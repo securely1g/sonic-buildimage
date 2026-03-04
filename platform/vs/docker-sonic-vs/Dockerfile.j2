@@ -149,6 +149,12 @@ COPY ["hwsku.json", "/usr/share/sonic/device/x86_64-kvm_x86_64-r0/Force10-S6000/
 COPY ["hwsku.json", "/usr/share/sonic/device/x86_64-kvm_x86_64-r0/brcm_gearbox_vs/"]
 COPY ["hwsku.json", "/usr/share/sonic/device/x86_64-kvm_x86_64-r0/Mellanox-SN2700/"]
 
+# Create Force10-S6000-1 hwsku with 1-indexed Ethernet ports for cSONiC neighbors
+RUN cp -r /usr/share/sonic/device/x86_64-kvm_x86_64-r0/Force10-S6000 \
+          /usr/share/sonic/device/x86_64-kvm_x86_64-r0/Force10-S6000-1 && \
+    printf '# name          lanes             alias             index       speed\nEthernet1       25,26,27,28       fortyGigE0/1      1           40000\nEthernet5       29,30,31,32       fortyGigE0/5      2           40000\n' \
+    > /usr/share/sonic/device/x86_64-kvm_x86_64-r0/Force10-S6000-1/port_config.ini
+
 RUN mkdir -p /etc/supervisor/conf.d/
 RUN sonic-cfggen -a "{\"ENABLE_ASAN\":\"{{ENABLE_ASAN}}\"}" -t /usr/share/sonic/templates/supervisord.conf.j2 > /etc/supervisor/conf.d/supervisord.conf
 RUN rm -f /usr/share/sonic/templates/supervisord.conf.j2
