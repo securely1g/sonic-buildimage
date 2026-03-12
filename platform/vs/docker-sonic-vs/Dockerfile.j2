@@ -135,6 +135,7 @@ COPY --from=fpm-frr frr/supervisord/supervisord.conf.common.j2 /usr/share/sonic/
 COPY --from=teamd supervisord.conf.common.j2 /usr/share/sonic/templates/supervisord.conf.teamd.j2
 COPY --from=nat supervisord.conf.common.j2 /usr/share/sonic/templates/supervisord.conf.nat.j2
 COPY --from=sflow supervisord.conf.common.j2 /usr/share/sonic/templates/supervisord.conf.sflow.j2
+COPY --from=orchagent supervisord.conf.common.j2 /usr/share/sonic/templates/supervisord.conf.swss.j2
 COPY --from=lldp start.sh /usr/bin/start-lldp.sh
 RUN chmod +x /usr/bin/start-lldp.sh
 COPY --from=teamd start.sh /usr/bin/start-teamd.sh
@@ -161,7 +162,7 @@ COPY ["hwsku.json", "/usr/share/sonic/device/x86_64-kvm_x86_64-r0/Mellanox-SN270
 
 RUN mkdir -p /etc/supervisor/conf.d/
 RUN sonic-cfggen -a "{\"ENABLE_ASAN\":\"{{ENABLE_ASAN}}\"}" -t /usr/share/sonic/templates/supervisord.conf.j2 > /etc/supervisor/conf.d/supervisord.conf
-RUN rm -f /usr/share/sonic/templates/supervisord.conf.j2 /usr/share/sonic/templates/supervisord.conf.lldp.j2 /usr/share/sonic/templates/supervisord.conf.frr.j2
+RUN rm -f /usr/share/sonic/templates/supervisord.conf.j2 /usr/share/sonic/templates/supervisord.conf.lldp.j2 /usr/share/sonic/templates/supervisord.conf.frr.j2 /usr/share/sonic/templates/supervisord.conf.swss.j2
 
 {%- if ENABLE_ASAN == "y" %}
 RUN mkdir -p /var/log/asan
