@@ -188,3 +188,7 @@ VLAN=`sonic-cfggen -d -v 'VLAN.keys() | join(" ") if VLAN'`
 if [ "$VLAN" != "" ]; then
     supervisorctl start arp_update
 fi
+
+# NOTE: docker-sonic-vs start sequence above supports cSONiC neighbor
+# composition via _INCLUDE_DOCKER feature flags (see Dockerfile.j2).
+
