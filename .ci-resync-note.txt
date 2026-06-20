@@ -1,0 +1,37 @@
+CI re-sync marker — PR #26724 (csonic2)
+=======================================
+
+Purpose
+-------
+Force GitHub to advance the PR #26724 head ref off the stale commit
+e80b2619731f900a2a2e19dffb6b182cb2a3c931 and re-trigger Azure CI against
+the current fork tip, which already contains the aspeed_arm64 bmcweb fix.
+
+Background
+----------
+Azure build_Azure.sonic-buildimage_merge_20260617.45 (buildId 1141429)
+failed only on the "Build aspeed_arm64" job. Root cause was the
+sonic-redfish submodule being pinned at c11fe4ee (pre-fix), which is
+incompatible with the current sdbusplus subproject revision. On
+aspeed_arm64 this breaks the bmcweb build:
+
+  ../src/object_mapper.cpp:59:42: error: 'object_path' in namespace
+  'sdbusplus::message' does not name a type
+  ../include/dbus_utility.hpp: 'DBusPropertiesMap' / 'DBusInterfacesMap'
+  was not declared in this scope
+
+The fix already landed on the csonic2 fork branch in commit fc98dffb1
+("sonic-redfish: bump submodule to 8b41b27 to fix aspeed_arm64 bmcweb
+build"), which moves the sonic-redfish submodule pointer from c11fe4ee
+to 8b41b2730dc1a2837b3c237e732d93bd6183f1c7.
+
+Why this marker is needed
+-------------------------
+The failing CI run built refs/pull/26724/merge derived from the stale
+head e80b2619 (sonic-redfish @ c11fe4ee), NOT the fixed fork tip
+(sonic-redfish @ 8b41b27). GitHub's PR head pointer was frozen on the
+old SHA and prior empty re-sync commits did not dislodge it. This is a
+real, non-empty tracked-file change to reliably advance the PR head so
+CI rebuilds the correct, fixed snapshot.
+
+No functional code is changed by this marker.
