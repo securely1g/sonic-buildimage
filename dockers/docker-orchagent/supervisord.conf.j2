@@ -70,7 +70,10 @@ stdout_syslog=true
 stderr_logfile=NONE
 stderr_syslog=true
 dependent_startup=true
-dependent_startup_wait_for=rsyslogd:running
+# portsyncd consumes CONFIG_DB port data. start.sh loads ConfigDB before
+# starting syncd, so waiting for syncd prevents dependent-startup from
+# launching portsyncd early with an empty PORT table.
+dependent_startup_wait_for=syncd:running
 {% if ENABLE_ASAN == "y" %}
 environment=ASAN_OPTIONS="log_path=/var/log/asan/portsyncd-asan.log{{ asan_extra_options }}"
 {% endif %}
