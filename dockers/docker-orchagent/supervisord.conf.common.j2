@@ -5,7 +5,7 @@
      swss_priority_base    - base priority offset (standalone: 0, VS: varies)
      include_swssconfig    - include swssconfig/countersyncd/enable_counters programs (default: true)
    Note: rsyslogd is NOT included here — each consumer provides its own rsyslogd program.
-         Programs in this template use dependent_startup_wait_for=rsyslogd:running,
+         Most programs in this template use dependent_startup_wait_for=rsyslogd:running,
          so the consumer must define a [program:rsyslogd] before including this template.
 #}
 
@@ -53,7 +53,10 @@ stdout_syslog=true
 stderr_logfile=NONE
 stderr_syslog=true
 dependent_startup=true
-dependent_startup_wait_for=rsyslogd:running
+# portsyncd consumes CONFIG_DB port data. start.sh loads ConfigDB before
+# starting syncd, so waiting for syncd prevents dependent-startup from
+# launching portsyncd early with an empty PORT table.
+dependent_startup_wait_for=syncd:running
 {% if ENABLE_ASAN == "y" %}
 environment=ASAN_OPTIONS="log_path=/var/log/asan/portsyncd-asan.log{{ asan_extra_options }}"
 {% endif %}
