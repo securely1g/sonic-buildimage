@@ -155,6 +155,7 @@ endef
 #     add_docker_feature target_docker.gz, FEATURE_NAME, source_docker.gz
 define add_docker_feature
 $(1)_DEPENDS += $$($(3)_DEPENDS)
+$(1)_DBG_DEPENDS += $$($(3)_DBG_DEPENDS)
 $(1)_PYTHON_WHEELS += $$($(3)_PYTHON_WHEELS)
 $(1)_FILES += $$($(3)_FILES)
 $(1)_DOCKERS += $(3)
@@ -171,6 +172,11 @@ endef
 define process_include_dockers
 $(foreach docker,$($(1)_INCLUDE_DOCKER),\
   $(eval $(call add_docker_feature,$(1),$(patsubst docker-%.gz,%,$(docker)),$(docker))))
+$(if $($(1)_INCLUDE_DOCKER),\
+  $(eval $(1)_DEPENDS := $$(sort $$($(1)_DEPENDS)))\
+  $(eval $(1)_DBG_DEPENDS := $$(sort $$($(1)_DBG_DEPENDS)))\
+  $(eval $(1)_PYTHON_WHEELS := $$(sort $$($(1)_PYTHON_WHEELS)))\
+  $(eval $(1)_FILES := $$(sort $$($(1)_FILES))))
 endef
 
 ###############################################################################

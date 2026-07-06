@@ -2,12 +2,10 @@
 
 DOCKER_SONIC_VS = docker-sonic-vs.gz
 $(DOCKER_SONIC_VS)_PATH = $(PLATFORM_PATH)/docker-sonic-vs
-$(DOCKER_SONIC_VS)_DEPENDS += $(SYNCD_VS) \
-                              $(PYTHON3_SWSSCOMMON) \
-                              $(LIBTEAMDCTL) \
-                              $(LIBTEAM_UTILS) \
-                              $(SONIC_DEVICE_DATA) \
-                              $(LIBYANG3) \
+# Deps with no owning feature docker (traditional explicit list). SYNCD_VS,
+# PYTHON3_SWSSCOMMON, LIBTEAMDCTL, LIBTEAM_UTILS and LIBYANG3 are now pulled in
+# automatically from the included dockers below (_INCLUDE_DOCKER).
+$(DOCKER_SONIC_VS)_DEPENDS += $(SONIC_DEVICE_DATA) \
                               $(LIBYANG3_PY3) \
                               $(SONIC_UTILITIES_DATA) \
                               $(SONIC_HOST_SERVICES_DATA) \
@@ -15,6 +13,7 @@ $(DOCKER_SONIC_VS)_DEPENDS += $(SYNCD_VS) \
 
 # Include feature dockers — auto-merges DEPENDS, PYTHON_WHEELS,
 # and provides --build-context for COPY --from=<feature> in Dockerfile.j2
+$(DOCKER_SONIC_VS)_INCLUDE_DOCKER += $(DOCKER_SYNCD_VS)
 $(DOCKER_SONIC_VS)_INCLUDE_DOCKER += $(DOCKER_LLDP)
 $(DOCKER_SONIC_VS)_INCLUDE_DOCKER += $(DOCKER_FPM_FRR)
 $(DOCKER_SONIC_VS)_INCLUDE_DOCKER += $(DOCKER_TEAMD)
