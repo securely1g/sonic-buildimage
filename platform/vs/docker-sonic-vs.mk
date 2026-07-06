@@ -2,12 +2,15 @@
 
 DOCKER_SONIC_VS = docker-sonic-vs.gz
 $(DOCKER_SONIC_VS)_PATH = $(PLATFORM_PATH)/docker-sonic-vs
+# NOTE: Packages already contributed by an _INCLUDE_DOCKER feature (below) are
+# intentionally NOT re-declared here — add_docker_feature auto-merges each
+# included feature docker's _DEPENDS. Omitted duplicates:
+#   $(PYTHON3_SWSSCOMMON)             <- docker-lldp
+#   $(LIBTEAMDCTL), $(LIBTEAM_UTILS)  <- docker-teamd
+#   $(LIBYANG3)                       <- docker-fpm-frr
+# Only packages unique to docker-sonic-vs are listed below.
 $(DOCKER_SONIC_VS)_DEPENDS += $(SYNCD_VS) \
-                              $(PYTHON3_SWSSCOMMON) \
-                              $(LIBTEAMDCTL) \
-                              $(LIBTEAM_UTILS) \
                               $(SONIC_DEVICE_DATA) \
-                              $(LIBYANG3) \
                               $(LIBYANG3_PY3) \
                               $(SONIC_UTILITIES_DATA) \
                               $(SONIC_HOST_SERVICES_DATA) \
@@ -38,9 +41,10 @@ $(DOCKER_SONIC_VS)_DEPENDS += $(LIBSWSSCOMMON_DBG) \
                               $(SYSMGR_DBG)
 endif
 
-ifeq ($(SONIC_ROUTING_STACK), frr)
-$(DOCKER_SONIC_VS)_DEPENDS += $(FRR)
-else
+# $(FRR) is not declared here for the frr routing stack: docker-fpm-frr
+# (unconditionally included above) already contributes $(FRR) via
+# add_docker_feature. Only the gobgp stack needs an explicit dep here.
+ifneq ($(SONIC_ROUTING_STACK), frr)
 $(DOCKER_SONIC_VS)_DEPENDS += $(GOBGP)
 endif
 
