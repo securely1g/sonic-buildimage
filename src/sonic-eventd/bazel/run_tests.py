@@ -44,9 +44,10 @@ def main():
         with tarfile.open(archive) as package:
             package.extractall(runtime, filter=member_filter)
         for directory in ['tests', 'rsyslog_plugin_tests']:
-            for source in (sources/directory).rglob('*.json'):
-                dest = work/source.relative_to(sources)
-                dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(source, dest)
+            for source in (sources/directory).rglob('*'):
+                if source.is_file() and source.suffix in {'.json', '.txt'}:
+                    dest = work/source.relative_to(sources)
+                    dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(source, dest)
         libraries = sorted({str(p.parent) for p in runtime.rglob('lib*.so*') if p.is_file()})
         environment = dict(os.environ, LD_LIBRARY_PATH=':'.join(libraries))
         libyang = {str(p.resolve()) for p in runtime.rglob('libyang.so.3')}

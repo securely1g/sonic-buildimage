@@ -120,7 +120,7 @@ cc_binary(name = "rsyslog_plugin_tests_bin", testonly = True, srcs = ["rsyslog_p
         srcs = ["bazel/run_tests.py"],
         main = "bazel/run_tests.py",
         args = ["$(location :" + name + "_tests_bin)", "$(location :test_runtime)", "$(location tests/eventdb_database_config.json)"],
-        data = [":" + name + "_tests_bin", ":test_runtime"] + glob(["tests/**/*.json", "rsyslog_plugin_tests/*.json"]),
+        data = [":" + name + "_tests_bin", ":test_runtime"] + glob(["tests/**/*.json", "rsyslog_plugin_tests/*.json", "rsyslog_plugin_tests/*.txt"]),
         deps = ["@rules_python//python/runfiles"],
         timeout = "long",
         tags = ["exclusive"],
