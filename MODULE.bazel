@@ -205,3 +205,9 @@ single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",
 )
+
+uv = use_extension("@aspect_rules_py//uv/unstable:extension.bzl", "uv")
+use_repo(uv, "pypi")
+
+# Everything the Make/Bazel equivalence check needs.
+include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
