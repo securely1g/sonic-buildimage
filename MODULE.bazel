@@ -155,6 +155,8 @@ use_repo(bindgen, "rules_rust_bindgen")
 
 register_toolchains("@rules_rust_bindgen//:all")
 
+bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
+
 toolchains = use_extension("@tar.bzl//tar:extensions.bzl", "toolchains")
 use_repo(toolchains, "bsd_tar_toolchains")
 
