@@ -88,8 +88,6 @@ platform/**/debian/*
 !platform/**/debian/compat
 !platform/**/debian/*.postinst
 !platform/**/debian/*.install
-!platform/**/debian/*.service
-!platform/**/debian/*.conf
 platform/**/build
 platform/**/*.ko
 platform/**/*.mod.c
@@ -132,9 +130,7 @@ sources.list.*
 # Generated mirror configs
 apt-retries-count
 
-# Generated Bazel state.
+# Bazel
 /bazel-*
-**/MODULE.bazel.lock
-**/Cargo.Bazel.lock
-/.bazelrc.user
-/artifacts/swss/
+MODULE.bazel.lock
+user.bazelrc
