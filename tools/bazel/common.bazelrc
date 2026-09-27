@@ -1,14 +1,18 @@
-common --lockfile_mode=update
+# Try to read from sonic-bazel-registry, for modules maintained by SONiC
+common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+# After that, read from upstream sources.
+common --registry=https://raw.githubusercontent.com/aspect-build/bazel-central-registry/aspect_rules_py-v1.7.1
+common --registry=https://bcr.bazel.build
 
-# This opt-in container path supports native AMD64 Debian Trixie.
+# Build all release binaries for `trixie`.
+# These are host toolchains (exec == target == $cpu),
+# so --config=aarch64 only resolves when Bazel itself is running on an aarch64 machine.
+#
+# Without this, binaries that should run on the exec machine (the machine running the build)
+# will instead be compiled as though they were targetting the release machine (the SONiC switch),
+# and thus may fail CI.
 common --platforms=@sonic_build_infra//platforms:x86_64_trixie
-# Build-time cfggen has native Common/YANG dependencies too. Select the declared
-# Trixie toolchain for execution tools instead of the ambient host compiler.
-common --host_platform=@sonic_build_infra//platforms:x86_64_trixie
-common --@sonic_swss_common//tools/bazel:yang_modules=True
-common --noincompatible_disallow_empty_glob
-build --@rules_rust//rust/settings:experimental_use_allocator_libraries_with_mangled_symbols=True
-build:release --compilation_mode=opt
-test --test_output=errors
+common:aarch64 --platforms=@sonic_build_infra//platforms:aarch64_trixie
 
-try-import %workspace%/.bazelrc.user
+# Always print errored test output
+test --test_output=errors
