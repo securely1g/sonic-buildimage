@@ -16,13 +16,11 @@ common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 common --features=external_include_paths
 common --test_output=errors
 
-# TODO(bazel-ready): YANG-driven cfg_schema.h generation (gen_cfg_schema.py) is not
-# wired into the Bazel build yet. It needs the YANG toolchain in the registry plus a
-# python toolchain.
-#
-# Until then, disable YANG modules so swss-common builds with the
-# minimal cfg_schema.h stub instead of failing as deliberately-incompatible.
-common --@sonic_swss_common//tools/bazel:yang_modules=False
+# SWSS uses Common's generated YANG schema and YANG-enabled runtime.
+common --@sonic_swss_common//tools/bazel:yang_modules=True
+
+# Rust 1.90 emits versioned allocator symbols when cc_common performs the link.
+common --@rules_rust//rust/settings:experimental_use_allocator_libraries_with_mangled_symbols=True
 
 # Select the (only) venv configuration for pip dependencies resolved by the `uv`
 # extension in src/sonic-build-infra/deps/pyproject.toml
