@@ -462,7 +462,7 @@ def merge(parts, output, pigz=None, level=6):
     metadata = output.with_name(output.name + ".metadata.tmp.gz")
     try:
         with fragment(metadata, pigz, level) as archive:
-            for name, mode in (("image", 0o700), ("image/overlay2", 0o700),
+            for name, mode in ((".", 0o710), ("image", 0o700), ("image/overlay2", 0o700),
                                ("image/overlay2/imagedb", 0o700), ("image/overlay2/imagedb/content", 0o700),
                                ("image/overlay2/imagedb/content/sha256", 0o700),
                                ("image/overlay2/imagedb/metadata", 0o700),
