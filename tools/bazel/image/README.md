@@ -5,6 +5,9 @@ assembles a bootable SONiC VS ONIE installer in one Bazel graph. This initial
 configuration supports amd64, Debian Trixie, Docker 28.5.2 `overlay2`, and unsigned
 ONIE images. The normal Make image build is unchanged.
 
+See the [measured one-line SWSS benchmark](BENCHMARK.md) for timings, verified
+cache behavior, artifact identity, and the reproduction method.
+
 The graph consumes explicit phase-one predecessors: a **pre-container host
 snapshot**, native source/configuration needed to finalize that snapshot, and
 the other service images. It does not rebuild every Debian package or use a
@@ -63,6 +66,9 @@ individual layers discovered inside that import are not separate Bazel actions.
 The preparation scripts freeze native predecessors under
 `target/bazel-image-inputs/` and write a generated `inputs.bzl` plus provenance
 receipts. Large generated inputs are not committed.
+This checkout consumes a bundle from a separate phase-one native build provider;
+it does not produce the snapshot state marker or evaluated native inventory.
+An ordinary completed Make installer or unmarked SquashFS is not a substitute.
 Preparation also installs `vs/BUILD.bazel` from its checked-in template, so a
 fresh checkout can load other Bazel packages before native inputs are available.
 Changes to the frozen native source, generated services, or configuration
@@ -84,12 +90,76 @@ template are direct graph inputs and are always read from the current checkout.
    preparation includes the existing platform configurations and all three VS
    KVM platforms.
 
+### Capturing the native template environment
+
+The tested preparer path used a retained native provider's Make invocation and
+a capture-only replacement for `build_debian.sh`. The following portable capture
+pattern documents that boundary; it is not a validated recipe for a cold native
+build. Work only in a disposable copy of the provider's matching native tree,
+with its generated prerequisites and the same slave, configuration, Make
+variables, and exported snapshot identity (`SONIC_BAZEL_SOURCE_COMMIT`,
+`SONIC_BAZEL_SOURCE_BRANCH`, and `SOURCE_DATE_EPOCH`).
+
+```sh
+cp build_debian.sh build_debian.capture-source.sh
+test ! -e captured-host-environment.json
+cat > build_debian.sh <<'PY'
+#!/usr/bin/env python3
+import json, os, pathlib, re
+
+sources = [pathlib.Path('build_debian.capture-source.sh'), pathlib.Path('slave.mk')]
+sources += list(pathlib.Path('files/build_templates').rglob('*.j2'))
+names = {'SONIC_BAZEL_SOURCE_COMMIT', 'SONIC_BAZEL_SOURCE_BRANCH', 'SOURCE_DATE_EPOCH'}
+for source in sources:
+    names.update(re.findall(r'[A-Za-z_][A-Za-z_0-9]*', source.read_text()))
+ambient = {'PWD', 'HOME', 'USER', 'LOGNAME', 'PATH', 'SHELL', 'SHLVL',
+           'MAKEFLAGS', 'MAKELEVEL', 'MFLAGS', 'DOCKER_HOST', 'RUSTUP_HOME'}
+captured = {}
+for name, value in os.environ.items():
+    if name not in names or name in ambient:
+        continue
+    if any(word in name.upper() for word in ('PASSWORD', 'TOKEN', 'SECRET', 'PROXY')):
+        if name != 'CHANGE_DEFAULT_PASSWORD' or value not in ('y', 'n'):
+            continue
+    captured[name] = value
+os.umask(0o077)
+with open('captured-host-environment.json', 'x') as output:
+    json.dump(captured, output, indent=2, sort_keys=True)
+    output.write('\n')
+raise SystemExit(88)
+PY
+chmod 755 build_debian.sh
+```
+
+Now repeat the provider's native image Make command **inside its native slave**,
+including its original variable assignments and Make overlays. For a provider
+using only `slave.mk`, the target invocation is:
+
+```sh
+make -f slave.mk SONIC_BUILD_TARGET=target/sonic-vs.bin target/sonic-vs.bin
+# Expected: build_debian.sh exits 88; Make reports a nonzero status.
+mv build_debian.capture-source.sh build_debian.sh
+test -s captured-host-environment.json
+```
+
+The capture stops before filesystem assembly; Make may still rebuild missing
+prerequisites before reaching it. Restore the original script before preparing
+the source bundle. Pass this local JSON file to `prepare_host_inputs.py`; do not
+dump the entire shell environment or publish captured environment files. The
+preparer validates supported options and identity, and the host action checks
+that identity against the pre-container snapshot.
+
 The execution environment JSON declares `schema`, `platform`, `worker_image`
 (an immutable Docker image ID), `docker_version`, `storage_driver`, and
 `distribution`. Actions verify the worker marker; Docker actions also verify
 the daemon version. The worker must contain Python 3.13, Docker 28.5.2, pigz,
 GNU tar, squashfs-tools, `j2`, and the native SONiC image tools. The tested
 worker is the pinned SONiC Trixie slave used by the preceding native build.
+`run.py` intentionally executes Bazel as UID/GID `1000:1000` in that worker.
+The mounted source trees, output directory (or its parent when creating it), and
+optional repository cache must be accessible and writable by those IDs. A host
+account with another UID is not automatically mapped; use an appropriately
+owned build area or a prepared worker setup before running this wrapper.
 
 Run the target through `run.py` in a dedicated privileged worker. The worker
 gets a bind mount of the explicitly selected source/build area and **no host
