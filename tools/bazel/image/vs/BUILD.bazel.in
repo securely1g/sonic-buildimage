@@ -1,0 +1,19 @@
+load("//target/bazel-image-inputs:inputs.bzl", "IMAGE_INPUTS")
+load("//tools/bazel/image:defs.bzl", "sonic_vs_image")
+
+# Prepare explicit native predecessors first; see ../README.md. There is no
+# dependency on a previous finished image or an undeclared mutable Docker store.
+sonic_vs_image(
+    name = "sonic-vs.bin",
+    epoch = IMAGE_INPUTS["epoch"],
+    execution_environment = IMAGE_INPUTS["execution_environment"],
+    host_config = IMAGE_INPUTS["host_config"],
+    image_version = IMAGE_INPUTS["image_version"],
+    images = IMAGE_INPUTS["images"],
+    installer_config = IMAGE_INPUTS["installer_config"],
+    installer_files = IMAGE_INPUTS["installer_files"],
+    installer_modes = IMAGE_INPUTS["installer_modes"],
+    local_images = IMAGE_INPUTS["local_images"],
+    snapshot = IMAGE_INPUTS["snapshot"],
+    source = IMAGE_INPUTS["source"],
+)
