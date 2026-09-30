@@ -104,6 +104,36 @@ class StoreTest(unittest.TestCase):
             self.assertEqual((self.root / "first" / filename).read_bytes(),
                              (self.root / "second" / filename).read_bytes())
 
+    def test_complete_native_metadata_directory_skeleton(self):
+        native, _, _ = self.native("native")
+        part, output = self.root / "part", self.root / "dockerfs.tar.gz"
+        store.collect(native, part)
+        store.merge([part], output)
+        # Native SONiC dockerfs starts with ./ mode0710. Its root entry matters:
+        # installation extracts into an existing directory, and must restore
+        # Docker's directory permissions instead of inheriting the mountpoint's.
+        expected = {
+            ".": 0o710,
+            "image": 0o700,
+            "image/overlay2": 0o700,
+            "image/overlay2/imagedb": 0o700,
+            "image/overlay2/imagedb/content": 0o700,
+            "image/overlay2/imagedb/content/sha256": 0o700,
+            "image/overlay2/imagedb/metadata": 0o700,
+            "image/overlay2/imagedb/metadata/sha256": 0o700,
+            "image/overlay2/layerdb": 0o700,
+            "image/overlay2/layerdb/sha256": 0o700,
+            "overlay2": 0o710,
+            "overlay2/l": 0o700,
+        }
+        with tarfile.open(output) as archive:
+            self.assertEqual(archive.next().name, ".")
+            for name, mode in expected.items():
+                item = archive.getmember(name)
+                self.assertTrue(item.isdir(), name)
+                self.assertEqual((item.mode, item.uid, item.gid), (mode, 0, 0), name)
+                self.assertEqual(item.pax_headers, {}, name)
+
     def test_merge_declared_tree_artifact_through_sandbox_symlinks(self):
         native, _, _ = self.native("native")
         part, sandbox = self.root / "part", self.root / "sandbox"
