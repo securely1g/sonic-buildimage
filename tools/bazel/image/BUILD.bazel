@@ -1,0 +1,46 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob([
+    "*.py",
+    "*.bzl",
+]))
+
+py_test(
+    name = "metadata_test",
+    srcs = [
+        "metadata.py",
+        "metadata_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "host_test",
+    srcs = [
+        "host.py",
+        "host_test.py",
+        "metadata.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "store_test",
+    srcs = [
+        "store.py",
+        "store_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "installer_test",
+    srcs = [
+        "installer.py",
+        "installer_test.py",
+    ],
+    data = ["//:image_installer_test_data"],
+    imports = ["."],
+)

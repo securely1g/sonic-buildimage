@@ -1,6 +1,8 @@
 # Files needed for the Bazel build
 _BAZEL_FILES = [
     "MODULE.bazel",
+    "build_debian.sh",
+    "files/build_templates/sonic_debian_extension.j2",
     "files/scripts/arp_update",
     "files/build_templates/arp_update_vars.j2",
     "files/build_templates/manifest.json.j2",
@@ -20,4 +22,17 @@ exports_files(
         allow_empty = True,
     ) +
     _BAZEL_FILES,
+)
+
+filegroup(
+    name = "image_installer_test_data",
+    srcs = [
+        "installer/default_platform.conf",
+        "installer/efi_sbatlevel.py",
+        "installer/install.sh",
+        "installer/sharch_body.sh",
+        "onie-image.conf",
+        "platform/vs/platform.conf",
+    ],
+    visibility = ["//tools/bazel/image:__pkg__"],
 )
