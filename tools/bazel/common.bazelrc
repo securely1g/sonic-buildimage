@@ -1,5 +1,10 @@
 # Try to read from sonic-bazel-registry, for modules maintained by SONiC
-common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+# Match the immutable dependency registry snapshots validated by SWSS.
+common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/2f4012b01f7a73f24b12de64a0a9ae86a06b0e89
+common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97dea0f4d4254de4fe17c56a6ceaf17b001cc4ce
+common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/c999f3c9ebf59c5e2d8feaae8d5010fc9204ef92
+common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/473dda85dc87430fddfdf12ab55a05da21748069
+common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/482c2b1699423ab19c700f0e0ea8e2adb5915e27
 # After that, read from upstream sources.
 common --registry=https://raw.githubusercontent.com/aspect-build/bazel-central-registry/aspect_rules_py-v1.7.1
 common --registry=https://bcr.bazel.build
