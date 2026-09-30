@@ -45,6 +45,7 @@ function test_repo() {
 echo "[= Testing Docker Images =]"
 
 cd "${repo_root}"
+python3 -m unittest discover -s tools/bazel/tests -p '*_test.py' -v
 
 # --keep_going: not every package in the repo loads, and we only want the ones
 # declaring an oci_image, so a non-zero exit is expected here.
@@ -65,7 +66,7 @@ for image in ${docker_images}; do
       echo "[docker-make] ${archive}"
 
       rm -f "target/${archive}"
-      BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+      BAZEL_MIN_READINESS=experimental \
         NOBOOKWORM=1 \
         BLDENV=trixie \
         make "target/${archive}"
