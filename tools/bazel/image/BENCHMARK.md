@@ -135,8 +135,29 @@ it checked the unique changed orchagent bytes through the runtime archive and
 effective Docker overlay graph, fully decoded SquashFS, checked ZIP CRC/member
 hashes and boot/platform content, and verified the ONIE checksum and embedded
 payload byte chain. Separate live Docker store fixtures checked restore,
-dynamic-loader resolution, save/reload and whiteout semantics. These checks do
-not establish guest boot or forwarding coverage.
+dynamic-loader resolution, save/reload and whiteout semantics.
+
+The exact measured installer subsequently passed native ONIE installation and
+booted a fresh isolated VS guest. Live verification passed with the expected
+SWSS image ID, orchagent SHA256 and unique startup marker. Database, SWSS and
+syncd were active with zero container restarts; all 15 required SWSS processes
+(including countersyncd) and syncd were running. All five Redis databases
+responded. All 32 ports were present in configuration, application, state and
+ASIC data, with kernel interfaces, state `ok`, matching bidirectional VID/RID
+mappings, `PortConfigDone` count 32 and `PortInitDone` present.
+
+This used QEMU q35/TCG with 4 guest vCPUs and 10 GiB RAM, inside an isolated
+8-CPU/16-GiB worker. Installation and boot validation are outside the build
+timer. An initial readiness probe ran before first-boot process/port startup
+completed and failed; its receipt was preserved, and the unchanged verifier
+passed after initialization. `show version` reports the retained host stamp
+`SONiC.bazel.0-6e1eb6baa`; the changed runtime is identified by its image/binary
+hashes and marker.
+
+The inherited `watchdog-control.service` failure and virtio `NETDEV WATCHDOG`
+TX timeouts on the isolated data NICs were recorded. This is a boot and service
+check, without a forwarding test. The existing T0 remained unchanged, with
+zero restarts and all eight BGP sessions established at its postcheck.
 
 Measured marker: `cacheable e2e benchmark 20260930-e7b549c56f1e`.
 
