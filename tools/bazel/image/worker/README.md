@@ -2,8 +2,8 @@
 
 This AMD64 Debian Trixie image contains the execution tools for the existing
 cacheable VS image graph: Bazel 8.5.1, Docker 28.5.2 with its native overlay2
-store, containerd 1.7.28, Python 3.13, j2cli, GNU tar, pigz, SquashFS tools and
-the source-build tools used by SWSS. It does not contain a SONiC host filesystem,
+store, Buildx 0.29.1, containerd 1.7.28, Python 3.13, j2cli, GNU tar, pigz,
+SquashFS tools and the source-build tools used by SWSS. It does not contain a SONiC host filesystem,
 service archives, source checkout or credentials. By default it uses Debian's
 public trust anchors; an explicit local CA bundle can extend execution trust.
 
@@ -16,9 +16,9 @@ docker image inspect sonic-bazel-vs-worker:20261001
 ```
 
 The input fetcher records public source URLs and verifies SHA256 hashes for
-Docker, containerd and the official Bazel binary. The Dockerfile pins the Debian
-base by digest and validates these input hashes again. Its restricted Docker
-context admits only those four public files, the Dockerfile, the public
+Docker, Buildx, containerd and the official Bazel binary. The Dockerfile pins the
+Debian base by digest and validates these input hashes again. Its restricted Docker
+context admits only those five public files, the Dockerfile, the public
 `install-trust.py` helper and `build-ca-bundle.pem`. The preparation script copies
 the helper from `tools/bazel/ci/trust.py` and creates an empty CA placeholder for
 manual builds; the CI controller stages both files automatically. It installs
@@ -51,8 +51,13 @@ also create private mount, PID and network namespaces. Docker's scratch data
 must reside on the bind-mounted build filesystem, where overlay2 is supported.
 The worker needs writable build/cache directories for UID/GID 1000. The native
 preparation helper uses a separate instance with a private Docker daemon to run
-the existing Make source build. Its outputs are verified and passed into the
-Bazel graph in the same CI invocation, as described in the parent README.
+the existing Make source build. It delegates controllers only inside its private
+cgroup namespace, keeping worker processes in a separate leaf so nested memory
+limits work on cgroup v2. Before Make, a nonroot preflight builds and runs a tiny
+image made from the worker's BusyBox and libraries. This verifies BuildKit, the
+private Docker socket, native memory/swap/file limits and writable bind mounts
+without pulling another base image. Native outputs are verified and passed into
+the Bazel graph in the same CI invocation, as described in the parent README.
 
 The first worker built from this recipe occupied about 1.54 GB. It completed
 real host finalization from the prepared VS snapshot and imported/collected a

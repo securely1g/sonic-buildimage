@@ -23,9 +23,12 @@ curl --fail --location --retry 3 \
   'https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-ce-cli_28.5.2-1~debian.13~trixie_amd64.deb' -o docker-ce-cli.deb
 curl --fail --location --retry 3 \
   'https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/containerd.io_1.7.28-2~debian.13~trixie_amd64.deb' -o containerd.io.deb
+curl --fail --location --retry 3 \
+  'https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-buildx-plugin_0.29.1-1~debian.13~trixie_amd64.deb' -o docker-buildx-plugin.deb
 sha256sum --check <<'CHECKSUMS'
 61d89402f0368e64b6c827be5de79d8e65382e8124c3cbb97325611a1851392e  bazel
 10f6fba7cfe2309cfb3a14033218339c6f0687247903806e6298943fca0ca740  docker-ce.deb
 dde4a0613e538847ed8558dbd937accd31fb76fca9c115e42442b812b7d13c0a  docker-ce-cli.deb
 18fad97fa08cb1e5f1f76f3dfd9a571e83f11e135f13ef77b83f2aa35397a619  containerd.io.deb
+355079ff06148070b255a0c0fd5a1672f2a960e9938605dea50a010345eb5d17  docker-buildx-plugin.deb
 CHECKSUMS
