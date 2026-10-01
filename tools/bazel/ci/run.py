@@ -35,6 +35,7 @@ TEST_TARGETS = [
     "//tools/bazel/image/native:handoff_test",
     "//tools/bazel/image/native:ca_hook_test",
     "//tools/bazel/ci:image_test",
+    "//tools/bazel/ci:source_workspace_test",
     "//tools/bazel/ci:verify_image_test",
 ]
 BUILD_TARGETS = {
