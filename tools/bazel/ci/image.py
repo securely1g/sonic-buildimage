@@ -11,6 +11,7 @@ import datetime
 import errno
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -72,30 +73,82 @@ def source_provenance(workspace):
             text=True).strip()
 
     result = {"source_commit": git(workspace, "rev-parse", "HEAD"), "components": {}}
-    git(workspace, "diff", "--quiet", "HEAD", "--ignore-submodules=none", "--")
-    require(not git(workspace, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"),
-            "checkout contains modified or untracked source files")
-    for component in COMPONENTS:
-        directory = workspace / component
-        require((directory / ".git").exists(), "component submodule is not initialized: " + component)
-        entry = git(workspace, "ls-tree", "HEAD", "--", component).split()
-        require(len(entry) == 4 and entry[:2] == ["160000", "commit"] and entry[3] == component,
-                "component is not a recorded Git submodule: " + component)
-        actual = git(directory, "rev-parse", "HEAD")
-        require(actual == entry[2], "component HEAD differs from recorded gitlink: " + component)
+
+    def visit(directory, prefix=""):
         git(directory, "diff", "--quiet", "HEAD", "--ignore-submodules=none", "--")
         require(not git(directory, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"),
-                "component contains modified or untracked source files: " + component)
-        result["components"][component] = {"commit": actual, "gitlink": entry[2]}
+                "checkout contains modified or untracked source files: " + (prefix or "."))
+        # Walk the recorded Git tree, rather than only the five Bazel modules:
+        # native prerequisite builds consume the complete recursive checkout.
+        for entry in git(directory, "ls-tree", "-r", "-z", "HEAD").split("\0"):
+            if not entry:
+                continue
+            metadata, name = entry.split("\t", 1)
+            mode, kind, recorded = metadata.split()
+            if mode != "160000":
+                continue
+            require(kind == "commit", "invalid submodule gitlink")
+            component = prefix + name
+            child = directory / name
+            require((child / ".git").exists(), "component submodule is not initialized: " + component)
+            actual = git(child, "rev-parse", "HEAD")
+            require(actual == recorded, "component HEAD differs from recorded gitlink: " + component)
+            result["components"][component] = {"commit": actual, "gitlink": recorded}
+            visit(child, component + "/")
+
+    visit(workspace)
+    require(set(COMPONENTS) <= result["components"].keys(), "required SONiC component submodules are missing")
     result["source_clean"] = True
     return result
 
 
-def check_bazel_version(manifest, workspace):
+def capture(command, workspace, artifacts, receipt, name):
+    record = {"argv": [str(value) for value in command], "log": name + ".log"}
+    receipt["commands"].append(record)
+    started = time.monotonic()
+    try:
+        process = subprocess.run(record["argv"], cwd=workspace, capture_output=True, text=True)
+        record["returncode"] = process.returncode
+        (artifacts / record["log"]).write_text(process.stdout + process.stderr)
+        require(process.returncode == 0, name + " failed; see " + record["log"])
+        return process.stdout
+    finally:
+        record["wall_seconds"] = time.monotonic() - started
+
+
+def build_worker(workspace, state, artifacts, receipt, invocation):
+    """Build the public execution recipe locally; never load a saved worker."""
+    context = state / ("worker-" + invocation)
+    context.mkdir()
+    recipe = workspace / "tools/bazel/image/worker"
+    sources = ("Dockerfile", ".dockerignore", "prepare-worker-inputs.sh")
+    for name in sources:
+        shutil.copyfile(recipe / name, context / name)
+    receipt["worker_recipe"] = {name: image_inputs.sha256(recipe / name) for name in sources}
+    execute(["bash", str(context / "prepare-worker-inputs.sh")], workspace, artifacts, receipt, "worker-inputs")
+    execute(["docker", "build", "--platform", "linux/amd64", "--iidfile", str(context / "image.id"),
+             str(context)], workspace, artifacts, receipt, "worker-build")
+    worker_image = (context / "image.id").read_text().strip()
+    require(re.fullmatch(r"sha256:[0-9a-f]{64}", worker_image), "worker build did not return an immutable image ID")
+    details = json.loads(capture(["docker", "image", "inspect", worker_image],
+                                workspace, artifacts, receipt, "worker-inspect"))
+    require(len(details) == 1 and re.fullmatch(r"sha256:[0-9a-f]{64}", details[0].get("Id", "")) and
+            details[0]["Os"] == "linux" and details[0]["Architecture"] == "amd64",
+            "built worker identity/platform mismatch")
+    # Classic and containerd stores may expose config vs manifest IDs. Resolve
+    # the build's immutable ID, then use the exact ID returned by this daemon.
+    receipt["worker_build_id"] = worker_image
+    worker_image = details[0]["Id"]
+    version = capture(["docker", "run", "--rm", "--network", "none", "--read-only",
+                       "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                       "--entrypoint", "/usr/local/bin/bazel", worker_image, "--version"],
+                      workspace, artifacts, receipt, "worker-bazel-version").strip()
     expected = (workspace / ".bazelversion").read_text().strip()
-    require(manifest["worker"].get("bazel_version") == expected,
-            "pinned worker Bazel version differs from checkout .bazelversion")
-    return expected
+    require(version == "bazel " + expected, "built worker Bazel version differs from checkout .bazelversion")
+    receipt["bazel_version"] = expected
+    spec = context / "execution-environment.json"
+    spec.write_text(json.dumps(dict(image_inputs.ENVIRONMENT, worker_image=worker_image), indent=2) + "\n")
+    return spec
 
 
 def execute(command, workspace, artifacts, receipt, name):
@@ -118,7 +171,10 @@ def execute(command, workspace, artifacts, receipt, name):
         if process is not None and process.poll() is None:
             process.terminate()
             try:
-                process.wait(timeout=30)
+                # The native helper owns a separate Docker daemon/container.
+                # Allow its bounded stop (60s) and removal (30s) to finish before
+                # killing the helper; otherwise cancellation can orphan it.
+                process.wait(timeout=105 if name == "native-build" else 30)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
@@ -230,25 +286,16 @@ def build(args):
                "worker": worker_name, "output_user_root": str(output_root),
                "output_cleanup": {"path": str(output_root), "status": "not_created"},
                "cache_policy": "Package disk cache and repository cache persist; full image disk cache disabled.",
-               "scope": "Bazel SWSS compile and VS image assembly from pinned native predecessors; "
+               "scope": "Native prerequisites built from this checkout, then Bazel SWSS and VS image assembly; "
                         "installer byte-chain verification. No boot or forwarding test."}
     try:
         require(not artifacts.is_relative_to(output_root), "artifacts cannot be inside the invocation output root")
         require(not output_root.is_symlink(), "invocation output root must not be a symlink")
-        manifest = args.manifest.resolve(strict=True)
-        receipt["manifest_sha256"] = image_inputs.sha256(manifest)
-        receipt["bazel_version"] = check_bazel_version(image_inputs.load_manifest(manifest), workspace)
-        receipt.update(source_provenance(workspace))
-        prepare_started = time.monotonic()
-        image_inputs.prepare(manifest, workspace, state / "input-downloads",
-                             artifacts / "input-receipt.json", args.local_assets)
-        receipt["input_preparation_seconds"] = time.monotonic() - prepare_started
-        spec = workspace / "target/bazel-image-inputs/execution-environment.json"
-        receipt["execution_environment"] = json.loads(spec.read_text())
-        host_config = json.loads((workspace / "target/bazel-image-inputs/host-config.json").read_text())
-        receipt["native_host_identity"] = host_config.get("identity")
-        # Claim this fresh directory exclusively; cleanup never adopts an
-        # existing output root or another invocation's scratch directory.
+        require(not (workspace / "target").exists() and not (workspace / "target").is_symlink(),
+                "source image CI requires a fresh checkout without retained target outputs")
+        source = source_provenance(workspace)
+        receipt.update(source)
+        # Claim scratch before doing any work; never adopt another invocation.
         output_root.mkdir()
         created = output_root.lstat()
         output_identity = (created.st_dev, created.st_ino)
@@ -259,6 +306,25 @@ def build(args):
             ownership_changed = True
             for path in (workspace, state):
                 chown_tree(path, 1000, 1000)
+        spec = build_worker(workspace, state, artifacts, receipt, invocation)
+        native_receipt = artifacts / "native-receipt.json"
+        execute([sys.executable, str(workspace / "tools/bazel/ci/native_build.py"),
+                 "--workspace", str(workspace), "--state", str(state / ("native-" + invocation)),
+                 "--artifacts", str(artifacts / "native"), "--worker-spec", str(spec),
+                 "--source-commit", source["source_commit"], "--invocation", invocation,
+                 "--output", str(native_receipt)], workspace, artifacts, receipt, "native-build")
+        prepare_started = time.monotonic()
+        image_inputs.prepare(native_receipt, workspace, state / ("prepare-" + invocation),
+                             artifacts / "input-receipt.json", spec, source, invocation)
+        receipt["input_preparation_seconds"] = time.monotonic() - prepare_started
+        spec = workspace / "target/bazel-image-inputs/execution-environment.json"
+        receipt["execution_environment"] = json.loads(spec.read_text())
+        host_config = json.loads((workspace / "target/bazel-image-inputs/host-config.json").read_text())
+        receipt["native_host_identity"] = host_config["identity"]
+        # Host-side preparation creates new inputs after the initial ownership
+        # change. Give only this generated bundle to the Bazel worker user.
+        if os.geteuid() == 0:
+            chown_tree(workspace / "target/bazel-image-inputs", 1000, 1000)
         launcher = [sys.executable, str(workspace / "tools/bazel/image/run.py"),
                     "--workspace", str(workspace), "--mount-root", str(mount_root),
                     "--worker-spec", str(spec), "--bazel", "/usr/local/bin/bazel",
@@ -346,9 +412,8 @@ def build(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("workspace", "state", "artifacts", "manifest"):
+    for name in ("workspace", "state", "artifacts"):
         parser.add_argument("--" + name, type=Path, required=True)
-    parser.add_argument("--local-assets", type=Path)
     args = parser.parse_args(argv)
 
     def interrupted(signum, _frame):

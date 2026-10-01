@@ -171,10 +171,8 @@ class ImageControllerTest(unittest.TestCase):
         self.assertTrue(linked.is_symlink())
 
     def test_failed_build_stops_exact_worker_restores_owner_and_writes_failed_receipt(self):
-        manifest = self.root / "inputs.json"
-        manifest.write_text("{}")
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
-                                       artifacts=self.artifacts, manifest=manifest, local_assets=None)
+                                       artifacts=self.artifacts)
 
         def prepare(*_args):
             inputs = self.workspace / "target/bazel-image-inputs"
@@ -193,15 +191,17 @@ class ImageControllerTest(unittest.TestCase):
         with mock.patch.object(image.os, "geteuid", return_value=0), \
                 mock.patch.object(image.os, "chown"), \
                 mock.patch.object(image, "chown_tree") as chown, \
-                mock.patch.object(image.image_inputs, "load_manifest", return_value={"worker": {"bazel_version": "8.5.1"}}), \
+                mock.patch.object(image, "build_worker", return_value=self.state / "worker-spec.json"), \
                 mock.patch.object(image.image_inputs, "prepare", side_effect=prepare), \
                 mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
                 mock.patch.object(image, "execute", side_effect=execute):
             self.assertEqual(image.build(arguments), 1)
         self.assertEqual(chown.call_args_list, [mock.call(self.workspace, 1000, 1000),
-                         mock.call(self.state, 1000, 1000), mock.call(self.workspace, *owner)])
-        self.assertEqual(len(commands), 2)
-        self.assertEqual(commands[1], commands[0][:commands[0].index("--")] + ["--worker-action", "stop"])
+                         mock.call(self.state, 1000, 1000),
+                         mock.call(self.workspace / "target/bazel-image-inputs", 1000, 1000),
+                         mock.call(self.workspace, *owner)])
+        self.assertEqual(len(commands), 3)
+        self.assertEqual(commands[2], commands[1][:commands[1].index("--")] + ["--worker-action", "stop"])
         receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         self.assertEqual(receipt["status"], "failed")
         self.assertIn("fixture compilation failed", receipt["error"])
@@ -209,11 +209,34 @@ class ImageControllerTest(unittest.TestCase):
         self.assertEqual(receipt["output_cleanup"]["status"], "retained")
         self.assertTrue(Path(receipt["output_user_root"]).is_dir())
 
-    def test_worker_bazel_version_must_match_checked_out_version(self):
-        self.assertEqual(image.check_bazel_version({"worker": {"bazel_version": "8.5.1"}}, self.workspace), "8.5.1")
-        for worker in ({}, {"bazel_version": "8.4.2"}):
-            with self.subTest(worker=worker), self.assertRaisesRegex(ValueError, "Bazel version"):
-                image.check_bazel_version({"worker": worker}, self.workspace)
+    def test_worker_is_built_from_recipe_and_actual_bazel_version_is_checked(self):
+        recipe = self.workspace / "tools/bazel/image/worker"
+        recipe.mkdir(parents=True)
+        for name in ("Dockerfile", ".dockerignore", "prepare-worker-inputs.sh"):
+            (recipe / name).write_text("fixture " + name)
+        self.state.mkdir()
+        self.artifacts.mkdir(parents=True)
+        worker_id = "sha256:" + "c" * 64
+        commands = []
+        def execute(command, *_args):
+            commands.append(command)
+            if "--iidfile" in command:
+                Path(command[command.index("--iidfile") + 1]).write_text(worker_id)
+        details = json.dumps([{"Id": worker_id, "Os": "linux", "Architecture": "amd64"}])
+        for invocation, version in (("valid", "bazel 8.5.1"), ("invalid", "bazel 8.4.2")):
+            receipt = {"commands": []}
+            with mock.patch.object(image, "execute", side_effect=execute), \
+                    mock.patch.object(image, "capture", side_effect=[details, version]):
+                if invocation == "invalid":
+                    with self.assertRaisesRegex(ValueError, "Bazel version"):
+                        image.build_worker(self.workspace, self.state, self.artifacts, receipt, invocation)
+                else:
+                    spec = image.build_worker(self.workspace, self.state, self.artifacts, receipt, invocation)
+                    self.assertEqual(json.loads(spec.read_text())["worker_image"], worker_id)
+                    self.assertEqual(receipt["bazel_version"], "8.5.1")
+        self.assertEqual(commands[0][0], "bash")
+        self.assertEqual(commands[1][:2], ["docker", "build"])
+        self.assertFalse(any("load" in command for command in commands))
 
     def test_component_commit_must_match_gitlink_and_tree_must_be_clean(self):
         component = image.COMPONENTS[0]
@@ -229,12 +252,10 @@ class ImageControllerTest(unittest.TestCase):
             image.source_provenance(self.workspace)
 
     def test_untracked_root_source_fails_before_input_staging_or_worker_start(self):
-        manifest = self.root / "inputs.json"
-        manifest.write_text("{}")
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
-                                       artifacts=self.artifacts, manifest=manifest, local_assets=None)
+                                       artifacts=self.artifacts)
         with mock.patch.object(image.os, "geteuid", return_value=1000), \
-                mock.patch.object(image.image_inputs, "load_manifest", return_value={"worker": {"bazel_version": "8.5.1"}}), \
+                mock.patch.object(image, "build_worker", return_value=self.state / "worker-spec.json"), \
                 mock.patch.object(image.image_inputs, "prepare") as prepare, \
                 mock.patch.object(image, "execute") as execute, \
                 mock.patch.object(image.subprocess, "check_output", side_effect=["root-commit", "", "?? extra.cc\n"]):
@@ -251,14 +272,78 @@ class ImageControllerTest(unittest.TestCase):
         responses = ["root-commit", "", "", "160000 commit recorded-commit\t" + component,
                      "recorded-commit", "", "?? extra.cc\n"]
         with mock.patch.object(image.subprocess, "check_output", side_effect=responses), \
-                self.assertRaisesRegex(ValueError, "component contains modified or untracked"):
+                self.assertRaisesRegex(ValueError, "checkout contains modified or untracked"):
             image.source_provenance(self.workspace)
 
+    def test_all_recorded_recursive_submodules_are_checked(self):
+        component = image.COMPONENTS[0]
+        (self.workspace / component / ".git").mkdir(parents=True)
+        (self.workspace / component / "nested/.git").mkdir(parents=True)
+        responses = [
+            "root", "", "", "160000 commit first\t" + component + "\0",
+            "first", "", "", "160000 commit second\tnested\0",
+            "second", "", "", "100644 blob ignored\tfile.cc\0",
+        ]
+        with mock.patch.object(image, "COMPONENTS", [component]), \
+                mock.patch.object(image.subprocess, "check_output", side_effect=responses):
+            result = image.source_provenance(self.workspace)
+        self.assertEqual(result["components"], {
+            component: {"commit": "first", "gitlink": "first"},
+            component + "/nested": {"commit": "second", "gitlink": "second"}})
+        (self.workspace / component / "nested/.git").rmdir()
+        with mock.patch.object(image, "COMPONENTS", [component]), \
+                mock.patch.object(image.subprocess, "check_output", side_effect=responses), \
+                self.assertRaisesRegex(ValueError, "not initialized.*nested"):
+            image.source_provenance(self.workspace)
+
+    def test_native_cancellation_allows_owned_container_cleanup_to_finish(self):
+        self.artifacts.mkdir(parents=True)
+        for name, timeout in (("native-build", 105), ("package", 30)):
+            with self.subTest(name=name):
+                process = mock.Mock()
+                process.stdout = mock.MagicMock()
+                process.stdout.__iter__.side_effect = InterruptedError("cancelled")
+                process.poll.return_value = None
+                process.returncode = -15
+                with mock.patch.object(image.subprocess, "Popen", return_value=process), \
+                        self.assertRaisesRegex(InterruptedError, "cancelled"):
+                    image.execute(["fixture"], self.workspace, self.artifacts, {"commands": []}, name)
+                process.terminate.assert_called_once_with()
+                process.wait.assert_called_once_with(timeout=timeout)
+                process.kill.assert_not_called()
+
+    def test_retained_native_outputs_are_rejected_before_worker_or_native_build(self):
+        (self.workspace / "target").mkdir()
+        (self.workspace / "target/docker-config-engine-trixie.gz").write_bytes(b"retained output")
+        arguments = argparse.Namespace(workspace=self.workspace, state=self.state, artifacts=self.artifacts)
+        with mock.patch.object(image.os, "geteuid", return_value=1000), \
+                mock.patch.object(image, "build_worker") as worker, \
+                mock.patch.object(image, "execute") as execute:
+            self.assertEqual(image.build(arguments), 1)
+        worker.assert_not_called()
+        execute.assert_not_called()
+        receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
+        self.assertIn("without retained target outputs", receipt["error"])
+
+    def test_native_failure_blocks_bazel_and_input_preparation(self):
+        arguments = argparse.Namespace(workspace=self.workspace, state=self.state, artifacts=self.artifacts)
+        with mock.patch.object(image.os, "geteuid", return_value=1000), \
+                mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
+                mock.patch.object(image, "build_worker", return_value=self.state / "worker-spec.json"), \
+                mock.patch.object(image, "execute", side_effect=RuntimeError("native compilation failed")) as execute, \
+                mock.patch.object(image.image_inputs, "prepare") as prepare:
+            self.assertEqual(image.build(arguments), 1)
+        execute.assert_called_once()
+        self.assertTrue(execute.call_args.args[0][1].endswith("native_build.py"))
+        prepare.assert_not_called()
+        receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
+        self.assertEqual(receipt["status"], "failed")
+        self.assertIn("native compilation failed", receipt["error"])
+        self.assertEqual(receipt["output_cleanup"]["status"], "retained")
+
     def run_build_fixture(self, failure=None, stop_hook=None):
-        manifest = self.root / "inputs.json"
-        manifest.write_text("{}")
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
-                                       artifacts=self.artifacts, manifest=manifest, local_assets=None)
+                                       artifacts=self.artifacts)
         for cache in ("package-cache", "repository-cache"):
             (self.state / cache).mkdir(parents=True, exist_ok=True)
             (self.state / cache / "retained-entry").write_bytes(b"keep cache")
@@ -307,7 +392,7 @@ class ImageControllerTest(unittest.TestCase):
                     "status": "passed", "installer": {"sha256": image.image_inputs.sha256(installer)}}))
 
         with mock.patch.object(image.os, "geteuid", return_value=1000), \
-                mock.patch.object(image.image_inputs, "load_manifest", return_value={"worker": {"bazel_version": "8.5.1"}}), \
+                mock.patch.object(image, "build_worker", return_value=self.state / "worker-spec.json"), \
                 mock.patch.object(image.image_inputs, "prepare", side_effect=prepare), \
                 mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
                 mock.patch.object(image, "execute", side_effect=execute):
@@ -318,7 +403,11 @@ class ImageControllerTest(unittest.TestCase):
     def test_success_reuses_worker_disables_full_image_disk_cache_and_publishes_verified_bytes(self):
         result, commands, receipt = self.run_build_fixture()
         self.assertEqual(result, 0)
-        self.assertEqual(len(commands), 4)
+        self.assertEqual(len(commands), 5)
+        native = commands.pop(0)
+        self.assertTrue(native[1].endswith("tools/bazel/ci/native_build.py"))
+        self.assertIn("--invocation", native)
+        self.assertIn("--worker-spec", native)
         self.assertIn("--disk_cache=" + str(self.state / "package-cache"), commands[0])
         self.assertIn("--disk_cache=", commands[1])
         for command in (commands[0], commands[1], commands[-1]):

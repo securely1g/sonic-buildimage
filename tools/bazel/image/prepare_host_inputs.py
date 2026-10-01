@@ -77,7 +77,8 @@ def prepare(source, captured, snapshot, output):
             result.add(source / name, arcname=name, recursive=True, filter=normalize)
     validate_archive(archive)
     snapshot_output = output / 'host-onie.squashfs'
-    shutil.copyfile(snapshot, snapshot_output)
+    if snapshot.resolve() != snapshot_output.resolve():
+        shutil.copyfile(snapshot, snapshot_output)
     receipt = {'schema': 1, 'source_boundary': 'before-container-loading', 'identity': identity,
                'source_members': sorted(selected),
                'artifacts': {p.name: {'size': p.stat().st_size, 'sha256': digest(p)} for p in (archive, config, snapshot_output)}}

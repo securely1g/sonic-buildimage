@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
-"""Fetch and verify the explicit native predecessors for Bazel VS image CI.
+"""Verify same-job native source outputs and declare the Bazel image inputs.
 
-Release archives contain only the declared target/ inputs. Each small archive
-is verified, extracted and removed before downloading the next, so staging
-does not require another complete copy of the multi-gigabyte input bundle.
+There is no download or retained-input mode. The controller must first run the
+native producer from the current checkout and supply its invocation receipt.
 """
 
-import argparse
 import ast
 import hashlib
-import importlib.util
 import json
-import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
-import tarfile
-import tempfile
-import urllib.parse
-import urllib.request
+import sys
+
+
+NATIVE = "target/bazel-native/"
+CONFIG_ENGINE = "target/docker-config-engine-trixie.gz"
+SCAPY = "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl"
+REQUIRED = {NATIVE + name for name in (
+    "inventory.json", "captured-host-environment.json", "host-onie.squashfs",
+    "host-source.tar", "host-config.json", "installer-config.json", "images.json",
+)} | {CONFIG_ENGINE, SCAPY}
+ENVIRONMENT = {"schema": 1, "platform": "linux/amd64", "docker_version": "28.5.2",
+               "storage_driver": "overlay2", "distribution": "trixie"}
 
 
 def require(condition, message):
@@ -31,108 +35,18 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def copy_verified(source, output, metadata, description):
-    digest, size = hashlib.sha256(), 0
-    while chunk := source.read(min(1024 * 1024, metadata["bytes"] - size + 1)):
-        size += len(chunk)
-        require(size <= metadata["bytes"], "input exceeds declared size: " + description)
-        digest.update(chunk)
-        output.write(chunk)
-    require(size == metadata["bytes"] and digest.hexdigest() == metadata["sha256"],
-            "input failed size/SHA256 validation: " + description)
-
-
-def input_path(name):
-    path = PurePosixPath(name)
-    require(not path.is_absolute() and ".." not in path.parts and str(path) == name,
-            "noncanonical input path: " + name)
-    require(name.startswith("target/bazel-image-inputs/") or name in {
-        "target/docker-config-engine-trixie.gz",
-        "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl",
-    }, "input outside the declared native predecessors: " + name)
+def local_input(workspace, name):
+    """Accept producer outputs beneath target, never aliases outside the clone."""
+    relative = PurePosixPath(name)
+    require(not relative.is_absolute() and ".." not in relative.parts and str(relative) == name,
+            "noncanonical native input path: " + name)
+    require(name.startswith(NATIVE) or name == SCAPY or
+            (relative.parent == PurePosixPath("target") and relative.name.startswith("docker-")
+             and relative.name.endswith(".gz")), "unexpected native input path: " + name)
+    path = workspace / name
+    require(path.resolve(strict=True) == path and path.is_file(),
+            "native input is a symlink or escapes the workspace: " + name)
     return path
-
-
-def load_manifest(path):
-    manifest = json.loads(Path(path).read_text())
-    require(manifest.get("schema") == 1, "unsupported input manifest schema")
-    worker = manifest["worker"]
-    require(re.fullmatch(r"sonic-bazel-vs-worker:[A-Za-z0-9_.-]+", worker["reference"]),
-            "invalid worker archive reference")
-    require(worker["image_ids"] and all(re.fullmatch(r"sha256:[0-9a-f]{64}", value)
-            for value in worker["image_ids"]), "worker must declare immutable image IDs")
-    require(worker["environment"] == {"schema": 1, "platform": "linux/amd64",
-            "docker_version": "28.5.2", "storage_driver": "overlay2", "distribution": "trixie"},
-            "unsupported image execution environment")
-    base = urllib.parse.urlparse(manifest.get("release_url", ""))
-    require(base.scheme == "https" and base.hostname == "github.com" and
-            re.fullmatch(r"/securely1g/sonic-buildimage/releases/download/[A-Za-z0-9_.-]+", base.path)
-            and not base.query and not base.fragment and not base.username,
-            "expected the published SONiC native-input release URL")
-    seen, names, workers = set(), set(), 0
-    for asset in manifest["assets"]:
-        name = asset["name"]
-        require(re.fullmatch(r"[A-Za-z0-9_.-]+", name) and name not in names,
-                "invalid or duplicate release asset")
-        names.add(name)
-        require(0 < asset["bytes"] < 2 * 1024 ** 3 and
-                re.fullmatch(r"[0-9a-f]{64}", asset["sha256"]), "invalid asset size or digest")
-        require(asset["kind"] in {"worker", "inputs"}, "invalid asset kind")
-        if asset["kind"] == "worker":
-            workers += 1
-            continue
-        require(asset.get("files"), "empty predecessor archive")
-        for name, metadata in asset["files"].items():
-            input_path(name)
-            require(name != "target/bazel-image-inputs/execution-environment.json",
-                    "worker identity is generated from the verified worker archive")
-            require(name not in seen, "duplicate input across release assets: " + name)
-            seen.add(name)
-            require(metadata["bytes"] >= 0 and re.fullmatch(r"[0-9a-f]{64}", metadata["sha256"])
-                    and metadata["mode"] in {0o644, 0o755}, "invalid file metadata: " + name)
-    require(workers == 1, "manifest must contain exactly one worker archive")
-    require({"target/bazel-image-inputs/inputs.bzl",
-             "target/bazel-image-inputs/BUILD.bazel",
-             "target/bazel-image-inputs/host-onie.squashfs",
-             "target/bazel-image-inputs/host-source.tar",
-             "target/bazel-image-inputs/host-config.json",
-             "target/docker-config-engine-trixie.gz",
-             "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl"} <= seen,
-            "missing required native predecessors")
-    return manifest
-
-
-def fetch_asset(asset, base_url, destination, local_assets=None):
-    with destination.open("xb") as output:
-        if local_assets is not None:
-            source = (local_assets / asset["name"]).open("rb")
-        else:
-            source = urllib.request.urlopen(base_url + "/" + asset["name"], timeout=120)
-        with source:
-            copy_verified(source, output, asset, asset["name"])
-
-
-def extract_inputs(archive_path, expected, workspace):
-    seen = set()
-    with tarfile.open(archive_path, "r|*") as archive:
-        for member in archive:
-            name = member.name
-            input_path(name)
-            require(member.isfile() and name in expected and name not in seen,
-                    "unexpected, duplicate, or non-regular input: " + name)
-            info = expected[name]
-            require(member.size == info["bytes"] and member.mode == info["mode"],
-                    "input size/mode does not match manifest: " + name)
-            output = workspace / name
-            require(output.resolve().is_relative_to(workspace.resolve()), "input escapes workspace")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            # Refuse overwrites, including symlinks: CI must start with a fresh
-            # checkout, not silently reuse mutable native inputs from a prior job.
-            with output.open("xb") as stream, archive.extractfile(member) as source:
-                copy_verified(source, stream, info, name)
-            output.chmod(info["mode"])
-            seen.add(name)
-    require(seen == set(expected), "release archive omits declared inputs")
 
 
 def read_image_inputs(path):
@@ -148,134 +62,86 @@ def read_image_inputs(path):
     return value
 
 
-def refresh_installer_inputs(workspace, source=None):
-    """Replace only installer sources after all released inputs were verified.
-
-    Native host/service predecessors and the image identity remain pinned. The
-    regenerated installer files and data mappings have their own provenance;
-    their bytes must not be represented as the released asset's contents.
-    """
-    source = (source or workspace).resolve(strict=True)
-    bundle = workspace / "target/bazel-image-inputs"
-    staged = bundle / "installer"
-    require(staged.is_dir() and not staged.is_symlink(), "missing verified installer source bundle")
-    inputs_file = bundle / "inputs.bzl"
-    attributes = read_image_inputs(inputs_file)
-    require(attributes.get("installer_config") == "//target/bazel-image-inputs:installer/config.json",
-            "unexpected installer configuration input")
-    source_commit = subprocess.check_output([
-        "git", "-c", "safe.directory=" + str(source), "-C", str(source), "rev-parse", "HEAD"],
-        text=True).strip()
-    require(re.fullmatch(r"[0-9a-f]{40}", source_commit), "invalid installer source commit")
-
-    def files_in(directory, prefix):
-        result = {}
-        for path in sorted(directory.rglob("*")):
-            require(not path.is_symlink(), "installer bundle must not contain symlinks")
-            if path.is_file():
-                result[prefix + str(path.relative_to(directory))] = {
-                    "bytes": path.stat().st_size, "sha256": sha256(path), "mode": path.stat().st_mode & 0o777,
-                }
-        return result
-
-    released = files_in(staged, "target/bazel-image-inputs/installer/")
-    released["target/bazel-image-inputs/inputs.bzl"] = {
-        "bytes": inputs_file.stat().st_size, "sha256": sha256(inputs_file),
-        "mode": inputs_file.stat().st_mode & 0o777,
-    }
-    module_path = Path(__file__).resolve().parents[1] / "image/installer.py"
-    spec = importlib.util.spec_from_file_location("sonic_ci_installer_inputs", module_path)
-    installer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(installer)
-    with tempfile.TemporaryDirectory(prefix="sonic-installer-source-", dir=bundle.parent) as temporary:
-        temporary = Path(temporary)
-        regenerated = temporary / "installer"
-        installer.prepare_inputs(source, staged / "config.json", regenerated)
-        config = json.loads((regenerated / "config.json").read_text())
-        require(config["image_version"] == attributes.get("image_version"),
-                "host and regenerated installer image versions disagree")
-        entries = json.loads((regenerated / "files-manifest.json").read_text())
-        attributes["installer_files"] = {
-            "//target/bazel-image-inputs:installer/" + item["source"]: item["path"] for item in entries
-        }
-        attributes["installer_modes"] = {item["path"]: str(item["mode"]) for item in entries}
-        updated_inputs = temporary / "inputs.bzl"
-        updated_inputs.write_text(
-            "# Native predecessors are pinned; installer sources come from the current checkout.\n"
-            "IMAGE_INPUTS = " + json.dumps(attributes, indent=4, sort_keys=True) + "\n")
-        derived = files_in(regenerated, "target/bazel-image-inputs/installer/")
-        derived["target/bazel-image-inputs/inputs.bzl"] = {
-            "bytes": updated_inputs.stat().st_size, "sha256": sha256(updated_inputs),
-            "mode": updated_inputs.stat().st_mode & 0o777,
-        }
-        provenance = json.loads((regenerated / "provenance.json").read_text())
-        # Construct the complete replacement before touching the verified
-        # bundle. No host snapshot or service archive is moved or rewritten.
-        os.replace(staged, temporary / "released-installer")
-        os.replace(regenerated, staged)
-        os.replace(updated_inputs, inputs_file)
-    return {
-        "source_commit": source_commit, "source_root": str(source),
-        "generator_sha256": sha256(module_path),
-        "released_files": released, "derived_files": derived, "source_provenance": provenance,
-        "scope": "Installer source files regenerated from the checkout; native host/service inputs and image identity retained.",
-    }
+def verify_native(native_receipt, workspace, source, invocation):
+    run = json.loads(native_receipt.read_text())
+    require(run.get("schema") == 1 and run.get("status") == "passed",
+            "native source build did not pass")
+    require(run.get("invocation") == invocation and run.get("source_commit") == source["source_commit"],
+            "native receipt does not belong to this invocation and source commit")
+    require(run.get("native_provenance") == NATIVE + "provenance.json",
+            "native build did not declare its producer provenance")
+    provenance_path = local_input(workspace, run["native_provenance"])
+    provenance = json.loads(provenance_path.read_text())
+    require(provenance.get("schema") == 1 and provenance.get("source_commit") == source["source_commit"],
+            "native producer source commit differs from this checkout")
+    expected_submodules = {name: item["commit"] for name, item in source["components"].items()}
+    require(provenance.get("source_submodules") == expected_submodules,
+            "native producer submodule revisions differ from this checkout")
+    files = provenance["files"]
+    require(REQUIRED <= files.keys(), "native producer omitted required image inputs")
+    for name, info in files.items():
+        path = local_input(workspace, name)
+        require(type(info.get("bytes")) is int and info["bytes"] > 0 and
+                re.fullmatch(r"[0-9a-f]{64}", info.get("sha256", "")),
+                "invalid native input metadata: " + name)
+        require(path.stat().st_size == info["bytes"] and sha256(path) == info["sha256"],
+                "native input failed size/SHA256 validation: " + name)
+    config = json.loads((workspace / NATIVE / "host-config.json").read_text())
+    identity = config["identity"]
+    for key in ("source_commit", "source_branch", "source_date_epoch", "image_version"):
+        require(identity.get(key) == provenance.get(key), "native host identity differs: " + key)
+    images = json.loads((workspace / NATIVE / "images.json").read_text())
+    require("docker-orchagent.gz" not in images, "SWSS must be built by the Bazel source target")
+    for name, relative in images.items():
+        require(relative in files and PurePosixPath(relative).name == name,
+                "service archive is not declared in native provenance: " + name)
+        local_input(workspace, relative)
+    return provenance, images, sha256(provenance_path)
 
 
-def prepare(manifest_path, workspace, scratch, receipt_path, local_assets=None):
-    manifest = load_manifest(manifest_path)
+def prepare(native_receipt, workspace, scratch, receipt_path, worker_spec, source, invocation):
     workspace = workspace.resolve(strict=True)
     scratch.mkdir(parents=True, exist_ok=True)
-    receipt = {"schema": 1, "status": "running", "manifest_sha256": sha256(manifest_path),
-               "release_url": manifest["release_url"], "assets": []}
-    worker_image = None
+    receipt = {"schema": 1, "status": "running", "invocation": invocation,
+               "source_commit": source["source_commit"], "native_receipt_sha256": sha256(native_receipt)}
     try:
-        for asset in manifest["assets"]:
-            print("Verifying and staging " + asset["name"], flush=True)
-            with tempfile.TemporaryDirectory(prefix="sonic-vs-input-", dir=scratch) as temporary:
-                path = Path(temporary) / asset["name"]
-                fetch_asset(asset, manifest["release_url"], path, local_assets)
-                if asset["kind"] == "worker":
-                    subprocess.run(["docker", "load", "--input", str(path)], check=True)
-                    result = json.loads(subprocess.check_output([
-                        "docker", "image", "inspect", manifest["worker"]["reference"]], text=True))
-                    require(len(result) == 1 and result[0]["Id"] in manifest["worker"]["image_ids"]
-                            and result[0]["Os"] == "linux" and result[0]["Architecture"] == "amd64",
-                            "loaded worker image identity/platform mismatch")
-                    worker_image = result[0]["Id"]
-                else:
-                    extract_inputs(path, asset["files"], workspace)
-                receipt["assets"].append({key: asset[key] for key in ("name", "bytes", "sha256", "kind")})
-        require(worker_image is not None, "worker archive was not loaded")
-        receipt["installer_refresh"] = refresh_installer_inputs(workspace)
-        # Docker's classic and containerd image stores identify the same saved
-        # image by its config and manifest/index digest respectively. Both IDs
-        # come from the pinned archive; record the ID accepted by this daemon.
-        spec = dict(manifest["worker"]["environment"], worker_image=worker_image)
-        spec_path = workspace / "target/bazel-image-inputs/execution-environment.json"
-        with spec_path.open("x") as output:
-            output.write(json.dumps(spec, indent=2, sort_keys=True) + "\n")
-        template = workspace / "tools/bazel/image/vs/BUILD.bazel.in"
-        (template.parent / "BUILD.bazel").write_bytes(template.read_bytes())
-        receipt.update(status="passed", worker_image=worker_image, execution_environment_sha256=sha256(spec_path))
+        output = workspace / "target/bazel-image-inputs"
+        require(not output.exists() and not output.is_symlink(), "image inputs already exist; a fresh native build is required")
+        provenance, images, digest = verify_native(native_receipt, workspace, source, invocation)
+        receipt["native_provenance_sha256"] = digest
+        receipt["native_files"] = provenance["files"]
+        worker = json.loads(worker_spec.read_text())
+        native_run = json.loads(native_receipt.read_text())
+        require(native_run.get("worker_image") == worker.get("worker_image"),
+                "native source build used a different execution worker")
+        require(all(worker.get(key) == value for key, value in ENVIRONMENT.items()) and
+                re.fullmatch(r"sha256:[0-9a-f]{64}", worker.get("worker_image", "")),
+                "unsupported locally built worker environment")
+        resolved_images = scratch / "images.json"
+        with resolved_images.open("x") as stream:
+            stream.write(json.dumps({name: str(workspace / path) for name, path in images.items()}, indent=2) + "\n")
+        native = workspace / NATIVE
+        command = [sys.executable, str(workspace / "tools/bazel/image/prepare_inputs.py"),
+                   "--output", str(output), "--inventory", str(native / "inventory.json"),
+                   "--images", str(resolved_images), "--host-source", str(native / "host-source.tar"),
+                   "--host-config", str(native / "host-config.json"),
+                   "--host-snapshot", str(native / "host-onie.squashfs"),
+                   "--installer-source", str(workspace), "--installer-config", str(native / "installer-config.json"),
+                   "--execution-environment", str(worker_spec)]
+        receipt["prepare_command"] = command
+        subprocess.run(command, cwd=workspace, check=True)
+        attributes = read_image_inputs(output / "inputs.bzl")
+        require(attributes["images"].get("docker-orchagent.gz") ==
+                "//dockers/docker-orchagent:docker-orchagent.gz", "prepared graph must compile SWSS from source")
+        require(json.loads((output / "execution-environment.json").read_text()) == worker,
+                "prepared worker environment changed")
+        receipt.update(status="passed", worker_image=worker["worker_image"],
+                       prepared_provenance_sha256=sha256(output / "provenance.json"),
+                       image_inputs_sha256=sha256(output / "inputs.bzl"))
+        return receipt
     except Exception as error:
         receipt.update(status="failed", error=str(error))
         raise
     finally:
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--scratch", type=Path, required=True)
-    parser.add_argument("--receipt", type=Path, required=True)
-    parser.add_argument("--local-assets", type=Path, help="Verify an unpublished bundle using local release assets")
-    args = parser.parse_args()
-    prepare(args.manifest, args.workspace, args.scratch, args.receipt, args.local_assets)
-
-
-if __name__ == "__main__":
-    main()
