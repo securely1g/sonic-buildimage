@@ -1,3 +1,4 @@
+load("@rules_python//python:defs.bzl", "py_test")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 
 # Exercise the same transitive debug-symbol collection used by the OCI image,
@@ -5,4 +6,13 @@ load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 debug_symbols_layer(
     name = "swss_debug_symbols",
     image = "//dockers/docker-orchagent:rdeps",
+)
+
+py_test(
+    name = "run_test",
+    srcs = [
+        "run.py",
+        "run_test.py",
+    ],
+    imports = ["."],
 )
