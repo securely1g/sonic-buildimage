@@ -1,7 +1,9 @@
 FROM debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
 
-# These public inputs are fetched by prepare-worker-inputs.sh. No host rootfs,
-# environment, credentials, or trust-store files are part of the build context.
+# These public inputs are fetched by prepare-worker-inputs.sh. The controller
+# may additionally supply an explicit certificate-only CA bundle for local TLS
+# environments; the default placeholder is empty. No host rootfs or credentials
+# are part of the build context.
 COPY docker-ce.deb docker-ce-cli.deb containerd.io.deb /tmp/packages/
 RUN printf '%s\n' \
     '10f6fba7cfe2309cfb3a14033218339c6f0687247903806e6298943fca0ca740  /tmp/packages/docker-ce.deb' \
@@ -26,6 +28,20 @@ RUN echo '61d89402f0368e64b6c827be5de79d8e65382e8124c3cbb97325611a1851392e  /usr
     && test "$(docker --version)" = 'Docker version 28.5.2, build ecc6942' \
     && test "$(dockerd --version)" = 'Docker version 28.5.2, build 89c5e8f' \
     && test "$(bazel --version)" = 'bazel 8.5.1'
+
+# This changes the immutable worker identity when optional local trust is used.
+# It affects only the execution worker; the CA file is never a SONiC image input.
+COPY install-trust.py build-ca-bundle.pem /tmp/trust-inputs/
+RUN python3 /tmp/trust-inputs/install-trust.py --bundle /tmp/trust-inputs/build-ca-bundle.pem \
+      --bazel /usr/local/bin/bazel > /usr/share/sonic-build-trust.json \
+    && rm -rf /tmp/trust-inputs
+
+# Give Python requests/pip the same verified system trust used by git/curl.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
 ENV LANG=C.UTF-8
 CMD ["/bin/bash"]
