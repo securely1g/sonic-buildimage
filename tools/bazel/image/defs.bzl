@@ -11,10 +11,21 @@ HostInfo = provider("Finalized host filesystem and boot payloads.", fields = ["f
 def _import_resources(_os, _input_size):
     return {"cpu": 4, "memory": 2048}
 
-def _python_action(ctx, script, args, inputs, outputs, mnemonic, privileged = False):
+def _python_action(ctx, script, args, inputs, outputs, mnemonic, privileged = False, readonly_output = False):
+    command = 'cmp -- "$1" /run/sonic-image-worker.json && shift && exec /usr/bin/python3 "$@"'
+    arguments = [ctx.file.execution_environment.path, script.path] + args
+    if readonly_output:
+        if len(outputs) != 1:
+            fail("readonly_output requires one declared output file")
+
+        # Bazel's default output mode is 0555. Set it before spawn completion:
+        # otherwise execution logging hashes the large archive, then Bazel's
+        # chmod changes ctime and invalidates that digest before output checks.
+        command = 'cmp -- "$1" /run/sonic-image-worker.json && image_output="$2" && shift 2 && /usr/bin/python3 "$@" && chmod 0555 -- "$image_output"'
+        arguments = [ctx.file.execution_environment.path, outputs[0].path, script.path] + args
     ctx.actions.run_shell(
-        command = 'cmp -- "$1" /run/sonic-image-worker.json && shift && exec /usr/bin/python3 "$@"',
-        arguments = [ctx.file.execution_environment.path, script.path] + args,
+        command = command,
+        arguments = arguments,
         inputs = depset(inputs + [script, ctx.file.execution_environment]),
         outputs = outputs,
         mnemonic = mnemonic,
@@ -85,7 +96,7 @@ def _merge_impl(ctx):
     args = ["merge", "--output", output.path]
     for part in ctx.files.parts:
         args += ["--part", part.path]
-    _python_action(ctx, ctx.file._script, args, ctx.files.parts, [output], "SonicDockerStore")
+    _python_action(ctx, ctx.file._script, args, ctx.files.parts, [output], "SonicDockerStore", readonly_output = True)
     return [DefaultInfo(files = depset([output]))]
 
 docker_store = rule(
@@ -166,7 +177,7 @@ def _payload_impl(ctx):
         "--output",
         output.path,
     ]
-    _python_action(ctx, ctx.file._script, args, [host.fs, host.boot, host.platform, ctx.file.store], [output], "SonicImagePayload")
+    _python_action(ctx, ctx.file._script, args, [host.fs, host.boot, host.platform, ctx.file.store], [output], "SonicImagePayload", readonly_output = True)
     return [DefaultInfo(files = depset([output]))]
 
 image_payload = rule(
@@ -215,6 +226,7 @@ def _onie_impl(ctx):
         inputs,
         [output],
         "SonicOnieInstaller",
+        readonly_output = True,
     )
     return [DefaultInfo(files = depset([output]))]
 
