@@ -13,6 +13,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 import installer
@@ -120,6 +121,35 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual((member.uid, member.gid, member.mtime), (0, 0, 0))
         installer.create_onie(self.payload, self.files, self.config, self.output, self.dockerfs)
         self.assertEqual(first, self.output.read_bytes())
+
+    def test_large_wrapper_matches_default_buffer_bytes(self):
+        # Cross multiple large stream buffers and leave a non-block-aligned
+        # tail. The long pathname also exercises GNU extension records.
+        self.squashfs.write_bytes(b"hsqs" + bytes(range(256)) * 8192 + b"tail")
+        entries = json.loads(self.files.read_text())
+        long_name = "platforms/" + "long-platform-name-" * 12
+        entries.append({"path": long_name, "source": str(self.platforms)})
+        self.files.write_text(json.dumps(entries))
+        self.build_onie()
+        optimized = self.output.read_bytes()
+        reference = self.root / "default-buffer.bin"
+        original_open = tarfile.open
+
+        def default_buffers(*args, **kwargs):
+            kwargs.pop("bufsize", None)
+            kwargs.pop("copybufsize", None)
+            return original_open(*args, **kwargs)
+
+        with mock.patch.object(installer.tarfile, "open", side_effect=default_buffers):
+            installer.create_onie(self.payload, self.files, self.config, reference, self.dockerfs)
+        self.assertEqual(optimized, reference.read_bytes())
+        header, archive = self.read_wrapper()
+        self.assertEqual(len(archive) % tarfile.RECORDSIZE, 0)
+        self.assertEqual(hashlib.sha1(archive).hexdigest(),
+                         re.search(r"^payload_sha1=(\w+)", header, re.M).group(1))
+        with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+            self.assertEqual(bundle.extractfile("installer/" + long_name).read(), self.platforms.read_bytes())
+            self.assertEqual(bundle.extractfile("installer/fs.zip").read(), self.payload.read_bytes())
 
     def test_real_native_shell_wrapper_extracts_and_rejects_corruption(self):
         self.build_onie()
