@@ -310,7 +310,10 @@ class NativeBuildTest(unittest.TestCase):
             self.assertEqual(kwargs["cwd"], self.workspace)
             self.assertEqual(kwargs["env"]["DOCKER_HOST"], socket)
             self.assertEqual(kwargs["env"]["HOME"], "/home/" + native_build.USER)
-        self.assertEqual((self.workspace / "rules/config.user").read_text(), "SONIC_CONFIG_MAKE_JOBS = 2\n")
+        self.assertEqual((self.workspace / "rules/config.user").read_text(),
+                         "SONIC_CONFIG_MAKE_JOBS = 2\n"
+                         "export MONIT_SOURCE_METHOD = debian\n"
+                         "export RASDAEMON_SOURCE_METHOD = debian\n")
         daemon.terminate.assert_called_once_with()
         daemon.wait.assert_called_once_with(timeout=30)
         self.assertTrue(popen.call_args.kwargs["stdout"].closed)

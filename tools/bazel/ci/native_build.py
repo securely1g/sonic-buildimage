@@ -253,11 +253,14 @@ def inside(args):
         else:
             raise RuntimeError("private native Docker daemon did not become ready")
         daemon_preflight(args, env)
-        # Set per-package concurrency where slave.mk actually reads it. This
-        # file is intentionally generated only in the fresh invocation clone.
+        # slave.mk reads this file inside the native Docker boundary. Export
+        # source selection for package submakes as well as setting concurrency.
+        # Generate it only in this invocation's fresh checkout.
         config = workspace / "rules/config.user"
         with config.open("x") as stream:
-            stream.write("SONIC_CONFIG_MAKE_JOBS = 2\n")
+            stream.write("SONIC_CONFIG_MAKE_JOBS = 2\n"
+                         "export MONIT_SOURCE_METHOD = debian\n"
+                         "export RASDAEMON_SOURCE_METHOD = debian\n")
         os.chown(config, 1000, 1000)
         epoch = capture(["git", "-c", "safe.directory=" + str(workspace), "-C", workspace,
                          "show", "-s", "--format=%ct", args.source_commit])
