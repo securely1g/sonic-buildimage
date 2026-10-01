@@ -272,6 +272,8 @@ class NativeBuildTest(unittest.TestCase):
             "BLDENV=trixie", "PLATFORM_ARCH=amd64", "USERNAME=admin",
             "BAZEL_MIN_READINESS=bazel_disabled", "KERNEL_PROCURE_METHOD=build",
             "ENABLE_DOCKER_BASE_PULL=n", "SONIC_DPKG_CACHE_METHOD=none",
+            "DEFAULT_CONTAINER_REGISTRY=docker.io",
+            "SONIC_DPKG_CACHE_SOURCE=" + str(self.args.state / "native-cache"),
             "SONIC_DPKG_CACHE_METHOD_OVERRIDE=none", "SONIC_CONFIG_USE_DOCKER_CACHE=n",
             "SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n", "ENABLE_SBOM=n",
             "ENABLE_IMAGE_SIGNATURE=n", "SONIC_BUILD_JOBS=1",
