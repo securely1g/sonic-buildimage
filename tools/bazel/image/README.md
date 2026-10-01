@@ -272,11 +272,16 @@ as `sonic-vs-bazel-amd64` and retained for 14 days. Missing inputs or failed
 validation fail the job.
 
 The hosted job removes unused preinstalled SDKs on its disposable runner and
-requires 45 GiB of free disk after restoring caches and before assembly. Its
+requires 50 GiB of free disk after restoring caches and before assembly. Its
 worker is limited to four CPUs and 12 GiB of memory; Bazel uses four jobs and
 a 10,000 MB memory resource budget. Downloaded repositories and source-package
 actions are cached; the multi-gigabyte image outputs are retained as build
 artifacts rather than duplicating them into the limited GitHub Actions cache.
+Verified artifacts are hardlinked into the upload directory when it shares a
+filesystem with the build outputs. After a successful build, verification and
+worker shutdown, the controller removes only that invocation's output directory
+to leave room for cache uploads. Failed runs retain their output directory for
+diagnosis; reusable package and repository caches remain intact.
 The native predecessor release is independent of those disposable caches.
 
 The release retains the original native source revision and pre-container

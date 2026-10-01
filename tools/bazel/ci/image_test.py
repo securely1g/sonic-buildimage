@@ -2,6 +2,7 @@
 """Check CI output provenance and cleanup without Docker or a full build."""
 
 import argparse
+import errno
 import json
 from pathlib import Path
 import tempfile
@@ -36,7 +37,8 @@ class ImageControllerTest(unittest.TestCase):
             {"id": {"namedSet": {"id": "parent"}}, "namedSetOfFiles": {"fileSets": [{"id": "child"}]}},
             {"id": {"namedSet": {"id": "child"}}, "namedSetOfFiles": {
                 "files": [{"uri": (output or self.output).as_uri()}]}},
-            {"id": {"buildFinished": {}}, "finished": {"exitCode": {"code": 0}}},
+            {"id": {"buildFinished": {}}, "finished": {
+                "overallSuccess": True, "exitCode": {"name": "SUCCESS"}}},
         ]
 
     def resolve(self, events):
@@ -47,6 +49,37 @@ class ImageControllerTest(unittest.TestCase):
         result = self.resolve(list(reversed(self.events())))
         self.assertEqual(result, {image.IMAGE: {self.output}})
         self.assertEqual(image.named_output(result, image.IMAGE, "sonic-vs.bin"), self.output)
+
+    def test_successful_protojson_completion_accepts_omitted_or_explicit_zero(self):
+        # Match the real Bazel 8.5.1 completion: code=0 is omitted, not null.
+        for exit_code in ({"name": "SUCCESS"}, {"name": "SUCCESS", "code": 0}, {"code": 0}, {}):
+            with self.subTest(exit_code=exit_code):
+                events = self.events()
+                events[-1]["finished"]["exitCode"] = exit_code
+                self.assertEqual(self.resolve(events), {image.IMAGE: {self.output}})
+
+    def test_missing_malformed_failed_and_contradictory_completions_are_rejected(self):
+        completions = [
+            None, {}, {"overallSuccess": True}, {"overallSuccess": True, "exitCode": None},
+            {"overallSuccess": True, "exitCode": []}, {"exitCode": {"name": "SUCCESS"}},
+            {"overallSuccess": False, "exitCode": {"name": "SUCCESS", "code": 0}},
+            {"overallSuccess": 1, "exitCode": {"name": "SUCCESS"}},
+            {"overallSuccess": True, "exitCode": {"name": "SUCCESS", "code": 1}},
+            {"overallSuccess": True, "exitCode": {"name": "BUILD_FAILURE", "code": 0}},
+            {"overallSuccess": True, "exitCode": {"name": "SUCCESS", "code": None}},
+            {"overallSuccess": True, "exitCode": {"name": "SUCCESS", "code": False}},
+            {"overallSuccess": True, "exitCode": {"name": "SUCCESS", "code": "0"}},
+        ]
+        for completion in completions:
+            with self.subTest(completion=completion):
+                events = self.events()
+                events[-1]["finished"] = completion
+                with self.assertRaises(ValueError):
+                    self.resolve(events)
+        events = self.events()
+        events.append(events[-1])
+        with self.assertRaisesRegex(ValueError, "ambiguous build completion"):
+            self.resolve(events)
 
     def test_stale_external_output_and_symlink_escape_are_rejected(self):
         stale = self.workspace / "sonic-vs.bin"
@@ -97,6 +130,46 @@ class ImageControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "stale"):
             image.validate_paths(self.workspace, self.state, self.artifacts)
 
+    def test_publish_hardlinks_verified_bytes_without_copying(self):
+        self.artifacts.mkdir(parents=True)
+        with mock.patch.object(image.shutil, "copyfileobj") as copy:
+            info = image.publish(self.output, self.artifacts, "sonic-vs.bin")
+        copy.assert_not_called()
+        published = self.artifacts / "sonic-vs.bin"
+        self.assertEqual(published.stat().st_ino, self.output.stat().st_ino)
+        self.assertEqual(info["publication_method"], "hardlink")
+        self.assertEqual(info["sha256"], image.image_inputs.sha256(self.output))
+
+    def test_publish_falls_back_to_exclusive_copy_only_across_filesystems(self):
+        self.artifacts.mkdir(parents=True)
+        with mock.patch.object(image.os, "link", side_effect=OSError(errno.EXDEV, "different filesystems")):
+            info = image.publish(self.output, self.artifacts, "sonic-vs.bin")
+        published = self.artifacts / "sonic-vs.bin"
+        self.assertEqual(published.read_bytes(), self.output.read_bytes())
+        self.assertNotEqual(published.stat().st_ino, self.output.stat().st_ino)
+        self.assertEqual(info["publication_method"], "copy")
+        with mock.patch.object(image.os, "link", side_effect=OSError(errno.EPERM, "not allowed")), \
+                mock.patch.object(image.shutil, "copyfileobj") as copy, self.assertRaises(PermissionError):
+            image.publish(self.output, self.artifacts, "another.bin")
+        copy.assert_not_called()
+        self.assertFalse((self.artifacts / "another.bin").exists())
+
+    def test_publish_never_overwrites_existing_file_or_symlink(self):
+        self.artifacts.mkdir(parents=True)
+        existing = self.artifacts / "existing.bin"
+        existing.write_bytes(b"keep existing bytes")
+        linked = self.artifacts / "existing-link.bin"
+        linked.symlink_to(existing)
+        for name in (existing.name, linked.name):
+            with self.subTest(name=name):
+                with self.assertRaises(FileExistsError):
+                    image.publish(self.output, self.artifacts, name)
+                with mock.patch.object(image.os, "link", side_effect=OSError(errno.EXDEV, "different filesystems")), \
+                        self.assertRaises(FileExistsError):
+                    image.publish(self.output, self.artifacts, name)
+        self.assertEqual(existing.read_bytes(), b"keep existing bytes")
+        self.assertTrue(linked.is_symlink())
+
     def test_failed_build_stops_exact_worker_restores_owner_and_writes_failed_receipt(self):
         manifest = self.root / "inputs.json"
         manifest.write_text("{}")
@@ -133,6 +206,8 @@ class ImageControllerTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "failed")
         self.assertIn("fixture compilation failed", receipt["error"])
         self.assertFalse((self.artifacts / "sonic-vs.bin").exists())
+        self.assertEqual(receipt["output_cleanup"]["status"], "retained")
+        self.assertTrue(Path(receipt["output_user_root"]).is_dir())
 
     def test_worker_bazel_version_must_match_checked_out_version(self):
         self.assertEqual(image.check_bazel_version({"worker": {"bazel_version": "8.5.1"}}, self.workspace), "8.5.1")
@@ -179,11 +254,14 @@ class ImageControllerTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "component contains modified or untracked"):
             image.source_provenance(self.workspace)
 
-    def test_success_reuses_worker_disables_full_image_disk_cache_and_publishes_verified_bytes(self):
+    def run_build_fixture(self, failure=None, stop_hook=None):
         manifest = self.root / "inputs.json"
         manifest.write_text("{}")
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
                                        artifacts=self.artifacts, manifest=manifest, local_assets=None)
+        for cache in ("package-cache", "repository-cache"):
+            (self.state / cache).mkdir(parents=True, exist_ok=True)
+            (self.state / cache / "retained-entry").write_bytes(b"keep cache")
 
         def prepare(*_args):
             inputs = self.workspace / "target/bazel-image-inputs"
@@ -195,6 +273,11 @@ class ImageControllerTest(unittest.TestCase):
 
         def execute(command, *_args):
             commands.append(command)
+            if "--worker-action" in command:
+                if failure == "worker-stop":
+                    raise RuntimeError("fixture worker stop failed")
+                if stop_hook is not None:
+                    stop_hook(Path(command[command.index("--output-user-root") + 1]))
             if image.IMAGE in command:
                 output_root = Path(command[command.index("--output-user-root") + 1])
                 events = []
@@ -213,9 +296,12 @@ class ImageControllerTest(unittest.TestCase):
                         {"id": {"namedSet": {"id": str(number)}}, "namedSetOfFiles": {
                             "files": [{"uri": (output_root / name).as_uri()} for name in names]}},
                     ])
-                events.append({"id": {"buildFinished": {}}, "finished": {"exitCode": {"code": 0}}})
+                events.append({"id": {"buildFinished": {}}, "finished": {
+                    "overallSuccess": True, "exitCode": {"name": "SUCCESS"}}})
                 (self.artifacts / "image.bep.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
             if "--installer" in command:
+                if failure == "verify":
+                    raise RuntimeError("fixture verification failed")
                 installer = Path(command[command.index("--installer") + 1])
                 (self.artifacts / "image-verification.json").write_text(json.dumps({
                     "status": "passed", "installer": {"sha256": image.image_inputs.sha256(installer)}}))
@@ -225,7 +311,13 @@ class ImageControllerTest(unittest.TestCase):
                 mock.patch.object(image.image_inputs, "prepare", side_effect=prepare), \
                 mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
                 mock.patch.object(image, "execute", side_effect=execute):
-            self.assertEqual(image.build(arguments), 0)
+            result = image.build(arguments)
+        receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
+        return result, commands, receipt
+
+    def test_success_reuses_worker_disables_full_image_disk_cache_and_publishes_verified_bytes(self):
+        result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 0)
         self.assertEqual(len(commands), 4)
         self.assertIn("--disk_cache=" + str(self.state / "package-cache"), commands[0])
         self.assertIn("--disk_cache=", commands[1])
@@ -236,10 +328,109 @@ class ImageControllerTest(unittest.TestCase):
         self.assertEqual(commands[0][:commands[0].index("--")], commands[1][:commands[1].index("--")])
         self.assertEqual(commands[-1][-2:], ["--worker-action", "stop"])
         self.assertEqual((self.artifacts / "sonic-vs.bin").read_bytes(), b"built sonic-vs.bin")
-        receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         self.assertEqual(receipt["status"], "passed")
         self.assertEqual(set(receipt["outputs"]), {"installer", "runtime"})
         self.assertEqual(len((self.artifacts / "SHA256SUMS").read_text().splitlines()), 2)
+        self.assertEqual(receipt["output_cleanup"]["status"], "removed")
+        self.assertFalse(Path(receipt["output_user_root"]).exists())
+        self.assertEqual((self.artifacts / "docker-orchagent.gz").read_bytes(), b"built docker-orchagent.gz")
+        for output in receipt["outputs"].values():
+            self.assertEqual(output["publication_method"], "hardlink")
+            self.assertEqual(image.image_inputs.sha256(self.artifacts / output["file"]), output["sha256"])
+        for cache in ("package-cache", "repository-cache"):
+            self.assertEqual((self.state / cache / "retained-entry").read_bytes(), b"keep cache")
+
+    def test_verification_failure_retains_this_invocations_output(self):
+        result, commands, receipt = self.run_build_fixture(failure="verify")
+        self.assertEqual(result, 1)
+        self.assertEqual(commands[-1][-2:], ["--worker-action", "stop"])
+        self.assertEqual(receipt["output_cleanup"]["status"], "retained")
+        self.assertTrue((Path(receipt["output_user_root"]) / "sonic-vs.bin").is_file())
+        self.assertFalse((self.artifacts / "sonic-vs.bin").exists())
+
+    def test_worker_stop_failure_retains_output_even_after_successful_publication(self):
+        result, _, receipt = self.run_build_fixture(failure="worker-stop")
+        self.assertEqual(result, 1)
+        self.assertIn("fixture worker stop failed", receipt["worker_cleanup_error"])
+        self.assertEqual(receipt["output_cleanup"]["status"], "retained")
+        original = Path(receipt["output_user_root"]) / "sonic-vs.bin"
+        self.assertTrue(original.is_file())
+        self.assertEqual(original.stat().st_ino, (self.artifacts / "sonic-vs.bin").stat().st_ino)
+
+    def test_publication_failure_retains_output_after_worker_stop(self):
+        with mock.patch.object(image, "publish", side_effect=OSError("fixture publication failed")):
+            result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(commands[-1][-2:], ["--worker-action", "stop"])
+        self.assertEqual(receipt["output_cleanup"]["status"], "retained")
+        self.assertTrue((Path(receipt["output_user_root"]) / "sonic-vs.bin").is_file())
+
+    def test_output_cleanup_error_fails_the_receipt(self):
+        with mock.patch.object(image.shutil, "rmtree", side_effect=OSError("fixture cleanup failed")):
+            result, _, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(receipt["output_cleanup"]["status"], "failed")
+        self.assertIn("fixture cleanup failed", receipt["output_cleanup"]["error"])
+        self.assertTrue(Path(receipt["output_user_root"]).is_dir())
+        self.assertEqual((self.artifacts / "sonic-vs.bin").read_bytes(), b"built sonic-vs.bin")
+
+    def test_cleanup_refuses_a_replaced_output_directory(self):
+        def replace(root):
+            root.rename(self.state / "retained-original-output")
+            root.mkdir()
+            (root / "unrelated").write_bytes(b"do not delete")
+        result, _, receipt = self.run_build_fixture(stop_hook=replace)
+        self.assertEqual(result, 1)
+        self.assertEqual(receipt["output_cleanup"]["status"], "failed")
+        self.assertIn("replaced invocation", receipt["output_cleanup"]["error"])
+        self.assertEqual((Path(receipt["output_user_root"]) / "unrelated").read_bytes(), b"do not delete")
+        self.assertTrue((self.state / "retained-original-output/sonic-vs.bin").is_file())
+
+    def test_cleanup_refuses_output_root_replaced_by_cache_symlink(self):
+        def replace(root):
+            root.rename(self.state / "retained-original-output")
+            root.symlink_to(self.state / "package-cache", target_is_directory=True)
+        result, _, receipt = self.run_build_fixture(stop_hook=replace)
+        self.assertEqual(result, 1)
+        self.assertEqual(receipt["output_cleanup"]["status"], "failed")
+        self.assertTrue(Path(receipt["output_user_root"]).is_symlink())
+        self.assertEqual((self.state / "package-cache/retained-entry").read_bytes(), b"keep cache")
+
+    def test_existing_output_root_is_not_adopted_or_cleaned_up(self):
+        self.state.mkdir()
+        existing = self.state / "output-0123456789abcdef"
+        existing.mkdir()
+        (existing / "unrelated").write_bytes(b"do not delete")
+        with mock.patch.object(image.uuid, "uuid4", return_value=mock.Mock(hex="0123456789abcdef")):
+            result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(commands, [])
+        self.assertEqual(receipt["output_cleanup"]["status"], "not_created")
+        self.assertEqual((existing / "unrelated").read_bytes(), b"do not delete")
+
+    def test_artifacts_inside_selected_output_root_are_rejected_before_building(self):
+        self.artifacts = self.state / "output-0123456789abcdef/artifacts"
+        with mock.patch.object(image.uuid, "uuid4", return_value=mock.Mock(hex="0123456789abcdef")):
+            result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(commands, [])
+        self.assertIn("artifacts cannot be inside", receipt["error"])
+        self.assertEqual(receipt["output_cleanup"]["status"], "not_created")
+
+    def test_preexisting_output_root_symlink_is_rejected_without_touching_target(self):
+        self.state.mkdir()
+        target = self.state / "unrelated"
+        target.mkdir()
+        (target / "keep").write_bytes(b"do not delete")
+        selected = self.state / "output-0123456789abcdef"
+        selected.symlink_to(target, target_is_directory=True)
+        with mock.patch.object(image.uuid, "uuid4", return_value=mock.Mock(hex="0123456789abcdef")):
+            result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(commands, [])
+        self.assertIn("must not be a symlink", receipt["error"])
+        self.assertEqual(receipt["output_cleanup"]["status"], "not_created")
+        self.assertEqual((target / "keep").read_bytes(), b"do not delete")
 
 
 if __name__ == "__main__":
