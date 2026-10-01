@@ -1,6 +1,11 @@
 load("@rules_python//python:defs.bzl", "py_test")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 
+exports_files([
+    "trust.py",
+    "trust_test.py",
+])
+
 # Exercise the same transitive debug-symbol collection used by the OCI image,
 # without requiring its Make-built config-engine base on a fresh CI runner.
 debug_symbols_layer(
@@ -32,6 +37,7 @@ py_test(
         "image.py",
         "image_inputs.py",
         "image_test.py",
+        "trust.py",
     ],
     imports = ["."],
 )
@@ -50,6 +56,15 @@ py_test(
     srcs = [
         "native_build.py",
         "native_build_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "trust_test",
+    srcs = [
+        "trust.py",
+        "trust_test.py",
     ],
     imports = ["."],
 )
