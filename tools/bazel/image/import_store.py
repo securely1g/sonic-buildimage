@@ -18,6 +18,21 @@ import tempfile
 import time
 
 
+def remove_store_scratch(root):
+    """Remove this action's private store after its daemon has exited."""
+    data = root / "data"
+    if data.exists():
+        # Docker can leave a self-bind mount on its data root after shutdown.
+        # This path belongs to our fresh mkdtemp, inside the private mount
+        # namespace. Unmount only that path; do not detach or sweep mounts.
+        mounted = subprocess.run(["mountpoint", "--quiet", str(data)]).returncode
+        if mounted == 0:
+            subprocess.run(["umount", "--", str(data)], check=True)
+        elif mounted != 32:  # util-linux: path exists but is not a mountpoint.
+            raise RuntimeError("cannot determine private Docker data-root mount state")
+    shutil.rmtree(root)
+
+
 def run(args):
     if os.geteuid() != 0 or os.getpid() != 1:
         raise ValueError("run in a privileged worker through unshare --pid --fork --mount-proc")
@@ -92,7 +107,7 @@ def run(args):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-        shutil.rmtree(root)
+        remove_store_scratch(root)
         shutil.rmtree(runtime)
         # Bazel must also be able to remove a partial failed TreeArtifact.
         for directory, _, files in os.walk(output):

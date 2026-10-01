@@ -249,11 +249,60 @@ python3 tools/bazel/ci/run.py test --artifacts artifacts/tests
 python3 tools/bazel/ci/run.py build --artifacts artifacts/packages
 ```
 
-Hosted CI does not have the native predecessor bundle required for the complete
-OCI archives or VS installer. Full image assembly, Docker runtime and guest boot
-validation remain the separately documented integration checks; CI does not
-replace them with synthetic predecessor files. The imported DASH library's
-missing debug symbols remain an explicit package-validation exception.
+`Bazel VS installer (AMD64)` then builds the actual
+`//tools/bazel/image/vs:sonic-vs.bin` target on a fresh hosted Ubuntu runner. It
+downloads the native predecessors and a smaller Trixie execution worker from
+the immutable release descriptor in `tools/bazel/ci/vs_inputs.json`. Every
+archive and extracted file is checked against a committed SHA256. The worker
+archive has its own SHA256 and allowed Docker image identities; the job creates
+the execution-environment input using the verified local identity. The worker
+[recipe](worker/README.md) contains only public execution tools.
+
+After verifying the released bundle, the job regenerates the installer inputs
+from the current checkout. Its receipt records both the released and derived
+file hashes. Native host and service predecessors keep their pinned identity.
+The job initializes the recorded component sources, builds SWSS with a reusable
+package cache, and invokes the complete image graph in the isolated privileged
+worker. It resolves the installer and intermediate outputs from that invocation's
+Bazel event log, checks the ONIE checksum, and streams the complete payload ZIP
+and Docker-store archive to verify CRCs and byte identity with the declared
+SquashFS, store, boot and platform outputs. `sonic-vs.bin`, the matching SWSS
+archive, checksums, input/build/validation receipts, logs and profiles are uploaded
+as `sonic-vs-bazel-amd64` and retained for 14 days. Missing inputs or failed
+validation fail the job.
+
+The hosted job removes unused preinstalled SDKs on its disposable runner and
+requires 45 GiB of free disk after restoring caches and before assembly. Its
+worker is limited to four CPUs and 12 GiB of memory; Bazel uses four jobs and
+a 10,000 MB memory resource budget. Downloaded repositories and source-package
+actions are cached; the multi-gigabyte image outputs are retained as build
+artifacts rather than duplicating them into the limited GitHub Actions cache.
+The native predecessor release is independent of those disposable caches.
+
+The release retains the original native source revision and pre-container
+boundary. It supplies a real host snapshot, frozen native configuration, the
+config-engine base, Scapy wheel and other services; it never supplies a finished
+installer or substitutes a prebuilt SWSS archive for the source-built target.
+Host build metadata therefore identifies the native predecessor revision; the
+CI receipts separately identify the current buildimage checkout and component
+gitlinks. The release removes local build-cache paths and a temporary build CA
+from the retained host inputs. Publish a new audited descriptor when the native
+OS, services or frozen configuration need refreshing.
+
+For a local reproduction, use a fresh standalone clone in a dedicated build
+directory, initialize the same five submodules as the workflow, and run:
+
+```sh
+sudo python3 tools/bazel/ci/image.py \
+  --workspace "$PWD" --state "$PWD/../vs-ci-state" \
+  --manifest tools/bazel/ci/vs_inputs.json --artifacts "$PWD/artifacts/image"
+```
+
+The controller owns its dedicated worker lifecycle and restores checkout
+ownership afterward. It does not remove local SDKs. CI performs offline image
+validation; live Docker execution, guest boot and forwarding remain the
+separately documented integration checks. The imported DASH library's missing
+debug symbols remain an explicit package-validation exception.
 
 ```sh
 bazel test //tools/bazel/image:metadata_test //tools/bazel/image:host_test \

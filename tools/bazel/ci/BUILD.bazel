@@ -16,3 +16,33 @@ py_test(
     ],
     imports = ["."],
 )
+
+py_test(
+    name = "image_inputs_test",
+    srcs = [
+        "image_inputs.py",
+        "image_inputs_test.py",
+    ],
+    data = ["//tools/bazel/image:installer.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "image_test",
+    srcs = [
+        "image.py",
+        "image_inputs.py",
+        "image_test.py",
+    ],
+    data = ["//tools/bazel/image:installer.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "verify_image_test",
+    srcs = [
+        "verify_image.py",
+        "verify_image_test.py",
+    ],
+    imports = ["."],
+)

@@ -114,6 +114,10 @@ def build_plan(args):
                  or not re.fullmatch(r"/[a-zA-Z0-9_./-]+", home)
                  or ".." in Path(home).parts or home == "/"):
         raise ValueError("invalid worker user or home directory")
+    cpus = getattr(args, "worker_cpus", 8)
+    memory_gib = getattr(args, "worker_memory_gib", 24)
+    if type(cpus) is not int or cpus <= 0 or type(memory_gib) is not int or memory_gib <= 0:
+        raise ValueError("worker CPU count and memory GiB must be positive integers")
     bootstrap = PERSISTENT_BOOTSTRAP
     if user:
         # Substitute template values once, without rewriting the supplied values.
@@ -131,7 +135,8 @@ def build_plan(args):
     docker = [
         "docker", "run", "--rm", "--init", "--pull=never",
         "--platform", "linux/amd64",
-        "--privileged", "--cpus=8", "--memory=24g", "--memory-swap=24g",
+        "--privileged", "--cpus=" + str(cpus), "--memory=" + str(memory_gib) + "g",
+        "--memory-swap=" + str(memory_gib) + "g",
         "--user", "0:0", "--ulimit", "nofile=524288:524288",
         "--mount", "type=bind,source=" + str(root) + ",target=" + str(root),
         "--mount", "type=bind,source=" + str(worker_spec) + ",target=/run/sonic-image-worker.json,readonly",
@@ -159,7 +164,7 @@ def build_plan(args):
         verb = command[command_index]
         defaults = list(cache_arg)
         if verb in {"build", "test", "run", "coverage"}:
-            defaults += ["--jobs=8", "--local_resources=cpu=8"]
+            defaults += ["--jobs=" + str(cpus), "--local_resources=cpu=" + str(cpus)]
             if persistent:
                 defaults += ["--cache_computed_file_digests=200000"]
         command[command_index + 1:command_index + 1] = defaults
@@ -182,8 +187,8 @@ def build_plan(args):
         "bootstrap_sha256": hashlib.sha256(bootstrap.encode()).hexdigest(),
         "worker_user": user,
         "worker_home": home,
-        "cpu_count": 8,
-        "memory_bytes": MEMORY,
+        "cpu_count": cpus,
+        "memory_bytes": memory_gib * 1024 ** 3,
     }
     if bazel.exists() and bazel.is_relative_to(root):
         identity["bazel_sha256"] = hashlib.sha256(bazel.read_bytes()).hexdigest()
@@ -218,8 +223,8 @@ def build_command(args):
     return build_plan(args)["disposable"]
 
 
-def capture(command):
-    result = subprocess.run(command, text=True, capture_output=True)
+def capture(command, timeout=None):
+    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
     if result.returncode:
         raise RuntimeError("command failed: " + " ".join(command[:3]) + "\n" + result.stderr.strip())
     return result.stdout
@@ -254,9 +259,9 @@ def validate_worker(worker, plan):
         "user": (config.get("User"), "0:0"),
         "init": (host.get("Init"), True),
         "privileged": (host.get("Privileged"), True),
-        "CPU limit": (host.get("NanoCpus"), 8_000_000_000),
-        "memory limit": (host.get("Memory"), MEMORY),
-        "swap limit": (host.get("MemorySwap"), MEMORY),
+        "CPU limit": (host.get("NanoCpus"), identity["cpu_count"] * 1_000_000_000),
+        "memory limit": (host.get("Memory"), identity["memory_bytes"]),
+        "swap limit": (host.get("MemorySwap"), identity["memory_bytes"]),
         "network namespace": (host.get("NetworkMode"), "bridge"),
         "PID namespace": (host.get("PidMode", ""), ""),
         "IPC namespace": (host.get("IpcMode"), "private"),
@@ -369,18 +374,45 @@ def persistent_action(args, plan, owner_file):
         return 0
     save_owner(owner_file, plan, container_id)
     if action == "stop":
+        shutdown_code, shutdown_error, cleanup_errors = 0, None, []
+        failures = (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired, KeyboardInterrupt)
         if running:
-            ready_worker(container_id, plan)
-            shutdown = [plan["identity"]["bazel"],
-                        "--output_user_root=" + plan["identity"]["output_root"], "shutdown"]
-            result = subprocess.run(exec_command(container_id, plan, shutdown))
-            if result.returncode:
-                return result.returncode
-            capture(["docker", "stop", "--time", "30", container_id])
-        capture(["docker", "rm", container_id])
-        owner_file.unlink()
-        print(json.dumps({"worker": args.persistent_worker, "container_id": container_id, "state": "removed"}))
-        return 0
+            try:
+                ready_worker(container_id, plan)
+                shutdown = [plan["identity"]["bazel"],
+                            "--output_user_root=" + plan["identity"]["output_root"], "shutdown"]
+                shutdown_code = subprocess.run(exec_command(container_id, plan, shutdown), timeout=30).returncode
+                if shutdown_code:
+                    shutdown_error = "Bazel shutdown exited with status " + str(shutdown_code)
+            except failures as error:
+                shutdown_error = type(error).__name__ + ": " + str(error)
+            # Cleanup is authorized by the immutable container validation above,
+            # even when its Bazel server or bootstrap is no longer responding.
+            try:
+                capture(["docker", "stop", "--time", "30", container_id], timeout=40)
+            except failures as error:
+                cleanup_errors.append("stop: " + str(error))
+                try:
+                    capture(["docker", "kill", container_id], timeout=10)
+                except failures as error:
+                    cleanup_errors.append("kill: " + str(error))
+        removed = False
+        try:
+            capture(["docker", "rm", container_id], timeout=10)
+            removed = True
+            owner_file.unlink()
+        except failures as error:
+            cleanup_errors.append("remove: " + str(error))
+        report = {"worker": args.persistent_worker, "container_id": container_id,
+                  "state": "removed" if removed else "cleanup_failed",
+                  "bazel_shutdown_returncode": shutdown_code, "bazel_shutdown_error": shutdown_error,
+                  "cleanup_errors": cleanup_errors}
+        print(json.dumps(report))
+        if cleanup_errors:
+            raise RuntimeError("worker cleanup reported errors: " + json.dumps(report))
+        if shutdown_error and not shutdown_code:
+            raise RuntimeError("worker removed after failed Bazel shutdown: " + shutdown_error)
+        return shutdown_code
     if not running:
         capture(["docker", "start", container_id])
     ready_worker(container_id, plan)
@@ -402,6 +434,8 @@ def main():
     parser.add_argument("--persistent-worker", help="retain and reuse this named worker and its Bazel server")
     parser.add_argument("--worker-user", help="explicit UID 1000 account for a persistent worker")
     parser.add_argument("--worker-home", help="home for --worker-user; both options are required together")
+    parser.add_argument("--worker-cpus", type=int, default=8, help="positive worker CPU limit (default: 8)")
+    parser.add_argument("--worker-memory-gib", type=int, default=24, help="positive worker memory limit in GiB (default: 24)")
     parser.add_argument("--worker-action", choices=("run", "start", "status", "stop"), default="run")
     parser.add_argument("--dry-run", action="store_true", help="print the command/worker contract without running it")
     parser.add_argument("command", nargs=argparse.REMAINDER)
