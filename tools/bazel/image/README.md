@@ -110,8 +110,8 @@ original clean checkout and the current invocation before declaring the Bazel
 inputs. Installer scripts/configuration come from the same checked-out source.
 
 The underlying recipes still use normal Debian packages, base images and
-execution tool downloads. The Bazel SWSS dependency graph's pinned DASH binary
-import also remains unchanged. This CI change covers the SWSS Docker image and
+execution tool downloads. SWSS and DASH use the recorded source gitlinks in the
+Bazel graph. This CI change covers the SWSS Docker image and
 VS assembly; it does not migrate every component's build system to Bazel.
 
 The execution environment JSON declares `schema`, `platform`, `worker_image`
@@ -263,8 +263,8 @@ sudo python3 tools/bazel/ci/image.py \
 
 The controller owns its dedicated workers and restores checkout ownership
 afterward. It does not remove local SDKs or operate on unrelated Docker workers.
-The imported DASH library's missing debug symbols remain an explicit
-package-validation exception.
+The source-built DASH library and Python extension require matching debug
+symbols in package validation.
 
 ```sh
 bazel test //tools/bazel/image:metadata_test //tools/bazel/image:host_test \
