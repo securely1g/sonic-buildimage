@@ -72,7 +72,9 @@ sudo bash -c "echo \"DOCKER_OPTS=\"--storage-driver=overlay2\"\" >> $FILESYSTEM_
 sudo mkdir -p "$FILESYSTEM_ROOT/$DOCKER_CTL_DIR"
 sudo cp $DOCKER_SCRIPTS_DIR/docker "$FILESYSTEM_ROOT/$DOCKER_CTL_SCRIPT"
 fi
-if [[ $MULTIARCH_QEMU_ENVIRON == y  || $CROSS_BUILD_ENVIRON == y ]]; then
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    : # Snapshot contains host packages only; do not start a container daemon.
+elif [[ $MULTIARCH_QEMU_ENVIRON == y  || $CROSS_BUILD_ENVIRON == y ]]; then
     DOCKER_HOST="unix:///dockerfs/var/run/docker.sock"
     SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID="cat `pwd`/dockerfs/var/run/docker.pid"
 else
@@ -982,6 +984,11 @@ EOF
 {% endif %}
 
 fi  # Pre-boundary host work
+
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    echo '[INFO] Native host reached the Bazel pre-container boundary'
+    exit 0
+fi
 
 ## Bind docker path
 if [[ $MULTIARCH_QEMU_ENVIRON == y || $CROSS_BUILD_ENVIRON == y ]]; then

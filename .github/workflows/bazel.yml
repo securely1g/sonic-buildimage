@@ -89,8 +89,10 @@ jobs:
   image:
     name: Bazel VS installer (AMD64)
     needs: ci
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # Full native prerequisites need substantially more disk than a standard
+    # hosted runner. Register this label on a disposable source-build runner.
+    runs-on: [self-hosted, linux, x64, sonic-vs-source]
+    timeout-minutes: 720
     defaults:
       run:
         shell: bash
@@ -100,11 +102,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize the recorded Bazel component sources
+      - name: Initialize every recorded native and Bazel source
         run: |
-          git submodule update --init --depth 1 --jobs 4 -- \
-            src/sonic-build-infra src/sonic-dash-api src/sonic-sairedis \
-            src/sonic-swss src/sonic-swss-common
+          git submodule update --init --recursive --jobs 4
 
       - name: Restore Bazel source-package and download caches
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -117,27 +117,22 @@ jobs:
             sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'tools/bazel/common.bazelrc') }}-
             sonic-vs-bazel-8.5.1-${{ runner.os }}-
 
-      - name: Reserve disk for native image assembly
-        # Only discard unused SDKs on this fresh, disposable GitHub runner.
-        # These paths are never removed by the local build entry point.
+      - name: Check source-build runner capacity
         run: |
-          test "$RUNNER_ENVIRONMENT" = github-hosted
-          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /opt/hostedtoolcache /usr/local/share/powershell
           df -h "$GITHUB_WORKSPACE"
           /usr/bin/python3 - <<'PY'
           import os, shutil
           free = shutil.disk_usage(os.environ["GITHUB_WORKSPACE"]).free
-          if free < 50 * 1024**3:
-              raise SystemExit("VS image assembly needs at least 50 GiB of free disk")
+          if free < 300 * 1024**3:
+              raise SystemExit("VS native source build needs at least 300 GiB of free disk after cache restore")
           PY
+          docker info > /dev/null
 
       - name: Build and verify sonic-vs.bin with Bazel
         run: |
           sudo /usr/bin/python3 tools/bazel/ci/image.py \
             --workspace "$GITHUB_WORKSPACE" \
             --state "$GITHUB_WORKSPACE/../vs-ci-state" \
-            --manifest tools/bazel/ci/vs_inputs.json \
             --artifacts "$GITHUB_WORKSPACE/artifacts/image"
 
       - name: Upload VS installer and build evidence

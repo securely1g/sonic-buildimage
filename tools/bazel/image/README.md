@@ -11,11 +11,14 @@ cache behavior, artifact identity, and the reproduction method.
 The graph consumes explicit phase-one predecessors: a **pre-container host
 snapshot**, native source/configuration needed to finalize that snapshot, and
 the other service images. It does not rebuild every Debian package or use a
-previously finished installer as its host input. A cold build of those retained
-predecessors is outside this graph.
+previously finished installer as its host input. The source-image CI job builds
+these predecessors with the native Make recipes in the same invocation, then runs
+this Bazel graph. A warm developer build can reuse previously generated inputs.
 
 ```mermaid
 flowchart LR
+    NATIVE[Native sources and Make recipes] --> SNAP
+    NATIVE --> OTHER
     SWSS[SWSS source] --> OCI[Bazel OCI image]
     OCI --> META[Service labels]
     SNAP[Pre-container host snapshot] --> HOST[Host filesystem and boot files]
@@ -66,95 +69,58 @@ individual layers discovered inside that import are not separate Bazel actions.
 The preparation scripts freeze native predecessors under
 `target/bazel-image-inputs/` and write a generated `inputs.bzl` plus provenance
 receipts. Large generated inputs are not committed.
-This checkout consumes a bundle from a separate phase-one native build provider;
-it does not produce the snapshot state marker or evaluated native inventory.
-An ordinary completed Make installer or unmarked SquashFS is not a substitute.
+The `bazel-vs-native-inputs` Make target produces the marked pre-container
+snapshot, evaluated image inventory, captured configuration and source provenance
+from the current recursive checkout. An ordinary completed Make installer or
+unmarked SquashFS is not a substitute.
 Preparation also installs `vs/BUILD.bazel` from its checked-in template, so a
 fresh checkout can load other Bazel packages before native inputs are available.
 Changes to the frozen native source, generated services, or configuration
 require preparing those inputs again. `build_debian.sh` and the extension
 template are direct graph inputs and are always read from the current checkout.
 
-1. Obtain a pre-container host snapshot with its
-   `.sonic-bazel-host-state.json` identity and capture the matching native Make
-   template environment and rendered service scripts. The capture must stop
-   before running `build_debian.sh`; do not use a completed host filesystem.
-2. Run `prepare_host_inputs.py --source NATIVE_SOURCE --captured-environment
-   ENV.json --snapshot HOST.squashfs --output target/bazel-image-inputs`. It
-   selects post-boundary source files, generated services, and required packages,
-   excluding service archives, prior image outputs, Git data, and build caches.
-3. Run `prepare_inputs.py --help` and supply that host bundle, the evaluated
-   native inventory, a JSON mapping of archive basenames to local input paths,
-   installer configuration/source, and execution environment. The SWSS archive
-   mapping is always replaced by the source-built Bazel target. Installer
-   preparation includes the existing platform configurations and all three VS
-   KVM platforms.
+The CI controller performs the native source build, checks its provenance, then
+invokes `prepare_inputs.py` to declare the generated host bundle, service archives,
+installer sources and execution environment. The SWSS archive mapping always
+selects its source-built Bazel target. Installer preparation includes the existing
+platform configurations and all three VS KVM platforms.
 
-### Capturing the native template environment
+### Building native prerequisites from source
 
-The tested preparer path used a retained native provider's Make invocation and
-a capture-only replacement for `build_debian.sh`. The following portable capture
-pattern documents that boundary; it is not a validated recipe for a cold native
-build. Work only in a disposable copy of the provider's matching native tree,
-with its generated prerequisites and the same slave, configuration, Make
-variables, and exported snapshot identity (`SONIC_BAZEL_SOURCE_COMMIT`,
-`SONIC_BAZEL_SOURCE_BRANCH`, and `SOURCE_DATE_EPOCH`).
+Image CI starts with a fresh clone and initializes every recorded recursive
+submodule. It builds the [execution worker](worker/README.md) from this checkout,
+then runs the native preparation target in a separate worker with its own Docker
+daemon. No host Docker socket or prepared SONiC release bundle is supplied.
 
-```sh
-cp build_debian.sh build_debian.capture-source.sh
-test ! -e captured-host-environment.json
-cat > build_debian.sh <<'PY'
-#!/usr/bin/env python3
-import json, os, pathlib, re
+The native stage runs `make -f Makefile.work BLDENV=trixie configure PLATFORM=vs
+PLATFORM_ARCH=amd64`, followed by `bazel-vs-native-inputs` with the same fixed
+build identity. Native package/image caches and slave-image registry pulls are
+disabled for this initial source-build CI path. It compiles the kernel and native
+prerequisites, including config-engine and the Scapy wheel. The Make target
+excludes the orchagent archive while retaining its service templates; Bazel
+builds that archive later. Other native service recipes still compile a native
+SWSS DEB where their existing dependency graph requires one. Sysmgr remains on
+its existing native path in this scoped image job.
 
-sources = [pathlib.Path('build_debian.capture-source.sh'), pathlib.Path('slave.mk')]
-sources += list(pathlib.Path('files/build_templates').rglob('*.j2'))
-names = {'SONIC_BAZEL_SOURCE_COMMIT', 'SONIC_BAZEL_SOURCE_BRANCH', 'SOURCE_DATE_EPOCH'}
-for source in sources:
-    names.update(re.findall(r'[A-Za-z_][A-Za-z_0-9]*', source.read_text()))
-ambient = {'PWD', 'HOME', 'USER', 'LOGNAME', 'PATH', 'SHELL', 'SHLVL',
-           'MAKEFLAGS', 'MAKELEVEL', 'MFLAGS', 'DOCKER_HOST', 'RUSTUP_HOME'}
-captured = {}
-for name, value in os.environ.items():
-    if name not in names or name in ambient:
-        continue
-    if any(word in name.upper() for word in ('PASSWORD', 'TOKEN', 'SECRET', 'PROXY')):
-        if name != 'CHANGE_DEFAULT_PASSWORD' or value not in ('y', 'n'):
-            continue
-    captured[name] = value
-os.umask(0o077)
-with open('captured-host-environment.json', 'x') as output:
-    json.dump(captured, output, indent=2, sort_keys=True)
-    output.write('\n')
-raise SystemExit(88)
-PY
-chmod 755 build_debian.sh
-```
+The producer stops the host build immediately before service-container loading,
+writes the snapshot identity, captures only the required non-secret template
+environment, and records all recursive source revisions and output SHA256s in
+`target/bazel-native/provenance.json`. The controller checks those against the
+original clean checkout and the current invocation before declaring the Bazel
+inputs. Installer scripts/configuration come from the same checked-out source.
 
-Now repeat the provider's native image Make command **inside its native slave**,
-including its original variable assignments and Make overlays. For a provider
-using only `slave.mk`, the target invocation is:
-
-```sh
-make -f slave.mk SONIC_BUILD_TARGET=target/sonic-vs.bin target/sonic-vs.bin
-# Expected: build_debian.sh exits 88; Make reports a nonzero status.
-mv build_debian.capture-source.sh build_debian.sh
-test -s captured-host-environment.json
-```
-
-The capture stops before filesystem assembly; Make may still rebuild missing
-prerequisites before reaching it. Restore the original script before preparing
-the source bundle. Pass this local JSON file to `prepare_host_inputs.py`; do not
-dump the entire shell environment or publish captured environment files. The
-preparer validates supported options and identity, and the host action checks
-that identity against the pre-container snapshot.
+The underlying recipes still use normal Debian packages, base images and
+execution tool downloads. The Bazel SWSS dependency graph's pinned DASH binary
+import also remains unchanged. This CI change covers the SWSS Docker image and
+VS assembly; it does not migrate every component's build system to Bazel.
 
 The execution environment JSON declares `schema`, `platform`, `worker_image`
 (an immutable Docker image ID), `docker_version`, `storage_driver`, and
 `distribution`. Actions verify the worker marker; Docker actions also verify
 the daemon version. The worker must contain Python 3.13, Docker 28.5.2, pigz,
-GNU tar, squashfs-tools, `j2`, and the native SONiC image tools. The tested
-worker is the pinned SONiC Trixie slave used by the preceding native build.
+GNU tar, squashfs-tools, `j2`, and the native SONiC image tools. Image CI builds
+the checked-in worker recipe; the native Make stage builds its own Trixie slave
+inside that worker's private Docker daemon.
 `run.py` intentionally executes Bazel as UID/GID `1000:1000` in that worker.
 The mounted source trees, output directory (or its parent when creating it), and
 optional repository cache must be accessible and writable by those IDs. A host
@@ -249,65 +215,56 @@ python3 tools/bazel/ci/run.py test --artifacts artifacts/tests
 python3 tools/bazel/ci/run.py build --artifacts artifacts/packages
 ```
 
-`Bazel VS installer (AMD64)` then builds the actual
-`//tools/bazel/image/vs:sonic-vs.bin` target on a fresh hosted Ubuntu runner. It
-downloads the native predecessors and a smaller Trixie execution worker from
-the immutable release descriptor in `tools/bazel/ci/vs_inputs.json`. Every
-archive and extracted file is checked against a committed SHA256. The worker
-archive has its own SHA256 and allowed Docker image identities; the job creates
-the execution-environment input using the verified local identity. The worker
-[recipe](worker/README.md) contains only public execution tools.
+`Bazel VS installer (AMD64)` builds native prerequisites from the checked-out
+sources, then builds `//tools/bazel/image/vs:sonic-vs.bin` with Bazel. It uses a
+disposable self-hosted runner labeled `sonic-vs-source`, because a complete native
+source build needs substantially more disk than standard hosted runners. The
+job requires 300 GiB free after restoring caches. Provision Docker, Git, Python
+3 and passwordless sudo on the runner; 32 GiB RAM is recommended. Native
+preparation uses one package job, two compiler jobs per package and a 16-GiB
+worker limit. The later Bazel worker uses four CPUs, 12 GiB and four jobs.
 
-After verifying the released bundle, the job regenerates the installer inputs
-from the current checkout. Its receipt records both the released and derived
-file hashes. Native host and service predecessors keep their pinned identity.
-The job initializes the recorded component sources, builds SWSS with a reusable
-package cache, and invokes the complete image graph in the isolated privileged
-worker. It resolves the installer and intermediate outputs from that invocation's
+The worker is built from the checked-in public recipe. The controller refuses
+retained target outputs, modified source trees, missing recursive submodules,
+source revisions that differ from their gitlinks, and native receipts from a
+different invocation. It records both the buildimage commit and every native
+component revision. There are no prepared SONiC input release assets.
+
+The job resolves the installer and intermediate outputs from that invocation's
 Bazel event log, checks the ONIE checksum, and streams the complete payload ZIP
 and Docker-store archive to verify CRCs and byte identity with the declared
 SquashFS, store, boot and platform outputs. `sonic-vs.bin`, the matching SWSS
 archive, checksums, input/build/validation receipts, logs and profiles are uploaded
 as `sonic-vs-bazel-amd64` and retained for 14 days. Missing inputs or failed
-validation fail the job.
+validation fail the job. This is offline validation; live Docker execution,
+SquashFS decoding, guest boot and forwarding require separate integration tests.
 
-The hosted job removes unused preinstalled SDKs on its disposable runner and
-requires 50 GiB of free disk after restoring caches and before assembly. Its
-worker is limited to four CPUs and 12 GiB of memory; Bazel uses four jobs and
-a 10,000 MB memory resource budget. Downloaded repositories and source-package
-actions are cached; the multi-gigabyte image outputs are retained as build
-artifacts rather than duplicating them into the limited GitHub Actions cache.
-Verified artifacts are hardlinked into the upload directory when it shares a
-filesystem with the build outputs. After a successful build, verification and
-worker shutdown, the controller removes only that invocation's output directory
-to leave room for cache uploads. Failed runs retain their output directory for
-diagnosis; reusable package and repository caches remain intact.
-The native predecessor release is independent of those disposable caches.
+Repository downloads and Bazel source-package actions may be cached. The job
+keeps full image outputs out of the action cache, hardlinks verified artifacts
+into the upload directory on the same filesystem, and removes only successful
+Bazel invocation scratch after worker shutdown. Failed runs retain scratch for
+diagnosis. Native source-build scratch is confined to the disposable build area;
+it is never published as a reusable input bundle.
 
-The release retains the original native source revision and pre-container
-boundary. It supplies a real host snapshot, frozen native configuration, the
-config-engine base, Scapy wheel and other services; it never supplies a finished
-installer or substitutes a prebuilt SWSS archive for the source-built target.
-Host build metadata therefore identifies the native predecessor revision; the
-CI receipts separately identify the current buildimage checkout and component
-gitlinks. The release removes local build-cache paths and a temporary build CA
-from the retained host inputs. Publish a new audited descriptor when the native
-OS, services or frozen configuration need refreshing.
+Privileged image builds must run on disposable machines appropriate for the
+reviewed code being executed. A private Docker daemon separates build state; it
+is not a security boundary for untrusted PR code. Register ephemeral CI runners
+according to the repository's external-contributor approval policy.
 
 For a local reproduction, use a fresh standalone clone in a dedicated build
-directory, initialize the same five submodules as the workflow, and run:
+directory, initialize its recursive submodules, and run:
 
 ```sh
+git submodule update --init --recursive --jobs 4
 sudo python3 tools/bazel/ci/image.py \
   --workspace "$PWD" --state "$PWD/../vs-ci-state" \
-  --manifest tools/bazel/ci/vs_inputs.json --artifacts "$PWD/artifacts/image"
+  --artifacts "$PWD/artifacts/image"
 ```
 
-The controller owns its dedicated worker lifecycle and restores checkout
-ownership afterward. It does not remove local SDKs. CI performs offline image
-validation; live Docker execution, guest boot and forwarding remain the
-separately documented integration checks. The imported DASH library's missing
-debug symbols remain an explicit package-validation exception.
+The controller owns its dedicated workers and restores checkout ownership
+afterward. It does not remove local SDKs or operate on unrelated Docker workers.
+The imported DASH library's missing debug symbols remain an explicit
+package-validation exception.
 
 ```sh
 bazel test //tools/bazel/image:metadata_test //tools/bazel/image:host_test \
