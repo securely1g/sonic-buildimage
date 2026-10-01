@@ -144,6 +144,8 @@ def inside(args):
                    # Use the upstream public registry; native version control
                    # still applies the recorded Debian image digest.
                    "DEFAULT_CONTAINER_REGISTRY=docker.io",
+                   "MIRROR_URLS=http://deb.debian.org/debian/",
+                   "MIRROR_SECURITY_URLS=http://deb.debian.org/debian-security/",
                    "SONIC_DPKG_CACHE_SOURCE=" + str(state / "native-cache"),
                    "SONIC_DPKG_CACHE_METHOD=none", "SONIC_DPKG_CACHE_METHOD_OVERRIDE=none",
                    "SONIC_CONFIG_USE_DOCKER_CACHE=n", "SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n",

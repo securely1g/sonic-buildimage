@@ -273,6 +273,8 @@ class NativeBuildTest(unittest.TestCase):
             "BAZEL_MIN_READINESS=bazel_disabled", "KERNEL_PROCURE_METHOD=build",
             "ENABLE_DOCKER_BASE_PULL=n", "SONIC_DPKG_CACHE_METHOD=none",
             "DEFAULT_CONTAINER_REGISTRY=docker.io",
+            "MIRROR_URLS=http://deb.debian.org/debian/",
+            "MIRROR_SECURITY_URLS=http://deb.debian.org/debian-security/",
             "SONIC_DPKG_CACHE_SOURCE=" + str(self.args.state / "native-cache"),
             "SONIC_DPKG_CACHE_METHOD_OVERRIDE=none", "SONIC_CONFIG_USE_DOCKER_CACHE=n",
             "SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n", "ENABLE_SBOM=n",
