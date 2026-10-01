@@ -20,6 +20,7 @@ TEST_TARGETS = [
     "//tools/bazel/image:metadata_test",
     "//tools/bazel/image:host_test",
     "//tools/bazel/image:store_test",
+    "//tools/bazel/image:import_store_test",
     "//tools/bazel/image:installer_test",
     "//tools/bazel/image:run_test",
     "//tools/bazel/oci:docker_archive_to_oci_layout_test",
@@ -27,6 +28,9 @@ TEST_TARGETS = [
     "//tools/bazel/tests:make_bridge_test",
     "//tools/bazel/registry:registry_lib_test",
     "//tools/bazel/ci:run_test",
+    "//tools/bazel/ci:image_inputs_test",
+    "//tools/bazel/ci:image_test",
+    "//tools/bazel/ci:verify_image_test",
 ]
 BUILD_TARGETS = {
     "swss.tar": "@sonic_swss//dist:swss_pkg",
