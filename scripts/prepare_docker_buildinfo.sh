@@ -146,10 +146,11 @@ ENV GIT_SSL_CAINFO=/usr/local/share/sonic-build-trust/ca-bundle.pem
 ENV CURL_CA_BUNDLE=/usr/local/share/sonic-build-trust/ca-bundle.pem
 ENV REQUESTS_CA_BUNDLE=/usr/local/share/sonic-build-trust/ca-bundle.pem
 ENV PIP_CERT=/usr/local/share/sonic-build-trust/ca-bundle.pem
+ENV WGETRC=/usr/local/share/sonic-build-trust/wgetrc
 RUN mkdir -p /etc/apt/apt.conf.d && \\
     printf '%s\\n' 'Acquire::https::CaInfo "/usr/local/share/sonic-build-trust/ca-bundle.pem";' > /etc/apt/apt.conf.d/99sonic-native-build-ca && \\
     printf '%s\\n' '[http]' '    sslCAInfo = /usr/local/share/sonic-build-trust/ca-bundle.pem' >> /etc/gitconfig && \\
-    printf '%s\\n' 'ca_certificate = /usr/local/share/sonic-build-trust/ca-bundle.pem' 'check_certificate = on' >> /etc/wgetrc
+    printf '%s\\n' 'ca_certificate = /usr/local/share/sonic-build-trust/ca-bundle.pem' 'check_certificate = on' > /usr/local/share/sonic-build-trust/wgetrc
 # SONIC native execution trust END
 EOF
     awk -v trustfile="$TRUST_BLOCK_FILE" '
