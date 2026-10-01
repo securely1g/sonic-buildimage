@@ -4,6 +4,7 @@
 import argparse
 from contextlib import ExitStack, redirect_stdout
 import copy
+import errno
 import hashlib
 import io
 import json
@@ -40,7 +41,7 @@ class NativeBuildTest(unittest.TestCase):
         self.info = {
             "Id": self.container,
             "Config": {"Image": self.image, "Labels": {native_build.LABEL: self.args.invocation}},
-            "HostConfig": {"Privileged": True},
+            "HostConfig": {"Privileged": True, "CgroupnsMode": "private"},
             "Mounts": [{"Type": "bind", "Source": str(self.root), "Destination": str(self.root), "RW": True}],
             "State": {"Running": False, "ExitCode": 0},
         }
@@ -111,6 +112,7 @@ class NativeBuildTest(unittest.TestCase):
             lambda info: info["Config"]["Labels"].update({native_build.LABEL: "foreign"}),
             lambda info: info["Config"].update(Image="sha256:" + "e" * 64),
             lambda info: info["HostConfig"].update(Privileged=False),
+            lambda info: info["HostConfig"].update(CgroupnsMode="host"),
             lambda info: info["Mounts"][0].update(Source="/"),
             lambda info: info["Mounts"][0].update(Destination="/other-build"),
             lambda info: info["Mounts"][0].update(RW=False),
@@ -165,6 +167,7 @@ class NativeBuildTest(unittest.TestCase):
         self.assertEqual(create[create.index("--mount") + 1], "type=bind,src=" + str(self.root) + ",dst=" + str(self.root))
         self.assertEqual(create.count("--mount"), 1)
         self.assertIn(self.image, create)
+        self.assertIn("--cgroupns=private", create)
         self.assertIn("SONIC_NATIVE_CI_INVOCATION=" + self.args.invocation, create)
         self.assertFalse(any("docker.sock" in item or item in ("-v", "--volume", "--network=host", "--pid=host") for item in create))
         self.assertEqual([argv for argv, _ in self.commands], [
@@ -216,7 +219,7 @@ class NativeBuildTest(unittest.TestCase):
         self.assertNotIn("worker_removed", receipt)
 
     def run_inside(self, *, fail_stage=None, daemon_exit=None, wait_timeout=False, extra_env=None,
-                   trust_bundle=None):
+                   trust_bundle=None, preflight_failure=None):
         self.args.state.mkdir()
         self.args.artifacts.mkdir(parents=True)
         fake_root = self.root / "worker-root"
@@ -255,13 +258,16 @@ class NativeBuildTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(native_build.os, "geteuid", return_value=0))
             stack.enter_context(mock.patch.object(native_build.os, "chown"))
             stack.enter_context(mock.patch.object(native_build, "Path", side_effect=worker_path))
+            stack.enter_context(mock.patch.object(native_build, "prepare_cgroups", return_value={"version": 2}))
+            self.preflight = stack.enter_context(mock.patch.object(
+                native_build, "daemon_preflight", side_effect=preflight_failure))
             stack.enter_context(mock.patch.object(native_build.pwd, "getpwuid", return_value=SimpleNamespace(pw_name=native_build.USER)))
             popen = stack.enter_context(mock.patch.object(native_build.subprocess, "Popen", return_value=daemon))
             probe = stack.enter_context(mock.patch.object(native_build.subprocess, "run", return_value=SimpleNamespace(returncode=0)))
             stack.enter_context(mock.patch.object(native_build, "capture", return_value="1704067200"))
             stack.enter_context(mock.patch.object(native_build, "command", side_effect=command))
             stack.enter_context(redirect_stdout(io.StringIO()))
-            if fail_stage:
+            if fail_stage or preflight_failure:
                 with self.assertRaises(subprocess.CalledProcessError):
                     native_build.inside(self.args)
             elif daemon_exit is not None:
@@ -276,6 +282,8 @@ class NativeBuildTest(unittest.TestCase):
         socket = "unix://" + str(fake_root / "run/sonic-native-ci/docker.sock")
         self.assertIn("--host=" + socket, popen.call_args.args[0])
         self.assertIn("--data-root=" + str(self.args.state / "docker-data"), popen.call_args.args[0])
+        self.assertIn("--exec-opt=native.cgroupdriver=cgroupfs", popen.call_args.args[0])
+        self.preflight.assert_called_once_with(self.args, probe.call_args.kwargs["env"])
         self.assertEqual(probe.call_args.kwargs["env"]["DOCKER_HOST"], socket)
         self.assertEqual([argv[-1] for argv, _ in self.make_calls], ["init", "configure", "bazel-vs-native-inputs"])
         flags = {
@@ -362,7 +370,151 @@ class NativeBuildTest(unittest.TestCase):
         daemon, _, probe, _ = self.run_inside(daemon_exit=1)
         self.assertEqual(self.make_calls, [])
         probe.assert_not_called()
+        self.preflight.assert_not_called()
         daemon.terminate.assert_called_once_with()
+
+    def test_preflight_failure_stops_daemon_before_any_source_configuration(self):
+        failure = subprocess.CalledProcessError(125, ["docker", "run"])
+        daemon, _, _, _ = self.run_inside(preflight_failure=failure)
+        self.assertEqual(self.make_calls, [])
+        self.assertFalse((self.workspace / "rules/config.user").exists())
+        daemon.terminate.assert_called_once_with()
+        daemon.wait.assert_called_once_with(timeout=30)
+
+    def exercise_preflight(self, fail_at=None):
+        self.args.state.mkdir()
+        self.args.artifacts.mkdir(parents=True)
+        calls = []
+
+        def command(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if argv[0] == "ldd":
+                return SimpleNamespace(stdout="libc.so.6 => /lib/libc.so.6 (0x1)\n/lib64/ld.so (0x2)\n")
+            if len(calls) - 1 == fail_at:
+                raise subprocess.CalledProcessError(1, argv)
+            if "run" in argv:
+                (self.args.state / "docker-preflight/scratch/result").write_text("native-preflight-ok\n")
+            return SimpleNamespace(stdout="")
+
+        with mock.patch.object(native_build, "command", side_effect=command), \
+                mock.patch.object(native_build.os, "chown"), \
+                mock.patch.object(native_build.shutil, "copy2"), \
+                mock.patch.object(Path, "is_file", return_value=True):
+            if fail_at:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    native_build.daemon_preflight(self.args, {"DOCKER_HOST": "unix:///private/docker.sock"})
+            else:
+                native_build.daemon_preflight(self.args, {"DOCKER_HOST": "unix:///private/docker.sock"})
+        return calls
+
+    def test_preflight_uses_nonroot_private_daemon_and_actual_slave_limits(self):
+        calls = self.exercise_preflight()
+        docker = [argv for argv, _ in calls[1:]]
+        for argv, kwargs in calls[1:]:
+            self.assertEqual(argv[:6], ["runuser", "--preserve-environment", "--user", "sonicnative", "--", "docker"])
+            self.assertEqual(kwargs["env"], {"DOCKER_HOST": "unix:///private/docker.sock"})
+            self.assertLessEqual(kwargs["timeout"], 180)
+        self.assertEqual(docker[0][-2:], ["buildx", "version"])
+        self.assertIn("--load", docker[1])
+        self.assertIn("--network=none", docker[1])
+        context = self.args.state / "docker-preflight"
+        self.assertEqual((context / "Dockerfile").read_text(),
+                         'FROM scratch\nCOPY rootfs/ /\nRUN ["/bin/busybox", "true"]\n')
+        nested = docker[2]
+        for flag in ("--privileged", "--init", "--memory=14g", "--memory-swap=14g", "nofile=524288:524288"):
+            self.assertIn(flag, nested)
+        self.assertEqual(nested[nested.index("--mount") + 1],
+                         "type=bind,src=" + str(context / "scratch") + ",dst=/probe")
+        self.assertEqual(docker[-1][-3:], ["image", "rm", "sonic-native-preflight:" + self.args.invocation])
+        receipt = json.loads((self.args.artifacts / "docker-preflight.json").read_text())
+        self.assertEqual(receipt["status"], "passed")
+        self.assertTrue(receipt["buildkit_run"] and receipt["writable_bind"])
+
+    def test_missing_buildx_fails_without_build_or_nested_run(self):
+        calls = self.exercise_preflight(fail_at=1)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse((self.args.artifacts / "docker-preflight.json").exists())
+
+    def test_buildkit_execution_failure_cannot_reach_nested_run(self):
+        calls = self.exercise_preflight(fail_at=2)
+        self.assertEqual(len(calls), 3)
+        self.assertFalse((self.args.artifacts / "docker-preflight.json").exists())
+
+    def test_nested_cgroup_failure_cannot_publish_preflight_success(self):
+        calls = self.exercise_preflight(fail_at=3)
+        self.assertEqual(len(calls), 4)
+        self.assertFalse((self.args.artifacts / "docker-preflight.json").exists())
+
+
+class CgroupDelegationTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.cgroup = self.root / "sys/fs/cgroup"
+        self.cgroup.mkdir(parents=True)
+        (self.root / "proc/self").mkdir(parents=True)
+        (self.root / "proc/self/cgroup").write_text("0::/\n")
+        for name, content in {"cgroup.type": "domain\n", "cgroup.controllers": "cpu memory pids\n",
+                              "cgroup.procs": "1\n7\n", "cgroup.subtree_control": ""}.items():
+            (self.cgroup / name).write_text(content)
+
+    def prepare(self, *, busy=0):
+        original_write = Path.write_text
+        events = []
+
+        def write(path, data, *args, **kwargs):
+            nonlocal busy
+            events.append((path.name, data))
+            if path.name == "cgroup.subtree_control" and busy:
+                busy -= 1
+                raise OSError(errno.EBUSY, "fixture root process race")
+            return original_write(path, data, *args, **kwargs)
+
+        with mock.patch.object(native_build, "Path", side_effect=lambda name: self.root / str(name).lstrip("/")), \
+                mock.patch.object(Path, "write_text", new=write), \
+                mock.patch.object(native_build.time, "sleep"):
+            result = native_build.prepare_cgroups()
+        return result, events
+
+    def test_processes_move_to_leaf_before_domain_controllers_are_enabled(self):
+        result, events = self.prepare()
+        self.assertEqual(events, [("cgroup.procs", "1"), ("cgroup.procs", "7"),
+                                  ("cgroup.subtree_control", "+cpu +memory +pids")])
+        self.assertEqual(result, {"version": 2, "controllers": ["cpu", "memory", "pids"],
+                                  "process_leaf": "sonic-native-init"})
+
+    def test_shared_or_already_threaded_cgroup_is_rejected_before_writes(self):
+        for file, content in (("proc/self/cgroup", "0::/host.slice\n"),
+                              ("sys/fs/cgroup/cgroup.type", "domain threaded\n")):
+            path = self.root / file
+            original = path.read_text()
+            path.write_text(content)
+            with self.subTest(file=file), self.assertRaisesRegex(ValueError, "fresh private domain"):
+                self.prepare()
+            self.assertFalse((self.cgroup / "sonic-native-init").exists())
+            path.write_text(original)
+
+    def test_missing_memory_delegation_is_rejected_before_writes(self):
+        (self.cgroup / "cgroup.controllers").write_text("cpu pids\n")
+        with self.assertRaisesRegex(ValueError, "lacks delegated"):
+            self.prepare()
+        self.assertFalse((self.cgroup / "sonic-native-init").exists())
+
+    def test_transient_process_race_retries_but_persistent_busy_is_bounded(self):
+        _, events = self.prepare(busy=1)
+        self.assertEqual(sum(name == "cgroup.subtree_control" for name, _ in events), 2)
+
+    def test_persistent_root_process_race_fails_after_five_attempts(self):
+        with self.assertRaises(OSError) as raised:
+            self.prepare(busy=5)
+        self.assertEqual(raised.exception.errno, errno.EBUSY)
+
+    def test_v1_hierarchy_is_left_unchanged(self):
+        (self.cgroup / "cgroup.controllers").unlink()
+        result, events = self.prepare()
+        self.assertEqual(result, {"version": 1})
+        self.assertEqual(events, [])
 
 
 if __name__ == "__main__":
