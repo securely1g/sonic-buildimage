@@ -69,6 +69,19 @@ class WorkerTest(unittest.TestCase):
         self.assertNotIn('--batch', plan['bazel_command'])
         self.assertEqual(image_run.validate_worker(self.worker(plan), plan), 'b' * 64)
 
+    def test_trust_comes_from_declared_worker_not_ambient_host_mount(self):
+        plan = self.plan()
+        self.assertEqual(plan['mounts'], [
+            (str(self.root), str(self.root), True),
+            (str(self.spec), '/run/sonic-image-worker.json', False),
+        ])
+        worker = self.worker(plan)
+        worker['Mounts'].append({'Type': 'bind', 'Source': '/etc/ssl/certs',
+                                 'Destination': '/etc/ssl/certs', 'RW': False,
+                                 'Propagation': 'rprivate'})
+        with self.assertRaisesRegex(ValueError, 'bind mounts'):
+            image_run.validate_worker(worker, plan)
+
     def test_explicit_default_resources_preserve_existing_worker_identity(self):
         original = self.plan()
         self.args.worker_cpus, self.args.worker_memory_gib = 8, 24

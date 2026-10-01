@@ -219,6 +219,18 @@ class EnvironmentCaptureTest(unittest.TestCase):
         self.assertEqual({'SECURE_UPGRADE_MODE': 'no_sign'}, self.producer.capture_environment(
             self.root, {name: 'host' for name in names}))
 
+    def test_execution_trust_selectors_never_become_installer_or_service_inputs(self):
+        names = ('SONIC_BUILD_SLAVE_CA_BUNDLE', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+                 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'PIP_CERT',
+                 'GIT_SSL_CAINFO', 'GIT_SSL_CAPATH', 'WGETRC')
+        (self.templates / 'trust.j2').write_text(
+            '\n'.join('{{ ' + name + ' }}' for name in names), encoding='utf-8',
+        )
+        environment = {name: '/execution-only/ca-bundle.pem' for name in names}
+        environment['CHANGE_DEFAULT_PASSWORD'] = 'y'
+        self.assertEqual({'SECURE_UPGRADE_MODE': 'no_sign', 'CHANGE_DEFAULT_PASSWORD': 'y'},
+                         self.producer.capture_environment(self.root, environment))
+
     def test_capture_keeps_values_literal(self):
         marker = self.root / 'must-not-exist'
         literal = '$(touch ' + str(marker) + '); `echo executable`; "quoted"\nsecond line'

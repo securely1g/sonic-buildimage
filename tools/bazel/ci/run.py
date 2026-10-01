@@ -30,8 +30,10 @@ TEST_TARGETS = [
     "//tools/bazel/ci:run_test",
     "//tools/bazel/ci:image_inputs_test",
     "//tools/bazel/ci:native_build_test",
+    "//tools/bazel/ci:trust_test",
     "//tools/bazel/image/native:producer_test",
     "//tools/bazel/image/native:handoff_test",
+    "//tools/bazel/image/native:ca_hook_test",
     "//tools/bazel/ci:image_test",
     "//tools/bazel/ci:verify_image_test",
 ]

@@ -1,6 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
+# The CI controller stages these explicitly. Keep direct recipe builds working
+# with the public helper and no additional CA trust by default.
+if [[ -f ../../ci/trust.py ]]; then
+  cp ../../ci/trust.py install-trust.py
+elif [[ ! -f install-trust.py ]]; then
+  echo 'The isolated worker context is missing install-trust.py' >&2
+  exit 1
+fi
+if [[ ! -e build-ca-bundle.pem ]]; then
+  : > build-ca-bundle.pem
+fi
+if [[ -s build-ca-bundle.pem ]]; then
+  python3 install-trust.py --validate --bundle build-ca-bundle.pem
+fi
 curl --fail --location --retry 3 \
   https://releases.bazel.build/8.5.1/release/bazel-8.5.1-linux-x86_64 -o bazel
 curl --fail --location --retry 3 \

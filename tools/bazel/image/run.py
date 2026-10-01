@@ -140,7 +140,6 @@ def build_plan(args):
         "--user", "0:0", "--ulimit", "nofile=524288:524288",
         "--mount", "type=bind,source=" + str(root) + ",target=" + str(root),
         "--mount", "type=bind,source=" + str(worker_spec) + ",target=/run/sonic-image-worker.json,readonly",
-        "--mount", "type=bind,source=/etc/ssl/certs,target=/etc/ssl/certs,readonly",
     ]
     cache_arg = []
     cache = None
@@ -194,8 +193,7 @@ def build_plan(args):
         identity["bazel_sha256"] = hashlib.sha256(bazel.read_bytes()).hexdigest()
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     mounts = [(str(root), str(root), True),
-              (str(worker_spec), "/run/sonic-image-worker.json", False),
-              ("/etc/ssl/certs", "/etc/ssl/certs", False)]
+              (str(worker_spec), "/run/sonic-image-worker.json", False)]
     if cache:
         mounts.append((str(cache), "/repository-cache", True))
     common = docker[3:]

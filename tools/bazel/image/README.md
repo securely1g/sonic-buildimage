@@ -263,6 +263,16 @@ sudo python3 tools/bazel/ci/image.py \
   --artifacts "$PWD/artifacts/image"
 ```
 
+On networks requiring an additional certificate issuer, append
+`--ca-bundle /absolute/path/to/issuer-certificates.pem`. The controller validates
+certificate-only PEM, records its SHA256 and certificate count, and builds it
+into the execution worker's system and Bazel Java trust stores. The native
+slave receives the combined trust bundle only in its generated build context;
+its Dockerfile includes the bundle digest so a trust change invalidates that
+worker image. Certificate bytes are excluded from published evidence and the
+SONiC host/service inputs. Without this option, workers use their packaged trust
+stores. The launcher does not mount the host's certificate directories.
+
 The controller owns its dedicated workers and restores checkout ownership
 afterward. It does not remove local SDKs or operate on unrelated Docker workers.
 The source-built DASH library and Python extension require matching debug

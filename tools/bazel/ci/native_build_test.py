@@ -4,6 +4,7 @@
 import argparse
 from contextlib import ExitStack, redirect_stdout
 import copy
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -214,12 +215,21 @@ class NativeBuildTest(unittest.TestCase):
         self.assertIn("fixture remove failed", receipt["worker_cleanup_error"])
         self.assertNotIn("worker_removed", receipt)
 
-    def run_inside(self, *, fail_stage=None, daemon_exit=None, wait_timeout=False, extra_env=None):
+    def run_inside(self, *, fail_stage=None, daemon_exit=None, wait_timeout=False, extra_env=None,
+                   trust_bundle=None):
         self.args.state.mkdir()
         self.args.artifacts.mkdir(parents=True)
         fake_root = self.root / "worker-root"
         (fake_root / "etc/sudoers.d").mkdir(parents=True)
         (fake_root / ".dockerenv").touch()
+        if trust_bundle is not None:
+            trust = fake_root / "usr/local/share/sonic-build-trust"
+            trust.mkdir(parents=True)
+            (trust / "ca-bundle.pem").write_bytes(trust_bundle)
+            (trust / "receipt.json").write_text(json.dumps({
+                "enabled": True, "sha256": "e" * 64, "certificate_count": 1,
+                "installed_bundle_sha256": hashlib.sha256(trust_bundle).hexdigest(),
+            }))
         self.make_calls = []
         daemon = mock.Mock()
         daemon.poll.return_value = daemon_exit
@@ -280,6 +290,7 @@ class NativeBuildTest(unittest.TestCase):
             "SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n", "ENABLE_SBOM=n",
             "ENABLE_IMAGE_SIGNATURE=n", "SONIC_BUILD_JOBS=1",
             "SOURCE_DATE_EPOCH=1704067200", "BUILD_TIMESTAMP=20240101.000000", "BUILD_NUMBER=0",
+            "SONIC_BUILD_SLAVE_CA_BUNDLE=",
         }
         for argv, kwargs in self.make_calls:
             self.assertEqual(argv[:8], ["runuser", "--preserve-environment", "--user", native_build.USER, "--", "make", "-f", "Makefile.work"])
@@ -301,11 +312,43 @@ class NativeBuildTest(unittest.TestCase):
                    "DOCKER_CONFIG": "/foreign/config", "DOCKER_TLS_VERIFY": "1",
                    "DOCKER_CERT_PATH": "/foreign/certs", "DOCKER_API_VERSION": "1.12",
                    "DOCKER_DEFAULT_PLATFORM": "linux/arm64"}
+        foreign.update({key: "/foreign/certs" for key in (
+            "SONIC_BUILD_SLAVE_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR",
+            "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "CURL_CA_BUNDLE",
+            "REQUESTS_CA_BUNDLE", "PIP_CERT", "WGETRC")})
         _, _, probe, _ = self.run_inside(extra_env=foreign)
         for environment in [probe.call_args.kwargs["env"], *[kwargs["env"] for _, kwargs in self.make_calls]]:
             self.assertTrue(environment["DOCKER_HOST"].startswith("unix://"))
             for key in foreign.keys() - {"DOCKER_HOST"}:
                 self.assertNotIn(key, environment)
+
+    def test_declared_worker_trust_is_forwarded_only_to_slave_option(self):
+        bundle = b"fixture combined trust bytes"
+        _, _, _, fake_root = self.run_inside(trust_bundle=bundle)
+        bundle_path = fake_root / "usr/local/share/sonic-build-trust/ca-bundle.pem"
+        for argv, _ in self.make_calls:
+            self.assertIn("SONIC_BUILD_SLAVE_CA_BUNDLE=" + str(bundle_path), argv)
+            self.assertNotIn(bundle.decode(), " ".join(argv))
+        receipt = json.loads((self.args.artifacts / "execution-trust.json").read_text())
+        self.assertEqual(receipt["installed_bundle_sha256"], hashlib.sha256(bundle).hexdigest())
+        self.assertNotIn(bundle.decode(), json.dumps(receipt))
+
+    def test_worker_trust_rejects_unrecorded_or_modified_bundle(self):
+        trust = self.root / "trust"
+        trust.mkdir()
+        bundle, receipt = trust / "ca-bundle.pem", trust / "receipt.json"
+        bundle.write_bytes(b"unexpected trust")
+        with mock.patch.object(native_build, "Path", return_value=trust):
+            with self.assertRaisesRegex(ValueError, "no receipt"):
+                native_build.execution_trust()
+            receipt.write_text(json.dumps({"enabled": False}))
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                native_build.execution_trust()
+            receipt.write_text(json.dumps({"enabled": True, "sha256": "a" * 64,
+                                          "installed_bundle_sha256": "b" * 64,
+                                          "certificate_count": 1}))
+            with self.assertRaisesRegex(ValueError, "differs"):
+                native_build.execution_trust()
 
     def test_failed_make_stops_private_daemon_and_does_not_start_later_stages(self):
         daemon, popen, _, _ = self.run_inside(fail_stage="configure", wait_timeout=True)

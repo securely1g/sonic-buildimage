@@ -29,3 +29,13 @@ py_test(
     srcs = ["handoff_test.py"] + _PRODUCER_SOURCES,
     imports = ["."],
 )
+
+py_test(
+    name = "ca_hook_test",
+    srcs = ["ca_hook_test.py"],
+    data = [
+        "//:scripts/prepare_docker_buildinfo.sh",
+        "//tools/bazel/ci:trust.py",
+        "//tools/bazel/ci:trust_test.py",
+    ],
+)

@@ -23,6 +23,7 @@ import urllib.parse
 import uuid
 
 import image_inputs
+import trust
 
 
 IMAGE = "//tools/bazel/image/vs:sonic-vs.bin"
@@ -116,7 +117,7 @@ def capture(command, workspace, artifacts, receipt, name):
         record["wall_seconds"] = time.monotonic() - started
 
 
-def build_worker(workspace, state, artifacts, receipt, invocation):
+def build_worker(workspace, state, artifacts, receipt, invocation, ca_bundle=None):
     """Build the public execution recipe locally; never load a saved worker."""
     context = state / ("worker-" + invocation)
     context.mkdir()
@@ -125,6 +126,10 @@ def build_worker(workspace, state, artifacts, receipt, invocation):
     for name in sources:
         shutil.copyfile(recipe / name, context / name)
     receipt["worker_recipe"] = {name: image_inputs.sha256(recipe / name) for name in sources}
+    installer = workspace / "tools/bazel/ci/trust.py"
+    shutil.copyfile(installer, context / "install-trust.py")
+    receipt["worker_recipe"]["install-trust.py"] = image_inputs.sha256(installer)
+    receipt["execution_trust"] = trust.stage_bundle(ca_bundle, context / "build-ca-bundle.pem")
     execute(["bash", str(context / "prepare-worker-inputs.sh")], workspace, artifacts, receipt, "worker-inputs")
     execute(["docker", "build", "--platform", "linux/amd64", "--iidfile", str(context / "image.id"),
              str(context)], workspace, artifacts, receipt, "worker-build")
@@ -306,7 +311,8 @@ def build(args):
             ownership_changed = True
             for path in (workspace, state):
                 chown_tree(path, 1000, 1000)
-        spec = build_worker(workspace, state, artifacts, receipt, invocation)
+        spec = build_worker(workspace, state, artifacts, receipt, invocation,
+                            getattr(args, "ca_bundle", None))
         native_receipt = artifacts / "native-receipt.json"
         execute([sys.executable, str(workspace / "tools/bazel/ci/native_build.py"),
                  "--workspace", str(workspace), "--state", str(state / ("native-" + invocation)),
@@ -414,6 +420,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("workspace", "state", "artifacts"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--ca-bundle", type=Path,
+                        help="optional PEM certificate bundle for execution workers only")
     args = parser.parse_args(argv)
 
     def interrupted(signum, _frame):

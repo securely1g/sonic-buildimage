@@ -214,6 +214,9 @@ class ImageControllerTest(unittest.TestCase):
         recipe.mkdir(parents=True)
         for name in ("Dockerfile", ".dockerignore", "prepare-worker-inputs.sh"):
             (recipe / name).write_text("fixture " + name)
+        installer = self.workspace / "tools/bazel/ci/trust.py"
+        installer.parent.mkdir(parents=True)
+        installer.write_text("fixture trust installer")
         self.state.mkdir()
         self.artifacts.mkdir(parents=True)
         worker_id = "sha256:" + "c" * 64
@@ -234,6 +237,9 @@ class ImageControllerTest(unittest.TestCase):
                     spec = image.build_worker(self.workspace, self.state, self.artifacts, receipt, invocation)
                     self.assertEqual(json.loads(spec.read_text())["worker_image"], worker_id)
                     self.assertEqual(receipt["bazel_version"], "8.5.1")
+                    self.assertFalse(receipt["execution_trust"]["enabled"])
+                    self.assertEqual((spec.parent / "build-ca-bundle.pem").read_bytes(), b"")
+                    self.assertEqual((spec.parent / "install-trust.py").read_text(), installer.read_text())
         self.assertEqual(commands[0][0], "bash")
         self.assertEqual(commands[1][:2], ["docker", "build"])
         self.assertFalse(any("load" in command for command in commands))

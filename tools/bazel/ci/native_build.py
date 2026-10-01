@@ -10,6 +10,7 @@ builds orchagent and the final installer after this helper returns.
 import argparse
 import datetime
 import grp
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -85,10 +86,35 @@ def native_environment(socket):
     env = {key: value for key, value in os.environ.items() if key not in {
         "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_CONFIG",
         "DOCKER_API_VERSION", "DOCKER_DEFAULT_PLATFORM",
+        "SONIC_BUILD_SLAVE_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "CURL_CA_BUNDLE",
+        "REQUESTS_CA_BUNDLE", "PIP_CERT", "WGETRC",
     }}
     env.update(DOCKER_HOST="unix://" + str(socket), USER=USER, LOGNAME=USER,
                HOME="/home/" + USER, LC_ALL="C.UTF-8")
     return env
+
+
+def execution_trust():
+    """Trust is part of the declared worker image, never inherited from its host."""
+    root = Path("/usr/local/share/sonic-build-trust")
+    bundle, record = root / "ca-bundle.pem", root / "receipt.json"
+    if not record.exists():
+        require(not bundle.exists(), "execution trust bundle has no receipt")
+        return {"enabled": False}, None
+    metadata = json.loads(record.read_text())
+    require(type(metadata.get("enabled")) is bool, "invalid execution trust receipt")
+    if not metadata["enabled"]:
+        require(not bundle.exists(), "disabled execution trust contains a bundle")
+        return {"enabled": False}, None
+    for key in ("sha256", "installed_bundle_sha256"):
+        require(re.fullmatch(r"[0-9a-f]{64}", metadata.get(key, "")), "invalid execution trust digest")
+    count = metadata.get("certificate_count")
+    require(type(count) is int and count > 0, "invalid execution trust certificate count")
+    require(bundle.is_file() and hashlib.sha256(bundle.read_bytes()).hexdigest() ==
+            metadata["installed_bundle_sha256"], "execution trust bundle differs from worker receipt")
+    return {key: metadata[key] for key in
+            ("enabled", "sha256", "installed_bundle_sha256", "certificate_count")}, bundle
 
 
 def inside(args):
@@ -120,6 +146,8 @@ def inside(args):
         "--storage-driver=overlay2"], stdout=docker_log, stderr=subprocess.STDOUT)
     env = native_environment(socket)
     try:
+        trust_metadata, ca_bundle = execution_trust()
+        (args.artifacts / "execution-trust.json").write_text(json.dumps(trust_metadata, indent=2) + "\n")
         for _ in range(90):
             if daemon.poll() is not None:
                 raise RuntimeError("private native Docker daemon exited during startup")
@@ -152,6 +180,7 @@ def inside(args):
                    "SONIC_BUILD_JOBS=1", "SONIC_BUILD_MEMORY=14g", "SONIC_BUILD_MEMORY_SWAP=14g",
                    "KERNEL_PROCURE_METHOD=build", "ENABLE_SBOM=n", "ENABLE_IMAGE_SIGNATURE=n",
                    "BUILD_NUMBER=0", "BUILD_TIMESTAMP=" + timestamp, "SOURCE_DATE_EPOCH=" + epoch]
+        options.append("SONIC_BUILD_SLAVE_CA_BUNDLE=" + (str(ca_bundle) if ca_bundle else ""))
         for stage in ("init", "configure", "bazel-vs-native-inputs"):
             argv = ["runuser", "--preserve-environment", "--user", USER, "--",
                     "make", "-f", "Makefile.work", *options,
@@ -196,6 +225,9 @@ def build(args):
         receipt["container"] = container
         assert_owned(container, args.invocation, spec["worker_image"], root)
         command(["docker", "start", "--attach", container])
+        trust_receipt = artifacts / "execution-trust.json"
+        if trust_receipt.is_file():
+            receipt["execution_trust"] = json.loads(trust_receipt.read_text())
         info = assert_owned(container, args.invocation, spec["worker_image"], root)
         require(not info["State"]["Running"] and info["State"]["ExitCode"] == 0,
                 "native worker did not complete successfully")
