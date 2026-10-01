@@ -131,8 +131,9 @@ def verify_packages(paths):
         for name in ("rdeps.tar", "debug-symbols.tar"):
             with tarfile.open(paths[name]) as archive:
                 archive.extractall(extracted, filter="data")
-        pairs, gaps = contract.elf_debug(extracted, combined, {"usr/lib/libdashapi.so"})
-    contract.require(set(programs) <= {pair["path"] for pair in pairs}, "incomplete SWSS debug coverage")
+        pairs, gaps = contract.elf_debug(extracted, combined, set())
+    required_debug = set(programs) | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so"}
+    contract.require(required_debug <= {pair["path"] for pair in pairs}, "incomplete SWSS/DASH debug coverage")
     configuration = contract.payload(paths["config.tar"])
     contract.require(configuration.get("usr/bin/docker-init.sh", {}).get("mode") == 0o755,
                      "missing executable rendered SWSS entrypoint")
