@@ -83,7 +83,7 @@ rm -rf -- "$SLAVE_TRUST_CERTIFICATES"
 SLAVE_TRUST_SHA256=
 if [[ "$BUILD_SLAVE" == y && "$IMAGENAME" == sonic-slave-* && -n "${SONIC_BUILD_SLAVE_CA_BUNDLE:-}" ]]; then
     python3 tools/bazel/ci/trust.py stage --source "$SONIC_BUILD_SLAVE_CA_BUNDLE" \
-        --output "$SLAVE_TRUST_FILE" --certificates-output "$SLAVE_TRUST_CERTIFICATES" || exit 1
+        --output "$SLAVE_TRUST_FILE" --certificates-output "$SLAVE_TRUST_CERTIFICATES" > /dev/null || exit 1
     SLAVE_TRUST_SHA256=$(sha256sum "$SLAVE_TRUST_FILE" | cut -d' ' -f1)
 fi
 
