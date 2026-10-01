@@ -121,6 +121,9 @@ class NativeTrustHookTest(unittest.TestCase):
         for name in ('SSL_CERT_FILE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE',
                      'REQUESTS_CA_BUNDLE', 'PIP_CERT'):
             self.assertIn('ENV ' + name + '=' + TRUST_PATH, content)
+        self.assertIn('ENV WGETRC=/usr/local/share/sonic-build-trust/wgetrc', content)
+        self.assertIn('> /usr/local/share/sonic-build-trust/wgetrc', content)
+        self.assertNotIn('/etc/wgetrc', content)
         self.assertIn('Acquire::https::CaInfo "' + TRUST_PATH + '";', content)
         self.assertIn('check_certificate = on', content)
         self.assertIn("printf '%s\\n'", content)
