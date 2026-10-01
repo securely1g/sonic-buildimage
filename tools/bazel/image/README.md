@@ -224,6 +224,10 @@ sources. It checks the 30-program install contract, root ownership, ELF
 architecture, build IDs, DWARF and debuglink checksums, and uploads packages and
 build evidence.
 
+Hosted jobs install `zstd` before setup-bazel so cache archives use multithreaded
+`zstdmt`. Compression is part of the cache version, so the first run safely misses
+older gzip caches and populates Zstandard caches for later runs.
+
 The CI commands can also run from an initialized checkout in the same execution
 environment:
 
