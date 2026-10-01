@@ -23,6 +23,7 @@ import urllib.parse
 import uuid
 
 import image_inputs
+import source_workspace
 import trust
 
 
@@ -283,6 +284,7 @@ def build(args):
     started = time.monotonic()
     invocation = uuid.uuid4().hex[:16]
     output_root = state / ("output-" + invocation)
+    bazel_workspace = state / ("bazel-source-" + invocation)
     worker_name = "sonic-vs-ci-" + invocation
     launcher, worker_attempted, ownership_changed = None, False, False
     output_identity = None
@@ -291,7 +293,8 @@ def build(args):
                "worker": worker_name, "output_user_root": str(output_root),
                "output_cleanup": {"path": str(output_root), "status": "not_created"},
                "cache_policy": "Package disk cache and repository cache persist; full image disk cache disabled.",
-               "scope": "Native prerequisites built from this checkout, then Bazel SWSS and VS image assembly; "
+               "scope": "Native prerequisites built from this checkout, then Bazel SWSS and VS image assembly "
+                        "from a separate pristine checkout of the same recorded revisions; "
                         "installer byte-chain verification. No boot or forwarding test."}
     try:
         require(not artifacts.is_relative_to(output_root), "artifacts cannot be inside the invocation output root")
@@ -307,6 +310,17 @@ def build(args):
         receipt["output_cleanup"]["status"] = "retained"
         for path in (state / "repository-cache", state / "package-cache"):
             path.mkdir(parents=True, exist_ok=True)
+        # Native package recipes legitimately create or rewrite source files.
+        # Freeze independent Git checkouts before Make starts; never pass its
+        # working directories or ignored build products to Bazel.
+        clone_started = time.monotonic()
+        source_record = source_workspace.clone(workspace, bazel_workspace, source)
+        source_record["wall_seconds"] = time.monotonic() - clone_started
+        (artifacts / "bazel-source-receipt.json").write_text(
+            json.dumps(source_record, indent=2, sort_keys=True) + "\n")
+        receipt["bazel_source"] = {"workspace": str(bazel_workspace),
+                                  "receipt": "bazel-source-receipt.json",
+                                  "clone_seconds": source_record["wall_seconds"]}
         if os.geteuid() == 0:
             ownership_changed = True
             for path in (workspace, state):
@@ -314,25 +328,41 @@ def build(args):
         spec = build_worker(workspace, state, artifacts, receipt, invocation,
                             getattr(args, "ca_bundle", None))
         native_receipt = artifacts / "native-receipt.json"
-        execute([sys.executable, str(workspace / "tools/bazel/ci/native_build.py"),
-                 "--workspace", str(workspace), "--state", str(state / ("native-" + invocation)),
-                 "--artifacts", str(artifacts / "native"), "--worker-spec", str(spec),
-                 "--source-commit", source["source_commit"], "--invocation", invocation,
-                 "--output", str(native_receipt)], workspace, artifacts, receipt, "native-build")
+        native_passed = False
+        try:
+            execute([sys.executable, str(workspace / "tools/bazel/ci/native_build.py"),
+                     "--workspace", str(workspace), "--state", str(state / ("native-" + invocation)),
+                     "--artifacts", str(artifacts / "native"), "--worker-spec", str(spec),
+                     "--source-commit", source["source_commit"], "--invocation", invocation,
+                     "--output", str(native_receipt)], workspace, artifacts, receipt, "native-build")
+            native_passed = True
+        finally:
+            # Keep evidence of native mutations without resetting or cleaning
+            # the native checkout, including when its build fails.
+            try:
+                audit = source_workspace.audit(workspace, source)
+                (artifacts / "native-source-audit.json").write_text(
+                    json.dumps(audit, indent=2, sort_keys=True) + "\n")
+                receipt["native_source_audit"] = "native-source-audit.json"
+            except Exception as error:
+                receipt["native_source_audit_error"] = str(error)
+                if native_passed:
+                    raise
+        receipt["bazel_source"]["verification_after_native"] = source_workspace.verify(bazel_workspace, source)
         prepare_started = time.monotonic()
-        image_inputs.prepare(native_receipt, workspace, state / ("prepare-" + invocation),
+        image_inputs.prepare(native_receipt, workspace, bazel_workspace, state / ("prepare-" + invocation),
                              artifacts / "input-receipt.json", spec, source, invocation)
         receipt["input_preparation_seconds"] = time.monotonic() - prepare_started
-        spec = workspace / "target/bazel-image-inputs/execution-environment.json"
+        spec = bazel_workspace / "target/bazel-image-inputs/execution-environment.json"
         receipt["execution_environment"] = json.loads(spec.read_text())
-        host_config = json.loads((workspace / "target/bazel-image-inputs/host-config.json").read_text())
+        host_config = json.loads((bazel_workspace / "target/bazel-image-inputs/host-config.json").read_text())
         receipt["native_host_identity"] = host_config["identity"]
         # Host-side preparation creates new inputs after the initial ownership
         # change. Give only this generated bundle to the Bazel worker user.
         if os.geteuid() == 0:
-            chown_tree(workspace / "target/bazel-image-inputs", 1000, 1000)
-        launcher = [sys.executable, str(workspace / "tools/bazel/image/run.py"),
-                    "--workspace", str(workspace), "--mount-root", str(mount_root),
+            chown_tree(bazel_workspace / "target", 1000, 1000)
+        launcher = [sys.executable, str(bazel_workspace / "tools/bazel/image/run.py"),
+                    "--workspace", str(bazel_workspace), "--mount-root", str(mount_root),
                     "--worker-spec", str(spec), "--bazel", "/usr/local/bin/bazel",
                     "--output-user-root", str(output_root), "--repository-cache", str(state / "repository-cache"),
                     "--worker-cpus", "4", "--worker-memory-gib", "12",
@@ -345,14 +375,14 @@ def build(args):
 
         worker_attempted = True
         execute(bazel("package", ["@sonic_swss//dist:swss_pkg"], str(state / "package-cache")),
-                workspace, artifacts, receipt, "package")
-        execute(bazel("image", TARGETS, ""), workspace, artifacts, receipt, "image")
+                bazel_workspace, artifacts, receipt, "package")
+        execute(bazel("image", TARGETS, ""), bazel_workspace, artifacts, receipt, "image")
         outputs = bep_outputs(artifacts / "image.bep.jsonl", TARGETS, output_root)
         receipt["bazel_outputs"] = {target: sorted(str(path) for path in paths)
                                     for target, paths in outputs.items()}
         installer = named_output(outputs, IMAGE, "sonic-vs.bin")
         runtime = named_output(outputs, RUNTIME, "docker-orchagent.gz")
-        verify = [sys.executable, str(workspace / "tools/bazel/ci/verify_image.py"),
+        verify = [sys.executable, str(bazel_workspace / "tools/bazel/ci/verify_image.py"),
                   "--installer", str(installer),
                   "--payload", str(named_output(outputs, IMAGE + "_fs", "sonic-vs.bin_fs.zip")),
                   "--dockerfs", str(named_output(outputs, IMAGE + "_dockerfs", "sonic-vs.bin_dockerfs.tar.gz")),
@@ -360,7 +390,7 @@ def build(args):
                   "--boot", str(named_output(outputs, IMAGE + "_host", "sonic-vs.bin_host.boot.tar")),
                   "--platform", str(named_output(outputs, IMAGE + "_host", "sonic-vs.bin_host.platform.tar.gz")),
                   "--output", str(artifacts / "image-verification.json")]
-        execute(verify, workspace, artifacts, receipt, "verify-image")
+        execute(verify, bazel_workspace, artifacts, receipt, "verify-image")
         verification = json.loads((artifacts / "image-verification.json").read_text())
         require(verification["status"] == "passed", "image verifier did not pass")
         receipt["outputs"]["installer"] = publish(installer, artifacts, "sonic-vs.bin")
@@ -379,7 +409,7 @@ def build(args):
         worker_stopped = False
         if worker_attempted:
             try:
-                execute(launcher + ["--worker-action", "stop"], workspace, artifacts, receipt, "worker-stop")
+                execute(launcher + ["--worker-action", "stop"], bazel_workspace, artifacts, receipt, "worker-stop")
                 worker_stopped = True
             except (Exception, KeyboardInterrupt) as error:
                 receipt.update(status="failed", worker_cleanup_error=str(error))

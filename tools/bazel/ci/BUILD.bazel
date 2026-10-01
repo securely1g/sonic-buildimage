@@ -37,7 +37,17 @@ py_test(
         "image.py",
         "image_inputs.py",
         "image_test.py",
+        "source_workspace.py",
         "trust.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "source_workspace_test",
+    srcs = [
+        "source_workspace.py",
+        "source_workspace_test.py",
     ],
     imports = ["."],
 )

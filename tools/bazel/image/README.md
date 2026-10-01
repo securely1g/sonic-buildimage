@@ -88,7 +88,10 @@ platform configurations and all three VS KVM platforms.
 ### Building native prerequisites from source
 
 Image CI starts with a fresh clone and initializes every recorded recursive
-submodule. It builds the [execution worker](worker/README.md) from this checkout,
+submodule. Before Make runs, it creates an independent Bazel checkout from the
+same recorded Git objects, including every recursive gitlink. Working-tree
+files, generated files and ignored local overrides are not copied. It builds
+the [execution worker](worker/README.md) from the original checkout,
 then runs the native preparation target in a separate worker with its own Docker
 daemon. No host Docker socket or prepared SONiC release bundle is supplied.
 
@@ -113,8 +116,15 @@ The producer stops the host build immediately before service-container loading,
 writes the snapshot identity, captures only the required non-secret template
 environment, and records all recursive source revisions and output SHA256s in
 `target/bazel-native/provenance.json`. The controller checks those against the
-original clean checkout and the current invocation before declaring the Bazel
-inputs. Installer scripts/configuration come from the same checked-out source.
+original clean revisions and the current invocation before declaring the Bazel
+inputs. Native Make can rewrite tracked files such as SWSS's `Cargo.lock` and
+leave generated headers behind. The controller records those mutations without
+cleaning the native checkout, then verifies that the separate Bazel checkout
+still contains exactly the recorded sources and no untracked or ignored files.
+Only the verified native image inputs, config-engine archive and Scapy wheel
+are staged for Bazel. Installer preparation, SWSS compilation and image assembly
+use the pristine checkout; `bazel-source-receipt.json`,
+`native-source-audit.json` and `input-receipt.json` record this boundary.
 
 The underlying recipes still use normal Debian packages, base images and
 execution tool downloads. SWSS and DASH use the recorded source gitlinks in the
