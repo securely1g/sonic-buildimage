@@ -230,6 +230,31 @@ trial and this follow-up at the same output/checksum boundary.
 
 ## Validation and limitations
 
+Pull requests, including drafts and stacked branches, run the
+[Bazel workflow](../../../.github/workflows/bazel.yml) on native AMD64 in a
+pinned Debian Trixie container. `Bazel checks (AMD64)` runs formatting, the image
+assembly and worker tests, OCI conversion, SWSS configuration rendering, Make
+readiness/fallback tests, and registry configuration checks. `Bazel SWSS packages
+(AMD64)` builds the complete SWSS runtime, its dependency layer, rendered
+configuration, and matching debug-symbol layer from the recorded component
+sources. It checks the 30-program install contract, root ownership, ELF
+architecture, build IDs, DWARF and debuglink checksums, and uploads packages and
+build evidence.
+
+The CI commands can also run from an initialized checkout in the same execution
+environment:
+
+```sh
+python3 tools/bazel/ci/run.py test --artifacts artifacts/tests
+python3 tools/bazel/ci/run.py build --artifacts artifacts/packages
+```
+
+Hosted CI does not have the native predecessor bundle required for the complete
+OCI archives or VS installer. Full image assembly, Docker runtime and guest boot
+validation remain the separately documented integration checks; CI does not
+replace them with synthetic predecessor files. The imported DASH library's
+missing debug symbols remain an explicit package-validation exception.
+
 ```sh
 bazel test //tools/bazel/image:metadata_test //tools/bazel/image:host_test \
   //tools/bazel/image:store_test //tools/bazel/image:installer_test \

@@ -36,3 +36,16 @@ filegroup(
     ],
     visibility = ["//tools/bazel/image:__pkg__"],
 )
+
+filegroup(
+    name = "make_bridge_test_data",
+    srcs = [
+        "Makefile",
+        "Makefile.work",
+        "rules/config",
+        "rules/docker-orchagent.mk",
+        "rules/docker-sysmgr.mk",
+        "slave.mk",
+    ],
+    visibility = ["//tools/bazel/tests:__pkg__"],
+)
