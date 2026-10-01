@@ -78,6 +78,30 @@ class NativeTrustHookTest(unittest.TestCase):
         self.assertEqual(b'fixture hooks',
                          (self.shared / 'sonic-build-hooks_1.0_all.deb').read_bytes())
 
+    def test_make_shell_preparation_emits_no_text_into_makefile_syntax(self):
+        context = self.root / 'sonic-slave-trixie'
+        context.mkdir()
+        dockerfile = context / 'Dockerfile'
+        dockerfile.write_text('FROM debian:trixie\nRUN echo fixture-build\n', encoding='utf-8')
+        makefile = self.root / 'Makefile'
+        makefile.write_text(
+            '$(shell BUILD_SLAVE=y ENABLE_VERSION_CONTROL_DOCKER=n '
+            'SONIC_BUILD_SLAVE_CA_BUNDLE="' + str(self.bundle) + '" bash "' +
+            str(SOURCE / 'scripts/prepare_docker_buildinfo.sh') + '" '
+            'sonic-slave-trixie sonic-slave-trixie/Dockerfile amd64 "" trixie)\n'
+            '.PHONY: all\nall:\n\t@echo native-preparation-complete\n', encoding='utf-8',
+        )
+        result = subprocess.run(
+            ['make', '--no-print-directory', '--file', str(makefile), 'all'],
+            cwd=self.root, env={'PATH': os.defpath, 'LC_ALL': 'C'},
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assert_success(result)
+        self.assertEqual('native-preparation-complete\n', result.stdout)
+        self.assertIn(BEGIN, dockerfile.read_text(encoding='utf-8'))
+        self.assertEqual(self.bundle.read_bytes(),
+                         (context / 'buildinfo/sonic-build-ca-bundle.pem').read_bytes())
+
     def test_opt_in_installs_validated_trust_before_native_first_run(self):
         result, dockerfile = self.prepare()
         self.assert_success(result)
