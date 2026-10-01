@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -25,6 +26,7 @@ TEST_TARGETS = [
     "//dockers/docker-orchagent/config:render_test",
     "//tools/bazel/tests:make_bridge_test",
     "//tools/bazel/registry:registry_lib_test",
+    "//tools/bazel/ci:run_test",
 ]
 BUILD_TARGETS = {
     "swss.tar": "@sonic_swss//dist:swss_pkg",
@@ -65,6 +67,31 @@ def execute(command, directory, receipt, name):
     if record["returncode"]:
         raise RuntimeError(f"{name} failed with exit {record['returncode']}; see {log}")
     return "".join(output)
+
+
+def capture(command, directory, receipt, name):
+    """Return machine-readable stdout while retaining diagnostic stderr."""
+    log = directory / (name + ".log")
+    record = {"argv": command, "log": log.name}
+    receipt["commands"].append(record)
+    started = time.monotonic()
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    record.update(returncode=result.returncode, elapsed_seconds=time.monotonic() - started)
+    log.write_text(result.stdout + result.stderr)
+    print(result.stdout, end="", flush=True)
+    print(result.stderr, end="", file=sys.stderr, flush=True)
+    if result.returncode:
+        raise RuntimeError(f"{name} failed with exit {result.returncode}; see {log}")
+    return result.stdout
+
+
+def check_bazel_version(bazel, expected, directory, receipt):
+    # Bazelisk's first invocation can download Bazel and report progress on
+    # stderr. That diagnostic output is not part of Bazel's version string.
+    version = capture([bazel, "--version"], directory, receipt, "bazel-version").strip()
+    if version != expected:
+        raise ValueError(f"Expected {expected}, got {version}")
+    return version
 
 
 def verify_tests(path):
@@ -130,9 +157,7 @@ def main():
     try:
         receipt["revision"] = execute(["git", "rev-parse", "HEAD"], directory, receipt, "revision").strip()
         expected = "bazel " + (ROOT / ".bazelversion").read_text().strip()
-        version = execute([args.bazel, "--version"], directory, receipt, "bazel-version").strip()
-        if version != expected:
-            raise ValueError(f"Expected {expected}, got {version}")
+        version = check_bazel_version(args.bazel, expected, directory, receipt)
         receipt["bazel_version"] = version
         if args.command == "build":
             release = platform.freedesktop_os_release()
@@ -160,12 +185,7 @@ def main():
             for name, target in BUILD_TARGETS.items():
                 # Use stdout alone: Bazel diagnostics are not artifact paths.
                 command = [args.bazel, "cquery", *OPTIONS, "--output=files", target]
-                query = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
-                (directory / (name + ".query.log")).write_text(query.stdout + query.stderr)
-                receipt["commands"].append({"argv": command, "returncode": query.returncode,
-                                            "log": name + ".query.log"})
-                query.check_returncode()
-                files = query.stdout.splitlines()
+                files = capture(command, directory, receipt, name + ".query").splitlines()
                 if len(files) != 1 or not (ROOT / files[0]).is_file() or not (ROOT / files[0]).stat().st_size:
                     raise ValueError("Expected exactly one nonempty package output for " + target)
                 destination = directory / name
