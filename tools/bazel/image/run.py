@@ -116,7 +116,12 @@ def build_plan(args):
         raise ValueError("invalid worker user or home directory")
     bootstrap = PERSISTENT_BOOTSTRAP
     if user:
-        bootstrap = bootstrap.replace("/var/sonic-builder", home).replace("sonic-builder", user)
+        # Substitute template values once, without rewriting the supplied values.
+        bootstrap = re.sub(
+            r"/var/sonic-builder|sonic-builder",
+            lambda match: home if match.group() == "/var/sonic-builder" else user,
+            bootstrap,
+        )
         expected_account = user + ":" + home
         bootstrap = bootstrap.replace(
             'usermod -g 1000',

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -78,6 +79,22 @@ class WorkerTest(unittest.TestCase):
         self.assertIn('lgh:/var/lgh', plan['bootstrap'])
         self.assertNotIn('sonic-builder', plan['bootstrap'])
         self.assertEqual(image_run.validate_worker(self.worker(plan), plan), 'b' * 64)
+
+    def test_explicit_account_fields_preserve_builder_substrings(self):
+        for user, home in [('alice', '/var/sonic-builder'),
+                           ('alice', '/srv/sonic-builder/home'),
+                           ('sonic-builder-ci', '/var/custom'),
+                           ('sonic-builder-ci', '/srv/sonic-builder/home')]:
+            with self.subTest(user=user, home=home):
+                self.args.worker_user, self.args.worker_home = user, home
+                bootstrap = self.plan()['bootstrap']
+                commands = [shlex.split(line) for line in bootstrap.splitlines()
+                            if line.strip().startswith(('groupadd ', 'useradd '))]
+                groupadd, useradd = commands
+                self.assertEqual(groupadd[-1], user)
+                self.assertEqual(useradd[-1], user)
+                self.assertEqual(useradd[useradd.index('-d') + 1], home)
+                self.assertIn('= "' + user + ':' + home + '" ]', bootstrap)
 
     def test_invalid_or_partial_user_identity_rejected(self):
         for user, home in [('lgh', None), (None, '/var/lgh'), ('bad;cmd', '/var/lgh'),
