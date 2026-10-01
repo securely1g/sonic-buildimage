@@ -141,6 +141,10 @@ def inside(args):
         timestamp = datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).strftime("%Y%m%d.%H%M%S")
         options = ["BLDENV=trixie", "PLATFORM_ARCH=amd64", "USERNAME=admin",
                    "BAZEL_MIN_READINESS=bazel_disabled", "ENABLE_DOCKER_BASE_PULL=n",
+                   # Use the upstream public registry; native version control
+                   # still applies the recorded Debian image digest.
+                   "DEFAULT_CONTAINER_REGISTRY=docker.io",
+                   "SONIC_DPKG_CACHE_SOURCE=" + str(state / "native-cache"),
                    "SONIC_DPKG_CACHE_METHOD=none", "SONIC_DPKG_CACHE_METHOD_OVERRIDE=none",
                    "SONIC_CONFIG_USE_DOCKER_CACHE=n", "SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n",
                    "SONIC_BUILD_JOBS=1", "SONIC_BUILD_MEMORY=14g", "SONIC_BUILD_MEMORY_SWAP=14g",
