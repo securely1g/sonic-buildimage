@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Fail closed when a native-input release differs from its pinned manifest."""
+"""Verify that only this job's source-built native outputs reach image assembly."""
 
-import hashlib
-import io
 import json
 from pathlib import Path
-import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -13,314 +10,198 @@ from unittest import mock
 import image_inputs
 
 
-PREFIX = "target/bazel-image-inputs/"
-
-
-def metadata(content, mode=0o644):
-    return {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest(), "mode": mode}
-
-
-def write_archive(path, entries):
-    with tarfile.open(path, "w:gz") as archive:
-        for name, content, kind, mode in entries:
-            member = tarfile.TarInfo(name)
-            member.type = kind
-            member.mode = mode
-            if kind == tarfile.REGTYPE:
-                member.size = len(content)
-                archive.addfile(member, io.BytesIO(content))
-            else:
-                member.linkname = "outside"
-                archive.addfile(member)
-
-
-def regular(name, content=b"native input", mode=0o644):
-    return name, content, tarfile.REGTYPE, mode
-
-
 class InputVerificationTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.workspace = self.root / "workspace"
+        self.workspace = self.root / "checkout"
         self.workspace.mkdir()
-        self.assets = self.root / "assets"
-        self.assets.mkdir()
-        self.archive = self.assets / "inputs-01.tar.gz"
-        self.name = PREFIX + "host-source.tar"
-        self.content = b"native predecessor\x00bytes"
-        self.expected = {self.name: metadata(self.content)}
-        write_archive(self.archive, [regular(self.name, self.content)])
-
-    def installer_sources(self):
-        files = {
-            "installer/install.sh": b"#!/bin/sh\n# current checkout installer\n",
-            "installer/sharch_body.sh": b"#!/bin/sh\nexit_marker\n",
-            "installer/default_platform.conf": b"CURRENT_PLATFORM=yes\n",
-            "onie-image.conf": b"CURRENT_ONIE=yes\n",
-            "platform/vs/platform.conf": b"PLATFORM=vs\n",
-            "platform/vs/platform-modules-vs.mk": b"$(VS_PLATFORM_MODULE)_PLATFORM = x86_64-kvm_x86_64-r0\n",
-            "device/virtual/x86_64-kvm_x86_64-r0/installer.conf": b"VAR_LOG_SIZE=1024\n",
-        }
-        for name, content in files.items():
+        self.native = self.workspace / image_inputs.NATIVE
+        self.native.mkdir(parents=True)
+        self.invocation = "this-job"
+        self.source = {"source_commit": "a" * 40, "components": {
+            "src/component": {"commit": "b" * 40, "gitlink": "b" * 40}}}
+        self.identity = {"source_commit": "a" * 40, "source_branch": "ci",
+                         "source_date_epoch": "123", "image_version": "source.fixture"}
+        for name in image_inputs.REQUIRED:
             path = self.workspace / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
-            path.chmod(0o755 if name.endswith(".sh") else 0o644)
-        return files
+            path.write_bytes(b"source-built native bytes")
+        (self.native / "host-config.json").write_text(json.dumps({"identity": self.identity}))
+        self.images = {"docker-config-engine-trixie.gz": image_inputs.CONFIG_ENGINE}
+        (self.native / "images.json").write_text(json.dumps(self.images))
+        self.provenance = {"schema": 1, **self.identity,
+                           "source_submodules": {"src/component": "b" * 40}, "files": {}}
+        self.provenance_path = self.native / "provenance.json"
+        self.rehash()
+        self.native_receipt = self.root / "native-receipt.json"
+        self.run = {"schema": 1, "status": "passed", "invocation": self.invocation,
+                    "source_commit": self.source["source_commit"],
+                    "native_provenance": image_inputs.NATIVE + "provenance.json",
+                    "worker_image": "sha256:" + "c" * 64}
+        self.write_run()
+        self.spec = self.root / "execution-environment.json"
+        self.worker = dict(image_inputs.ENVIRONMENT, worker_image="sha256:" + "c" * 64)
+        self.spec.write_text(json.dumps(self.worker))
+        self.receipt = self.root / "input-receipt.json"
 
-    def installer_bundle(self):
-        attributes = {
-            "image_version": "native.fixture", "epoch": 0,
-            "installer_config": "//target/bazel-image-inputs:installer/config.json",
-            "installer_files": {"//target/bazel-image-inputs:installer/files/install.sh": "install.sh"},
-            "installer_modes": {"install.sh": "493"},
-            "source": "//target/bazel-image-inputs:host-source.tar",
-            "images": {"docker-orchagent.gz": "//dockers/docker-orchagent:docker-orchagent.gz"},
-        }
-        return {
-            PREFIX + "inputs.bzl": ("IMAGE_INPUTS = " + json.dumps(attributes) + "\n").encode(),
-            PREFIX + "installer/config.json": b'{"image_version": "native.fixture"}',
-            PREFIX + "installer/files/install.sh": b"#!/bin/sh\n# old release installer\n",
-            PREFIX + "installer/files/obsolete.sh": b"# absent from current checkout\n",
-        }
+    def write_run(self):
+        self.native_receipt.write_text(json.dumps(self.run))
 
-    def test_verified_copy_accepts_exact_content_and_rejects_wrong_hash_or_size(self):
-        output = io.BytesIO()
-        image_inputs.copy_verified(io.BytesIO(self.content), output, metadata(self.content), "fixture")
-        self.assertEqual(output.getvalue(), self.content)
-        for actual in (self.content[:-1], self.content + b"x", b"X" + self.content[1:]):
+    def write_provenance(self):
+        self.provenance_path.write_text(json.dumps(self.provenance))
+
+    def rehash(self):
+        self.provenance["files"] = {name: {"bytes": (self.workspace / name).stat().st_size,
+                                           "sha256": image_inputs.sha256(self.workspace / name)}
+                                    for name in image_inputs.REQUIRED}
+        self.write_provenance()
+
+    def verify(self):
+        return image_inputs.verify_native(self.native_receipt, self.workspace, self.source, self.invocation)
+
+    def prepare(self):
+        return image_inputs.prepare(self.native_receipt, self.workspace, self.root / "scratch",
+                                    self.receipt, self.spec, self.source, self.invocation)
+
+    def test_exact_same_job_native_outputs_are_accepted(self):
+        provenance, images, digest = self.verify()
+        self.assertEqual(provenance, self.provenance)
+        self.assertEqual(images, self.images)
+        self.assertEqual(digest, image_inputs.sha256(self.provenance_path))
+
+    def test_failed_foreign_invocation_and_foreign_source_receipts_are_rejected(self):
+        for field, value in (("status", "failed"), ("invocation", "old-job"),
+                             ("source_commit", "d" * 40), ("native_provenance", "../elsewhere")):
+            with self.subTest(field=field):
+                saved = self.run[field]
+                self.run[field] = value
+                self.write_run()
+                with self.assertRaises(ValueError):
+                    self.verify()
+                self.run[field] = saved
+                self.write_run()
+
+    def test_native_source_commit_submodules_and_host_identity_must_match(self):
+        for field, value in (("source_commit", "d" * 40), ("source_submodules", {}),
+                             ("source_branch", "different"), ("image_version", "old"),
+                             ("source_date_epoch", "999")):
+            with self.subTest(field=field):
+                saved = self.provenance[field]
+                self.provenance[field] = value
+                self.write_provenance()
+                with self.assertRaises(ValueError):
+                    self.verify()
+                self.provenance[field] = saved
+                self.write_provenance()
+
+    def test_native_file_content_and_length_are_verified(self):
+        path = self.native / "host-source.tar"
+        content = path.read_bytes()
+        for actual in (content[:-1], content + b"x", b"X" + content[1:]):
             with self.subTest(actual=actual):
-                with self.assertRaisesRegex(ValueError, "size|SHA256"):
-                    image_inputs.copy_verified(io.BytesIO(actual), io.BytesIO(), metadata(self.content), "fixture")
+                path.write_bytes(actual)
+                with self.assertRaisesRegex(ValueError, "size/SHA256"):
+                    self.verify()
+        path.write_bytes(content)
 
-    def test_fetch_checks_asset_digest_before_extraction(self):
-        asset = metadata(self.archive.read_bytes()) | {"name": self.archive.name}
-        downloaded = self.root / "downloaded.tar.gz"
-        image_inputs.fetch_asset(asset, "https://unused.invalid", downloaded, self.assets)
-        self.assertEqual(downloaded.read_bytes(), self.archive.read_bytes())
-        # The complete gzip stream remains valid, but these new bytes were not
-        # the release asset approved in the manifest.
-        write_archive(self.archive, [regular(self.name, b"another predecessor")])
-        with self.assertRaisesRegex(ValueError, "size|SHA256"):
-            image_inputs.fetch_asset(asset, "https://unused.invalid", self.root / "corrupt.tar.gz", self.assets)
+    def test_missing_required_input_is_rejected(self):
+        del self.provenance["files"][image_inputs.CONFIG_ENGINE]
+        self.write_provenance()
+        with self.assertRaisesRegex(ValueError, "omitted required"):
+            self.verify()
 
-    def test_fetch_refuses_to_overwrite_existing_download(self):
-        downloaded = self.root / "existing"
-        downloaded.write_bytes(b"keep me")
-        asset = metadata(self.archive.read_bytes()) | {"name": self.archive.name}
-        with self.assertRaises(FileExistsError):
-            image_inputs.fetch_asset(asset, "https://unused.invalid", downloaded, self.assets)
-        self.assertEqual(downloaded.read_bytes(), b"keep me")
+    def test_input_paths_cannot_escape_or_point_to_completed_installers(self):
+        for name in ("../escape", "/absolute", "target/../escape", "target//bazel-native/file",
+                     "target/bazel-native/./file", "target/sonic-vs.bin", "bazel-out/image"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                image_inputs.local_input(self.workspace, name)
 
-    def test_extract_preserves_verified_bytes_and_declared_mode(self):
-        executable = PREFIX + "installer/files/install.sh"
-        write_archive(self.archive, [regular(self.name, self.content), regular(executable, b"#!/bin/sh\n", 0o755)])
-        expected = self.expected | {executable: metadata(b"#!/bin/sh\n", 0o755)}
-        image_inputs.extract_inputs(self.archive, expected, self.workspace)
-        self.assertEqual((self.workspace / self.name).read_bytes(), self.content)
-        self.assertEqual((self.workspace / executable).stat().st_mode & 0o777, 0o755)
-
-    def test_manifest_file_digest_is_enforced_independently_of_archive_digest(self):
-        altered = b"X" + self.content[1:]
-        write_archive(self.archive, [regular(self.name, altered)])
-        # Fetch accepts this exact asset; extraction must still enforce the
-        # separately pinned digest for its member.
-        asset = metadata(self.archive.read_bytes()) | {"name": self.archive.name}
-        downloaded = self.root / "verified-archive.tar.gz"
-        image_inputs.fetch_asset(asset, "https://unused.invalid", downloaded, self.assets)
-        with self.assertRaisesRegex(ValueError, "SHA256"):
-            image_inputs.extract_inputs(downloaded, self.expected, self.workspace)
-
-    def test_paths_cannot_escape_or_supply_undeclared_build_outputs(self):
-        for name in (
-            "../escaped", "/target/bazel-image-inputs/absolute", PREFIX + "../../escaped",
-            "target//bazel-image-inputs/file", PREFIX + "./file", "target/sonic-vs.bin",
-            "bazel-out/sonic-vs.bin", PREFIX.rstrip("/"),
-        ):
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    image_inputs.input_path(name)
-                write_archive(self.archive, [regular(name, self.content)])
-                with self.assertRaises(ValueError):
-                    image_inputs.extract_inputs(self.archive, {name: metadata(self.content)}, self.workspace)
-        self.assertFalse((self.root / "escaped").exists())
-
-    def test_symlinks_hardlinks_devices_directories_and_fifos_are_rejected(self):
-        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE,
-                     tarfile.BLKTYPE, tarfile.DIRTYPE, tarfile.FIFOTYPE):
-            with self.subTest(kind=kind):
-                write_archive(self.archive, [(self.name, b"", kind, 0o644)])
-                with self.assertRaisesRegex(ValueError, "non-regular"):
-                    image_inputs.extract_inputs(self.archive, {self.name: metadata(b"")}, self.workspace)
-                self.assertFalse((self.workspace / self.name).exists())
-
-    def test_duplicate_member_is_rejected_without_overwriting_first_member(self):
-        write_archive(self.archive, [regular(self.name, self.content), regular(self.name, b"overwrite")])
-        with self.assertRaisesRegex(ValueError, "duplicate"):
-            image_inputs.extract_inputs(self.archive, self.expected, self.workspace)
-        self.assertEqual((self.workspace / self.name).read_bytes(), self.content)
-
-    def test_missing_or_unexpected_members_fail(self):
-        missing = PREFIX + "missing.tar"
-        with self.assertRaisesRegex(ValueError, "omits declared inputs"):
-            image_inputs.extract_inputs(self.archive, self.expected | {missing: metadata(b"missing")}, self.workspace)
-        self.assertFalse((self.workspace / missing).exists())
-        write_archive(self.archive, [regular(missing, b"unexpected")])
-        with self.assertRaisesRegex(ValueError, "unexpected"):
-            image_inputs.extract_inputs(self.archive, self.expected, self.workspace)
-        self.assertFalse((self.workspace / missing).exists())
-
-    def test_member_size_and_mode_must_match_manifest(self):
-        for content, mode in ((self.content + b"extra", 0o644), (self.content, 0o755)):
-            with self.subTest(mode=mode, bytes=len(content)):
-                write_archive(self.archive, [regular(self.name, content, mode)])
-                with self.assertRaisesRegex(ValueError, "size/mode"):
-                    image_inputs.extract_inputs(self.archive, self.expected, self.workspace)
-                self.assertFalse((self.workspace / self.name).exists())
-
-    def test_existing_file_or_symlink_cannot_be_overwritten(self):
-        output = self.workspace / self.name
-        output.parent.mkdir(parents=True)
-        output.write_bytes(b"existing input")
-        with self.assertRaises(FileExistsError):
-            image_inputs.extract_inputs(self.archive, self.expected, self.workspace)
-        self.assertEqual(output.read_bytes(), b"existing input")
-        output.unlink()
-        existing = self.workspace / "existing"
-        existing.write_bytes(b"symlink target")
-        output.symlink_to(existing)
-        with self.assertRaises(FileExistsError):
-            image_inputs.extract_inputs(self.archive, self.expected, self.workspace)
-        self.assertTrue(output.is_symlink())
-        self.assertEqual(existing.read_bytes(), b"symlink target")
-
-    def test_parent_symlink_cannot_redirect_extraction_outside_workspace(self):
+    def test_symlinked_file_or_parent_cannot_supply_inputs(self):
+        path = self.native / "host-source.tar"
         outside = self.root / "outside"
-        outside.mkdir()
-        (self.workspace / "target").symlink_to(outside, target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, "escapes workspace"):
-            image_inputs.extract_inputs(self.archive, self.expected, self.workspace)
-        self.assertEqual(list(outside.iterdir()), [])
+        outside.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "symlink|escapes"):
+            self.verify()
+        path.unlink()
+        path.write_bytes(outside.read_bytes())
+        moved = self.root / "moved-native"
+        self.native.rename(moved)
+        self.native.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlink|escapes"):
+            self.verify()
 
-    def test_installer_refresh_tracks_current_sources_and_preserves_native_inputs(self):
-        self.installer_sources()
-        for name, content in self.installer_bundle().items():
-            path = self.workspace / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
-        native = self.workspace / self.name
-        native.write_bytes(self.content)
-        inputs_file = self.workspace / PREFIX / "inputs.bzl"
-        original = image_inputs.read_image_inputs(inputs_file)
-        source = self.workspace / "installer/install.sh"
-        staged = self.workspace / PREFIX / "installer/files/install.sh"
-        with mock.patch.object(image_inputs.subprocess, "check_output", return_value="a" * 40 + "\n"):
-            first = image_inputs.refresh_installer_inputs(self.workspace)
-            self.assertEqual(staged.read_bytes(), source.read_bytes())
-            self.assertNotEqual(first["released_files"][PREFIX + "installer/files/install.sh"]["sha256"],
-                                first["derived_files"][PREFIX + "installer/files/install.sh"]["sha256"])
-            self.assertFalse((staged.parent / "obsolete.sh").exists())
-            source.write_bytes(source.read_bytes() + b"# one-line PR change\n")
-            (source.parent / "new-helper.sh").write_bytes(b"#!/bin/sh\necho current\n")
-            second = image_inputs.refresh_installer_inputs(self.workspace)
-        self.assertEqual(staged.read_bytes(), source.read_bytes())
-        self.assertNotEqual(first["derived_files"][PREFIX + "installer/files/install.sh"]["sha256"],
-                            second["derived_files"][PREFIX + "installer/files/install.sh"]["sha256"])
-        self.assertEqual(second["source_commit"], "a" * 40)
-        self.assertEqual(second["source_provenance"]["source_sha256"]["installer/install.sh"],
-                         hashlib.sha256(source.read_bytes()).hexdigest())
-        updated = image_inputs.read_image_inputs(inputs_file)
-        self.assertEqual({k: v for k, v in original.items() if k not in {"installer_files", "installer_modes"}},
-                         {k: v for k, v in updated.items() if k not in {"installer_files", "installer_modes"}})
-        self.assertIn("new-helper.sh", updated["installer_files"].values())
-        self.assertEqual(native.read_bytes(), self.content)
-        for relative, info in second["derived_files"].items():
-            self.assertEqual(info["sha256"], hashlib.sha256((self.workspace / relative).read_bytes()).hexdigest())
-
-    def test_input_mapping_parser_never_executes_code(self):
-        inputs_file = self.root / "inputs.bzl"
-        sentinel = self.root / "executed"
-        expression = "__import__('pathlib').Path(" + repr(str(sentinel)) + ").write_text('bad')"
-        for text in ("IMAGE_INPUTS = {\"payload\": " + expression + "}\n",
-                     "IMAGE_INPUTS = {}\n" + expression + "\n",
-                     "OTHER_INPUTS = {}\n"):
-            with self.subTest(text=text):
-                inputs_file.write_text(text)
+    def test_service_archives_must_be_declared_and_swss_cannot_be_imported(self):
+        for images in ({"docker-other.gz": "target/docker-other.gz"},
+                       {"docker-orchagent.gz": image_inputs.CONFIG_ENGINE},
+                       {"different.gz": image_inputs.CONFIG_ENGINE}):
+            with self.subTest(images=images):
+                (self.native / "images.json").write_text(json.dumps(images))
+                self.rehash()
                 with self.assertRaises(ValueError):
-                    image_inputs.read_image_inputs(inputs_file)
-                self.assertFalse(sentinel.exists())
+                    self.verify()
 
-    def test_prepare_receipt_records_only_assets_whose_pinned_bytes_passed(self):
-        worker_image = "sha256:" + "1" * 64
-        self.installer_sources()
-        files = {name: b"fixture predecessor" for name in (
-            PREFIX + "inputs.bzl", PREFIX + "BUILD.bazel", PREFIX + "host-onie.squashfs",
-            PREFIX + "host-config.json", "target/docker-config-engine-trixie.gz",
-            "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl",
-        )}
-        files[self.name] = self.content
-        files.update(self.installer_bundle())
-        write_archive(self.archive, [regular(name, content) for name, content in files.items()])
-        asset = metadata(self.archive.read_bytes()) | {
-            "name": self.archive.name, "kind": "inputs",
-            "files": {name: metadata(content) for name, content in files.items()},
-        }
-        worker = self.assets / "worker.tar.gz"
-        worker.write_bytes(b"worker fixture for mocked Docker loader")
-        worker_asset = metadata(worker.read_bytes()) | {"name": worker.name, "kind": "worker"}
-        environment = {"schema": 1, "platform": "linux/amd64", "docker_version": "28.5.2",
-                       "storage_driver": "overlay2", "distribution": "trixie"}
-        manifest = {
-            "schema": 1, "worker": {"reference": "sonic-bazel-vs-worker:test",
-                                     "image_ids": [worker_image], "environment": environment},
-            "release_url": "https://github.com/securely1g/sonic-buildimage/releases/download/test-inputs",
-            "assets": [asset, worker_asset],
-        }
-        path = self.root / "manifest.json"
-        path.write_text(json.dumps(manifest))
-        template = self.workspace / "tools/bazel/image/vs/BUILD.bazel.in"
-        template.parent.mkdir(parents=True)
-        template.write_text("# test BUILD template\n")
-        receipt_path = self.root / "receipt.json"
-        inspection = json.dumps([{"Id": worker_image, "Os": "linux", "Architecture": "amd64"}])
-
-        def inspect_or_revision(command, **_kwargs):
-            return inspection if command[0] == "docker" else "a" * 40 + "\n"
-
-        # Only Docker process execution is mocked. Manifest validation, asset
-        # fetching, digest checks, extraction and receipt writing all run.
-        with mock.patch.object(image_inputs.subprocess, "run"), \
-                mock.patch.object(image_inputs.subprocess, "check_output", side_effect=inspect_or_revision):
-            image_inputs.prepare(path, self.workspace, self.root / "scratch", receipt_path, self.assets)
-        receipt = json.loads(receipt_path.read_text())
+    def test_prepare_resolves_native_archives_and_uses_current_installer_sources(self):
+        def prepare(command, **kwargs):
+            self.assertEqual(kwargs, {"cwd": self.workspace, "check": True})
+            self.assertEqual(command[command.index("--installer-source") + 1], str(self.workspace))
+            images = json.loads(Path(command[command.index("--images") + 1]).read_text())
+            self.assertEqual(images, {name: str(self.workspace / path) for name, path in self.images.items()})
+            output = Path(command[command.index("--output") + 1])
+            output.mkdir()
+            (output / "inputs.bzl").write_text('IMAGE_INPUTS = {"images": {"docker-orchagent.gz": "//dockers/docker-orchagent:docker-orchagent.gz"}}\n')
+            (output / "execution-environment.json").write_text(self.spec.read_text())
+            (output / "provenance.json").write_text('{"schema": 1}')
+        with mock.patch.object(image_inputs.subprocess, "run", side_effect=prepare) as run:
+            receipt = self.prepare()
+        run.assert_called_once()
         self.assertEqual(receipt["status"], "passed")
-        self.assertEqual(receipt["manifest_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
-        self.assertEqual(receipt["assets"], [
-            {key: entry[key] for key in ("name", "bytes", "sha256", "kind")} for entry in manifest["assets"]
-        ])
-        self.assertEqual((template.parent / "BUILD.bazel").read_bytes(), template.read_bytes())
-        execution = self.workspace / PREFIX / "execution-environment.json"
-        self.assertEqual(json.loads(execution.read_text()), environment | {"worker_image": worker_image})
-        self.assertEqual(receipt["execution_environment_sha256"], hashlib.sha256(execution.read_bytes()).hexdigest())
-        self.assertEqual(receipt["installer_refresh"]["source_commit"], "a" * 40)
-        self.assertEqual((self.workspace / PREFIX / "installer/files/install.sh").read_bytes(),
-                         (self.workspace / "installer/install.sh").read_bytes())
-        # A valid archive with a wrong pinned file digest must leave a failure
-        # receipt and cannot be reported as a successfully staged asset.
-        failed_workspace = self.root / "failed-workspace"
-        failed_workspace.mkdir()
-        asset["files"][self.name]["sha256"] = "0" * 64
-        path.write_text(json.dumps(manifest))
-        with mock.patch.object(image_inputs.subprocess, "run") as docker:
-            with self.assertRaisesRegex(ValueError, "SHA256"):
-                image_inputs.prepare(path, failed_workspace, self.root / "scratch", receipt_path, self.assets)
-            docker.assert_not_called()
-        receipt = json.loads(receipt_path.read_text())
-        self.assertEqual(receipt["status"], "failed")
-        self.assertEqual(receipt["assets"], [])
-        self.assertFalse((failed_workspace / "tools/bazel/image/vs/BUILD.bazel").exists())
+        self.assertEqual(receipt["invocation"], self.invocation)
+        self.assertEqual(json.loads(self.receipt.read_text()), receipt)
+
+    def test_existing_prepared_bundle_is_not_reused(self):
+        output = self.workspace / "target/bazel-image-inputs"
+        output.mkdir()
+        retained = output / "host-source.tar"
+        retained.write_bytes(b"old input")
+        with mock.patch.object(image_inputs.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "already exist"):
+            self.prepare()
+        run.assert_not_called()
+        self.assertEqual(retained.read_bytes(), b"old input")
+        self.assertEqual(json.loads(self.receipt.read_text())["status"], "failed")
+
+    def test_failed_verification_does_not_prepare_and_records_failure(self):
+        (self.native / "host-source.tar").write_bytes(b"changed native output")
+        with mock.patch.object(image_inputs.subprocess, "run") as run, self.assertRaises(ValueError):
+            self.prepare()
+        run.assert_not_called()
+        self.assertFalse((self.workspace / "target/bazel-image-inputs").exists())
+        self.assertEqual(json.loads(self.receipt.read_text())["status"], "failed")
+
+    def test_different_native_execution_worker_is_rejected_before_preparation(self):
+        self.run["worker_image"] = "sha256:" + "d" * 64
+        self.write_run()
+        with mock.patch.object(image_inputs.subprocess, "run") as run, \
+                self.assertRaisesRegex(ValueError, "different execution worker"):
+            self.prepare()
+        run.assert_not_called()
+        self.assertEqual(json.loads(self.receipt.read_text())["status"], "failed")
+
+    def test_preparer_failure_records_failure(self):
+        with mock.patch.object(image_inputs.subprocess, "run", side_effect=RuntimeError("preparation failed")), \
+                self.assertRaisesRegex(RuntimeError, "preparation failed"):
+            self.prepare()
+        self.assertEqual(json.loads(self.receipt.read_text())["status"], "failed")
+
+    def test_generated_inputs_are_literal_data_not_executable_code(self):
+        path = self.root / "inputs.bzl"
+        for text in ('IMAGE_INPUTS = dict(images={})', 'import os\nIMAGE_INPUTS = {}', 'OTHER = {}'):
+            path.write_text(text)
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                image_inputs.read_image_inputs(path)
 
 
 if __name__ == "__main__":

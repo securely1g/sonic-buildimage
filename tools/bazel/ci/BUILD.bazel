@@ -23,7 +23,6 @@ py_test(
         "image_inputs.py",
         "image_inputs_test.py",
     ],
-    data = ["//tools/bazel/image:installer.py"],
     imports = ["."],
 )
 
@@ -34,7 +33,6 @@ py_test(
         "image_inputs.py",
         "image_test.py",
     ],
-    data = ["//tools/bazel/image:installer.py"],
     imports = ["."],
 )
 
@@ -43,6 +41,15 @@ py_test(
     srcs = [
         "verify_image.py",
         "verify_image_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "native_build_test",
+    srcs = [
+        "native_build.py",
+        "native_build_test.py",
     ],
     imports = ["."],
 )

@@ -1750,6 +1750,10 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 	$(FOOTER)
 
+# Only the explicit preparation goal enables the native producer. Its normal
+# service inventory is retained while Bazel owns the orchagent archive.
+include tools/bazel/image/native/native.mk
+
 # targets for building installers with base image
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
@@ -1802,7 +1806,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
                 $(AUDISP_TACPLUS) \
                 $(SYSLOG_COUNTER) \
                 $(SEDUTIL)) \
-        $$(addprefix $(TARGET_PATH)/,$$($$*_DOCKERS)) \
+        $$(addprefix $(TARGET_PATH)/,$$(filter-out $$(BAZEL_NATIVE_EXCLUDED_IMAGES),$$($$*_DOCKERS))) \
         $$(addprefix $(TARGET_PATH)/,$$(SONIC_PACKAGES_LOCAL)) \
         $$(addprefix $(FILES_PATH)/,$$($$*_FILES)) \
         $(if $(findstring y,$(ENABLE_ZTP)),$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(SONIC_ZTP))) \
@@ -1828,6 +1832,15 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         $(addprefix $(PYTHON_WHEELS_PATH)/,$(SONIC_HOST_SERVICES_PY3)) \
         $$(addprefix $(TARGET_PATH)/,$$($$*_RFS_DEPENDS)) \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(LINUX_KBUILD)-install)
+
+	# Set the stage only after native prerequisites (including the first RFS
+	# stage) finish. Exporting it on the target would leak into prerequisites.
+	if [[ "$(BAZEL_NATIVE_PREPARE)" == y ]]; then
+		export SONIC_BAZEL_BUILD_STAGE=host
+		export SONIC_BAZEL_HOST_SNAPSHOT="$$PWD/target/bazel-native/host-onie.squashfs"
+		export SONIC_BAZEL_SOURCE_COMMIT="$$(git rev-parse HEAD)"
+		export SONIC_BAZEL_SOURCE_BRANCH="$$(git rev-parse --abbrev-ref HEAD)"
+	fi
 
 	$(HEADER)
 	# Pass initramfs and linux kernel explicitly. They are used for all platforms
@@ -2041,6 +2054,17 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 		ENABLE_SBOM="$(ENABLE_SBOM)" \
 		TARGET_PATH="$(TARGET_PATH)" \
 			./build_debian.sh $(LOG)
+
+		if [[ "$(BAZEL_NATIVE_PREPARE)" == y ]]; then
+			$(foreach docker, $($*_DOCKERS), \
+				rm -f *$($(docker:-dbg.gz=.gz)_CONTAINER_NAME).sh
+				rm -f $($(docker:-dbg.gz=.gz)_CONTAINER_NAME).service
+				rm -f $($(docker:-dbg.gz=.gz)_CONTAINER_NAME)@.service
+			)
+			rm -f sonic_debian_extension.sh
+			$(FOOTER)
+			exit 0
+		fi
 
 		USERNAME="$(USERNAME)" \
 		PASSWORD="$${PASSWORD}" \

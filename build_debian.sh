@@ -74,6 +74,12 @@ if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y ]]; then
     [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "Bazel host action requires SOURCE_DATE_EPOCH"
 fi
 
+case "${SONIC_BAZEL_BUILD_STAGE:-}" in
+    "") ;;
+    host) . tools/bazel/image/native/host.sh ;;
+    *) die "Unsupported Bazel native host stage" ;;
+esac
+
 if [ "$IMAGE_TYPE" = "aboot" ]; then
     TARGET_BOOTLOADER="aboot"
 fi
@@ -679,10 +685,12 @@ if [[ $RFS_SPLIT_LAST_STAGE == y ]]; then
         sudo unsquashfs -d $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME
     fi
 
-    ## make / as a mountpoint in chroot env, needed by dockerd
-    pushd $FILESYSTEM_ROOT
-    sudo mount --bind . .
-    popd
+    if [[ ${SONIC_BAZEL_BUILD_STAGE:-} != host ]]; then
+        ## make / as a mountpoint in chroot env, needed by dockerd
+        pushd $FILESYSTEM_ROOT
+        sudo mount --bind . .
+        popd
+    fi
 
     trap_push 'sudo LANG=C chroot $FILESYSTEM_ROOT umount /proc || true'
     sudo LANG=C chroot $FILESYSTEM_ROOT mount proc /proc -t proc
@@ -699,6 +707,11 @@ export commit_id="$(git rev-parse --short HEAD)"
 export branch="$(git rev-parse --abbrev-ref HEAD)"
 export release="$(if [ -f $FILESYSTEM_ROOT/etc/sonic/sonic_release ]; then cat $FILESYSTEM_ROOT/etc/sonic/sonic_release; fi)"
 export build_date="$(date -u)"
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    export commit_id="$SONIC_BAZEL_SOURCE_COMMIT"
+    export branch="$SONIC_BAZEL_SOURCE_BRANCH"
+    export build_date="$(LC_ALL=C date -u -d "@$SOURCE_DATE_EPOCH")"
+fi
 export build_number="${BUILD_NUMBER:-0}"
 export built_by="$USER@$BUILD_HOSTNAME"
 export sonic_os_version="${SONIC_OS_VERSION}"
@@ -707,6 +720,14 @@ fi
 
 if [ -f sonic_debian_extension.sh ]; then
     ./sonic_debian_extension.sh $FILESYSTEM_ROOT $PLATFORM_DIR $IMAGE_DISTRO
+fi
+
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    sonic_bazel_write_host_snapshot
+    # Capture generated services and the evaluated environment before Make
+    # removes its templates. This never includes password/signing material.
+    python3 tools/bazel/image/native/producer.py finish
+    exit 0
 fi
 
 ## Organization specific extensions such as Configuration & Scripts for features like AAA, ZTP...

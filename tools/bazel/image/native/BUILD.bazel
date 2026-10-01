@@ -1,0 +1,31 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "native.mk",
+    "producer.py",
+    "snapshot.py",
+])
+
+_PRODUCER_SOURCES = [
+    "producer.py",
+    "snapshot.py",
+    "//tools/bazel/image:host.py",
+    "//tools/bazel/image:installer.py",
+    "//tools/bazel/image:metadata.py",
+    "//tools/bazel/image:prepare_host_inputs.py",
+]
+
+py_test(
+    name = "producer_test",
+    srcs = ["producer_test.py"] + _PRODUCER_SOURCES,
+    data = ["native.mk"],
+    imports = ["."],
+)
+
+py_test(
+    name = "handoff_test",
+    srcs = ["handoff_test.py"] + _PRODUCER_SOURCES,
+    imports = ["."],
+)
