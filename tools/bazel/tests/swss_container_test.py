@@ -234,12 +234,15 @@ LOADER_PROBE = r'''
 import importlib, importlib.metadata, json, os, subprocess, sys
 records, errors, imports = [], [], []
 for path in sys.argv[1:]:
-    p = subprocess.run(['/usr/bin/ldd', '-r', '/' + path], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # Python supplies the DASH extension's interpreter symbols when importing it.
+    # Check its shared-library closure here and exercise the import below.
+    flags = [] if path == 'usr/lib/python3/dist-packages/dash_api/_utils.so' else ['-r']
+    p = subprocess.run(['/usr/bin/ldd', *flags, '/' + path], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     passed = not (p.returncode or 'not found' in p.stdout or 'undefined symbol:' in p.stdout)
     if not passed:
         errors.append('loader: ' + path)
     records.append({'path': path, 'passed': passed, 'returncode': p.returncode, 'loader_output': p.stdout.strip()})
-modules = ['swsscommon.swsscommon', 'swsscommon._swsscommon', 'sonic_py_common', 'jinja2', 'netifaces', 'pyroute2', 'scapy.all', 'google.protobuf']
+modules = ['swsscommon.swsscommon', 'swsscommon._swsscommon', 'sonic_py_common', 'jinja2', 'netifaces', 'pyroute2', 'scapy.all', 'google.protobuf', 'click', 'dash_api._utils', 'dash_api.utils', 'dash_api.appliance_pb2']
 for name in modules:
     try:
         module = importlib.import_module(name)
@@ -253,10 +256,22 @@ except importlib.metadata.PackageNotFoundError:
     version = None
 if version != '0.5.14':
     errors.append('pyroute2 version: ' + str(version))
+document = {'sip': {'ipv4': 16777482}, 'vm_vni': 4321, 'local_region_id': 100,
+            'outbound_direction_lookup': 'dst_mac', 'trusted_vnis_list': [{'value': 100}]}
+cli_roundtrip = {'input': document}
+cli = ['/usr/bin/dash_api_utils', '-t', 'DASH_APPLIANCE_TABLE']
+try:
+    encoded = subprocess.run(cli + ['--to_proto'], input=json.dumps(document).encode(), check=True, capture_output=True).stdout
+    decoded = subprocess.run(cli + ['--to_json'], input=encoded, check=True, capture_output=True).stdout
+    cli_roundtrip.update(encoded_hex=encoded.hex(), decoded=json.loads(decoded))
+    if cli_roundtrip['decoded'] != document:
+        errors.append('DASH CLI round trip')
+except Exception as error:
+    errors.append('DASH CLI: ' + str(error))
 syntax = subprocess.run(['/bin/bash', '-n', '/usr/bin/docker-init.sh'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 if syntax.returncode:
     errors.append('entrypoint syntax: ' + syntax.stdout)
-print(json.dumps({'passed': not errors, 'errors': errors, 'relocations': records, 'python_imports': imports, 'pyroute2_version': version}))
+print(json.dumps({'passed': not errors, 'errors': errors, 'relocations': records, 'python_imports': imports, 'pyroute2_version': version, 'dash_cli': cli_roundtrip}))
 '''
 
 
@@ -447,7 +462,8 @@ def main():
                 require(report["debug_loader"]["passed"], "debug container loader/import failures: " +
                         "; ".join(report["debug_loader"]["errors"]))
                 pairs, gaps = elf_debug(directory / "debug", combined, args.prebuilt_library)
-                require(set(programs) <= {item["path"] for item in pairs}, "missing SWSS executable debug coverage")
+                required_debug = set(programs) | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so"}
+                require(required_debug <= {item["path"] for item in pairs}, "missing SWSS/DASH debug coverage")
                 report.update(debug_archive=debug, debug_pairs=pairs, prebuilt_debug_gaps=gaps,
                               gdb=gdb_probe(docker, debug, pairs))
             report["status"] = "passed" if args.debug_archive else "runtime-passed-debug-not-run"
