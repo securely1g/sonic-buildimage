@@ -1,0 +1,8 @@
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+
+# Exercise the same transitive debug-symbol collection used by the OCI image,
+# without requiring its Make-built config-engine base on a fresh CI runner.
+debug_symbols_layer(
+    name = "swss_debug_symbols",
+    image = "//dockers/docker-orchagent:rdeps",
+)
