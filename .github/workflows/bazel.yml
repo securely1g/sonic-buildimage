@@ -128,8 +128,8 @@ jobs:
           /usr/bin/python3 - <<'PY'
           import os, shutil
           free = shutil.disk_usage(os.environ["GITHUB_WORKSPACE"]).free
-          if free < 45 * 1024**3:
-              raise SystemExit("VS image assembly needs at least 45 GiB of free disk")
+          if free < 50 * 1024**3:
+              raise SystemExit("VS image assembly needs at least 50 GiB of free disk")
           PY
 
       - name: Build and verify sonic-vs.bin with Bazel

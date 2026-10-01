@@ -8,11 +8,13 @@ worker/server reuses compiled SWSS actions within the job.
 
 import argparse
 import datetime
+import errno
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -126,7 +128,7 @@ def execute(command, workspace, artifacts, receipt, name):
 
 def bep_outputs(path, targets, output_root):
     """Resolve successful target default outputs from this build's BEP only."""
-    named, completed, finished = {}, {}, False
+    named, completed, finished, completion_seen = {}, {}, False, False
     with path.open() as stream:
         for line in stream:
             event = json.loads(line)
@@ -139,7 +141,18 @@ def bep_outputs(path, targets, output_root):
                     require(target["label"] not in completed, "ambiguous target completion in BEP")
                     completed[target["label"]] = event["completed"]
             if "buildFinished" in identity:
-                finished = event["finished"]["exitCode"]["code"] == 0
+                require(not completion_seen, "ambiguous build completion in BEP")
+                completion_seen = True
+                completion = event.get("finished")
+                require(isinstance(completion, dict) and isinstance(completion.get("exitCode"), dict),
+                        "BEP build completion lacks an explicit exitCode message")
+                exit_code = completion["exitCode"]
+                # Protobuf JSON omits scalar defaults, including successful code
+                # zero. Require the enclosing message and overall success first
+                # so a missing/failed completion cannot be mistaken for success.
+                code = exit_code.get("code", 0)
+                finished = (completion.get("overallSuccess") is True and type(code) is int and code == 0
+                            and exit_code.get("name", "SUCCESS") == "SUCCESS")
     require(finished, "BEP does not report a successful completed build")
 
     def files(identifier, ancestors):
@@ -181,8 +194,19 @@ def named_output(outputs, target, name):
 
 def publish(source, artifacts, name):
     output = artifacts / name
-    shutil.copyfile(source, output)
-    info = {"file": name, "bytes": output.stat().st_size, "sha256": image_inputs.sha256(output)}
+    method = "hardlink"
+    try:
+        os.link(source, output, follow_symlinks=False)
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+        # Different filesystems cannot share an inode. Exclusive creation keeps
+        # this fallback from overwriting a previous artifact or symlink.
+        with source.open("rb") as incoming, output.open("xb") as outgoing:
+            shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+        method = "copy"
+    info = {"file": name, "bytes": output.stat().st_size, "sha256": image_inputs.sha256(output),
+            "publication_method": method}
     require(info["bytes"] > 0 and info["sha256"] == image_inputs.sha256(source),
             "published artifact differs from Bazel output: " + name)
     return info
@@ -200,13 +224,17 @@ def build(args):
     output_root = state / ("output-" + invocation)
     worker_name = "sonic-vs-ci-" + invocation
     launcher, worker_attempted, ownership_changed = None, False, False
+    output_identity = None
     receipt = {"schema": 1, "status": "running", "commands": [], "outputs": {},
                "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                "worker": worker_name, "output_user_root": str(output_root),
+               "output_cleanup": {"path": str(output_root), "status": "not_created"},
                "cache_policy": "Package disk cache and repository cache persist; full image disk cache disabled.",
                "scope": "Bazel SWSS compile and VS image assembly from pinned native predecessors; "
                         "installer byte-chain verification. No boot or forwarding test."}
     try:
+        require(not artifacts.is_relative_to(output_root), "artifacts cannot be inside the invocation output root")
+        require(not output_root.is_symlink(), "invocation output root must not be a symlink")
         manifest = args.manifest.resolve(strict=True)
         receipt["manifest_sha256"] = image_inputs.sha256(manifest)
         receipt["bazel_version"] = check_bazel_version(image_inputs.load_manifest(manifest), workspace)
@@ -219,7 +247,13 @@ def build(args):
         receipt["execution_environment"] = json.loads(spec.read_text())
         host_config = json.loads((workspace / "target/bazel-image-inputs/host-config.json").read_text())
         receipt["native_host_identity"] = host_config.get("identity")
-        for path in (output_root, state / "repository-cache", state / "package-cache"):
+        # Claim this fresh directory exclusively; cleanup never adopts an
+        # existing output root or another invocation's scratch directory.
+        output_root.mkdir()
+        created = output_root.lstat()
+        output_identity = (created.st_dev, created.st_ino)
+        receipt["output_cleanup"]["status"] = "retained"
+        for path in (state / "repository-cache", state / "package-cache"):
             path.mkdir(parents=True, exist_ok=True)
         if os.geteuid() == 0:
             ownership_changed = True
@@ -270,11 +304,31 @@ def build(args):
         receipt.update(status="failed", error=str(error), error_type=type(error).__name__)
         print("VS image CI failed: " + str(error), file=sys.stderr)
     finally:
+        worker_stopped = False
         if worker_attempted:
             try:
                 execute(launcher + ["--worker-action", "stop"], workspace, artifacts, receipt, "worker-stop")
+                worker_stopped = True
             except (Exception, KeyboardInterrupt) as error:
                 receipt.update(status="failed", worker_cleanup_error=str(error))
+        if receipt["status"] == "passed" and worker_stopped:
+            cleanup_started = time.monotonic()
+            try:
+                require(output_identity is not None and output_root.parent == state
+                        and not output_root.is_symlink() and output_root.resolve(strict=True) == output_root
+                        and not artifacts.resolve().is_relative_to(output_root),
+                        "refusing cleanup of an unexpected invocation output root")
+                current = output_root.lstat()
+                require(stat.S_ISDIR(current.st_mode)
+                        and (current.st_dev, current.st_ino) == output_identity,
+                        "refusing cleanup of a replaced invocation output root")
+                shutil.rmtree(output_root)
+                receipt["output_cleanup"]["status"] = "removed"
+            except (Exception, KeyboardInterrupt) as error:
+                receipt["status"] = "failed"
+                receipt["output_cleanup"].update(status="failed", error=str(error))
+            finally:
+                receipt["output_cleanup"]["wall_seconds"] = time.monotonic() - cleanup_started
         if ownership_changed:
             try:
                 chown_tree(workspace, *original_owner)
