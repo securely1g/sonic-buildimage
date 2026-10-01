@@ -29,6 +29,29 @@ class ImageControllerTest(unittest.TestCase):
         self.output = self.output_root / "sonic-vs.bin"
         self.output.write_bytes(b"this build's output")
         self.bep = self.root / "bep.jsonl"
+        self.lifecycle = []
+
+        def clone(workspace, destination, source):
+            self.lifecycle.append("clone")
+            self.bazel_workspace = destination
+            destination.mkdir()
+            return {"schema": 1, "status": "passed", "source_commit": source["source_commit"]}
+
+        def audit(*_args):
+            self.lifecycle.append("audit")
+            return {"schema": 1, "clean": False, "repositories": {
+                "src/sonic-swss": {"changes": [{"path": "Cargo.lock", "kind": "file"}]}}}
+
+        def verify(*_args):
+            self.lifecycle.append("verify-source")
+            return {"status": "passed", "clean": True}
+
+        # Real Git isolation is exercised by source_workspace_test. These
+        # controller fixtures verify ordering and the workspace at each edge.
+        for name, implementation in (("clone", clone), ("audit", audit), ("verify", verify)):
+            patcher = mock.patch.object(image.source_workspace, name, side_effect=implementation)
+            setattr(self, name + "_source", patcher.start())
+            self.addCleanup(patcher.stop)
 
     def events(self, output=None):
         return [
@@ -175,7 +198,7 @@ class ImageControllerTest(unittest.TestCase):
                                        artifacts=self.artifacts)
 
         def prepare(*_args):
-            inputs = self.workspace / "target/bazel-image-inputs"
+            inputs = _args[2] / "target/bazel-image-inputs"
             inputs.mkdir(parents=True)
             (inputs / "execution-environment.json").write_text('{"schema": 1}')
             (inputs / "host-config.json").write_text('{"identity": {"image_version": "frozen"}}')
@@ -198,7 +221,7 @@ class ImageControllerTest(unittest.TestCase):
             self.assertEqual(image.build(arguments), 1)
         self.assertEqual(chown.call_args_list, [mock.call(self.workspace, 1000, 1000),
                          mock.call(self.state, 1000, 1000),
-                         mock.call(self.workspace / "target/bazel-image-inputs", 1000, 1000),
+                         mock.call(self.bazel_workspace / "target", 1000, 1000),
                          mock.call(self.workspace, *owner)])
         self.assertEqual(len(commands), 3)
         self.assertEqual(commands[2], commands[1][:commands[1].index("--")] + ["--worker-action", "stop"])
@@ -346,6 +369,10 @@ class ImageControllerTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "failed")
         self.assertIn("native compilation failed", receipt["error"])
         self.assertEqual(receipt["output_cleanup"]["status"], "retained")
+        self.clone_source.assert_called_once()
+        self.audit_source.assert_called_once()
+        self.verify_source.assert_not_called()
+        self.assertTrue((self.artifacts / "native-source-audit.json").is_file())
 
     def run_build_fixture(self, failure=None, stop_hook=None):
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
@@ -355,7 +382,10 @@ class ImageControllerTest(unittest.TestCase):
             (self.state / cache / "retained-entry").write_bytes(b"keep cache")
 
         def prepare(*_args):
-            inputs = self.workspace / "target/bazel-image-inputs"
+            self.lifecycle.append("prepare")
+            self.assertEqual(_args[1], self.workspace)
+            self.assertEqual(_args[2], self.bazel_workspace)
+            inputs = self.bazel_workspace / "target/bazel-image-inputs"
             inputs.mkdir(parents=True)
             (inputs / "execution-environment.json").write_text('{"schema": 1}')
             (inputs / "host-config.json").write_text('{"identity": {"image_version": "frozen"}}')
@@ -363,7 +393,11 @@ class ImageControllerTest(unittest.TestCase):
         commands = []
 
         def execute(command, *_args):
+            self.lifecycle.append(_args[-1])
+            self.assertEqual(_args[0], self.workspace if _args[-1] == "native-build" else self.bazel_workspace)
             commands.append(command)
+            if _args[-1] == "native-build" and failure == "native":
+                raise RuntimeError("fixture native compilation failed")
             if "--worker-action" in command:
                 if failure == "worker-stop":
                     raise RuntimeError("fixture worker stop failed")
@@ -409,14 +443,18 @@ class ImageControllerTest(unittest.TestCase):
     def test_success_reuses_worker_disables_full_image_disk_cache_and_publishes_verified_bytes(self):
         result, commands, receipt = self.run_build_fixture()
         self.assertEqual(result, 0)
+        self.assertEqual(self.lifecycle, ["clone", "native-build", "audit", "verify-source", "prepare",
+                                         "package", "image", "verify-image", "worker-stop"])
         self.assertEqual(len(commands), 5)
         native = commands.pop(0)
         self.assertTrue(native[1].endswith("tools/bazel/ci/native_build.py"))
         self.assertIn("--invocation", native)
         self.assertIn("--worker-spec", native)
+        self.assertEqual(native[native.index("--workspace") + 1], str(self.workspace))
         self.assertIn("--disk_cache=" + str(self.state / "package-cache"), commands[0])
         self.assertIn("--disk_cache=", commands[1])
         for command in (commands[0], commands[1], commands[-1]):
+            self.assertEqual(command[command.index("--workspace") + 1], str(self.bazel_workspace))
             self.assertEqual(command[command.index("--worker-cpus") + 1], "4")
             self.assertEqual(command[command.index("--worker-memory-gib") + 1], "12")
         self.assertIn("--local_resources=memory=10000", commands[1])
@@ -424,6 +462,8 @@ class ImageControllerTest(unittest.TestCase):
         self.assertEqual(commands[-1][-2:], ["--worker-action", "stop"])
         self.assertEqual((self.artifacts / "sonic-vs.bin").read_bytes(), b"built sonic-vs.bin")
         self.assertEqual(receipt["status"], "passed")
+        self.assertTrue(receipt["bazel_source"]["verification_after_native"]["clean"])
+        self.assertFalse(json.loads((self.artifacts / "native-source-audit.json").read_text())["clean"])
         self.assertEqual(set(receipt["outputs"]), {"installer", "runtime"})
         self.assertEqual(len((self.artifacts / "SHA256SUMS").read_text().splitlines()), 2)
         self.assertEqual(receipt["output_cleanup"]["status"], "removed")
@@ -434,6 +474,42 @@ class ImageControllerTest(unittest.TestCase):
             self.assertEqual(image.image_inputs.sha256(self.artifacts / output["file"]), output["sha256"])
         for cache in ("package-cache", "repository-cache"):
             self.assertEqual((self.state / cache / "retained-entry").read_bytes(), b"keep cache")
+
+    def test_changed_pristine_checkout_blocks_staging_and_bazel(self):
+        self.verify_source.side_effect = ValueError("pristine checkout contains ignored source")
+        result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(commands[0][1].endswith("native_build.py"))
+        self.assertNotIn("prepare", self.lifecycle)
+        self.assertIn("ignored source", receipt["error"])
+        self.assertFalse((self.artifacts / "sonic-vs.bin").exists())
+
+    def test_clone_failure_blocks_native_build(self):
+        self.clone_source.side_effect = ValueError("recorded source object is missing")
+        result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(commands, [])
+        self.assertIn("source object", receipt["error"])
+        self.audit_source.assert_not_called()
+
+    def test_native_audit_failure_blocks_staging_after_successful_make(self):
+        self.audit_source.side_effect = OSError("source audit unavailable")
+        result, commands, receipt = self.run_build_fixture()
+        self.assertEqual(result, 1)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("audit unavailable", receipt["native_source_audit_error"])
+        self.verify_source.assert_not_called()
+
+    def test_native_audit_failure_does_not_hide_native_build_failure(self):
+        self.audit_source.side_effect = OSError("source audit unavailable")
+        result, commands, receipt = self.run_build_fixture(failure="native")
+        self.assertEqual(result, 1)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("native compilation failed", receipt["error"])
+        self.assertIn("audit unavailable", receipt["native_source_audit_error"])
+        self.verify_source.assert_not_called()
+        self.assertNotIn("prepare", self.lifecycle)
 
     def test_verification_failure_retains_this_invocations_output(self):
         result, commands, receipt = self.run_build_fixture(failure="verify")
