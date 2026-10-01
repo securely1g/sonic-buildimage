@@ -172,16 +172,73 @@ Remote execution is disabled; remote execution toolchains and a completely
 source-built OS/package closure are follow-up work. Normal Bazel action caching
 is enabled, including for the isolated privileged actions.
 
+## Persistent developer loop
+
+Pass `--persistent-worker NAME` to reuse the isolated worker and its Bazel server
+across invocations. The launcher verifies the immutable worker image, declared
+specification, bind mounts, resource limits and account identity before executing
+inside the existing container. It serializes lifecycle/build operations with a
+lock. The same server retains Bazel analysis state and a bounded 200,000-entry
+file-digest cache. Cache checks and normal dependency invalidation remain enabled.
+Without this option, the launcher retains its disposable worker and batch JVM.
+
+Use the same absolute paths and startup flags on every invocation:
+
+```sh
+python3 tools/bazel/image/run.py \
+  --workspace /absolute/build-area/sonic-buildimage \
+  --mount-root /absolute/build-area \
+  --worker-spec /absolute/build-area/sonic-buildimage/target/bazel-image-inputs/execution-environment.json \
+  --output-user-root /absolute/build-area/bazel-state \
+  --repository-cache /absolute/repository-cache \
+  --persistent-worker sonic-vs-dev \
+  -- build //tools/bazel/image/vs:sonic-vs.bin
+```
+
+If the pinned worker lacks `/usr/local/bin/bazel`, add `--bazel` with an absolute
+executable path inside the mounted build area. Preserve any source overrides,
+distdir, or Java trust-store startup flags required by the workspace. The launcher
+uses the same 8-CPU quota, 24-GiB limit, eight jobs and CPU resource budget of eight
+in persistent mode. `--worker-user` and `--worker-home` can preserve a prior
+worker's UID-1000 account identity; both must match on later invocations.
+
+With the same launcher configuration, `--worker-action start` creates/initializes
+only the worker, `--worker-action status` reports its identity, and
+`--worker-action stop` shuts down its Bazel server and removes that verified
+worker. `run` is the default action and starts the worker if needed. The persistent
+container remains available until explicitly stopped. A startup-option change
+can make Bazel restart its server; changing source or build options still causes
+normal incremental analysis and rebuilding.
+
+The merged Docker archive, payload ZIP and ONIE installer finish with Bazel's
+normal read-only output mode before their actions exit. This prevents a later
+permission change from invalidating freshly computed file digests; it does not
+change archive contents or bypass artifact hashing. ONIE tar streaming and
+file copies use 1 MiB buffers to reduce small Python writes while preserving
+headers, padding and checksums; a regression test compares the exact bytes with
+the default-buffer implementation.
+
+For an incremental benchmark, report worker/JVM startup and initial graph/cache
+population separately. Require an unchanged zero-spawn invocation, then time a
+fresh one-line source change through all build actions, final publication and
+checksums. The latest measurement harness copies the installer and runtime
+archive first, then hashes those two files and the three assembly outputs with
+three read-only checksum workers. All five files are read independently in full;
+this publication optimization is recorded separately from the Bazel launcher.
+See [benchmark results](BENCHMARK.md) for both the original serial-publication
+trial and this follow-up at the same output/checksum boundary.
+
 ## Validation and limitations
 
 ```sh
 bazel test //tools/bazel/image:metadata_test //tools/bazel/image:host_test \
-  //tools/bazel/image:store_test //tools/bazel/image:installer_test
+  //tools/bazel/image:store_test //tools/bazel/image:installer_test \
+  //tools/bazel/image:run_test
 ```
 
 The tests cover metadata invalidation, snapshot identity, unsafe source bundles,
 Docker ChainID/lower-link consistency, shared-layer deduplication, byte reuse,
-archive readers, and the real ONIE shell wrapper's extraction/checksum behavior.
+archive readers, persistent-worker identity/lifecycle/locking, and the real ONIE shell wrapper's extraction/checksum behavior.
 A live integration check must also restore the assembled store under the pinned
 Docker version, run the rebuilt executable, and exercise Docker save/reload.
 Image validation must inspect the final payload, rather than only its source
