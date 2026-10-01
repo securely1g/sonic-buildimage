@@ -9,6 +9,7 @@ builds orchagent and the final installer after this helper returns.
 
 import argparse
 import datetime
+import errno
 import grp
 import hashlib
 import json
@@ -16,6 +17,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -74,6 +76,8 @@ def assert_owned(container, invocation, worker_image, mount_root):
             "refusing to act on an unrelated native worker")
     require(info["Config"]["Image"] == worker_image and info["HostConfig"]["Privileged"],
             "native worker image or isolation settings changed")
+    require(info["HostConfig"].get("CgroupnsMode") == "private",
+            "native worker requires its own cgroup namespace")
     mounts = info["Mounts"]
     require(len(mounts) == 1 and mounts[0]["Type"] == "bind"
             and mounts[0]["Source"] == str(mount_root)
@@ -117,6 +121,93 @@ def execution_trust():
             ("enabled", "sha256", "installed_bundle_sha256", "certificate_count")}, bundle
 
 
+def prepare_cgroups():
+    """Delegate only this worker's private cgroup v2 subtree to nested Docker.
+
+    As in Moby's hack/dind, keep worker processes in a leaf before enabling
+    domain controllers. Otherwise runc creates a threaded subtree which cannot
+    enforce the native slave's memory limit. The host checks CgroupnsMode before
+    starting us; these checks additionally reject a host-root or shared view.
+    """
+    root = Path("/sys/fs/cgroup")
+    if not (root / "cgroup.controllers").exists():
+        return {"version": 1}
+    require(Path("/proc/self/cgroup").read_text().strip() == "0::/"
+            and (root / "cgroup.type").read_text().strip() == "domain",
+            "native cgroup setup requires a fresh private domain")
+    controllers = (root / "cgroup.controllers").read_text().split()
+    require({"cpu", "memory", "pids"}.issubset(controllers),
+            "native worker lacks delegated CPU, memory, or PID controllers")
+    leaf = root / "sonic-native-init"
+    leaf.mkdir()
+    for attempt in range(5):
+        for pid in (root / "cgroup.procs").read_text().split():
+            require(pid.isdecimal() and int(pid) > 0, "invalid worker cgroup process")
+            try:
+                (leaf / "cgroup.procs").write_text(pid)
+            except ProcessLookupError:
+                pass  # A process can exit between reading and moving it.
+        try:
+            (root / "cgroup.subtree_control").write_text(
+                " ".join("+" + controller for controller in controllers))
+            return {"version": 2, "controllers": controllers,
+                    "process_leaf": leaf.name}
+        except OSError as error:
+            if error.errno != errno.EBUSY or attempt == 4:
+                raise
+            time.sleep(0.1)
+    raise AssertionError("unreachable cgroup preparation state")
+
+
+def daemon_preflight(args, env):
+    """Exercise the actual nonroot BuildKit and resource-limited slave boundary.
+
+    The tiny image contains only busybox and its libraries from the immutable
+    execution worker. It needs no registry, network, or prepared SONiC artifact.
+    """
+    context = args.state / "docker-preflight"
+    rootfs, scratch = context / "rootfs", context / "scratch"
+    rootfs.mkdir(parents=True)
+    scratch.mkdir()
+    os.chown(scratch, 1000, 1000)
+    dependencies = command(["ldd", "/bin/busybox"], stdout=subprocess.PIPE).stdout
+    for name in sorted({"/bin/busybox", *re.findall(r"(/\S+)", dependencies)}):
+        source = Path(name)
+        require(source.is_file(), "missing worker busybox runtime: " + name)
+        destination = rootfs / source.relative_to("/")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination, follow_symlinks=True)
+    (context / "Dockerfile").write_text(
+        'FROM scratch\nCOPY rootfs/ /\nRUN ["/bin/busybox", "true"]\n')
+    tag = "sonic-native-preflight:" + args.invocation
+    prefix = ["runuser", "--preserve-environment", "--user", USER, "--"]
+    # Every call is bounded and uses the same nonroot client/private socket as
+    # Make. Running the nested container also proves writable bind propagation.
+    command([*prefix, "docker", "buildx", "version"], env=env, timeout=30)
+    command([*prefix, "docker", "buildx", "build", "--load", "--network=none",
+             "--progress=plain", "--tag", tag, context], env=env, timeout=180)
+    check = (
+        'if [ -f /sys/fs/cgroup/cgroup.controllers ]; then '
+        'test "$(/bin/busybox cat /sys/fs/cgroup/memory.max)" = 15032385536; '
+        'test "$(/bin/busybox cat /sys/fs/cgroup/memory.swap.max)" = 0; '
+        'else test "$(/bin/busybox cat /sys/fs/cgroup/memory/memory.limit_in_bytes)" = 15032385536; '
+        'test "$(/bin/busybox cat /sys/fs/cgroup/memory/memory.memsw.limit_in_bytes)" = 15032385536; fi; '
+        'test "$(ulimit -n)" = 524288; printf "native-preflight-ok\\n" > /probe/result'
+    )
+    command([*prefix, "docker", "run", "--rm", "--privileged", "--init",
+             "--memory=14g", "--memory-swap=14g", "--ulimit", "nofile=524288:524288",
+             "--mount", "type=bind,src=" + str(scratch) + ",dst=/probe",
+             tag, "/bin/busybox", "sh", "-ec", check], env=env, timeout=60)
+    require((scratch / "result").read_text() == "native-preflight-ok\n",
+            "native Docker preflight did not write through its bind mount")
+    command([*prefix, "docker", "image", "rm", tag], env=env, timeout=30)
+    (args.artifacts / "docker-preflight.json").write_text(json.dumps({
+        "status": "passed", "image_source": "immutable worker busybox and runtime libraries",
+        "buildkit_run": True, "nonroot_client": USER, "memory_bytes": 14 * 1024 ** 3,
+        "swap_bytes": 0, "nofile": 524288, "writable_bind": True,
+    }, indent=2) + "\n")
+
+
 def inside(args):
     require(os.geteuid() == 0 and Path("/.dockerenv").exists()
             and os.environ.get("SONIC_NATIVE_CI_INVOCATION") == args.invocation,
@@ -136,6 +227,8 @@ def inside(args):
     sudoers = Path("/etc/sudoers.d/sonic-native-ci")
     sudoers.write_text(USER + " ALL=(ALL) NOPASSWD:ALL\n")
     sudoers.chmod(0o440)
+    (args.artifacts / "cgroup-delegation.json").write_text(
+        json.dumps(prepare_cgroups(), indent=2) + "\n")
     socket = Path("/run/sonic-native-ci/docker.sock")
     socket.parent.mkdir(parents=True)
     docker_log = (args.artifacts / "dockerd.log").open("w")
@@ -143,7 +236,8 @@ def inside(args):
         "dockerd", "--host=unix://" + str(socket), "--group=" + USER,
         "--data-root=" + str(state / "docker-data"),
         "--exec-root=/run/sonic-native-ci/exec", "--pidfile=/run/sonic-native-ci/docker.pid",
-        "--storage-driver=overlay2"], stdout=docker_log, stderr=subprocess.STDOUT)
+        "--storage-driver=overlay2", "--exec-opt=native.cgroupdriver=cgroupfs"],
+        stdout=docker_log, stderr=subprocess.STDOUT)
     env = native_environment(socket)
     try:
         trust_metadata, ca_bundle = execution_trust()
@@ -158,6 +252,7 @@ def inside(args):
             time.sleep(1)
         else:
             raise RuntimeError("private native Docker daemon did not become ready")
+        daemon_preflight(args, env)
         # Set per-package concurrency where slave.mk actually reads it. This
         # file is intentionally generated only in the fresh invocation clone.
         config = workspace / "rules/config.user"
@@ -212,6 +307,7 @@ def build(args):
     try:
         argv = ["docker", "create", "--name", "sonic-native-ci-" + args.invocation,
                 "--label", LABEL + "=" + args.invocation, "--privileged", "--init",
+                "--cgroupns=private",
                 "--cpus=4", "--memory=16g", "--memory-swap=16g",
                 "--mount", "type=bind,src=" + str(root) + ",dst=" + str(root),
                 "--env", "SONIC_NATIVE_CI_INVOCATION=" + args.invocation,
