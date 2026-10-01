@@ -43,8 +43,8 @@ class WorkerTest(unittest.TestCase):
                            'Entrypoint': ['/bin/bash'],
                            'Cmd': ['-ec', plan['bootstrap'], 'sonic-image-worker'],
                            'WorkingDir': identity['workspace'], 'User': '0:0'},
-                'HostConfig': {'Init': True, 'Privileged': True, 'NanoCpus': 8_000_000_000,
-                               'Memory': image_run.MEMORY, 'MemorySwap': image_run.MEMORY,
+                'HostConfig': {'Init': True, 'Privileged': True, 'NanoCpus': identity['cpu_count'] * 1_000_000_000,
+                               'Memory': identity['memory_bytes'], 'MemorySwap': identity['memory_bytes'],
                                'NetworkMode': 'bridge', 'PidMode': '', 'IpcMode': 'private',
                                'AutoRemove': False, 'PublishAllPorts': False, 'PortBindings': {},
                                'RestartPolicy': {'Name': 'no'}},
@@ -68,6 +68,43 @@ class WorkerTest(unittest.TestCase):
         self.assertIn('--network=bridge', plan['create'])
         self.assertNotIn('--batch', plan['bazel_command'])
         self.assertEqual(image_run.validate_worker(self.worker(plan), plan), 'b' * 64)
+
+    def test_explicit_default_resources_preserve_existing_worker_identity(self):
+        original = self.plan()
+        self.args.worker_cpus, self.args.worker_memory_gib = 8, 24
+        plan = self.plan()
+        self.assertEqual(plan['identity'], original['identity'])
+        self.assertEqual(plan['digest'], original['digest'])
+        self.assertEqual(plan['create'], original['create'])
+        self.assertEqual(plan['bazel_command'], original['bazel_command'])
+
+    def test_hosted_worker_resources_match_docker_identity_and_bazel_defaults(self):
+        original = self.plan()
+        self.args.worker_cpus, self.args.worker_memory_gib = 4, 12
+        plan = self.plan()
+        self.assertNotEqual(plan['digest'], original['digest'])
+        for argument in ('--cpus=4', '--memory=12g', '--memory-swap=12g'):
+            self.assertIn(argument, plan['create'])
+        self.assertIn('--jobs=4', plan['bazel_command'])
+        self.assertIn('--local_resources=cpu=4', plan['bazel_command'])
+        self.assertNotIn('--jobs=8', plan['bazel_command'])
+        self.assertEqual(image_run.validate_worker(self.worker(plan), plan), 'b' * 64)
+        for field, incorrect in [('NanoCpus', 8_000_000_000), ('Memory', 24 * 1024 ** 3),
+                                 ('MemorySwap', 24 * 1024 ** 3)]:
+            with self.subTest(field=field):
+                worker = self.worker(plan)
+                worker['HostConfig'][field] = incorrect
+                with self.assertRaisesRegex(ValueError, 'mismatched persistent worker'):
+                    image_run.validate_worker(worker, plan)
+
+    def test_worker_resources_reject_nonpositive_and_noninteger_values(self):
+        for field in ('worker_cpus', 'worker_memory_gib'):
+            for value in (0, -1, 2.5, '4', True, None):
+                with self.subTest(field=field, value=value):
+                    self.args.worker_cpus, self.args.worker_memory_gib = 8, 24
+                    setattr(self.args, field, value)
+                    with self.assertRaisesRegex(ValueError, 'positive integers'):
+                        self.plan()
 
     def test_explicit_user_home_preserves_action_environment(self):
         original = self.plan()
@@ -187,14 +224,20 @@ class WorkerTest(unittest.TestCase):
                 image_run.validate_worker(worker, plan)
 
     def test_existing_bad_worker_is_never_started_or_removed(self):
-        plan = self.plan()
-        worker = self.worker(plan)
-        worker['Config']['Labels'] = {}
-        with mock.patch.object(image_run, 'inspect_worker', return_value=worker), \
-                mock.patch.object(image_run.subprocess, 'run') as run:
-            with self.assertRaises(ValueError):
-                image_run.persistent_action(self.args, plan, self.root / 'owner.json')
-        run.assert_not_called()
+        for action in ('run', 'stop'):
+            with self.subTest(action=action):
+                self.args.worker_action = action
+                self.args.command = ['--', 'build', '//:image'] if action == 'run' else []
+                plan = self.plan()
+                worker = self.worker(plan)
+                worker['Config']['Labels'] = {}
+                with mock.patch.object(image_run, 'inspect_worker', return_value=worker), \
+                        mock.patch.object(image_run, 'capture') as capture, \
+                        mock.patch.object(image_run.subprocess, 'run') as run:
+                    with self.assertRaises(ValueError):
+                        image_run.persistent_action(self.args, plan, self.root / 'owner.json')
+                run.assert_not_called()
+                capture.assert_not_called()
 
     def test_name_creation_race_validates_winner(self):
         plan = self.plan()
@@ -229,10 +272,11 @@ class WorkerTest(unittest.TestCase):
                 mock.patch.object(image_run.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
             self.assertEqual(image_run.persistent_action(self.args, plan, self.root / 'owner.json'), 0)
         self.assertEqual(run.call_args.args[0][-1], 'shutdown')
-        self.assertEqual(capture.call_args_list, [mock.call(['docker', 'stop', '--time', '30', 'b' * 64]),
-                                                mock.call(['docker', 'rm', 'b' * 64])])
+        self.assertEqual(run.call_args.kwargs['timeout'], 30)
+        self.assertEqual(capture.call_args_list, [mock.call(['docker', 'stop', '--time', '30', 'b' * 64], timeout=40),
+                                                mock.call(['docker', 'rm', 'b' * 64], timeout=10)])
 
-    def test_stop_failure_preserves_worker(self):
+    def test_failed_bazel_shutdown_still_removes_worker_and_propagates_status(self):
         self.args.command = []
         self.args.worker_action = 'stop'
         plan = self.plan()
@@ -241,7 +285,67 @@ class WorkerTest(unittest.TestCase):
                 mock.patch.object(image_run, 'capture') as capture, \
                 mock.patch.object(image_run.subprocess, 'run', return_value=subprocess.CompletedProcess([], 2)):
             self.assertEqual(image_run.persistent_action(self.args, plan, self.root / 'owner.json'), 2)
-        capture.assert_not_called()
+        self.assertEqual(capture.call_args_list, [mock.call(['docker', 'stop', '--time', '30', 'b' * 64], timeout=40),
+                                                mock.call(['docker', 'rm', 'b' * 64], timeout=10)])
+        self.assertFalse((self.root / 'owner.json').exists())
+
+    def test_unready_worker_is_still_removed_after_identity_validation(self):
+        self.args.command = []
+        self.args.worker_action = 'stop'
+        plan = self.plan()
+        with mock.patch.object(image_run, 'inspect_worker', return_value=self.worker(plan)), \
+                mock.patch.object(image_run, 'ready_worker', side_effect=RuntimeError('bootstrap failed')), \
+                mock.patch.object(image_run, 'capture') as capture, \
+                mock.patch.object(image_run.subprocess, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'worker removed.*bootstrap failed'):
+                image_run.persistent_action(self.args, plan, self.root / 'owner.json')
+        run.assert_not_called()
+        self.assertEqual(capture.call_args_list, [mock.call(['docker', 'stop', '--time', '30', 'b' * 64], timeout=40),
+                                                mock.call(['docker', 'rm', 'b' * 64], timeout=10)])
+        self.assertFalse((self.root / 'owner.json').exists())
+
+    def test_bazel_shutdown_timeout_does_not_bypass_worker_cleanup(self):
+        self.args.command = []
+        self.args.worker_action = 'stop'
+        plan = self.plan()
+        with mock.patch.object(image_run, 'inspect_worker', return_value=self.worker(plan)), \
+                mock.patch.object(image_run, 'ready_worker'), \
+                mock.patch.object(image_run, 'capture') as capture, \
+                mock.patch.object(image_run.subprocess, 'run', side_effect=subprocess.TimeoutExpired('shutdown', 30)):
+            with self.assertRaisesRegex(RuntimeError, 'worker removed.*TimeoutExpired'):
+                image_run.persistent_action(self.args, plan, self.root / 'owner.json')
+        self.assertEqual(capture.call_count, 2)
+        self.assertFalse((self.root / 'owner.json').exists())
+
+    def test_docker_stop_failure_attempts_exact_id_kill_and_removal_then_reports_error(self):
+        self.args.command = []
+        self.args.worker_action = 'stop'
+        plan = self.plan()
+        with mock.patch.object(image_run, 'inspect_worker', return_value=self.worker(plan)), \
+                mock.patch.object(image_run, 'ready_worker'), \
+                mock.patch.object(image_run, 'capture', side_effect=[RuntimeError('daemon stop failed'), '', '']) as capture, \
+                mock.patch.object(image_run.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            with self.assertRaisesRegex(RuntimeError, 'cleanup reported errors.*stop: daemon stop failed'):
+                image_run.persistent_action(self.args, plan, self.root / 'owner.json')
+        self.assertEqual(capture.call_args_list, [mock.call(['docker', 'stop', '--time', '30', 'b' * 64], timeout=40),
+                                                mock.call(['docker', 'kill', 'b' * 64], timeout=10),
+                                                mock.call(['docker', 'rm', 'b' * 64], timeout=10)])
+        self.assertFalse((self.root / 'owner.json').exists())
+
+    def test_docker_removal_failure_preserves_owner_and_reports_shutdown_error_separately(self):
+        self.args.command = []
+        self.args.worker_action = 'stop'
+        plan = self.plan()
+        owner = self.root / 'owner.json'
+        with mock.patch.object(image_run, 'inspect_worker', return_value=self.worker(plan)), \
+                mock.patch.object(image_run, 'ready_worker'), \
+                mock.patch.object(image_run, 'capture', side_effect=['', RuntimeError('daemon remove failed')]), \
+                mock.patch.object(image_run.subprocess, 'run', return_value=subprocess.CompletedProcess([], 2)):
+            with self.assertRaisesRegex(RuntimeError, 'cleanup reported errors') as raised:
+                image_run.persistent_action(self.args, plan, owner)
+        self.assertIn('Bazel shutdown exited with status 2', str(raised.exception))
+        self.assertIn('remove: daemon remove failed', str(raised.exception))
+        self.assertEqual(json.loads(owner.read_text())['container_id'], 'b' * 64)
 
     def test_output_root_cannot_be_shared_with_other_worker_or_disposable(self):
         plan = self.plan()

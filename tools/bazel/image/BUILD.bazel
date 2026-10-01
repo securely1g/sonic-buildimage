@@ -36,6 +36,15 @@ py_test(
 )
 
 py_test(
+    name = "import_store_test",
+    srcs = [
+        "import_store.py",
+        "import_store_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
     name = "installer_test",
     srcs = [
         "installer.py",
