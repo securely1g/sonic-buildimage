@@ -257,7 +257,11 @@ def create_onie(payload, files, config_file, output, dockerfs=None):
         with output.open("w+b") as dest:
             dest.write(header)
             writer = HashWriter(dest)
-            with tarfile.open(fileobj=writer, mode="w|", format=tarfile.GNU_FORMAT) as archive:
+            # The default 10 KiB stream/16 KiB copy buffers create hundreds of
+            # thousands of Python writes for a multi-GiB image. Larger blocks
+            # preserve tar headers, padding, and checksum bytes exactly.
+            with tarfile.open(fileobj=writer, mode="w|", format=tarfile.GNU_FORMAT,
+                              bufsize=COPY_SIZE, copybufsize=COPY_SIZE) as archive:
                 for info, content in records:
                     if content is None:
                         archive.addfile(info)
