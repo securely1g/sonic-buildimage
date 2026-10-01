@@ -96,8 +96,8 @@ The native stage runs `make -f Makefile.work BLDENV=trixie configure PLATFORM=vs
 PLATFORM_ARCH=amd64`, followed by `bazel-vs-native-inputs` with the same fixed
 build identity. Native package/image caches and slave-image registry pulls are
 disabled for this initial source-build CI path. It compiles the kernel and native
-prerequisites using Docker Hub for public base images, retaining the native
-recipes' recorded Debian image digests. It builds
+prerequisites using Docker Hub for public base images and Debian's public package
+mirrors, retaining the native recipes' recorded Debian image digests. It builds
 config-engine and the Scapy wheel. The Make target
 excludes the orchagent archive while retaining its service templates; Bazel
 builds that archive later. Other native service recipes still compile a native
