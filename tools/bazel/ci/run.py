@@ -15,6 +15,8 @@ import tarfile
 import tempfile
 import time
 
+import resolution
+
 
 ROOT = Path(__file__).resolve().parents[3]
 TEST_TARGETS = [
@@ -58,7 +60,7 @@ GIT_OPTIONS = (["--repo_env=GIT_CONFIG_SYSTEM", "--repo_env=GIT_CONFIG_NOSYSTEM"
                if os.environ.get("GIT_CONFIG_SYSTEM") else [])
 OPTIONS = [
     "--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
-    "--lockfile_mode=off", "--noshow_progress", "--color=no", "--curses=no",
+    "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no",
 ] + GIT_OPTIONS
 
 
@@ -196,7 +198,7 @@ def main():
                 options += ["--config=aarch64"]
             receipt["architecture"] = "arm64" if machine == "aarch64" else "amd64"
             receipt["coverage"] = "Native protobuf header import through the buildimage module graph; no ARM64 image build."
-            graph = capture([args.bazel, "mod", "graph", "--lockfile_mode=update", *GIT_OPTIONS],
+            graph = capture([args.bazel, "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update", *GIT_OPTIONS],
                             directory, receipt, "module-graph")
             (directory / "module-graph.txt").write_text(graph)
             execute([args.bazel, "test", *options, "--nocache_test_results",
@@ -210,7 +212,7 @@ def main():
             if not re.search(r'\bversion\s*=\s*"0\.9\.4-sonic\.1"', text):
                 raise ValueError("Expected the native Distroless header-fix module")
             shutil.copyfile(fetched, directory / "rules_distroless.MODULE.bazel")
-            shutil.copyfile(ROOT / "MODULE.bazel.lock", directory / "MODULE.bazel.lock")
+            receipt["resolution"] = resolution.retain(ROOT, directory, graph)
             receipt["distroless_version"] = "0.9.4-sonic.1"
             receipt["status"] = "passed"
             return
@@ -249,6 +251,10 @@ def main():
                 receipt["artifacts"][name] = {"target": target, "bytes": destination.stat().st_size,
                                                "sha256": contract.sha(destination)}
             receipt["validation"] = verify_packages(paths)
+        graph = capture([args.bazel, "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update", *GIT_OPTIONS],
+                        directory, receipt, "module-graph")
+        receipt["resolution"] = resolution.retain(ROOT, directory, graph)
+        receipt["architecture"] = "amd64"
         receipt["status"] = "passed"
     except Exception as error:
         receipt.update(status="failed", error=str(error))

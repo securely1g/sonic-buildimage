@@ -4,6 +4,7 @@
 import argparse
 import errno
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -35,6 +36,11 @@ class ImageControllerTest(unittest.TestCase):
             self.lifecycle.append("clone")
             self.bazel_workspace = destination
             destination.mkdir()
+            (destination / ".gitignore").write_text("MODULE.bazel.lock\ntarget/\n")
+            subprocess.run(["git", "init", "-q", str(destination)], check=True)
+            subprocess.run(["git", "-C", str(destination), "add", ".gitignore"], check=True)
+            subprocess.run(["git", "-C", str(destination), "-c", "user.name=Fixture",
+                            "-c", "user.email=fixture@example.test", "commit", "-qm", "Fixture"], check=True)
             return {"schema": 1, "status": "passed", "source_commit": source["source_commit"]}
 
         def audit(*_args):
@@ -404,6 +410,7 @@ class ImageControllerTest(unittest.TestCase):
                 if stop_hook is not None:
                     stop_hook(Path(command[command.index("--output-user-root") + 1]))
             if image.IMAGE in command:
+                (self.bazel_workspace / "MODULE.bazel.lock").write_text('{"lockFileVersion": 24}\n')
                 output_root = Path(command[command.index("--output-user-root") + 1])
                 events = []
                 for number, (target, names) in enumerate({
@@ -431,11 +438,17 @@ class ImageControllerTest(unittest.TestCase):
                 (self.artifacts / "image-verification.json").write_text(json.dumps({
                     "status": "passed", "installer": {"sha256": image.image_inputs.sha256(installer)}}))
 
+        def capture(command, *args):
+            execute(command, *args)
+            self.assertEqual(command[-5:], ["--", "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update"])
+            return "<root> (fixture@_)\n"
+
         with mock.patch.object(image.os, "geteuid", return_value=1000), \
                 mock.patch.object(image, "build_worker", return_value=self.state / "worker-spec.json"), \
                 mock.patch.object(image.image_inputs, "prepare", side_effect=prepare), \
                 mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
-                mock.patch.object(image, "execute", side_effect=execute):
+                mock.patch.object(image, "execute", side_effect=execute), \
+                mock.patch.object(image, "capture", side_effect=capture):
             result = image.build(arguments)
         receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         return result, commands, receipt
@@ -444,8 +457,8 @@ class ImageControllerTest(unittest.TestCase):
         result, commands, receipt = self.run_build_fixture()
         self.assertEqual(result, 0)
         self.assertEqual(self.lifecycle, ["clone", "native-build", "audit", "verify-source", "prepare",
-                                         "package", "image", "verify-image", "worker-stop"])
-        self.assertEqual(len(commands), 5)
+                                         "package", "image", "module-graph", "verify-image", "worker-stop"])
+        self.assertEqual(len(commands), 6)
         native = commands.pop(0)
         self.assertTrue(native[1].endswith("tools/bazel/ci/native_build.py"))
         self.assertIn("--invocation", native)
@@ -462,6 +475,10 @@ class ImageControllerTest(unittest.TestCase):
         self.assertEqual(commands[-1][-2:], ["--worker-action", "stop"])
         self.assertEqual((self.artifacts / "sonic-vs.bin").read_bytes(), b"built sonic-vs.bin")
         self.assertEqual(receipt["status"], "passed")
+        self.assertTrue(receipt["resolution"]["tracked_files_unchanged"])
+        self.assertEqual((self.artifacts / "MODULE.bazel.lock").read_bytes(),
+                         (self.bazel_workspace / "MODULE.bazel.lock").read_bytes())
+        self.assertEqual((self.artifacts / "module-graph.txt").read_text(), "<root> (fixture@_)\n")
         self.assertTrue(receipt["bazel_source"]["verification_after_native"]["clean"])
         self.assertFalse(json.loads((self.artifacts / "native-source-audit.json").read_text())["clean"])
         self.assertEqual(set(receipt["outputs"]), {"installer", "runtime"})

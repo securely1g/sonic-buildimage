@@ -23,6 +23,7 @@ import urllib.parse
 import uuid
 
 import image_inputs
+import resolution
 import source_workspace
 import trust
 
@@ -33,7 +34,7 @@ TARGETS = [IMAGE, IMAGE + "_host", IMAGE + "_fs", IMAGE + "_dockerfs", RUNTIME]
 COMPONENTS = ["src/sonic-build-infra", "src/sonic-dash-api", "src/sonic-sairedis",
               "src/sonic-swss", "src/sonic-swss-common"]
 OPTIONS = ["--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
-           "--lockfile_mode=off", "--noshow_progress", "--color=no", "--curses=no"]
+           "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no"]
 
 
 def require(condition, message):
@@ -324,6 +325,8 @@ def build(args):
         # working directories or ignored build products to Bazel.
         clone_started = time.monotonic()
         source_record = source_workspace.clone(workspace, bazel_workspace, source)
+        require(not (bazel_workspace / "MODULE.bazel.lock").exists(),
+                "pristine Bazel checkout must start without a generated lock")
         source_record["wall_seconds"] = time.monotonic() - clone_started
         (artifacts / "bazel-source-receipt.json").write_text(
             json.dumps(source_record, indent=2, sort_keys=True) + "\n")
@@ -389,6 +392,10 @@ def build(args):
         execute(bazel("package", ["@sonic_swss//dist:swss_pkg"], str(state / "package-cache")),
                 bazel_workspace, artifacts, receipt, "package")
         execute(bazel("image", TARGETS, ""), bazel_workspace, artifacts, receipt, "image")
+        graph = capture(launcher + ["--", "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update"],
+                        bazel_workspace, artifacts, receipt, "module-graph")
+        receipt["resolution"] = resolution.retain(bazel_workspace, artifacts, graph)
+        receipt["architecture"] = "amd64"
         outputs = bep_outputs(artifacts / "image.bep.jsonl", TARGETS, output_root)
         receipt["bazel_outputs"] = {target: sorted(str(path) for path in paths)
                                     for target, paths in outputs.items()}

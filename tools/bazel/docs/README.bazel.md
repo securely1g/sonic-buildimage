@@ -107,6 +107,13 @@ dotted version. Native AMD64 and ARM64 header checks compile the registered
 protobuf consumer through this root module graph and retain the resolved graph,
 fetched module declaration, generated lockfile and test events.
 
+Every source CI job starts without `MODULE.bazel.lock`, uses
+`--lockfile_mode=update`, and uploads the generated lock and module graph with
+SHA-256 hashes in its receipt. The lock stays ignored; CI rejects changes to
+tracked source files. The sysmgr check within the SWSS package job uses the same
+job's generated state. Image CI retains the lock from its pristine Bazel checkout,
+separately from the native Make checkout.
+
 The SWSS container graph currently targets native AMD64 on Trixie with ASAN
 disabled. ARM and ASAN configurations retain the legacy SWSS Make recipes even
 with `BAZEL_MIN_READINESS=experimental`. Initialize the component submodules at the revisions recorded by this
