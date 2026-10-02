@@ -27,7 +27,29 @@ export EXTERNAL_KERNEL_PATCH_LOC
 
 LINUX_HEADERS_COMMON = linux-headers-$(KERNEL_VERSION)$(KERNEL_ABISUFFIX)-common-$(KERNEL_FEATURESET)_$(KERNEL_VERSION)-$(KERNEL_SUBVERSION)_all.deb
 $(LINUX_HEADERS_COMMON)_SRC_PATH = $(SRC_PATH)/sonic-linux-kernel
+ifeq ($(strip $(SONIC_BAZEL_KERNEL_PACKAGES)),)
 SONIC_MAKE_DEBS += $(LINUX_HEADERS_COMMON)
+else
+# The controller stages only Bazel action outputs from the selected kernel
+# module. Never silently fall back to Make compilation for this explicit mode.
+ifneq ($(CONFIGURED_PLATFORM)/$(CONFIGURED_ARCH)/$(BLDENV),vs/amd64/trixie)
+$(error Bazel kernel packages require AMD64 Trixie VS)
+endif
+ifneq ($(subst ",,$(SECURE_UPGRADE_MODE)),no_sign)
+$(error Bazel kernel packages require SECURE_UPGRADE_MODE=no_sign)
+endif
+ifneq ($(INCLUDE_EXTERNAL_PATCHES),n)
+$(error Bazel kernel packages do not support external platform patches)
+endif
+ifneq ($(SONIC_BAZEL_KERNEL_PACKAGES),target/bazel-kernel-inputs)
+$(error Bazel kernel packages must be staged in target/bazel-kernel-inputs)
+endif
+SONIC_COPY_DEBS += $(LINUX_HEADERS_COMMON)
+.PHONY: bazel-kernel-verify
+bazel-kernel-verify:
+	python3 tools/bazel/ci/kernel.py verify --bundle target/bazel-kernel-inputs
+$(DEBS_PATH)/$(LINUX_HEADERS_COMMON): bazel-kernel-verify
+endif
 
 LINUX_KBUILD = linux-kbuild-$(KERNEL_VERSION)$(KERNEL_ABISUFFIX)_$(KERNEL_VERSION)-$(KERNEL_SUBVERSION)_$(CONFIGURED_ARCH).deb
 $(eval $(call add_derived_package,$(LINUX_HEADERS_COMMON),$(LINUX_KBUILD)))
@@ -43,3 +65,7 @@ LINUX_HEADERS = linux-headers-$(KVERSION)_$(KERNEL_VERSION)-$(KERNEL_SUBVERSION)
 $(LINUX_HEADERS)_DEPENDS += $(LINUX_KBUILD) $(LINUX_KERNEL)
 $(LINUX_HEADERS)_RDEPENDS += $(LINUX_KBUILD) $(LINUX_KERNEL)
 $(eval $(call add_derived_package,$(LINUX_HEADERS_COMMON),$(LINUX_HEADERS)))
+
+ifneq ($(strip $(SONIC_BAZEL_KERNEL_PACKAGES)),)
+$(foreach deb,$(LINUX_HEADERS_COMMON) $(LINUX_KBUILD) $(LINUX_KERNEL) $(LINUX_HEADERS),$(eval $(deb)_PATH := $(SONIC_BAZEL_KERNEL_PACKAGES)))
+endif

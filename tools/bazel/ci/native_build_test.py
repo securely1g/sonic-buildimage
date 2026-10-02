@@ -335,6 +335,25 @@ class NativeBuildTest(unittest.TestCase):
         daemon.wait.assert_called_once_with(timeout=30)
         self.assertTrue(popen.call_args.kwargs["stdout"].closed)
 
+    def test_bazel_kernel_is_staged_after_configuration_before_native_dependencies(self):
+        self.args.kernel_bundle = self.root / "kernel-bundle"
+        self.args.kernel_bundle.mkdir()
+        with mock.patch.object(native_build.kernel, "verify_provenance", return_value={"verified": True}) as verify, \
+                mock.patch.object(native_build.kernel, "copy_bundle") as copy:
+            self.run_inside()
+        verify.assert_called_once_with(self.args.kernel_bundle, self.workspace, self.args.source_commit)
+        copy.assert_called_once_with(self.args.kernel_bundle, self.workspace / native_build.kernel.INPUTS, self.workspace)
+        self.assertEqual([argv[-1] for argv, _ in self.make_calls], ["init", "configure", "bazel-vs-native-inputs"])
+        self.assertIn("export SONIC_BAZEL_KERNEL_PACKAGES = target/bazel-kernel-inputs\n",
+                      (self.workspace / "rules/config.user").read_text())
+        self.assertEqual(json.loads((self.args.artifacts / "kernel-import.json").read_text()), {"verified": True})
+
+    def test_invalid_bazel_kernel_bundle_stops_before_native_worker_creation(self):
+        self.args.kernel_bundle = self.root / "kernel-bundle"
+        self.args.kernel_bundle.mkdir()
+        with mock.patch.object(native_build.kernel, "verify_provenance", side_effect=ValueError("corrupt kernel")):
+            with self.assertRaisesRegex(ValueError, "corrupt kernel"):
+                self.validate()
     def test_explicit_git_config_reaches_make_and_each_slave_launch(self):
         config = self.workspace / "source.gitconfig"
         config.write_text("")

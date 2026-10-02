@@ -2,6 +2,7 @@ load("@rules_python//python:defs.bzl", "py_test")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 
 exports_files([
+    "kernel.py",
     "trust.py",
     "trust_test.py",
 ])
@@ -38,6 +39,7 @@ py_test(
         "image.py",
         "image_inputs.py",
         "image_test.py",
+        "kernel.py",
         "resolution.py",
         "source_workspace.py",
         "trust.py",
@@ -66,9 +68,20 @@ py_test(
 py_test(
     name = "native_build_test",
     srcs = [
+        "kernel.py",
         "native_build.py",
         "native_build_test.py",
     ],
+    imports = ["."],
+)
+
+py_test(
+    name = "kernel_test",
+    srcs = [
+        "kernel.py",
+        "kernel_test.py",
+    ],
+    data = ["//:kernel_make_test_data"],
     imports = ["."],
 )
 

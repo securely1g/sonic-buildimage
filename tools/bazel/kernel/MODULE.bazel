@@ -1,0 +1,6 @@
+# Keep this graph aligned with sonic-linux-kernel/tools/bazel/cache-consumer
+# so kernel CI and buildimage share action-cache keys.
+module(name = "sonic-kernel-cache-consumer")
+
+bazel_dep(name = "sonic-linux-kernel", version = "0.0.1-3d737ef1195f3d4b5aa5cf8eeb4dda6df5233a60", repo_name = "sonic_linux_kernel")
+bazel_dep(name = "sonic-build-infra", version = "0.0.15-3a3d42932877e303385fd0b6503d1c413fc86bab", repo_name = "sonic_build_infra")

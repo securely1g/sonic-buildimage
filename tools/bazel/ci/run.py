@@ -34,6 +34,7 @@ TEST_TARGETS = [
     "//tools/bazel/ci:run_test",
     "//tools/bazel/ci:image_inputs_test",
     "//tools/bazel/ci:native_build_test",
+    "//tools/bazel/ci:kernel_test",
     "//tools/bazel/ci:p4lang_pi_source_test",
     "//tools/bazel/ci:trust_test",
     "//tools/bazel/image/native:producer_test",

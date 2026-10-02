@@ -127,6 +127,35 @@ class NativeHandoffTest(unittest.TestCase):
             producer.finish(self.root, dict(self.environment, SONIC_IMAGE_VERSION="stale"))
         self.assertFalse((self.output / "provenance.json").exists())
 
+    def kernel_bundle(self):
+        directory = self.root / "target/bazel-kernel-inputs"
+        directory.mkdir()
+        payload = b"verified kernel package bytes"
+        package = {"name": "kernel.deb", "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        (self.root / "target/debs/trixie/kernel.deb").write_bytes(payload)
+        manifest = directory / "kernel-packages.json"
+        manifest.write_text(json.dumps({"packages": [package], "source_tree_sha256": "c" * 64}))
+        (directory / "kernel-provenance.json").write_text(json.dumps({
+            "source_commit": self.identity["source_commit"], "manifest_sha256": producer.file_info(manifest)["sha256"]}))
+        self.environment["SONIC_BAZEL_KERNEL_PACKAGES"] = "target/bazel-kernel-inputs"
+        return directory
+
+    def test_handoff_retains_kernel_manifest_and_checks_imported_package_bytes(self):
+        self.begin()
+        directory = self.kernel_bundle()
+        receipt = producer.finish(self.root, self.environment)
+        self.assertEqual(receipt["kernel"]["manifest"], json.loads((directory / "kernel-packages.json").read_text()))
+        self.assertIn("target/bazel-kernel-inputs/kernel-packages.json", receipt["files"])
+        self.assertIn("target/bazel-kernel-inputs/kernel-provenance.json", receipt["files"])
+
+    def test_replaced_native_kernel_package_prevents_successful_handoff(self):
+        self.begin()
+        self.kernel_bundle()
+        (self.root / "target/debs/trixie/kernel.deb").write_bytes(b"different package")
+        with self.assertRaisesRegex(ValueError, "native kernel package differs"):
+            producer.finish(self.root, self.environment)
+        self.assertFalse((self.output / "provenance.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

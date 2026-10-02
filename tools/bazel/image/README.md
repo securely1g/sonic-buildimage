@@ -98,8 +98,9 @@ daemon. No host Docker socket or prepared SONiC release bundle is supplied.
 The native stage runs `make -f Makefile.work BLDENV=trixie configure PLATFORM=vs
 PLATFORM_ARCH=amd64`, followed by `bazel-vs-native-inputs` with the same fixed
 build identity. Native package/image caches and slave-image registry pulls are
-disabled for this initial source-build CI path. It compiles the kernel and native
-prerequisites using Docker Hub for public base images and Debian's public package
+disabled for this source-build CI path. The workflow selects the Bazel kernel
+path described below; Make compiles the remaining native prerequisites using
+Docker Hub for public base images and Debian's public package
 mirrors, retaining the native recipes' recorded Debian image digests. For Monit
 and rasdaemon, CI uses SHA256-pinned Debian source archives for the configured
 versions and applies the existing SONiC patches before compiling their packages.
@@ -321,6 +322,77 @@ The controller owns its dedicated workers and restores checkout ownership
 afterward. It does not remove local SDKs or operate on unrelated Docker workers.
 The source-built DASH library and Python extension require matching debug
 symbols in package validation.
+
+### Reuse kernel source-build actions
+
+`--bazel-kernel` builds the kernel packages through
+`@sonic_linux_kernel//:kernel_packages` before Make builds the other native
+prerequisites. The self-contained consumer in `tools/bazel/kernel` pins the
+kernel module and its declared Debian build tools. The controller copies that
+small workspace into invocation scratch, then calls the launcher's isolated
+kernel worker. Kernel CI can warm the same action cache using that consumer
+graph and configuration.
+
+Local invocations use the immutable registry snapshot in that workspace's
+`.bazelrc`. CI passes `--kernel-ci-registry` to replace its SONiC registry URL
+with the maintained `codex/sonic-linux-kernel` branch in the scratch copy only.
+Each invocation uses one SONiC registry endpoint; module and source pins remain
+unchanged, and the selected endpoint is recorded in the kernel receipt.
+
+Kernel targets belong to that separate workspace and are not exposed from
+buildimage's root Bazel graph. The root keeps its checked-out SWSS build
+infrastructure; the kernel consumer resolves its own pinned build tools so its
+actions match kernel CI. Use the image controller's `--bazel-kernel` option for
+this integration.
+
+The kernel worker uses host networking for Bazel source downloads and cache
+access. Its compilation action receives the complete source archives and tools
+and disables the Make download path. The chroot limits filesystem access; it
+does not provide network isolation when Bazel uses its local process wrapper.
+
+```sh
+sudo python3 tools/bazel/ci/image.py \
+  --workspace "$PWD" --state "$PWD/../vs-ci-state" \
+  --artifacts "$PWD/artifacts/image" --bazel-kernel \
+  --kernel-remote-cache https://bazel-cache.example.org \
+  --kernel-disk-cache "$PWD/../vs-ci-state/kernel-cache"
+```
+
+The remote endpoint is optional; `SONIC_KERNEL_REMOTE_CACHE` is also accepted
+when the controller receives that environment variable. A cache hit downloads
+the four kernel DEBs without running the kernel action. A miss compiles them
+from the declared sources. Remote access is read only by default; trusted cache
+warming invocations may add `--kernel-cache-upload`. Endpoint URLs must not
+contain credentials or tokens because commands are retained as build evidence.
+Configure authentication at the cache service/worker boundary.
+
+For a custom certificate issuer, the controller forwards `--ca-bundle` to the
+kernel launcher. Also supply `--kernel-java-trust-store /path/to/cacerts` when
+the kernel worker's Bazel JVM needs a custom public Java trust store. These are
+execution-only inputs; their digests are recorded, and certificate/store bytes
+are not added to the installer or published evidence.
+
+The workflow enables the Bazel kernel path and persists its optional disk cache
+with `actions/cache`. Set repository variable `SONIC_KERNEL_REMOTE_CACHE` to use
+the shared remote cache as well. GitHub's disk-cache archive is repository
+scoped; the remote service is what permits reuse between kernel CI and
+buildimage CI. No prepared kernel bundle is published as a workflow input.
+
+Before Make consumes the packages, the controller checks their hashes, Debian
+control metadata, ABI, architecture and signing mode. The action's source digest
+must match the pinned kernel submodule's Makefile, configuration and patches.
+Make copies this verified package set using `SONIC_COPY_DEBS`; this path disables
+the independently keyed native kernel cache and has no kernel compilation
+fallback. The native producer verifies the copied package bytes again and
+includes the kernel manifest and source provenance in its image input receipt.
+Ordinary Make builds and controller invocations without `--bazel-kernel` or a
+kernel remote endpoint retain their existing native kernel build behavior.
+
+Kernel build evidence remains in the invocation's `state/kernel-*` directory,
+including the execution log, BEP, profile, and downloaded outputs. A cache-hit
+check must use a fresh output directory and no disk cache, then confirm the
+kernel action was a remote cache hit in the execution log. An up-to-date local
+output directory alone does not establish remote-cache reuse.
 
 ```sh
 bazel test //tools/bazel/image:metadata_test //tools/bazel/image:host_test \

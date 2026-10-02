@@ -380,9 +380,13 @@ class ImageControllerTest(unittest.TestCase):
         self.verify_source.assert_not_called()
         self.assertTrue((self.artifacts / "native-source-audit.json").is_file())
 
-    def run_build_fixture(self, failure=None, stop_hook=None, git_config=None):
+    def run_build_fixture(self, failure=None, stop_hook=None, git_config=None, kernel_remote_cache=None,
+                          ca_bundle=None, kernel_java_trust_store=None, kernel_ci_registry=False):
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
-                                       artifacts=self.artifacts, git_config=git_config)
+                                       artifacts=self.artifacts, git_config=git_config,
+                                       kernel_remote_cache=kernel_remote_cache, ca_bundle=ca_bundle,
+                                       kernel_java_trust_store=kernel_java_trust_store,
+                                       kernel_ci_registry=kernel_ci_registry)
         for cache in ("package-cache", "repository-cache"):
             (self.state / cache).mkdir(parents=True, exist_ok=True)
             (self.state / cache / "retained-entry").write_bytes(b"keep cache")
@@ -452,6 +456,40 @@ class ImageControllerTest(unittest.TestCase):
             result = image.build(arguments)
         receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         return result, commands, receipt
+
+    def test_bazel_kernel_precedes_native_build_and_uses_pristine_source(self):
+        bundle = self.state / "verified-kernel-packages"
+        ca = self.root / "public-ca.pem"
+        java = self.root / "public-java-cacerts"
+
+        def build(workspace, state, artifacts, source, invocation, remote, upload, execute, receipt, disk_cache,
+                  *, ca_bundle=None, java_trust_store=None, ci_registry=False):
+            self.lifecycle.append("kernel-build")
+            self.assertEqual(workspace, self.bazel_workspace)
+            self.assertEqual(remote, "http://127.0.0.1:8080")
+            self.assertFalse(upload)
+            self.assertIsNone(disk_cache)
+            self.assertEqual(ca_bundle, ca)
+            self.assertEqual(java_trust_store, java)
+            self.assertTrue(ci_registry)
+            return bundle
+
+        with mock.patch.object(image.kernel, "build", side_effect=build):
+            result, commands, receipt = self.run_build_fixture(kernel_remote_cache="http://127.0.0.1:8080",
+                                                              ca_bundle=ca, kernel_java_trust_store=java,
+                                                              kernel_ci_registry=True)
+        self.assertEqual(result, 0)
+        self.assertLess(self.lifecycle.index("kernel-build"), self.lifecycle.index("native-build"))
+        native = commands[0]
+        self.assertEqual(native[native.index("--kernel-bundle") + 1], str(bundle))
+
+    def test_failed_bazel_kernel_blocks_native_build_without_fallback(self):
+        with mock.patch.object(image.kernel, "build", side_effect=ValueError("kernel action failed")):
+            result, commands, receipt = self.run_build_fixture(kernel_remote_cache="http://127.0.0.1:8080")
+        self.assertEqual(result, 1)
+        self.assertEqual(commands, [])
+        self.assertIn("kernel action failed", receipt["error"])
+        self.assertNotIn("native-build", self.lifecycle)
 
     def test_success_reuses_worker_disables_full_image_disk_cache_and_publishes_verified_bytes(self):
         result, commands, receipt = self.run_build_fixture()

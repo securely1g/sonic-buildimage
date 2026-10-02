@@ -169,6 +169,22 @@ def finish(source, environment):
     installer.load_config(output / "installer-config.json")
     inputs = set(images.values()) | set(inv["bazel_prerequisites"])
     inputs.update(path.relative_to(source).as_posix() for path in output.iterdir() if path.is_file())
+    kernel = None
+    if environment.get("SONIC_BAZEL_KERNEL_PACKAGES"):
+        require(environment["SONIC_BAZEL_KERNEL_PACKAGES"] == "target/bazel-kernel-inputs",
+                "unexpected Bazel kernel input directory")
+        kernel_path = "target/bazel-kernel-inputs/"
+        manifest = json.loads((source / (kernel_path + "kernel-packages.json")).read_text())
+        provenance = json.loads((source / (kernel_path + "kernel-provenance.json")).read_text())
+        require(provenance.get("source_commit") == original["source_commit"]
+                and provenance.get("manifest_sha256") == file_info(source / (kernel_path + "kernel-packages.json"))["sha256"],
+                "Bazel kernel provenance changed during native build")
+        for package in manifest["packages"]:
+            require(file_info(source / "target/debs/trixie" / package["name"]) == {
+                "bytes": package["size"], "sha256": package["sha256"]},
+                "native kernel package differs from the selected Bazel output")
+        inputs.update(kernel_path + name for name in ("kernel-packages.json", "kernel-provenance.json"))
+        kernel = {"manifest": manifest, "provenance": provenance}
     files = {}
     for name in sorted(inputs):
         path = Path(name)
@@ -178,6 +194,8 @@ def finish(source, environment):
     receipt = {"schema": 1, **original, "native_transformations": transformations,
                "source_boundary": "before-container-loading",
                "files": files, "scope": inv["native_swss_scope"]}
+    if kernel:
+        receipt["kernel"] = kernel
     write_json(output / "provenance.json", receipt)
     return receipt
 
