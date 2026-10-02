@@ -20,7 +20,8 @@ class NativeHandoffTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.identity = {"source_commit": "a" * 40, "source_branch": "ci-test",
-                         "source_submodules": {"src/example": "b" * 40}}
+                         "source_submodules": {"src/example": "b" * 40},
+                         "native_transformations": {}}
         self.make_environment = {
             "BAZEL_PLATFORM": "vs", "BAZEL_ARCH": "amd64", "BAZEL_DISTRO": "trixie",
             "BAZEL_IMAGE_VERSION": "test", "BAZEL_INSTALLED_DOCKERS": "docker-orchagent.gz docker-sysmgr.gz",
@@ -91,6 +92,26 @@ class NativeHandoffTest(unittest.TestCase):
         with mock.patch.object(producer, "source_identity", return_value=dict(self.identity, source_commit="c" * 40)):
             with self.assertRaisesRegex(ValueError, "identity changed"):
                 producer.finish(self.root, self.environment)
+        self.assertFalse((self.output / "provenance.json").exists())
+
+    def test_verified_native_transformation_after_inventory_preserves_recorded_source(self):
+        self.begin()
+        transformation = {"src/sonic-frr/frr": {"recorded_commit": "b" * 40, "actual_commit": "c" * 40}}
+        with mock.patch.object(producer, "source_identity", return_value=dict(
+                self.identity, native_transformations=transformation)):
+            receipt = producer.finish(self.root, self.environment)
+        self.assertEqual(self.identity["source_submodules"], receipt["source_submodules"])
+        self.assertEqual(transformation, receipt["native_transformations"])
+
+    def test_transformation_observed_before_inventory_cannot_be_removed_or_replaced(self):
+        transformation = {"src/sonic-frr/frr": {"actual_commit": "c" * 40}}
+        self.identity["native_transformations"] = transformation
+        self.begin()
+        for changed in ({}, {"src/sonic-frr/frr": {"actual_commit": "d" * 40}}):
+            with self.subTest(changed=changed), mock.patch.object(
+                    producer, "source_identity", return_value=dict(self.identity, native_transformations=changed)):
+                with self.assertRaisesRegex(ValueError, "transformation changed"):
+                    producer.finish(self.root, self.environment)
         self.assertFalse((self.output / "provenance.json").exists())
 
     def test_missing_native_archive_fails_without_success_receipt(self):
