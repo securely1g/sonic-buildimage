@@ -53,6 +53,12 @@ jobs:
           git submodule update --init --depth 1 --jobs 4 -- \
             src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
 
+      - name: Verify fresh generated dependency state
+        run: |
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -66,7 +72,7 @@ jobs:
         if: matrix.mode == 'test'
         run: |
           mkdir -p artifacts
-          bazel run --lockfile_mode=off //tools/bazel/buildifier:buildifier.check \
+          bazel run --lockfile_mode=update //tools/bazel/buildifier:buildifier.check \
             2>&1 | tee artifacts/format.log
 
       - name: Run Bazel checks and validate outputs
