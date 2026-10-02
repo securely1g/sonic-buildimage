@@ -47,7 +47,7 @@ Here is the list of internet sources we depend on:
 
 | Name  | URL Prefixes |
 |-------|--------------|
-| Bazel module registries | `raw.githubusercontent.com/blorente/sonic-bazel-registry/`, `raw.githubusercontent.com/aspect-build/bazel-central-registry/`, `bcr.bazel.build/` |
+| Bazel module registries | `raw.githubusercontent.com/securely1g/sonic-bazel-registry/`, `raw.githubusercontent.com/blorente/sonic-bazel-registry/` (standalone protobuf and FIPS builds), `bcr.bazel.build/` |
 | Bazel module archives | `github.com/`, `storage.googleapis.com/grpc-bazel-mirror/`, `mirror.bazel.build/`, `repo1.maven.org/maven2/` |
 | Hermetic GCC toolchain | `github.com/blorente/gcc-builds/releases/download/` |
 | Hermetic Python toolchain | `github.com/astral-sh/python-build-standalone/releases/download/` |
