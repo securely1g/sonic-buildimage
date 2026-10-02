@@ -1,4 +1,4 @@
-"""Unpacks a top-level artifact (OCI image or deb archive) into the individual files worth comparing."""
+"""Unpacks images and package payloads into the individual files worth comparing."""
 
 import gzip
 import json
@@ -270,6 +270,19 @@ def _extract_deb(
     return _pair(ctx, artifact, _index_tree(make_root), _index_tree(bazel_root), debug)
 
 
+def _extract_tar(
+    ctx: Context, artifact: ComparableArtifact, debug: DebugFiles
+) -> list[ComparableArtifact]:
+    """Compare a Bazel deployment tar with an already-built Make DEB's payload."""
+    make_root, bazel_root = _roots_for(ctx, artifact)
+    make_root.mkdir(parents=True, exist_ok=True)
+    bazel_root.mkdir(parents=True, exist_ok=True)
+    ctx.tools.dpkg_deb.run("-x", str(artifact.makeVersion), str(make_root))
+    with tarfile.open(artifact.bazelVersion) as archive:
+        archive.extractall(bazel_root, filter=_writable_dirs)
+    return _pair(ctx, artifact, _index_tree(make_root), _index_tree(bazel_root), debug)
+
+
 # A layer entry whose basename carries this prefix deletes what the rest of it names.
 WHITEOUT_PREFIX = ".wh."
 
@@ -405,6 +418,8 @@ def extract_source(
             return []
 
     match artifact.type:
+        case ArtifactType.TAR:
+            return _extract_tar(ctx, artifact, debug)
         case ArtifactType.DEB:
             return _extract_deb(ctx, artifact, debug)
         case ArtifactType.OCI_IMAGE:
