@@ -98,12 +98,14 @@ class Bazel:
     def deployment_tar_targets(
         self, repo_name: str
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """Map explicitly tagged tar targets to existing Make DEB filenames.
+        """Map tagged module-root tar targets to existing Make DEB filenames.
 
         Use an explicit filegroup when a packaging macro propagates tags to
         internal rules. Each Make package must have exactly one mapped target.
         """
-        expression = f'attr(tags, "{self.MAKE_DEB_TAG}", @{repo_name}//...)'
+        # A dependency's dev-only subpackages may not load from the root graph.
+        # Declare public comparison mappings at its module root instead.
+        expression = f'attr(tags, "{self.MAKE_DEB_TAG}", @{repo_name}//:*)'
         result = self.run("query", *self.QUERY_FLAGS, "--output=xml", expression)
         compared, excluded = {}, {}
         packages = set()
