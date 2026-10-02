@@ -1,7 +1,7 @@
 # Comparing deployment tars with Make packages
 
 Declare each Bazel runtime or debug tar's existing Make counterpart with one
-`make-deb:<filename.deb>` tag. For example:
+`make-deb:<filename.deb>` tag in the module's root `BUILD.bazel`. For example:
 
 ```starlark
 filegroup(
@@ -16,6 +16,10 @@ targets. Each tagged target must produce exactly one tar, and each Make filename
 must have exactly one target. Put the debug mapping on its final debug tar target,
 using `make-deb:sysmgr-dbg_1.0.0_amd64.deb` for sysmgr. The existing
 `no-elf-equivalence` exclusion tag still applies.
+
+Expose nested archive targets through a root filegroup. Discovery queries only
+that public package so dependency-only builds do not load unrelated developer
+tools whose development dependencies are unavailable in the root module graph.
 
 The collector builds only explicitly mapped tars and container images. It reads
 the matching Make package from `target/debs/<release>/<filename.deb>` and uses
