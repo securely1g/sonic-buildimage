@@ -44,10 +44,11 @@ def _record_sources(
     identifier_of: Callable[[BazelLabel], ArtifactIdentifier],
     make_dir: Path,
     artifact_type: ArtifactType,
+    make_filenames: dict[BazelLabel, str] | None = None,
 ) -> list[ComparableArtifact]:
     """Pair every label in `labels` with the Make artifact of the same filename.
 
-    A source is a top-level thing to compare: a deb, or a container image.
+    A source is a top-level thing to compare: a deployment tar, or a container image.
 
     Args:
         ctx: the run's context.
@@ -56,6 +57,7 @@ def _record_sources(
         identifier_of: how to name the artifact a label produces.
         make_dir: where Make writes this kind of artifact.
         artifact_type: what kind of artifact these labels build.
+        make_filenames: explicit Make counterpart names for deployment tars.
 
     Returns:
         One ComparableArtifact per label that was not excluded, also added to the index.
@@ -78,7 +80,8 @@ def _record_sources(
         artifact = ComparableArtifact(
             identifier=identifier,
             bazelVersion=built,
-            makeVersion=make_dir / built.name,
+            makeVersion=make_dir
+            / (make_filenames[label] if make_filenames is not None else built.name),
             type=artifact_type,
         )
         ctx.index.add(artifact)
@@ -87,12 +90,8 @@ def _record_sources(
     return artifacts
 
 
-def _collect_debs(ctx: Context) -> list[ComparableArtifact]:
-    """Every deb a top-level Bazel module declares, paired with its Make counterpart.
-
-    Debs pair by filename: `sonic_deb` emits `<package>_<version>_<arch>.deb`, which is
-    the Debian convention Make already follows.
-    """
+def _collect_deployment_tars(ctx: Context) -> list[ComparableArtifact]:
+    """Pair declared runtime/debug tars with the existing Make DEBs in their tags."""
     make_dir = registry_lib.REPO_ROOT / MAKE_DEBS_DIR / ctx.debian_release
     repo_names = ctx.bazel.root_repo_names()
     artifacts = []
@@ -108,25 +107,29 @@ def _collect_debs(ctx: Context) -> list[ComparableArtifact]:
             )
             continue
 
-        progress.start(f"LISTING DEBS IN {module}")
+        progress.start(f"LISTING DEPLOYMENT TARS IN {module}")
         repo_name = repo_names[module]
         repo_prefix = f"@{repo_name}"
 
-        compared, excluded = ctx.bazel.deb_targets(repo_name)
+        compared, excluded = ctx.bazel.deployment_tar_targets(repo_name)
         progress.finish()
+        make_filenames = compared | excluded
 
         artifacts += _record_sources(
             ctx,
-            labels=excluded + compared,
+            labels=sorted(excluded) + sorted(compared),
             excluded=set(excluded),
             # Queried from the root, a label names the repo it came from. The
             # identifier spells the module instead, so that it reads the same
             # whichever workspace the query ran in.
-            identifier_of=lambda label: _bazel_label_identifier(
-                label.removeprefix(repo_prefix), module
+            identifier_of=lambda label: ArtifactIdentifier(
+                name=f"@{module}{label.removeprefix(repo_prefix)}",
+                source=None,
+                modifiers=_modifiers_for(make_filenames[label]),
             ),
             make_dir=make_dir,
-            artifact_type=ArtifactType.DEB,
+            artifact_type=ArtifactType.TAR,
+            make_filenames=make_filenames,
         )
 
     return artifacts
@@ -149,9 +152,9 @@ def _collect_images(ctx: Context) -> list[ComparableArtifact]:
 
 
 def collect_artifacts(ctx: Context) -> list[ComparableArtifact]:
-    """Run Bazel queries to find out which top-level artifacts we need to compare (debs and OCI images).
+    """Find explicitly mapped deployment tars and OCI images to compare with Make.
 
     Collects diagnostics in the diagnostics sink.
-    Returns a merged list of artifacts, containing deb packages and oci images.
+    Returns a merged list of deployment tars and OCI images; never builds DEBs.
     """
-    return _collect_debs(ctx) + _collect_images(ctx)
+    return _collect_deployment_tars(ctx) + _collect_images(ctx)
