@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify native sysmgr packages without a Make-built image base."""
+"""Build and verify native sysmgr runtime/debug tars and container layers."""
 
 import argparse
 import hashlib
@@ -9,6 +9,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -20,12 +21,13 @@ TESTS = [
     "//tools/bazel/registry:registry_lib_test",
     "//tools/bazel/equivalence_checker:rules_engine_test",
     "//tools/bazel/equivalence_checker:reporter_test",
+    "//tools/bazel/equivalence_checker:deployment_tar_test",
     "//tools/bazel/oci:docker_archive_to_oci_layout_test",
     "//tools/bazel/dpkg:test_dpkg_patterns_up_to_date",
 ]
 PACKAGES = {
-    "sysmgr.deb": "@sonic_sysmgr//:sysmgr_deb",
-    "sysmgr-dbg.deb": "@sonic_sysmgr//:sysmgr-dbg_deb",
+    "sysmgr-runtime.tar": "@sonic_sysmgr//:sysmgr_pkg",
+    "sysmgr-debug.tar": "@sonic_sysmgr//:sysmgr_debug_pkg",
     "runtime-layer.tar": "//dockers/docker-sysmgr:rdeps",
     "config-layer.tar": "//dockers/docker-sysmgr:source_files",
     "debug-layer.tar": "//tools/bazel/ci/sysmgr:symbols",
@@ -60,14 +62,8 @@ def verify_packages(paths):
     with tempfile.TemporaryDirectory(prefix="sysmgr-ci-") as temporary:
         directory = Path(temporary)
         runtime, debug, layers, symbols = [directory / name for name in ("runtime", "debug", "layers", "symbols")]
-        for name, package in (("sysmgr.deb", "sysmgr"), ("sysmgr-dbg.deb", "sysmgr-dbg")):
-            metadata = output("dpkg-deb", "-f", str(paths[name]), "Package", "Architecture", "Version")
-            require(f"Package: {package}\n" in metadata and "Architecture: amd64\n" in metadata
-                    and "Version: 1.0.0\n" in metadata, "Unexpected Debian metadata: " + metadata)
-            data = directory / (package + ".tar")
-            with data.open("wb") as stream:
-                subprocess.run(["dpkg-deb", "--fsys-tarfile", str(paths[name])], stdout=stream, check=True)
-            unpack(data, runtime if package == "sysmgr" else debug)
+        unpack(paths["sysmgr-runtime.tar"], runtime)
+        unpack(paths["sysmgr-debug.tar"], debug)
         unpack(paths["runtime-layer.tar"], layers)
         unpack(paths["debug-layer.tar"], symbols)
         pairs = []
@@ -127,7 +123,7 @@ def main():
     require(not directory.exists() or not any(directory.iterdir()), "Artifact directory must be empty")
     directory.mkdir(parents=True, exist_ok=True)
     receipt = {"status": "running", "mode": args.mode, "commands": [],
-               "scope": "AMD64/Trixie source packages and container contribution layers; no base image or installer build."}
+               "scope": "AMD64/Trixie source runtime/debug tars and container contribution layers; no base image or installer build."}
 
     def run(command, name):
         started = time.monotonic()
@@ -161,6 +157,15 @@ def main():
             require(set(summaries) == set(TESTS) and set(summaries.values()) == {"PASSED"}, "Missing passing required test: " + repr(summaries))
             receipt["tests"] = summaries
         else:
+            # Check the real Bazel tags used by the Make comparison, without
+            # generating a Debian package or requiring existing Make outputs.
+            sys.path[:0] = [str(ROOT / "tools/bazel/equivalence_checker"),
+                            str(ROOT / "tools/bazel/registry")]
+            from tools import Bazel
+            mappings, excluded = Bazel().deployment_tar_targets("sonic_sysmgr")
+            require(set(mappings.values()) == {"sysmgr_1.0.0_amd64.deb", "sysmgr-dbg_1.0.0_amd64.deb"}
+                    and not excluded, "Missing sysmgr tar equivalence mapping")
+            receipt["make_equivalence"] = mappings
             run(["bazel", "build", *OPTIONS, "--build_event_json_file=" + str(directory / "bep.json"),
                  "--profile=" + str(directory / "profile.json.gz"), *PACKAGES.values()], "build")
             paths = {}

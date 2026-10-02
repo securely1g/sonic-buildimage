@@ -11,6 +11,8 @@ ArtifactName: TypeAlias = str
 
 class ArtifactType(enum.StrEnum):
     DEB = "DEB"
+    # A Bazel deployment tar paired with the payload of an existing Make DEB.
+    TAR = "TAR"
     OCI_IMAGE = "OCI_IMAGE"
     ELF_EXECUTABLE = "ELF_EXECUTABLE"
     # The .debug file carrying a binary's symbols.

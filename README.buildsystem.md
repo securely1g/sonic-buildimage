@@ -213,14 +213,14 @@ build the full SONiC installer.
 ```sh
 git submodule update --init src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
 bazel build //dockers/docker-sysmgr:docker-sysmgr.gz \
-    @sonic_sysmgr//:sysmgr_deb @sonic_sysmgr//:sysmgr-dbg_deb
+    @sonic_sysmgr//:sysmgr_pkg @sonic_sysmgr//:sysmgr_debug_pkg
 bazel run //dockers/docker-sysmgr:write_docker-sysmgr.gz
 bazel test //dockers/docker-sysmgr:debug_symbols_test
 ```
 
 The debug container is `//dockers/docker-sysmgr:docker-sysmgr-dbg.gz`. It also
 needs the prebuilt FIPS packages pinned in `src/sonic-fips/MODULE.bazel`; these
-are separate from the split symbols in `sysmgr-dbg_deb`. The root Bazel build
+are separate from the split symbols in `sysmgr_debug_pkg`. The root Bazel build
 currently disables YANG. See [the Bazel guide](tools/bazel/docs/README.bazel.md)
 for the build graph and component workflow.
 
