@@ -45,6 +45,11 @@ BUILD_TARGETS = {
     "config.tar": "//dockers/docker-orchagent/config:files",
     "debug-symbols.tar": "//tools/bazel/ci:swss_debug_symbols",
 }
+HEADER_TARGETS = [
+    "@rules_distroless//registry_ci:protobuf_headers_test",
+    "@rules_distroless//registry_ci:architecture_amd64_test",
+    "@rules_distroless//registry_ci:architecture_arm64_test",
+]
 OPTIONS = [
     "--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
     "--lockfile_mode=off", "--noshow_progress", "--color=no", "--curses=no",
@@ -105,13 +110,17 @@ def check_bazel_version(bazel, expected, directory, receipt):
     return version
 
 
-def verify_tests(path):
+def verify_tests(path, targets=TEST_TARGETS):
     summaries = {}
     for line in path.read_text().splitlines():
         event = json.loads(line)
         if "testSummary" in event.get("id", {}):
-            summaries[event["id"]["testSummary"]["label"]] = event["testSummary"]["overallStatus"]
-    if set(summaries) != set(TEST_TARGETS) or any(value != "PASSED" for value in summaries.values()):
+            label = event["id"]["testSummary"]["label"]
+            if label.startswith("@@"):
+                repository, target = label[2:].split("//", 1)
+                label = "@" + repository.split("+", 1)[0] + "//" + target
+            summaries[label] = event["testSummary"]["overallStatus"]
+    if set(summaries) != set(targets) or any(value != "PASSED" for value in summaries.values()):
         raise ValueError("Expected a passing Bazel test summary for every explicit target: " + repr(summaries))
     return summaries
 
@@ -155,7 +164,7 @@ def verify_packages(paths):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("test", "build"))
+    parser.add_argument("command", choices=("test", "build", "headers"))
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--bazel", default="bazel")
     args = parser.parse_args()
@@ -171,6 +180,34 @@ def main():
         expected = "bazel " + (ROOT / ".bazelversion").read_text().strip()
         version = check_bazel_version(args.bazel, expected, directory, receipt)
         receipt["bazel_version"] = version
+        if args.command == "headers":
+            machine = platform.machine()
+            if machine not in ("x86_64", "aarch64") or platform.freedesktop_os_release().get("VERSION_CODENAME") != "trixie":
+                raise ValueError("Header CI requires native AMD64 or ARM64 Debian Trixie")
+            options = [option for option in OPTIONS if not option.startswith("--lockfile_mode=")]
+            options += ["--lockfile_mode=update"]
+            if machine == "aarch64":
+                options += ["--config=aarch64"]
+            receipt["architecture"] = "arm64" if machine == "aarch64" else "amd64"
+            receipt["coverage"] = "Native protobuf header import through the buildimage module graph; no ARM64 image build."
+            graph = capture([args.bazel, "mod", "graph", "--lockfile_mode=update"],
+                            directory, receipt, "module-graph")
+            (directory / "module-graph.txt").write_text(graph)
+            execute([args.bazel, "test", *options, "--nocache_test_results",
+                     "--build_event_json_file=" + str(directory / "bep.json"), *HEADER_TARGETS],
+                    directory, receipt, "headers")
+            receipt["tests"] = verify_tests(directory / "bep.json", HEADER_TARGETS)
+            output_base = Path(capture([args.bazel, "info", "output_base"],
+                                       directory, receipt, "output-base").strip())
+            fetched = output_base / "external/rules_distroless+/MODULE.bazel"
+            text = fetched.read_text()
+            if not re.search(r'\bversion\s*=\s*"0\.9\.4-sonic\.1"', text):
+                raise ValueError("Expected the native Distroless header-fix module")
+            shutil.copyfile(fetched, directory / "rules_distroless.MODULE.bazel")
+            shutil.copyfile(ROOT / "MODULE.bazel.lock", directory / "MODULE.bazel.lock")
+            receipt["distroless_version"] = "0.9.4-sonic.1"
+            receipt["status"] = "passed"
+            return
         if args.command == "build":
             release = platform.freedesktop_os_release()
             if platform.machine() != "x86_64" or release.get("VERSION_CODENAME") != "trixie":

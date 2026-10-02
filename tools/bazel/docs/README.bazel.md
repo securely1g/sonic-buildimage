@@ -101,6 +101,12 @@ make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/sonic-vs.bin
 The final installer remains Make-built. Building a container alone does not
 validate the installed SONiC image or its boot behavior.
 
+The root selects `rules_distroless 0.9.4-sonic.1` from registry PR #28. Its
+version override keeps historical component pins from selecting the older
+dotted version. Native AMD64 and ARM64 header checks compile the registered
+protobuf consumer through this root module graph and retain the resolved graph,
+fetched module declaration, generated lockfile and test events.
+
 The SWSS container graph currently targets native AMD64 on Trixie with ASAN
 disabled. ARM and ASAN configurations retain the legacy SWSS Make recipes even
 with `BAZEL_MIN_READINESS=experimental`. Initialize the component submodules at the revisions recorded by this
