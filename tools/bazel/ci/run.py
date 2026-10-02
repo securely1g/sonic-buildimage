@@ -4,6 +4,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -52,10 +53,13 @@ HEADER_TARGETS = [
     "@rules_distroless//registry_ci:architecture_amd64_test",
     "@rules_distroless//registry_ci:architecture_arm64_test",
 ]
+GIT_OPTIONS = (["--repo_env=GIT_CONFIG_SYSTEM", "--repo_env=GIT_CONFIG_NOSYSTEM",
+                "--repo_env=CARGO_NET_GIT_FETCH_WITH_CLI"]
+               if os.environ.get("GIT_CONFIG_SYSTEM") else [])
 OPTIONS = [
     "--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
     "--lockfile_mode=off", "--noshow_progress", "--color=no", "--curses=no",
-]
+] + GIT_OPTIONS
 
 
 def contract_module():
@@ -192,14 +196,14 @@ def main():
                 options += ["--config=aarch64"]
             receipt["architecture"] = "arm64" if machine == "aarch64" else "amd64"
             receipt["coverage"] = "Native protobuf header import through the buildimage module graph; no ARM64 image build."
-            graph = capture([args.bazel, "mod", "graph", "--lockfile_mode=update"],
+            graph = capture([args.bazel, "mod", "graph", "--lockfile_mode=update", *GIT_OPTIONS],
                             directory, receipt, "module-graph")
             (directory / "module-graph.txt").write_text(graph)
             execute([args.bazel, "test", *options, "--nocache_test_results",
                      "--build_event_json_file=" + str(directory / "bep.json"), *HEADER_TARGETS],
                     directory, receipt, "headers")
             receipt["tests"] = verify_tests(directory / "bep.json", HEADER_TARGETS)
-            output_base = Path(capture([args.bazel, "info", "output_base"],
+            output_base = Path(capture([args.bazel, "info", "output_base", *GIT_OPTIONS],
                                        directory, receipt, "output-base").strip())
             fetched = output_base / "external/rules_distroless+/MODULE.bazel"
             text = fetched.read_text()

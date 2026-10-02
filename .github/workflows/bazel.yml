@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# Git's system config survives native user setup without making its global
+# user.name/user.email writes target the source transport policy.
+env:
+  GIT_CONFIG_NOSYSTEM: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 concurrency:
   group: bazel-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -63,6 +69,8 @@ jobs:
 
       - name: Initialize the recorded Bazel component sources
         run: |
+          export GIT_CONFIG_SYSTEM="$GITHUB_WORKSPACE/tools/bazel/ci/fork-source.gitconfig"
+          echo "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM" >> "$GITHUB_ENV"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule update --init --depth 1 --jobs 4 -- \
             src/sonic-build-infra src/sonic-dash-api src/sonic-sairedis \
@@ -81,7 +89,9 @@ jobs:
         if: matrix.mode == 'test'
         run: |
           mkdir -p artifacts
-          bazel run --lockfile_mode=off //tools/bazel/buildifier:buildifier.check \
+          bazel run --repo_env=GIT_CONFIG_SYSTEM --repo_env=GIT_CONFIG_NOSYSTEM \
+            --repo_env=CARGO_NET_GIT_FETCH_WITH_CLI \
+            --lockfile_mode=off //tools/bazel/buildifier:buildifier.check \
             2>&1 | tee artifacts/format.log
 
       - name: Run Bazel checks and validate outputs
@@ -122,6 +132,8 @@ jobs:
 
       - name: Initialize every recorded native and Bazel source
         run: |
+          export GIT_CONFIG_SYSTEM="$GITHUB_WORKSPACE/tools/bazel/ci/fork-source.gitconfig"
+          echo "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM" >> "$GITHUB_ENV"
           git submodule update --init --recursive --jobs 4
 
       - name: Restore Bazel source-package and download caches
@@ -154,6 +166,7 @@ jobs:
           fi
           sudo /usr/bin/python3 tools/bazel/ci/image.py \
             --workspace "$GITHUB_WORKSPACE" \
+            --git-config "$GIT_CONFIG_SYSTEM" \
             --state "$GITHUB_WORKSPACE/../vs-ci-state" \
             --artifacts "$GITHUB_WORKSPACE/artifacts/image" \
             "${ca_args[@]}"

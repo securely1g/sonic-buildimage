@@ -61,6 +61,28 @@ class WorkerTest(unittest.TestCase):
         self.assertIn('--jobs=8', command)
         self.assertIn('--memory=24g', command)
 
+    def test_git_transport_is_explicit_readonly_and_part_of_worker_identity(self):
+        original = self.plan()
+        config = self.workspace / 'source.gitconfig'
+        config.write_text('[url "file:///source/"]\n insteadOf = https://example.test/\n')
+        self.args.git_config = str(config)
+        plan = self.plan()
+        self.assertNotEqual(original['digest'], plan['digest'])
+        self.assertIn((str(config), '/run/sonic-source.gitconfig', False), plan['mounts'])
+        for key in ('create', 'disposable'):
+            self.assertIn('GIT_CONFIG_SYSTEM=/run/sonic-source.gitconfig', plan[key])
+        self.assertIn('--repo_env=GIT_CONFIG_SYSTEM=/run/sonic-source.gitconfig', plan['bazel_command'])
+        worker = self.worker(plan)
+        with self.assertRaisesRegex(ValueError, 'Git transport environment'):
+            image_run.validate_worker(worker, plan)
+        worker['Config']['Env'] = ['GIT_CONFIG_SYSTEM=/run/sonic-source.gitconfig', 'GIT_CONFIG_NOSYSTEM=0', 'CARGO_NET_GIT_FETCH_WITH_CLI=true']
+        self.assertEqual(image_run.validate_worker(worker, plan), 'b' * 64)
+        config.write_text(config.read_text() + '# changed policy\n')
+        self.assertNotEqual(plan['digest'], self.plan()['digest'])
+        self.args.git_config = '/etc/passwd'
+        with self.assertRaisesRegex(ValueError, 'inside --mount-root'):
+            self.plan()
+
     def test_persistent_server_and_isolation(self):
         plan = self.plan()
         self.assertIn('--init', plan['create'])

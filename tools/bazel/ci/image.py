@@ -303,6 +303,15 @@ def build(args):
                 "source image CI requires a fresh checkout without retained target outputs")
         source = source_provenance(workspace)
         receipt.update(source)
+        git_config = getattr(args, "git_config", None)
+        git_args = []
+        if git_config:
+            git_config = git_config.resolve(strict=True)
+            require(git_config.is_file() and git_config.is_relative_to(workspace),
+                    "Git transport config must be a source file inside the checkout")
+            git_args = ["--git-config", str(git_config)]
+            receipt["git_transport"] = {"path": str(git_config),
+                                        "sha256": image_inputs.sha256(git_config)}
         # Claim scratch before doing any work; never adopt another invocation.
         output_root.mkdir()
         created = output_root.lstat()
@@ -334,7 +343,7 @@ def build(args):
                      "--workspace", str(workspace), "--state", str(state / ("native-" + invocation)),
                      "--artifacts", str(artifacts / "native"), "--worker-spec", str(spec),
                      "--source-commit", source["source_commit"], "--invocation", invocation,
-                     "--output", str(native_receipt)], workspace, artifacts, receipt, "native-build")
+                     "--output", str(native_receipt), *git_args], workspace, artifacts, receipt, "native-build")
             native_passed = True
         finally:
             # Keep evidence of native mutations without resetting or cleaning
@@ -349,6 +358,9 @@ def build(args):
                 if native_passed:
                     raise
         receipt["bazel_source"]["verification_after_native"] = source_workspace.verify(bazel_workspace, source)
+        if git_config:
+            require(image_inputs.sha256(git_config) == receipt["git_transport"]["sha256"],
+                    "native build modified the Git transport config")
         prepare_started = time.monotonic()
         image_inputs.prepare(native_receipt, workspace, bazel_workspace, state / ("prepare-" + invocation),
                              artifacts / "input-receipt.json", spec, source, invocation)
@@ -366,7 +378,7 @@ def build(args):
                     "--worker-spec", str(spec), "--bazel", "/usr/local/bin/bazel",
                     "--output-user-root", str(output_root), "--repository-cache", str(state / "repository-cache"),
                     "--worker-cpus", "4", "--worker-memory-gib", "12",
-                    "--persistent-worker", worker_name]
+                    "--persistent-worker", worker_name, *git_args]
 
         def bazel(name, targets, cache):
             return launcher + ["--", "build", *OPTIONS, "--disk_cache=" + cache,
@@ -452,6 +464,8 @@ def main(argv=None):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--ca-bundle", type=Path,
                         help="optional PEM certificate bundle for execution workers only")
+    parser.add_argument("--git-config", type=Path,
+                        help="explicit Git system config for native and Bazel source fetches")
     args = parser.parse_args(argv)
 
     def interrupted(signum, _frame):

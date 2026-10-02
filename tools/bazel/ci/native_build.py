@@ -99,6 +99,22 @@ def native_environment(socket):
     return env
 
 
+def git_transport(args):
+    """Translate the explicit source config across Make's /sonic bind mount."""
+    value = getattr(args, "git_config", None)
+    if not value:
+        return None, []
+    workspace = args.workspace.resolve(strict=True)
+    config = Path(value).resolve(strict=True)
+    require(config.is_file() and config.is_relative_to(workspace),
+            "Git transport config must be a source file inside the checkout")
+    relative = config.relative_to(workspace).as_posix()
+    require(re.fullmatch(r"[a-zA-Z0-9_./-]+", relative), "unsupported Git transport config path")
+    # GIT_CONFIG_SYSTEM leaves the slave's global user identity writable.
+    return config, ["SONIC_BUILDER_EXTRA_CMDLINE=-e GIT_CONFIG_SYSTEM=/sonic/" + relative +
+                    " -e GIT_CONFIG_NOSYSTEM=0 -e CARGO_NET_GIT_FETCH_WITH_CLI=true"]
+
+
 def execution_trust():
     """Trust is part of the declared worker image, never inherited from its host."""
     root = Path("/usr/local/share/sonic-build-trust")
@@ -213,6 +229,7 @@ def inside(args):
             and os.environ.get("SONIC_NATIVE_CI_INVOCATION") == args.invocation,
             "native bootstrap must run inside its owned container")
     workspace, state = args.workspace.resolve(strict=True), args.state.resolve(strict=True)
+    git_config, git_options = git_transport(args)
     try:
         account = pwd.getpwuid(1000)
         require(account.pw_name == USER, "unexpected worker UID 1000 account")
@@ -239,6 +256,9 @@ def inside(args):
         "--storage-driver=overlay2", "--exec-opt=native.cgroupdriver=cgroupfs"],
         stdout=docker_log, stderr=subprocess.STDOUT)
     env = native_environment(socket)
+    if git_config:
+        env.update(GIT_CONFIG_SYSTEM=str(git_config), GIT_CONFIG_NOSYSTEM="0",
+                   CARGO_NET_GIT_FETCH_WITH_CLI="true")
     try:
         trust_metadata, ca_bundle = execution_trust()
         (args.artifacts / "execution-trust.json").write_text(json.dumps(trust_metadata, indent=2) + "\n")
@@ -280,6 +300,7 @@ def inside(args):
                    "KERNEL_PROCURE_METHOD=build", "ENABLE_SBOM=n", "ENABLE_IMAGE_SIGNATURE=n",
                    "BUILD_NUMBER=0", "BUILD_TIMESTAMP=" + timestamp, "SOURCE_DATE_EPOCH=" + epoch]
         options.append("SONIC_BUILD_SLAVE_CA_BUNDLE=" + (str(ca_bundle) if ca_bundle else ""))
+        options += git_options
         for stage in ("init", "configure", "bazel-vs-native-inputs"):
             argv = ["runuser", "--preserve-environment", "--user", USER, "--",
                     "make", "-f", "Makefile.work", *options,
@@ -298,6 +319,7 @@ def inside(args):
 
 def build(args):
     workspace, state, artifacts, output, root, spec = validate(args)
+    git_config, _ = git_transport(args)
     state.mkdir(parents=True, exist_ok=False)
     artifacts.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -320,6 +342,8 @@ def build(args):
                 "--workspace", str(workspace), "--state", str(state), "--artifacts", str(artifacts),
                 "--worker-spec", str(args.worker_spec.resolve()), "--source-commit", args.source_commit,
                 "--invocation", args.invocation, "--output", str(output)]
+        if git_config:
+            argv += ["--git-config", str(git_config)]
         container = capture(argv)
         require(re.fullmatch(r"[0-9a-f]{64}", container), "invalid created native worker ID")
         receipt["container"] = container
@@ -361,6 +385,8 @@ def main(argv=None):
     for name in ("source-commit", "invocation"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--inside-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--git-config", type=Path,
+                        help="explicit Git system config inside the source checkout")
     args = parser.parse_args(argv)
 
     def interrupted(signum, _frame):

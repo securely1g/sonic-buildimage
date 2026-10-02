@@ -374,9 +374,9 @@ class ImageControllerTest(unittest.TestCase):
         self.verify_source.assert_not_called()
         self.assertTrue((self.artifacts / "native-source-audit.json").is_file())
 
-    def run_build_fixture(self, failure=None, stop_hook=None):
+    def run_build_fixture(self, failure=None, stop_hook=None, git_config=None):
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
-                                       artifacts=self.artifacts)
+                                       artifacts=self.artifacts, git_config=git_config)
         for cache in ("package-cache", "repository-cache"):
             (self.state / cache).mkdir(parents=True, exist_ok=True)
             (self.state / cache / "retained-entry").write_bytes(b"keep cache")
@@ -474,6 +474,15 @@ class ImageControllerTest(unittest.TestCase):
             self.assertEqual(image.image_inputs.sha256(self.artifacts / output["file"]), output["sha256"])
         for cache in ("package-cache", "repository-cache"):
             self.assertEqual((self.state / cache / "retained-entry").read_bytes(), b"keep cache")
+
+    def test_explicit_git_policy_crosses_native_and_bazel_worker_boundaries(self):
+        config = self.workspace / "source.gitconfig"
+        config.write_text('[url "file:///source/"]\n insteadOf = https://example.test/\n')
+        result, commands, receipt = self.run_build_fixture(git_config=config)
+        self.assertEqual(result, 0)
+        self.assertEqual(receipt["git_transport"]["sha256"], image.image_inputs.sha256(config))
+        for command in (commands[0], commands[1], commands[2], commands[-1]):
+            self.assertEqual(command[command.index("--git-config") + 1], str(config))
 
     def test_changed_pristine_checkout_blocks_staging_and_bazel(self):
         self.verify_source.side_effect = ValueError("pristine checkout contains ignored source")

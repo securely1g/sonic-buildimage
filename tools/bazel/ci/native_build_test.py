@@ -173,6 +173,22 @@ class NativeBuildTest(unittest.TestCase):
         self.assertEqual([argv for argv, _ in self.commands], [
             ["docker", "start", "--attach", self.container], ["docker", "rm", self.container]])
 
+    def test_git_transport_reaches_native_worker_and_slave_without_global_writes(self):
+        config = self.workspace / "source.gitconfig"
+        config.write_text('[url "file:///source/"]\n insteadOf = https://example.test/\n')
+        self.args.git_config = config
+        self.assertEqual(native_build.git_transport(self.args), (config, [
+            "SONIC_BUILDER_EXTRA_CMDLINE=-e GIT_CONFIG_SYSTEM=/sonic/source.gitconfig -e GIT_CONFIG_NOSYSTEM=0 -e CARGO_NET_GIT_FETCH_WITH_CLI=true"]))
+        result, receipt = self.run_build()
+        self.assertEqual((result, receipt["status"]), (0, "passed"))
+        create = next(argv for argv in self.captures if argv[:2] == ["docker", "create"])
+        self.assertEqual(create[-2:], ["--git-config", str(config)])
+        self.assertNotIn("GIT_CONFIG_GLOBAL", " ".join(create))
+        self.args.git_config = self.root / "outside.gitconfig"
+        self.args.git_config.write_text("")
+        with self.assertRaisesRegex(ValueError, "inside the checkout"):
+            native_build.git_transport(self.args)
+
     def test_failed_build_stops_and_removes_only_its_exact_worker(self):
         running = copy.deepcopy(self.info)
         running["State"]["Running"] = True
@@ -318,6 +334,18 @@ class NativeBuildTest(unittest.TestCase):
         daemon.terminate.assert_called_once_with()
         daemon.wait.assert_called_once_with(timeout=30)
         self.assertTrue(popen.call_args.kwargs["stdout"].closed)
+
+    def test_explicit_git_config_reaches_make_and_each_slave_launch(self):
+        config = self.workspace / "source.gitconfig"
+        config.write_text("")
+        option = "SONIC_BUILDER_EXTRA_CMDLINE=-e GIT_CONFIG_SYSTEM=/sonic/source.gitconfig -e GIT_CONFIG_NOSYSTEM=0 -e CARGO_NET_GIT_FETCH_WITH_CLI=true"
+        with mock.patch.object(native_build, "git_transport", return_value=(config, [option])):
+            self.run_inside(extra_env={"GIT_CONFIG_SYSTEM": "/unrelated/config"})
+        for argv, kwargs in self.make_calls:
+            self.assertIn(option, argv)
+            self.assertEqual(kwargs["env"]["GIT_CONFIG_SYSTEM"], str(config))
+            self.assertEqual(kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "0")
+            self.assertEqual(kwargs["env"]["CARGO_NET_GIT_FETCH_WITH_CLI"], "true")
 
     def test_inherited_docker_context_cannot_redirect_private_daemon_clients(self):
         foreign = {"DOCKER_CONTEXT": "host-context", "DOCKER_HOST": "tcp://foreign:2375",

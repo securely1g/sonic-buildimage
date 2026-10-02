@@ -141,6 +141,20 @@ def build_plan(args):
         "--mount", "type=bind,source=" + str(root) + ",target=" + str(root),
         "--mount", "type=bind,source=" + str(worker_spec) + ",target=/run/sonic-image-worker.json,readonly",
     ]
+    git_config = getattr(args, "git_config", None)
+    git_options = []
+    if git_config:
+        git_config = contained(git_config, root, "Git transport config", must_exist=True)
+        if not git_config.is_file():
+            raise ValueError("Git transport config must be a file")
+        docker += ["--mount", "type=bind,source=" + str(git_config) +
+                   ",target=/run/sonic-source.gitconfig,readonly",
+                   "--env", "GIT_CONFIG_SYSTEM=/run/sonic-source.gitconfig",
+                   "--env", "GIT_CONFIG_NOSYSTEM=0",
+                   "--env", "CARGO_NET_GIT_FETCH_WITH_CLI=true"]
+        git_options = ["--repo_env=GIT_CONFIG_SYSTEM=/run/sonic-source.gitconfig",
+                       "--repo_env=GIT_CONFIG_NOSYSTEM=0",
+                       "--repo_env=CARGO_NET_GIT_FETCH_WITH_CLI=true"]
     cache_arg = []
     cache = None
     if args.repository_cache:
@@ -162,6 +176,8 @@ def build_plan(args):
             raise ValueError("Bazel command is missing")
         verb = command[command_index]
         defaults = list(cache_arg)
+        if verb in {"build", "test", "run", "coverage", "query", "cquery", "aquery", "fetch", "sync", "mod", "info"}:
+            defaults += git_options
         if verb in {"build", "test", "run", "coverage"}:
             defaults += ["--jobs=" + str(cpus), "--local_resources=cpu=" + str(cpus)]
             if persistent:
@@ -191,11 +207,16 @@ def build_plan(args):
     }
     if bazel.exists() and bazel.is_relative_to(root):
         identity["bazel_sha256"] = hashlib.sha256(bazel.read_bytes()).hexdigest()
+    if git_config:
+        identity["git_config"] = str(git_config)
+        identity["git_config_sha256"] = hashlib.sha256(git_config.read_bytes()).hexdigest()
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     mounts = [(str(root), str(root), True),
               (str(worker_spec), "/run/sonic-image-worker.json", False)]
     if cache:
         mounts.append((str(cache), "/repository-cache", True))
+    if git_config:
+        mounts.append((str(git_config), "/run/sonic-source.gitconfig", False))
     common = docker[3:]
     create = ["docker", "create", "--name", persistent or "unused",
               "--label", LABEL + "=" + digest,
@@ -271,6 +292,12 @@ def validate_worker(worker, plan):
     for label, (actual, wanted) in expected.items():
         if actual != wanted:
             raise ValueError("refusing mismatched persistent worker " + identity["name"] + ": " + label)
+    if identity.get("git_config"):
+        environment = config.get("Env") or []
+        for value in ("GIT_CONFIG_SYSTEM=/run/sonic-source.gitconfig", "GIT_CONFIG_NOSYSTEM=0",
+                      "CARGO_NET_GIT_FETCH_WITH_CLI=true"):
+            if value not in environment:
+                raise ValueError("refusing mismatched persistent worker: Git transport environment")
     mounts = worker.get("Mounts", [])
     observed = sorted((item.get("Source"), item.get("Destination"), item.get("RW"))
                       for item in mounts if item.get("Type") == "bind"
@@ -339,6 +366,10 @@ def ready_worker(container_id, plan):
     actual = capture(["docker", "exec", container_id, "sha256sum", "/run/sonic-image-worker.json"])
     if actual.split()[0] != plan["identity"]["spec_sha256"]:
         raise ValueError("worker specification changed after worker creation")
+    if plan["identity"].get("git_config"):
+        actual = capture(["docker", "exec", container_id, "sha256sum", "/run/sonic-source.gitconfig"])
+        if actual.split()[0] != plan["identity"]["git_config_sha256"]:
+            raise ValueError("Git transport config changed after worker creation")
 
 
 def persistent_action(args, plan, owner_file):
@@ -427,6 +458,7 @@ def main():
     parser.add_argument("--mount-root", required=True)
     parser.add_argument("--worker-spec", required=True)
     parser.add_argument("--bazel", default="/usr/local/bin/bazel")
+    parser.add_argument("--git-config", help="explicit Git system config visible to source fetches")
     parser.add_argument("--output-user-root", required=True)
     parser.add_argument("--repository-cache")
     parser.add_argument("--persistent-worker", help="retain and reuse this named worker and its Bazel server")

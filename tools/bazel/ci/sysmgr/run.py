@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -34,6 +35,9 @@ PACKAGES = {
 }
 OPTIONS = ["--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
            "--lockfile_mode=off", "--noshow_progress", "--color=no", "--curses=no"]
+if os.environ.get("GIT_CONFIG_SYSTEM"):
+    OPTIONS += ["--repo_env=GIT_CONFIG_SYSTEM", "--repo_env=GIT_CONFIG_NOSYSTEM",
+                "--repo_env=CARGO_NET_GIT_FETCH_WITH_CLI"]
 BINARIES = ["usr/bin/rebootbackend", "usr/lib/x86_64-linux-gnu/librebootgnoi.so.0.0.0"]
 
 
