@@ -155,13 +155,13 @@ container or the full installer has passed validation.
 
 ## Bazel Rules Dependencies
 
-This checkout uses `securely1g/sonic-bazel-registry`. CI and local root builds
-select its reviewed `codex/ci-compatible-registry` branch, which preserves the
-existing SWSS and DASH registrations through one registry endpoint. Some of
-these entries are absent from `main`; the branch also preserves the selected
-SAI overlay. Move to `main` when a reviewed dependency update makes that possible.
-Module versions, source checksums and package locks remain pinned independently
-of the registry URL. CI does not need a registry commit pin.
+CI and local root builds use the maintained `main` branch of
+`securely1g/sonic-bazel-registry`, followed by Bazel Central Registry. The selected
+SAI registration uses the shared infrastructure Aspell and Doxygen execution
+tools. Root module overrides still select the recorded component sources under
+`src/`; they do not require historical registry entries. Module versions, source
+checksums and package locks remain pinned independently of the registry URL.
+CI does not need a registry commit pin.
 
 Everything that isn't a plain upstream BCR dependency lives in that external registry:
 
