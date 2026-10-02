@@ -78,6 +78,8 @@ def verify_native(native_receipt, workspace, source, invocation):
     expected_submodules = {name: item["commit"] for name, item in source["components"].items()}
     require(provenance.get("source_submodules") == expected_submodules,
             "native producer submodule revisions differ from this checkout")
+    require(isinstance(provenance.get("native_transformations"), dict),
+            "native producer omitted its source transformation record")
     files = provenance["files"]
     require(REQUIRED <= files.keys(), "native producer omitted required image inputs")
     for name, info in files.items():
@@ -139,6 +141,7 @@ def prepare(native_receipt, native_workspace, bazel_workspace, scratch, receipt_
         provenance, images, digest = verify_native(native_receipt, native_workspace, source, invocation)
         receipt["native_provenance_sha256"] = digest
         receipt["native_files"] = provenance["files"]
+        receipt["native_transformations"] = provenance["native_transformations"]
         worker = json.loads(worker_spec.read_text())
         native_run = json.loads(native_receipt.read_text())
         require(native_run.get("worker_image") == worker.get("worker_image"),

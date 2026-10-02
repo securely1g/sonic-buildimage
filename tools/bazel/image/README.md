@@ -117,8 +117,14 @@ writes the snapshot identity, captures only the required non-secret template
 environment, and records all recursive source revisions and output SHA256s in
 `target/bazel-native/provenance.json`. The controller checks those against the
 original clean revisions and the current invocation before declaring the Bazel
-inputs. Native Make can rewrite tracked files such as SWSS's `Cargo.lock` and
-leave generated headers behind. The controller records those mutations without
+inputs. FRR's native recipe creates a Git commit for each declared SONiC patch
+and a final changelog commit. The producer reconstructs each patch tree from the
+recorded FRR gitlink, verifies the linear commit chain and changelog version,
+and records the resulting native revision and input hashes separately in
+`native_transformations`. Other submodule HEAD changes are rejected; the
+recorded source revision map remains unchanged. Native Make can rewrite tracked
+files such as SWSS's `Cargo.lock` and leave generated headers behind. The
+controller records those mutations without
 cleaning the native checkout, then verifies that the separate Bazel checkout
 still contains exactly the recorded sources and no untracked or ignored files.
 Only the verified native image inputs, config-engine archive and Scapy wheel

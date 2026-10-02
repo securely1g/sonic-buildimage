@@ -11,8 +11,9 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
+
+from source_identity import source_identity
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import host
@@ -55,26 +56,6 @@ def file_info(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return {"bytes": path.stat().st_size, "sha256": digest.hexdigest()}
-
-
-def git(source, *arguments):
-    return subprocess.check_output(["git", "-C", str(source), *arguments], text=True).strip()
-
-
-def source_identity(source):
-    commit = git(source, "rev-parse", "HEAD")
-    require(re.fullmatch(r"[0-9a-f]{40}", commit), "invalid source commit")
-    submodules = {}
-    for line in git(source, "submodule", "status", "--recursive").splitlines():
-        # strip() removes the first line's normal leading space, but not the
-        # mismatch, uninitialized or conflict markers, which must fail closed.
-        require(line[0] not in "-+U", "submodule does not match its recorded gitlink: " + line)
-        fields = line.split()
-        require(len(fields) >= 2 and re.fullmatch(r"[0-9a-f]{40}", fields[0]),
-                "invalid submodule identity")
-        submodules[fields[1]] = fields[0]
-    return {"source_commit": commit, "source_branch": git(source, "rev-parse", "--abbrev-ref", "HEAD"),
-            "source_submodules": submodules}
 
 
 def capture_environment(source, environment):
@@ -150,7 +131,16 @@ def finish(source, environment):
     output = source / OUTPUT
     original = json.loads((output / "source.json").read_text())
     current = source_identity(source)
-    require(all(current[key] == original[key] for key in current), "source identity changed during native build")
+    require(all(current[key] == original[key] for key in
+                ("source_commit", "source_branch", "source_submodules")),
+            "source identity changed during native build")
+    # Inventory can precede or follow prerequisite compilation. A clean FRR
+    # checkout may acquire the verified native patch stack, but an observed
+    # stack must not be replaced or removed after inventory was captured.
+    transformations = current["native_transformations"]
+    require(all(transformations.get(path) == value
+                for path, value in original["native_transformations"].items()),
+            "native source transformation changed during host assembly")
     captured = capture_environment(source, environment)
     expected = {"SONIC_BAZEL_SOURCE_COMMIT": original["source_commit"],
                 "SONIC_BAZEL_SOURCE_BRANCH": original["source_branch"],
@@ -185,7 +175,8 @@ def finish(source, environment):
         require(not path.is_absolute() and ".." not in path.parts, "invalid native input path: " + name)
         require((source / path).resolve().is_relative_to(source.resolve()), "native input escapes checkout")
         files[name] = file_info(source / path)
-    receipt = {"schema": 1, **original, "source_boundary": "before-container-loading",
+    receipt = {"schema": 1, **original, "native_transformations": transformations,
+               "source_boundary": "before-container-loading",
                "files": files, "scope": inv["native_swss_scope"]}
     write_json(output / "provenance.json", receipt)
     return receipt
