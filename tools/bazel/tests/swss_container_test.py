@@ -76,6 +76,26 @@ def payload(path, require_root=True):
     return result
 
 
+# DASH and SWSS link this source-built shared library. Keep the matching runtime
+# and symbols in the final layer instead of installing a second Debian build.
+PROTOBUF_RUNTIME = "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12"
+
+
+def source_protobuf_contract(combined, protobuf):
+    require(protobuf.get(PROTOBUF_RUNTIME, {}).get("elf_machine") == 62,
+            "missing source-built AMD64 protobuf runtime")
+    for name, item in protobuf.items():
+        if item["kind"] != "directory":
+            require(combined.get(name) == dict(item, uid=0, gid=0),
+                    "runtime layer changes source protobuf bytes or modes: " + name)
+    require(combined.get("usr/lib/x86_64-linux-gnu/libprotobuf.so.32", {}).get("linkname") ==
+            "libprotobuf.so.32.0.12", "incorrect source protobuf SONAME link")
+    require({name for name, item in combined.items()
+             if "/libprotobuf.so" in name and item["kind"] != "directory"} ==
+            {PROTOBUF_RUNTIME, "usr/lib/x86_64-linux-gnu/libprotobuf.so.32"},
+            "conflicting full protobuf runtime in declared layer")
+
+
 def swss_contract(source, files):
     values = {}
     for node in ast.parse((source / "bazel/production_sources.bzl").read_text()).body:
@@ -462,8 +482,8 @@ def main():
                 require(report["debug_loader"]["passed"], "debug container loader/import failures: " +
                         "; ".join(report["debug_loader"]["errors"]))
                 pairs, gaps = elf_debug(directory / "debug", combined, args.prebuilt_library)
-                required_debug = set(programs) | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so"}
-                require(required_debug <= {item["path"] for item in pairs}, "missing SWSS/DASH debug coverage")
+                required_debug = set(programs) | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so", PROTOBUF_RUNTIME}
+                require(required_debug <= {item["path"] for item in pairs}, "missing SWSS/DASH/protobuf debug coverage")
                 report.update(debug_archive=debug, debug_pairs=pairs, prebuilt_debug_gaps=gaps,
                               gdb=gdb_probe(docker, debug, pairs))
             report["status"] = "passed" if args.debug_archive else "runtime-passed-debug-not-run"

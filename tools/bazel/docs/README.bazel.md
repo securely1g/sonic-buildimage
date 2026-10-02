@@ -498,3 +498,11 @@ See more details [here](/tools/bazel/docs/patterns-detail.md#remote-caching).
 > This section will detail how to apply patches to SONiC Components.
 > However, it is under construction until we settle on an approach to versioning components like `sonic-swss-common`.
 > Please email the SONiC Build Working Group if you'd like specific guidance.
+
+The orchagent layer uses DASH and SWSS with the same source-built protobuf
+3.21.12 shared library. Its runtime tar is included in `rdeps`, and the debug
+layer collects the matching symbols. The AMD64 package check retains the
+protobuf tar and verifies that the combined layer preserves its bytes, modes,
+SONAME symlink, build ID and debuglink; it rejects a second full protobuf
+runtime. Debian's distinct protobuf-lite library remains available for other
+runtime consumers.

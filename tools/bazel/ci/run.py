@@ -46,6 +46,7 @@ TEST_TARGETS = [
 ]
 BUILD_TARGETS = {
     "swss.tar": "@sonic_swss//dist:swss_pkg",
+    "protobuf.tar": "@sonic_dash_api//:protobuf_runtime_pkg",
     "rdeps.tar": "//dockers/docker-orchagent:rdeps",
     "config.tar": "//dockers/docker-orchagent/config:files",
     "debug-symbols.tar": "//tools/bazel/ci:swss_debug_symbols",
@@ -141,6 +142,8 @@ def verify_packages(paths):
     for name, metadata in runtime.items():
         if metadata["kind"] != "directory":
             contract.require(dependencies.get(name) == metadata, "runtime layer changed SWSS payload: " + name)
+    protobuf = contract.payload(paths["protobuf.tar"], require_root=False)
+    contract.source_protobuf_contract(dependencies, protobuf)
     symbols = contract.payload(paths["debug-symbols.tar"])
     contract.require(symbols and all(
         metadata["kind"] == "directory" or
@@ -160,8 +163,8 @@ def verify_packages(paths):
             with tarfile.open(paths[name]) as archive:
                 archive.extractall(extracted, filter="data")
         pairs, gaps = contract.elf_debug(extracted, combined, set())
-    required_debug = set(programs) | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so"}
-    contract.require(required_debug <= {pair["path"] for pair in pairs}, "incomplete SWSS/DASH debug coverage")
+    required_debug = set(programs) | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so", contract.PROTOBUF_RUNTIME}
+    contract.require(required_debug <= {pair["path"] for pair in pairs}, "incomplete SWSS/DASH/protobuf debug coverage")
     configuration = contract.payload(paths["config.tar"])
     contract.require(configuration.get("usr/bin/docker-init.sh", {}).get("mode") == 0o755,
                      "missing executable rendered SWSS entrypoint")
@@ -198,8 +201,9 @@ def main():
                 options += ["--config=aarch64"]
             receipt["architecture"] = "arm64" if machine == "aarch64" else "amd64"
             receipt["coverage"] = "Native protobuf header import through the buildimage module graph; no ARM64 image build."
-            graph = capture([args.bazel, "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update", *GIT_OPTIONS],
-                            directory, receipt, "module-graph")
+            graph_options = ["--config=aarch64"] if machine == "aarch64" else []
+            graph = capture([args.bazel, "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update",
+                             *graph_options, *GIT_OPTIONS], directory, receipt, "module-graph")
             (directory / "module-graph.txt").write_text(graph)
             execute([args.bazel, "test", *options, "--nocache_test_results",
                      "--build_event_json_file=" + str(directory / "bep.json"), *HEADER_TARGETS],
