@@ -148,7 +148,15 @@ container or the full installer has passed validation.
 
 ## Bazel Rules Dependencies
 
-SONiC maintains its own Bazel registry, `blorente/sonic-bazel-registry` (soon to be `sonic-net/sonic-bazel-registry`). Everything that isn't a plain upstream BCR dependency lives in that external registry:
+This checkout uses `securely1g/sonic-bazel-registry`. CI and local root builds
+select its reviewed `codex/ci-compatible-registry` branch, which preserves the
+existing SWSS and DASH registrations through one registry endpoint. Some of
+these entries are absent from `main`; the branch also preserves the selected
+SAI overlay. Move to `main` when a reviewed dependency update makes that possible.
+Module versions, source checksums and package locks remain pinned independently
+of the registry URL. CI does not need a registry commit pin.
+
+Everything that isn't a plain upstream BCR dependency lives in that external registry:
 
 - First-party component modules (e.g. `sonic-build-infra`, `sonic-swss-common`, `sonic-sysmgr`), discovered automatically from `src/`.
 - Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet, and `libnl3` carries our own patch on top of the real upstream archive.
