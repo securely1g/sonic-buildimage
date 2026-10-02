@@ -27,6 +27,7 @@ TEST_TARGETS = [
     "//dockers/docker-orchagent/config:render_test",
     "//tools/bazel/tests:make_bridge_test",
     "//tools/bazel/registry:registry_lib_test",
+    "//tools/bazel/equivalence_checker:deployment_tar_test",
     "//tools/bazel/ci:run_test",
     "//tools/bazel/ci:image_inputs_test",
     "//tools/bazel/ci:native_build_test",

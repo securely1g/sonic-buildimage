@@ -439,24 +439,21 @@ Usually, we'll use it one of two ways:
 - `mutate`: useful to bulk-relocate a group of files into a specific directory layout, by stripping and re-rooting a path prefix. See [`libnl3-dev_headers`](/src/libnl3/libnl3.BUILD) for an example: it strips `include/` off every public header and re-roots them under `./usr/include/libnl3`.
 - `mtree`: explicitly list, per file, where it lands and with what permissions. Useful when assembling complex layers, or when dealing with loose files like binaries or configuration files. See [Creating Component Containers](/tools/bazel/docs/patterns-detail.md#creating-component-containers) for examples.
 
-## Generating `.deb` Packages
+## Runtime and debug archives
 
-`sonic-build-infra` defines a [`sonic_deb`](/src/sonic-build-infra/deb/sonic_deb.bzl) macro that assembles a `.deb` from a pre-packaged data `tar`, deriving the target architecture from the target platform. It only supports the dpkg-required control fields plus `Depends`. We should extend the macro if a migrated package needs more (e.g. `Homepage`).
+Build component runtime and matching debug tars directly. Sysmgr's
+`sonic_deploy_tar` target derives both outputs from the same linked binaries;
+the debug target normalizes archive ownership before delivery:
 
-```starlark
-# src/sonic-sysmgr/BUILD.bazel
-
-sonic_deb(
-    name = "sysmgr_deb",
-    data = ":sysmgr_pkg",
-    depends = ["libswsscommon"],
-    description = "This package contains sysmgr service.",
-    maintainer = "Runming Wu <runmingwu@google.com>",
-    package = "sysmgr",
-    version = "1.0.0",
-    visibility = ["//visibility:public"],
-)
+```sh
+bazel build @sonic_sysmgr//:sysmgr_pkg @sonic_sysmgr//:sysmgr_debug_pkg
 ```
+
+The archives contain their installed paths under `usr/`. Container layers consume
+these payloads directly. Source CI verifies ownership, modes, SONAME links, native
+ELF architecture, matching build IDs, debug-link checksums and GDB source lookup.
+External Debian packages remain pinned build/runtime inputs; the existing Make
+path retains its own Debian packaging.
 
 ## Adapting Bazel To Your Internal Environment
 
