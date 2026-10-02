@@ -42,6 +42,7 @@ class DeploymentTargetTests(unittest.TestCase):
             actual = Bazel().deployment_tar_targets("sysmgr")
         self.assertEqual(run.call_args.args[0], "query")
         self.assertIn("--output=xml", run.call_args.args)
+        self.assertEqual(run.call_args.args[-1], 'attr(tags, "make-deb:", @sysmgr//:*)')
         return actual
 
     def test_explicit_runtime_debug_and_excluded_mappings(self):
