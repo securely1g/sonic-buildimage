@@ -148,10 +148,15 @@ jobs:
 
       - name: Build and verify sonic-vs.bin with Bazel
         run: |
+          ca_args=()
+          if [[ -n "${SONIC_BUILD_CA_BUNDLE:-}" ]]; then
+            ca_args=(--ca-bundle "$SONIC_BUILD_CA_BUNDLE")
+          fi
           sudo /usr/bin/python3 tools/bazel/ci/image.py \
             --workspace "$GITHUB_WORKSPACE" \
             --state "$GITHUB_WORKSPACE/../vs-ci-state" \
-            --artifacts "$GITHUB_WORKSPACE/artifacts/image"
+            --artifacts "$GITHUB_WORKSPACE/artifacts/image" \
+            "${ca_args[@]}"
 
       - name: Upload VS installer and build evidence
         if: always()

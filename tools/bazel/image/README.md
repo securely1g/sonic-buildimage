@@ -263,6 +263,13 @@ job requires 300 GiB free after restoring caches. Provision Docker, Git, Python
 preparation uses one package job, two compiler jobs per package and a 16-GiB
 worker limit. The later Bazel worker uses four CPUs, 12 GiB and four jobs.
 
+If the runner's network requires an additional TLS issuer, set
+`SONIC_BUILD_CA_BUNDLE=/absolute/path/to/issuer-certificates.pem` in the runner's
+environment before starting it. The workflow passes that file explicitly to
+the controller's `--ca-bundle` option, which installs verified trust in both
+the native and Bazel workers. Keep the certificate-only PEM outside the source
+checkout. Leave the variable unset when the distribution's public roots suffice.
+
 The worker is built from the checked-in public recipe. The controller refuses
 retained target outputs, modified source trees, missing recursive submodules,
 source revisions that differ from their gitlinks, and native receipts from a
