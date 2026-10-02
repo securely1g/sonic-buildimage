@@ -34,7 +34,8 @@ class InputVerificationTest(unittest.TestCase):
         self.images = {"docker-config-engine-trixie.gz": image_inputs.CONFIG_ENGINE}
         (self.native / "images.json").write_text(json.dumps(self.images))
         self.provenance = {"schema": 1, **self.identity,
-                           "source_submodules": {"src/component": "b" * 40}, "files": {}}
+                           "source_submodules": {"src/component": "b" * 40},
+                           "native_transformations": {}, "files": {}}
         self.provenance_path = self.native / "provenance.json"
         self.rehash()
         self.native_receipt = self.root / "native-receipt.json"
@@ -114,6 +115,12 @@ class InputVerificationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "omitted required"):
             self.verify()
 
+    def test_missing_native_transformation_record_is_rejected(self):
+        del self.provenance["native_transformations"]
+        self.write_provenance()
+        with self.assertRaisesRegex(ValueError, "transformation record"):
+            self.verify()
+
     def test_input_paths_cannot_escape_or_point_to_completed_installers(self):
         for name in ("../escape", "/absolute", "target/../escape", "target//bazel-native/file",
                      "target/bazel-native/./file", "target/sonic-vs.bin", "bazel-out/image"):
@@ -147,6 +154,9 @@ class InputVerificationTest(unittest.TestCase):
                     self.verify()
 
     def test_prepare_uses_separate_clean_installer_sources_and_preserves_native_tree(self):
+        self.provenance["native_transformations"] = {
+            "src/sonic-frr/frr": {"recorded_commit": "b" * 40, "actual_commit": "d" * 40}}
+        self.write_provenance()
         for root, content in ((self.workspace, "native mutation"), (self.bazel_workspace, "Git source")):
             (root / "installer").mkdir()
             (root / "installer/source.sh").write_text(content)
@@ -182,6 +192,7 @@ class InputVerificationTest(unittest.TestCase):
         self.assertEqual(json.loads(self.receipt.read_text()), receipt)
         self.assertEqual(receipt["native_workspace"], str(self.workspace))
         self.assertEqual(receipt["bazel_workspace"], str(self.bazel_workspace))
+        self.assertEqual(receipt["native_transformations"], self.provenance["native_transformations"])
         self.assertEqual(receipt["staged_files"], {name: self.provenance["files"][name]
                                                 for name in (image_inputs.CONFIG_ENGINE, image_inputs.SCAPY)})
         self.assertEqual(before, {path.relative_to(self.workspace): path.read_bytes()
