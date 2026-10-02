@@ -78,3 +78,13 @@ py_test(
     ],
     imports = ["."],
 )
+
+py_test(
+    name = "p4lang_pi_source_test",
+    srcs = ["p4lang_pi_source_test.py"],
+    data = [
+        "//src/p4lang:Makefile",
+        "//src/p4lang:pi_source.json",
+        "//src/p4lang:pi_source.py",
+    ],
+)

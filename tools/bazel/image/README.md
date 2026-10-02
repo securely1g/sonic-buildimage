@@ -105,8 +105,20 @@ and rasdaemon, CI uses SHA256-pinned Debian source archives for the configured
 versions and applies the existing SONiC patches before compiling their packages.
 These archives are authenticated Debian releases; equivalence to the original
 Salsa Git trees has not been verified. Ordinary Make builds retain the Git source
-method. It builds
-config-engine and the Scapy wheel. The Make target
+method.
+
+For P4 PI 0.1.3-2, CI selects `P4LANG_PI_SOURCE_METHOD=github`. The source
+stager uses SHA256-pinned archives for the upstream PI commit, its five recorded
+submodules and the official `p4lang/packages` packaging commit, then applies the
+existing SONiC patches. This establishes the source and packaging revisions;
+byte-for-byte equivalence with the Open Build Service source tarball is not
+asserted. Ordinary Make builds retain `P4LANG_PI_SOURCE_METHOD=obs`. BMV2 and
+P4C keep their existing source-package recipes. P4C's original-archive checksum
+must match the configured 1.2.4.2-3 descriptor; the older cached archive cannot
+substitute for it. A source mirror missing the matching archive still requires
+access to the upstream source repository.
+
+The native stage also builds config-engine and the Scapy wheel. The Make target
 excludes the orchagent archive while retaining its service templates; Bazel
 builds that archive later. Other native service recipes still compile a native
 SWSS DEB where their existing dependency graph requires one. Sysmgr remains on

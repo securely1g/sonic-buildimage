@@ -313,7 +313,8 @@ class NativeBuildTest(unittest.TestCase):
         self.assertEqual((self.workspace / "rules/config.user").read_text(),
                          "SONIC_CONFIG_MAKE_JOBS = 2\n"
                          "export MONIT_SOURCE_METHOD = debian\n"
-                         "export RASDAEMON_SOURCE_METHOD = debian\n")
+                         "export RASDAEMON_SOURCE_METHOD = debian\n"
+                         "export P4LANG_PI_SOURCE_METHOD = github\n")
         daemon.terminate.assert_called_once_with()
         daemon.wait.assert_called_once_with(timeout=30)
         self.assertTrue(popen.call_args.kwargs["stdout"].closed)
