@@ -35,7 +35,14 @@ use_repo(llvm, "llvm_toolchain_llvm")
 
 register_toolchains("//tools/bazel/rust:bindgen_toolchain")
 
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.2")
+bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+
+# Pinned component sources still request older dotted versions, which sort
+# above the native header-fix registration despite containing older changes.
+single_version_override(
+    module_name = "rules_distroless",
+    version = "0.9.4-sonic.1",
+)
 
 # Dependencies from this repository's submodules.
 # Versions here are irrelevant (see root-unpinned-modules-config.bazelrc).
