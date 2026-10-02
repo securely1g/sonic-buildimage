@@ -260,7 +260,8 @@ def inside(args):
         with config.open("x") as stream:
             stream.write("SONIC_CONFIG_MAKE_JOBS = 2\n"
                          "export MONIT_SOURCE_METHOD = debian\n"
-                         "export RASDAEMON_SOURCE_METHOD = debian\n")
+                         "export RASDAEMON_SOURCE_METHOD = debian\n"
+                         "export P4LANG_PI_SOURCE_METHOD = github\n")
         os.chown(config, 1000, 1000)
         epoch = capture(["git", "-c", "safe.directory=" + str(workspace), "-C", workspace,
                          "show", "-s", "--format=%ct", args.source_commit])
