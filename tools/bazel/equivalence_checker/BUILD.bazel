@@ -3,6 +3,22 @@ load("@rules_python//python:py_test.bzl", "py_test")
 exports_files(["equivalence.MODULE.bazel"])
 
 py_test(
+    name = "deployment_tar_test",
+    size = "small",
+    srcs = [
+        "collector.py",
+        "context.py",
+        "deployment_tar_test.py",
+        "diagnostics.py",
+        "extractor.py",
+        "progress.py",
+        "tools.py",
+    ],
+    imports = ["."],
+    deps = ["//tools/bazel/registry:registry_lib"],
+)
+
+py_test(
     name = "rules_engine_test",
     size = "small",
     srcs = [
