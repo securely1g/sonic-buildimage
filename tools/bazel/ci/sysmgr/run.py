@@ -17,6 +17,8 @@ import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT / "tools/bazel/ci"))
+import resolution
 TESTS = [
     "//tools/bazel/registry:registry_lib_test",
     "//tools/bazel/equivalence_checker:rules_engine_test",
@@ -33,7 +35,7 @@ PACKAGES = {
     "debug-layer.tar": "//tools/bazel/ci/sysmgr:symbols",
 }
 OPTIONS = ["--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
-           "--lockfile_mode=off", "--noshow_progress", "--color=no", "--curses=no"]
+           "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no"]
 BINARIES = ["usr/bin/rebootbackend", "usr/lib/x86_64-linux-gnu/librebootgnoi.so.0.0.0"]
 
 
@@ -129,11 +131,13 @@ def main():
         started = time.monotonic()
         record = {"argv": command, "log": name + ".log"}
         receipt["commands"].append(record)
-        result = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        (directory / record["log"]).write_text(result.stdout)
+        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+        (directory / record["log"]).write_text(result.stdout + result.stderr)
         print(result.stdout, end="", flush=True)
+        print(result.stderr, end="", file=sys.stderr, flush=True)
         record.update(returncode=result.returncode, elapsed_seconds=time.monotonic() - started)
         require(result.returncode == 0, f"{name} failed: {result.returncode}")
+        return result.stdout
 
     try:
         require(platform.machine() == "x86_64" and platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
@@ -178,6 +182,9 @@ def main():
                 shutil.copyfile(ROOT / files[0], paths[name])
                 receipt["artifacts"][name] = {"target": target, "sha256": sha(paths[name]), "bytes": paths[name].stat().st_size}
             receipt["validation"] = verify_packages(paths)
+        graph = run(["bazel", "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update"], "module-graph")
+        receipt["resolution"] = resolution.retain(ROOT, directory, graph)
+        receipt["architecture"] = "amd64"
         receipt["status"] = "passed"
     except Exception as error:
         receipt.update(status="failed", error=str(error))
