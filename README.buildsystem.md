@@ -189,6 +189,59 @@ $(SOME_DOCKER)_LOAD_DOCKERS += $(SOME_OTHER_DOCkER) # docker image from which th
 SONIC_DOCKER_IMAGES += $(SOME_DOCKER) # add docker to this group
 ```
 
+#### Bazel Docker images
+
+The `SONIC_BAZEL_DOCKER_IMAGES` target group contains docker images built with [Bazel](https://bazel.build/).
+Whenever Make requests an image in this group, it runs `bazel build //dockers/<name>:<name>.gz` so Bazel can check its declared inputs. Make atomically publishes changed archives to `target/<name>.gz` and preserves the file timestamp when the archive is unchanged.
+This is opt-in: a recipe only registers the image here when `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` (see **rules/config**).
+
+The image is still registered in `SONIC_DOCKER_IMAGES` / `SONIC_INSTALL_DOCKER_IMAGES`, and still carries `_PATH`, `_VERSION` and `_PACKAGE_NAME`, so it is installed and listed in the sonic-package-manager catalog exactly as a Make-built one.
+
+Bazel currently only supports trixie-based images.
+
+For example, build the sysmgr image with Bazel while disabling the default Bookworm build:
+
+```sh
+make NOBOOKWORM=1 BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/docker-sysmgr.gz
+```
+
+For a direct Bazel build on AMD64, initialize the required submodules and provide
+`target/docker-config-engine-trixie.gz` from a Trixie Make build (or a previously
+built archive with known provenance). Bazel imports that base image; it does not
+build the full SONiC installer.
+
+```sh
+git submodule update --init src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
+bazel build //dockers/docker-sysmgr:docker-sysmgr.gz \
+    @sonic_sysmgr//:sysmgr_pkg @sonic_sysmgr//:sysmgr_debug_pkg
+bazel run //dockers/docker-sysmgr:write_docker-sysmgr.gz
+bazel test //dockers/docker-sysmgr:debug_symbols_test
+```
+
+The debug container is `//dockers/docker-sysmgr:docker-sysmgr-dbg.gz`. It also
+needs the prebuilt FIPS packages pinned in `src/sonic-fips/MODULE.bazel`; these
+are separate from the split symbols in `sysmgr_debug_pkg`. The root Bazel build
+currently disables YANG. See [the Bazel guide](tools/bazel/docs/README.bazel.md)
+for the build graph and component workflow.
+
+Define:
+
+```make
+SOME_DOCKER = some_docker.gz # name of your docker (must match dockers/<name>/BUILD.bazel)
+$(SOME_DOCKER)_PATH = path/to/your/docker # path to the docker's directory
+$(SOME_DOCKER)_VERSION = 1.0.0 # version recorded in the package catalog
+$(SOME_DOCKER)_PACKAGE_NAME = some_package # sonic-package-manager package name
+$(SOME_DOCKER)_BAZEL_BASE += $(SOME_BASE_DOCKER) # base docker(s) the Bazel build depends on
+SONIC_BAZEL_DOCKER_IMAGES += $(SOME_DOCKER) # build this docker with Bazel
+SONIC_DOCKER_IMAGES += $(SOME_DOCKER) # still a regular docker image downstream of the .gz
+SONIC_INSTALL_DOCKER_IMAGES += $(SOME_DOCKER) # install it into the final image
+```
+
+Two configuration knobs in **rules/config** control this flow:
+
+* **BUILD_WITH_BAZEL_WHEN_AVAILABLE** (default `n`): When set to `y`, eligible dockers are built with Bazel rather than the legacy `docker build` flow.
+* **SONIC_BAZEL_CACHE_SOURCE** (default `$(SONIC_DPKG_CACHE_SOURCE)/bazel`): Host directory used to persist Bazel's disk and repository caches across slave container runs. It is mounted into the slave as a volume. Existing directory permissions are preserved; choose a directory writable by the build user. Bazel server and output state stay in the default per-user directory inside each container.
+
 ## Tips & Tricks
 Although every target is built inside a sonic-slave container, which exits at the end of build, you can enter bash of sonic-slave using this command:
 ```
