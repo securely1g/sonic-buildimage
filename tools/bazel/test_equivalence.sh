@@ -1,5 +1,5 @@
 #!/bin/bash
-# Compares every Bazel-built artifact (.deb archives and container images) against its Make-built counterpart.
+# Compare Bazel runtime/debug tars and container images with their Make counterparts.
 set -Eeuo pipefail
 
 trap 'echo "[FAILED] ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND}" >&2' ERR
