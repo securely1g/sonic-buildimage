@@ -77,6 +77,7 @@ run_in_slave "." "bazel test \
   //tools/bazel/equivalence_checker:rules_engine_test \
   //tools/bazel/equivalence_checker:reporter_test \
   //tools/bazel/equivalence_checker:deployment_tar_test \
+  //tools/bazel/dpkg:test_dpkg_patterns_up_to_date \
   //dockers/docker-sysmgr:debug_symbols_test"
 
 # libnl3 is a registered dependency; it no longer has an in-tree Bazel module.
