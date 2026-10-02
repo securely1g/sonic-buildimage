@@ -54,7 +54,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             autoconf automake binutils build-essential busybox ca-certificates \
-            git libtool make pigz pkg-config python3 tar unzip zstd
+            gdb git libtool make pigz pkg-config python3 tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,7 +66,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule update --init --depth 1 --jobs 4 -- \
             src/sonic-build-infra src/sonic-dash-api src/sonic-sairedis \
-            src/sonic-swss src/sonic-swss-common
+            src/sonic-swss src/sonic-swss-common src/sonic-sysmgr/gnoi
 
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
@@ -86,6 +86,10 @@ jobs:
 
       - name: Run Bazel checks and validate outputs
         run: python3 tools/bazel/ci/run.py "${{ matrix.mode }}" --artifacts "artifacts/${{ matrix.mode }}"
+
+      - name: Validate sysmgr runtime and matching debug tars
+        if: matrix.mode == 'build'
+        run: python3 tools/bazel/ci/sysmgr/run.py build --artifacts artifacts/sysmgr
 
       - name: Upload build evidence and packages
         if: always()

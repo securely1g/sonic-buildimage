@@ -1,9 +1,11 @@
 import enum
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
@@ -44,8 +46,7 @@ class Bazel:
         "--ui_event_filters=-INFO,-WARNING",
     )
 
-    # sonic_deb is a macro, so we match on the kind of the underlying rule.
-    DEB_RULE = "_sonic_deb_assemble rule"
+    MAKE_DEB_TAG = "make-deb:"
 
     repo_root: Path = registry_lib.REPO_ROOT
 
@@ -86,13 +87,52 @@ class Bazel:
         excluded = self.query(f'attr(tags, "{self.EXCLUDE_TAG}", {matching})')
         compared = set(everything) - set(excluded)
         return (
-            sorted(label for label in compared if not self._is_convenience_symlink(label)),
-            sorted(label for label in excluded if not self._is_convenience_symlink(label)),
+            sorted(
+                label for label in compared if not self._is_convenience_symlink(label)
+            ),
+            sorted(
+                label for label in excluded if not self._is_convenience_symlink(label)
+            ),
         )
 
-    def deb_targets(self, repo_name: str) -> tuple[list[str], list[str]]:
-        """The deb targets of one module."""
-        return self._targets(self.DEB_RULE, f"@{repo_name}//...")
+    def deployment_tar_targets(
+        self, repo_name: str
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Map explicitly tagged tar targets to existing Make DEB filenames.
+
+        Use an explicit filegroup when a packaging macro propagates tags to
+        internal rules. Each Make package must have exactly one mapped target.
+        """
+        expression = f'attr(tags, "{self.MAKE_DEB_TAG}", @{repo_name}//...)'
+        result = self.run("query", *self.QUERY_FLAGS, "--output=xml", expression)
+        compared, excluded = {}, {}
+        packages = set()
+        for rule in ET.fromstring(result.stdout).findall("rule"):
+            label = rule.attrib["name"]
+            if self._is_convenience_symlink(label):
+                continue
+            tags = [
+                item.attrib["value"]
+                for item in rule.findall("list[@name='tags']/string")
+            ]
+            filenames = [
+                tag.removeprefix(self.MAKE_DEB_TAG)
+                for tag in tags
+                if tag.startswith(self.MAKE_DEB_TAG)
+            ]
+            if len(filenames) != 1 or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9.+~_-]*\.deb", filenames[0]
+            ):
+                raise ValueError(
+                    f"{label}: expected one {self.MAKE_DEB_TAG}<filename.deb> tag"
+                )
+            filename = filenames[0]
+            if filename in packages:
+                raise ValueError(f"Multiple tar targets map to Make package {filename}")
+            packages.add(filename)
+            destination = excluded if self.EXCLUDE_TAG in tags else compared
+            destination[label] = filename
+        return compared, excluded
 
     def image_targets(self) -> tuple[list[str], list[str]]:
         return self._targets("gzip rule", "//dockers/...")
