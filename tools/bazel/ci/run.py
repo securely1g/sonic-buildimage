@@ -32,6 +32,7 @@ TEST_TARGETS = [
     "//tools/bazel/registry:registry_lib_test",
     "//tools/bazel/equivalence_checker:deployment_tar_test",
     "//tools/bazel/ci:run_test",
+    "//tools/bazel/ci:rust_test",
     "//tools/bazel/ci:image_inputs_test",
     "//tools/bazel/ci:native_build_test",
     "//tools/bazel/ci:p4lang_pi_source_test",
@@ -191,6 +192,12 @@ def main():
         expected = "bazel " + (ROOT / ".bazelversion").read_text().strip()
         version = check_bazel_version(args.bazel, expected, directory, receipt)
         receipt["bazel_version"] = version
+        execute([sys.executable, str(ROOT / "tools/bazel/ci/rust.py"),
+                 "--workspace", str(ROOT), "--artifacts", str(directory / "rust"),
+                 "--bazel", args.bazel,
+                 *["--bazel-arg=" + option for option in GIT_OPTIONS]],
+                directory, receipt, "rust-preparation")
+        receipt["rust_preparation"] = "rust/receipt.json"
         if args.command == "headers":
             machine = platform.machine()
             if machine not in ("x86_64", "aarch64") or platform.freedesktop_os_release().get("VERSION_CODENAME") != "trixie":
@@ -226,6 +233,8 @@ def main():
                 raise ValueError("SWSS package CI requires a native AMD64 Debian Trixie environment")
         targets = TEST_TARGETS if args.command == "test" else list(BUILD_TARGETS.values())
         if args.command == "test":
+            execute([args.bazel, "run", "--lockfile_mode=update", *GIT_OPTIONS,
+                     "//tools/bazel/buildifier:buildifier.check"], directory, receipt, "format")
             # These configuration checks deliberately discover the source-tree
             # modules. Their existing Bazel targets do not declare that tree as
             # runfiles, so check the actual initialized checkout directly.

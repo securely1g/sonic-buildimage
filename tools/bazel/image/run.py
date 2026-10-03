@@ -16,7 +16,9 @@ configuration are modified. The worker image must already be available locally.
 Add --persistent-worker NAME to retain this isolated worker and its Bazel server.
 The run action creates or reuses it; --worker-action start initializes it without
 running Bazel, status inspects it, and stop shuts down Bazel and removes only that
-verified worker. Use identical worker arguments for every lifecycle operation.
+verified worker. The prepare-rust action generates component Cargo.Bazel.lock
+files before the consuming Bazel graph is loaded. Use identical worker arguments
+for every lifecycle operation.
 An output-root lock serializes operations, including builds. Startup option
 changes use Bazel's normal server restart; output-root overrides and batch mode
 are rejected in persistent mode.
@@ -106,6 +108,15 @@ def build_plan(args):
         raise ValueError("a Bazel command is required after --")
     if action != "run" and command:
         raise ValueError("lifecycle operations do not take a Bazel command")
+    rust_artifacts = getattr(args, "rust_artifacts", None)
+    if action == "prepare-rust":
+        if not rust_artifacts:
+            raise ValueError("prepare-rust requires --rust-artifacts")
+        rust_artifacts = contained(rust_artifacts, root, "Rust preparation artifacts")
+        if rust_artifacts in (root, workspace) or rust_artifacts.is_relative_to(output_root):
+            raise ValueError("Rust preparation artifacts must be separate from Bazel output scratch")
+    elif rust_artifacts:
+        raise ValueError("--rust-artifacts requires --worker-action prepare-rust")
     user = getattr(args, "worker_user", None)
     home = getattr(args, "worker_home", None)
     if bool(user) != bool(home) or (user and not persistent):
@@ -228,7 +239,15 @@ def build_plan(args):
         "-ec", BOOTSTRAP, "sonic-image-bootstrap", str(bazel), "--batch",
         "--output_user_root=" + str(output_root), *command,
     ]
+    rust_command = None
+    if action == "prepare-rust":
+        rust_command = ["python3", str(workspace / "tools/bazel/ci/rust.py"),
+                        "--workspace", str(workspace), "--artifacts", str(rust_artifacts),
+                        "--bazel", str(bazel), "--output-user-root", str(output_root)]
+        for option in cache_arg + git_options:
+            rust_command.append("--bazel-arg=" + option)
     return {
+        "rust_command": rust_command,
         "disposable": docker, "create": create, "identity": identity, "bootstrap": bootstrap,
         "digest": digest, "mounts": mounts,
         "bazel_command": [str(bazel), "--output_user_root=" + str(output_root), *command],
@@ -449,7 +468,8 @@ def persistent_action(args, plan, owner_file):
         print(json.dumps({"worker": args.persistent_worker, "container_id": container_id,
                           "identity": plan["digest"], "state": "running"}))
         return 0
-    return subprocess.run(exec_command(container_id, plan)).returncode
+    command = plan["rust_command"] if action == "prepare-rust" else None
+    return subprocess.run(exec_command(container_id, plan, command)).returncode
 
 
 def main():
@@ -466,7 +486,8 @@ def main():
     parser.add_argument("--worker-home", help="home for --worker-user; both options are required together")
     parser.add_argument("--worker-cpus", type=int, default=8, help="positive worker CPU limit (default: 8)")
     parser.add_argument("--worker-memory-gib", type=int, default=24, help="positive worker memory limit in GiB (default: 24)")
-    parser.add_argument("--worker-action", choices=("run", "start", "status", "stop"), default="run")
+    parser.add_argument("--worker-action", choices=("run", "start", "status", "stop", "prepare-rust"), default="run")
+    parser.add_argument("--rust-artifacts", help="retain prepared Rust metadata and receipts in this directory")
     parser.add_argument("--dry-run", action="store_true", help="print the command/worker contract without running it")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()

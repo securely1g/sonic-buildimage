@@ -229,8 +229,8 @@ class ImageControllerTest(unittest.TestCase):
                          mock.call(self.state, 1000, 1000),
                          mock.call(self.bazel_workspace / "target", 1000, 1000),
                          mock.call(self.workspace, *owner)])
-        self.assertEqual(len(commands), 3)
-        self.assertEqual(commands[2], commands[1][:commands[1].index("--")] + ["--worker-action", "stop"])
+        self.assertEqual(len(commands), 4)
+        self.assertEqual(commands[3], commands[2][:commands[2].index("--")] + ["--worker-action", "stop"])
         receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         self.assertEqual(receipt["status"], "failed")
         self.assertIn("fixture compilation failed", receipt["error"])
@@ -404,7 +404,9 @@ class ImageControllerTest(unittest.TestCase):
             commands.append(command)
             if _args[-1] == "native-build" and failure == "native":
                 raise RuntimeError("fixture native compilation failed")
-            if "--worker-action" in command:
+            if _args[-1] == "rust-preparation" and failure == "rust":
+                raise RuntimeError("fixture Rust preparation failed")
+            if "--worker-action" in command and "stop" in command:
                 if failure == "worker-stop":
                     raise RuntimeError("fixture worker stop failed")
                 if stop_hook is not None:
@@ -457,13 +459,17 @@ class ImageControllerTest(unittest.TestCase):
         result, commands, receipt = self.run_build_fixture()
         self.assertEqual(result, 0)
         self.assertEqual(self.lifecycle, ["clone", "native-build", "audit", "verify-source", "prepare",
-                                         "package", "image", "module-graph", "verify-image", "worker-stop"])
-        self.assertEqual(len(commands), 6)
+                                         "rust-preparation", "package", "image", "module-graph", "verify-image", "worker-stop"])
+        self.assertEqual(len(commands), 7)
         native = commands.pop(0)
         self.assertTrue(native[1].endswith("tools/bazel/ci/native_build.py"))
         self.assertIn("--invocation", native)
         self.assertIn("--worker-spec", native)
         self.assertEqual(native[native.index("--workspace") + 1], str(self.workspace))
+        rust = commands.pop(0)
+        self.assertIn("prepare-rust", rust)
+        self.assertEqual(rust[rust.index("--rust-artifacts") + 1], str(self.artifacts / "rust"))
+        self.assertEqual(receipt["rust_preparation"], "rust/receipt.json")
         self.assertIn("--disk_cache=" + str(self.state / "package-cache"), commands[0])
         self.assertIn("--disk_cache=", commands[1])
         for command in (commands[0], commands[1], commands[-1]):
@@ -498,8 +504,16 @@ class ImageControllerTest(unittest.TestCase):
         result, commands, receipt = self.run_build_fixture(git_config=config)
         self.assertEqual(result, 0)
         self.assertEqual(receipt["git_transport"]["sha256"], image.image_inputs.sha256(config))
-        for command in (commands[0], commands[1], commands[2], commands[-1]):
+        for command in (commands[0], commands[1], commands[2], commands[3], commands[-1]):
             self.assertEqual(command[command.index("--git-config") + 1], str(config))
+
+    def test_rust_preparation_failure_blocks_package_and_image_and_stops_worker(self):
+        result, commands, receipt = self.run_build_fixture(failure="rust")
+        self.assertEqual(result, 1)
+        self.assertIn("fixture Rust preparation failed", receipt["error"])
+        self.assertEqual(self.lifecycle[-2:], ["rust-preparation", "worker-stop"])
+        self.assertFalse(any("build" in command for command in commands))
+        self.assertFalse((self.artifacts / "sonic-vs.bin").exists())
 
     def test_changed_pristine_checkout_blocks_staging_and_bazel(self):
         self.verify_source.side_effect = ValueError("pristine checkout contains ignored source")

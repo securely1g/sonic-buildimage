@@ -246,13 +246,37 @@ Hosted jobs install `zstd` before setup-bazel so cache archives use multithreade
 `zstdmt`. Compression is part of the cache version, so the first run safely misses
 older gzip caches and populates Zstandard caches for later runs.
 
-The CI commands can also run from an initialized checkout in the same execution
-environment:
+Every hosted job prepares Common and SWSS Rust dependencies before loading the
+buildimage module graph, including formatting and protobuf header checks. Git
+keeps each component's authoritative `Cargo.lock`; `Cargo.Bazel.lock` is ignored
+and generated from it by the pinned shared preparation helper. Common is prepared
+first because SWSS consumes its Rust dependencies. The job rejects Cargo lock
+changes and retains both lockfiles, the helper receipts, and their SHA256 values
+under the artifact's `rust/` directory. Generation reuses dependency downloads;
+it does not trust a previously generated JSON lock.
+
+The CI commands perform that preparation automatically and can also run from an
+initialized checkout in the same execution environment:
 
 ```sh
 python3 tools/bazel/ci/run.py test --artifacts artifacts/tests
 python3 tools/bazel/ci/run.py build --artifacts artifacts/packages
 ```
+
+Before invoking Bazel directly in this root workspace, prepare the initialized
+component checkouts in the same native Trixie environment:
+
+```sh
+python3 tools/bazel/ci/rust.py --workspace "$PWD" --artifacts artifacts/rust
+bazel build @sonic_swss//dist:swss_pkg
+```
+
+Use a new artifact directory for each preparation attempt. In a persistent
+image worker, run the launcher with `--worker-action prepare-rust` and
+`--rust-artifacts /absolute/build-area/artifacts/rust` before its first Bazel
+command. Keep the same workspace, worker, output root, cache and resource
+arguments used for the subsequent image build. Preparation runs inside that
+verified worker; no host Cargo installation is needed.
 
 `Bazel VS installer (AMD64)` builds native prerequisites from the checked-out
 sources, then builds `//tools/bazel/image/vs:sonic-vs.bin` with Bazel. It uses a
@@ -274,7 +298,12 @@ The worker is built from the checked-in public recipe. The controller refuses
 retained target outputs, modified source trees, missing recursive submodules,
 source revisions that differ from their gitlinks, and native receipts from a
 different invocation. It records both the buildimage commit and every native
-component revision. There are no prepared SONiC input release assets.
+component revision. Before native Make starts, it freezes a separate clean Bazel
+checkout of those revisions. After native work finishes, it verifies that frozen
+checkout, prepares the native inputs, then generates the two Rust metadata files
+in the Bazel checkout before compiling SWSS. Native Make's Cargo lock changes do
+not enter the Bazel source tree. The generated metadata and unchanged Cargo locks
+are retained as evidence. There are no prepared SONiC input release assets.
 
 The job resolves the installer and intermediate outputs from that invocation's
 Bazel event log, checks the ONIE checksum, and streams the complete payload ZIP

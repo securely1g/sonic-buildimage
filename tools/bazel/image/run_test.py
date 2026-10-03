@@ -297,6 +297,38 @@ class WorkerTest(unittest.TestCase):
         self.assertNotIn('test-worker', command)
         self.assertNotIn('--batch', command)
 
+    def test_rust_preparation_reuses_verified_worker_without_changing_identity(self):
+        original = self.plan()
+        self.args.command = []
+        self.args.worker_action = 'prepare-rust'
+        self.args.rust_artifacts = str(self.workspace / 'artifacts/rust')
+        plan = self.plan()
+        self.assertEqual(plan['identity'], original['identity'])
+        self.assertEqual(plan['digest'], original['digest'])
+        with mock.patch.object(image_run, 'inspect_worker', return_value=self.worker(plan)), \
+                mock.patch.object(image_run, 'ready_worker'), \
+                mock.patch.object(image_run.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertEqual(image_run.persistent_action(self.args, plan, self.root / 'owner.json'), 0)
+        command = run.call_args.args[0]
+        self.assertIn('b' * 64, command)
+        self.assertEqual(command[-len(plan['rust_command']):], plan['rust_command'])
+        self.assertIn(str(self.workspace / 'tools/bazel/ci/rust.py'), command)
+        self.assertIn('--output-user-root', command)
+
+    def test_rust_preparation_requires_retained_artifacts_inside_mount(self):
+        self.args.command = []
+        self.args.worker_action = 'prepare-rust'
+        with self.assertRaisesRegex(ValueError, 'requires --rust-artifacts'):
+            self.plan()
+        for path in ('/etc', self.root, self.workspace, self.root / 'outputs/rust'):
+            self.args.rust_artifacts = str(path)
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                self.plan()
+        self.args.worker_action = 'start'
+        self.args.rust_artifacts = str(self.workspace / 'artifacts/rust')
+        with self.assertRaisesRegex(ValueError, 'requires --worker-action prepare-rust'):
+            self.plan()
+
     def test_stop_removes_only_verified_container_after_shutdown(self):
         self.args.command = []
         self.args.worker_action = 'stop'

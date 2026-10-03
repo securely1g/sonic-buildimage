@@ -24,6 +24,15 @@ py_test(
 )
 
 py_test(
+    name = "rust_test",
+    srcs = [
+        "rust.py",
+        "rust_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
     name = "image_inputs_test",
     srcs = [
         "image_inputs.py",

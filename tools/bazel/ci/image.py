@@ -389,6 +389,9 @@ def build(args):
                 "--profile=" + str(artifacts / (name + ".profile.json.gz")), *targets]
 
         worker_attempted = True
+        execute(launcher + ["--worker-action", "prepare-rust", "--rust-artifacts", str(artifacts / "rust")],
+                bazel_workspace, artifacts, receipt, "rust-preparation")
+        receipt["rust_preparation"] = "rust/receipt.json"
         execute(bazel("package", ["@sonic_swss//dist:swss_pkg"], str(state / "package-cache")),
                 bazel_workspace, artifacts, receipt, "package")
         execute(bazel("image", TARGETS, ""), bazel_workspace, artifacts, receipt, "image")

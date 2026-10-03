@@ -91,15 +91,6 @@ jobs:
           disk-cache: buildimage-${{ matrix.mode }}-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
-      - name: Check Bazel formatting
-        if: matrix.mode == 'test'
-        run: |
-          mkdir -p artifacts
-          bazel run --repo_env=GIT_CONFIG_SYSTEM --repo_env=GIT_CONFIG_NOSYSTEM \
-            --repo_env=CARGO_NET_GIT_FETCH_WITH_CLI \
-            --lockfile_mode=update //tools/bazel/buildifier:buildifier.check \
-            2>&1 | tee artifacts/format.log
-
       - name: Run Bazel checks and validate outputs
         run: python3 tools/bazel/ci/run.py "${{ matrix.mode }}" --artifacts "artifacts/${{ matrix.mode }}"
 
