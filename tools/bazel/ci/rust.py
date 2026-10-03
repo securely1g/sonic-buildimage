@@ -33,14 +33,19 @@ def prepare(workspace, artifacts, bazel="bazel", startup=(), options=()):
     locks = {name: workspace / "src" / name / "Cargo.lock" for name in COMPONENTS}
     try:
         before = {name: sha256(path) for name, path in locks.items()}
-        overrides = ["--override_module=" + name + "=" + str(workspace / "src" / name)
-                     for name in ("sonic-build-infra", "sonic-dash-api", "sonic-sairedis")]
         for name in COMPONENTS:
             component = workspace / "src" / name
             evidence = artifacts / name
             evidence.mkdir()
             launcher = component / "tools/bazel/prepare_rust.py"
-            component_options = overrides + list(options)
+            # Bazel rejects overrides for modules absent from this component's
+            # graph. Common has no dependency on DASH or Sairedis.
+            dependencies = ("sonic-build-infra",)
+            if name == "sonic-swss":
+                dependencies += ("sonic-dash-api", "sonic-sairedis")
+            component_options = ["--override_module=" + dependency + "=" +
+                                 str(workspace / "src" / dependency)
+                                 for dependency in dependencies] + list(options)
             command = [sys.executable, str(launcher), "--bazel", bazel,
                        "--receipt", str(evidence / "preparation.json"),
                        *["--bazel-startup-arg=" + value for value in startup],

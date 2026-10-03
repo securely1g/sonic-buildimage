@@ -35,6 +35,12 @@ class RustPreparationTest(unittest.TestCase):
                              str(self.root / "src/sonic-swss-common"))
         else:
             self.assertNotIn("--prepared-common", command)
+        overrides = [value.split("=", 2)[2].split("=", 1)[0] for value in command
+                     if value.startswith("--bazel-arg=--override_module=")]
+        expected = ["sonic-build-infra"]
+        if name == "sonic-swss":
+            expected += ["sonic-dash-api", "sonic-sairedis"]
+        self.assertEqual(overrides, expected)
         self.assertIn("--bazel-arg=--repository_cache=/cache", command)
         (cwd / "Cargo.Bazel.lock").write_text('{"crates": {"fixture 1.0.0": {}}}\n')
         Path(command[command.index("--receipt") + 1]).write_text('{"status": "passed"}\n')
