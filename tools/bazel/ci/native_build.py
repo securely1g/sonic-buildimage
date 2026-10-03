@@ -23,6 +23,8 @@ import subprocess
 import sys
 import time
 
+import kernel
+
 
 LABEL = "sonic.bazel.native.invocation"
 USER = "sonicnative"
@@ -67,6 +69,12 @@ def validate(args):
             "native worker must have an immutable image identity")
     require(spec.get("platform") == "linux/amd64" and spec.get("distribution") == "trixie",
             "native CI requires the AMD64 Trixie worker")
+    bundle = getattr(args, "kernel_bundle", None)
+    if bundle:
+        bundle = bundle.resolve(strict=True)
+        require(bundle.is_dir() and bundle.is_relative_to(root) and not bundle.is_relative_to(workspace)
+                and not bundle.is_relative_to(state), "kernel bundle must be a dedicated sibling in the build area")
+        kernel.verify_provenance(bundle, workspace, args.source_commit)
     return workspace, state, artifacts, output, root, spec
 
 
@@ -302,6 +310,16 @@ def inside(args):
         options.append("SONIC_BUILD_SLAVE_CA_BUNDLE=" + (str(ca_bundle) if ca_bundle else ""))
         options += git_options
         for stage in ("init", "configure", "bazel-vs-native-inputs"):
+            if stage == "bazel-vs-native-inputs" and getattr(args, "kernel_bundle", None):
+                bundle = args.kernel_bundle.resolve(strict=True)
+                evidence = kernel.verify_provenance(bundle, workspace, args.source_commit)
+                destination = workspace / kernel.INPUTS
+                kernel.copy_bundle(bundle, destination, workspace)
+                # The native slave sees the source checkout at /sonic. The
+                # relative path is valid on both sides of that bind mount.
+                with config.open("a") as stream:
+                    stream.write("export SONIC_BAZEL_KERNEL_PACKAGES = " + kernel.INPUTS.as_posix() + "\n")
+                (args.artifacts / "kernel-import.json").write_text(json.dumps(evidence, indent=2) + "\n")
             argv = ["runuser", "--preserve-environment", "--user", USER, "--",
                     "make", "-f", "Makefile.work", *options,
                     "PLATFORM=vs" if stage == "configure" else "PLATFORM=", stage]
@@ -344,6 +362,9 @@ def build(args):
                 "--invocation", args.invocation, "--output", str(output)]
         if git_config:
             argv += ["--git-config", str(git_config)]
+        if getattr(args, "kernel_bundle", None):
+            argv += ["--kernel-bundle", str(args.kernel_bundle.resolve(strict=True))]
+            receipt["kernel"] = kernel.verify_provenance(args.kernel_bundle, workspace, args.source_commit)
         container = capture(argv)
         require(re.fullmatch(r"[0-9a-f]{64}", container), "invalid created native worker ID")
         receipt["container"] = container
@@ -387,6 +408,8 @@ def main(argv=None):
     parser.add_argument("--inside-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--git-config", type=Path,
                         help="explicit Git system config inside the source checkout")
+    parser.add_argument("--kernel-bundle", type=Path,
+                        help="verified Bazel kernel packages produced before native prerequisites")
     args = parser.parse_args(argv)
 
     def interrupted(signum, _frame):

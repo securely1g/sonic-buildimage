@@ -106,10 +106,15 @@ bazel run //tools/bazel/registry:publish_to_remote_registry -- src/libnl3
 #### Unpinned Mode In Buildimage
 
 *Inside* `sonic-buildimage`, that version string doesn't actually matter for modules under `src/`:
-`sonic-buildimage`'s own `.bazelrc` unconditionally overrides every top-level `src/` module with [`--override_module`](https://bazel.build/reference/command-line-reference#common_options-flag--override_module),
+`sonic-buildimage`'s own `.bazelrc` unconditionally overrides top-level `src/` modules in its root graph with [`--override_module`](https://bazel.build/reference/command-line-reference#common_options-flag--override_module),
 so Bazel builds it from `src/` instead of resolving it through any registry at all.
 
 These configurations come from [`tools/bazel/root-unpinned-modules-config.bazelrc`](/tools/bazel/root-unpinned-modules-config.bazelrc), which is generated and kept up-to-date by [`tools/bazel/registry/root_config_test.py`](/tools/bazel/registry/root_config_test.py).
+
+The kernel integration uses the separate `tools/bazel/kernel` workspace with
+pinned dependencies matching kernel CI. `sonic-linux-kernel` is excluded from
+the root graph and its automatic overrides; use the image controller's
+`--bazel-kernel` option described in [the image build guide](../image/README.md#reuse-kernel-source-build-actions).
 
 #### Unpinned Mode In Submodules
 
@@ -121,7 +126,7 @@ cd src/sonic-swss-common
 bazel build --config=unpinned-sonic-build-infra ...
 ```
 
-This applies `--override_module=sonic-build-infra=<path-to-src/sonic-build-infra>`, the same mechanism the root `.bazelrc` uses unconditionally for every top-level `src/` module.
+This applies `--override_module=sonic-build-infra=<path-to-src/sonic-build-infra>`, the same mechanism the root `.bazelrc` uses for components in its graph.
 
 > [!warning]
 > Please see [`tools/bazel/submodule-config.bazelrc`](/tools/bazel/submodule-config.bazelrc) for an explanation of the gotchas.

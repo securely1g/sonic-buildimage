@@ -39,6 +39,17 @@ filegroup(
 )
 
 filegroup(
+    name = "kernel_make_test_data",
+    srcs = [
+        "rules/functions",
+        "rules/linux-kernel.dep",
+        "rules/linux-kernel.mk",
+        "slave.mk",
+    ],
+    visibility = ["//tools/bazel/ci:__pkg__"],
+)
+
+filegroup(
     name = "make_bridge_test_data",
     srcs = [
         "Makefile",

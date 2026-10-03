@@ -23,6 +23,7 @@ import urllib.parse
 import uuid
 
 import image_inputs
+import kernel
 import resolution
 import source_workspace
 import trust
@@ -298,6 +299,17 @@ def build(args):
                         "from a separate pristine checkout of the same recorded revisions; "
                         "installer byte-chain verification. No boot or forwarding test."}
     try:
+        remote_cache = getattr(args, "kernel_remote_cache", None)
+        if remote_cache:
+            kernel.endpoint(remote_cache)
+        require(not getattr(args, "kernel_cache_upload", False) or remote_cache,
+                "--kernel-cache-upload requires --kernel-remote-cache")
+        require(not getattr(args, "kernel_disk_cache", None) or remote_cache or getattr(args, "bazel_kernel", False),
+                "--kernel-disk-cache requires --bazel-kernel or --kernel-remote-cache")
+        require(not getattr(args, "kernel_java_trust_store", None) or remote_cache or getattr(args, "bazel_kernel", False),
+                "--kernel-java-trust-store requires --bazel-kernel or --kernel-remote-cache")
+        require(not getattr(args, "kernel_ci_registry", False) or remote_cache or getattr(args, "bazel_kernel", False),
+                "--kernel-ci-registry requires --bazel-kernel or --kernel-remote-cache")
         require(not artifacts.is_relative_to(output_root), "artifacts cannot be inside the invocation output root")
         require(not output_root.is_symlink(), "invocation output root must not be a symlink")
         require(not (workspace / "target").exists() and not (workspace / "target").is_symlink(),
@@ -339,6 +351,22 @@ def build(args):
                 chown_tree(path, 1000, 1000)
         spec = build_worker(workspace, state, artifacts, receipt, invocation,
                             getattr(args, "ca_bundle", None))
+        kernel_args = []
+        if remote_cache or getattr(args, "bazel_kernel", False):
+            try:
+                bundle = kernel.build(bazel_workspace, state, artifacts, source, invocation,
+                                      remote_cache, getattr(args, "kernel_cache_upload", False), execute, receipt,
+                                      getattr(args, "kernel_disk_cache", None),
+                                      ca_bundle=getattr(args, "ca_bundle", None),
+                                      java_trust_store=getattr(args, "kernel_java_trust_store", None),
+                                      ci_registry=getattr(args, "kernel_ci_registry", False))
+            finally:
+                # Kernel actions use root only inside their isolated chroot
+                # worker. The later image worker reads/writes this cache as
+                # UID 1000, matching the controller's initial ownership setup.
+                if os.geteuid() == 0:
+                    chown_tree(state / "repository-cache", 1000, 1000)
+            kernel_args = ["--kernel-bundle", str(bundle)]
         native_receipt = artifacts / "native-receipt.json"
         native_passed = False
         try:
@@ -346,7 +374,7 @@ def build(args):
                      "--workspace", str(workspace), "--state", str(state / ("native-" + invocation)),
                      "--artifacts", str(artifacts / "native"), "--worker-spec", str(spec),
                      "--source-commit", source["source_commit"], "--invocation", invocation,
-                     "--output", str(native_receipt), *git_args], workspace, artifacts, receipt, "native-build")
+                     "--output", str(native_receipt), *git_args, *kernel_args], workspace, artifacts, receipt, "native-build")
             native_passed = True
         finally:
             # Keep evidence of native mutations without resetting or cleaning
@@ -476,6 +504,18 @@ def main(argv=None):
                         help="optional PEM certificate bundle for execution workers only")
     parser.add_argument("--git-config", type=Path,
                         help="explicit Git system config for native and Bazel source fetches")
+    parser.add_argument("--kernel-remote-cache", default=os.environ.get("SONIC_KERNEL_REMOTE_CACHE"),
+                        help="build the pinned Bazel kernel using this shared remote cache")
+    parser.add_argument("--bazel-kernel", action="store_true",
+                        help="build kernel prerequisites with Bazel, with or without a remote cache")
+    parser.add_argument("--kernel-ci-registry", action="store_true",
+                        help="use the maintained kernel registry branch in the copied CI workspace")
+    parser.add_argument("--kernel-disk-cache", type=Path,
+                        help="optional persistent kernel action-cache directory inside --state")
+    parser.add_argument("--kernel-java-trust-store", type=Path,
+                        help="optional public Java trust store for the kernel worker's Bazel downloads")
+    parser.add_argument("--kernel-cache-upload", action="store_true",
+                        help="allow this trusted invocation to upload kernel action results (default: read only)")
     args = parser.parse_args(argv)
 
     def interrupted(signum, _frame):

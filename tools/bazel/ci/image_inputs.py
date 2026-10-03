@@ -142,6 +142,8 @@ def prepare(native_receipt, native_workspace, bazel_workspace, scratch, receipt_
         receipt["native_provenance_sha256"] = digest
         receipt["native_files"] = provenance["files"]
         receipt["native_transformations"] = provenance["native_transformations"]
+        if "kernel" in provenance:
+            receipt["kernel"] = provenance["kernel"]
         worker = json.loads(worker_spec.read_text())
         native_run = json.loads(native_receipt.read_text())
         require(native_run.get("worker_image") == worker.get("worker_image"),

@@ -73,7 +73,7 @@ jobs:
           echo "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM" >> "$GITHUB_ENV"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule update --init --depth 1 --jobs 4 -- \
-            src/sonic-build-infra src/sonic-dash-api src/sonic-sairedis \
+            src/sonic-build-infra src/sonic-dash-api src/sonic-linux-kernel src/sonic-sairedis \
             src/sonic-swss src/sonic-swss-common src/sonic-sysmgr/gnoi
 
       - name: Verify fresh generated dependency state
@@ -139,6 +139,7 @@ jobs:
           path: |
             ${{ github.workspace }}/../vs-ci-state/package-cache
             ${{ github.workspace }}/../vs-ci-state/repository-cache
+            ${{ github.workspace }}/../vs-ci-state/kernel-cache
           key: sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'tools/bazel/common.bazelrc') }}-${{ github.sha }}
           restore-keys: |
             sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'tools/bazel/common.bazelrc') }}-
@@ -156,17 +157,26 @@ jobs:
           docker info > /dev/null
 
       - name: Build and verify sonic-vs.bin with Bazel
+        env:
+          SONIC_KERNEL_REMOTE_CACHE: ${{ vars.SONIC_KERNEL_REMOTE_CACHE }}
         run: |
           ca_args=()
           if [[ -n "${SONIC_BUILD_CA_BUNDLE:-}" ]]; then
             ca_args=(--ca-bundle "$SONIC_BUILD_CA_BUNDLE")
+          fi
+          kernel_args=(--bazel-kernel --kernel-ci-registry --kernel-disk-cache "$GITHUB_WORKSPACE/../vs-ci-state/kernel-cache")
+          if [[ -n "$SONIC_KERNEL_REMOTE_CACHE" ]]; then
+            kernel_args+=(--kernel-remote-cache "$SONIC_KERNEL_REMOTE_CACHE")
+          fi
+          if [[ -n "${SONIC_KERNEL_JAVA_TRUST_STORE:-}" ]]; then
+            kernel_args+=(--kernel-java-trust-store "$SONIC_KERNEL_JAVA_TRUST_STORE")
           fi
           sudo /usr/bin/python3 tools/bazel/ci/image.py \
             --workspace "$GITHUB_WORKSPACE" \
             --git-config "$GIT_CONFIG_SYSTEM" \
             --state "$GITHUB_WORKSPACE/../vs-ci-state" \
             --artifacts "$GITHUB_WORKSPACE/artifacts/image" \
-            "${ca_args[@]}"
+            "${ca_args[@]}" "${kernel_args[@]}"
 
       - name: Upload VS installer and build evidence
         if: always()

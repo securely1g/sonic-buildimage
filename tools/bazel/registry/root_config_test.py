@@ -1,8 +1,8 @@
 """Verifies that tools/bazel/root-unpinned-modules-config.bazelrc is complete and up to date.
 
-sonic-buildimage always builds these src/ modules from the local source tree,
-regardless of what version any consumer's bazel_dep declares.
-This test suite makes sure that the list of modules is always complete.
+sonic-buildimage builds modules in its root graph from the local source tree,
+regardless of what version any consumer's bazel_dep declares. Components built
+through a separate workspace are explicitly excluded from these overrides.
 
 Assumes that the module name (declared in MODULE.bazel) is the same as the subdirectory name.
 
@@ -19,6 +19,11 @@ ROOT_CONFIG = registry_lib.REPO_ROOT / "tools/bazel/root-unpinned-modules-config
 
 CONFIG_NAME = "local-modules"
 
+# The kernel consumer must retain the same dependency graph as kernel CI for
+# shared action-cache keys. Its newer build-tools dependency is independent of
+# the SWSS graph's checked-out sonic-build-infra version.
+ISOLATED_MODULES = {"sonic-linux-kernel"}
+
 HEADER = """\
 # ==============================================================================
 # THIS FILE IS AUTO-GENERATED. Do not hand-edit it. To re-generate, run:
@@ -30,6 +35,7 @@ HEADER = """\
 # Imported unconditionally by sonic-buildimage's own .bazelrc.
 # Always builds these src/ modules from the checked-out tree,
 # regardless of what version any consumer's bazel_dep declares.
+# sonic-linux-kernel instead uses the isolated tools/bazel/kernel workspace.
 #
 # This bypasses registry lookup and version-string resolution entirely,
 # regardless of what any of the submodule's MODULE.bazel declare.
@@ -51,7 +57,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    modules = registry_lib.discover_top_level_bazel_modules()
+    modules = [
+        (name, src_path)
+        for name, src_path in registry_lib.discover_top_level_bazel_modules()
+        if name not in ISOLATED_MODULES
+    ]
     updated = HEADER + "".join(render_entry(name, src_path) for name, src_path in modules)
 
     if ROOT_CONFIG.exists() and ROOT_CONFIG.read_text() == updated:
