@@ -29,6 +29,7 @@ TEST_TARGETS = [
     "//tools/bazel/oci:docker_archive_to_oci_layout_test",
     "//dockers/docker-orchagent/config:render_test",
     "//tools/bazel/tests:make_bridge_test",
+    "//tools/bazel/tests:swss_contract_test",
     "//tools/bazel/registry:registry_lib_test",
     "//tools/bazel/equivalence_checker:deployment_tar_test",
     "//tools/bazel/ci:run_test",
@@ -170,6 +171,8 @@ def verify_packages(paths):
     contract.require(configuration.get("usr/bin/docker-init.sh", {}).get("mode") == 0o755,
                      "missing executable rendered SWSS entrypoint")
     return {"programs": programs, "elf_count": len(elfs), "debug_pairs": pairs,
+            "source_contract": {name: contract.sha(ROOT / "src/sonic-swss" / name)
+                                for name in contract.SWSS_CONTRACT_INPUTS},
             "prebuilt_debug_gaps": gaps,
             "scope": "Package payload, architecture, build IDs, DWARF and debuglink CRC; no container or boot execution."}
 

@@ -96,15 +96,40 @@ def source_protobuf_contract(combined, protobuf):
             "conflicting full protobuf runtime in declared layer")
 
 
+SWSS_CONTRACT_INPUTS = ("dist/BUILD.bazel", "debian/swss.install")
+
+
 def swss_contract(source, files):
+    # SWSS owns the runtime declarations and compares them with configured
+    # Automake in source CI. Read only their literal install inventory here;
+    # do not depend on its retired generated production_sources.bzl file.
+    required = {"CPP_BINARIES", "LUA_FILES", "LUA_INSTALL_ALIASES"}
     values = {}
-    for node in ast.parse((source / "bazel/production_sources.bzl").read_text()).body:
-        if isinstance(node, ast.Assign):
-            values[node.targets[0].id] = ast.literal_eval(node.value)
-    programs = {item["install_path"] for item in values["SWSS_PROGRAMS"].values()}
+    for node in ast.parse((source / "dist/BUILD.bazel").read_text()).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            name = getattr(node.targets[0], "id", None)
+            if name in required:
+                require(name not in values, "duplicate SWSS install declaration: " + name)
+                values[name] = ast.literal_eval(node.value)
+    require(values.keys() == required, "missing SWSS source install declarations")
+
+    def label_path(label):
+        require(isinstance(label, str) and label.startswith("//") and label.count(":") == 1,
+                "expected a source-local SWSS label: " + str(label))
+        package, name = label[2:].split(":")
+        require(package and name, "empty SWSS source label")
+        return Path(path_name(package + "/" + name))
+
+    programs = {"usr/bin/" + label_path(label).name for label in values["CPP_BINARIES"]}
+    require(len(programs) == len(values["CPP_BINARIES"]), "duplicate SWSS program path")
     expected = {name: (0o755, None) for name in programs}
-    for item in values["SWSS_AUTOMAKE_INSTALL"]:
-        expected[item["install_path"]] = (item["mode"], source / item["source"])
+    aliases = values["LUA_INSTALL_ALIASES"]
+    require(isinstance(aliases, dict) and aliases.keys() <= set(values["LUA_FILES"]),
+            "SWSS install alias has no declared Lua file")
+    for label in values["LUA_FILES"]:
+        name = "usr/share/swss/" + label_path(label).name
+        require(name not in expected, "duplicate SWSS install path: " + name)
+        expected[name] = (0o644, source / label_path(aliases.get(label, label)))
     for line in (source / "debian/swss.install").read_text().splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -448,7 +473,7 @@ def main():
               "expected_payload": expected, "elf_paths": elfs,
               "package_inputs": [{"path": str(path.resolve()), "sha256": sha(path)} for path in input_tars],
               "swss_source_contract": {name: sha(args.swss_source / name)
-                                       for name in ("bazel/production_sources.bzl", "debian/swss.install")}}
+                                       for name in SWSS_CONTRACT_INPUTS}}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     try:
         docker = Docker(args.docker_host)
