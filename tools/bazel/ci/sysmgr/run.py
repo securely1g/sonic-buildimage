@@ -181,6 +181,7 @@ def main():
         receipt["platform"] = platform.platform()
         receipt["os_release"] = platform.freedesktop_os_release()
         if args.mode == "test":
+            run(["python3", "-E", str(ROOT / "tools/bazel/ci/resolution_test.py")], "resolution-test")
             for name in ("root_config_test", "submodule_config_test"):
                 run(["python3", "-E", str(ROOT / "tools/bazel/registry" / (name + ".py"))], name)
             run(["bazel", "test", *OPTIONS, "--nocache_test_results", "--test_output=errors",
@@ -217,8 +218,7 @@ def main():
                 shutil.copyfile(ROOT / files[0], paths[name])
                 receipt["artifacts"][name] = {"target": target, "sha256": sha(paths[name]), "bytes": paths[name].stat().st_size}
             receipt["validation"] = verify_packages(paths)
-        graph = run(["bazel", "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update"], "module-graph")
-        receipt["resolution"] = resolution.retain(ROOT, directory, graph)
+        receipt["resolution"] = resolution.collect(ROOT, directory)
         receipt["architecture"] = "amd64"
         receipt["status"] = "passed"
     except Exception as error:
