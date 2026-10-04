@@ -113,127 +113,34 @@ If we follow the example of `libnl3` this would entail:
 Of course, step 4 is an oversimplification -- every project is different, and their builds will require more or less care. In addition, this is the point where you may decide the project is not worth the hassle, and move onto [Method 4](#method-4-build-the-dependency-out-of-band-and-import-it-into-bazel-as-an-opaque-archive).
 
 LLMs do a decent job at generating these `BUILD.bazel` files, but please double-check their output. Often, old projects that rely on e.g. autotools will have configuration flags that affect what compiler flags a target is built with, and the LLMs may not be aware of which configuration you want. If necessary, compare the flags produced by the current SONiC build with the ones Bazel uses, using [`--subcommands`](https://bazel.build/reference/command-line-reference#build-flag--subcommands).
-### Then, we import the project into the SONiC build
+### Then, publish reusable support in the registry
 
-Once we have a working Bazel build, we have to import it to SONiC. To do that, we're going to recreate the process we've just done (clone, apply the patches, then overlay the Bazel build) but within Bazel. For an example, please refer to [`src/libnl3`](/src/libnl3).
+Keep dependency-owned source rules, patches, overlays and tests in the dependency's
+registry module. The consumer declares a version and uses the module's public
+labels. It should not copy those rules into `src/` or add a local override that
+bypasses the selected registry version.
 
-The structure boils down to three files:
-
-- A file that holds the Bazel build for the dependency. If you're following the process above, it's the one BUILD file we had. This is just a regular file, and you can name it whatever you want. For `libnl3`, we named it `libnl3.BUILD`, and we got it by doing:
-
-```starlark
-$ cd sonic-buildimage
-$ cp /home/../../path/to/libnl3/BUILD.bazel src/libnl3/libnl3.BUILD
-```
-
-- A `MODULE.bazel` file that imports the source code of the dependency via `http_archive`, applies whatever patches we need to the source, and overlays the above file. For `libnl3`:
+Buildimage uses the existing [libnl3 3.7.0-sonic.2 entry](https://github.com/securely1g/sonic-bazel-registry/tree/main/modules/libnl3/3.7.0-sonic.2):
 
 ```starlark
-$ cd sonic-buildimage
-$ cd src/libnl3
-$ cat MODULE.bazel
+bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
 
-... 
-LIBNL_3_VERSION = "3.7.0"
-
-# This is a custom repository rule because libnl3.BUILD needs access to the repository name.
-# Usually, an `http_archive` is enough.
-
-libnl3_src = use_repo_rule("//:libnl3_src.bzl", "libnl3_src")
-libnl3_src(
-    name = "libnl3_src",
-    build_file_template = "//:libnl3.BUILD",
-    patches = [
-        "//:patch/0003-Adding-support-for-RTA_NH_ID-attribute.patch",
-        "//:bazel_patches/fix-icmp6-mib-max-assert.patch",
-    ],
-    sha256 = "9fe43ccbeeea72c653bdcf8c93332583135cda46a79507bfd0a483bb57f65939",
-    strip_prefix = "libnl-{}".format(LIBNL_3_VERSION),
-    urls = ["http://debian-archive.trafficmanager.net/debian/pool/main/libn/libnl3/libnl3_{}.orig.tar.gz".format(LIBNL_3_VERSION)],
-)
-
-...
+# Older components request dotted historical versions that sort above this release.
+single_version_override(module_name = "libnl3", version = "3.7.0-sonic.2")
 ```
 
-This will build the dependency correctly as the `@libnl_src` module. Because it imports it as an external module it will not be possible for anything outside of `src/libnl3` to consume it. To do that, we need the third piece:
+The registry preserves the pinned libnl 3.7.0 source archive and SONiC RTA_NH_ID
+patch. It exports the library, header and runtime/development package labels,
+including `@libnl3//:libnl_3`, `@libnl3//:headers` and `@libnl3//:libnl-3_pkg`.
+Bazel builds from this source through the registry's overlay; it does not import a
+prebuilt libnl package. `src/libnl3/Makefile` and its patch series remain for the
+legacy Make path.
 
-- A `BUILD.bazel` file that exports the required targets. This file is just a list of `alias` targets that re-exports whatever we need from the build. For `libnl3`:
-```starlark
-alias(
-    name = "libnl_3",
-    actual = "@libnl3_src//:libnl_3",
-    visibility = ["//visibility:public"],
-)
-
-alias(
-    name = "libnl_genl_3",
-    actual = "@libnl3_src//:libnl_genl_3",
-    visibility = ["//visibility:public"],
-)
-
-... # Other targets
-```
-
-Now we have fully implemented `@libnl3`, a working Bazel build that downloads some source code, applies some patches, rebuilds, and surfaces the result in a useful way. But how does one depend on `src/libnl3` from other parts of `sonic-buildimage`, and from outside it?
-
-Unlike Methods 1 and 2, first-party `src/` modules like `libnl3` are *not* hand-authored in a registry at all.
-`tools/bazel/registry` only holds the tooling that publishes them.
-Instead:
-
-- **For development inside `sonic-buildimage`**: nothing to do. `sonic-buildimage`'s own `.bazelrc` unconditionally overrides every top-level `src/` module with `--override_module`, so it's always built from your checked-out `src/libnl3` tree, regardless of what version any consumer's `bazel_dep` declares. This list is auto-generated -- run the updater to pick up a new module (see [`tools/bazel/root-unpinned-modules-config.bazelrc`](/tools/bazel/root-unpinned-modules-config.bazelrc)):
-
-```
-$ bazel run //tools/bazel/registry:root_config_test -- --fix
-Wrote --override_module=libnl3= for src/libnl3
-Wrote --override_module=sonic-build-infra= for src/sonic-build-infra
-Wrote --override_module=sonic-swss-common= for src/sonic-swss-common
-Wrote --override_module=sonic-sysmgr= for src/sonic-sysmgr
-Regenerated tools/bazel/root-unpinned-modules-config.bazelrc
-```
-
-- **For consumption outside `sonic-buildimage`** (or to pin a real version other consumers depend on): add an entry to `OVERLAY_MODULES` in [`tools/bazel/registry/publish_to_remote_registry.py`](/tools/bazel/registry/publish_to_remote_registry.py), pointing at the wrapper directory and the repository rule that fetches the real upstream source:
-
-```python
-OverlayModule(
-    name="libnl3",
-    version="3.7.0.sonic-buildimage",  # Not plain "3.7.0": this carries our own patch, so it needs a distinguishing version.
-    wrapper_dir="src/libnl3",
-    source=repo_rule_source(wrapper_dir="src/libnl3", repo_rule_name="libnl3_src"),
-    overlay_files=["MODULE.bazel", "BUILD.bazel", "libnl3_src.bzl", "libnl3.BUILD", "patch/0003-Adding-support-for-RTA_NH_ID-attribute.patch"],
-),
-```
-
-Running the publisher then opens a PR against the external `sonic-bazel-registry`, publishing a real archive-based entry: it fetches the same upstream archive `libnl3_src` already downloads, and overlays our wrapper's files on top. Passing its path publishes just this one module, and only `src/libnl3` needs to be a clean checkout -- not the rest of the repo:
-
-```
-$ python3 tools/bazel/registry/publish_to_remote_registry.py src/libnl3
-Cloned https://github.com/blorente/sonic-bazel-registry to /tmp/sonic-bazel-registry-erb4ycku
-new: libnl3 3.7.0.sonic-buildimage
-Opened PR: https://github.com/blorente/sonic-bazel-registry/pull/3
-```
-
-The published entry carries our wrapper's `MODULE.bazel`/`BUILD.bazel`/patches as an `overlay` on top of the real upstream archive.
-See `write_overlay_module_entry` in `publish_to_remote_registry.py` for the details.
-
-Now, anything that needs `libnl3` can depend on it with `bazel_dep(name = "libnl3", version = "3.7.0.sonic-buildimage")`, and use `@libnl3//:libnl_3` in its build, just like any other package from the BCR.
-
-`repo_rule_source()` isn't the only way to resolve an `OverlayModule`'s archive.
-`archive_source(url=..., sha256=..., strip_prefix=...)` pins it by hand instead, for wrappers that don't have their own repository rule to parse it from.
-See `com_github_openconfig_gnoi` (vendored at `src/sonic-sysmgr/gnoi`) for an example:
-
-```python
-OverlayModule(
-    name="com_github_openconfig_gnoi",
-    version="0.6.1.sonic-buildimage",
-    wrapper_dir="src/sonic-sysmgr/gnoi_overlay",
-    source=archive_source(
-        url="https://github.com/openconfig/gnoi/archive/2b6ff72de5769839fc68bd019f345a184e3b0bf1.tar.gz",
-        sha256="0f71e9452ec8c50f5a87f54d59f709501a2cb4770a4633d773c443379ca4d4e0",
-        strip_prefix="gnoi-2b6ff72de5769839fc68bd019f345a184e3b0bf1",
-    ),
-    overlay_files=["MODULE.bazel"],
-),
-```
+The effective CI registry is the maintained SONiC `main` endpoint plus BCR.
+Generated root and submodule override files contain only modules still built from
+local source checkouts. There is no local libnl3 module or publisher entry to keep
+in sync. Changes to its reusable Bazel implementation belong in a new registry
+version, with source integrity and native consumer validation.
 
 ## Method 4: Build the dependency out of band, and import it into Bazel as an opaque archive.
 
@@ -305,5 +212,5 @@ OverlayModule(
 ),
 ```
 
-Then `python3 tools/bazel/registry/publish_to_remote_registry.py src/python` publishes it to `sonic-bazel-registry`, the same way as `libnl3` in Method 3.
+Then `python3 tools/bazel/registry/publish_to_remote_registry.py src/python` publishes it to `sonic-bazel-registry`, using the component publisher.
 
