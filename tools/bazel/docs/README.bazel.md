@@ -96,10 +96,11 @@ SONIC_INSTALL_DOCKER_DBG_IMAGES += $(DOCKER_SYSMGR_DBG)
 
 ## Bazel Rules Dependencies
 
-SONiC maintains its own Bazel registry, `blorente/sonic-bazel-registry` (soon to be `sonic-net/sonic-bazel-registry`). Everything that isn't a plain upstream BCR dependency lives in that external registry:
+This build uses the maintained `securely1g/sonic-bazel-registry` main branch. Everything that isn't a plain upstream BCR dependency lives in that external registry:
 
 - First-party component modules (e.g. `sonic-build-infra`, `sonic-swss-common`, `sonic-sysmgr`), discovered automatically from `src/`.
-- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet, and `libnl3` carries our own patch on top of the real upstream archive.
+- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet.
+- Patched third-party libraries such as `libnl3` use existing registry modules. Buildimage selects `libnl3` `3.7.0-sonic.2`; its source rules, patch and package targets are maintained in the registry, while `src/libnl3` retains the legacy Make packaging.
 - Rulesets we need to patch from the Bazel Central Registry (e.g. `rules_go`). These are maintained directly in `sonic-bazel-registry` (there's no `sonic-buildimage`-side tooling for them), and are often temporary until the patches have been merged and released upstream.
 
 Please see [Depending on Other Modules](/tools/bazel/docs/patterns-detail.md#depending-on-other-modules) for instructions on how to maintain this registry.
@@ -360,7 +361,7 @@ Sometimes, we need to execute binary tools as part of a build. For instance, the
 
 These are the patterns we prefer to use when reaching for a tool, in this order:
 
-1. An existing ruleset from the the Bazel Central Registry (e.g. `rules_m4` for libnl3, see [`src/libnl3/libnl3.BUILD`](/src/libnl3/libnl3.BUILD)).
+1. An existing ruleset from the the Bazel Central Registry (e.g. `rules_m4` for libnl3, see [`libnl3.BUILD` in the registry](https://github.com/securely1g/sonic-bazel-registry/blob/main/modules/libnl3/3.7.0-sonic.2/overlay/libnl3.BUILD)).
 2. An exsiting BCR module that serves that binary, wrapped in either a custom rule or a `genrule`.
 3. Migrate the tool to build from source, and then switch to (2).
 4. Build a hermetic version of the tool out of band and import it to the Bazel build, and then switch to (2).
@@ -368,7 +369,7 @@ These are the patterns we prefer to use when reaching for a tool, in this order:
 This is similar to the way we handle library dependencies, see [Importing External Projects](/tools/bazel/docs/import-external-projects.md).
 
 For a full example, see:
-- How libnl3 uses `rules_m4`, `rules_bison`, and `rules_flex`, in [`src/libnl3/libnl3.BUILD`](/src/libnl3/libnl3.BUILD).
+- How libnl3 uses `rules_m4`, `rules_bison`, and `rules_flex`, in [`libnl3.BUILD` in the registry](https://github.com/securely1g/sonic-bazel-registry/blob/main/modules/libnl3/3.7.0-sonic.2/overlay/libnl3.BUILD).
 - How we handle Doxygen and Perl in SAI, in [`meta/BUILD.bazel`](https://github.com/thesayyn/SAI/blob/master/meta/BUILD.bazel).
 
 ## Tar
@@ -376,7 +377,7 @@ For a full example, see:
 We use `tar.bzl` to build and manipulate `tar` files.
 Usually, we'll use it one of two ways:
 
-- `mutate`: useful to bulk-relocate a group of files into a specific directory layout, by stripping and re-rooting a path prefix. See [`libnl3-dev_headers`](/src/libnl3/libnl3.BUILD) for an example: it strips `include/` off every public header and re-roots them under `./usr/include/libnl3`.
+- `mutate`: useful to bulk-relocate a group of files into a specific directory layout, by stripping and re-rooting a path prefix. See [`libnl3-dev_headers`](https://github.com/securely1g/sonic-bazel-registry/blob/main/modules/libnl3/3.7.0-sonic.2/overlay/libnl3.BUILD) for an example: it strips `include/` off every public header and re-roots them under `./usr/include/libnl3`.
 - `mtree`: explicitly list, per file, where it lands and with what permissions. Useful when assembling complex layers, or when dealing with loose files like binaries or configuration files. See [Creating Component Containers](/tools/bazel/docs/patterns-detail.md#creating-component-containers) for examples.
 
 ## Runtime and debug archives
