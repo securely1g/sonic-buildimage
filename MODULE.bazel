@@ -44,10 +44,11 @@ single_version_override(
     version = "3.7.0-sonic.2",
 )
 
+bazel_dep(name = "protobuf-legacy", version = "3.21.12-sonic.1", repo_name = "sonic_protobuf")
+
 # Dependencies built from this repository's submodule checkouts.
 # Their versions are overridden in root-unpinned-modules-config.bazelrc.
 bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
-bazel_dep(name = "sonic-protobuf", version = "0.0.0", repo_name = "sonic_protobuf")
 bazel_dep(name = "sonic-build-infra", version = "0.0.0", repo_name = "sonic_build_infra")
 bazel_dep(name = "sonic-sysmgr", version = "0.0.0", repo_name = "sonic_sysmgr")
 bazel_dep(name = "sonic-swss-common", version = "0.0.0", repo_name = "sonic_swss_common")

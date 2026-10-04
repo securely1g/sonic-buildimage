@@ -12,14 +12,14 @@ class DebugSymbolsTest(unittest.TestCase):
             self.assertIn(member.uname, ("", "root"), member.name)
             self.assertIn(member.gname, ("", "root"), member.name)
 
-    def test_image_layer_contains_both_sysmgr_debug_elfs(self):
+    def test_image_layer_contains_sysmgr_and_protobuf_debug_elfs(self):
         with tarfile.open(DEBUG_ARCHIVE, "r:*") as archive:
             members = archive.getmembers()
             self.assert_root_owned(members)
             files = [member for member in members if member.isfile()]
-            # sysmgr_pkg deploys rebootbackend and librebootgnoi.so.0.0.0.
+            # sysmgr and registry Protobuf deploy three native ELF files.
             # A lost DebugSymbolsInfo provider used to produce an empty layer.
-            self.assertEqual(len(files), 2, [member.name for member in files])
+            self.assertEqual(len(files), 3, [member.name for member in files])
             paths = set()
             for member in files:
                 path = member.name.removeprefix("./")
