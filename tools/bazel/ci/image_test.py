@@ -444,7 +444,9 @@ class ImageControllerTest(unittest.TestCase):
             self.assertEqual(workspace, self.bazel_workspace)
             self.assertEqual(directory, self.artifacts)
             self.assertEqual(bazel[-1], "--")
-            execute(bazel + ["mod", "graph"], workspace, directory, {}, "module-graph")
+            self.assertEqual(bazel[:-1], commands[-1][:commands[-1].index("--")])
+            # The collector retains its command in its own inspection receipt.
+            self.lifecycle.append("module-graph")
             graph = json.dumps({"key": "<root>", "root": True,
                                 "dependencies": [{"key": "fixture@1"}]})
             return image.resolution.retain(workspace, directory, graph,
@@ -465,7 +467,7 @@ class ImageControllerTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(self.lifecycle, ["clone", "native-build", "audit", "verify-source", "prepare",
                                          "rust-preparation", "package", "image", "module-graph", "verify-image", "worker-stop"])
-        self.assertEqual(len(commands), 7)
+        self.assertEqual(len(commands), 6)
         native = commands.pop(0)
         self.assertTrue(native[1].endswith("tools/bazel/ci/native_build.py"))
         self.assertIn("--invocation", native)

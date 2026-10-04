@@ -8,7 +8,7 @@ import subprocess
 
 
 def inspect_graph(stdout, stderr, returncode):
-    """Validate the full module graph, allowing two unused Bazel 8 extensions."""
+    """Validate the full graph, allowing complete known unused extension failures."""
     graph = json.loads(stdout)
     if graph.get("key") != "<root>" or not graph.get("root") or not graph.get("dependencies"):
         raise ValueError("Missing resolved module graph")
@@ -35,19 +35,31 @@ def inspect_graph(stdout, stderr, returncode):
     # unused extensions after the required Linux build/tests already succeeded.
     # Keep their diagnostics; reject every other failure and incomplete graph.
     errors = [line for line in stderr.splitlines() if line.startswith(("ERROR:", "Error:"))]
-    allowed = [
-        r"ERROR: Traceback \(most recent call last\):",
-        r"Error: 'struct' value has no field or method 'AppleDynamicFramework'",
-        r"ERROR: @@bazel_tools//tools/cpp:cc_configure\.bzl does not export a module extension called cc_configure_extension, yet its use is requested at https://bcr\.bazel\.build/modules/abseil-cpp/20240722\.0/MODULE\.bazel:23:29",
-        r"ERROR: Error loading '@@rules_apple\+//apple:apple\.bzl' for module extensions, requested by https://bcr\.bazel\.build/modules/rules_apple/3\.5\.1/MODULE\.bazel:27:48: at [^\n]+/rules_apple\+/apple/apple\.bzl:27:5: initialization of module 'apple/internal/apple_xcframework_import\.bzl' failed: at [^\n]+/rules_apple\+/apple/apple\.bzl:27:5: initialization of module 'apple/internal/apple_xcframework_import\.bzl' failed",
-        r"ERROR: Results may be incomplete as 2 extensions failed\.",
+    groups = [
+        ("abseil-cpp@20240722.0", "cc_configure_extension", [
+            r"ERROR: @@bazel_tools//tools/cpp:cc_configure\.bzl does not export a module extension called cc_configure_extension, yet its use is requested at https://bcr\.bazel\.build/modules/abseil-cpp/20240722\.0/MODULE\.bazel:23:29",
+        ]),
+        ("rules_apple@3.5.1", "apple", [
+            r"ERROR: Traceback \(most recent call last\):",
+            r"Error: 'struct' value has no field or method 'AppleDynamicFramework'",
+            r"ERROR: Error loading '@@rules_apple\+//apple:apple\.bzl' for module extensions, requested by https://bcr\.bazel\.build/modules/rules_apple/3\.5\.1/MODULE\.bazel:27:48: at [^\n]+/rules_apple\+/apple/apple\.bzl:27:5: initialization of module 'apple/internal/apple_xcframework_import\.bzl' failed: at [^\n]+/rules_apple\+/apple/apple\.bzl:27:5: initialization of module 'apple/internal/apple_xcframework_import\.bzl' failed",
+        ]),
     ]
-    if (returncode != 2 or len(errors) != len(allowed)
-            or not all(sum(bool(re.fullmatch(pattern, error)) for error in errors) == 1 for pattern in allowed)
-            or not {"abseil-cpp@20240722.0", "rules_apple@3.5.1"} <= expanded):
+    failures, matched = [], set()
+    for module, extension, patterns in groups:
+        matches = [[index for index, error in enumerate(errors) if re.fullmatch(pattern, error)]
+                   for pattern in patterns]
+        if any(matches):
+            if module not in expanded or any(len(indices) != 1 for indices in matches):
+                raise ValueError("Incomplete or duplicate known extension failure")
+            failures.append(module + ":" + extension)
+            matched.update(indices[0] for indices in matches)
+    count = len(failures)
+    summary = f"ERROR: Results may be incomplete as {count} extension{'s' if count != 1 else ''} failed."
+    remaining = [error for index, error in enumerate(errors) if index not in matched]
+    if returncode != 2 or not failures or remaining != [summary]:
         raise ValueError("Unexpected module graph inspection failure")
-    result["unused_extension_failures"] = ["abseil-cpp@20240722.0:cc_configure_extension",
-                                           "rules_apple@3.5.1:apple"]
+    result["unused_extension_failures"] = failures
     return result
 
 
