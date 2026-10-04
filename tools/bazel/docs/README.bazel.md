@@ -73,7 +73,7 @@ See `rules/docker-sysmgr.mk` and the [shared container contract](../README.md).
 This build uses the maintained `securely1g/sonic-bazel-registry` main branch for shared SONiC modules and BCR for compatible public modules. Sysmgr and FIPS source are owned by this checkout and selected locally:
 
 - Shared first-party components such as `sonic-build-infra` and `sonic-swss-common` use the explicit landed versions in the root module. Sysmgr and FIPS use local source overrides; their standalone module declarations retain dependency versions.
-- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet.
+- gNOI uses the central registry's `openconfig_gnoi` 0.6.2 module and its public schema targets.
 - Patched third-party libraries such as `libnl3` use existing registry modules. Buildimage selects `libnl3` `3.7.0-sonic.2`; its source rules, patch and package targets are maintained in the registry, while `src/libnl3` retains the legacy Make packaging.
 - Rulesets we need to patch from the Bazel Central Registry (e.g. `rules_go`). These are maintained directly in `sonic-bazel-registry` (there's no `sonic-buildimage`-side tooling for them), and are often temporary until the patches have been merged and released upstream.
 
@@ -415,7 +415,8 @@ See more details [here](/tools/bazel/docs/patterns-detail.md#remote-caching).
 The `Bazel sysmgr` GitHub Actions workflow runs for every pull request (including
 stacked bases), pushes to `master`, and manual runs. Its native AMD64 jobs use
 Bazel 8.5.1 in digest-pinned Debian Trixie, initialize the recorded infrastructure,
-SWSS Common and gNOI gitlinks, and use the checkout's AMD64 Trixie platform.
+and SWSS Common gitlinks, and use the checkout's AMD64 Trixie platform.
+The gNOI schemas come from BCR; this workflow leaves their Make submodule uninitialized.
 
 - `Bazel sysmgr checks (AMD64)` runs formatting, both source-tree registry
   configuration checks, a gNOI JSON/serialization runtime test and six Bazel tests for the registry,

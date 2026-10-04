@@ -142,6 +142,25 @@ local source checkouts. There is no local libnl3 module or publisher entry to ke
 in sync. Changes to its reusable Bazel implementation belong in a new registry
 version, with source integrity and native consumer validation.
 
+### Prefer the central registry when upstream adds Bazel support
+
+System-manager uses `bazel_dep(name = "openconfig_gnoi", version = "0.6.2")`
+and upstream public `.proto` targets. It no longer publishes a separate gNOI
+overlay or reads those schemas from the vendored submodule for Bazel builds.
+The `types`, `common`, and `system` schemas are identical to the previous
+`2b6ff72de5769839fc68bd019f345a184e3b0bf1` source revision.
+
+System-manager also selects BCR `rules_go` 0.64.1. Upstream gNOI's schema
+packages load its proto definitions, including when only `.proto` inputs are
+consumed. The older SONiC-patched rules_go removed that package.
+
+The consumer stages these schemas at their original import paths and generates
+C++ with the shared `@sonic_protobuf//:defs.bzl` helper. The registry module
+`protobuf-legacy` 3.21.12-sonic.1 supplies the matching source-built compiler,
+headers and shared runtime packaged in the sysmgr layer.
+The `librebootgnoi.so.0` library and runtime/debug tar layout remain the
+consumer's responsibility. The gNOI submodule remains an input to Make.
+
 ## Method 4: Build the dependency out of band, and import it into Bazel as an opaque archive.
 
 Sometimes, a dependency's build process is too convoluted, and it's not worth porting to Bazel. For instance, we may need to patch Python itself, a project famous for being hard to compile in the best of times.
