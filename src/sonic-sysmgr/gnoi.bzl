@@ -4,7 +4,7 @@ _SONAME = "librebootgnoi.so.0"
 _LIBRARY = _SONAME + ".0.0"
 
 def gnoi_cc_protos(name):
-    """Compile the vendored gNOI messages with the registry's Protobuf toolchain.
+    """Compile the central gNOI messages with the registry's Protobuf toolchain.
 
     Args:
         name: the cc_library to define.
