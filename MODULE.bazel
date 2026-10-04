@@ -16,9 +16,14 @@ python.toolchain(python_version = "3.11.6")
 
 bazel_dep(name = "rules_distroless", version = "0.9.4")
 
-# Dependencies from this repository's submodules.
-# Versions here are irrelevant (see root-unpinned-modules-config.bazelrc).
-bazel_dep(name = "libnl3", version = "3.7.0.sonic-buildimage")
+# Reuse the patched source and package targets published in the SONiC registry.
+bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
+
+# Historical dotted versions requested by older components sort above this release.
+single_version_override(module_name = "libnl3", version = "3.7.0-sonic.2")
+
+# Dependencies built from this repository's submodule checkouts.
+# Their versions are overridden in root-unpinned-modules-config.bazelrc.
 bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
 bazel_dep(name = "sonic-protobuf", version = "0.0.0", repo_name = "sonic_protobuf")
 bazel_dep(name = "sonic-build-infra", version = "0.0.0", repo_name = "sonic_build_infra")
