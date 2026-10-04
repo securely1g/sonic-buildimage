@@ -1,0 +1,123 @@
+name: Bazel SWSS OCI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      build_vs:
+        description: Build the full Make VS image on a disposable source-build runner
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bazel-swss-oci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: SWSS source layers (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils build-essential busybox ca-certificates \
+            gdb git libtool make pigz pkg-config python3 python3-jinja2 tar unzip zstd
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check generated dependency state
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: buildimage-swss-oci-amd64
+          cache-version: "8.5.1"
+
+      - name: Check Make handoff and archive validation
+        run: |
+          python3 -B -m unittest discover -s tools/bazel/swss -p '*_test.py'
+          PYTHONPATH=tools/bazel/oci python3 -B tools/bazel/oci/docker_archive_to_oci_layout_test.py
+          PYTHONPATH=dockers/docker-orchagent/config python3 -B dockers/docker-orchagent/config/render_test.py \
+            rules/docker-orchagent.mk files/build_templates/manifest.json.j2 dockers/docker-orchagent/docker-init.j2
+
+      - name: Build and inspect SWSS runtime and debug layers
+        run: PYTHONPATH=tools/bazel/swss python3 -B tools/bazel/swss/ci.py --artifacts artifacts/swss
+
+      - name: Upload source layers and build evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-source-layers-amd64
+          path: artifacts/swss/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  vs:
+    name: Make VS with Bazel SWSS (AMD64)
+    if: github.event_name == 'workflow_dispatch' && inputs.build_vs
+    needs: source
+    runs-on: [self-hosted, linux, x64, sonic-vs-source]
+    timeout-minutes: 720
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Check source-build runner capacity
+        run: |
+          docker info > /dev/null
+          python3 - <<'PY'
+          import shutil
+          if shutil.disk_usage('.').free < 300 * 1024**3:
+              raise SystemExit('The full Make VS build needs at least 300 GiB free')
+          PY
+
+      - name: Configure the native VS image
+        run: |
+          make init
+          make configure PLATFORM=vs PLATFORM_ARCH=amd64
+
+      - name: Build the VS image with Bazel SWSS archives
+        run: make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_SWSS_WITH_BAZEL=y
+
+      - name: Upload VS image and SWSS archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-make-bazel-swss-amd64
+          path: |
+            target/sonic-vs.img.gz
+            target/docker-orchagent.gz
+            target/docker-orchagent-dbg.gz
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

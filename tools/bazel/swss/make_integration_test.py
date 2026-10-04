@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Check SWSS selection without starting a slave, Docker or Bazel."""
+
+import pathlib
+import subprocess
+import tempfile
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+
+class MakeIntegrationTest(unittest.TestCase):
+    def select(self, **overrides):
+        settings = {
+            "BUILD_SWSS_WITH_BAZEL": "n",
+            "BLDENV": "trixie",
+            "CONFIGURED_PLATFORM": "vs",
+            "CONFIGURED_ARCH": "amd64",
+            "ENABLE_ASAN": "n",
+        }
+        settings.update(overrides)
+        makefile = """
+DBG_IMAGE_MARK = dbg
+SWSS = swss.deb
+LIB_SONIC_DASH_API = dash.deb
+SCAPY = scapy.whl
+SONIC_DOCKER_IMAGES = docker-sysmgr.gz docker-swss-layer-trixie.gz
+include rules/docker-orchagent.mk
+.PHONY: selected
+selected:
+	@echo bazel=$(SONIC_BAZEL_SWSS_IMAGES)
+	@echo legacy=$(filter-out $(SONIC_BAZEL_SWSS_IMAGES),$(SONIC_DOCKER_IMAGES))
+	@echo debug=$(filter-out $(SONIC_BAZEL_SWSS_IMAGES),$(SONIC_DOCKER_DBG_IMAGES))
+	@echo install=$(SONIC_INSTALL_DOCKER_IMAGES)
+	@echo swss_packages=$($(DOCKER_ORCHAGENT)_DEPENDS)
+	@echo swss_wheels=$($(DOCKER_ORCHAGENT)_PYTHON_WHEELS)
+"""
+        return subprocess.run(
+            ["make", "--no-print-directory", "-f", "-", "selected"]
+            + [f"{key}={value}" for key, value in settings.items()],
+            input=makefile,
+            text=True,
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+
+    def values(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return dict(line.split("=", 1) for line in result.stdout.splitlines())
+
+    def test_default_preserves_make(self):
+        values = self.values(self.select())
+        self.assertEqual(values["bazel"], "")
+        self.assertIn("docker-orchagent.gz", values["legacy"].split())
+        self.assertEqual(values["debug"], "docker-orchagent-dbg.gz")
+
+    def test_opt_in_selects_only_swss_and_keeps_installer_contract(self):
+        values = self.values(self.select(BUILD_SWSS_WITH_BAZEL="y"))
+        self.assertEqual(
+            values["bazel"].split(),
+            ["docker-orchagent.gz", "docker-orchagent-dbg.gz"],
+        )
+        self.assertEqual(
+            values["legacy"].split(),
+            ["docker-sysmgr.gz", "docker-swss-layer-trixie.gz"],
+        )
+        self.assertEqual(values["debug"], "")
+        self.assertEqual(values["install"], "docker-orchagent.gz")
+        # The combined docker-sonic-vs Make build imports this metadata.
+        self.assertEqual(values["swss_packages"], "swss.deb dash.deb")
+        self.assertEqual(values["swss_wheels"], "scapy.whl")
+
+    def test_other_slave_phases_stay_on_make(self):
+        for distro in ("bookworm", "bullseye"):
+            with self.subTest(distro=distro):
+                values = self.values(self.select(BUILD_SWSS_WITH_BAZEL="y", BLDENV=distro))
+                self.assertEqual(values["bazel"], "")
+
+    def test_unsupported_bazel_configurations_fail_explicitly(self):
+        for setting in (
+            {"CONFIGURED_PLATFORM": "mellanox"},
+            {"CONFIGURED_ARCH": "arm64"},
+            {"ENABLE_ASAN": "y"},
+            {"CROSS_BUILD_ENVIRON": "y"},
+            {"MULTIARCH_QEMU_ENVIRON": "y"},
+        ):
+            with self.subTest(setting=setting):
+                result = self.select(BUILD_SWSS_WITH_BAZEL="y", **setting)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("BUILD_SWSS_WITH_BAZEL=y", result.stderr)
+
+    def test_make_remains_available_for_other_platforms(self):
+        values = self.values(self.select(CONFIGURED_PLATFORM="mellanox", CONFIGURED_ARCH="arm64"))
+        self.assertEqual(values["bazel"], "")
+
+    def test_invalid_selector_fails(self):
+        for selector in ("yes", "y n", ""):
+            with self.subTest(selector=selector):
+                result = self.select(BUILD_SWSS_WITH_BAZEL=selector)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must be y or n", result.stderr)
+
+    def test_builder_switch_invalidates_both_archives_once(self):
+        slave = (ROOT / "slave.mk").read_text()
+        start = slave.index("# Changing the SWSS builder")
+        end = slave.index("# Let Bazel check its declared inputs", start)
+        with tempfile.TemporaryDirectory() as tmp:
+            makefile = f"""
+TARGET_PATH = {tmp}
+BLDENV = trixie
+DOCKER_ORCHAGENT = docker-orchagent.gz
+DOCKER_ORCHAGENT_DBG = docker-orchagent-dbg.gz
+{slave[start:end]}
+.PHONY: check
+check: {tmp}/docker-orchagent.gz {tmp}/docker-orchagent-dbg.gz
+{tmp}/docker-orchagent.gz {tmp}/docker-orchagent-dbg.gz:
+	@echo $(BUILD_SWSS_WITH_BAZEL) > $@
+"""
+            paths = [pathlib.Path(tmp) / name for name in ("docker-orchagent.gz", "docker-orchagent-dbg.gz")]
+            previous = None
+            for mode in ("n", "n", "y", "y", "n", "n"):
+                result = subprocess.run(
+                    ["make", "--no-print-directory", "-f", "-", "check", f"BUILD_SWSS_WITH_BAZEL={mode}"],
+                    input=makefile, text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                current = (mode, [p.stat().st_mtime_ns for p in paths])
+                for path in paths:
+                    self.assertEqual(path.read_text().strip(), mode)
+                if previous:
+                    if previous[0] == mode:
+                        self.assertEqual(previous[1], current[1])
+                    else:
+                        self.assertNotEqual(previous[1], current[1])
+                previous = current
+
+    def test_archive_recipe_requires_make_base_and_scapy(self):
+        slave = (ROOT / "slave.mk").read_text()
+        start = slave.index("# Let Bazel check its declared inputs")
+        end = slave.index("# Targets for building docker debug images", start)
+        makefile = f"""
+TARGET_PATH = target
+DOCKER_CONFIG_ENGINE_TRIXIE = docker-config-engine-trixie.gz
+PYTHON_WHEELS_PATH = target/python-wheels/trixie
+SCAPY = scapy.whl
+SONIC_BAZEL_SWSS_IMAGES = docker-orchagent.gz docker-orchagent-dbg.gz
+{slave[start:end]}
+.PHONY: .platform target/docker-config-engine-trixie.gz target/python-wheels/trixie/scapy.whl
+target/docker-config-engine-trixie.gz target/python-wheels/trixie/scapy.whl:
+	@echo make-input=$@
+"""
+        for archive in ("docker-orchagent.gz", "docker-orchagent-dbg.gz"):
+            with self.subTest(archive=archive):
+                result = subprocess.run(
+                    ["make", "--no-print-directory", "-n", "-f", "-", f"target/{archive}"],
+                    input=makefile, text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("make-input=target/docker-config-engine-trixie.gz", result.stdout)
+                self.assertIn("make-input=target/python-wheels/trixie/scapy.whl", result.stdout)
+                self.assertIn(f'--archive "{archive}" --output "target/{archive}"', result.stdout)
+                self.assertNotIn("swss.deb", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

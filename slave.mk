@@ -1367,13 +1367,14 @@ endif
 endif
 endif
 
-# Bazel dockers (opted in via SONIC_BAZEL_DOCKER_IMAGES in their recipe) are
-# built by the Bazel rule further below, not the normal `docker build` rule.
-# Drop them from DOCKER_IMAGES so they don't also get the normal recipe.
-# When Bazel is disabled, SONIC_BAZEL_DOCKER_IMAGES will be empty.
-# Same applies for `DOCKER_DBG_IMAGES`
-DOCKER_IMAGES := $(filter-out $(SONIC_BAZEL_DOCKER_IMAGES),$(DOCKER_IMAGES))
-DOCKER_DBG_IMAGES := $(filter-out $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$(DOCKER_DBG_IMAGES))
+# Only the selected SWSS archives use Bazel; all other Docker recipes stay on
+# Make, including the shared docker-swss-layer-trixie base.
+DOCKER_IMAGES := $(filter-out $(SONIC_BAZEL_SWSS_IMAGES),$(DOCKER_IMAGES))
+DOCKER_DBG_IMAGES := $(filter-out $(SONIC_BAZEL_SWSS_IMAGES),$(DOCKER_DBG_IMAGES))
+
+ifneq ($(filter $(SONIC_BAZEL_SWSS_IMAGES),$(SONIC_PACKAGES_LOCAL)),)
+$(error BUILD_SWSS_WITH_BAZEL=y does not support SWSS in SONIC_PACKAGES_LOCAL: the OCI archives use the latest tag)
+endif
 
 $(foreach IMAGE,$(DOCKER_IMAGES), $(eval $(IMAGE)_DEBS_PATH := $(DEBS_PATH)))
 $(foreach IMAGE,$(DOCKER_IMAGES), $(eval $(IMAGE)_FILES_PATH := $(FILES_PATH)))
@@ -1503,21 +1504,31 @@ $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES))
 
-# Targets for building docker images (and debug images) with Bazel.
-$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform \
-		$$(addprefix $(TARGET_PATH)/,$$($$*.gz_BAZEL_BASE))
+# Changing the SWSS builder invalidates either archive, including when Make's
+# package cache is disabled. Preserve the stamp on repeated use of one builder.
+ifeq ($(BLDENV),trixie)
+.PHONY: swss-build-method-force
+swss-build-method-force:
+$(TARGET_PATH)/.swss-build-method: swss-build-method-force
+	@mkdir -p "$(@D)"
+	@echo "$(BUILD_SWSS_WITH_BAZEL)" | cmp -s - "$@" || echo "$(BUILD_SWSS_WITH_BAZEL)" > "$@"
+$(addprefix $(TARGET_PATH)/,$(DOCKER_ORCHAGENT) $(DOCKER_ORCHAGENT_DBG)): $(TARGET_PATH)/.swss-build-method
+endif
+
+# Let Bazel check its declared inputs on every request. The wrapper publishes
+# changed archives atomically and preserves timestamps when output is unchanged.
+.PHONY: bazel-swss-force
+bazel-swss-force:
+
+$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_SWSS_IMAGES)) : $(TARGET_PATH)/%.gz : .platform bazel-swss-force \
+		$(TARGET_PATH)/$(DOCKER_CONFIG_ENGINE_TRIXIE) \
+		$(PYTHON_WHEELS_PATH)/$(SCAPY)
 	$(HEADER)
-	bazel run //dockers/$*:write_$*.gz $(LOG)
+	python3 tools/bazel/swss/build.py --archive "$(@F)" --output "$@" $(LOG)
+	$(call sbom_emit_fragment,$@,DOCKER_IMAGE,$(DOCKERS_PATH)/docker-orchagent,,,,)
 	$(FOOTER)
 
-$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DBG_DOCKER_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform \
-		$$(addprefix $(TARGET_PATH)/,$$($$*.gz_BAZEL_BASE))
-	$(HEADER)
-	bazel run //dockers/$*:write_$*-$(DBG_IMAGE_MARK).gz $(LOG)
-	$(FOOTER)
-
-SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES))
-SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DBG_DOCKER_IMAGES))
+SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_SWSS_IMAGES))
 
 # Targets for building docker debug images
 $(addprefix $(TARGET_PATH)/, $(DOCKER_DBG_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform docker-start \
@@ -1593,6 +1604,7 @@ DOCKER_LOAD_TARGETS = $(addsuffix -load,$(addprefix $(TARGET_PATH)/, \
 		      $(DOWNLOADED_DOCKER_IMAGES) \
 		      $(COPY_DOCKER_IMAGES) \
 		      $(DOCKER_IMAGES) \
+		      $(SONIC_BAZEL_SWSS_IMAGES) \
 		      $(DOCKER_DBG_IMAGES)))
 
 ifeq ($(BLDENV),trixie)

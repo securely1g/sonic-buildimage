@@ -1,35 +1,190 @@
-module(name = "sonic-buildimage")
+module(
+    name = "sonic-buildimage",
+    bazel_compatibility = [
+        ">=8.5.1",
+        "<=8.5.1",
+    ],
+)
 
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
-bazel_dep(name = "rules_oci", version = "2.2.6")
-bazel_dep(name = "tar.bzl", version = "0.10.5")
-bazel_dep(name = "rules_python", version = "1.7.0")
-bazel_dep(name = "bazel_lib", version = "3.1.1")
 bazel_dep(name = "pigz", version = "2.8")
-bazel_dep(name = "aspect_rules_py", version = "1.11.2")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+bazel_dep(name = "rules_oci", version = "2.2.6")
+bazel_dep(name = "rules_python", version = "1.8.0")
+bazel_dep(name = "rules_rs", version = "0.1.0")
+bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
 
-bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = True)
+# Build SWSS and its runtime libraries from source without changing the source
+# submodules selected by the rest of the Make image build.
+bazel_dep(
+    name = "sonic-build-infra",
+    version = "0.0.15-6653ac1a0b15488a4b54f69ca78440b52be3ccf8",
+    repo_name = "sonic_build_infra",
+)
+bazel_dep(
+    name = "sonic-dash-api",
+    version = "0.0.4-2a6e390b96a4fc17c191fa0da4b7ed1f40aed069",
+    repo_name = "sonic_dash_api",
+)
+bazel_dep(
+    name = "sonic-sairedis",
+    version = "0.0.0-e9402b77ba43aee6323665921598ef67e66293f9",
+    repo_name = "sonic_sairedis",
+)
+bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-swss-common", version = "0.0.1", repo_name = "sonic_swss_common")
+
+# These source revisions are not yet registered. Keep the SWSS proposal and
+# Common's landed merge explicit until equivalent registry entries are available.
+git_override(
+    module_name = "sonic-swss",
+    commit = "9d876e5794cded68deebf2ac1a176cbf13e17325",
+    remote = "https://github.com/securely1g/sonic-swss.git",
+)
+
+git_override(
+    module_name = "sonic-swss-common",
+    commit = "5d696f73bacb7c02889ce909a7b177bc7d418016",
+    remote = "https://github.com/securely1g/sonic-swss-common.git",
+)
+
+# The wheel installer is proposed in build-infra #9, above its current master.
+# It retains the registered version's archive timestamp and ownership behavior.
+git_override(
+    module_name = "sonic-build-infra",
+    commit = "e5d05f345b35f2a34261d7747fcc910205cc3acb",
+    remote = "https://github.com/securely1g/sonic-build-infra.git",
+)
+
+# Dependency overrides do not propagate from imported modules. Retain their
+# compatible rule implementations, including tar's timestamp handling and the
+# Distroless native protobuf fix.
+single_version_override(
+    module_name = "rules_cc",
+    version = "0.2.20",
+)
+
+single_version_override(
+    module_name = "rules_distroless",
+    version = "0.9.4-sonic.1",
+)
+
+single_version_override(
+    module_name = "tar.bzl",
+    version = "0.10.5-sonic.1",
+)
+
+single_version_override(
+    module_name = "libnl3",
+    version = "3.7.0-sonic.2",
+)
+
+single_version_override(
+    module_name = "re2",
+    version = "2024-07-02.bcr.1",
+)
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(python_version = "3.11.6")
+python.toolchain(
+    is_default = True,
+    python_version = "3.13",
+)
+python.toolchain(python_version = "3.11")
 
-bazel_dep(name = "rules_distroless", version = "0.0.0.commit-01bb79d7eef4eb3ce9511d3dfaf0ab386bd8d12d")
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "swss_config_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-orchagent/config:requirements_lock.txt",
+)
+use_repo(pip, "swss_config_pip")
 
-# Dependencies from this repository's submodules.
-# Versions here are irrelevant (see root-unpinned-modules-config.bazelrc).
-bazel_dep(name = "sonic-build-infra", version = "0.0.0", repo_name = "sonic_build_infra")
-bazel_dep(name = "sonic-sysmgr", version = "0.0.0", repo_name = "sonic_sysmgr")
-bazel_dep(name = "sonic-swss-common", version = "0.0.0", repo_name = "sonic_swss_common")
+gcc = use_extension("@sonic_build_infra//toolchains/gcc:extensions.bzl", "gcc")
+use_repo(gcc, "gcc_toolchains")
+
+register_toolchains("@gcc_toolchains//:all")
+
+# Common owns its Rust library and public Serde targets. rules_rs reads the
+# tracked Cargo locks directly; no generated Cargo.Bazel.lock is required.
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
+
+rust = use_extension("@rules_rs//rs:rules_rust_reexported_extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    extra_target_triples = [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ],
+    versions = ["1.90.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+bindgen = use_extension("@rules_rs//rs:rules_rust_bindgen.bzl", "rules_rust_bindgen")
+use_repo(bindgen, "rules_rust_bindgen")
+
+register_toolchains("@rules_rust_bindgen//:all")
+
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+
+# This consumer only configures the owners' Cargo graphs. rules_rs requires a
+# config tag for such consumers; an empty config preserves Cargo's defaults.
+crate.config(cargo_config_toml = "//tools/bazel/swss:cargo-config.toml")
+
+override_repo(
+    crate,
+    **{
+        "swss_crates__github.com_securely1g_sonic-swss-common.git_5d696f73": "sonic_swss_common",
+        "swss_crates__serde-1.0.228": "sonic_swss_common",
+        "swss_crates__serde_core-1.0.228": "sonic_swss_common",
+    }
+)
 
 toolchains = use_extension("@tar.bzl//tar:extensions.bzl", "toolchains")
 use_repo(toolchains, "bsd_tar_toolchains")
 
 register_toolchains("@bsd_tar_toolchains//:all")
 
-# The actual dependencies are listed in src/sonic-build-infra/MODULE.bazel, and re-exported.
+# The imported build infrastructure pins the Debian package snapshots.
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
-use_repo(apt, "trixie")
-
-uv = use_extension("@aspect_rules_py//uv/unstable:extension.bzl", "uv")
-use_repo(uv, "pypi")
+apt.install(
+    dependency_set = "orchagent_debian",
+    packages = [
+        "arping",
+        "bridge-utils",
+        "conntrack",
+        # Require the concrete Trixie implementation instead of virtual Provides.
+        "ifupdown (>= 0.8.44)",
+        "iproute2",
+        "iputils-ping",
+        "libgssrpc4t64",
+        "libjansson4",
+        "libjemalloc2",
+        "libkadm5clnt-mit12",
+        "libkadm5srv-mit12",
+        "libkdb5-10t64",
+        "libprotobuf-lite32t64",
+        "libteam5",
+        "libteamdctl0",
+        "libxml2",
+        "libyaml-cpp0.8",
+        "ndisc6",
+        "ndppd",
+        "pciutils",
+        "python3-click",
+        "python3-netifaces",
+        "python3-protobuf",
+        "tcpdump",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "orchagent_debian", "trixie")

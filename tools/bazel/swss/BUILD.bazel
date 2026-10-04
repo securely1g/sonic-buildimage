@@ -1,0 +1,10 @@
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+
+exports_files(["cargo-config.toml"])
+
+# Check the image's transitive symbols on hosted runners without requiring the
+# config-engine base container that Make builds for complete image assembly.
+debug_symbols_layer(
+    name = "debug_symbols",
+    image = "//dockers/docker-orchagent:rdeps",
+)

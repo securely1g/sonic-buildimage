@@ -1,14 +1,16 @@
-# Files needed for the Bazel build
-_BAZEL_FILES = [
-    "MODULE.bazel",
-]
-
+# Make supplies only the config-engine base and the existing Scapy wheel.
 exports_files(
-    # Capture files produced by Make (e.g. the base docker layers).
-    # allow_empty: on a clean tree Make has not produced anything yet.
     glob(
-        ["target/*"],
+        [
+            "target/docker-config-engine-trixie.gz",
+            "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl",
+        ],
         allow_empty = True,
-    ) +
-    _BAZEL_FILES,
+    ) + [
+        "files/scripts/arp_update",
+        "files/build_templates/arp_update_vars.j2",
+        "files/build_templates/manifest.json.j2",
+        "files/build_templates/per_namespace/swss.service.j2",
+        "rules/docker-orchagent.mk",
+    ],
 )
