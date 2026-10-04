@@ -3,7 +3,7 @@ module(name = "sonic-buildimage")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "rules_oci", version = "2.2.6")
-bazel_dep(name = "tar.bzl", version = "0.10.5")
+bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
 bazel_dep(name = "rules_python", version = "1.7.0")
 bazel_dep(name = "bazel_lib", version = "3.1.1")
 bazel_dep(name = "pigz", version = "2.8")
@@ -14,13 +14,35 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = Tr
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(python_version = "3.11.6")
 
-bazel_dep(name = "rules_distroless", version = "0.9.4")
+bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+
+# Keep the shared archive and package fixes selected over upstream releases
+# and historical dotted versions requested by older component modules.
+single_version_override(
+    module_name = "tar.bzl",
+    version = "0.10.5-sonic.1",
+)
+
+single_version_override(
+    module_name = "rules_distroless",
+    version = "0.9.4-sonic.1",
+)
+
+# Distroless loads rules_cc's private cc_import. Newer releases require a
+# runtime toolchain type that Bazel 8.5.1 does not provide.
+single_version_override(
+    module_name = "rules_cc",
+    version = "0.2.20",
+)
 
 # Reuse the patched source and package targets published in the SONiC registry.
 bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
 
 # Historical dotted versions requested by older components sort above this release.
-single_version_override(module_name = "libnl3", version = "3.7.0-sonic.2")
+single_version_override(
+    module_name = "libnl3",
+    version = "3.7.0-sonic.2",
+)
 
 # Dependencies built from this repository's submodule checkouts.
 # Their versions are overridden in root-unpinned-modules-config.bazelrc.

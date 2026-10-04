@@ -6,10 +6,7 @@ debug_symbols_layer(
     image = "//dockers/docker-sysmgr:rdeps",
 )
 
-genrule(
+filegroup(
     name = "symbols",
     srcs = [":symbols_raw"],
-    outs = ["symbols.tar"],
-    cmd = '$(location @sonic_sysmgr//:root_owned_tar) "$(location :symbols_raw)" "$@"',
-    tools = ["@sonic_sysmgr//:root_owned_tar"],
 )
