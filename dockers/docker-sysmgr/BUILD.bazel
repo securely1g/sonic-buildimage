@@ -95,12 +95,10 @@ debug_symbols_layer(
     image = ":docker-sysmgr",
 )
 
-genrule(
+# Shared debug-symbol layers already normalize archive ownership.
+filegroup(
     name = "docker-sysmgr.debug_symbols",
     srcs = [":docker-sysmgr.debug_symbols_raw"],
-    outs = ["docker-sysmgr.debug_symbols.tar"],
-    cmd = '$(location @sonic_sysmgr//:root_owned_tar) "$(location :docker-sysmgr.debug_symbols_raw)" "$@"',
-    tools = ["@sonic_sysmgr//:root_owned_tar"],
     visibility = ["//visibility:public"],
 )
 
