@@ -51,7 +51,10 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule update --init --depth 1 --jobs 4 -- \
-            src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
+            src/sonic-build-infra src/sonic-swss-common
+
+      - name: Verify gNOI schemas come from the central registry
+        run: test ! -f src/sonic-sysmgr/gnoi/types/types.proto
 
       - name: Verify fresh generated dependency state
         run: |

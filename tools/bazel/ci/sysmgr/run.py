@@ -104,6 +104,10 @@ def verify_packages(paths):
                           "runtime_sha256": sha(binary), "debug_sha256": sha(detached)})
         library = runtime / BINARIES[1]
         require("[librebootgnoi.so.0]" in output("readelf", "-d", str(library)), "Wrong gNOI SONAME")
+        protobuf_runtime = re.findall(r"Shared library: \[(libprotobuf[^\]]*)\]",
+                                      output("readelf", "-d", str(runtime / BINARIES[0])))
+        require(protobuf_runtime == ["libprotobuf.so.32"],
+                "System-manager must use the SONiC protobuf runtime: " + repr(protobuf_runtime))
         for suffix in ("", ".0"):
             link = library.parent / ("librebootgnoi.so" + suffix)
             require(link.is_symlink() and link.readlink() == Path(library.name), "Broken library symlink")
@@ -113,7 +117,8 @@ def verify_packages(paths):
                 "Unexpected debug symbol inventory")
         subprocess.run(["python3", str(ROOT / "dockers/docker-sysmgr/debug_symbols_test.py"),
                         str(paths["debug-layer.tar"]), str(paths["config-layer.tar"])], check=True)
-        return {"runtime_debug_pairs": pairs, "architecture": "amd64", "image_layer_tests": 2}
+        return {"runtime_debug_pairs": pairs, "architecture": "amd64", "image_layer_tests": 2,
+                "protobuf_runtime": protobuf_runtime}
 
 
 def main():
