@@ -1,4 +1,3 @@
-load("@rules_python//python:py_binary.bzl", "py_binary")
 load("@sonic_build_infra//tar:sonic_deploy_tar.bzl", "sonic_deploy_tar")
 
 sonic_deploy_tar(
@@ -30,21 +29,17 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-py_binary(
+# Preserve the existing tool label for consumers using the shared normalizer.
+alias(
     name = "root_owned_tar",
-    srcs = ["tools/bazel/root_owned_tar.py"],
-    main = "tools/bazel/root_owned_tar.py",
+    actual = "@sonic_build_infra//tar:root_owned_tar",
     visibility = ["//visibility:public"],
 )
 
-# The debug tar's generated parent entries can inherit the build user's owner.
-# Normalize the headers before including them in a package or an OCI layer.
-genrule(
+# Shared deployment tars already normalize every debug archive header.
+filegroup(
     name = "sysmgr_debug_pkg",
     srcs = [":sysmgr_pkg.debug_symbols"],
-    outs = ["sysmgr_debug_pkg.tar"],
-    cmd = '$(location :root_owned_tar) "$(location :sysmgr_pkg.debug_symbols)" "$@"',
     tags = ["make-deb:sysmgr-dbg_1.0.0_amd64.deb"],
-    tools = [":root_owned_tar"],
     visibility = ["//visibility:public"],
 )
