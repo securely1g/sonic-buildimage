@@ -35,20 +35,13 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.1", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.1-6e0204634f2f78605abdd94ea2b013a46e0660ac", repo_name = "sonic_swss_common")
 
-# These source revisions are not yet registered. Keep the SWSS proposal and
-# Common's landed merge explicit until equivalent registry entries are available.
+# SWSS is not registered yet. Select its maintained-branch merge explicitly.
 git_override(
     module_name = "sonic-swss",
-    commit = "9d876e5794cded68deebf2ac1a176cbf13e17325",
+    commit = "34de0503eb9d1cf54af3492d8307dcf7c3022a0e",
     remote = "https://github.com/securely1g/sonic-swss.git",
-)
-
-git_override(
-    module_name = "sonic-swss-common",
-    commit = "5d696f73bacb7c02889ce909a7b177bc7d418016",
-    remote = "https://github.com/securely1g/sonic-swss-common.git",
 )
 
 # Use the landed wheel installer until a registry entry includes that source.
@@ -62,6 +55,13 @@ git_override(
 # Dependency overrides do not propagate from imported modules. Retain their
 # compatible rule implementations, including tar's timestamp handling and the
 # Distroless native protobuf fix.
+# Dependency overrides do not propagate from Common. Keep its cgo header
+# repair selected when another module requests the unpatched stable release.
+single_version_override(
+    module_name = "rules_go",
+    version = "0.64.1-sonic.1",
+)
+
 single_version_override(
     module_name = "rules_cc",
     version = "0.2.20",
@@ -139,7 +139,7 @@ crate.config(cargo_config_toml = "//tools/bazel/swss:cargo-config.toml")
 override_repo(
     crate,
     **{
-        "swss_crates__github.com_securely1g_sonic-swss-common.git_5d696f73": "sonic_swss_common",
+        "swss_crates__github.com_securely1g_sonic-swss-common.git_6e020463": "sonic_swss_common",
         "swss_crates__serde-1.0.228": "sonic_swss_common",
         "swss_crates__serde_core-1.0.228": "sonic_swss_common",
     }
