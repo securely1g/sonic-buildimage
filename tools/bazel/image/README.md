@@ -249,8 +249,8 @@ older gzip caches and populates Zstandard caches for later runs.
 Common and SWSS use `rules_rs` 0.1.0 to read their tracked `Cargo.toml` and
 `Cargo.lock` directly. The image root provides Rust 1.90.0 and bindgen toolchains
 and maps SWSS's Common/Serde repositories to Common's source-owned targets.
-The selected Common revision is landed; SWSS remains the explicitly selected
-source proposal. No `Cargo.Bazel.lock` generation or preparation helper is needed.
+The selected SWSS and Common revisions are their maintained-branch merges,
+`34de0503` and `6e020463`, respectively. No `Cargo.Bazel.lock` generation or preparation helper is needed.
 
 Before execution, CI records each component revision and copies its tracked
 module declaration, Cargo manifest and Cargo lock into the artifact's `rust/`

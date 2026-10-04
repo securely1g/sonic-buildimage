@@ -57,10 +57,17 @@ crate.config(cargo_config_toml = "//tools/bazel/rust:cargo-config.toml")
 override_repo(
     crate,
     **{
-        "swss_crates__github.com_securely1g_sonic-swss-common.git_5d696f73": "sonic_swss_common",
+        "swss_crates__github.com_securely1g_sonic-swss-common.git_6e020463": "sonic_swss_common",
         "swss_crates__serde-1.0.228": "sonic_swss_common",
         "swss_crates__serde_core-1.0.228": "sonic_swss_common",
     }
+)
+
+# Dependency overrides do not propagate from Common. Keep its cgo header
+# repair selected when another module requests the unpatched stable release.
+single_version_override(
+    module_name = "rules_go",
+    version = "0.64.1-sonic.1",
 )
 
 single_version_override(
