@@ -74,7 +74,7 @@ bazel_dep(name = "sonic-swss-common", version = "0.0.0-0bbc08794128e4e1d7df043c3
 This build uses the maintained `securely1g/sonic-bazel-registry` main branch. Everything that isn't a plain upstream BCR dependency lives in that external registry:
 
 - First-party component modules (e.g. `sonic-build-infra`, `sonic-swss-common`, `sonic-sysmgr`), discovered automatically from `src/`.
-- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet.
+- gNOI uses the central registry's `openconfig_gnoi` 0.6.2 module and its public schema targets.
 - Patched third-party libraries such as `libnl3` use existing registry modules. Buildimage selects `libnl3` `3.7.0-sonic.2`; its source rules, patch and package targets are maintained in the registry, while `src/libnl3` retains the legacy Make packaging.
 - Rulesets we need to patch from the Bazel Central Registry (e.g. `rules_go`). These are maintained directly in `sonic-bazel-registry` (there's no `sonic-buildimage`-side tooling for them), and are often temporary until the patches have been merged and released upstream.
 

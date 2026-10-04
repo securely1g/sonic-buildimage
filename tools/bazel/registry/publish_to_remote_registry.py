@@ -92,12 +92,6 @@ def repo_rule_source(wrapper_dir: str, repo_rule_name: str) -> RuleSource:
     )
 
 
-def archive_source(url: str, sha256: str, strip_prefix: str) -> RuleSource:
-    """A hand-specified RuleSource: url/sha256/strip_prefix given directly,
-    rather than parsed or resolved from anything else."""
-    return RuleSource(url=url, strip_prefix=strip_prefix, integrity=sha256_hex_to_integrity(sha256))
-
-
 @dataclass(frozen=True)
 class OverlayModule:
     name: str
@@ -111,22 +105,7 @@ class OverlayModule:
 # patch it, and overlay a Bazel build on top.
 #
 # We assume these change rarely, and hence are okay with hardcoding values like the version.
-OVERLAY_MODULES = [
-    OverlayModule(
-        name="com_github_openconfig_gnoi",
-        version="0.6.1.sonic-buildimage",
-        wrapper_dir="src/sonic-sysmgr/gnoi_overlay",
-        # gnoi ships no repo_rule of its own to fetch its source
-        # (it hasn't migrated to bzlmod yet), so we pin its archive by hand.
-        # Update this by hand when bumping the pinned submodule commit.
-        source=archive_source(
-            url="https://github.com/openconfig/gnoi/archive/2b6ff72de5769839fc68bd019f345a184e3b0bf1.tar.gz",
-            sha256="0f71e9452ec8c50f5a87f54d59f709501a2cb4770a4633d773c443379ca4d4e0",
-            strip_prefix="gnoi-2b6ff72de5769839fc68bd019f345a184e3b0bf1",
-        ),
-        overlay_files=["MODULE.bazel"],
-    ),
-]
+OVERLAY_MODULES = []
 
 
 def check_repo_is_clean(path: str | None = None) -> None:
