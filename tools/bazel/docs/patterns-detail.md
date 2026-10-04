@@ -71,10 +71,11 @@ To resolve dependencies between modules (e.g. `sonic-sysmgr` depends on `sonic-s
 bazel_dep(name = "sonic-swss-common", version = "0.0.0-0bbc08794128e4e1d7df043c3e3f3c4cd3ec9750")
 ```
 
-SONiC maintains its own Bazel registry, `blorente/sonic-bazel-registry` (soon to be `sonic-net/sonic-bazel-registry`). Everything that isn't a plain upstream BCR dependency lives in that external registry:
+This build uses the maintained `securely1g/sonic-bazel-registry` main branch. Everything that isn't a plain upstream BCR dependency lives in that external registry:
 
 - First-party component modules (e.g. `sonic-build-infra`, `sonic-swss-common`, `sonic-sysmgr`), discovered automatically from `src/`.
-- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet, and `libnl3` carries our own patch on top of the real upstream archive.
+- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet.
+- Patched third-party libraries such as `libnl3` use existing registry modules. Buildimage selects `libnl3` `3.7.0-sonic.2`; its source rules, patch and package targets are maintained in the registry, while `src/libnl3` retains the legacy Make packaging.
 - Rulesets we need to patch from the Bazel Central Registry (e.g. `rules_go`). These are maintained directly in `sonic-bazel-registry` (there's no `sonic-buildimage`-side tooling for them), and are often temporary until the patches have been merged and released upstream.
 
 [`publish_to_remote_registry.py`](/tools/bazel/registry/publish_to_remote_registry.py) holds the tooling to publish these modules into the SONiC Bazel registry.
@@ -85,7 +86,7 @@ $ python3 tools/bazel/registry/publish_to_remote_registry.py
 Cloned https://github.com/blorente/sonic-bazel-registry to /tmp/sonic-bazel-registry-erb4ycku
 skip (already published): sonic-build-infra 0.0.0-d2283ad0aebb0eb78821920635e7f9ab54c6f146
 skip (already published): sonic-swss-common 0.0.0-0bbc08794128e4e1d7df043c3e3f3c4cd3ec9750
-new: libnl3 3.7.0.sonic-buildimage
+new: sonic-sysmgr 0.0.0-<source-commit>
 Opened PR: https://github.com/blorente/sonic-bazel-registry/pull/3
 ```
 
@@ -94,13 +95,13 @@ Already-published `(name, version)` pairs are skipped, so it's safe to re-run af
 With no arguments, the whole repo must be a clean checkout (including submodules) before publishing anything. To publish a single module instead, pass its path -- only that path needs to be clean, not the rest of the repo:
 
 ```
-$ python3 tools/bazel/registry/publish_to_remote_registry.py src/libnl3
+$ python3 tools/bazel/registry/publish_to_remote_registry.py src/sonic-sysmgr
 ```
 
 This also works via `bazel run` (note the `--` separating Bazel's own flags from the script's):
 
 ```sh
-bazel run //tools/bazel/registry:publish_to_remote_registry -- src/libnl3
+bazel run //tools/bazel/registry:publish_to_remote_registry -- src/sonic-sysmgr
 ```
 
 #### Unpinned Mode In Buildimage
@@ -644,13 +645,17 @@ So, this is a dependency that:
 
 With these constraints, [Method 3](/tools/bazel/docs/import-external-projects.md#method-3-port-the-dependency-into-bazel) on the guide to dealing with external dependencies is the most appropriate. Please read that section for instructions on how to structure the migration.
 
-At the end, you we'll have well-formed Bazel project in `src/libnl3`, which can be:
-- built directly (and successfully) with `cd src/libnl3 && bazel build ...`, and 
-- imported into any other module that depends on it with `bazel_dep(name = "libnl3", version = "3.7.0")`, and used with `@libnl3//<target>`.
+The reusable Bazel implementation is now maintained in the
+[libnl3 3.7.0-sonic.2 registry entry](https://github.com/securely1g/sonic-bazel-registry/tree/main/modules/libnl3/3.7.0-sonic.2).
+Buildimage declares that version and uses `@libnl3//<target>`. A root
+`single_version_override` prevents older dotted versions requested by existing
+components from replacing it. There is no local `src/libnl3` Bazel overlay or
+module override; the Makefile and patch series above remain for legacy builds.
 
-Some useful tips we used to migrate `libnl3`:
-- Some dependencies were assumed to be in the system, like `flex` and `bison`. In the Make build, they are installed in the slave container. Luckily, [someone has already ported them to the BCR](https://registry-preview.bazel.build/modules/rules_flex), so we can just use that ([Method 1](/tools/bazel/docs/import-external-projects.md#method-1-pull-from-the-bazel-central-registry-bcr)).
-- `libnl3` is built with autotools. Sometimes, autotools creates header files after configuring itself. Because we know exactly which configuration we're going to need (from the call to `dpkg` in the SONiC Makefile), we can predict what these header files will contain, and just write them as constants into the build (see `@libnl3_src//:defs_h` for an example). Same goes for `pkg-config` files.
+The registry builds the same pinned source archive with the SONiC RTA_NH_ID patch.
+It also owns the Flex/Bison/M4 integration, generated headers and package layout.
+Update that shared entry through a new version when its implementation changes,
+then validate the selected native consumers.
 
 #### Next: `libyang3`
 

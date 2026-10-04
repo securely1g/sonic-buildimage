@@ -25,9 +25,6 @@
 #
 # For instance, if we had `sonic-swss-common` in a unified list, Bazel would crash if we were building in `soinc-swss-common`.
 
-# Override libnl3 with a local checkout of src/libnl3.
-common:unpinned-libnl3 --override_module=libnl3=%workspace%/../../src/libnl3
-
 # Override sonic-protobuf with a local checkout of src/protobuf.
 common:unpinned-sonic-protobuf --override_module=sonic-protobuf=%workspace%/../../src/protobuf
 
