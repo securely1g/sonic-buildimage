@@ -551,7 +551,7 @@ We may need to migrate:
 We may or may not need to migrate protobuf, depending on a series of factors. For instance, [protobuf is already in the BCR](https://registry-preview.bazel.build/modules/protobuf), which means we can pull it from there at build time if we find a suitable version. There is also a Debian package for protobuf, which means we could put _that package_ in the final runtime container.
 
 > [!note]
-> For `sonic-sysmgr` we settled on the second option. [`src/protobuf`](/src/protobuf/MODULE.bazel) fetches Debian's protobuf `.deb`s and exposes `@sonic_protobuf//:libprotobuf`, so `rebootbackend` compiles with the same `protoc` and links against the same `libprotobuf.so.32` the Make-built base layer carries.
+> `sonic-sysmgr` now selects the registry's `protobuf-legacy` 3.21.12-sonic.1 source module as `@sonic_protobuf`. Its source-built generator, headers and shared runtime are selected together. The sysmgr runtime layer installs `libprotobuf_pkg`, and native CI checks the generated messages against that packaged `libprotobuf.so.32`. The legacy Make Protobuf build remains independent.
 
 Now, we repeat the process with `rules/swss-common.mk`:
 

@@ -25,9 +25,6 @@
 #
 # For instance, if we had `sonic-swss-common` in a unified list, Bazel would crash if we were building in `soinc-swss-common`.
 
-# Override sonic-protobuf with a local checkout of src/protobuf.
-common:unpinned-sonic-protobuf --override_module=sonic-protobuf=%workspace%/../../src/protobuf
-
 # Override sonic-build-infra with a local checkout of src/sonic-build-infra.
 common:unpinned-sonic-build-infra --override_module=sonic-build-infra=%workspace%/../../src/sonic-build-infra
 

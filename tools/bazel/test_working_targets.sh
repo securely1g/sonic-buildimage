@@ -114,19 +114,17 @@ test_repo "src/sonic-swss-common" \
    //tests:shared_library_runtime_test //dist:libswsscommon_package_test"
 
 # The pinned Common Go integration test requires Redis and remains manual.
-# libnl3 is still a local module in this sysmgr source revision.
-test_repo "src/libnl3" \
-  "//:libnl-3_pkg //:libnl-genl-3_pkg //:libnl-route-3_pkg
-   //:libnl-nf-3_pkg //:libnl-cli-3_pkg //:libnl-3-dev_pkg
-   //:libnl-genl-3-dev_pkg //:libnl-route-3-dev_pkg
-   //:libnl-nf-3-dev_pkg //:libnl-cli-3-dev_pkg"
+# Shared third-party modules are built from the root's registry selection.
+run_in_slave "." "bazel build \
+  @libnl3//:libnl-3_pkg @libnl3//:libnl-genl-3_pkg @libnl3//:libnl-route-3_pkg \
+  @libnl3//:libnl-nf-3_pkg @libnl3//:libnl-cli-3_pkg @libnl3//:libnl-3-dev_pkg \
+  @libnl3//:libnl-genl-3-dev_pkg @libnl3//:libnl-route-3-dev_pkg \
+  @libnl3//:libnl-nf-3-dev_pkg @libnl3//:libnl-cli-3-dev_pkg"
 
 test_repo "src/sonic-sysmgr" "//:sysmgr_pkg //:sysmgr_debug_pkg"
 test_repo "src/sonic-fips" "//:baseimage_installers"
-test_repo "src/protobuf" \
-  "//:libprotobuf //:libprotobuf_headers //:well_known_protos
-   //:descriptor_proto //:protoc //:libprotoc_soname //:libprotoc_library
-   //:libprotobuf_soname //:libprotobuf_library //:protoc_version"
+run_in_slave "." "bazel build @sonic_protobuf//:protoc @sonic_protobuf//:libprotobuf_pkg @sonic_protobuf//:libprotobuf_pkg.debug_symbols"
+run_in_slave "." "bazel test @sonic_protobuf//:generated_runtime_test @sonic_protobuf//:source_package_test"
 
 echo "[= Testing Binary Equivalence with Make =]"
 

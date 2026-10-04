@@ -441,15 +441,17 @@ Bazel 8.5.1 in digest-pinned Debian Trixie, initialize the recorded infrastructu
 SWSS Common and gNOI gitlinks, and use the checkout's AMD64 Trixie platform.
 
 - `Bazel sysmgr checks (AMD64)` runs formatting, both source-tree registry
-  configuration checks and six explicit Bazel tests for the registry,
+  configuration checks, a gNOI JSON/serialization runtime test and six Bazel tests for the registry,
   equivalence checker, OCI conversion and dpkg filter patterns.
-- `Bazel sysmgr packages (AMD64)` compiles sysmgr and its gNOI library from source,
+- `Bazel sysmgr packages (AMD64)` compiles sysmgr, its gNOI library and registry Protobuf 3.21.12 from source,
   builds the runtime and debug tar archives, and validates their AMD64 ELF
   architecture, SONAME links, modes, build IDs, detached DWARF, debug-link CRCs and GDB source/line lookup.
   It compares those archives with the production runtime layer and collected
   debug layer, and runs the existing two layer ownership/configuration checks.
+  A loader check then runs the gNOI probe against the extracted image libraries,
+  verifying that Protobuf resolves to the packaged source build.
 
-The workflow retains the five required packages/layers, revision and gitlink
+The workflow retains seven runtime/debug archives and the gNOI probe, revision and gitlink
 receipts, SHA256 digests, command logs, test results and build profile for 14 days.
 Each job starts without `MODULE.bazel.lock` and uses `--lockfile_mode=update`.
 Its artifacts also retain the generated lock and module graph, with SHA-256
