@@ -1,0 +1,18 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+py_test(
+    name = "make_bridge_test",
+    size = "small",
+    srcs = ["make_bridge_test.py"],
+    data = ["//:make_bridge_test_data"],
+)
+
+py_test(
+    name = "swss_contract_test",
+    size = "small",
+    srcs = [
+        "swss_container_test.py",
+        "swss_contract_test.py",
+    ],
+    imports = ["."],
+)

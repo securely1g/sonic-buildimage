@@ -50,10 +50,10 @@ def build_oci_archive(path: Path, layout_dir: Path) -> None:
                 tar.add(child, arcname=str(child.relative_to(layout_dir)))
 
 
-def run_converter(src: Path, out: Path) -> subprocess.CompletedProcess:
+def run_converter(src: Path, out: Path, *extra: str) -> subprocess.CompletedProcess:
     """Run the converter on ``src`` -> ``out`` and return the completed process."""
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--src", str(src), "--out", str(out)],
+        [sys.executable, str(SCRIPT), "--src", str(src), "--out", str(out), *extra],
         capture_output=True,
         text=True,
     )
@@ -187,6 +187,36 @@ def test_malformed_manifest_rejected() -> None:
     print("PASS: malformed manifest.json rejected")
 
 
+def test_imported_platform_contract() -> None:
+    """Both import formats must reject a base for a different binary ABI."""
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        layer = make_layer_tar({"etc/hello": "world\n"})
+        layer_digest = hashlib.sha256(layer).hexdigest()
+        for architecture in ("amd64", "arm64"):
+            config = {
+                "architecture": architecture,
+                "os": "linux",
+                "rootfs": {"type": "layers", "diff_ids": [f"sha256:{layer_digest}"]},
+            }
+            archive = workdir / (architecture + ".tar.gz")
+            build_legacy_archive(archive, json.dumps(config).encode(), layer)
+            layout = workdir / (architecture + "-layout")
+            result = run_converter(archive, layout)
+            assert result.returncode == 0, result.stderr
+            oci_archive = workdir / (architecture + "-oci.tar.gz")
+            build_oci_archive(oci_archive, layout)
+            for source in (archive, oci_archive):
+                result = run_converter(source, workdir / (source.name + "-checked"),
+                                       "--expected-platform", "linux/amd64")
+                if architecture == "amd64":
+                    assert result.returncode == 0, result.stderr
+                else:
+                    assert result.returncode != 0, "accepted ARM base for AMD64 payload"
+                    assert "imported image platform" in result.stderr, result.stderr
+    print("PASS: imported Docker and OCI platforms checked against target ABI")
+
+
 def main() -> None:
     # Each test is self-contained (own temp dir, own fixtures) and may run in
     # any order, independently.
@@ -194,6 +224,7 @@ def main() -> None:
     test_oci_verbatim_path()
     test_oci_traversal_rejected()
     test_malformed_manifest_rejected()
+    test_imported_platform_contract()
     print("All tests passed.")
 
 

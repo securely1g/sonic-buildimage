@@ -77,12 +77,11 @@
 #  *                 BLDENV/arch; reuse at own risk if stale vs. current slave Dockerfiles.
 #  *                 With DPKG cache write modes, a reused tag that differs from the computed
 #  *                 base tag is rejected.
-#  * BUILD_WITH_BAZEL_WHEN_AVAILABLE: Build targets registered in
-#  *                 SONIC_BAZEL_DOCKER_IMAGES with Bazel instead of the legacy
-#  *                 `docker build` flow.
-#  *                 When disabled they fall back to the normal Make docker build.
-#  *                 Default: n
-#  *                 Values: y,n
+#  * BAZEL_MIN_READINESS: Select registered Docker images for Bazel by readiness.
+#  *                 experimental includes experimental and stable images;
+#  *                 stable includes only stable images. Others use Make.
+#  *                 Default: bazel_disabled
+#  *                 Values: bazel_disabled,experimental,stable
 ###############################################################################
 
 SHELL = /bin/bash
@@ -169,9 +168,16 @@ include rules/config
 -include rules/config.user
 include rules/sonic-fips.mk
 
-ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+# Validate the effective value after organization and user configuration.
+ifneq ($(words $(BAZEL_MIN_READINESS)),1)
+$(error BAZEL_MIN_READINESS must be one of: bazel_disabled experimental stable)
+endif
+ifeq ($(filter bazel_disabled experimental stable,$(BAZEL_MIN_READINESS)),)
+$(error BAZEL_MIN_READINESS="$(BAZEL_MIN_READINESS)" must be one of: bazel_disabled experimental stable)
+endif
+ifneq ($(BAZEL_MIN_READINESS),bazel_disabled)
 ifneq ($(BLDENV),trixie)
-$(error BUILD_WITH_BAZEL_WHEN_AVAILABLE=y only supports BLDENV=trixie (got '$(BLDENV)'))
+$(error BAZEL_MIN_READINESS=$(BAZEL_MIN_READINESS) only supports BLDENV=trixie (got '$(BLDENV)'))
 endif
 endif
 
@@ -290,6 +296,7 @@ $(shell SONIC_VERSION_CONTROL_COMPONENTS=$(SONIC_VERSION_CONTROL_COMPONENTS) \
 	MIRROR_SNAPSHOT=$(MIRROR_SNAPSHOT) BUILD_SNAPSHOT_URL=$(BUILD_SNAPSHOT_URL) scripts/build_mirror_config.sh $(SLAVE_DIR) $(CONFIGURED_ARCH) $(BLDENV))
 
 PREPARE_DOCKER=BUILD_SLAVE=y \
+	SONIC_BUILD_SLAVE_CA_BUNDLE="$(SONIC_BUILD_SLAVE_CA_BUNDLE)" \
 	DEFAULT_CONTAINER_REGISTRY=$(DEFAULT_CONTAINER_REGISTRY) \
 	SONIC_VERSION_CACHE=$(SONIC_VERSION_CACHE) \
 	DBGOPT='$(DBGOPT)' \
@@ -782,7 +789,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 						   SBOM_INCLUDE_LICENSES=$(SBOM_INCLUDE_LICENSES) \
 						   SBOM_STRICT=$(SBOM_STRICT) \
 						   SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
-						   BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(BUILD_WITH_BAZEL_WHEN_AVAILABLE) \
+						   BAZEL_MIN_READINESS=$(BAZEL_MIN_READINESS) \
                            $(SONIC_OVERRIDE_BUILD_VARS)
 
 .PHONY: sonic-slave-build sonic-slave-bash sonic-slave-run init reset
