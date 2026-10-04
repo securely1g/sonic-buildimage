@@ -54,7 +54,10 @@ jobs:
           # These gitlinks are inspected by the optional development-rc checks;
           # they do not override the source revisions in the root build graph.
           git submodule update --init --depth 1 --jobs 4 -- \
-            src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
+            src/sonic-build-infra src/sonic-swss-common
+
+      - name: Verify gNOI schemas come from the central registry
+        run: test ! -f src/sonic-sysmgr/gnoi/types/types.proto
 
       - name: Verify fresh generated dependency state
         run: |
