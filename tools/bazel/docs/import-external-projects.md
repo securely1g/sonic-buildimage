@@ -217,23 +217,22 @@ See `write_overlay_module_entry` in `publish_to_remote_registry.py` for the deta
 
 Now, anything that needs `libnl3` can depend on it with `bazel_dep(name = "libnl3", version = "3.7.0.sonic-buildimage")`, and use `@libnl3//:libnl_3` in its build, just like any other package from the BCR.
 
-`repo_rule_source()` isn't the only way to resolve an `OverlayModule`'s archive.
-`archive_source(url=..., sha256=..., strip_prefix=...)` pins it by hand instead, for wrappers that don't have their own repository rule to parse it from.
-See `com_github_openconfig_gnoi` (vendored at `src/sonic-sysmgr/gnoi`) for an example:
+### Prefer the central registry when upstream adds Bazel support
 
-```python
-OverlayModule(
-    name="com_github_openconfig_gnoi",
-    version="0.6.1.sonic-buildimage",
-    wrapper_dir="src/sonic-sysmgr/gnoi_overlay",
-    source=archive_source(
-        url="https://github.com/openconfig/gnoi/archive/2b6ff72de5769839fc68bd019f345a184e3b0bf1.tar.gz",
-        sha256="0f71e9452ec8c50f5a87f54d59f709501a2cb4770a4633d773c443379ca4d4e0",
-        strip_prefix="gnoi-2b6ff72de5769839fc68bd019f345a184e3b0bf1",
-    ),
-    overlay_files=["MODULE.bazel"],
-),
-```
+System-manager uses `bazel_dep(name = "openconfig_gnoi", version = "0.6.2")`
+and upstream public `.proto` targets. It no longer publishes a separate gNOI
+overlay or reads those schemas from the vendored submodule for Bazel builds.
+The `types`, `common`, and `system` schemas are identical to the previous
+`2b6ff72de5769839fc68bd019f345a184e3b0bf1` source revision.
+
+System-manager also selects BCR `rules_go` 0.64.1. Upstream gNOI's schema
+packages load its proto definitions, including when only `.proto` inputs are
+consumed. The older SONiC-patched rules_go removed that package.
+
+The system-manager build still generates C++ with `@sonic_protobuf`, because
+its compiler and runtime must match the Debian protobuf shipped in SONiC.
+The `librebootgnoi.so.0` library and runtime/debug tar layout remain the
+consumer's responsibility. The gNOI submodule remains an input to Make.
 
 ## Method 4: Build the dependency out of band, and import it into Bazel as an opaque archive.
 

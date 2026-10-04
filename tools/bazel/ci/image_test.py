@@ -440,17 +440,22 @@ class ImageControllerTest(unittest.TestCase):
                 (self.artifacts / "image-verification.json").write_text(json.dumps({
                     "status": "passed", "installer": {"sha256": image.image_inputs.sha256(installer)}}))
 
-        def capture(command, *args):
-            execute(command, *args)
-            self.assertEqual(command[-5:], ["--", "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update"])
-            return "<root> (fixture@_)\n"
+        def collect(workspace, directory, *, bazel):
+            self.assertEqual(workspace, self.bazel_workspace)
+            self.assertEqual(directory, self.artifacts)
+            self.assertEqual(bazel[-1], "--")
+            execute(bazel + ["mod", "graph"], workspace, directory, {}, "module-graph")
+            graph = json.dumps({"key": "<root>", "root": True,
+                                "dependencies": [{"key": "fixture@1"}]})
+            return image.resolution.retain(workspace, directory, graph,
+                                           graph_filename="module-graph.json")
 
         with mock.patch.object(image.os, "geteuid", return_value=1000), \
                 mock.patch.object(image, "build_worker", return_value=self.state / "worker-spec.json"), \
                 mock.patch.object(image.image_inputs, "prepare", side_effect=prepare), \
                 mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
                 mock.patch.object(image, "execute", side_effect=execute), \
-                mock.patch.object(image, "capture", side_effect=capture):
+                mock.patch.object(image.resolution, "collect", side_effect=collect):
             result = image.build(arguments)
         receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         return result, commands, receipt
@@ -484,7 +489,7 @@ class ImageControllerTest(unittest.TestCase):
         self.assertTrue(receipt["resolution"]["tracked_files_unchanged"])
         self.assertEqual((self.artifacts / "MODULE.bazel.lock").read_bytes(),
                          (self.bazel_workspace / "MODULE.bazel.lock").read_bytes())
-        self.assertEqual((self.artifacts / "module-graph.txt").read_text(), "<root> (fixture@_)\n")
+        self.assertEqual(json.loads((self.artifacts / "module-graph.json").read_text())["key"], "<root>")
         self.assertTrue(receipt["bazel_source"]["verification_after_native"]["clean"])
         self.assertFalse(json.loads((self.artifacts / "native-source-audit.json").read_text())["clean"])
         self.assertEqual(set(receipt["outputs"]), {"installer", "runtime"})

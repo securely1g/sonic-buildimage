@@ -395,9 +395,8 @@ def build(args):
         execute(bazel("package", ["@sonic_swss//dist:swss_pkg"], str(state / "package-cache")),
                 bazel_workspace, artifacts, receipt, "package")
         execute(bazel("image", TARGETS, ""), bazel_workspace, artifacts, receipt, "image")
-        graph = capture(launcher + ["--", "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update"],
-                        bazel_workspace, artifacts, receipt, "module-graph")
-        receipt["resolution"] = resolution.retain(bazel_workspace, artifacts, graph)
+        receipt["resolution"] = resolution.collect(
+            bazel_workspace, artifacts, bazel=launcher + ["--"])
         receipt["architecture"] = "amd64"
         outputs = bep_outputs(artifacts / "image.bep.jsonl", TARGETS, output_root)
         receipt["bazel_outputs"] = {target: sorted(str(path) for path in paths)

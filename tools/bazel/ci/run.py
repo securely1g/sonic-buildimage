@@ -212,9 +212,6 @@ def main():
             receipt["architecture"] = "arm64" if machine == "aarch64" else "amd64"
             receipt["coverage"] = "Native protobuf header import through the buildimage module graph; no ARM64 image build."
             graph_options = ["--config=aarch64"] if machine == "aarch64" else []
-            graph = capture([args.bazel, "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update",
-                             *graph_options, *GIT_OPTIONS], directory, receipt, "module-graph")
-            (directory / "module-graph.txt").write_text(graph)
             execute([args.bazel, "test", *options, "--nocache_test_results",
                      "--build_event_json_file=" + str(directory / "bep.json"), *HEADER_TARGETS],
                     directory, receipt, "headers")
@@ -226,7 +223,8 @@ def main():
             if not re.search(r'\bversion\s*=\s*"0\.9\.4-sonic\.1"', text):
                 raise ValueError("Expected the native Distroless header-fix module")
             shutil.copyfile(fetched, directory / "rules_distroless.MODULE.bazel")
-            receipt["resolution"] = resolution.retain(ROOT, directory, graph)
+            receipt["resolution"] = resolution.collect(
+                ROOT, directory, bazel=[args.bazel], options=graph_options + GIT_OPTIONS)
             receipt["distroless_version"] = "0.9.4-sonic.1"
             receipt["status"] = "passed"
             return
@@ -236,6 +234,8 @@ def main():
                 raise ValueError("SWSS package CI requires a native AMD64 Debian Trixie environment")
         targets = TEST_TARGETS if args.command == "test" else list(BUILD_TARGETS.values())
         if args.command == "test":
+            execute(["python3", "-E", str(ROOT / "tools/bazel/ci/resolution_test.py")],
+                    directory, receipt, "resolution-tests")
             execute([args.bazel, "run", "--lockfile_mode=update", *GIT_OPTIONS,
                      "//tools/bazel/buildifier:buildifier.check"], directory, receipt, "format")
             # These configuration checks deliberately discover the source-tree
@@ -267,9 +267,8 @@ def main():
                 receipt["artifacts"][name] = {"target": target, "bytes": destination.stat().st_size,
                                                "sha256": contract.sha(destination)}
             receipt["validation"] = verify_packages(paths)
-        graph = capture([args.bazel, "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update", *GIT_OPTIONS],
-                        directory, receipt, "module-graph")
-        receipt["resolution"] = resolution.retain(ROOT, directory, graph)
+        receipt["resolution"] = resolution.collect(
+            ROOT, directory, bazel=[args.bazel], options=GIT_OPTIONS)
         receipt["architecture"] = "amd64"
         receipt["status"] = "passed"
     except Exception as error:
