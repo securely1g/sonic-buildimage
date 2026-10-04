@@ -6,7 +6,7 @@
  * Source compatibility layer for protobuf versions.
  *
  * The Makefile-based version of SONiC uses Protobuf 3.21.12,
- * whereas the Bazel build tries to use the latest protobuf (as of time of writing, 34.0).
+ * whereas Bazel selects the registry's source-built Protobuf 3.21.12.
  * There are source incompatibilities between the two versions, and this file bridges that gap.
  * It always defaults to a version compatible with the Makefile-based build system,
  * only switching to Bazel if the `BAZEL` macro is defined.
