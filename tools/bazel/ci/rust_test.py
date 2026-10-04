@@ -21,6 +21,10 @@ class RustPreparationTest(unittest.TestCase):
             component = self.root / "src" / name
             component.mkdir(parents=True)
             (component / "Cargo.lock").write_text("version = 4\n")
+            (component / ".bazelrc").write_text(
+                "common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/common-rust-library\n"
+                "common --registry=https://bcr.bazel.build/\n"
+                "common --platforms=@sonic_build_infra//platforms:x86_64_trixie\n")
         self.order = []
 
     def generate(self, command, *, cwd, stdout, stderr):
@@ -30,6 +34,12 @@ class RustPreparationTest(unittest.TestCase):
             self.assertTrue((self.root / "src/sonic-swss-common/Cargo.Bazel.lock").is_file())
         self.assertEqual(stderr, subprocess.STDOUT)
         self.assertIn("--bazel-startup-arg=--batch", command)
+        self.assertIn("--bazel-startup-arg=--noworkspace_rc", command)
+        rc = next(value.split("=", 2)[2] for value in command
+                  if value.startswith("--bazel-startup-arg=--bazelrc="))
+        self.assertEqual(Path(rc).read_text(), (cwd / ".bazelrc").read_text().replace(
+            "codex/common-rust-library", "main"))
+        self.assertIn("codex/common-rust-library", (cwd / ".bazelrc").read_text())
         if name == "sonic-swss":
             self.assertEqual(command[command.index("--prepared-common") + 1],
                              str(self.root / "src/sonic-swss-common"))
@@ -87,6 +97,15 @@ class RustPreparationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing generated Rust metadata"):
                 self.prepare()
         self.assertEqual(self.order, ["sonic-swss-common"])
+
+    def test_ambiguous_registry_configuration_is_rejected(self):
+        component = self.root / "src/sonic-swss-common"
+        config = component / ".bazelrc"
+        original = config.read_text()
+        config.write_text(original + original)
+        with self.assertRaisesRegex(ValueError, "Expected one SONiC registry"):
+            self.prepare()
+        self.assertEqual(config.read_text(), original + original)
 
     def test_existing_artifacts_are_not_reused(self):
         self.artifacts.mkdir()

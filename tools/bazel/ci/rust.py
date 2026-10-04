@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,21 @@ COMPONENTS = ("sonic-swss-common", "sonic-swss")
 def sha256(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def component_startup(component, evidence, startup):
+    """Select the image registry without changing the recorded component source."""
+    source = component / ".bazelrc"
+    original = source.read_text()
+    pattern = r"(?m)^(common --registry=https://raw\.githubusercontent\.com/securely1g/sonic-bazel-registry/)\S+$"
+    configured, count = re.subn(pattern, r"\g<1>main", original)
+    if count != 1:
+        raise ValueError("Expected one SONiC registry in component .bazelrc: " + str(component))
+    # Repeating --registry would add another endpoint. Load a retained copy with
+    # the selected endpoint instead, preserving all other settings and imports.
+    effective = evidence / "component.bazelrc"
+    effective.write_text(configured)
+    return [*startup, "--noworkspace_rc", "--bazelrc=" + str(effective)]
 
 
 def prepare(workspace, artifacts, bazel="bazel", startup=(), options=()):
@@ -38,6 +54,7 @@ def prepare(workspace, artifacts, bazel="bazel", startup=(), options=()):
             evidence = artifacts / name
             evidence.mkdir()
             launcher = component / "tools/bazel/prepare_rust.py"
+            selected_startup = component_startup(component, evidence, startup)
             # Bazel rejects overrides for modules absent from this component's
             # graph. Common has no dependency on DASH or Sairedis.
             dependencies = ("sonic-build-infra",)
@@ -48,7 +65,7 @@ def prepare(workspace, artifacts, bazel="bazel", startup=(), options=()):
                                  for dependency in dependencies] + list(options)
             command = [sys.executable, str(launcher), "--bazel", bazel,
                        "--receipt", str(evidence / "preparation.json"),
-                       *["--bazel-startup-arg=" + value for value in startup],
+                       *["--bazel-startup-arg=" + value for value in selected_startup],
                        *["--bazel-arg=" + value for value in component_options]]
             if name == "sonic-swss":
                 command += ["--prepared-common", str(workspace / "src/sonic-swss-common")]

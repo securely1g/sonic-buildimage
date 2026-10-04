@@ -369,3 +369,9 @@ Unsupported configurations fail closed: cross builds, other platforms,
 Kubernetes/remote packages, organization hooks, debug host images, reduced-size
 filesystem formats, SBOM generation, and secure signing. Do not compare this
 warm-cache incremental path to a cold build of all SONiC sources.
+
+Rust preparation loads a retained copy of each recorded component’s `.bazelrc`
+with the SONiC registry endpoint replaced by maintained `main`. Other settings
+and imports are preserved, and tracked component sources remain unchanged. This
+keeps the shared infrastructure’s tar dependency available without adding a
+second endpoint for the same registry.
