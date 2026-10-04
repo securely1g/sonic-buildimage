@@ -150,7 +150,7 @@ def discover_top_level_bazel_modules() -> list[tuple[str, str]]:
     whose own MODULE.bazel has a real module() declaration.
 
     Includes both git submodules (e.g. sonic-swss-common)
-    and plain vendored directories (e.g. sonic-sysmgr, libnl3)
+    and plain vendored directories (e.g. sonic-sysmgr)
     """
     modules = []
     for module_bazel in sorted((REPO_ROOT / "src").glob("*/MODULE.bazel")):

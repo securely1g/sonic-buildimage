@@ -9,7 +9,7 @@ TODO: Migrate to sonic-net when we have a repository available.
 
 Usage:
     python3 tools/bazel/registry/publish_to_remote_registry.py
-    python3 tools/bazel/registry/publish_to_remote_registry.py <path>  # publish a single module, e.g. src/libnl3
+    python3 tools/bazel/registry/publish_to_remote_registry.py <path>  # publish a single module, e.g. src/sonic-sysmgr
 
 Or, via Bazel (note the `--` separating Bazel's own flags from this script's):
     bazel run //tools/bazel/registry:publish_to_remote_registry
@@ -82,7 +82,7 @@ class RuleSource:
 
 def repo_rule_source(wrapper_dir: str, repo_rule_name: str) -> RuleSource:
     """Resolve a RuleSource by parsing a `<repo_rule_name>(...)` call out of
-    <wrapper_dir>/MODULE.bazel (e.g. libnl3's `libnl3_src(...)`)."""
+    <wrapper_dir>/MODULE.bazel using the named repository rule."""
     module_bazel_text = (REPO_ROOT / wrapper_dir / "MODULE.bazel").read_text()
     repo_rule_call = extract_repo_rule_call(module_bazel_text, repo_rule_name)
     return RuleSource(
@@ -112,19 +112,6 @@ class OverlayModule:
 #
 # We assume these change rarely, and hence are okay with hardcoding values like the version.
 OVERLAY_MODULES = [
-    OverlayModule(
-        name="libnl3",
-        version="3.7.0.sonic-buildimage",
-        wrapper_dir="src/libnl3",
-        source=repo_rule_source(wrapper_dir="src/libnl3", repo_rule_name="libnl3_src"),
-        overlay_files=[
-            "MODULE.bazel",
-            "BUILD.bazel",
-            "libnl3_src.bzl",
-            "libnl3.BUILD",
-            "patch/0003-Adding-support-for-RTA_NH_ID-attribute.patch",
-        ],
-    ),
     OverlayModule(
         name="com_github_openconfig_gnoi",
         version="0.6.1.sonic-buildimage",
@@ -493,7 +480,7 @@ def publish_candidates(registry_dir: Path, candidates: list[PublishCandidate]) -
 def main(path: str | None) -> None:
     """Publish git-submodule-backed and external (BCR-style) modules to the remote registry.
 
-    If PATH is given (e.g. src/libnl3), only the module anchored there is
+    If PATH is given (e.g. src/sonic-sysmgr), only the module anchored there is
     published, and only PATH itself needs to be a clean checkout -- not the
     whole repo.
     """
