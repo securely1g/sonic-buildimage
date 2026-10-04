@@ -24,6 +24,7 @@ import uuid
 
 import image_inputs
 import resolution
+import rust
 import source_workspace
 import trust
 
@@ -390,13 +391,14 @@ def build(args):
 
         worker_attempted = True
         execute(launcher + ["--worker-action", "prepare-rust", "--rust-artifacts", str(artifacts / "rust")],
-                bazel_workspace, artifacts, receipt, "rust-preparation")
-        receipt["rust_preparation"] = "rust/receipt.json"
+                bazel_workspace, artifacts, receipt, "rust-inputs")
+        receipt["rust_inputs"] = "rust/receipt.json"
         execute(bazel("package", ["@sonic_swss//dist:swss_pkg"], str(state / "package-cache")),
                 bazel_workspace, artifacts, receipt, "package")
         execute(bazel("image", TARGETS, ""), bazel_workspace, artifacts, receipt, "image")
         receipt["resolution"] = resolution.collect(
             bazel_workspace, artifacts, bazel=launcher + ["--"])
+        receipt["rust_input_verification"] = rust.verify(bazel_workspace, artifacts / "rust")
         receipt["architecture"] = "amd64"
         outputs = bep_outputs(artifacts / "image.bep.jsonl", TARGETS, output_root)
         receipt["bazel_outputs"] = {target: sorted(str(path) for path in paths)

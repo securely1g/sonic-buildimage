@@ -1,97 +1,58 @@
 #!/usr/bin/env python3
-"""Prepare component Rust metadata before loading the buildimage Bazel graph."""
+"""Record and verify the tracked Cargo inputs read directly by rules_rs."""
 
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
-import re
-import shutil
 import subprocess
-import sys
-import time
 
 
-# Common's generated repository is consumed by SWSS's standalone module.
 COMPONENTS = ("sonic-swss-common", "sonic-swss")
+INPUTS = ("MODULE.bazel", "Cargo.toml", "Cargo.lock")
 
 
-def sha256(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
 
 
-def component_startup(component, evidence, startup):
-    """Select the image registry without changing the recorded component source."""
-    source = component / ".bazelrc"
-    original = source.read_text()
-    pattern = r"(?m)^(common --registry=https://raw\.githubusercontent\.com/securely1g/sonic-bazel-registry/)\S+$"
-    configured, count = re.subn(pattern, r"\g<1>main", original)
-    if count != 1:
-        raise ValueError("Expected one SONiC registry in component .bazelrc: " + str(component))
-    # Repeating --registry would add another endpoint. Load a retained copy with
-    # the selected endpoint instead, preserving all other settings and imports.
-    effective = evidence / "component.bazelrc"
-    effective.write_text(configured)
-    return [*startup, "--noworkspace_rc", "--bazelrc=" + str(effective)]
+def tracked_inputs(component):
+    """Reject local edits before recording the selected source revision."""
+    def git(*args):
+        return subprocess.check_output(["git", "-c", "safe.directory=" + str(component),
+                                        "-C", str(component), *args])
+
+    revision = git("rev-parse", "HEAD").decode().strip()
+    contents = {}
+    for name in INPUTS:
+        path = component / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("missing regular tracked Rust input: " + str(path))
+        contents[name] = path.read_bytes()
+        if contents[name] != git("show", "HEAD:" + name):
+            raise ValueError("modified tracked Rust input: " + str(path))
+    return revision, contents
 
 
-def prepare(workspace, artifacts, bazel="bazel", startup=(), options=()):
+def record(workspace, artifacts):
     workspace = workspace.resolve(strict=True)
     artifacts = artifacts.resolve()
     if artifacts.exists() and any(artifacts.iterdir()):
-        raise ValueError("Rust preparation artifacts must be empty")
+        raise ValueError("Rust input artifacts must be empty")
     artifacts.mkdir(parents=True, exist_ok=True)
-    receipt = {"schema": 1, "status": "running", "components": {}, "commands": [],
-               "policy": "Regenerate Cargo.Bazel.lock from committed Cargo.lock before root module evaluation."}
-    started = time.monotonic()
-    locks = {name: workspace / "src" / name / "Cargo.lock" for name in COMPONENTS}
+    receipt = {"schema": 2, "status": "running", "components": {},
+               "policy": "rules_rs reads tracked Cargo inputs directly; no Cargo.Bazel.lock generation."}
     try:
-        before = {name: sha256(path) for name, path in locks.items()}
         for name in COMPONENTS:
-            component = workspace / "src" / name
-            evidence = artifacts / name
-            evidence.mkdir()
-            launcher = component / "tools/bazel/prepare_rust.py"
-            selected_startup = component_startup(component, evidence, startup)
-            # Bazel rejects overrides for modules absent from this component's
-            # graph. Common has no dependency on DASH or Sairedis.
-            dependencies = ("sonic-build-infra",)
-            if name == "sonic-swss":
-                dependencies += ("sonic-dash-api", "sonic-sairedis")
-            component_options = ["--override_module=" + dependency + "=" +
-                                 str(workspace / "src" / dependency)
-                                 for dependency in dependencies] + list(options)
-            command = [sys.executable, str(launcher), "--bazel", bazel,
-                       "--receipt", str(evidence / "preparation.json"),
-                       *["--bazel-startup-arg=" + value for value in selected_startup],
-                       *["--bazel-arg=" + value for value in component_options]]
-            if name == "sonic-swss":
-                command += ["--prepared-common", str(workspace / "src/sonic-swss-common")]
-            record = {"component": name, "argv": command, "log": name + ".log"}
-            receipt["commands"].append(record)
-            with (artifacts / record["log"]).open("w") as output:
-                process = subprocess.run(command, cwd=component, stdout=output, stderr=subprocess.STDOUT)
-            record["returncode"] = process.returncode
-            if process.returncode:
-                raise RuntimeError(name + " Rust preparation failed; see " + record["log"])
-            for source, path in locks.items():
-                if sha256(path) != before[source]:
-                    raise ValueError("Rust preparation changed committed Cargo.lock: " + source)
-            generated = component / "Cargo.Bazel.lock"
-            if generated.is_symlink() or not generated.is_file() or not generated.stat().st_size:
-                raise ValueError("missing generated Rust metadata: " + name)
-            metadata = json.loads(generated.read_text())
-            if not isinstance(metadata, dict) or not metadata.get("crates"):
-                raise ValueError("invalid generated Rust metadata: " + name)
-            if not (evidence / "preparation.json").is_file():
-                raise ValueError("Rust helper did not retain preparation evidence: " + name)
-            for source in (locks[name], generated):
-                shutil.copyfile(source, evidence / source.name)
+            revision, contents = tracked_inputs(workspace / "src" / name)
+            directory = artifacts / name
+            directory.mkdir()
+            for filename, data in contents.items():
+                (directory / filename).write_bytes(data)
             receipt["components"][name] = {
-                "cargo_lock_sha256": before[name], "cargo_lock_unchanged": True,
-                "bazel_lock_sha256": sha256(generated), "preparation": name + "/preparation.json",
+                "revision": revision,
+                "inputs": {filename: {"sha256": sha256(data), "bytes": len(data)}
+                           for filename, data in contents.items()},
             }
         receipt["status"] = "passed"
         return receipt
@@ -99,30 +60,39 @@ def prepare(workspace, artifacts, bazel="bazel", startup=(), options=()):
         receipt.update(status="failed", error=str(error))
         raise
     finally:
-        receipt["wall_seconds"] = time.monotonic() - started
         (artifacts / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+
+
+def verify(workspace, artifacts):
+    """Check both the retained evidence and source inputs after Bazel execution."""
+    receipt = json.loads((artifacts / "receipt.json").read_text())
+    if receipt.get("schema") != 2 or receipt.get("status") != "passed":
+        raise ValueError("Rust inputs do not have a successful capture receipt")
+    if set(receipt["components"]) != set(COMPONENTS):
+        raise ValueError("Rust input receipt has incomplete components")
+    for name in COMPONENTS:
+        entry = receipt["components"][name]
+        revision, contents = tracked_inputs(workspace / "src" / name)
+        if revision != entry["revision"] or set(entry["inputs"]) != set(INPUTS):
+            raise ValueError("Rust source revision or input set changed: " + name)
+        for filename, data in contents.items():
+            expected = entry["inputs"][filename]
+            retained = artifacts / name / filename
+            if (expected != {"sha256": sha256(data), "bytes": len(data)} or
+                    retained.is_symlink() or retained.read_bytes() != data):
+                raise ValueError("Rust input or retained evidence changed: " + name + "/" + filename)
+    return {"status": "passed", "tracked_inputs_unchanged": True,
+            "components": receipt["components"]}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--bazel", default="bazel")
-    parser.add_argument("--output-user-root", type=Path)
-    parser.add_argument("--bazel-arg", action="append", default=[])
+    parser.add_argument("--verify", action="store_true")
     args = parser.parse_args()
-    # Batch preparation exits each component JVM before building the consumer.
-    # It must not leave two additional toolchain-resolution servers resident.
-    startup = ["--batch"]
-    if args.output_user_root:
-        startup.append("--output_user_root=" + str(args.output_user_root.resolve()))
-    options = list(args.bazel_arg)
-    if os.environ.get("GIT_CONFIG_SYSTEM"):
-        for name in ("GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "CARGO_NET_GIT_FETCH_WITH_CLI"):
-            option = "--repo_env=" + name
-            if not any(value == option or value.startswith(option + "=") for value in options):
-                options.append(option)
-    prepare(args.workspace, args.artifacts, args.bazel, startup, options)
+    result = verify(args.workspace, args.artifacts) if args.verify else record(args.workspace, args.artifacts)
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

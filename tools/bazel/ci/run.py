@@ -16,10 +16,12 @@ import tempfile
 import time
 
 import resolution
+import rust
 
 
 ROOT = Path(__file__).resolve().parents[3]
 TEST_TARGETS = [
+    "@sonic_swss//crates/countersyncd:common_rust_test",
     "//tools/bazel/image:metadata_test",
     "//tools/bazel/image:host_test",
     "//tools/bazel/image:store_test",
@@ -129,7 +131,9 @@ def verify_tests(path, targets=TEST_TARGETS):
             label = event["id"]["testSummary"]["label"]
             if label.startswith("@@"):
                 repository, target = label[2:].split("//", 1)
-                label = "@" + repository.split("+", 1)[0] + "//" + target
+                repository = repository.split("+", 1)[0]
+                repository = {"sonic-swss": "sonic_swss"}.get(repository, repository)
+                label = "@" + repository + "//" + target
             summaries[label] = event["testSummary"]["overallStatus"]
     if set(summaries) != set(targets) or any(value != "PASSED" for value in summaries.values()):
         raise ValueError("Expected a passing Bazel test summary for every explicit target: " + repr(summaries))
@@ -177,6 +181,35 @@ def verify_packages(paths):
             "scope": "Package payload, architecture, build IDs, DWARF and debuglink CRC; no container or boot execution."}
 
 
+def verify_rust_dependencies(directory, receipt, bazel):
+    """Validate the same shared Common and Serde providers as standalone SWSS."""
+    prefix = [bazel, "cquery", *OPTIONS, "--noimplicit_deps", "--output=label"]
+    graph = capture(prefix + [
+        'kind("rust_library rule", deps(set('
+        '@sonic_swss//crates/countersyncd:countersyncd '
+        '@sonic_swss//crates/countersyncd:common_rust_test)))',
+    ], directory, receipt, "rust-dependencies")
+    reference = capture(prefix + [
+        'kind("rust_library rule", deps(@sonic_swss_common//:serde))',
+    ], directory, receipt, "common-serde-dependencies")
+
+    def serde_labels(output):
+        labels = {line.split()[0] for line in output.splitlines() if line.strip()}
+        return {name: sorted(label for label in labels if label.endswith(":" + name))
+                for name in ("serde", "serde_core")}
+
+    actual, expected = serde_labels(graph), serde_labels(reference)
+    if any(len(labels) != 1 for labels in expected.values()) or actual != expected:
+        raise ValueError("SWSS and Common must use one shared serde and serde_core library")
+    common = sorted({line.split()[0] for line in graph.splitlines()
+                     if line.split() and line.split()[0].endswith("//crates/swss-common:swss_common")})
+    if len(common) != 1:
+        raise ValueError("SWSS must use Common's public Rust library target")
+    result = {"common_library": common[0], "shared_rust_libraries": actual}
+    (directory / "rust-dependencies.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("test", "build", "headers"))
@@ -196,11 +229,9 @@ def main():
         version = check_bazel_version(args.bazel, expected, directory, receipt)
         receipt["bazel_version"] = version
         execute([sys.executable, str(ROOT / "tools/bazel/ci/rust.py"),
-                 "--workspace", str(ROOT), "--artifacts", str(directory / "rust"),
-                 "--bazel", args.bazel,
-                 *["--bazel-arg=" + option for option in GIT_OPTIONS]],
-                directory, receipt, "rust-preparation")
-        receipt["rust_preparation"] = "rust/receipt.json"
+                 "--workspace", str(ROOT), "--artifacts", str(directory / "rust")],
+                directory, receipt, "rust-inputs")
+        receipt["rust_inputs"] = "rust/receipt.json"
         if args.command == "headers":
             machine = platform.machine()
             if machine not in ("x86_64", "aarch64") or platform.freedesktop_os_release().get("VERSION_CODENAME") != "trixie":
@@ -225,6 +256,7 @@ def main():
             shutil.copyfile(fetched, directory / "rules_distroless.MODULE.bazel")
             receipt["resolution"] = resolution.collect(
                 ROOT, directory, bazel=[args.bazel], options=graph_options + GIT_OPTIONS)
+            receipt["rust_input_verification"] = rust.verify(ROOT, directory / "rust")
             receipt["distroless_version"] = "0.9.4-sonic.1"
             receipt["status"] = "passed"
             return
@@ -267,8 +299,10 @@ def main():
                 receipt["artifacts"][name] = {"target": target, "bytes": destination.stat().st_size,
                                                "sha256": contract.sha(destination)}
             receipt["validation"] = verify_packages(paths)
+        receipt["rust_dependencies"] = verify_rust_dependencies(directory, receipt, args.bazel)
         receipt["resolution"] = resolution.collect(
             ROOT, directory, bazel=[args.bazel], options=GIT_OPTIONS)
+        receipt["rust_input_verification"] = rust.verify(ROOT, directory / "rust")
         receipt["architecture"] = "amd64"
         receipt["status"] = "passed"
     except Exception as error:

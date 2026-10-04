@@ -4,14 +4,12 @@ bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
-bazel_dep(name = "rules_python", version = "1.7.0")
+bazel_dep(name = "rules_python", version = "1.8.0")
 bazel_dep(name = "bazel_lib", version = "3.1.1")
 bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "aspect_rules_py", version = "1.11.2")
-bazel_dep(name = "rules_cc", version = "0.2.16")
-bazel_dep(name = "rules_rust", version = "0.74.0")
-bazel_dep(name = "rules_rust_bindgen", version = "0.74.0")
-bazel_dep(name = "toolchains_llvm", version = "1.5.0")
+bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = True)
@@ -27,13 +25,48 @@ pip.parse(
 )
 use_repo(pip, "swss_config_pip")
 
-# Bindgen needs a toolchain selected by the consuming root. The SWSS module
-# owns its generated bindings and Cargo dependency graph.
-llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
-llvm.toolchain(llvm_version = "17.0.6")
-use_repo(llvm, "llvm_toolchain_llvm")
+# Common owns its Rust library and public Serde targets. rules_rs reads the
+# tracked Cargo locks directly; no generated Cargo.Bazel.lock is required.
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
 
-register_toolchains("//tools/bazel/rust:bindgen_toolchain")
+rust = use_extension("@rules_rs//rs:rules_rust_reexported_extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    extra_target_triples = [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ],
+    versions = ["1.90.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+bindgen = use_extension("@rules_rs//rs:rules_rust_bindgen.bzl", "rules_rust_bindgen")
+use_repo(bindgen, "rules_rust_bindgen")
+
+register_toolchains("@rules_rust_bindgen//:all")
+
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+
+# This consumer only configures the owners' Cargo graphs. rules_rs requires a
+# config tag for such consumers; an empty config preserves Cargo's defaults.
+crate.config(cargo_config_toml = "//tools/bazel/rust:cargo-config.toml")
+
+override_repo(
+    crate,
+    **{
+        "swss_crates__github.com_securely1g_sonic-swss-common.git_5d696f73": "sonic_swss_common",
+        "swss_crates__serde-1.0.228": "sonic_swss_common",
+        "swss_crates__serde_core-1.0.228": "sonic_swss_common",
+    }
+)
+
+single_version_override(
+    module_name = "rules_cc",
+    version = "0.2.20",
+)
 
 bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
 

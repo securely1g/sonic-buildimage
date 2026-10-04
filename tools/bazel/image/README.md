@@ -246,37 +246,37 @@ Hosted jobs install `zstd` before setup-bazel so cache archives use multithreade
 `zstdmt`. Compression is part of the cache version, so the first run safely misses
 older gzip caches and populates Zstandard caches for later runs.
 
-Every hosted job prepares Common and SWSS Rust dependencies before loading the
-buildimage module graph, including formatting and protobuf header checks. Git
-keeps each component's authoritative `Cargo.lock`; `Cargo.Bazel.lock` is ignored
-and generated from it by the pinned shared preparation helper. Common is prepared
-first because SWSS consumes its Rust dependencies. The job rejects Cargo lock
-changes and retains both lockfiles, the helper receipts, and their SHA256 values
-under the artifact's `rust/` directory. Generation reuses dependency downloads;
-it does not trust a previously generated JSON lock.
+Common and SWSS use `rules_rs` 0.1.0 to read their tracked `Cargo.toml` and
+`Cargo.lock` directly. The image root provides Rust 1.90.0 and bindgen toolchains
+and maps SWSS's Common/Serde repositories to Common's source-owned targets.
+The selected Common revision is landed; SWSS remains the explicitly selected
+source proposal. No `Cargo.Bazel.lock` generation or preparation helper is needed.
 
-The CI commands perform that preparation automatically and can also run from an
-initialized checkout in the same execution environment:
+Before execution, CI records each component revision and copies its tracked
+module declaration, Cargo manifest and Cargo lock into the artifact's `rust/`
+directory. It verifies those inputs against Git and checks them again after
+Bazel finishes. The separately generated `MODULE.bazel.lock` and module graph
+record actual resolution; tracked files must remain unchanged.
+
+Run the initialized checkout in the supported native Trixie environment:
 
 ```sh
 python3 tools/bazel/ci/run.py test --artifacts artifacts/tests
 python3 tools/bazel/ci/run.py build --artifacts artifacts/packages
 ```
 
-Before invoking Bazel directly in this root workspace, prepare the initialized
-component checkouts in the same native Trixie environment:
+Direct Bazel builds no longer require a separate preparation step. To retain the
+same input evidence around an explicit build, use a fresh artifact directory:
 
 ```sh
 python3 tools/bazel/ci/rust.py --workspace "$PWD" --artifacts artifacts/rust
 bazel build @sonic_swss//dist:swss_pkg
+python3 tools/bazel/ci/rust.py --workspace "$PWD" --artifacts artifacts/rust --verify
 ```
 
-Use a new artifact directory for each preparation attempt. In a persistent
-image worker, run the launcher with `--worker-action prepare-rust` and
-`--rust-artifacts /absolute/build-area/artifacts/rust` before its first Bazel
-command. Keep the same workspace, worker, output root, cache and resource
-arguments used for the subsequent image build. Preparation runs inside that
-verified worker; no host Cargo installation is needed.
+The persistent worker's existing `--worker-action prepare-rust` command now
+captures these tracked inputs inside the verified worker. It keeps the same
+workspace, output root and caches; no host Cargo installation is needed.
 
 `Bazel VS installer (AMD64)` builds native prerequisites from the checked-out
 sources, then builds `//tools/bazel/image/vs:sonic-vs.bin` with Bazel. It uses a

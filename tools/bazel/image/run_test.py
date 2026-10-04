@@ -313,7 +313,8 @@ class WorkerTest(unittest.TestCase):
         self.assertIn('b' * 64, command)
         self.assertEqual(command[-len(plan['rust_command']):], plan['rust_command'])
         self.assertIn(str(self.workspace / 'tools/bazel/ci/rust.py'), command)
-        self.assertIn('--output-user-root', command)
+        self.assertNotIn('--output-user-root', command)
+        self.assertIn('--artifacts', command)
 
     def test_rust_preparation_requires_retained_artifacts_inside_mount(self):
         self.args.command = []

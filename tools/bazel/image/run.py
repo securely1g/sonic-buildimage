@@ -16,7 +16,7 @@ configuration are modified. The worker image must already be available locally.
 Add --persistent-worker NAME to retain this isolated worker and its Bazel server.
 The run action creates or reuses it; --worker-action start initializes it without
 running Bazel, status inspects it, and stop shuts down Bazel and removes only that
-verified worker. The prepare-rust action generates component Cargo.Bazel.lock
+verified worker. The prepare-rust action records tracked component Cargo input
 files before the consuming Bazel graph is loaded. Use identical worker arguments
 for every lifecycle operation.
 An output-root lock serializes operations, including builds. Startup option
@@ -242,10 +242,7 @@ def build_plan(args):
     rust_command = None
     if action == "prepare-rust":
         rust_command = ["python3", str(workspace / "tools/bazel/ci/rust.py"),
-                        "--workspace", str(workspace), "--artifacts", str(rust_artifacts),
-                        "--bazel", str(bazel), "--output-user-root", str(output_root)]
-        for option in cache_arg + git_options:
-            rust_command.append("--bazel-arg=" + option)
+                        "--workspace", str(workspace), "--artifacts", str(rust_artifacts)]
     return {
         "rust_command": rust_command,
         "disposable": docker, "create": create, "identity": identity, "bootstrap": bootstrap,

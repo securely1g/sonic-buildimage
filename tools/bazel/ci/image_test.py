@@ -404,7 +404,7 @@ class ImageControllerTest(unittest.TestCase):
             commands.append(command)
             if _args[-1] == "native-build" and failure == "native":
                 raise RuntimeError("fixture native compilation failed")
-            if _args[-1] == "rust-preparation" and failure == "rust":
+            if _args[-1] == "rust-inputs" and failure == "rust":
                 raise RuntimeError("fixture Rust preparation failed")
             if "--worker-action" in command and "stop" in command:
                 if failure == "worker-stop":
@@ -457,7 +457,8 @@ class ImageControllerTest(unittest.TestCase):
                 mock.patch.object(image.image_inputs, "prepare", side_effect=prepare), \
                 mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
                 mock.patch.object(image, "execute", side_effect=execute), \
-                mock.patch.object(image.resolution, "collect", side_effect=collect):
+                mock.patch.object(image.resolution, "collect", side_effect=collect), \
+                mock.patch.object(image.rust, "verify", return_value={"status": "passed"}):
             result = image.build(arguments)
         receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         return result, commands, receipt
@@ -466,7 +467,7 @@ class ImageControllerTest(unittest.TestCase):
         result, commands, receipt = self.run_build_fixture()
         self.assertEqual(result, 0)
         self.assertEqual(self.lifecycle, ["clone", "native-build", "audit", "verify-source", "prepare",
-                                         "rust-preparation", "package", "image", "module-graph", "verify-image", "worker-stop"])
+                                         "rust-inputs", "package", "image", "module-graph", "verify-image", "worker-stop"])
         self.assertEqual(len(commands), 6)
         native = commands.pop(0)
         self.assertTrue(native[1].endswith("tools/bazel/ci/native_build.py"))
@@ -476,7 +477,7 @@ class ImageControllerTest(unittest.TestCase):
         rust = commands.pop(0)
         self.assertIn("prepare-rust", rust)
         self.assertEqual(rust[rust.index("--rust-artifacts") + 1], str(self.artifacts / "rust"))
-        self.assertEqual(receipt["rust_preparation"], "rust/receipt.json")
+        self.assertEqual(receipt["rust_inputs"], "rust/receipt.json")
         self.assertIn("--disk_cache=" + str(self.state / "package-cache"), commands[0])
         self.assertIn("--disk_cache=", commands[1])
         for command in (commands[0], commands[1], commands[-1]):
@@ -518,7 +519,7 @@ class ImageControllerTest(unittest.TestCase):
         result, commands, receipt = self.run_build_fixture(failure="rust")
         self.assertEqual(result, 1)
         self.assertIn("fixture Rust preparation failed", receipt["error"])
-        self.assertEqual(self.lifecycle[-2:], ["rust-preparation", "worker-stop"])
+        self.assertEqual(self.lifecycle[-2:], ["rust-inputs", "worker-stop"])
         self.assertFalse(any("build" in command for command in commands))
         self.assertFalse((self.artifacts / "sonic-vs.bin").exists())
 
