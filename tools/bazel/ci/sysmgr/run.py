@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "tools/bazel/ci"))
 import resolution
 TESTS = [
+    "@sonic_sysmgr//rebootbackend:gnoi_runtime_test",
     "//tools/bazel/registry:registry_lib_test",
     "//tools/bazel/equivalence_checker:rules_engine_test",
     "//tools/bazel/equivalence_checker:reporter_test",
@@ -28,6 +30,9 @@ TESTS = [
     "//tools/bazel/dpkg:test_dpkg_patterns_up_to_date",
 ]
 PACKAGES = {
+    "protobuf-runtime.tar": "@sonic_protobuf//:libprotobuf_pkg",
+    "protobuf-debug.tar": "@sonic_protobuf//:libprotobuf_pkg.debug_symbols",
+    "gnoi-runtime-probe": "@sonic_sysmgr//rebootbackend:gnoi_runtime_test",
     "sysmgr-runtime.tar": "@sonic_sysmgr//:sysmgr_pkg",
     "sysmgr-debug.tar": "@sonic_sysmgr//:sysmgr_debug_pkg",
     "runtime-layer.tar": "//dockers/docker-sysmgr:rdeps",
@@ -36,7 +41,9 @@ PACKAGES = {
 }
 OPTIONS = ["--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
            "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no"]
-BINARIES = ["usr/bin/rebootbackend", "usr/lib/x86_64-linux-gnu/librebootgnoi.so.0.0.0"]
+BINARIES = ["usr/bin/rebootbackend", "usr/lib/x86_64-linux-gnu/librebootgnoi.so.0.0.0",
+            "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12"]
+SOURCES = ["rebootbe.cpp", "system.pb.cc", "message_lite.cc"]
 
 
 def require(condition, message):
@@ -66,10 +73,12 @@ def verify_packages(paths):
         runtime, debug, layers, symbols = [directory / name for name in ("runtime", "debug", "layers", "symbols")]
         unpack(paths["sysmgr-runtime.tar"], runtime)
         unpack(paths["sysmgr-debug.tar"], debug)
+        unpack(paths["protobuf-runtime.tar"], runtime)
+        unpack(paths["protobuf-debug.tar"], debug)
         unpack(paths["runtime-layer.tar"], layers)
         unpack(paths["debug-layer.tar"], symbols)
         pairs = []
-        for relative in BINARIES:
+        for relative, source in zip(BINARIES, SOURCES):
             binary = runtime / relative
             require(binary.is_file() and binary.read_bytes()[:4] == b"\x7fELF", "Missing ELF: " + relative)
             require(binary.read_bytes()[4:6] == bytes((2, 1)) and struct.unpack_from("<H", binary.read_bytes(), 18)[0] == 62,
@@ -90,7 +99,6 @@ def verify_packages(paths):
             require(filename.decode() == detached.name, "Wrong debug-link filename")
             offset = (len(filename) + 1 + 3) & ~3
             require(struct.unpack_from("<I", link, offset)[0] == zlib.crc32(detached.read_bytes()), "Debug-link checksum mismatch")
-            source = "rebootbe.cpp" if relative == BINARIES[0] else "system.pb.cc"
             decoded = output("readelf", "--debug-dump=decodedline", str(detached))
             source_line = re.search(r"^\s*" + re.escape(source) + r"\s+(\d+)\s+0x", decoded, re.MULTILINE)
             require(source_line is not None, "No source line table for " + source)
@@ -109,11 +117,30 @@ def verify_packages(paths):
             require(link.is_symlink() and link.readlink() == Path(library.name), "Broken library symlink")
         require((runtime / BINARIES[0]).stat().st_mode & 0o777 == 0o755, "Wrong executable mode")
         require(library.stat().st_mode & 0o777 == 0o644, "Wrong library mode")
-        require(len(list(debug.rglob("*.debug"))) == len(list(symbols.rglob("*.debug"))) == 2,
+        require(len(list(debug.rglob("*.debug"))) == len(list(symbols.rglob("*.debug"))) == len(BINARIES),
                 "Unexpected debug symbol inventory")
+        protobuf = layers / BINARIES[2]
+        require("[libprotobuf.so.32]" in output("readelf", "-d", str(protobuf)), "Wrong Protobuf SONAME")
+        soname = protobuf.parent / "libprotobuf.so.32"
+        require(soname.is_symlink() and soname.resolve() == protobuf.resolve(), "Broken Protobuf SONAME link")
+        probe = paths["gnoi-runtime-probe"]
+        interpreter = re.search(r"Requesting program interpreter: ([^\]]+)",
+                                output("readelf", "-l", str(probe))).group(1)
+        environment = dict(os.environ)
+        for key in ("LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT"):
+            environment.pop(key, None)
+        loader = [interpreter, "--library-path", str(protobuf.parent)]
+        linked = subprocess.check_output([*loader, "--list", str(probe)], text=True, env=environment)
+        for name in ("libprotobuf.so.32", "librebootgnoi.so.0"):
+            selected = re.search(r"^\s*" + re.escape(name) + r" => (\S+)", linked, re.MULTILINE)
+            require(selected is not None and Path(selected.group(1)).resolve().is_relative_to(layers.resolve()),
+                    "Probe did not select packaged " + name + ": " + linked)
+        probe_result = subprocess.check_output([*loader, str(probe)], text=True, env=environment)
+        require("gNOI JSON and serialization passed" in probe_result, "Packaged gNOI runtime probe failed")
         subprocess.run(["python3", str(ROOT / "dockers/docker-sysmgr/debug_symbols_test.py"),
                         str(paths["debug-layer.tar"]), str(paths["config-layer.tar"])], check=True)
-        return {"runtime_debug_pairs": pairs, "architecture": "amd64", "image_layer_tests": 2}
+        return {"runtime_debug_pairs": pairs, "architecture": "amd64", "image_layer_tests": 2,
+                "packaged_runtime_probe": probe_result.strip(), "packaged_loader_resolution": linked}
 
 
 def main():
@@ -157,7 +184,10 @@ def main():
             for line in (directory / "bep.json").read_text().splitlines():
                 event = json.loads(line)
                 if "testSummary" in event.get("id", {}):
-                    summaries[event["id"]["testSummary"]["label"]] = event["testSummary"]["overallStatus"]
+                    label = event["id"]["testSummary"]["label"]
+                    # BEP uses the canonical Bzlmod name for this external module.
+                    label = label.replace("@@sonic-sysmgr+//", "@sonic_sysmgr//", 1)
+                    summaries[label] = event["testSummary"]["overallStatus"]
             require(set(summaries) == set(TESTS) and set(summaries.values()) == {"PASSED"}, "Missing passing required test: " + repr(summaries))
             receipt["tests"] = summaries
         else:
