@@ -47,6 +47,30 @@ available in `target/`, the equivalent Bazel targets are
 `//dockers/docker-orchagent:docker-orchagent-dbg.gz`. The Make wrapper publishes
 the completed archive to `target/` only after the Bazel build succeeds.
 
+## BuildBuddy remote cache
+
+Both CI jobs use BuildBuddy when the repository Actions secret
+`BUILDBUDDY_API_KEY` is configured with a key from your BuildBuddy account.
+Set the optional Actions variable `BUILDBUDDY_CACHE_ENDPOINT` to the cache
+endpoint for that account; it defaults to `grpcs://remote.buildbuddy.io`.
+See the [BuildBuddy authentication guide](https://www.buildbuddy.io/docs/guide-auth/)
+for creating a key with cache access.
+
+CI writes the endpoint and a host-scoped Bazel credential helper to the ignored
+`.bazelrc.user`. The helper sends credentials only to that secure endpoint.
+The setup step saves the secret to a temporary file
+outside the checkout with mode `0600`; build steps pass only that file's path to
+the helper. This keeps the key out of Bazel's recorded client environment, build
+events, command arguments and configuration. Make mounts the file read-only in
+its slave and forwards the file path and endpoint by environment variable name.
+CI removes the file after the build, including on failure.
+This enables remote caching; compilation still runs on the CI
+runner. No remote execution or BuildBuddy build-event upload is enabled.
+
+Fork pull requests do not receive the secret. When the key is unavailable, CI
+continues using local caches and explicitly reports that BuildBuddy is not
+configured in its job summary.
+
 ## Validation
 
 The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
@@ -59,11 +83,15 @@ includes the five tar files, hashes, command logs, build events, generated modul
 lock and resolved module graph. CI starts without a module lock and rejects
 tracked input changes.
 
-The hosted check does not build Make's native prerequisites. Complete OCI
-archives and the final VS installer are covered by the optional `build_vs`
-workflow-dispatch input on a disposable `sonic-vs-source` runner with Docker and
-at least 300 GiB free. No such repository runner was registered when this change
-was prepared. The Make base supplies Python Common bindings while Bazel supplies Common's C++
+The `Make VS with Bazel SWSS (AMD64)` job builds the complete OCI
+archives and final VS image after the source-layer check succeeds. It runs
+automatically for pull requests and pushes to `master`, and on manual workflow
+dispatch. It requires a disposable runner with the labels `self-hosted`, `linux`,
+`x64` and `sonic-vs-source`, working Docker and at least 300 GiB free. When no
+matching runner is available, this job remains queued; the
+source-layer check alone does not validate the complete image.
+
+The Make base supplies Python Common bindings while Bazel supplies Common's C++
 library; their compatibility must be checked with the complete image. Guest
 boot, forwarding, ARM64 images and cross builds remain unvalidated. ASAN and
 listing SWSS in `SONIC_PACKAGES_LOCAL` are rejected by this opt-in path.
