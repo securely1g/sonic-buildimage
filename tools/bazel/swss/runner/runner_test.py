@@ -215,6 +215,68 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
             self.assertNotIn("short-lived", output.getvalue())
             self.assertEqual(run.call_args.args[0], ["systemctl", "start", rearm.SERVICE])
 
+    def test_extraction_exhausting_capacity_stops_before_registration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            previous = home / "attempts/previous"
+            previous.mkdir(parents=True)
+            retained = previous / "build.log"
+            retained.write_text("Retained build evidence\n")
+            (home / "current").symlink_to(previous)
+            lock = home / "register.lock"
+            account = SimpleNamespace(pw_uid=1001, pw_gid=1001)
+            token_input = io.StringIO("short-lived\n")
+            workspace_gib = 300.5
+            checked_workspaces = []
+            extracted_attempts = []
+
+            def run_as_runner(command, **kwargs):
+                nonlocal workspace_gib
+                if command[0] == "tar":
+                    attempt = Path(command[command.index("-C") + 1])
+                    (attempt / "extracted-runner").write_text("Keep failed attempts for diagnosis\n")
+                    extracted_attempts.append(attempt)
+                    workspace_gib -= 1
+                elif command[:2] == ["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py"]:
+                    workspace = Path(command[command.index("--workspace") + 1]) if "--workspace" in command else home
+                    checked_workspaces.append(workspace)
+                    # Exercise real budget accounting on separate filesystems;
+                    # extraction uses the headroom that allowed the first check.
+                    with patch.object(preflight.shutil, "disk_usage", side_effect=[
+                            SimpleNamespace(free=n * 1024**3) for n in (workspace_gib, 150)]), \
+                            patch.object(preflight.os, "stat", side_effect=[
+                                SimpleNamespace(st_dev=n) for n in (1, 2)]):
+                        preflight.check_disk(workspace, "/docker", 300, 100)
+                else:
+                    self.fail(f"Unexpected runner command after capacity was exhausted: {command[0]}")
+
+            with patch.object(rearm, "RUNNER_HOME", home), \
+                    patch.object(rearm.os, "geteuid", return_value=0), \
+                    patch.object(rearm.os.path, "ismount", return_value=True), \
+                    patch.object(rearm.os, "chown"), \
+                    patch.object(rearm, "open", side_effect=lambda *args: lock.open("w"), create=True), \
+                    patch.object(rearm, "idle_host"), \
+                    patch.object(rearm.pwd, "getpwnam", return_value=account), \
+                    patch.object(rearm, "archive_digest", return_value=rearm.SHA256), \
+                    patch.object(rearm, "as_runner", side_effect=run_as_runner), \
+                    patch.object(rearm.subprocess, "check_output", return_value="loaded\n"), \
+                    patch.object(rearm.subprocess, "run") as run, \
+                    patch.object(rearm.sys, "stdin", token_input), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(RuntimeError, "300 GiB workspace"):
+                    rearm.register(SimpleNamespace(repo="owner/repo", pr=9))
+
+            self.assertEqual(len(extracted_attempts), 1)
+            attempt = extracted_attempts[0]
+            self.assertEqual(checked_workspaces, [home, attempt])
+            self.assertTrue((attempt / "extracted-runner").is_file())
+            self.assertFalse((attempt / ".runner").exists())
+            self.assertEqual((home / "current").resolve(), previous)
+            self.assertEqual(retained.read_text(), "Retained build evidence\n")
+            self.assertEqual(token_input.tell(), 0)
+            self.assertNotIn("short-lived", output.getvalue())
+            run.assert_not_called()
+
     def test_readiness_accepts_only_exact_runner_online_or_busy(self):
         for status, busy in (("online", False), ("offline", True)):
             with self.subTest(status=status, busy=busy), \

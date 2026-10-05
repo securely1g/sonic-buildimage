@@ -130,10 +130,10 @@ workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
 run's workflow. A new registration is required after each consumed job.
-Pushing another commit to the PR cancels its active workflow, including a full
-image build, because the workflow uses `cancel-in-progress`. Coordinate changes
-before arming a long build. A cancelled job also consumes its one-job runner;
-arm a new runner for the replacement run.
+The workflow's concurrency group includes the tested revision, so pushing a
+new commit preserves a full build of an earlier revision. Runs of the same
+revision supersede one another. A cancelled job also consumes its one-job
+runner; arm a new runner for the replacement run.
 The workflow labels Make builder containers with its repository, run and attempt.
 An `always()` cleanup step saves their container logs and removes only those
 containers. Stopping the runner alone does not stop Docker containers. After a
@@ -141,8 +141,11 @@ host crash or interrupted cleanup, inspect `sudo docker ps` and the containers'
 labels and workspace mounts before removing an identified orphan or rearming.
 
 Rearm refuses a running listener/worker or an unfinished previous registration.
-It rechecks the host, verifies the archive, extracts a fresh runner under
-`/data/sonic-runner/attempts/TIMESTAMP-ID`, and registers with `--ephemeral`.
+It rechecks the host, verifies the archive, and extracts a fresh runner under
+`/data/sonic-runner/attempts/TIMESTAMP-ID`. It then repeats preflight against
+that directory before registering with `--ephemeral`, accounting for space
+used by extraction. If the final check fails, no runner is registered or
+service started; the extracted attempt and previous attempts remain intact.
 Only a short-lived registration token crosses to the runner, through standard
 input and its environment rather than command arguments; the operator's
 personal token and SSH agent are not copied. The service has `Restart=no` and
@@ -169,6 +172,22 @@ understood and uploaded artifacts/logs are saved. Rearm preserves them and uses
 a fresh directory; it never recursively deletes a checkout or prunes Docker.
 After a failure, inspect free space before retrying. Clean only identified,
 inactive attempt directories and unused build images after saving evidence.
+
+If the workflow rejects workspace capacity, use its reported path and free
+space to inspect the actual filesystem; an extraction-time capacity change is
+only one possible cause. Restore the documented workspace and Docker budgets
+before rearming. A PR update does not refresh the installed helper under
+`/opt`. On an already bootstrapped, idle host, install this rearm update from
+the reviewed checkout, then recheck capacity and arm the desired queued run:
+
+```sh
+sudo install -m 0755 -o root -g root tools/bazel/swss/runner/rearm.py /opt/sonic-runner-tools/runner/rearm.py
+sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.py
+python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+```
+
+The additional check prevents registration when extraction uses the remaining
+headroom; it neither frees space nor proves why an earlier job lacked capacity.
 
 If the listener stopped before consuming a job, its `.runner` registration may
 remain. First confirm the job is not running, then stop the service. Inspect
@@ -199,6 +218,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Root or inaccessible Docker/KVM | Dedicated account, groups, actual daemon and KVM ioctl checks |
 | `/data` `nodev,nosuid` blocked device access in privileged containers | Scoped self-bind plus boot-time remount and effective mount-flag check |
 | Docker consumes a different filesystem from checkout | Separate capacity checks and summed budget if shared |
+| Runner extraction uses the remaining workspace headroom | Repeat preflight against the fresh attempt before registration |
 | Ephemeral runner disappears after a job | Explicit one-command rearm, fresh token, no restart loop |
 | Ephemeral registration leaves local state behind | Preserve diagnostics; explicit cleanup and host rebuild policy |
 | Cancelled job left its build container compiling | Per-attempt container labels, saved container logs and cleanup on cancellation/failure |

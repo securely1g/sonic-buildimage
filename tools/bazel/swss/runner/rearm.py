@@ -160,6 +160,10 @@ def register(args):
         os.chown(attempt, account.pw_uid, account.pw_gid)
         print(f"Attempt directory: {attempt}", flush=True)
         as_runner(["tar", "xzf", str(ARCHIVE), "--no-same-owner", "-C", str(attempt)])
+        # Extraction consumes workspace capacity. Recheck the actual attempt
+        # before registering a runner that could immediately accept a job.
+        as_runner(["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py",
+                   "--workspace", str(attempt)])
         # The caller sends only a short-lived registration token through stdin.
         token = sys.stdin.readline().strip()
         if not token or len(token) > 4096:

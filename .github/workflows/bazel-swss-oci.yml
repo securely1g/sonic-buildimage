@@ -219,9 +219,16 @@ jobs:
         run: |
           docker info > /dev/null
           python3 - <<'PY'
+          from pathlib import Path
           import shutil
-          if shutil.disk_usage('.').free < 300 * 1024**3:
-              raise SystemExit('The full Make VS build needs at least 300 GiB free')
+          workspace = Path.cwd().resolve()
+          usage = shutil.disk_usage(workspace)
+          free_gib = usage.free / 1024**3
+          print(f'Workspace: {workspace}; available: {free_gib:.1f} GiB; '
+                f'total: {usage.total / 1024**3:.1f} GiB', flush=True)
+          if usage.free < 300 * 1024**3:
+              raise SystemExit(f'The full Make VS build needs at least 300 GiB free; '
+                               f'{workspace} has {free_gib:.1f} GiB available')
           PY
 
       - name: Checkout repository
