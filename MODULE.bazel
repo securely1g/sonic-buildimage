@@ -63,11 +63,11 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Use the landed wheel installer until a registry entry includes that source.
-# It retains the registered version's archive timestamp and ownership behavior.
+# Retain the landed wheel installer and its reproducible archive metadata.
+# Include build-infra PR #25 until its host-library search fix lands and is registered.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "a77a3d8b38e4dcac9ed728dcb281a7cb108140f5",
+    commit = "3637389828820cdb1ed8fe1320cdb38207543b85",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
