@@ -87,8 +87,12 @@ The `Make VS with Bazel SWSS (AMD64)` job builds the complete OCI
 archives and final VS image after the source-layer check succeeds. It runs
 automatically for pull requests and pushes to `master`, and on manual workflow
 dispatch. It requires a disposable runner with the labels `self-hosted`, `linux`,
-`x64` and `sonic-vs-source`, working Docker and at least 300 GiB free. When no
-matching runner is available, this job remains queued; the
+`x64` and `sonic-vs-source-pr-NUMBER` for a pull request, or
+`sonic-vs-source-master` for push/manual runs. The host needs Docker, KVM, `j2`
+and at least 300 GiB free for the workspace plus room for Docker storage.
+The [runner setup and recovery guide](runner/README.md) provides checked
+provisioning, host preflight and one-job rearming, including PR #9 examples.
+When no matching runner is available, this job remains queued; the
 source-layer check alone does not validate the complete image.
 
 The Make base supplies Python Common bindings while Bazel supplies Common's C++

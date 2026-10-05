@@ -1,0 +1,166 @@
+# One-job VS build runner
+
+These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
+runner for one full VS image job. Defaults target PR #9 in
+`securely1g/sonic-buildimage`; pass `--repo owner/name --pr NUMBER` for another PR.
+The workflow routes PR jobs to `sonic-vs-source-pr-NUMBER` and push/manual jobs
+to `sonic-vs-source-master`. A runner gets only its selected custom label plus
+GitHub's default `self-hosted`, `linux`, `x64` labels.
+
+## Prepare a host once
+
+Use Ubuntu 22.04 or 24.04 for the documented SONiC host baseline. The initial
+host uses Ubuntu 26.04; passing preflight does not establish full compatibility.
+Enable hardware virtualization and KVM, load `overlay`, and install Docker
+Engine with buildx following the [Docker Ubuntu instructions](https://docs.docker.com/engine/install/ubuntu/).
+Also install `ca-certificates`, `curl`, `git`, `make`, `python3`, `python3-venv`,
+`kmod`, `procps`, `util-linux`, and the [GitHub CLI](https://cli.github.com/).
+For Ubuntu 24.04/26.04, the distribution-package preparation command is:
+
+```sh
+sudo apt-get update
+sudo apt-get install docker.io docker-buildx ca-certificates curl git make python3 python3-venv kmod procps util-linux liblttng-ust1t64 libicu-dev
+sudo systemctl enable --now docker
+sudo modprobe kvm
+sudo modprobe overlay
+```
+
+If Docker CE is already installed, keep that installation instead of installing
+`docker.io`; use its `docker-buildx-plugin`. Ubuntu 22.04 uses `liblttng-ust1`
+instead of `liblttng-ust1t64`; use Docker's linked instructions for its buildx
+installation. Install `gh` separately using its linked instructions, and verify
+that `/dev/kvm` exists after enabling CPU virtualization in the host firmware.
+
+Use a local, persistent `/data` mount with at least 300 GiB free for workspaces.
+Budget another 100 GiB free for Docker; if they share a filesystem, preflight
+requires 400 GiB total. The Docker figure is this tool's conservative planning
+allowance, not a measured maximum or a workflow requirement; the workflow itself
+requires 300 GiB workspace space. Docker's containerd image store can also use
+`/var/lib/containerd`; if separately mounted, budget and monitor that filesystem
+as well. The initial host keeps both Docker and containerd on the root filesystem.
+Prefer at least 12 GiB RAM available; the image installer VM alone requests 10 GiB.
+Avoid running multiple full builds on the same host.
+
+From a reviewed checkout, preview and then install:
+
+```sh
+bash tools/bazel/swss/runner/bootstrap.sh --dry-run
+sudo bash tools/bazel/swss/runner/bootstrap.sh
+sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.py
+```
+
+Bootstrap creates `sonic-runner` with a locked password, no administrator group,
+and `docker,kvm` membership. It verifies the pinned runner 2.337.0 archive using
+its SHA-256, installs `jinjanator==25.3.1` in a root-owned virtual environment,
+and exposes `j2` to systemd builds. It installs the operator scripts in a
+root-owned location accessible to the runner. Runner runtime dependencies must
+also be available; if `config.sh` reports a missing library, review and run the
+verified archive's `bin/installdependencies.sh`, then retry.
+
+SONiC uses privileged Docker, chroot, device nodes, loop mounts and a KVM VM.
+A `/data` mount with `nodev,nosuid` can let checkout and compilation succeed but
+break image assembly. Bootstrap adds a self-bind mount only at
+`/data/sonic-runner`; `sonic-vs-workspace-permissions.service` explicitly remounts
+that child with `dev,suid,exec` before the runner starts. An initial bind alone
+can inherit restrictive flags. The parent `/data` flags remain unchanged.
+Bootstrap backs up fstab before adding its entry and refuses a conflicting
+existing entry. Preflight checks effective flags, Docker/buildx as the runner
+user, workspace and Docker disk budgets, RAM, overlay, j2 rendering and KVM API.
+
+## Arm a runner for the next attempt
+
+Run these as the normal operator who is already authenticated to GitHub with
+repository runner administration access. Keep that login out of `sonic-runner`.
+Inspect the queued runs and cancel obsolete attempts before arming; a PR label
+selects the PR, not an individual commit or run.
+
+```sh
+gh auth status
+gh run list --repo securely1g/sonic-buildimage --workflow bazel-swss-oci.yml --limit 10
+python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9 --dry-run
+python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+```
+
+Use `--master` for a push/manual job. Arm only after reviewing the PR code and
+workflow that will run. For a failed attempt, retry the workflow with
+`gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
+require a new run on the updated commit, because rerunning uses the original
+run's workflow. A new registration is required after each consumed job.
+
+Rearm refuses a running listener/worker or an unfinished previous registration.
+It rechecks the host, verifies the archive, extracts a fresh runner under
+`/data/sonic-runner/attempts/TIMESTAMP-ID`, and registers with `--ephemeral`.
+Only a short-lived registration token crosses to the runner, through standard
+input and its environment rather than command arguments; the operator's
+personal token and SSH agent are not copied. The service has `Restart=no` and
+starts only when `.runner` exists. No automatic registration occurs at boot.
+GitHub runner auto-update remains enabled; update the archive version and its
+verified checksum together when maintaining the bootstrap baseline.
+
+## Observe and recover
+
+```sh
+gh run watch RUN_ID --repo securely1g/sonic-buildimage --exit-status
+sudo journalctl -u sonic-vs-runner.service --since today
+sudo systemctl status sonic-vs-runner.service
+sudo du -sh /data/sonic-runner/attempts/*
+docker system df
+```
+
+Keep `_diag` and `_work` inside the previous attempt until the failed run is
+understood and uploaded artifacts/logs are saved. Rearm preserves them and uses
+a fresh directory; it never recursively deletes a checkout or prunes Docker.
+After a failure, inspect free space before retrying. Clean only identified,
+inactive attempt directories and unused build images after saving evidence.
+
+If the listener stopped before consuming a job, its `.runner` registration may
+remain. First confirm the job is not running, then stop the service. Inspect
+the repository runner list, remove only that stale runner ID from GitHub, and
+clear its local registration before rearming:
+
+```sh
+sudo systemctl stop sonic-vs-runner.service
+gh api repos/securely1g/sonic-buildimage/actions/runners --jq '.runners[] | {id,name,status,busy}'
+# Replace RUNNER_ID only after identifying the inactive runner.
+gh api --method DELETE repos/securely1g/sonic-buildimage/actions/runners/RUNNER_ID
+sudo -u sonic-runner sh -c 'cd /data/sonic-runner/current && ./config.sh remove --local'
+```
+
+When adopting the initial host, stop and disable its old
+`actions.runner.securely1g-sonic-buildimage.p330-sonic-vs-pr9.service` after its
+job finishes. Do not leave two listeners active. The new service can coexist
+with the preserved old `/data/sonic-runner/runner` directory.
+
+## Gaps addressed and remaining limits
+
+| Failure or gap | Repeatable protection |
+| --- | --- |
+| Generic label accepted an older unrelated queued job | Per-PR labels; inspect/cancel obsolete runs before arming |
+| Interrupted submodule checkout left `.git/modules/.../HEAD` pointing at `.invalid` | Fresh runner directory for each registration; workflow checkout also uses run/attempt-specific paths |
+| Missing host `j2` or service PATH differs from operator shell | Pinned root-owned virtual environment, explicit service PATH and render check |
+| Root or inaccessible Docker/KVM | Dedicated account, groups, actual daemon and KVM ioctl checks |
+| `/data` `nodev,nosuid` blocked device access in privileged containers | Scoped self-bind plus boot-time remount and effective mount-flag check |
+| Docker consumes a different filesystem from checkout | Separate capacity checks and summed budget if shared |
+| Ephemeral runner disappears after a job | Explicit one-command rearm, fresh token, no restart loop |
+| Ephemeral registration leaves local state behind | Preserve diagnostics; explicit cleanup and host rebuild policy |
+
+Ephemeral registration does **not** erase the machine, Docker state, user home,
+or other attempts. Docker group membership grants root-equivalent host access.
+Use this machine only for reviewed, trusted code; for untrusted/public PRs use
+a disposable VM or host and destroy it afterward. Repository labels are routing,
+not a security boundary. No full host image/package lock, automatic cleanup,
+network mirror, remote execution, or unattended runner autoscaler is provided.
+BuildBuddy caching is optional and needs the repository secret described in the
+parent README. Downloads still depend on GitHub, package registries and upstream
+repositories. Fresh attempts have cold workspace caches; retained Docker layers
+are not a complete build cache. Mutable upstream container tags and the Bazelisk
+download path remain reproducibility dependencies; this tooling does not pin or
+mirror them. Host checks do not prove the full VS image builds, boots, or forwards
+traffic; track those results independently.
+
+Tool checks, requiring no sudo or GitHub token:
+
+```sh
+bash -n tools/bazel/swss/runner/bootstrap.sh
+python3 -B -m unittest discover -s tools/bazel/swss/runner -p '*_test.py'
+```

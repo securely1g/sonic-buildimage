@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Non-destructive host checks, executed as the runner service account."""
+import argparse
+import fcntl
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import tempfile
+
+
+def output(*args):
+    result = subprocess.run(args, text=True, capture_output=True)
+    if result.returncode:
+        diagnostics = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"{args[0]} failed ({result.returncode}): {diagnostics}")
+    return result.stdout.strip()
+
+
+def check_disk(workspace, docker_root, work_gib, docker_gib):
+    """A shared filesystem must cover both budgets, not count free space twice."""
+    work_free = shutil.disk_usage(workspace).free / 1024**3
+    docker_free = shutil.disk_usage(docker_root).free / 1024**3
+    shared = os.stat(workspace).st_dev == os.stat(docker_root).st_dev
+    print(f"Free space: workspace {work_free:.1f} GiB; Docker {docker_free:.1f} GiB ({docker_root})")
+    if shared:
+        if work_free < work_gib + docker_gib:
+            raise RuntimeError(f"Shared filesystem needs {work_gib + docker_gib} GiB free")
+    elif work_free < work_gib or docker_free < docker_gib:
+        raise RuntimeError(f"Need {work_gib} GiB workspace and {docker_gib} GiB Docker free")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", type=Path, default=Path("/data/sonic-runner"))
+    parser.add_argument("--workspace-gib", type=int, default=300)
+    parser.add_argument("--docker-gib", type=int, default=100)
+    args = parser.parse_args()
+    if args.workspace_gib <= 0 or args.docker_gib <= 0:
+        parser.error("Disk budgets must be positive")
+    if os.geteuid() == 0:
+        parser.error("Run as sonic-runner so permission failures are visible")
+    if platform.machine() != "x86_64":
+        parser.error("The VS job needs native x86_64")
+    if not os.path.ismount("/data"):
+        parser.error("/data is not mounted")
+    flags = set(output("findmnt", "--noheadings", "--output", "OPTIONS", "--target", str(args.workspace)).split(","))
+    blocked = flags & {"nodev", "nosuid", "noexec", "ro"}
+    if blocked:
+        parser.error(f"Workspace mount blocks image construction: {', '.join(sorted(blocked))}")
+    for command in ("git", "make", "docker", "j2", "python3"):
+        if not shutil.which(command):
+            parser.error(f"Missing executable: {command}")
+    os_release = platform.freedesktop_os_release()
+    print(f"Host: {os_release.get('PRETTY_NAME')}; CPUs: {os.cpu_count()}")
+    available_kib = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines()
+                             if line.startswith('MemAvailable:')))
+    print(f"Available memory: {available_kib / 1024**2:.1f} GiB")
+    if available_kib < 10 * 1024**2:
+        parser.error("The VS installer VM alone requests 10 GiB; free memory before building")
+    if available_kib < 12 * 1024**2:
+        print("NOTE: less than 2 GiB headroom beyond the 10 GiB installer VM; reduce competing work.")
+    if "overlay" not in Path('/proc/filesystems').read_text().split():
+        parser.error("Load the overlay filesystem module on the host: sudo modprobe overlay")
+    if os_release.get("ID") != "ubuntu" or os_release.get("VERSION_ID") not in ("22.04", "24.04"):
+        print("NOTE: use Ubuntu 22.04/24.04 for the documented SONiC host baseline; this host needs full build validation.")
+    print(output("docker", "version", "--format", "Docker server {{.Server.Version}}"))
+    print(output("docker", "buildx", "version"))
+    docker_root = Path(output("docker", "info", "--format", "{{.DockerRootDir}}"))
+    check_disk(args.workspace, docker_root, args.workspace_gib, args.docker_gib)
+    with tempfile.TemporaryDirectory(prefix="runner-preflight-", dir=args.workspace) as temporary:
+        template = Path(temporary) / "check.j2"
+        template.write_text("{{ 6 * 7 }}")
+        if output("j2", str(template)) != "42":
+            raise RuntimeError("j2 failed to render a template")
+    with open("/dev/kvm", "r+b", buffering=0) as device:
+        version = fcntl.ioctl(device.fileno(), 0xAE00, 0)
+    if version != 12:
+        raise RuntimeError(f"Unexpected KVM API: {version}")
+    print("PASS: non-root Docker/buildx, writable workspace, disk budgets, j2 and KVM API 12")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"Preflight failed: {error}")

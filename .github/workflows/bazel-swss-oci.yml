@@ -57,6 +57,7 @@ jobs:
       - name: Check Make handoff and archive validation
         run: |
           python3 -B -m unittest discover -s tools/bazel/swss -p '*_test.py'
+          python3 -B -m unittest discover -s tools/bazel/swss/runner -p '*_test.py'
           PYTHONPATH=tools/bazel/oci python3 -B tools/bazel/oci/docker_archive_to_oci_layout_test.py
           PYTHONPATH=dockers/docker-orchagent/config python3 -B dockers/docker-orchagent/config/render_test.py \
             rules/docker-orchagent.mk files/build_templates/manifest.json.j2 dockers/docker-orchagent/docker-init.j2
@@ -91,19 +92,22 @@ jobs:
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: source
-    runs-on: [self-hosted, linux, x64, sonic-vs-source]
+    # Only repository writers may send code to this privileged build host.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Keep a one-job runner from accepting an older, unrelated PR's queued job.
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - ${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}
     timeout-minutes: 720
     defaults:
       run:
         shell: bash
+        working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          submodules: recursive
-
       - name: Check source-build runner capacity
+        working-directory: ${{ github.workspace }}
         run: |
           docker info > /dev/null
           python3 - <<'PY'
@@ -112,10 +116,23 @@ jobs:
               raise SystemExit('The full Make VS build needs at least 300 GiB free')
           PY
 
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # An interrupted submodule clone can leave an invalid HEAD that the
+          # checkout action's superproject clean/reset cannot repair.
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Check VS build prerequisites
+        run: python3 -B tools/bazel/swss/runner/preflight.py --workspace "$PWD"
+
       - name: Configure the native VS image
         run: |
-          make init
-          make configure PLATFORM=vs PLATFORM_ARCH=amd64
+          mkdir -p artifacts/vs
+          make init 2>&1 | tee artifacts/vs/init.log
+          make configure PLATFORM=vs PLATFORM_ARCH=amd64 2>&1 | tee artifacts/vs/configure.log
 
       - name: Configure BuildBuddy remote cache
         env:
@@ -134,22 +151,38 @@ jobs:
             export BUILDBUDDY_API_KEY_FILE=/run/sonic-ci/buildbuddy-key
           fi
           make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_SWSS_WITH_BAZEL=y \
-            SONIC_BUILDER_EXTRA_CMDLINE="$cache_mount -e BUILDBUDDY_API_KEY_FILE -e BUILDBUDDY_CACHE_ENDPOINT"
+            SONIC_BUILDER_EXTRA_CMDLINE="$cache_mount -e BUILDBUDDY_API_KEY_FILE -e BUILDBUDDY_CACHE_ENDPOINT" \
+            2>&1 | tee artifacts/vs/build.log
 
       - name: Remove temporary cache credentials
         if: always()
+        working-directory: ${{ github.workspace }}
         env:
           BUILDBUDDY_API_KEY_FILE: ${{ runner.temp }}/sonic-buildbuddy-api-key
-        run: rm -f "$BUILDBUDDY_API_KEY_FILE" .bazelrc.user
+          VS_CHECKOUT: vs-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -f "$BUILDBUDDY_API_KEY_FILE" "$VS_CHECKOUT/.bazelrc.user"
+
+      - name: Upload VS build diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-build-diagnostics-amd64
+          path: |
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/**/*.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/sonic-slave-*/*.log
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 1
 
       - name: Upload VS image and SWSS archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-make-bazel-swss-amd64
           path: |
-            target/sonic-vs.img.gz
-            target/docker-orchagent.gz
-            target/docker-orchagent-dbg.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.img.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
