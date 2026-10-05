@@ -109,6 +109,16 @@ jobs:
           python3 -c 'import gzip; from pathlib import Path; p = Path("artifacts/archive"); (p / "archive-fixture.tar").write_bytes(gzip.decompress((p / "archive-fixture.gz").read_bytes()))'
           sha256sum artifacts/archive/archive-fixture.* > artifacts/archive/archive-sha256.txt
 
+      - name: Check local cache reuse across fresh checkouts
+        run: |
+          PYTHONPATH=tools/bazel/swss python3 -B tools/bazel/swss/verify_agent_cache.py \
+            --artifacts artifacts/archive/agent-cache \
+            --repository-cache "$(bazel info repository_cache)" \
+            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
+            --bazel-arg=--jobs=4 \
+            --bazel-arg=--local_resources=cpu=4 \
+            --bazel-arg=--local_resources=memory=10000
+
       - name: Retain generated module lock and graph
         run: |
           PYTHONPATH=tools/bazel/swss python3 -B - <<'PY'
@@ -209,6 +219,10 @@ jobs:
     timeout-minutes: 720
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
+      # Keep build results outside run-specific checkouts and disposable builders.
+      BAZEL_SWSS_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
+      SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
+      SONIC_DPKG_CACHE_METHOD: rwcache
     defaults:
       run:
         shell: bash
@@ -242,6 +256,15 @@ jobs:
 
       - name: Check VS build prerequisites
         run: python3 -B tools/bazel/swss/runner/preflight.py --workspace "$PWD"
+
+      - name: Prepare persistent agent caches
+        run: |
+          install -d -m 0700 /data/sonic-runner/cache/sonic-buildimage \
+            "$BAZEL_SWSS_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
+          test -w "$BAZEL_SWSS_CACHE_SOURCE"
+          test -w "$SONIC_DPKG_CACHE_SOURCE"
+          printf 'Bazel cache: %s\nMake package cache: %s (%s)\n' \
+            "$BAZEL_SWSS_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" "$SONIC_DPKG_CACHE_METHOD"
 
       - name: Configure the native VS image
         run: |

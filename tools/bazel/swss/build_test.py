@@ -65,6 +65,38 @@ class BuildTest(unittest.TestCase):
                 build.build("docker-orchagent.gz", self.destination, workspace=self.root)
         run.assert_not_called()
 
+    def test_shared_caches_are_used_for_build_and_output_query(self):
+        source = self.root / "bazel-bin/docker-orchagent.gz"
+        source.parent.mkdir()
+        source.write_bytes(b"new container archive")
+        cache = self.root / "persistent cache"
+        with patch.object(build.subprocess, "run") as run:
+            run.return_value.stdout = "bazel-bin/docker-orchagent.gz\n"
+            build.build("docker-orchagent.gz", self.destination, workspace=self.root,
+                        cache_directory=cache, options=["--jobs=2"])
+        for invocation in run.call_args_list:
+            command = invocation.args[0]
+            self.assertIn(f"--repository_cache={cache}/repository", command)
+            self.assertIn(f"--disk_cache={cache}/disk", command)
+            self.assertIn("--jobs=2", command)
+            self.assertFalse(any(arg.startswith("--output_base") for arg in command))
+        self.assertTrue((cache / "repository").is_dir())
+        self.assertTrue((cache / "disk").is_dir())
+
+    def test_optional_cache_does_not_change_normal_bazel_defaults(self):
+        self.assertEqual(build.cache_options(None), [])
+        self.assertEqual(build.cache_options(""), [])
+
+    def test_unusable_cache_fails_before_build_and_preserves_output(self):
+        cache = self.root / "cache-is-file"
+        cache.write_bytes(b"not a directory")
+        with patch.object(build.subprocess, "run") as run:
+            with self.assertRaises(OSError):
+                build.build("docker-orchagent.gz", self.destination, workspace=self.root,
+                            cache_directory=cache)
+        run.assert_not_called()
+        self.assertEqual(self.destination.read_bytes(), b"previous image")
+
 
 if __name__ == "__main__":
     unittest.main()

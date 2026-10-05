@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check SWSS selection without starting a slave, Docker or Bazel."""
 
+import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -11,6 +13,66 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 class MakeIntegrationTest(unittest.TestCase):
+    def cache_mount(self, directory, mode="y", source=None):
+        work = (ROOT / "Makefile.work").read_text()
+        start = work.index("# Reuse downloads and action outputs")
+        end = work.index('# User name and tag for "docker-*" images', start)
+        fake_docker = directory / "docker.py"
+        fake_docker.write_text("""import json, os, pathlib, sys
+args = sys.argv[1:]
+record = {'args': args}
+if '-v' in args:
+    source = pathlib.Path(args[args.index('-v') + 1].removesuffix(':/bazel-cache:rw'))
+    record['source_exists'] = source.is_dir()
+    record['source_owner'] = source.stat().st_uid
+    (source / 'container-cache-write').write_text('writable')
+print(json.dumps(record))
+""")
+        makefile = f"""DOCKER_RUN = python3 {fake_docker}
+{work[start:end]}
+.PHONY: launch
+launch:
+	@$(DOCKER_RUN) builder-image
+"""
+        return subprocess.run(
+            ["make", "--no-print-directory", "-f", "-", "launch",
+             f"BUILD_SWSS_WITH_BAZEL={mode}",
+             f"BAZEL_SWSS_CACHE_SOURCE={source if source is not None else directory / 'cache'}"],
+            input=makefile, text=True, cwd=ROOT, capture_output=True, check=False,
+        )
+
+    def test_bazel_cache_mount_is_created_as_builder_and_passed_with_spaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            source = directory / "builder's persistent cache"
+            result = self.cache_mount(directory, source=source)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads(result.stdout)
+            self.assertTrue(record["source_exists"])
+            self.assertEqual(record["source_owner"], os.getuid())
+            self.assertIn(str(source) + ":/bazel-cache:rw", record["args"])
+            self.assertIn("BAZEL_SWSS_CACHE_DIR=/bazel-cache", record["args"])
+            self.assertIn("BAZELISK_HOME=/bazel-cache/bazelisk", record["args"])
+
+    def test_native_make_and_empty_cache_setting_add_no_mount(self):
+        for mode, source in (("n", None), ("y", "")):
+            with self.subTest(mode=mode, source=source), tempfile.TemporaryDirectory() as tmp:
+                directory = pathlib.Path(tmp)
+                result = self.cache_mount(directory, mode, source)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["args"], ["builder-image"])
+                self.assertFalse((directory / "cache").exists())
+
+    def test_unusable_host_cache_stops_before_docker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            source = directory / "cache"
+            source.write_bytes(b"existing file")
+            result = self.cache_mount(directory, source=source)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(source.read_bytes(), b"existing file")
+
     def select(self, **overrides):
         settings = {
             "BUILD_SWSS_WITH_BAZEL": "n",

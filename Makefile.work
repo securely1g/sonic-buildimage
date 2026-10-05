@@ -82,6 +82,9 @@
 #  *                 image, including other slave distributions, uses Make.
 #  *                 Default: n
 #  *                 Values: y,n
+#  * BAZEL_SWSS_CACHE_SOURCE: Host directory for persistent Bazel repository,
+#  *                 action and Bazelisk caches when BUILD_SWSS_WITH_BAZEL=y.
+#  *                 Default: ~/.cache/sonic-buildimage/bazel; empty disables it.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -502,6 +505,20 @@ endif
 
 ifneq ($(SONIC_VERSION_CACHE_SOURCE),)
 	DOCKER_RUN += -v "$(SONIC_VERSION_CACHE_SOURCE):/vcache:rw"
+endif
+
+# Reuse downloads and action outputs across disposable builder containers.
+# Create the bind source as the host build user, before Docker can create a
+# root-owned directory. Keep the output base private to each builder/check-out.
+ifeq ($(BUILD_SWSS_WITH_BAZEL),y)
+ifneq ($(strip $(BAZEL_SWSS_CACHE_SOURCE)),)
+SONIC_BAZEL_CACHE_SOURCE := $(shell realpath -m -- '$(subst ','"'"',$(BAZEL_SWSS_CACHE_SOURCE))')
+SONIC_BAZEL_CACHE_QUOTED := '$(subst ','"'"',$(SONIC_BAZEL_CACHE_SOURCE))'
+DOCKER_RUN := mkdir -p -- $(SONIC_BAZEL_CACHE_QUOTED) && test -w $(SONIC_BAZEL_CACHE_QUOTED) && $(DOCKER_RUN) \
+	-v $(SONIC_BAZEL_CACHE_QUOTED):/bazel-cache:rw \
+	-e BAZEL_SWSS_CACHE_DIR=/bazel-cache \
+	-e BAZELISK_HOME=/bazel-cache/bazelisk
+endif
 endif
 
 # User name and tag for "docker-*" images created by native dockerd mode.

@@ -167,6 +167,11 @@ SONIC_DPKG_CACHE_SOURCE ?= /var/cache/sonic/artifacts
 # Other slave distributions remain on Make during the same image build.
 BUILD_SWSS_WITH_BAZEL ?= n
 
+# Host-local Bazel downloads and action outputs shared by disposable SWSS
+# builder containers and checkouts. Set empty to use Bazel's normal local cache.
+# This does not share Bazel's output base or enable native Make package caching.
+BAZEL_SWSS_CACHE_SOURCE ?= $(HOME)/.cache/sonic-buildimage/bazel
+
 # Default VS build memory preparation
 DEFAULT_VS_PREPARE_MEM = yes
 

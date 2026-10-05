@@ -235,9 +235,17 @@ a disposable VM or host and destroy it afterward. Repository labels are routing,
 not a security boundary. No full host image/package lock, automatic cleanup,
 network mirror, remote execution, or unattended runner autoscaler is provided.
 Downloads still depend on GitHub, package registries and upstream repositories.
-Fresh attempts have cold workspace caches; retained Docker layers
-are not a complete build cache. SONiC's existing version machinery pins Debian
-builder image digests and supplies versioned download mirrors and Python
+Fresh attempts use separate checkouts and Bazel working directories. The VS
+workflow shares Bazel's download/result cache and Make's package cache under
+`/data/sonic-runner/cache/sonic-buildimage`, outside the attempt directories.
+Those caches survive builder removal and runner rearming. Make's package cache
+runs in `rwcache` mode; Bazel still checks the SWSS source inputs on every request.
+The workflow creates the cache directories as the runner account, beneath a
+private parent, and never deletes their contents during job cleanup. See
+[local cache settings](../README.md#reuse-local-build-caches) for paths and overrides.
+These caches count against the available disk space checked before a build;
+retained Docker layers alone are not a complete build cache. SONiC's existing
+version machinery pins Debian builder image digests and supplies versioned download mirrors and Python
 constraints. This run still uses rolling APT repositories, and download/Python
 fallback paths can accept different inputs. Runner provisioning does not make
 those mechanisms strict or freeze the host package environment. Host checks do

@@ -15,6 +15,19 @@ ROOT = Path(__file__).resolve().parents[3]
 ARCHIVES = ("docker-orchagent.gz", "docker-orchagent-dbg.gz")
 
 
+def cache_options(cache_directory):
+    """Share content-addressed caches, keeping each Bazel output base private."""
+    if not cache_directory:
+        return []
+    root = Path(cache_directory).expanduser().resolve()
+    options = []
+    for name, flag in (("repository", "repository_cache"), ("disk", "disk_cache")):
+        path = root / name
+        path.mkdir(parents=True, exist_ok=True)
+        options.append(f"--{flag}={path}")
+    return options
+
+
 def export_archive(source, destination):
     """Leave the previous image intact if copying a new archive fails."""
     if destination.is_file() and filecmp.cmp(source, destination, shallow=False):
@@ -31,7 +44,8 @@ def export_archive(source, destination):
         temporary.unlink(missing_ok=True)
 
 
-def build(archive, destination, bazel="bazel", startup=(), options=(), workspace=ROOT):
+def build(archive, destination, bazel="bazel", startup=(), options=(), workspace=ROOT,
+          cache_directory=None):
     if archive not in ARCHIVES:
         raise ValueError("unsupported SWSS archive: " + archive)
     for name in ("target/docker-config-engine-trixie.oci/index.json",
@@ -41,6 +55,7 @@ def build(archive, destination, bazel="bazel", startup=(), options=(), workspace
             raise ValueError("Make prerequisite is missing: " + name)
     target = "//dockers/docker-orchagent:" + archive
     command = [bazel, *startup]
+    options = [*cache_options(cache_directory), *options]
     subprocess.run([*command, "build", *options, target], cwd=workspace, check=True)
     result = subprocess.run([*command, "cquery", *options, "--output=files", target],
                             cwd=workspace, check=True, text=True, stdout=subprocess.PIPE)
@@ -58,11 +73,13 @@ def main():
     parser.add_argument("--archive", choices=ARCHIVES, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--bazel", default=os.environ.get("BAZEL", "bazel"))
+    parser.add_argument("--cache-directory", default=os.environ.get("BAZEL_SWSS_CACHE_DIR"))
     parser.add_argument("--bazel-startup-arg", action="append", default=[])
     parser.add_argument("--bazel-arg", action="append", default=[])
     args = parser.parse_args()
     build(args.archive, args.output.resolve(), args.bazel, args.bazel_startup_arg,
-          [*shlex.split(os.environ.get("BAZEL_SWSS_ARGS", "")), *args.bazel_arg])
+          [*shlex.split(os.environ.get("BAZEL_SWSS_ARGS", "")), *args.bazel_arg],
+          cache_directory=args.cache_directory)
 
 
 if __name__ == "__main__":

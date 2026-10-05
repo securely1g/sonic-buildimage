@@ -67,6 +67,44 @@ An older Docker-only cache must be rebuilt; it is not converted. Publication is
 atomic, and repeating it with unchanged content preserves the layout timestamps.
 See [the OCI base guide](../oci/README.md#use-makes-oci-base).
 
+## Reuse local build caches
+
+With `BUILD_SWSS_WITH_BAZEL=y`, Make mounts the host's
+`$HOME/.cache/sonic-buildimage/bazel` at `/bazel-cache` in each builder.
+`BAZEL_SWSS_CACHE_SOURCE` selects another host directory. Bazel keeps downloaded
+repositories in `repository/`, completed build results in `disk/`, and Bazelisk
+keeps its downloaded Bazel binaries in `bazelisk/`. The cache survives removal of
+the builder and can be reused from a fresh checkout on the same host. Each builder
+keeps its own output base; concurrent builds do not share a Bazel server or its
+working directory.
+
+The full VS CI job also enables Make's package cache with
+`SONIC_DPKG_CACHE_METHOD=rwcache`. Make restores a matching package or container
+archive and writes a newly built result on a cache miss. The SWSS Bazel targets
+still invoke Bazel to check their declared inputs. The agent stores both caches
+outside the per-run checkout:
+
+| Cache | Host path in VS CI |
+| --- | --- |
+| Bazel downloads and results | `/data/sonic-runner/cache/sonic-buildimage/bazel` |
+| Make packages and archives | `/data/sonic-runner/cache/sonic-buildimage/packages` |
+
+To use both caches for a local build, choose persistent, writable directories:
+
+```sh
+mkdir -p "$HOME/.cache/sonic-buildimage/packages"
+make target/sonic-vs.img.gz BUILD_SWSS_WITH_BAZEL=y \
+  BAZEL_SWSS_CACHE_SOURCE="$HOME/.cache/sonic-buildimage/bazel" \
+  SONIC_DPKG_CACHE_METHOD=rwcache \
+  SONIC_DPKG_CACHE_SOURCE="$HOME/.cache/sonic-buildimage/packages"
+```
+
+Bazel uses its declared action inputs to select cached results. Make uses its
+existing source, dependency and configuration cache keys. Neither cache freezes
+rolling upstream package repositories. CI retains fresh source checkouts and
+checks available disk space; it does not delete these caches when a job ends.
+Outside the VS workflow, Make's package cache remains opt-in.
+
 ## Validation
 
 The independent `Container archive (AMD64)` and `Container archive (ARM64)` checks
@@ -75,11 +113,15 @@ images. They verify unchanged base bytes, platform checks, reproducible gzip
 headers and bytes, Docker-save contents and the expected image tag without
 building Debian packages or needing Make outputs. Artifacts retain the fixture
 tar and gzip files, hashes, test results, generated module lock and resolved
-module graph. See the [archive guide](../oci/README.md#reproducible-docker-archives).
+module graph. A separate cache regression builds the archive in two fresh
+checkouts with separate Bazel output bases and one new local disk cache. It checks
+cache hits and identical bytes, then changes a source input and requires a rebuild.
+Receipts and execution logs are retained with the archive evidence. See the [archive guide](../oci/README.md#reproducible-docker-archives).
 
 The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
 the Make handoff, OCI base publication, configuration rendering and package
-validator, then builds SWSS, its runtime dependencies, configuration and matching
+validator. A native Make regression also checks package-cache reuse across fresh
+checkouts and invalidation when source or architecture changes. The job then builds SWSS, its runtime dependencies, configuration and matching
 debug-symbol tar layers. It also runs SWSS's Common Rust API and Serde consumer
 test and checks the Debian path-filter rules. The shared renderer and orchagent
 adapter tests also run under Bazel to check their declared Python dependencies.
