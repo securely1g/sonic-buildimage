@@ -206,6 +206,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Host AppArmor blocked Ghostscript PDF output even in a privileged builder | Managed gs-only owner allowance for `/sonic/**.{ps,pdf}`, profile reload and preflight configuration check |
 | Host Docker worked but nested Docker could not initialize legacy NAT | Load and persist host `iptable_nat`; preflight also recognizes built-in support |
 | Cached builder tags ignored changes to their installed build hooks | Include build-hook source content in builder tags so hook repairs rebuild cached environments |
+| Shallow Scapy checkout selected an unrelated newer tag for its wheel version | Export the pinned package version through Scapy's packaging interface so wheel metadata and filename match the source contract |
 
 Ephemeral registration does **not** erase the machine, Docker state, user home,
 or other attempts. Docker group membership grants root-equivalent host access.
@@ -222,6 +223,13 @@ fallback paths can accept different inputs. Runner provisioning does not make
 those mechanisms strict or freeze the host package environment. Host checks do
 not prove the full VS image builds, boots, or forwards traffic; track those
 results independently.
+
+Scapy's Git-based version fallback can select the newest fetched tag even when
+that tag is unrelated to its pinned source commit, particularly in shallow
+submodule checkouts. `rules/scapy.mk` supplies `SCAPY_VERSION=2.6.1.dev0` through
+Scapy's supported packaging interface for the existing source pin. This sets
+the actual wheel and source-distribution metadata; it does not rename a wheel.
+Update the source pin and declared package version together when upgrading.
 
 Tool checks, requiring no sudo or GitHub token:
 
