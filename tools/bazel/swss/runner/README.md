@@ -150,9 +150,8 @@ Use this machine only for reviewed, trusted code; for untrusted/public PRs use
 a disposable VM or host and destroy it afterward. Repository labels are routing,
 not a security boundary. No full host image/package lock, automatic cleanup,
 network mirror, remote execution, or unattended runner autoscaler is provided.
-BuildBuddy caching is optional and needs the repository secret described in the
-parent README. Downloads still depend on GitHub, package registries and upstream
-repositories. Fresh attempts have cold workspace caches; retained Docker layers
+Downloads still depend on GitHub, package registries and upstream repositories.
+Fresh attempts have cold workspace caches; retained Docker layers
 are not a complete build cache. Mutable upstream container tags and the Bazelisk
 download path remain reproducibility dependencies; this tooling does not pin or
 mirror them. Host checks do not prove the full VS image builds, boots, or forwards

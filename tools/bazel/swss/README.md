@@ -47,30 +47,6 @@ available in `target/`, the equivalent Bazel targets are
 `//dockers/docker-orchagent:docker-orchagent-dbg.gz`. The Make wrapper publishes
 the completed archive to `target/` only after the Bazel build succeeds.
 
-## BuildBuddy remote cache
-
-Both CI jobs use BuildBuddy when the repository Actions secret
-`BUILDBUDDY_API_KEY` is configured with a key from your BuildBuddy account.
-Set the optional Actions variable `BUILDBUDDY_CACHE_ENDPOINT` to the cache
-endpoint for that account; it defaults to `grpcs://remote.buildbuddy.io`.
-See the [BuildBuddy authentication guide](https://www.buildbuddy.io/docs/guide-auth/)
-for creating a key with cache access.
-
-CI writes the endpoint and a host-scoped Bazel credential helper to the ignored
-`.bazelrc.user`. The helper sends credentials only to that secure endpoint.
-The setup step saves the secret to a temporary file
-outside the checkout with mode `0600`; build steps pass only that file's path to
-the helper. This keeps the key out of Bazel's recorded client environment, build
-events, command arguments and configuration. Make mounts the file read-only in
-its slave and forwards the file path and endpoint by environment variable name.
-CI removes the file after the build, including on failure.
-This enables remote caching; compilation still runs on the CI
-runner. No remote execution or BuildBuddy build-event upload is enabled.
-
-Fork pull requests do not receive the secret. When the key is unavailable, CI
-continues using local caches and explicitly reports that BuildBuddy is not
-configured in its job summary.
-
 ## Validation
 
 The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
