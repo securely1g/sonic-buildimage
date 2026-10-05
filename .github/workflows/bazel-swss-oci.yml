@@ -85,6 +85,8 @@ jobs:
       - x64
       - ${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}
     timeout-minutes: 720
+    env:
+      SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
     defaults:
       run:
         shell: bash
@@ -116,12 +118,38 @@ jobs:
         run: |
           mkdir -p artifacts/vs
           make init 2>&1 | tee artifacts/vs/init.log
-          make configure PLATFORM=vs PLATFORM_ARCH=amd64 2>&1 | tee artifacts/vs/configure.log
+          make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            2>&1 | tee artifacts/vs/configure.log
 
       - name: Build the VS image with Bazel SWSS archives
         run: |
           make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_SWSS_WITH_BAZEL=y \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             2>&1 | tee artifacts/vs/build.log
+
+      - name: Remove this job's remaining build containers
+        if: always()
+        timeout-minutes: 2
+        working-directory: ${{ github.workspace }}
+        env:
+          VS_CHECKOUT: vs-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          # Killing a docker client does not stop its daemon-owned container.
+          # Match this repository/run/attempt only; keep the bind-mounted logs.
+          containers=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
+          if test -n "$containers"; then
+            readarray -t container_ids <<< "$containers"
+            mkdir -p "$VS_CHECKOUT/artifacts/vs"
+            for container_id in "${container_ids[@]}"; do
+              docker logs "$container_id" > "$VS_CHECKOUT/artifacts/vs/container-$container_id.log" 2>&1 || true
+            done
+            if ! docker rm --force "${container_ids[@]}"; then
+              # --rm containers can disappear between listing and removal.
+              remaining=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
+              test -z "$remaining"
+            fi
+          fi
 
       - name: Upload VS build diagnostics
         if: always()

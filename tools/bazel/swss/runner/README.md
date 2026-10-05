@@ -90,6 +90,11 @@ Pushing another commit to the PR cancels its active workflow, including a full
 image build, because the workflow uses `cancel-in-progress`. Coordinate changes
 before arming a long build. A cancelled job also consumes its one-job runner;
 arm a new runner for the replacement run.
+The workflow labels Make builder containers with its repository, run and attempt.
+An `always()` cleanup step saves their container logs and removes only those
+containers. Stopping the runner alone does not stop Docker containers. After a
+host crash or interrupted cleanup, inspect `sudo docker ps` and the containers'
+labels and workspace mounts before removing an identified orphan or rearming.
 
 Rearm refuses a running listener/worker or an unfinished previous registration.
 It rechecks the host, verifies the archive, extracts a fresh runner under
@@ -151,6 +156,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Docker consumes a different filesystem from checkout | Separate capacity checks and summed budget if shared |
 | Ephemeral runner disappears after a job | Explicit one-command rearm, fresh token, no restart loop |
 | Ephemeral registration leaves local state behind | Preserve diagnostics; explicit cleanup and host rebuild policy |
+| Cancelled job left its build container compiling | Per-attempt container labels, saved container logs and cleanup on cancellation/failure |
 
 Ephemeral registration does **not** erase the machine, Docker state, user home,
 or other attempts. Docker group membership grants root-equivalent host access.
