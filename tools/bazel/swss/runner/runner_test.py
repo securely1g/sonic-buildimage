@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -15,6 +16,38 @@ import rearm
 
 class RunnerTests(unittest.TestCase):
     registration = {"id": 42, "name": "sonic-vs-9-unique", "attempt": "/data/sonic-runner/attempts/unique"}
+
+    def test_umask_guard_matches_actual_modes_of_copied_build_inputs(self):
+        program = """
+import json, os, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import preflight
+mask = int(sys.argv[3], 8)
+os.umask(mask)
+directory = pathlib.Path(sys.argv[2]) / 'build-context'
+directory.mkdir()
+config = directory / 'pip.conf'
+config.write_text('[global]\\nbreak-system-packages = true\\n')
+try:
+    preflight.check_umask(mask, 'test')
+    accepted = True
+except RuntimeError:
+    accepted = False
+print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
+                  'directory': directory.stat().st_mode & 0o777}))
+"""
+        for mask, accepted, file_mode, directory_mode in (("0022", True, 0o644, 0o755),
+                                                          ("0077", False, 0o600, 0o700)):
+            with self.subTest(mask=mask), tempfile.TemporaryDirectory() as temporary:
+                result = subprocess.check_output([sys.executable, "-B", "-c", program, str(Path(__file__).parent), temporary, mask], text=True)
+                self.assertEqual(json.loads(result), {"accepted": accepted, "file": file_mode, "directory": directory_mode})
+
+    def test_preflight_checks_service_umask_even_when_operator_umask_is_safe(self):
+        with patch.object(preflight.Path, "read_text", return_value="Name: python3\nUmask:\t0022\n"), \
+                patch.object(preflight, "output", return_value="0077") as output:
+            with self.assertRaisesRegex(RuntimeError, "Runner service umask 0077"):
+                preflight.check_worker_umasks()
+        output.assert_called_once_with("systemctl", "show", "sonic-vs-runner.service", "--property=UMask", "--value")
 
     def test_register_reads_runner_written_bom_identity_before_starting_service(self):
         # Runner.Listener writes this JSON using a UTF-8 BOM. Exercise the real

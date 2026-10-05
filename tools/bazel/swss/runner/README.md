@@ -65,7 +65,17 @@ that child with `dev,suid,exec` before the runner starts. An initial bind alone
 can inherit restrictive flags. The parent `/data` flags remain unchanged.
 Bootstrap backs up fstab before adding its entry and refuses a conflicting
 existing entry. Preflight checks effective flags, Docker/buildx as the runner
-user, workspace and Docker disk budgets, RAM, overlay, j2 rendering and KVM API.
+user, workspace and Docker disk budgets, RAM, overlay, j2 rendering, KVM API,
+and both the process and runner service file-creation masks.
+
+The runner service uses `UMask=0022`, while its home and attempt directories
+remain `0700`. A restrictive `0077` mask makes checked-out configuration files
+`0600`; Docker copies preserve those modes while changing ownership to root.
+The non-root builder then cannot read `/etc/pip.conf` or Docker APT sources,
+causing misleading pip `externally-managed-environment` errors. After correcting
+an existing service, use a fresh checkout and rebuild affected slave images:
+changing the mask does not repair existing files, Docker layers, or containers.
+Preserve evidence and remove only identified obsolete builder tags before retrying.
 
 ## Arm a runner for the next attempt
 
@@ -151,6 +161,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Generic label accepted an older unrelated queued job | Per-PR labels; inspect/cancel obsolete runs before arming |
 | Interrupted submodule checkout left `.git/modules/.../HEAD` pointing at `.invalid` | Fresh runner directory for each registration; workflow checkout also uses run/attempt-specific paths |
 | Missing host `j2` or service PATH differs from operator shell | Pinned root-owned virtual environment, explicit service PATH and render check |
+| Restrictive service umask made copied pip/APT config root-only | `UMask=0022`, private runner directories, process/service umask checks, fresh checkout and rebuilt affected images |
 | Root or inaccessible Docker/KVM | Dedicated account, groups, actual daemon and KVM ioctl checks |
 | `/data` `nodev,nosuid` blocked device access in privileged containers | Scoped self-bind plus boot-time remount and effective mount-flag check |
 | Docker consumes a different filesystem from checkout | Separate capacity checks and summed budget if shared |

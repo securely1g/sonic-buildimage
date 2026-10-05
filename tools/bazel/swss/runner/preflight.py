@@ -18,6 +18,24 @@ def output(*args):
     return result.stdout.strip()
 
 
+def check_umask(mask, origin):
+    # Docker COPY preserves checkout modes but changes ownership to root. Its
+    # non-root build user must still read config files and traverse directories.
+    if mask & 0o055:
+        raise RuntimeError(f"{origin} umask {mask:04o} hides files/directories from Docker build users; use 0022")
+
+
+def check_worker_umasks():
+    process_mask = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines()
+                        if line.startswith('Umask:'))
+    check_umask(int(process_mask, 8), "Preflight process")
+    service_mask = output("systemctl", "show", "sonic-vs-runner.service", "--property=UMask", "--value")
+    if not service_mask:
+        raise RuntimeError("Runner service umask is unavailable; run bootstrap.sh first")
+    check_umask(int(service_mask, 8), "Runner service")
+    print(f"File creation masks: process {process_mask}; runner service {service_mask}")
+
+
 def check_disk(workspace, docker_root, work_gib, docker_gib):
     """A shared filesystem must cover both budgets, not count free space twice."""
     work_free = shutil.disk_usage(workspace).free / 1024**3
@@ -43,6 +61,7 @@ def main():
         parser.error("Run as sonic-runner so permission failures are visible")
     if platform.machine() != "x86_64":
         parser.error("The VS job needs native x86_64")
+    check_worker_umasks()
     if not os.path.ismount("/data"):
         parser.error("/data is not mounted")
     flags = set(output("findmnt", "--noheadings", "--output", "OPTIONS", "--target", str(args.workspace)).split(","))

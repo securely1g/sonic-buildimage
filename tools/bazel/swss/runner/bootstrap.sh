@@ -113,7 +113,7 @@ ExecStart=/data/sonic-runner/current/run.sh
 Restart=no
 KillMode=control-group
 TimeoutStopSec=5min
-UMask=0077
+UMask=0022
 
 [Install]
 WantedBy=multi-user.target
