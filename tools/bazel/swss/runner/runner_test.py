@@ -1,6 +1,7 @@
 """Checks for registration secret handling and storage accounting, without sudo."""
 import contextlib
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -13,6 +14,67 @@ import rearm
 
 
 class RunnerTests(unittest.TestCase):
+    registration = {"id": 42, "name": "sonic-vs-9-unique", "attempt": "/data/sonic-runner/attempts/unique"}
+
+    def test_readiness_accepts_only_exact_runner_online_or_busy(self):
+        for status, busy in (("online", False), ("offline", True)):
+            with self.subTest(status=status, busy=busy), \
+                    patch.object(rearm, "github_json", return_value={**self.registration, "status": status, "busy": busy}) as api, \
+                    contextlib.redirect_stdout(io.StringIO()) as result:
+                rearm.wait_until_ready("owner/repo", self.registration)
+            self.assertEqual(api.call_args.args[0], "repos/owner/repo/actions/runners/42")
+            self.assertIn("Verified sonic-vs-9-unique", result.getvalue())
+
+    def test_readiness_rejects_another_runner_even_if_online(self):
+        for replacement in ({"id": 43}, {"name": "another-runner"}):
+            with self.subTest(replacement=replacement), \
+                    patch.object(rearm, "github_json", return_value={**self.registration, **replacement, "status": "online"}):
+                with self.assertRaisesRegex(RuntimeError, "different runner identity"):
+                    rearm.wait_until_ready("owner/repo", self.registration)
+
+    def test_readiness_retries_transient_errors_and_offline_status(self):
+        responses = [rearm.GitHubApiError("HTTP 502"), {**self.registration, "status": "offline"},
+                     {**self.registration, "status": "online"}]
+        with patch.object(rearm, "github_json", side_effect=responses) as api, \
+                patch.object(rearm.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()):
+            rearm.wait_until_ready("owner/repo", self.registration)
+        self.assertEqual(api.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_readiness_timeout_is_bounded_and_reports_recovery_details(self):
+        clock = [0.0]
+        with patch.object(rearm.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(rearm.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), \
+                patch.object(rearm, "github_json", side_effect=rearm.GitHubApiError("HTTP 404")) as api:
+            with self.assertRaises(RuntimeError) as error:
+                rearm.wait_until_ready("owner/repo", self.registration, timeout=5)
+        self.assertEqual(clock[0], 5)
+        self.assertEqual(api.call_count, 2)
+        for detail in (self.registration["attempt"], "journalctl", "already consumed a job", "not stopped"):
+            self.assertIn(detail, str(error.exception))
+
+    def test_api_request_cannot_outlive_remaining_readiness_budget(self):
+        with patch.object(rearm.time, "monotonic", return_value=10), \
+                patch.object(rearm.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout='{}')) as run:
+            self.assertEqual(rearm.github_json("repos/owner/repo/actions/runners/42", deadline=12), {})
+        self.assertEqual(run.call_args.kwargs["timeout"], 2)
+
+    def test_registration_metadata_does_not_expose_the_token_in_arguments(self):
+        result = SimpleNamespace(returncode=0, stdout="Attempt created\n" + rearm.REGISTRATION_PREFIX + json.dumps(self.registration) + "\n")
+        command = ["sudo", "-n", "--", "/usr/bin/python3", "/root-owned/rearm.py", "--register"]
+        with patch.object(rearm.subprocess, "run", return_value=result) as run, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(rearm.register_from_operator(command, "short-lived"), self.registration)
+        self.assertEqual(run.call_args.args[0], command)
+        self.assertNotIn("short-lived", command)
+        self.assertEqual(run.call_args.kwargs["input"], "short-lived\n")
+        self.assertEqual(output.getvalue(), "Attempt created\n")
+
+    def test_service_start_without_registration_identity_is_not_success(self):
+        with patch.object(rearm.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+            with self.assertRaisesRegex(RuntimeError, "did not return a runner identity"):
+                rearm.register_from_operator(["sudo", "helper"], "short-lived")
+
     def test_passwordless_sudo_does_not_validate_interactively(self):
         with patch.object(rearm.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
             self.assertEqual(rearm.sudo_command(), ["sudo", "-n", "--"])

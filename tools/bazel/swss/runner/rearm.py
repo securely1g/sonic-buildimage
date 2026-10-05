@@ -11,12 +11,79 @@ import pwd
 import re
 import subprocess
 import sys
+import time
 import uuid
 
 RUNNER_HOME = Path("/data/sonic-runner")
 ARCHIVE = Path("/opt/sonic-runner-tools/releases/actions-runner-linux-x64-2.337.0.tar.gz")
 SHA256 = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
 SERVICE = "sonic-vs-runner.service"
+REGISTRATION_PREFIX = "SONIC_RUNNER_REGISTRATION="
+READY_TIMEOUT = 90
+
+
+class GitHubApiError(RuntimeError):
+    pass
+
+
+def github_json(endpoint, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise GitHubApiError("Readiness deadline reached")
+    try:
+        result = subprocess.run(["gh", "api", endpoint], text=True, capture_output=True,
+                                timeout=min(10, remaining))
+    except subprocess.TimeoutExpired as error:
+        raise GitHubApiError("GitHub API request timed out") from error
+    if result.returncode:
+        raise GitHubApiError((result.stderr or result.stdout).strip())
+    try:
+        return json.loads(result.stdout)
+    except ValueError as error:
+        raise GitHubApiError("GitHub returned an invalid JSON response") from error
+
+
+def wait_until_ready(repo, registration, timeout=READY_TIMEOUT):
+    deadline = time.monotonic() + timeout
+    last_status = "No runner status received"
+    while time.monotonic() < deadline:
+        try:
+            runner = github_json(f"repos/{repo}/actions/runners/{registration['id']}", deadline)
+            if runner.get("id") != registration["id"] or runner.get("name") != registration["name"]:
+                last_status = "GitHub returned a different runner identity"
+                break
+            if runner.get("status") == "online" or runner.get("busy") is True:
+                state = "busy" if runner.get("busy") else "online"
+                print(f"Verified {registration['name']}: GitHub reports {state}")
+                return
+            last_status = f"GitHub reports {runner.get('status', 'unknown')}"
+        except GitHubApiError as error:
+            last_status = str(error)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(3, remaining))
+    raise RuntimeError(
+        f"Could not verify runner readiness within {timeout}s: {last_status}. "
+        f"Attempt: {registration['attempt']}. "
+        f"Inspect sudo journalctl -u {SERVICE} --since today and this attempt's _diag. "
+        "The service was not stopped; inspect its state before retrying. "
+        "Also check whether this ephemeral runner already consumed a job and unregistered.")
+
+
+def register_from_operator(command, token):
+    result = subprocess.run(command, input=token + "\n", text=True, stdout=subprocess.PIPE)
+    registration = None
+    for line in result.stdout.splitlines():
+        if line.startswith(REGISTRATION_PREFIX):
+            registration = json.loads(line[len(REGISTRATION_PREFIX):])
+        else:
+            print(line, flush=True)
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command)
+    if (not isinstance(registration, dict) or not isinstance(registration.get("id"), int)
+            or registration["id"] <= 0 or not registration.get("name") or not registration.get("attempt")):
+        raise RuntimeError("Registration did not return a runner identity; inspect the service journal before retrying")
+    return registration
 
 
 def routing_label(pr):
@@ -91,6 +158,7 @@ def register(args):
         account = pwd.getpwnam("sonic-runner")
         attempt.mkdir(mode=0o700)
         os.chown(attempt, account.pw_uid, account.pw_gid)
+        print(f"Attempt directory: {attempt}", flush=True)
         as_runner(["tar", "xzf", str(ARCHIVE), "--no-same-owner", "-C", str(attempt)])
         # The caller sends only a short-lived registration token through stdin.
         token = sys.stdin.readline().strip()
@@ -101,14 +169,18 @@ def register(args):
                    "--url", f"https://github.com/{args.repo}", "--name", runner_name,
                    "--labels", routing_label(args.pr), "--work", "_work"], token=token, cwd=attempt)
         del token
+        config = json.loads((attempt / ".runner").read_text())
+        if config.get("agentName") != runner_name or not isinstance(config.get("agentId"), int):
+            raise RuntimeError(f"Unexpected local runner identity in {attempt}; inspect before retrying")
+        registration = {"id": config["agentId"], "name": runner_name, "attempt": str(attempt)}
         # Keep every prior attempt intact for logs and interrupted checkout diagnosis.
         link = RUNNER_HOME / f".current-{stamp}"
         link.symlink_to(attempt)
         link.replace(current)
         subprocess.run(["systemctl", "reset-failed", SERVICE], check=True)
         subprocess.run(["systemctl", "start", SERVICE], check=True)
-        print(f"Started {runner_name} with label {routing_label(args.pr)}")
-        print(f"Attempt directory: {attempt}")
+        print(f"Service start requested for {runner_name} with label {routing_label(args.pr)}")
+        print(REGISTRATION_PREFIX + json.dumps(registration), flush=True)
 
 
 def main():
@@ -145,7 +217,9 @@ def main():
     token = json.loads(token_response)["token"]
     command = sudo + ["/usr/bin/python3", str(Path(__file__).resolve()), "--register", "--repo", args.repo]
     command += ["--pr", str(args.pr)] if args.pr else ["--master"]
-    subprocess.run(command, input=token + "\n", text=True, check=True)
+    registration = register_from_operator(command, token)
+    del token, token_response
+    wait_until_ready(args.repo, registration)
 
 
 if __name__ == "__main__":

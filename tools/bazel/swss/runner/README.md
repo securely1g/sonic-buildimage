@@ -94,6 +94,10 @@ Only a short-lived registration token crosses to the runner, through standard
 input and its environment rather than command arguments; the operator's
 personal token and SSH agent are not copied. The service has `Restart=no` and
 starts only when `.runner` exists. No automatic registration occurs at boot.
+Rearm waits up to 90 seconds for GitHub to report that exact runner online or
+busy. If it cannot verify the connection, it reports the attempt directory and
+journal command; it leaves the service intact for diagnosis. Check whether the
+runner already consumed a job before retrying.
 GitHub runner auto-update remains enabled; update the archive version and its
 verified checksum together when maintaining the bootstrap baseline.
 
@@ -103,8 +107,8 @@ verified checksum together when maintaining the bootstrap baseline.
 gh run watch RUN_ID --repo securely1g/sonic-buildimage --exit-status
 sudo journalctl -u sonic-vs-runner.service --since today
 sudo systemctl status sonic-vs-runner.service
-sudo du -sh /data/sonic-runner/attempts/*
-docker system df
+sudo du -h --max-depth=1 /data/sonic-runner/attempts
+sudo docker system df
 ```
 
 Keep `_diag` and `_work` inside the previous attempt until the failed run is
@@ -152,10 +156,13 @@ not a security boundary. No full host image/package lock, automatic cleanup,
 network mirror, remote execution, or unattended runner autoscaler is provided.
 Downloads still depend on GitHub, package registries and upstream repositories.
 Fresh attempts have cold workspace caches; retained Docker layers
-are not a complete build cache. Mutable upstream container tags and the Bazelisk
-download path remain reproducibility dependencies; this tooling does not pin or
-mirror them. Host checks do not prove the full VS image builds, boots, or forwards
-traffic; track those results independently.
+are not a complete build cache. SONiC's existing version machinery pins Debian
+builder image digests and supplies versioned download mirrors and Python
+constraints. This run still uses rolling APT repositories, and download/Python
+fallback paths can accept different inputs. Runner provisioning does not make
+those mechanisms strict or freeze the host package environment. Host checks do
+not prove the full VS image builds, boots, or forwards traffic; track those
+results independently.
 
 Tool checks, requiring no sudo or GitHub token:
 
