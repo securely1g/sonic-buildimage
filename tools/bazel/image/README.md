@@ -15,27 +15,105 @@ previously finished installer as its host input. The source-image CI job builds
 these predecessors with the native Make recipes in the same invocation, then runs
 this Bazel graph. A warm developer build can reuse previously generated inputs.
 
+## Build ownership and installer paths
+
+There are two alternative installer assembly paths. Both produce an ONIE
+installer named `sonic-vs.bin`; the filename does **not** establish byte-for-byte
+identity. Path A uses the normal Make assembly. Path B uses the scoped Bazel
+assembly described here. Its supported configuration is unsigned AMD64 Trixie
+VS with the runtime SWSS container. Equivalence across all Make configurations
+is not claimed.
+
 ```mermaid
-flowchart LR
-    NATIVE[Native sources and Make recipes] --> SNAP
-    NATIVE --> OTHER
-    SWSS[SWSS source] --> OCI[Bazel OCI image]
-    OCI --> META[Service labels]
-    SNAP[Pre-container host snapshot] --> HOST[Host filesystem and boot files]
-    CONFIG[Native configuration and scripts] --> HOST
-    META --> HOST
-    OTHER[Other service archives] --> OTHERMETA[Service labels]
-    OTHERMETA --> HOST
-    LOCAL[Local package archives] --> HOST
-    OCI --> IMPORT[Private Docker import]
-    OTHER --> IMPORTS[Cached private imports]
-    LOCAL --> IMPORTS
-    IMPORT --> STORE[Merge compressed Docker layers]
-    IMPORTS --> STORE
-    HOST --> ZIP[Payload ZIP]
-    STORE --> ZIP
-    ZIP --> ONIE[ONIE installer]
+flowchart TB
+    COMMON["1. Common C++ library<br/>sonic-swss-common/BUILD.bazel"]
+    RUST["2. Common Rust library<br/>sonic-swss-common/crates/swss-common/BUILD.bazel"]
+    SWSS["3. SWSS C++ and Rust programs<br/>sonic-swss per-program BUILD.bazel"]
+    TARS["4. Runtime tar packages<br/>sonic-swss/dist/BUILD.bazel + dependency BUILD files"]
+    OCI["5. SWSS OCI image + configuration<br/>dockers/docker-orchagent/BUILD.bazel<br/>and config/BUILD.bazel"]
+    ARCHIVE["6. Docker-save tar → gzip<br/>dockers/docker-orchagent/BUILD.bazel<br/>docker-orchagent.gz"]
+    NATIVE["7. Native prerequisites<br/>Make recipes: host packages, base image,<br/>other service archives and configuration"]
+    COMMON --> RUST
+    COMMON --> SWSS
+    RUST --> SWSS
+    COMMON --> TARS
+    SWSS --> TARS
+    TARS --> OCI
+    NATIVE -->|config-engine base + Scapy wheel| OCI
+    OCI --> ARCHIVE
+
+    subgraph MAKEPATH["Path A — normal Make installer assembly"]
+        MAKE["8. slave.mk → build_debian.sh → build_image.sh"]
+        MAKEBIN["target/sonic-vs.bin"]
+        MAKE --> MAKEBIN
+    end
+    ARCHIVE -->|Make selects Bazel SWSS archive| MAKE
+    NATIVE --> MAKE
+
+    subgraph BAZELPATH["Path B — generated tools/bazel/image/vs/BUILD.bazel"]
+        META["9. Service metadata"]
+        HOST["10. Host filesystem + boot files"]
+        IMPORT["11. Private Docker import per service"]
+        STORE["12. Merge compressed Docker layers"]
+        ZIP["13. Payload ZIP"]
+        ONIE["14. ONIE wrapper"]
+        BAZELBIN["bazel-bin/tools/bazel/image/vs/sonic-vs.bin"]
+        META --> HOST
+        IMPORT --> STORE
+        HOST --> ZIP
+        STORE --> ZIP
+        ZIP --> ONIE
+        STORE --> ONIE
+        ONIE --> BAZELBIN
+    end
+    OCI -->|SWSS labels| META
+    NATIVE -->|other service labels| META
+    NATIVE -->|pre-container snapshot + source/configuration| HOST
+    NATIVE -->|local packages: full archives| HOST
+    ARCHIVE --> IMPORT
+    NATIVE -->|other service archives| IMPORT
 ```
+
+The numbers map each block to its owning declaration. Paths in the diagram
+omit the `src/` submodule prefix for readability. `@sonic_swss` and
+`@sonic_swss_common` refer to those repositories' recorded source revisions.
+
+| Block | Owning BUILD file or native recipe | Main targets / responsibility |
+| --- | --- | --- |
+| 1. Common C++ | [src/sonic-swss-common/BUILD.bazel](../../../src/sonic-swss-common/BUILD.bazel) | `@sonic_swss_common//:libswsscommon_shared`; Common owns its C++ library. |
+| 2. Common Rust | [src/sonic-swss-common/crates/swss-common/BUILD.bazel](../../../src/sonic-swss-common/crates/swss-common/BUILD.bazel) | `@sonic_swss_common//crates/swss-common:swss_common`; Common owns bindgen and its reusable Rust library. |
+| 3. SWSS programs | Per-program files, including [orchagent/BUILD.bazel](../../../src/sonic-swss/orchagent/BUILD.bazel), [cfgmgr/BUILD.bazel](../../../src/sonic-swss/cfgmgr/BUILD.bazel) and [crates/countersyncd/BUILD.bazel](../../../src/sonic-swss/crates/countersyncd/BUILD.bazel) | `@sonic_swss//orchagent:orchagent`, manager/sync daemons, and `@sonic_swss//crates/countersyncd:countersyncd`. The Rust consumer depends on Common's target. |
+| 4. Runtime tar packages | [src/sonic-swss/dist/BUILD.bazel](../../../src/sonic-swss/dist/BUILD.bazel), [Common's root BUILD.bazel](../../../src/sonic-swss-common/BUILD.bazel), and each dependency repository's BUILD files | `@sonic_swss//dist:swss_pkg`, `@sonic_swss_common//:libswsscommon_pkg`, and sairedis/DASH/protobuf runtime tars. The container's `:rdeps` combines these tars directly. |
+| 5. SWSS OCI image | [dockers/docker-orchagent/BUILD.bazel](../../../dockers/docker-orchagent/BUILD.bazel) and [config/BUILD.bazel](../../../dockers/docker-orchagent/config/BUILD.bazel) | `//dockers/docker-orchagent:docker-orchagent` combines the converted native base, `:apt_deps`, `:rdeps`, and configuration targets `:files` / `:python_runtime`. |
+| 6. Docker archive + gzip | [dockers/docker-orchagent/BUILD.bazel](../../../dockers/docker-orchagent/BUILD.bazel), via [sonic_docker_archive.bzl](../oci/sonic_docker_archive.bzl) | `//dockers/docker-orchagent:docker-orchagent.tar` selects the `oci_load` tarball; `:docker-orchagent.gz` compresses it through `rules_gzip`. [tools/bazel/gzip/BUILD.bazel](../gzip/BUILD.bazel) configures the compressor to omit filenames and timestamps. |
+| 7. Native prerequisites | [slave.mk](../../../slave.mk), the existing `rules/*.mk` recipes, and [native/native.mk](native/native.mk) | For Path B, `bazel-vs-native-inputs` stops before container loading and installer packaging. It produces a snapshot and other inputs, **not a completed `sonic-vs.bin`**, despite reusing the native target name internally. |
+| 8. Make installer | [slave.mk](../../../slave.mk), [build_debian.sh](../../../build_debian.sh), [build_image.sh](../../../build_image.sh) | Path A finishes the native host/container assembly and writes `target/sonic-vs.bin`. No BUILD file owns this final assembly. |
+
+All blocks 9–14 are instantiated by **`tools/bazel/image/vs/BUILD.bazel`**.
+[prepare_inputs.py](prepare_inputs.py) creates that file from the tracked
+[vs/BUILD.bazel.in](vs/BUILD.bazel.in), and generates
+`target/bazel-image-inputs/BUILD.bazel` / `inputs.bzl` to declare the native
+inputs. The shared implementation is [defs.bzl](defs.bzl). The neighboring
+[tools/bazel/image/BUILD.bazel](BUILD.bazel) declares tests and exported sources;
+it does not instantiate the final installer.
+
+| Block | Target inside `//tools/bazel/image/vs` | Implementation |
+| --- | --- | --- |
+| 9. Service metadata | `:sonic-vs.bin_<service>_metadata` | `service_metadata` → [metadata.py](metadata.py); SWSS labels come from the OCI image, other service labels from their archives. |
+| 10. Host filesystem | `:sonic-vs.bin_host` | `host_filesystem` → [host.py](host.py), using the native `build_debian.sh` and extension template. |
+| 11. Per-service import | `:sonic-vs.bin_<service>_store` | `docker_store_part` → [import_store.py](import_store.py) and [store.py](store.py); each action uses a private Docker daemon. |
+| 12. Docker layer merge | `:sonic-vs.bin_dockerfs` | `docker_store` → [store.py](store.py). |
+| 13. Payload ZIP | `:sonic-vs.bin_fs` | `image_payload` → [installer.py](installer.py). |
+| 14. ONIE installer | `:sonic-vs.bin` | `onie_installer` → [installer.py](installer.py). |
+
+**PR #2's full image CI chooses Path B.** The `Bazel VS installer (AMD64)` job
+in [bazel.yml](../../../.github/workflows/bazel.yml) runs
+[tools/bazel/ci/image.py](../ci/image.py): native prerequisite preparation,
+then `//tools/bazel/image/vs:sonic-vs.bin`. It verifies the result and publishes
+`artifacts/image/sonic-vs.bin` in the `sonic-vs-bazel-amd64` artifact. The hosted
+package/test jobs do not build a complete installer. The selected SWSS Bazel
+path uses runtime tars; native prerequisite recipes may still build DEBs outside
+Bazel.
 
 ## Cache boundaries
 
