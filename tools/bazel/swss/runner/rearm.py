@@ -169,7 +169,7 @@ def register(args):
                    "--url", f"https://github.com/{args.repo}", "--name", runner_name,
                    "--labels", routing_label(args.pr), "--work", "_work"], token=token, cwd=attempt)
         del token
-        config = json.loads((attempt / ".runner").read_text())
+        config = json.loads((attempt / ".runner").read_text(encoding="utf-8-sig"))
         if config.get("agentName") != runner_name or not isinstance(config.get("agentId"), int):
             raise RuntimeError(f"Unexpected local runner identity in {attempt}; inspect before retrying")
         registration = {"id": config["agentId"], "name": runner_name, "attempt": str(attempt)}

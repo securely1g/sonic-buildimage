@@ -16,6 +16,45 @@ import rearm
 class RunnerTests(unittest.TestCase):
     registration = {"id": 42, "name": "sonic-vs-9-unique", "attempt": "/data/sonic-runner/attempts/unique"}
 
+    def test_register_reads_runner_written_bom_identity_before_starting_service(self):
+        # Runner.Listener writes this JSON using a UTF-8 BOM. Exercise the real
+        # register stage and filesystem, replacing only privileged/external work.
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / "attempts").mkdir()
+            lock = home / "register.lock"
+            account = SimpleNamespace(pw_uid=1001, pw_gid=1001)
+
+            def configure(command, *, token=None, cwd=None):
+                if command[0].endswith("config.sh"):
+                    self.assertEqual(token, "short-lived")
+                    name = command[command.index("--name") + 1]
+                    (cwd / ".runner").write_text(json.dumps({"agentId": 42, "agentName": name,
+                                                           "ephemeral": True, "workFolder": "_work"}),
+                                                  encoding="utf-8-sig")
+
+            with patch.object(rearm, "RUNNER_HOME", home), \
+                    patch.object(rearm.os, "geteuid", return_value=0), \
+                    patch.object(rearm.os.path, "ismount", return_value=True), \
+                    patch.object(rearm.os, "chown"), \
+                    patch.object(rearm, "open", side_effect=lambda *args: lock.open("w"), create=True), \
+                    patch.object(rearm, "idle_host"), \
+                    patch.object(rearm.pwd, "getpwnam", return_value=account), \
+                    patch.object(rearm, "archive_digest", return_value=rearm.SHA256), \
+                    patch.object(rearm, "as_runner", side_effect=configure), \
+                    patch.object(rearm.subprocess, "check_output", return_value="loaded\n"), \
+                    patch.object(rearm.subprocess, "run") as run, \
+                    patch.object(rearm.sys, "stdin", io.StringIO("short-lived\n")), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                rearm.register(SimpleNamespace(repo="owner/repo", pr=9))
+            metadata = json.loads(output.getvalue().split(rearm.REGISTRATION_PREFIX)[1])
+            attempt = Path(metadata["attempt"])
+            self.assertEqual(metadata["id"], 42)
+            self.assertEqual((home / "current").resolve(), attempt)
+            self.assertTrue((attempt / ".runner").read_bytes().startswith(b"\xef\xbb\xbf"))
+            self.assertNotIn("short-lived", output.getvalue())
+            self.assertEqual(run.call_args.args[0], ["systemctl", "start", rearm.SERVICE])
+
     def test_readiness_accepts_only_exact_runner_online_or_busy(self):
         for status, busy in (("online", False), ("offline", True)):
             with self.subTest(status=status, busy=busy), \

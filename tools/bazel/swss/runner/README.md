@@ -86,6 +86,10 @@ workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
 run's workflow. A new registration is required after each consumed job.
+Pushing another commit to the PR cancels its active workflow, including a full
+image build, because the workflow uses `cancel-in-progress`. Coordinate changes
+before arming a long build. A cancelled job also consumes its one-job runner;
+arm a new runner for the replacement run.
 
 Rearm refuses a running listener/worker or an unfinished previous registration.
 It rechecks the host, verifies the archive, extracts a fresh runner under
