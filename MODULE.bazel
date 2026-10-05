@@ -6,6 +6,7 @@ module(
     ],
 )
 
+bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "pigz", version = "2.8")
@@ -22,6 +23,18 @@ bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
 register_toolchains("//tools/bazel/gzip:toolchain")
+
+# Import Make's Docker archives with the regctl binary pinned by rules_oci.
+# Use a root-owned name so rules_oci's default repositories are not redeclared.
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+oci.toolchains(name = "sonic_import")
+use_repo(
+    oci,
+    oci_crane_toolchains = "sonic_import_crane_toolchains",
+    oci_regctl_toolchains = "sonic_import_regctl_toolchains",
+)
+
+register_toolchains("@oci_crane_toolchains//:all", "@oci_regctl_toolchains//:all")
 
 # Build SWSS and its runtime libraries from source without changing the source
 # submodules selected by the rest of the Make image build.

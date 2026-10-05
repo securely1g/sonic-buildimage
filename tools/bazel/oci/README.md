@@ -55,6 +55,33 @@ The shared tests cover independent container prefixes, supported assignments,
 rejected dynamic inputs, strict rendering and label encoding. Orchagent's tests
 check its existing manifest and startup behavior and all five CLI outputs.
 
+## Import Make's base images
+
+`docker_archive_to_oci_layout` follows the upstream
+[rules_oci tarball-as-base example](https://github.com/bazel-contrib/rules_oci/blob/v2.2.6/examples/tarball_as_base/BUILD.bazel):
+standard `run_binary` runs the `regctl` executable pinned by `rules_oci` 2.2.6.
+The adapter imports a Docker-save or OCI archive, then checks the requested
+OS and architecture in both the image config and any index platform descriptor.
+An incompatible base fails the same build action before `oci_image` adds layers.
+
+Regctl owns archive conversion, including layer compression. Image config bytes,
+uncompressed layer contents and layer order are preserved; OCI blob bytes may
+differ from the former converter. Repeating an import with equivalent input
+archives produces identical layout files, including when source names, outer
+tar timestamps and gzip compression differ.
+
+Native AMD64 and ARM64 CI run the import tests and a real consumer that adds a
+layer through `oci_image`, then exports through `sonic_docker_archive`:
+
+```sh
+bazel test //tools/bazel/oci:docker_archive_to_oci_layout_test \
+  //tools/bazel/oci:docker_archive_import_consumer_test
+```
+
+The consumer fixture uses an AMD64 image on either execution host. Unit tests
+also exercise ARM64 and OS mismatches. These targets need no Make outputs or
+Docker daemon and create no Debian packages.
+
 ## Reproducible Docker archives
 
 `sonic_docker_archive` uses published `rules_gzip` to compress the Docker-save

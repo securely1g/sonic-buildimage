@@ -2,6 +2,7 @@ load("@container_config_pip//:requirements.bzl", "requirement")
 load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load(":docker_archive_to_oci.bzl", "docker_archive_to_oci_layout")
 load(":sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
@@ -22,18 +23,113 @@ py_test(
     deps = [":container_config"],
 )
 
-# Run via the hermetic Python toolchain (see MODULE.bazel), not system python3.
-# Used as the default `_converter` of docker_archive_to_oci_layout.
+# The same pinned executable and import wrapper are used by production and tests.
+filegroup(
+    name = "regctl",
+    srcs = ["@oci_regctl_toolchains//:current_toolchain"],
+)
+
 py_binary(
-    name = "docker_archive_to_oci_layout",
-    srcs = ["docker_archive_to_oci_layout.py"],
+    name = "import_docker_archive",
+    srcs = ["import_docker_archive.py"],
+)
+
+py_library(
+    name = "import_fixture_lib",
+    srcs = ["import_fixture.py"],
+    imports = ["."],
+)
+
+py_binary(
+    name = "import_fixture",
+    srcs = ["import_fixture.py"],
 )
 
 py_test(
     name = "docker_archive_to_oci_layout_test",
     size = "small",
     srcs = ["docker_archive_to_oci_layout_test.py"],
-    data = [":docker_archive_to_oci_layout"],
+    args = [
+        "--wrapper=$(location :import_docker_archive)",
+        "--regctl=$(location :regctl)",
+    ],
+    data = [
+        ":import_docker_archive",
+        ":regctl",
+    ],
+    deps = [":import_fixture_lib"],
+)
+
+# Exercise the production import macro and rules_oci consumer on native CI
+# architectures, with no Docker daemon or Make-built package dependencies.
+genrule(
+    name = "import_fixture_sources",
+    outs = [
+        "import-first.tar",
+        "import-renamed.tar.gz",
+        "import-overlay.tar",
+    ],
+    cmd = "$(execpath :import_fixture) " +
+          "--first $(location :import-first.tar) " +
+          "--second $(location :import-renamed.tar.gz) " +
+          "--overlay $(location :import-overlay.tar) --architecture amd64",
+    tools = [":import_fixture"],
+)
+
+docker_archive_to_oci_layout(
+    name = "import_fixture_first",
+    src = ":import-first.tar",
+    expected_platform = "linux/amd64",
+)
+
+docker_archive_to_oci_layout(
+    name = "import_fixture_second",
+    src = ":import-renamed.tar.gz",
+    expected_platform = "linux/amd64",
+)
+
+oci_image(
+    name = "import-consumer-first",
+    base = ":import_fixture_first",
+    env = {"CONSUMER_FIXTURE": "added"},
+    tars = [":import-overlay.tar"],
+)
+
+oci_image(
+    name = "import-consumer-second",
+    base = ":import_fixture_second",
+    env = {"CONSUMER_FIXTURE": "added"},
+    tars = [":import-overlay.tar"],
+)
+
+sonic_docker_archive(
+    name = "import-consumer-first.gz",
+    image = ":import-consumer-first",
+)
+
+sonic_docker_archive(
+    name = "import-consumer-second.gz",
+    image = ":import-consumer-second",
+)
+
+py_test(
+    name = "docker_archive_import_consumer_test",
+    size = "small",
+    srcs = ["docker_archive_import_consumer_test.py"],
+    args = [
+        "--first-layout=$(location :import_fixture_first)",
+        "--second-layout=$(location :import_fixture_second)",
+        "--first-export=$(location :import-consumer-first.gz)",
+        "--second-export=$(location :import-consumer-second.gz)",
+        "--architecture=amd64",
+    ],
+    data = [
+        ":import-consumer-first.gz",
+        ":import-consumer-second.gz",
+        ":import_fixture_first",
+        ":import_fixture_second",
+    ],
+    deps = [":import_fixture_lib"],
 )
 
 # A source-only fixture exercises the production archive macro on both native

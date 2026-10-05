@@ -1,45 +1,32 @@
-"""Turn a docker-archive (`docker save` output) into an OCI image layout directory
+"""Import Make's Docker archives as rules_oci base images with pinned regctl."""
 
-rules_oci's `base` expects an OCI layout (`oci-layout`/`index.json`/`blobs`),
-but the SONiC base images are produced by the legacy Make flow as docker-archive tarballs.
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 
-This wraps `docker_archive_to_oci_layout.py`in an action that emits a tree artifact
-in exactly the shape `oci_image` produces.
-"""
+def docker_archive_to_oci_layout(name, src, expected_platform = "", **kwargs):
+    """Import an archive and check its platform before consumers add layers.
 
-def _docker_archive_to_oci_layout_impl(ctx):
-    layout = ctx.actions.declare_directory(ctx.label.name + "_layout")
-    args = ctx.actions.args()
-    args.add("--src", ctx.file.src)
-    args.add("--out", layout.path)
-    if ctx.attr.expected_platform:
-        args.add("--expected-platform", ctx.attr.expected_platform)
-    ctx.actions.run(
-        inputs = [ctx.file.src],
-        outputs = [layout],
-        executable = ctx.executable._converter,
-        arguments = [args],
+    Uses rules_oci's tarball_as_base recipe. The small adapter only invokes
+    regctl and validates the result; regctl owns archive and blob conversion.
+    """
+    regctl = Label("//tools/bazel/oci:regctl")
+    args = [
+        "--regctl",
+        "$(execpath %s)" % regctl,
+        "--src",
+        "$(execpath %s)" % src,
+        "--out",
+        "$@",
+    ]
+    if expected_platform:
+        args += ["--expected-platform", expected_platform]
+
+    run_binary(
+        name = name,
+        srcs = [src, regctl],
+        args = args,
+        out_dirs = [name + "_layout"],
+        tool = Label("//tools/bazel/oci:import_docker_archive"),
         mnemonic = "DockerArchiveToOci",
-        progress_message = "Converting %{label} docker-archive to OCI layout",
+        progress_message = "Importing %{label} with regctl",
+        **kwargs
     )
-    return [DefaultInfo(files = depset([layout]))]
-
-docker_archive_to_oci_layout = rule(
-    implementation = _docker_archive_to_oci_layout_impl,
-    doc = "Convert a docker-archive tarball into an OCI image layout directory.",
-    attrs = {
-        "expected_platform": attr.string(
-            doc = "Require a single imported image for this os/architecture, such as linux/amd64.",
-        ),
-        "src": attr.label(
-            allow_single_file = True,
-            mandatory = True,
-            doc = "docker-archive tarball (.tar or .tar.gz), e.g. from `docker save`.",
-        ),
-        "_converter": attr.label(
-            default = Label("//tools/bazel/oci:docker_archive_to_oci_layout"),
-            executable = True,
-            cfg = "exec",
-        ),
-    },
-)
