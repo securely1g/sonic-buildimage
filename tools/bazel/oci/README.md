@@ -54,3 +54,30 @@ bazel test //tools/bazel/oci:container_config_test \
 The shared tests cover independent container prefixes, supported assignments,
 rejected dynamic inputs, strict rendering and label encoding. Orchagent's tests
 check its existing manifest and startup behavior and all five CLI outputs.
+
+## Reproducible Docker archives
+
+`sonic_docker_archive` uses published `rules_gzip` to compress the Docker-save
+tar produced by `oci_load`. Its execution toolchain uses pinned `pigz` with
+`--no-name`, configured through standard `rules_multirun` and `toolchain_utils`
+rules. Compression stays at level 6; source filenames and timestamps are omitted
+from the gzip header. A standard Skylib `copy_file` gives each input the basename
+needed to retain Make's `<container>.gz` filename. The intermediate copy lives in
+a separate directory so it cannot collide with the OCI image directory.
+
+The `//tools/bazel/oci:sonic_docker_archive_test` fixture exercises this macro and
+checks its Docker tag, configuration and layer contents, zero gzip timestamp,
+absent source filename, and identical compressed bytes for identical tars with
+different source filenames and requested modification times. It reports the
+observed input times because Bazel may normalize generated-file metadata.
+
+Native AMD64 and ARM64 jobs run this fixture without Make outputs or a Docker
+daemon. To run it on native AMD64 Trixie:
+
+```sh
+bazel test //tools/bazel/oci:sonic_docker_archive_test
+```
+
+On native ARM64 Trixie, also select
+`--platforms=@sonic_build_infra//platforms:aarch64_trixie`. This test validates
+compression and archive structure; it does not build a production ARM64 image.

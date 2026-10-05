@@ -6,21 +6,20 @@ gzipped `docker save` archive.
 This macro replicates that process in Bazel, creating intermediary targets when necessary.
 """
 
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
 load("@rules_oci//oci:defs.bzl", "oci_load")
-load("//tools/bazel:gzip.bzl", "gzip")
 
 def sonic_docker_archive(name, image, visibility = None):
     """Packages an `oci_image` into `target/<name>`, where the Make build expects it.
 
-    For `name = "docker-orchagent.gz"`, this defines:
-
     The archive is always tagged `<name without .gz>:latest`,
     as expected by `sonic_debian_extension.j2`.
 
-    This macro generates several intermediate targets, derived from `name`. Here are the useful ones:
+    For `name = "docker-orchagent.gz"`, useful targets include:
 
-    - `:{name}.load`, an `oci_load` tagged `{name}:latest`. Can be run with `bazel run` to load the image into a local registry.
-    - `:{name}`, the compressed archive exported by the Make bridge.
+    - `:docker-orchagent.gz`, the compressed archive exported by the Make bridge.
+    - `:docker-orchagent.load`, which loads the image into the local Docker engine.
 
     Args:
         name: File name of the archive, including the `.gz` suffix. Must match the
@@ -47,8 +46,19 @@ def sonic_docker_archive(name, image, visibility = None):
         visibility = visibility,
     )
 
-    gzip(
-        name = name,
+    # gzip_compress names its output <input basename>.gz. Give each input the
+    # expected stem so runtime/debug archives keep their Make-compatible names.
+    copy_file(
+        name = stem + ".gzip_input",
         src = stem + ".tar",
+        out = stem + ".gzip_input/" + stem,
+        allow_symlink = True,
+        visibility = ["//visibility:private"],
+    )
+
+    gzip_compress(
+        name = name,
+        src = stem + ".gzip_input",
+        level = 6,
         visibility = visibility,
     )

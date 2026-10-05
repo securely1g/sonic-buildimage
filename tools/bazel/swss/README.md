@@ -49,6 +49,13 @@ the completed archive to `target/` only after the Bazel build succeeds.
 
 ## Validation
 
+The independent `Container archive (AMD64)` and `Container archive (ARM64)` checks
+exercise the real archive macro with a tiny OCI image. They verify reproducible
+gzip headers and bytes, Docker-save contents and the expected image tag without
+building Debian packages or needing Make outputs. Artifacts retain the fixture
+tar and gzip files, hashes, test results, generated module lock and resolved
+module graph. See the [archive guide](../oci/README.md#reproducible-docker-archives).
+
 The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
 the Make handoff, archive conversion, configuration rendering and package
 validator, then builds SWSS, its runtime dependencies, configuration and matching
@@ -72,6 +79,10 @@ The [runner setup and recovery guide](runner/README.md) provides checked
 provisioning, host preflight and one-job rearming, including PR #9 examples.
 When no matching runner is available, this job remains queued; the
 source-layer check alone does not validate the complete image.
+
+Workflow concurrency is scoped to the source revision so a new push can run its
+hosted checks while an older full VS build keeps its progress. A rerun of the same
+revision supersedes its earlier run; a new full VS job waits for its runner.
 
 The Make base supplies Python Common bindings while Bazel supplies Common's C++
 library; their compatibility must be checked with the complete image. Guest
