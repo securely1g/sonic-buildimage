@@ -13,6 +13,25 @@ import rearm
 
 
 class RunnerTests(unittest.TestCase):
+    def test_passwordless_sudo_does_not_validate_interactively(self):
+        with patch.object(rearm.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            self.assertEqual(rearm.sudo_command(), ["sudo", "-n", "--"])
+        run.assert_called_once_with(["sudo", "-n", "--", "/usr/bin/true"], capture_output=True)
+
+    def test_sudo_without_a_terminal_fails_before_prompting(self):
+        with patch.object(rearm.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as run, \
+                patch.object(rearm.sys.stdin, "isatty", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "interactive terminal"):
+                rearm.sudo_command()
+        self.assertEqual(run.call_count, 1)
+
+    def test_sudo_interactive_fallback_validates_once(self):
+        with patch.object(rearm.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as run, \
+                patch.object(rearm.sys.stdin, "isatty", return_value=True):
+            self.assertEqual(rearm.sudo_command(), ["sudo", "-n", "--"])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0], ["sudo", "-v"])
+
     def test_parsed_output_excludes_successful_stderr_banner(self):
         result = preflight.output(sys.executable, "-c", "import sys; print('42'); print('j2 version banner', file=sys.stderr)")
         self.assertEqual(result, "42")

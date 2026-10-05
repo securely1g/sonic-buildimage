@@ -40,6 +40,16 @@ def archive_digest(path):
     return digest.hexdigest()
 
 
+def sudo_command():
+    probe = subprocess.run(["sudo", "-n", "--", "/usr/bin/true"], capture_output=True)
+    if probe.returncode == 0:
+        return ["sudo", "-n", "--"]
+    if not sys.stdin.isatty():
+        raise RuntimeError("Sudo needs authentication. Run this command in an interactive terminal or configure passwordless sudo for this operator")
+    subprocess.run(["sudo", "-v"], check=True)
+    return ["sudo", "-n", "--"]
+
+
 def as_runner(command, *, token=None, cwd=None):
     account = pwd.getpwnam("sonic-runner")
     subprocess.run(command, check=True, cwd=cwd, env=runner_environment(token),
@@ -127,13 +137,13 @@ def main():
         return
     if os.geteuid() == 0:
         parser.error("Run as your normal GitHub-authenticated operator account, without sudo")
-    subprocess.run(["sudo", "-v"], check=True)
+    sudo = sudo_command()
     identity = subprocess.check_output(["gh", "api", "user", "--jq", ".login"], text=True).strip()
     print(f"Using operator GitHub account {identity} for {args.repo}", flush=True)
     token_response = subprocess.check_output(
         ["gh", "api", "--method", "POST", f"repos/{args.repo}/actions/runners/registration-token"], text=True)
     token = json.loads(token_response)["token"]
-    command = ["sudo", "--", "/usr/bin/python3", str(Path(__file__).resolve()), "--register", "--repo", args.repo]
+    command = sudo + ["/usr/bin/python3", str(Path(__file__).resolve()), "--register", "--repo", args.repo]
     command += ["--pr", str(args.pr)] if args.pr else ["--master"]
     subprocess.run(command, input=token + "\n", text=True, check=True)
 
