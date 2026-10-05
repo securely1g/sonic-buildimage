@@ -2,6 +2,7 @@
 """Non-destructive host checks, executed as the runner service account."""
 import argparse
 import fcntl
+import gzip
 import os
 from pathlib import Path
 import platform
@@ -38,6 +39,41 @@ def check_worker_umasks():
     print(f"File creation masks: process {process_mask}; runner service {service_mask}")
 
 
+def check_legacy_nat(modules=Path("/proc/modules"), config=None,
+                     compressed_config=Path("/proc/config.gz"), builtin_modules=None):
+    """The builder uses iptables-legacy even when host Docker uses nftables."""
+    kernel = platform.release()
+    config = config or Path(f"/boot/config-{kernel}")
+    builtin_modules = builtin_modules or Path(f"/lib/modules/{kernel}/modules.builtin")
+    try:
+        if any(line.split()[0] == "iptable_nat" for line in modules.read_text().splitlines() if line.split()):
+            print("Nested Docker: iptable_nat is loaded")
+            return
+    except (FileNotFoundError, PermissionError):
+        pass
+    for path in (config, compressed_config):
+        try:
+            if path == compressed_config:
+                with gzip.open(path, "rt") as stream:
+                    text = stream.read()
+            else:
+                text = path.read_text()
+            if "CONFIG_IP_NF_NAT=y" in text.splitlines():
+                print("Nested Docker: legacy IPv4 NAT is built into the kernel")
+                return
+        except (FileNotFoundError, PermissionError):
+            pass
+    try:
+        if any(line.endswith("/iptable_nat.ko") for line in builtin_modules.read_text().splitlines()):
+            print("Nested Docker: iptable_nat is listed as built into the kernel")
+            return
+    except (FileNotFoundError, PermissionError):
+        pass
+    raise RuntimeError("Nested Docker needs host legacy IPv4 NAT support: run sudo modprobe iptable_nat "
+                       "and rerun bootstrap.sh to persist it. If missing, install modules matching the running kernel; "
+                       "the builder cannot load host modules from its own /lib/modules.")
+
+
 def check_disk(workspace, docker_root, work_gib, docker_gib):
     """A shared filesystem must cover both budgets, not count free space twice."""
     work_free = shutil.disk_usage(workspace).free / 1024**3
@@ -65,6 +101,7 @@ def main():
         parser.error("The VS job needs native x86_64")
     check_worker_umasks()
     check_ghostscript()
+    check_legacy_nat()
     if not os.path.ismount("/data"):
         parser.error("/data is not mounted")
     flags = set(output("findmnt", "--noheadings", "--output", "OPTIONS", "--target", str(args.workspace)).split(","))

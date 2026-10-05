@@ -122,6 +122,16 @@ jobs:
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             2>&1 | tee artifacts/vs/configure.log
 
+      - name: Check nested Docker in both build environments
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          for build_env in bookworm trixie; do
+            make -f Makefile.work BLDENV="$build_env" docker-start \
+              SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+              2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
+          done
+
       - name: Build the VS image with Bazel SWSS archives
         run: |
           make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_SWSS_WITH_BAZEL=y \

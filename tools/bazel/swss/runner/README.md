@@ -23,6 +23,7 @@ sudo apt-get install docker.io docker-buildx ca-certificates curl wget git make 
 sudo systemctl enable --now docker
 sudo modprobe kvm
 sudo modprobe overlay
+sudo modprobe iptable_nat
 ```
 
 If Docker CE is already installed, keep that installation instead of installing
@@ -66,7 +67,7 @@ that child with `dev,suid,exec` before the runner starts. An initial bind alone
 can inherit restrictive flags. The parent `/data` flags remain unchanged.
 Bootstrap backs up fstab before adding its entry and refuses a conflicting
 existing entry. Preflight checks effective flags, Docker/buildx as the runner
-user, workspace and Docker disk budgets, RAM, overlay, j2 rendering, KVM API,
+user, workspace and Docker disk budgets, RAM, overlay, legacy IPv4 NAT, j2 rendering, KVM API,
 and both the process and runner service file-creation masks.
 
 The runner service uses `UMask=0022`, while its home and attempt directories
@@ -90,6 +91,25 @@ to review it; AppArmor remains enabled. The `apparmor` package supplies the
 parser when required. Preflight detects a loaded `gs` profile without the
 managed configuration. This checks configuration files; after policy edits,
 reload the profile and validate actual Ghostscript execution in the builder.
+
+The builder selects `iptables-legacy` for its nested Docker daemon. Host Docker
+may use nftables, so a working host daemon does not establish legacy NAT support.
+Bootstrap loads `iptable_nat` (including its kernel dependencies), persists it
+in `/etc/modules-load.d/sonic-vs-runner.conf`, and orders the runner after the
+boot module loader. Preflight accepts either the loaded module or kernel
+configuration/built-in module metadata proving that support is compiled in.
+If `modprobe` fails, install the matching host kernel modules before retrying:
+the builder's `/lib/modules` does not contain modules for the host kernel.
+
+After configuration, the workflow starts the actual nested Docker daemon in
+both the Bookworm and Trixie builders before compiling packages. This checks
+daemon startup, including storage and network initialization, and saves
+`artifacts/vs/docker-start-{bookworm,trixie}.log`. It uses `Makefile.work`
+directly so the check does not enter the top-level Bookworm image build.
+The check has a ten-minute timeout and uses the same per-attempt container
+labels and cancellation cleanup as the build. It does not test child-container
+DNS or HTTPS access. Run it only while no other builder uses that checkout:
+Make clears the checkout's inner Docker store before each invocation.
 
 ## Arm a runner for the next attempt
 
@@ -184,6 +204,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Cancelled job left its build container compiling | Per-attempt container labels, saved container logs and cleanup on cancellation/failure |
 | Builder cleanup deleted groff device files, breaking Bash manual generation | Preserve groff runtime data in slave images while retaining runtime-image cleanup |
 | Host AppArmor blocked Ghostscript PDF output even in a privileged builder | Managed gs-only owner allowance for `/sonic/**.{ps,pdf}`, profile reload and preflight configuration check |
+| Host Docker worked but nested Docker could not initialize legacy NAT | Load and persist host `iptable_nat`; preflight also recognizes built-in support |
 | Cached builder tags ignored changes to their installed build hooks | Include build-hook source content in builder tags so hook repairs rebuild cached environments |
 
 Ephemeral registration does **not** erase the machine, Docker state, user home,

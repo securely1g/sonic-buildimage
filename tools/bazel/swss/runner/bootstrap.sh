@@ -18,6 +18,7 @@ Creates a self-bind mount at /data/sonic-runner and a startup service that
 enables dev,suid,exec there for chroot/image construction; /data is unchanged.
 If the host has an enabled gs AppArmor profile, preserves its local rules,
 adds owner access only to /sonic/**/*.ps and *.pdf, and reloads that profile.
+Loads iptable_nat and persists it for nested Docker's legacy IPv4 NAT support.
 --dry-run and --help only print this plan; they change nothing.
 EOF
     exit 0
@@ -43,6 +44,14 @@ usermod --append --groups docker,kvm sonic-runner
 if id -nG sonic-runner | tr ' ' '\n' | grep -Eq '^(sudo|wheel|admin)$'; then
     echo 'Remove sonic-runner from administrator groups before provisioning.' >&2; exit 1
 fi
+modprobe iptable_nat
+install -d -m 0755 /etc/modules-load.d
+cat > /etc/modules-load.d/sonic-vs-runner.conf <<'EOF'
+# SONiC's nested Docker uses iptables-legacy; load host NAT support at boot.
+iptable_nat
+EOF
+chmod 0644 /etc/modules-load.d/sonic-vs-runner.conf
+chown root:root /etc/modules-load.d/sonic-vs-runner.conf
 python3 "$(dirname "$0")/apparmor_gs.py" --install
 install -d -m 0700 -o sonic-runner -g sonic-runner "$runner_home"
 install -d -m 0700 -o sonic-runner -g sonic-runner "$runner_home/attempts"
@@ -99,8 +108,8 @@ install -m 0755 -o root -g root "$(dirname "$0")/preflight.py" "$(dirname "$0")/
 cat > /etc/systemd/system/sonic-vs-runner.service <<'EOF'
 [Unit]
 Description=One-job SONiC VS GitHub Actions runner
-Wants=network-online.target
-After=network-online.target docker.service sonic-vs-workspace-permissions.service
+Wants=network-online.target systemd-modules-load.service
+After=network-online.target systemd-modules-load.service docker.service sonic-vs-workspace-permissions.service
 Requires=docker.service sonic-vs-workspace-permissions.service
 RequiresMountsFor=/data/sonic-runner
 ConditionPathExists=/data/sonic-runner/current/.runner

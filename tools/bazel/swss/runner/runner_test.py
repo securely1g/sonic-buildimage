@@ -1,5 +1,6 @@
 """Checks for registration secret handling and storage accounting, without sudo."""
 import contextlib
+import gzip
 import io
 import json
 import subprocess
@@ -17,6 +18,33 @@ import apparmor_gs
 
 class RunnerTests(unittest.TestCase):
     registration = {"id": 42, "name": "sonic-vs-9-unique", "attempt": "/data/sonic-runner/attempts/unique"}
+
+    def test_legacy_nat_checks_loaded_and_builtin_support_not_only_nft_nat(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            modules = directory / "modules"
+            config = directory / "config"
+            compressed = directory / "config.gz"
+            builtin = directory / "modules.builtin"
+            def check():
+                with contextlib.redirect_stdout(io.StringIO()):
+                    preflight.check_legacy_nat(modules, config, compressed, builtin)
+            modules.write_text("nf_nat 65536 2 nft_chain_nat, Live 0x0000\n")
+            config.write_text("CONFIG_NF_NAT=y\nCONFIG_IP_NF_NAT=m\n")
+            with self.assertRaisesRegex(RuntimeError, "sudo modprobe iptable_nat"):
+                check()
+            modules.write_text("iptable_nat 12288 0 - Live 0x0000\n")
+            check()
+            modules.write_text("")
+            config.write_text("CONFIG_IP_NF_NAT=y\n")
+            check()
+            config.unlink()
+            with gzip.open(compressed, "wt") as stream:
+                stream.write("CONFIG_IP_NF_NAT=y\n")
+            check()
+            compressed.unlink()
+            builtin.write_text("kernel/net/ipv4/netfilter/iptable_nat.ko\n")
+            check()
 
     def test_ghostscript_rules_preserve_local_policy_and_are_idempotent(self):
         with tempfile.TemporaryDirectory() as temporary:
