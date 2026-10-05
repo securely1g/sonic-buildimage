@@ -52,6 +52,41 @@ fi
 # add script for reproducible build. using sha256 instead of tag for docker base image.
 scripts/docker_version_control.sh $@
 
+# Copy shared build info first. Local execution trust must never be written to
+# src/sonic-build-hooks: that source tree is also installed into runtime images.
+cp -rf src/sonic-build-hooks/buildinfo/* "$BUILDINFO_PATH"
+
+# Stage the shared cargo-auditable wrapper for the native execution image.
+if [[ "$IMAGENAME" == sonic-slave-* ]] && [ -f files/build/cargo-wrapper ]; then
+    cp files/build/cargo-wrapper "$BUILDINFO_PATH/cargo-wrapper"
+    chmod 0755 "$BUILDINFO_PATH/cargo-wrapper"
+fi
+
+# Remove our old generated block on every preparation, including when trust is
+# disabled. Dockerfile content participates in both native slave image tags.
+if [ -f "$DOCKERFILE_TARGET" ]; then
+    TRUST_CLEAN_FILE=$(mktemp)
+    awk '
+        /^# SONIC native execution trust BEGIN$/ { if (inside) exit 1; inside=1; next }
+        /^# SONIC native execution trust END$/ { if (!inside) exit 1; inside=0; next }
+        !inside { print }
+        END { if (inside) exit 1 }
+    ' "$DOCKERFILE_TARGET" > "$TRUST_CLEAN_FILE" || { rm -f "$TRUST_CLEAN_FILE"; exit 1; }
+    cat "$TRUST_CLEAN_FILE" > "$DOCKERFILE_TARGET"
+    rm -f "$TRUST_CLEAN_FILE"
+fi
+
+SLAVE_TRUST_FILE="$BUILDINFO_PATH/sonic-build-ca-bundle.pem"
+SLAVE_TRUST_CERTIFICATES="$BUILDINFO_PATH/sonic-build-ca-certificates"
+rm -f -- "$SLAVE_TRUST_FILE"
+rm -rf -- "$SLAVE_TRUST_CERTIFICATES"
+SLAVE_TRUST_SHA256=
+if [[ "$BUILD_SLAVE" == y && "$IMAGENAME" == sonic-slave-* && -n "${SONIC_BUILD_SLAVE_CA_BUNDLE:-}" ]]; then
+    python3 tools/bazel/ci/trust.py stage --source "$SONIC_BUILD_SLAVE_CA_BUNDLE" \
+        --output "$SLAVE_TRUST_FILE" --certificates-output "$SLAVE_TRUST_CERTIFICATES" > /dev/null || exit 1
+    SLAVE_TRUST_SHA256=$(sha256sum "$SLAVE_TRUST_FILE" | cut -d' ' -f1)
+fi
+
 DOCKERFILE_PRE_SCRIPT='# Auto-Generated for buildinfo
 ARG SONIC_VERSION_CACHE
 ARG SONIC_VERSION_CONTROL_COMPONENTS
@@ -93,17 +128,45 @@ if [ ! -f $DOCKERFILE_TARGET ] || ! grep -q "Auto-Generated for buildinfo" $DOCK
     rm -f $TEMP_FILE
 fi
 
-# Copy the build info config
-mkdir -p ${BUILDINFO_PATH}
-cp -rf src/sonic-build-hooks/buildinfo/* $BUILDINFO_PATH
-
-# Stage the shared cargo-auditable wrapper inside the buildinfo
-# directory so each sonic-slave-* Dockerfile can COPY it from a
-# single source of truth (files/build/cargo-wrapper) — only needs
-# to apply to slave-base images where Rust is installed.
-if [[ "$IMAGENAME" == sonic-slave-* ]] && [ -f files/build/cargo-wrapper ]; then
-    cp files/build/cargo-wrapper $BUILDINFO_PATH/cargo-wrapper
-    chmod 0755 $BUILDINFO_PATH/cargo-wrapper
+# Native execution trust is injected before the first RUN; ca-certificates is
+# not installed yet. Client configuration uses the validated bundle directly.
+# The package's later postinst also picks up the individual CA files for clients
+# run through sudo, which may discard the client environment overrides.
+# This opt-in does not change inherited recipes' existing TLS options.
+if [ -n "$SLAVE_TRUST_SHA256" ]; then
+    TRUST_BLOCK_FILE=$(mktemp)
+    TRUST_DOCKERFILE=$(mktemp)
+    cat > "$TRUST_BLOCK_FILE" <<EOF
+# SONIC native execution trust BEGIN
+# Execution CA bundle SHA256: $SLAVE_TRUST_SHA256
+COPY ["buildinfo/sonic-build-ca-bundle.pem", "/usr/local/share/sonic-build-trust/ca-bundle.pem"]
+COPY ["buildinfo/sonic-build-ca-certificates/", "/usr/local/share/ca-certificates/sonic-build-trust/"]
+ENV SSL_CERT_FILE=/usr/local/share/sonic-build-trust/ca-bundle.pem
+ENV GIT_SSL_CAINFO=/usr/local/share/sonic-build-trust/ca-bundle.pem
+ENV CURL_CA_BUNDLE=/usr/local/share/sonic-build-trust/ca-bundle.pem
+ENV REQUESTS_CA_BUNDLE=/usr/local/share/sonic-build-trust/ca-bundle.pem
+ENV PIP_CERT=/usr/local/share/sonic-build-trust/ca-bundle.pem
+ENV WGETRC=/usr/local/share/sonic-build-trust/wgetrc
+RUN mkdir -p /etc/apt/apt.conf.d && \\
+    printf '%s\\n' 'Acquire::https::CaInfo "/usr/local/share/sonic-build-trust/ca-bundle.pem";' > /etc/apt/apt.conf.d/99sonic-native-build-ca && \\
+    printf '%s\\n' '[http]' '    sslCAInfo = /usr/local/share/sonic-build-trust/ca-bundle.pem' >> /etc/gitconfig && \\
+    printf '%s\\n' 'ca_certificate = /usr/local/share/sonic-build-trust/ca-bundle.pem' 'check_certificate = on' > /usr/local/share/sonic-build-trust/wgetrc
+# SONIC native execution trust END
+EOF
+    awk -v trustfile="$TRUST_BLOCK_FILE" '
+        /^RUN dpkg -i \/usr\/local\/share\/buildinfo\/sonic-build-hooks_1\.0_all\.deb$/ {
+            while ((getline line < trustfile) > 0) print line
+            close(trustfile)
+            inserted++
+        }
+        { print }
+        END { if (inserted != 1) exit 1 }
+    ' "$DOCKERFILE_TARGET" > "$TRUST_DOCKERFILE" || {
+        rm -f "$TRUST_BLOCK_FILE" "$TRUST_DOCKERFILE"
+        exit 1
+    }
+    cat "$TRUST_DOCKERFILE" > "$DOCKERFILE_TARGET"
+    rm -f "$TRUST_BLOCK_FILE" "$TRUST_DOCKERFILE"
 fi
 
 # Generate the version lock files
@@ -186,4 +249,3 @@ else
 	# Delete the cache file if version cache is disabled.
 	rm -f ${DOCKER_PATH}/vcache/cache.tgz
 fi
-

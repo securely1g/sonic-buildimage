@@ -1,5 +1,4 @@
 load("@rules_python//python:py_binary.bzl", "py_binary")
-load("@sonic_build_infra//deb:sonic_deb.bzl", "sonic_deb")
 load("@sonic_build_infra//tar:sonic_deploy_tar.bzl", "sonic_deploy_tar")
 
 sonic_deploy_tar(
@@ -22,20 +21,12 @@ sonic_deploy_tar(
     visibility = ["//visibility:public"],
 )
 
-# The `sysmgr` deb, mirroring SYSMGR in rules/sysmgr.mk.
-# Metadata from debian/control
-sonic_deb(
-    name = "sysmgr_deb",
-    data = ":sysmgr_pkg",
-    depends = [
-        "libswsscommon",
-        "libprotobuf32",  # In trixie this is libprotobuf32t64, but it Provides libprotobuf32 as a virtual package, so it's fine.
-        "libdbus-c++-1-0v5",  # rebootbackend links against @trixie//libdbus-c++-dev; this is its runtime package.
-    ],
-    description = "This package contains sysmgr service.",
-    maintainer = "Runming Wu <runmingwu@google.com>",
-    package = "sysmgr",
-    version = "1.0.0",
+# Map the deployment payload to Make's existing package for equivalence checks.
+# Keep the tag outside sonic_deploy_tar, which propagates tags to internal rules.
+filegroup(
+    name = "sysmgr_runtime_equivalence",
+    srcs = [":sysmgr_pkg"],
+    tags = ["make-deb:sysmgr_1.0.0_amd64.deb"],
     visibility = ["//visibility:public"],
 )
 
@@ -53,17 +44,7 @@ genrule(
     srcs = [":sysmgr_pkg.debug_symbols"],
     outs = ["sysmgr_debug_pkg.tar"],
     cmd = '$(location :root_owned_tar) "$(location :sysmgr_pkg.debug_symbols)" "$@"',
+    tags = ["make-deb:sysmgr-dbg_1.0.0_amd64.deb"],
     tools = [":root_owned_tar"],
-    visibility = ["//visibility:public"],
-)
-
-sonic_deb(
-    name = "sysmgr-dbg_deb",
-    data = ":sysmgr_debug_pkg",
-    depends = ["sysmgr (= 1.0.0)"],
-    description = "debugging symbols for sysmgr",
-    maintainer = "Runming Wu <runmingwu@google.com>",
-    package = "sysmgr-dbg",
-    version = "1.0.0",
     visibility = ["//visibility:public"],
 )

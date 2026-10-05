@@ -15,6 +15,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import re
 import tarfile
 import tempfile
 from dataclasses import dataclass
@@ -187,6 +188,29 @@ def convert_docker_archive(tar: tarfile.TarFile, out_dir: Path) -> None:
     (out_dir / "oci-layout").write_text(json.dumps({"imageLayoutVersion": "1.0.0"}))
 
 
+def validate_platform(layout: Path, expected: str) -> None:
+    """Check the imported config before adding architecture-specific payloads."""
+    if len(expected.split("/")) != 2 or not all(expected.split("/")):
+        raise ValueError("expected platform must be os/architecture")
+
+    def read_blob(descriptor):
+        digest = descriptor["digest"]
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("invalid OCI SHA256 blob reference")
+        return json.loads((layout / "blobs" / "sha256" / digest[7:]).read_bytes())
+
+    index = json.loads((layout / "index.json").read_bytes())
+    manifests = index["manifests"]
+    if len(manifests) != 1:
+        raise ValueError("expected a single imported image for " + expected)
+    descriptor = manifests[0]
+    config = read_blob(read_blob(descriptor)["config"])
+    for platform in [config] + ([descriptor["platform"]] if "platform" in descriptor else []):
+        actual = platform.get("os", "") + "/" + platform.get("architecture", "")
+        if actual != expected:
+            raise ValueError(f"imported image platform {actual!r} does not match {expected!r}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -195,6 +219,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out", required=True, type=Path, help="output OCI layout directory"
     )
+    parser.add_argument("--expected-platform", help="require a single image for os/architecture")
     return parser.parse_args()
 
 
@@ -210,6 +235,8 @@ def main() -> None:
             tar.extractall(args.out, filter=make_path_validating_filter(args.out))
         else:
             convert_docker_archive(tar, args.out)
+    if args.expected_platform:
+        validate_platform(args.out, args.expected_platform)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
-# Try to read from sonic-bazel-registry, for modules maintained by SONiC
+# Use the maintained SONiC registry and Bazel Central Registry in CI and locally.
+# Module versions, source revisions and integrity hashes remain pinned.
 common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
-# After that, read from upstream sources.
-common --registry=https://raw.githubusercontent.com/aspect-build/bazel-central-registry/aspect_rules_py-v1.7.1
 common --registry=https://bcr.bazel.build
 
 # Build all release binaries for `trixie`.

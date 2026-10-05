@@ -22,6 +22,18 @@ $(DOCKER_ORCHAGENT)_PATH = $(DOCKERS_PATH)/$(DOCKER_ORCHAGENT_STEM)
 
 $(DOCKER_ORCHAGENT)_LOAD_DOCKERS += $(DOCKER_SWSS_LAYER_TRIXIE)
 
+# Bazel builds the SWSS runtime layer on the imported config-engine image.
+# Legacy Make keeps its SWSS-layer dependency when Bazel is not selected.
+# The current Bazel graph is AMD64 without ASAN; retain Make for other builds.
+ifeq ($(CONFIGURED_ARCH),amd64)
+ifneq ($(ENABLE_ASAN),y)
+$(DOCKER_ORCHAGENT)_BAZEL_READINESS = experimental
+$(DOCKER_ORCHAGENT)_BAZEL_BASE += $(DOCKER_CONFIG_ENGINE_TRIXIE)
+$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS += $(PYTHON_WHEELS_PATH)/$(SCAPY)
+SONIC_BAZEL_DOCKER_IMAGES += $(DOCKER_ORCHAGENT)
+endif
+endif
+
 $(DOCKER_ORCHAGENT)_VERSION = 1.0.0
 $(DOCKER_ORCHAGENT)_PACKAGE_NAME = swss
 $(DOCKER_ORCHAGENT)_WARM_SHUTDOWN_BEFORE = syncd

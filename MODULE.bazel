@@ -3,27 +3,115 @@ module(name = "sonic-buildimage")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "rules_oci", version = "2.2.6")
-bazel_dep(name = "tar.bzl", version = "0.10.5")
-bazel_dep(name = "rules_python", version = "1.7.0")
+bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
+bazel_dep(name = "rules_python", version = "1.8.0")
 bazel_dep(name = "bazel_lib", version = "3.1.1")
 bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "aspect_rules_py", version = "1.11.2")
+bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_rs", version = "0.1.0")
+bazel_dep(name = "platforms", version = "1.1.0")
 
 bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = True)
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(python_version = "3.11.6")
+python.toolchain(python_version = "3.13")
 
-bazel_dep(name = "rules_distroless", version = "0.9.4")
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "swss_config_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-orchagent/config:requirements_lock.txt",
+)
+use_repo(pip, "swss_config_pip")
+
+# Common owns its Rust library and public Serde targets. rules_rs reads the
+# tracked Cargo locks directly; no generated Cargo.Bazel.lock is required.
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
+
+rust = use_extension("@rules_rs//rs:rules_rust_reexported_extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    extra_target_triples = [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ],
+    versions = ["1.90.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+bindgen = use_extension("@rules_rs//rs:rules_rust_bindgen.bzl", "rules_rust_bindgen")
+use_repo(bindgen, "rules_rust_bindgen")
+
+register_toolchains("@rules_rust_bindgen//:all")
+
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+
+# This consumer only configures the owners' Cargo graphs. rules_rs requires a
+# config tag for such consumers; an empty config preserves Cargo's defaults.
+crate.config(cargo_config_toml = "//tools/bazel/rust:cargo-config.toml")
+
+override_repo(
+    crate,
+    **{
+        "swss_crates__github.com_securely1g_sonic-swss-common.git_6e020463": "sonic_swss_common",
+        "swss_crates__serde-1.0.228": "sonic_swss_common",
+        "swss_crates__serde_core-1.0.228": "sonic_swss_common",
+    }
+)
+
+# Dependency overrides do not propagate from Common. Keep its cgo header
+# repair selected when another module requests the unpatched stable release.
+single_version_override(
+    module_name = "rules_go",
+    version = "0.64.1-sonic.1",
+)
+
+single_version_override(
+    module_name = "rules_cc",
+    version = "0.2.20",
+)
+
+bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+
+# Pinned component sources still request older dotted versions, which sort
+# above the native header-fix registration despite containing older changes.
+single_version_override(
+    module_name = "rules_distroless",
+    version = "0.9.4-sonic.1",
+)
+
+# Keep the timestamp API required by the landed build infrastructure selected.
+single_version_override(
+    module_name = "tar.bzl",
+    version = "0.10.5-sonic.1",
+)
 
 # Dependencies from this repository's submodules.
 # Versions here are irrelevant (see root-unpinned-modules-config.bazelrc).
-bazel_dep(name = "libnl3", version = "3.7.0.sonic-buildimage")
+bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
 bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
 bazel_dep(name = "sonic-protobuf", version = "0.0.0", repo_name = "sonic_protobuf")
 bazel_dep(name = "sonic-build-infra", version = "0.0.0", repo_name = "sonic_build_infra")
 bazel_dep(name = "sonic-sysmgr", version = "0.0.0", repo_name = "sonic_sysmgr")
 bazel_dep(name = "sonic-swss-common", version = "0.0.0", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-sairedis", version = "0.0.0", repo_name = "sonic_sairedis")
+bazel_dep(name = "sonic-dash-api", version = "0.0.0", repo_name = "sonic_dash_api")
+
+# Select the reusable registry module instead of the former in-tree libnl overlay.
+single_version_override(
+    module_name = "libnl3",
+    version = "3.7.0-sonic.2",
+)
+
+single_version_override(
+    module_name = "re2",
+    version = "2024-07-02.bcr.1",
+)
 
 toolchains = use_extension("@tar.bzl//tar:extensions.bzl", "toolchains")
 use_repo(toolchains, "bsd_tar_toolchains")
@@ -32,7 +120,43 @@ register_toolchains("@bsd_tar_toolchains//:all")
 
 # The actual dependencies are listed in src/sonic-build-infra/MODULE.bazel, and re-exported.
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
-use_repo(apt, "trixie")
+apt.install(
+    dependency_set = "orchagent_debian",
+    packages = [
+        "arping",
+        "bridge-utils",
+        "conntrack",
+        # An unversioned request can resolve to netscript's virtual Provides.
+        # Preserve the Trixie ifupdown implementation used by the Dockerfile.
+        "ifupdown (>= 0.8.44)",
+        "iproute2",
+        "iputils-ping",
+        "libgssrpc4t64",
+        "libjansson4",
+        "libjemalloc2",
+        "libkadm5clnt-mit12",
+        "libkadm5srv-mit12",
+        "libkdb5-10t64",
+        "libprotobuf-lite32t64",
+        "libteam5",
+        "libteamdctl0",
+        "libxml2",
+        "libyaml-cpp0.8",
+        "ndisc6",
+        "ndppd",
+        "pciutils",
+        "python3-click",
+        "python3-netifaces",
+        "python3-protobuf",
+        "tcpdump",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "orchagent_debian", "trixie")
 
 uv = use_extension("@aspect_rules_py//uv/unstable:extension.bzl", "uv")
 use_repo(uv, "pypi")

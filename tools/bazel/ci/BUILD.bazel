@@ -1,0 +1,103 @@
+load("@rules_python//python:defs.bzl", "py_test")
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+
+exports_files([
+    "trust.py",
+    "trust_test.py",
+])
+
+# Exercise the same transitive debug-symbol collection used by the OCI image,
+# without requiring its Make-built config-engine base on a fresh CI runner.
+debug_symbols_layer(
+    name = "swss_debug_symbols",
+    image = "//dockers/docker-orchagent:rdeps",
+)
+
+py_test(
+    name = "run_test",
+    srcs = [
+        "resolution.py",
+        "run.py",
+        "run_test.py",
+        "rust.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "rust_test",
+    srcs = [
+        "rust.py",
+        "rust_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "image_inputs_test",
+    srcs = [
+        "image_inputs.py",
+        "image_inputs_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "image_test",
+    srcs = [
+        "image.py",
+        "image_inputs.py",
+        "image_test.py",
+        "resolution.py",
+        "rust.py",
+        "source_workspace.py",
+        "trust.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "source_workspace_test",
+    srcs = [
+        "source_workspace.py",
+        "source_workspace_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "verify_image_test",
+    srcs = [
+        "verify_image.py",
+        "verify_image_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "native_build_test",
+    srcs = [
+        "native_build.py",
+        "native_build_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "trust_test",
+    srcs = [
+        "trust.py",
+        "trust_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "p4lang_pi_source_test",
+    srcs = ["p4lang_pi_source_test.py"],
+    data = [
+        "//src/p4lang:Makefile",
+        "//src/p4lang:pi_source.json",
+        "//src/p4lang:pi_source.py",
+    ],
+)
