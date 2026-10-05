@@ -169,6 +169,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Ephemeral registration leaves local state behind | Preserve diagnostics; explicit cleanup and host rebuild policy |
 | Cancelled job left its build container compiling | Per-attempt container labels, saved container logs and cleanup on cancellation/failure |
 | Builder cleanup deleted groff device files, breaking Bash manual generation | Preserve groff runtime data in slave images while retaining runtime-image cleanup |
+| Cached builder tags ignored changes to their installed build hooks | Include build-hook source content in builder tags so hook repairs rebuild cached environments |
 
 Ephemeral registration does **not** erase the machine, Docker state, user home,
 or other attempts. Docker group membership grants root-equivalent host access.

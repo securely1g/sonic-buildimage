@@ -297,11 +297,20 @@ PREPARE_DOCKER=BUILD_SLAVE=y \
 
 $(shell $(PREPARE_DOCKER) )
 
+# The generated hook package contains timestamps; hash its source names and
+# contents instead. Include local additions and symlinks, but not build outputs.
+SONIC_BUILD_HOOKS_HASH := $(shell \
+	find src/sonic-build-hooks/Makefile src/sonic-build-hooks/scripts \
+		src/sonic-build-hooks/hooks src/sonic-build-hooks/debian \
+		\( -type f -o -type l \) -print0 \
+	| LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $$1}')
+
 # Add the versions in the tag, if the version change, need to rebuild the slave
 SLAVE_BASE_TAG_COMPUTED := $(shell \
+	(printf 'sonic-build-hooks=%s\n' '$(SONIC_BUILD_HOOKS_HASH)'; \
 	cat $(SLAVE_DIR)/Dockerfile \
 		$(SLAVE_DIR)/sources.list.* \
-		$(SLAVE_DIR)/buildinfo/versions/versions-* 2>/dev/null \
+		$(SLAVE_DIR)/buildinfo/versions/versions-* 2>/dev/null) \
 	| sha1sum \
 	| awk '{print substr($$1,0,11);}')
 
@@ -314,7 +323,8 @@ endif
 
 # Calculate the slave TAG based on $(USER)/$(PWD)/$(CONFIGURED_ARCH) to get unique SHA ID
 SLAVE_TAG = $(shell \
-	(cat $(SLAVE_DIR)/Dockerfile \
+	(printf 'sonic-build-hooks=%s\n' '$(SONIC_BUILD_HOOKS_HASH)'; \
+	 cat $(SLAVE_DIR)/Dockerfile \
 		 $(SLAVE_DIR)/sources.list.* \
 		 $(SLAVE_DIR)/buildinfo/versions/versions-* \
 	&& echo $(USER)/$(PWD)/$(CONFIGURED_ARCH)) \
