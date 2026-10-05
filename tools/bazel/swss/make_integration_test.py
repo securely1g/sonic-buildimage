@@ -159,9 +159,53 @@ target/docker-config-engine-trixie.gz target/python-wheels/trixie/scapy.whl:
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("make-input=target/docker-config-engine-trixie.gz", result.stdout)
+                self.assertIn("prepare_oci_base.py --archive", result.stdout)
+                self.assertIn('--output "target/docker-config-engine-trixie.oci"', result.stdout)
                 self.assertIn("make-input=target/python-wheels/trixie/scapy.whl", result.stdout)
                 self.assertIn(f'--archive "{archive}" --output "target/{archive}"', result.stdout)
                 self.assertNotIn("swss.deb", result.stdout)
+
+    def test_cached_base_is_prepared_once_before_parallel_archive_consumers(self):
+        from prepare_oci_base_test import native_archive
+
+        slave = (ROOT / "slave.mk").read_text()
+        start = slave.index("# Let Bazel check its declared inputs")
+        end = slave.index("# Targets for building docker debug images", start)
+        # Keep the production prerequisite graph and producer; replace only the
+        # heavyweight SWSS build with a consumer that requires the prepared base.
+        recipe = slave[start:end].replace(
+            'python3 tools/bazel/swss/build.py --archive "$(@F)" --output "$@" $(LOG)',
+            'test -f "$(TARGET_PATH)/docker-config-engine-trixie.oci/index.json"; echo built > "$@"',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            native_archive(directory / "docker-config-engine-trixie.gz")
+            (directory / "scapy.whl").write_bytes(b"cached wheel")
+            makefile = f"""
+TARGET_PATH = {tmp}
+DOCKER_CONFIG_ENGINE_TRIXIE = docker-config-engine-trixie.gz
+PYTHON_WHEELS_PATH = {tmp}
+SCAPY = scapy.whl
+SONIC_BAZEL_SWSS_IMAGES = docker-orchagent.gz docker-orchagent-dbg.gz
+.PHONY: .platform
+{recipe}
+"""
+            command = ["make", "--no-print-directory", "-j2", "-f", "-",
+                       str(directory / "docker-orchagent.gz"),
+                       str(directory / "docker-orchagent-dbg.gz")]
+            previous = None
+            for _ in range(2):
+                result = subprocess.run(command, input=makefile, cwd=ROOT,
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.count("python3 tools/bazel/swss/prepare_oci_base.py"), 1)
+                layout = directory / "docker-config-engine-trixie.oci"
+                current = layout.lstat().st_mtime_ns, (layout / "index.json").stat().st_mtime_ns
+                if previous:
+                    self.assertEqual(current, previous)
+                previous = current
+                for archive in ("docker-orchagent.gz", "docker-orchagent-dbg.gz"):
+                    self.assertEqual((directory / archive).read_text(), "built\n")
 
 
 if __name__ == "__main__":

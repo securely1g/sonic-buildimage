@@ -1,8 +1,9 @@
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@container_config_pip//:requirements.bzl", "requirement")
 load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
-load(":docker_archive_to_oci.bzl", "docker_archive_to_oci_layout")
+load(":oci_base_layout.bzl", "oci_base_layout")
 load(":sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
@@ -23,113 +24,136 @@ py_test(
     deps = [":container_config"],
 )
 
-# The same pinned executable and import wrapper are used by production and tests.
-filegroup(
-    name = "regctl",
-    srcs = ["@oci_regctl_toolchains//:current_toolchain"],
-)
-
-py_binary(
-    name = "import_docker_archive",
-    srcs = ["import_docker_archive.py"],
-)
-
+# The same validator is used by Make publication and the Bazel consumer.
 py_library(
-    name = "import_fixture_lib",
-    srcs = ["import_fixture.py"],
+    name = "oci_layout",
+    srcs = ["oci_layout.py"],
     imports = ["."],
 )
 
 py_binary(
-    name = "import_fixture",
-    srcs = ["import_fixture.py"],
+    name = "validate_oci_layout",
+    srcs = ["oci_layout.py"],
+    main = "oci_layout.py",
+)
+
+py_library(
+    name = "oci_base_fixture_lib",
+    srcs = ["oci_base_fixture.py"],
+    imports = ["."],
+)
+
+py_binary(
+    name = "oci_base_fixture",
+    srcs = ["oci_base_fixture.py"],
+    data = ["//tools/bazel/swss:prepare_oci_base"],
+    deps = ["@rules_python//python/runfiles"],
 )
 
 py_test(
-    name = "docker_archive_to_oci_layout_test",
+    name = "oci_base_layout_test",
     size = "small",
-    srcs = ["docker_archive_to_oci_layout_test.py"],
-    args = [
-        "--wrapper=$(location :import_docker_archive)",
-        "--regctl=$(location :regctl)",
+    srcs = ["oci_base_layout_test.py"],
+    deps = [
+        ":oci_base_fixture_lib",
+        ":oci_layout",
     ],
-    data = [
-        ":import_docker_archive",
-        ":regctl",
-    ],
-    deps = [":import_fixture_lib"],
 )
 
-# Exercise the production import macro and rules_oci consumer on native CI
-# architectures, with no Docker daemon or Make-built package dependencies.
+# Different outer archive timestamps must leave the original OCI bytes intact.
+# Each fixture invokes Make's actual publication helper before Bazel reads it.
+run_binary(
+    name = "oci_fixture_first",
+    args = [
+        "--out",
+        "$@",
+        "--mtime",
+        "946684800",
+    ],
+    out_dirs = ["oci-fixture-first"],
+    tool = ":oci_base_fixture",
+)
+
+run_binary(
+    name = "oci_fixture_second",
+    args = [
+        "--out",
+        "$@",
+        "--mtime",
+        "1700000000",
+    ],
+    out_dirs = ["oci-fixture-second"],
+    tool = ":oci_base_fixture",
+)
+
+oci_base_layout(
+    name = "oci_base_first",
+    srcs = [":oci_fixture_first"],
+    expected_platform = "linux/amd64",
+    marker = "$(execpath :oci_fixture_first)/oci-layout",
+    root = "tools/bazel/oci/oci-fixture-first",
+)
+
+oci_base_layout(
+    name = "oci_base_second",
+    srcs = [":oci_fixture_second"],
+    expected_platform = "linux/amd64",
+    marker = "$(execpath :oci_fixture_second)/oci-layout",
+    root = "tools/bazel/oci/oci-fixture-second",
+)
+
 genrule(
-    name = "import_fixture_sources",
-    outs = [
-        "import-first.tar",
-        "import-renamed.tar.gz",
-        "import-overlay.tar",
-    ],
-    cmd = "$(execpath :import_fixture) " +
-          "--first $(location :import-first.tar) " +
-          "--second $(location :import-renamed.tar.gz) " +
-          "--overlay $(location :import-overlay.tar) --architecture amd64",
-    tools = [":import_fixture"],
-)
-
-docker_archive_to_oci_layout(
-    name = "import_fixture_first",
-    src = ":import-first.tar",
-    expected_platform = "linux/amd64",
-)
-
-docker_archive_to_oci_layout(
-    name = "import_fixture_second",
-    src = ":import-renamed.tar.gz",
-    expected_platform = "linux/amd64",
+    name = "oci_fixture_overlay",
+    outs = ["oci-overlay.tar"],
+    cmd = "$(execpath :oci_base_fixture) --overlay $@",
+    tools = [":oci_base_fixture"],
 )
 
 oci_image(
-    name = "import-consumer-first",
-    base = ":import_fixture_first",
+    name = "oci-consumer-first",
+    base = ":oci_base_first",
     env = {"CONSUMER_FIXTURE": "added"},
-    tars = [":import-overlay.tar"],
+    tars = [":oci_fixture_overlay"],
 )
 
 oci_image(
-    name = "import-consumer-second",
-    base = ":import_fixture_second",
+    name = "oci-consumer-second",
+    base = ":oci_base_second",
     env = {"CONSUMER_FIXTURE": "added"},
-    tars = [":import-overlay.tar"],
+    tars = [":oci_fixture_overlay"],
 )
 
 sonic_docker_archive(
-    name = "import-consumer-first.gz",
-    image = ":import-consumer-first",
+    name = "oci-consumer-first.gz",
+    image = ":oci-consumer-first",
 )
 
 sonic_docker_archive(
-    name = "import-consumer-second.gz",
-    image = ":import-consumer-second",
+    name = "oci-consumer-second.gz",
+    image = ":oci-consumer-second",
 )
 
 py_test(
-    name = "docker_archive_import_consumer_test",
+    name = "oci_base_consumer_test",
     size = "small",
-    srcs = ["docker_archive_import_consumer_test.py"],
+    srcs = ["oci_base_consumer_test.py"],
     args = [
-        "--first-layout=$(location :import_fixture_first)",
-        "--second-layout=$(location :import_fixture_second)",
-        "--first-export=$(location :import-consumer-first.gz)",
-        "--second-export=$(location :import-consumer-second.gz)",
-        "--architecture=amd64",
+        "--first-layout=$(location :oci_base_first)",
+        "--second-layout=$(location :oci_base_second)",
+        "--first-image=$(location :oci-consumer-first)",
+        "--second-image=$(location :oci-consumer-second)",
+        "--first-export=$(location :oci-consumer-first.gz)",
+        "--second-export=$(location :oci-consumer-second.gz)",
     ],
     data = [
-        ":import-consumer-first.gz",
-        ":import-consumer-second.gz",
-        ":import_fixture_first",
-        ":import_fixture_second",
+        ":oci-consumer-first",
+        ":oci-consumer-first.gz",
+        ":oci-consumer-second",
+        ":oci-consumer-second.gz",
+        ":oci_base_first",
+        ":oci_base_second",
     ],
-    deps = [":import_fixture_lib"],
+    deps = [":oci_base_fixture_lib"],
 )
 
 # A source-only fixture exercises the production archive macro on both native

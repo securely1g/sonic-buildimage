@@ -1,6 +1,14 @@
+load("@rules_python//python:defs.bzl", "py_binary")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 
 exports_files(["cargo-config.toml"])
+
+py_binary(
+    name = "prepare_oci_base",
+    srcs = ["prepare_oci_base.py"],
+    visibility = ["//visibility:public"],
+    deps = ["//tools/bazel/oci:oci_layout"],
+)
 
 # Check the image's transitive symbols on hosted runners without requiring the
 # config-engine base container that Make builds for complete image assembly.

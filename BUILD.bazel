@@ -2,7 +2,7 @@
 exports_files(
     glob(
         [
-            "target/docker-config-engine-trixie.gz",
+            "target/docker-config-engine-trixie.oci/oci-layout",
             "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl",
         ],
         allow_empty = True,
@@ -13,4 +13,15 @@ exports_files(
         "files/build_templates/per_namespace/swss.service.j2",
         "rules/docker-orchagent.mk",
     ],
+)
+
+# Declare each blob so changes and newly published layers invalidate Bazel.
+filegroup(
+    name = "config_engine_oci_files",
+    srcs = glob(
+        ["target/docker-config-engine-trixie.oci/**"],
+        allow_empty = True,
+        exclude = ["target/docker-config-engine-trixie.oci/oci-layout"],
+    ),
+    visibility = ["//visibility:public"],
 )

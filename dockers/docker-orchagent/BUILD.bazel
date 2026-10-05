@@ -1,7 +1,7 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
-load("//tools/bazel/oci:docker_archive_to_oci.bzl", "docker_archive_to_oci_layout")
+load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
@@ -22,12 +22,17 @@ _COMPATIBLE_WITH = [
     "//conditions:default": [],
 })
 
-# Phase 1 shares the same declared Make-built config-engine base with sysmgr.
+# Make publishes the config-engine image as OCI files before invoking Bazel.
 # Its Python/config-engine utilities and libnl/libyang runtime are retained.
-docker_archive_to_oci_layout(
+oci_base_layout(
     name = "config_engine_base_layout",
-    src = "//:target/docker-config-engine-trixie.gz",
+    srcs = [
+        "//:config_engine_oci_files",
+        "//:target/docker-config-engine-trixie.oci/oci-layout",
+    ],
     expected_platform = "linux/amd64",
+    marker = "$(execpath //:target/docker-config-engine-trixie.oci/oci-layout)",
+    root = "target/docker-config-engine-trixie.oci",
 )
 
 sonic_layer(

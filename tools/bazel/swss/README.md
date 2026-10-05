@@ -41,23 +41,44 @@ make target/docker-orchagent.gz BUILD_SWSS_WITH_BAZEL=y
 make target/docker-orchagent-dbg.gz BUILD_SWSS_WITH_BAZEL=y
 ```
 
-These targets first produce their Make inputs. With those inputs already
-available in `target/`, the equivalent Bazel targets are
+These targets first produce their Make inputs, including
+`target/docker-config-engine-trixie.oci` and the Scapy wheel. Make publishes the
+base's existing OCI files from its Docker-save archive without converting or
+recompressing them. The original `.gz` remains available to existing consumers.
+Both outputs contain the same final config-engine image.
+
+With those inputs already available in `target/`, the equivalent Bazel targets are
 `//dockers/docker-orchagent:docker-orchagent.gz` and
 `//dockers/docker-orchagent:docker-orchagent-dbg.gz`. The Make wrapper publishes
 the completed archive to `target/` only after the Bazel build succeeds.
 
+If the Docker base archive and Scapy wheel already exist, prepare the layout
+before invoking Bazel directly:
+
+```sh
+python3 tools/bazel/swss/prepare_oci_base.py \
+  --archive target/docker-config-engine-trixie.gz \
+  --output target/docker-config-engine-trixie.oci \
+  --expected-platform linux/amd64
+```
+
+The helper accepts the native OCI entries emitted by the pinned Docker version.
+An older Docker-only cache must be rebuilt; it is not converted. Publication is
+atomic, and repeating it with unchanged content preserves the layout timestamps.
+See [the OCI base guide](../oci/README.md#use-makes-oci-base).
+
 ## Validation
 
 The independent `Container archive (AMD64)` and `Container archive (ARM64)` checks
-exercise the real archive macro with a tiny OCI image. They verify reproducible
-gzip headers and bytes, Docker-save contents and the expected image tag without
+exercise the Make OCI producer, Bazel base consumer and archive macro with tiny
+images. They verify unchanged base bytes, platform checks, reproducible gzip
+headers and bytes, Docker-save contents and the expected image tag without
 building Debian packages or needing Make outputs. Artifacts retain the fixture
 tar and gzip files, hashes, test results, generated module lock and resolved
 module graph. See the [archive guide](../oci/README.md#reproducible-docker-archives).
 
 The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
-the Make handoff, archive conversion, configuration rendering and package
+the Make handoff, OCI base publication, configuration rendering and package
 validator, then builds SWSS, its runtime dependencies, configuration and matching
 debug-symbol tar layers. It also runs SWSS's Common Rust API and Serde consumer
 test and checks the Debian path-filter rules. The shared renderer and orchagent

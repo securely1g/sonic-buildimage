@@ -1520,8 +1520,16 @@ endif
 .PHONY: bazel-swss-force
 bazel-swss-force:
 
+# Docker's native save archive also contains an OCI layout. Prepare that layout
+# after the archive target, including package-cache hits that skip image building.
+# The helper leaves unchanged bytes alone and publishes complete layouts atomically.
+$(TARGET_PATH)/docker-config-engine-trixie.oci: $(TARGET_PATH)/$(DOCKER_CONFIG_ENGINE_TRIXIE) \
+		tools/bazel/swss/prepare_oci_base.py tools/bazel/oci/oci_layout.py bazel-swss-force
+	python3 tools/bazel/swss/prepare_oci_base.py --archive "$(TARGET_PATH)/$(DOCKER_CONFIG_ENGINE_TRIXIE)" \
+		--output "$@" --expected-platform linux/amd64 $(LOG)
+
 $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_SWSS_IMAGES)) : $(TARGET_PATH)/%.gz : .platform bazel-swss-force \
-		$(TARGET_PATH)/$(DOCKER_CONFIG_ENGINE_TRIXIE) \
+		$(TARGET_PATH)/docker-config-engine-trixie.oci \
 		$(PYTHON_WHEELS_PATH)/$(SCAPY)
 	$(HEADER)
 	python3 tools/bazel/swss/build.py --archive "$(@F)" --output "$@" $(LOG)

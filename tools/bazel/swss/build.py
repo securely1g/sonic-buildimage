@@ -34,7 +34,8 @@ def export_archive(source, destination):
 def build(archive, destination, bazel="bazel", startup=(), options=(), workspace=ROOT):
     if archive not in ARCHIVES:
         raise ValueError("unsupported SWSS archive: " + archive)
-    for name in ("target/docker-config-engine-trixie.gz",
+    for name in ("target/docker-config-engine-trixie.oci/index.json",
+                 "target/docker-config-engine-trixie.oci/oci-layout",
                  "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl"):
         if not (workspace / name).is_file():
             raise ValueError("Make prerequisite is missing: " + name)

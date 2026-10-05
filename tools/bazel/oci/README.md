@@ -55,32 +55,39 @@ The shared tests cover independent container prefixes, supported assignments,
 rejected dynamic inputs, strict rendering and label encoding. Orchagent's tests
 check its existing manifest and startup behavior and all five CLI outputs.
 
-## Import Make's base images
+## Use Make's OCI base
 
-`docker_archive_to_oci_layout` follows the upstream
-[rules_oci tarball-as-base example](https://github.com/bazel-contrib/rules_oci/blob/v2.2.6/examples/tarball_as_base/BUILD.bazel):
-standard `run_binary` runs the `regctl` executable pinned by `rules_oci` 2.2.6.
-The adapter imports a Docker-save or OCI archive, then checks the requested
-OS and architecture in both the image config and any index platform descriptor.
-An incompatible base fails the same build action before `oci_image` adds layers.
+Make publishes `target/docker-config-engine-trixie.oci` alongside its existing
+`target/docker-config-engine-trixie.gz`. The pinned Docker 28.5.2 saves both
+Docker metadata and an OCI layout in the same archive. Make extracts the existing
+OCI files without changing the index, config or layer bytes. Both outputs
+therefore describe the same final image, including Make's version-cache cleanup.
 
-Regctl owns archive conversion, including layer compression. Image config bytes,
-uncompressed layer contents and layer order are preserved; OCI blob bytes may
-differ from the former converter. Repeating an import with equivalent input
-archives produces identical layout files, including when source names, outer
-tar timestamps and gzip compression differ.
+The root `BUILD.bazel` declares the layout files as inputs. The
+`oci_base_layout` macro validates descriptor digests, sizes and the requested OS
+and architecture, then uses upstream `copy_to_directory` to assemble the directory
+consumed by `oci_image`. The check reads the image config even when the index has
+no platform descriptor. Its validated `oci-layout` marker is a required input to
+the copy action. There is no Docker-to-OCI conversion or layer recompression.
 
-Native AMD64 and ARM64 CI run the import tests and a real consumer that adds a
-layer through `oci_image`, then exports through `sonic_docker_archive`:
+Make repairs missing or damaged layouts from the cached archive. It publishes a
+complete generation atomically and preserves unchanged files and timestamps on
+warm builds. A Docker-only archive from an older cache fails with instructions to
+rebuild the base using the pinned Docker version.
+
+Native AMD64 and ARM64 CI exercise the real Make producer and Bazel consumer:
 
 ```sh
-bazel test //tools/bazel/oci:docker_archive_to_oci_layout_test \
-  //tools/bazel/oci:docker_archive_import_consumer_test
+bazel test //tools/bazel/oci:oci_base_layout_test \
+  //tools/bazel/oci:oci_base_consumer_test
 ```
 
-The consumer fixture uses an AMD64 image on either execution host. Unit tests
-also exercise ARM64 and OS mismatches. These targets need no Make outputs or
-Docker daemon and create no Debian packages.
+The fixture starts with a dual-format Docker/OCI archive, publishes its OCI layout
+with Make's helper, adds a layer with `oci_image`, and exports through
+`sonic_docker_archive`. Tests check image contents, platform rejection and
+reproducibility. The consumer fixture uses an AMD64 image on either execution
+host. These targets need no existing Make outputs or Docker daemon and create no
+Debian packages.
 
 ## Reproducible Docker archives
 

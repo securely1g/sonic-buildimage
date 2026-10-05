@@ -15,7 +15,8 @@ class BuildTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        for name in ("target/docker-config-engine-trixie.gz",
+        for name in ("target/docker-config-engine-trixie.oci/index.json",
+                     "target/docker-config-engine-trixie.oci/oci-layout",
                      "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl"):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,11 +33,11 @@ class BuildTest(unittest.TestCase):
     def test_exports_only_the_selected_bazel_output(self):
         source = self.root / "bazel-bin/docker-orchagent.gz"
         source.parent.mkdir()
-        source.write_bytes(b"new OCI archive")
+        source.write_bytes(b"new container archive")
         with patch.object(build.subprocess, "run") as run:
             run.return_value.stdout = "bazel-bin/docker-orchagent.gz\n"
             build.build("docker-orchagent.gz", self.destination, workspace=self.root)
-        self.assertEqual(self.destination.read_bytes(), b"new OCI archive")
+        self.assertEqual(self.destination.read_bytes(), b"new container archive")
         self.assertEqual(self.destination.stat().st_mode & 0o777, 0o644)
         self.assertEqual(run.call_args_list[0].args[0][-1],
                          "//dockers/docker-orchagent:docker-orchagent.gz")
@@ -58,7 +59,7 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(self.destination.stat().st_mtime_ns, before)
 
     def test_missing_make_input_fails_before_bazel(self):
-        (self.root / "target/docker-config-engine-trixie.gz").unlink()
+        (self.root / "target/docker-config-engine-trixie.oci/index.json").unlink()
         with patch.object(build.subprocess, "run") as run:
             with self.assertRaisesRegex(ValueError, "Make prerequisite"):
                 build.build("docker-orchagent.gz", self.destination, workspace=self.root)

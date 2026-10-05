@@ -66,7 +66,7 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
-      - name: Check reproducible Docker archives
+      - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
           mkdir -p artifacts/archive
@@ -98,8 +98,8 @@ jobs:
             --lockfile_mode=update --nocache_test_results --test_output=all \
             --build_event_json_file="$PWD/artifacts/archive/test-events.jsonl" \
             //tools/bazel/oci:sonic_docker_archive_test \
-            //tools/bazel/oci:docker_archive_to_oci_layout_test \
-            //tools/bazel/oci:docker_archive_import_consumer_test \
+            //tools/bazel/oci:oci_base_layout_test \
+            //tools/bazel/oci:oci_base_consumer_test \
             2>&1 | tee artifacts/archive/test.log
           output=$(bazel cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --output=files //tools/bazel/oci:archive-fixture.gz)
@@ -129,10 +129,10 @@ jobs:
             artifacts/archive/
             bazel-testlogs/tools/bazel/oci/sonic_docker_archive_test/test.log
             bazel-testlogs/tools/bazel/oci/sonic_docker_archive_test/test.xml
-            bazel-testlogs/tools/bazel/oci/docker_archive_to_oci_layout_test/test.log
-            bazel-testlogs/tools/bazel/oci/docker_archive_to_oci_layout_test/test.xml
-            bazel-testlogs/tools/bazel/oci/docker_archive_import_consumer_test/test.log
-            bazel-testlogs/tools/bazel/oci/docker_archive_import_consumer_test/test.xml
+            bazel-testlogs/tools/bazel/oci/oci_base_layout_test/test.log
+            bazel-testlogs/tools/bazel/oci/oci_base_layout_test/test.xml
+            bazel-testlogs/tools/bazel/oci/oci_base_consumer_test/test.log
+            bazel-testlogs/tools/bazel/oci/oci_base_consumer_test/test.xml
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
