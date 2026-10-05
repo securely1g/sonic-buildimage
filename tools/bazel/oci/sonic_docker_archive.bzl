@@ -6,22 +6,22 @@ gzipped `docker save` archive.
 This macro replicates that process in Bazel, creating intermediary targets when necessary.
 """
 
+load("@bazel_lib//lib:copy_file.bzl", "copy_file")
 load("@bazel_lib//lib:write_source_files.bzl", "write_source_files")
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
 load("@rules_oci//oci:defs.bzl", "oci_load")
-load("//tools/bazel:gzip.bzl", "gzip")
 
 def sonic_docker_archive(name, image, visibility = None):
     """Packages an `oci_image` into `target/<name>`, where the Make build expects it.
 
-    For `name = "docker-sysmgr.gz"`, this defines:
-
     The archive is always tagged `<name without .gz>:latest`,
     as expected by `sonic_debian_extension.j2`.
 
-    This macro generates several intermediate targets, derived from `name`. Here are the useful ones:
+    For `name = "docker-sysmgr.gz"`, useful targets include:
 
-    - `:{name}.load`, an `oci_load` tagged `{name}:latest`. Can be run with `bazel run` to load the image into a local registry.
-    - `:write_{name}.gz`, a `write_source_files` that copies it back into the repo-root `target/`.
+    - `:docker-sysmgr.gz`, the compressed Docker archive.
+    - `:docker-sysmgr.load`, which loads the image into the local Docker engine.
+    - `:write_docker-sysmgr.gz`, which exports it to the repo-root `target/`.
 
     Args:
         name: File name of the archive, including the `.gz` suffix. Must match the
@@ -48,9 +48,20 @@ def sonic_docker_archive(name, image, visibility = None):
         visibility = visibility,
     )
 
-    gzip(
-        name = name,
+    # gzip_compress names its output <input basename>.gz. Give each input the
+    # expected stem so runtime/debug archives keep their Make-compatible names.
+    copy_file(
+        name = stem + ".gzip_input",
         src = stem + ".tar",
+        out = stem + ".gzip_input/" + stem,
+        allow_symlink = True,
+        visibility = ["//visibility:private"],
+    )
+
+    gzip_compress(
+        name = name,
+        src = stem + ".gzip_input",
+        level = 6,
         visibility = visibility,
     )
 

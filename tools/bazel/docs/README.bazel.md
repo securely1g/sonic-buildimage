@@ -134,6 +134,20 @@ The `write_docker-orchagent.gz` and `write_docker-orchagent-dbg.gz` run targets 
 Bazel archives into `target/`; Make performs that publication itself when invoked
 through the readiness interface.
 
+Container archives use the published `rules_gzip` compression rule. Its gzip
+execution toolchain uses pinned `pigz` with `--no-name`, configured through
+`rules_multirun` and `toolchain_utils`; this keeps source filenames and timestamps
+out of the gzip header. Compression stays at level 6. `rules_gzip` names outputs
+from the input basename, so a standard `copy_file` preserves the archive names
+expected by Make. The intermediate copy lives in a separate directory to avoid
+colliding with the OCI image directory.
+
+The `//tools/bazel/oci:sonic_docker_archive_test` fixture runs on native AMD64 and
+ARM64 CI. It checks the Docker tag, configuration and layer contents, zero gzip
+timestamp, absent source filename, and identical compressed bytes for identical
+tars with different source filenames and requested modification times. It needs
+no Make outputs or Docker daemon.
+
 For post-build validation, `tools/bazel/tests/swss_container_test.py --help`
 lists the archive, package-layer, and manifest inputs. It requires an explicit
 private Docker daemon endpoint, checks the deployed payload and native/Python

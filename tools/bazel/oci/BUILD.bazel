@@ -1,4 +1,7 @@
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
+load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load(":sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -14,4 +17,81 @@ py_test(
     size = "small",
     srcs = ["docker_archive_to_oci_layout_test.py"],
     data = [":docker_archive_to_oci_layout"],
+)
+
+# A source-only fixture exercises the production archive macro on both native
+# CI architectures without requiring Make-built components or a Docker daemon.
+py_binary(
+    name = "archive_fixture",
+    srcs = ["archive_fixture.py"],
+)
+
+genrule(
+    name = "archive_fixture_layer",
+    outs = ["archive-layer.tar"],
+    cmd = "$(execpath :archive_fixture) --layer $@",
+    tools = [":archive_fixture"],
+)
+
+oci_image(
+    name = "archive-fixture",
+    architecture = select({
+        "@platforms//cpu:aarch64": "arm64",
+        "//conditions:default": "amd64",
+    }),
+    os = "linux",
+    tars = [":archive-layer.tar"],
+)
+
+sonic_docker_archive(
+    name = "archive-fixture.gz",
+    image = ":archive-fixture",
+)
+
+genrule(
+    name = "archive_fixture_sources",
+    srcs = [":archive-fixture.tar"],
+    outs = [
+        "archive-first.tar",
+        "different-source-name.tar",
+    ],
+    cmd = "$(execpath :archive_fixture) --copy $(location :archive-fixture.tar) " +
+          "--first $(location :archive-first.tar) " +
+          "--second $(location :different-source-name.tar)",
+    tools = [":archive_fixture"],
+)
+
+gzip_compress(
+    name = "archive_fixture_first",
+    src = ":archive-first.tar",
+    level = 6,
+)
+
+gzip_compress(
+    name = "archive_fixture_second",
+    src = ":different-source-name.tar",
+    level = 6,
+)
+
+py_test(
+    name = "sonic_docker_archive_test",
+    size = "small",
+    srcs = ["sonic_docker_archive_test.py"],
+    args = [
+        "--archive=$(location :archive-fixture.gz)",
+        "--first=$(location :archive_fixture_first)",
+        "--second=$(location :archive_fixture_second)",
+        "--first-source=$(location :archive-first.tar)",
+        "--second-source=$(location :different-source-name.tar)",
+    ] + select({
+        "@platforms//cpu:aarch64": ["--architecture=arm64"],
+        "//conditions:default": ["--architecture=amd64"],
+    }),
+    data = [
+        ":archive-first.tar",
+        ":archive-fixture.gz",
+        ":archive_fixture_first",
+        ":archive_fixture_second",
+        ":different-source-name.tar",
+    ],
 )
