@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import tempfile
 
+from apparmor_gs import check_ghostscript
+
 
 def output(*args):
     result = subprocess.run(args, text=True, capture_output=True)
@@ -62,13 +64,14 @@ def main():
     if platform.machine() != "x86_64":
         parser.error("The VS job needs native x86_64")
     check_worker_umasks()
+    check_ghostscript()
     if not os.path.ismount("/data"):
         parser.error("/data is not mounted")
     flags = set(output("findmnt", "--noheadings", "--output", "OPTIONS", "--target", str(args.workspace)).split(","))
     blocked = flags & {"nodev", "nosuid", "noexec", "ro"}
     if blocked:
         parser.error(f"Workspace mount blocks image construction: {', '.join(sorted(blocked))}")
-    for command in ("git", "make", "docker", "j2", "python3"):
+    for command in ("git", "make", "docker", "j2", "python3", "wget"):
         if not shutil.which(command):
             parser.error(f"Missing executable: {command}")
     os_release = platform.freedesktop_os_release()

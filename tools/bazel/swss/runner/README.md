@@ -13,13 +13,13 @@ Use Ubuntu 22.04 or 24.04 for the documented SONiC host baseline. The initial
 host uses Ubuntu 26.04; passing preflight does not establish full compatibility.
 Enable hardware virtualization and KVM, load `overlay`, and install Docker
 Engine with buildx following the [Docker Ubuntu instructions](https://docs.docker.com/engine/install/ubuntu/).
-Also install `ca-certificates`, `curl`, `git`, `make`, `python3`, `python3-venv`,
+Also install `ca-certificates`, `curl`, `wget`, `git`, `make`, `python3`, `python3-venv`,
 `kmod`, `procps`, `util-linux`, and the [GitHub CLI](https://cli.github.com/).
 For Ubuntu 24.04/26.04, the distribution-package preparation command is:
 
 ```sh
 sudo apt-get update
-sudo apt-get install docker.io docker-buildx ca-certificates curl git make python3 python3-venv kmod procps util-linux liblttng-ust1t64 libicu-dev
+sudo apt-get install docker.io docker-buildx ca-certificates curl wget git make python3 python3-venv kmod procps util-linux liblttng-ust1t64 libicu-dev
 sudo systemctl enable --now docker
 sudo modprobe kvm
 sudo modprobe overlay
@@ -30,6 +30,7 @@ If Docker CE is already installed, keep that installation instead of installing
 instead of `liblttng-ust1t64`; use Docker's linked instructions for its buildx
 installation. Install `gh` separately using its linked instructions, and verify
 that `/dev/kvm` exists after enabling CPU virtualization in the host firmware.
+`make init` uses host `wget` to download the build hooks' trusted signing keys.
 
 Use a local, persistent `/data` mount with at least 300 GiB free for workspaces.
 Budget another 100 GiB free for Docker; if they share a filesystem, preflight
@@ -76,6 +77,19 @@ causing misleading pip `externally-managed-environment` errors. After correcting
 an existing service, use a fresh checkout and rebuild affected slave images:
 changing the mask does not repair existing files, Docker layers, or containers.
 Preserve evidence and remove only identified obsolete builder tags before retrying.
+
+Some Ubuntu hosts also enforce an AppArmor profile for `/usr/bin/gs`, including
+Ghostscript executed inside a privileged builder. Bash manual generation writes
+under `/sonic`, outside that profile's default permitted directories. If the
+standard `gs` profile is present and enabled, bootstrap preserves
+`/etc/apparmor.d/local/gs`, adds one include of the root-owned
+`/etc/apparmor.d/local/sonic-vs-gs` fragment, and reloads only `gs`. Its rule is
+`owner /sonic/**.{ps,pdf} rw,`: access is limited to owned PS/PDF files under
+the build mount. A differently structured profile fails with an instruction
+to review it; AppArmor remains enabled. The `apparmor` package supplies the
+parser when required. Preflight detects a loaded `gs` profile without the
+managed configuration. This checks configuration files; after policy edits,
+reload the profile and validate actual Ghostscript execution in the builder.
 
 ## Arm a runner for the next attempt
 
@@ -169,6 +183,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Ephemeral registration leaves local state behind | Preserve diagnostics; explicit cleanup and host rebuild policy |
 | Cancelled job left its build container compiling | Per-attempt container labels, saved container logs and cleanup on cancellation/failure |
 | Builder cleanup deleted groff device files, breaking Bash manual generation | Preserve groff runtime data in slave images while retaining runtime-image cleanup |
+| Host AppArmor blocked Ghostscript PDF output even in a privileged builder | Managed gs-only owner allowance for `/sonic/**.{ps,pdf}`, profile reload and preflight configuration check |
 | Cached builder tags ignored changes to their installed build hooks | Include build-hook source content in builder tags so hook repairs rebuild cached environments |
 
 Ephemeral registration does **not** erase the machine, Docker state, user home,

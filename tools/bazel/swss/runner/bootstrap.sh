@@ -10,19 +10,21 @@ if [[ ${1:-} == --help || ${1:-} == --dry-run ]]; then
     cat <<'EOF'
 Usage: sudo bash tools/bazel/swss/runner/bootstrap.sh
 Requires Linux x86_64, systemd, mounted /data, Docker + buildx, git, make,
-curl, Python 3 with venv, and working /dev/kvm with a kvm group.
+curl, wget, Python 3 with venv, and working /dev/kvm with a kvm group.
 Creates the non-sudo sonic-runner account, downloads and verifies runner
 2.337.0, installs jinjanator 25.3.1 in /opt/sonic-runner-tools, and enables
 sonic-vs-runner.service. It does not register a runner or start a build.
 Creates a self-bind mount at /data/sonic-runner and a startup service that
 enables dev,suid,exec there for chroot/image construction; /data is unchanged.
+If the host has an enabled gs AppArmor profile, preserves its local rules,
+adds owner access only to /sonic/**/*.ps and *.pdf, and reloads that profile.
 --dry-run and --help only print this plan; they change nothing.
 EOF
     exit 0
 fi
 [[ $# == 0 && $EUID == 0 && $(uname -m) == x86_64 ]] || { echo 'Run as root on Linux x86_64.' >&2; exit 1; }
 mountpoint -q /data || { echo '/data must be mounted before provisioning.' >&2; exit 1; }
-for command in docker git make curl python3 systemctl; do command -v "$command" > /dev/null; done
+for command in docker git make curl wget python3 systemctl; do command -v "$command" > /dev/null; done
 docker info > /dev/null
 docker buildx version > /dev/null
 getent group docker > /dev/null
@@ -41,6 +43,7 @@ usermod --append --groups docker,kvm sonic-runner
 if id -nG sonic-runner | tr ' ' '\n' | grep -Eq '^(sudo|wheel|admin)$'; then
     echo 'Remove sonic-runner from administrator groups before provisioning.' >&2; exit 1
 fi
+python3 "$(dirname "$0")/apparmor_gs.py" --install
 install -d -m 0700 -o sonic-runner -g sonic-runner "$runner_home"
 install -d -m 0700 -o sonic-runner -g sonic-runner "$runner_home/attempts"
 # A child bind mount confines SONiC's device/setuid requirements to its home.
@@ -92,7 +95,7 @@ else
     ln -s "$tool_root/bin/j2" /usr/local/bin/j2
 fi
 install -d -m 0755 -o root -g root "$tool_root/runner"
-install -m 0755 -o root -g root "$(dirname "$0")/preflight.py" "$(dirname "$0")/rearm.py" "$tool_root/runner/"
+install -m 0755 -o root -g root "$(dirname "$0")/preflight.py" "$(dirname "$0")/rearm.py" "$(dirname "$0")/apparmor_gs.py" "$tool_root/runner/"
 cat > /etc/systemd/system/sonic-vs-runner.service <<'EOF'
 [Unit]
 Description=One-job SONiC VS GitHub Actions runner

@@ -12,10 +12,109 @@ from unittest.mock import patch
 
 import preflight
 import rearm
+import apparmor_gs
 
 
 class RunnerTests(unittest.TestCase):
     registration = {"id": 42, "name": "sonic-vs-9-unique", "attempt": "/data/sonic-runner/attempts/unique"}
+
+    def test_ghostscript_rules_preserve_local_policy_and_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "gs").write_text('profile gs /usr/bin/gs {\n  include if exists <local/gs>\n}\n')
+            (directory / "local").mkdir()
+            local = directory / "local/gs"
+            previous = "# Administrator's existing rule\nowner /srv/printing/*.pdf r,"
+            local.write_text(previous)
+            with patch.object(apparmor_gs.os, "chown") as chown:
+                apparmor_gs.install_rules(directory)
+                first = local.read_text()
+                apparmor_gs.install_rules(directory)
+            self.assertEqual(local.read_text(), first)
+            self.assertEqual(first, previous + "\n" + apparmor_gs.INCLUDE + "\n")
+            fragment = directory / apparmor_gs.FRAGMENT
+            self.assertEqual(fragment.read_text(), apparmor_gs.CONTENTS)
+            self.assertEqual(fragment.stat().st_mode & 0o777, 0o644)
+            chown.assert_called_with(fragment, 0, 0)
+            profiles = directory / "loaded-profiles"
+            profiles.write_text("gs (enforce)\nother-profile (enforce)\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                apparmor_gs.check_ghostscript(directory, profiles)
+
+    def test_ghostscript_unrecognized_profile_is_left_untouched(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "gs").write_text('profile gs /usr/bin/gs {}\n')
+            with self.assertRaisesRegex(RuntimeError, "does not include local/gs"):
+                apparmor_gs.install_rules(directory)
+            self.assertFalse((directory / "local").exists())
+
+    def test_new_ghostscript_local_file_is_readable_despite_restrictive_umask(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "gs").write_text('profile gs /usr/bin/gs {\ninclude <local/gs>\n}\n')
+            previous_mask = apparmor_gs.os.umask(0o077)
+            try:
+                with patch.object(apparmor_gs.os, "chown") as chown:
+                    apparmor_gs.install_rules(directory)
+            finally:
+                apparmor_gs.os.umask(previous_mask)
+            local = directory / "local/gs"
+            self.assertEqual(local.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(local.parent.stat().st_mode & 0o777, 0o755)
+            chown.assert_any_call(local, 0, 0)
+            local.chmod(0o600)
+            with patch.object(apparmor_gs.os, "chown"):
+                apparmor_gs.install_rules(directory)
+            self.assertEqual(local.stat().st_mode & 0o777, 0o600)
+
+    def test_ghostscript_unreadable_existing_rules_have_actionable_error(self):
+        with patch.object(apparmor_gs, "gs_loaded", return_value=True), \
+                patch.object(apparmor_gs.Path, "read_text", side_effect=PermissionError(13, "Permission denied", "/etc/apparmor.d/local/gs")):
+            with self.assertRaisesRegex(RuntimeError, "review readability for sonic-runner"):
+                apparmor_gs.check_ghostscript()
+
+    def test_ghostscript_does_not_replace_foreign_fragment_rules(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "gs").write_text('profile gs /usr/bin/gs {\n#include <local/gs>\n}\n')
+            (directory / "local").mkdir()
+            fragment = directory / apparmor_gs.FRAGMENT
+            fragment.write_text("owner /srv/reports/*.pdf r,\n")
+            with self.assertRaisesRegex(RuntimeError, "contains other rules"):
+                apparmor_gs.install_rules(directory)
+            self.assertEqual(fragment.read_text(), "owner /srv/reports/*.pdf r,\n")
+
+    def test_preflight_rejects_loaded_ghostscript_without_scoped_allowance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            profiles = directory / "loaded-profiles"
+            profiles.write_text("gs (enforce)\n")
+            with self.assertRaisesRegex(RuntimeError, "reload only the gs profile"):
+                apparmor_gs.check_ghostscript(directory, profiles)
+            profiles.write_text("other-profile (enforce)\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                apparmor_gs.check_ghostscript(directory, profiles)
+
+    def test_ghostscript_installer_compiles_then_reloads_only_its_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            profile = directory / "gs"
+            profile.write_text('profile gs /usr/bin/gs {\ninclude if exists <local/gs>\n}\n')
+            profiles = directory / "loaded-profiles"
+            profiles.write_text("gs (enforce)\n")
+            with patch.object(apparmor_gs, "PROFILE_DIR", directory), \
+                    patch.object(apparmor_gs, "PROFILES", profiles), \
+                    patch.object(apparmor_gs.os, "geteuid", return_value=0), \
+                    patch.object(apparmor_gs.os, "chown"), \
+                    patch.object(apparmor_gs.shutil, "which", return_value="/usr/sbin/apparmor_parser"), \
+                    patch.object(sys, "argv", ["apparmor_gs.py", "--install"]), \
+                    patch.object(apparmor_gs.subprocess, "run") as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                apparmor_gs.main()
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ["/usr/sbin/apparmor_parser", "-Q", "-K", str(profile)],
+                ["/usr/sbin/apparmor_parser", "-r", "-T", str(profile)]])
 
     def test_umask_guard_matches_actual_modes_of_copied_build_inputs(self):
         program = """
