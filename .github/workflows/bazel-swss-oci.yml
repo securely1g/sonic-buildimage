@@ -99,12 +99,12 @@ jobs:
             --build_event_json_file="$PWD/artifacts/archive/test-events.jsonl" \
             //tools/bazel/oci:sonic_docker_archive_test \
             2>&1 | tee artifacts/archive/test.log
-          for extension in gz tar; do
-            output=$(bazel cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-              --output=files "//tools/bazel/oci:archive-fixture.$extension")
-            test -s "$output"
-            cp "$output" "artifacts/archive/archive-fixture.$extension"
-          done
+          output=$(bazel cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
+            --output=files //tools/bazel/oci:archive-fixture.gz)
+          test -s "$output"
+          cp "$output" artifacts/archive/archive-fixture.gz
+          # The fixture test verifies that this payload equals the original Docker tar.
+          python3 -c 'import gzip; from pathlib import Path; p = Path("artifacts/archive"); (p / "archive-fixture.tar").write_bytes(gzip.decompress((p / "archive-fixture.gz").read_bytes()))'
           sha256sum artifacts/archive/archive-fixture.* > artifacts/archive/archive-sha256.txt
 
       - name: Retain generated module lock and graph
