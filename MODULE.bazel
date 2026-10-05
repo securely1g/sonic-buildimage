@@ -96,11 +96,16 @@ python.toolchain(python_version = "3.11")
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
+    hub_name = "container_config_pip",
+    python_version = "3.13",
+    requirements_lock = "//tools/bazel/oci:requirements_lock.txt",
+)
+pip.parse(
     hub_name = "swss_config_pip",
     python_version = "3.13",
     requirements_lock = "//dockers/docker-orchagent/config:requirements_lock.txt",
 )
-use_repo(pip, "swss_config_pip")
+use_repo(pip, "container_config_pip", "swss_config_pip")
 
 gcc = use_extension("@sonic_build_infra//toolchains/gcc:extensions.bzl", "gcc")
 use_repo(gcc, "gcc_toolchains")

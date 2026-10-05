@@ -12,7 +12,7 @@ exports_files(["requirements_lock.txt"])
 py_binary(
     name = "render",
     srcs = ["render.py"],
-    deps = [requirement("jinja2")],
+    deps = ["//tools/bazel/oci:container_config"],
 )
 
 genrule(
@@ -153,5 +153,5 @@ py_test(
         "//dockers/docker-orchagent:docker-init.j2",
     ],
     imports = ["."],
-    deps = [requirement("jinja2")],
+    deps = ["//tools/bazel/oci:container_config"],
 )

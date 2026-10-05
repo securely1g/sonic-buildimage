@@ -33,6 +33,8 @@ OPTIONS = [
 TESTS = [
     "@sonic_swss//crates/countersyncd:common_rust_test",
     "//tools/bazel/dpkg:test_dpkg_patterns_up_to_date",
+    "//tools/bazel/oci:container_config_test",
+    "//dockers/docker-orchagent/config:render_test",
 ]
 
 

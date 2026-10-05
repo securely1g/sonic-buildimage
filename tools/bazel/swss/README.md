@@ -53,7 +53,9 @@ The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It check
 the Make handoff, archive conversion, configuration rendering and package
 validator, then builds SWSS, its runtime dependencies, configuration and matching
 debug-symbol tar layers. It also runs SWSS's Common Rust API and Serde consumer
-test and checks the Debian path-filter rules. It verifies the source install
+test and checks the Debian path-filter rules. The shared renderer and orchagent
+adapter tests also run under Bazel to check their declared Python dependencies.
+It verifies the source install
 inventory, installed bytes and modes, AMD64 ELF files, build IDs, DWARF and debug links. Its artifact
 includes the five tar files, hashes, command logs, build events, generated module
 lock and resolved module graph. CI starts without a module lock and rejects
@@ -93,3 +95,10 @@ Container dependencies belong in `dockers/docker-orchagent/BUILD.bazel`; startup
 configuration belongs in `dockers/docker-orchagent/config/BUILD.bazel`. The PR
 check compares the packaged programs and data with SWSS's install declarations
 and verifies that the container runtime layer preserves them.
+
+The small `dockers/docker-orchagent/config/render.py` adapter supplies SWSS's Make
+variable, service scope and non-ASAN settings. It uses the
+[shared container renderer](../oci/README.md) for metadata parsing, strict Jinja
+rendering and manifest labels. Other container recipes can depend on
+`//tools/bazel/oci:container_config` without depending on orchagent's configuration
+or runtime Python packages.

@@ -55,8 +55,9 @@ jobs:
         run: |
           python3 -B -m unittest discover -s tools/bazel/swss -p '*_test.py'
           python3 -B -m unittest discover -s tools/bazel/swss/runner -p '*_test.py'
+          PYTHONPATH=tools/bazel/oci python3 -B tools/bazel/oci/container_config_test.py
           PYTHONPATH=tools/bazel/oci python3 -B tools/bazel/oci/docker_archive_to_oci_layout_test.py
-          PYTHONPATH=dockers/docker-orchagent/config python3 -B dockers/docker-orchagent/config/render_test.py \
+          PYTHONPATH=tools/bazel/oci:dockers/docker-orchagent/config python3 -B dockers/docker-orchagent/config/render_test.py \
             rules/docker-orchagent.mk files/build_templates/manifest.json.j2 dockers/docker-orchagent/docker-init.j2
 
       - name: Build and inspect SWSS runtime and debug layers

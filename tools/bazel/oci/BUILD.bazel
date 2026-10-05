@@ -1,6 +1,23 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@container_config_pip//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 
 package(default_visibility = ["//visibility:public"])
+
+exports_files(["requirements_lock.txt"])
+
+py_library(
+    name = "container_config",
+    srcs = ["container_config.py"],
+    imports = ["."],
+    deps = [requirement("jinja2")],
+)
+
+py_test(
+    name = "container_config_test",
+    size = "small",
+    srcs = ["container_config_test.py"],
+    deps = [":container_config"],
+)
 
 # Run via the hermetic Python toolchain (see MODULE.bazel), not system python3.
 # Used as the default `_converter` of docker_archive_to_oci_layout.
