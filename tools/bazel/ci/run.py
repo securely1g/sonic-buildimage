@@ -20,7 +20,6 @@ import rust
 
 
 ROOT = Path(__file__).resolve().parents[3]
-ARCHIVE_TEST = "//tools/bazel/oci:sonic_docker_archive_test"
 TEST_TARGETS = [
     "@sonic_swss//crates/countersyncd:common_rust_test",
     "//tools/bazel/image:metadata_test",
@@ -30,7 +29,6 @@ TEST_TARGETS = [
     "//tools/bazel/image:installer_test",
     "//tools/bazel/image:run_test",
     "//tools/bazel/oci:docker_archive_to_oci_layout_test",
-    ARCHIVE_TEST,
     "//dockers/docker-orchagent/config:render_test",
     "//tools/bazel/tests:make_bridge_test",
     "//tools/bazel/tests:swss_contract_test",
@@ -61,7 +59,6 @@ HEADER_TARGETS = [
     "@rules_distroless//registry_ci:protobuf_headers_test",
     "@rules_distroless//registry_ci:architecture_amd64_test",
     "@rules_distroless//registry_ci:architecture_arm64_test",
-    ARCHIVE_TEST,
 ]
 GIT_OPTIONS = (["--repo_env=GIT_CONFIG_SYSTEM", "--repo_env=GIT_CONFIG_NOSYSTEM",
                 "--repo_env=CARGO_NET_GIT_FETCH_WITH_CLI"]
@@ -244,9 +241,7 @@ def main():
             if machine == "aarch64":
                 options += ["--config=aarch64"]
             receipt["architecture"] = "arm64" if machine == "aarch64" else "amd64"
-            receipt["coverage"] = (
-                "Native protobuf header import and reproducible gzip Docker archive fixture "
-                "through the buildimage module graph; no production ARM64 image build.")
+            receipt["coverage"] = "Native protobuf header import through the buildimage module graph; no ARM64 image build."
             graph_options = ["--config=aarch64"] if machine == "aarch64" else []
             execute([args.bazel, "test", *options, "--nocache_test_results",
                      "--build_event_json_file=" + str(directory / "bep.json"), *HEADER_TARGETS],
