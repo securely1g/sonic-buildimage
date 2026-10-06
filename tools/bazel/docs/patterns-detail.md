@@ -71,9 +71,9 @@ To resolve dependencies between modules (e.g. `sonic-sysmgr` depends on `sonic-s
 bazel_dep(name = "sonic-swss-common", version = "0.0.0-0bbc08794128e4e1d7df043c3e3f3c4cd3ec9750")
 ```
 
-This build uses the maintained `securely1g/sonic-bazel-registry` main branch. Everything that isn't a plain upstream BCR dependency lives in that external registry:
+This build uses the maintained `securely1g/sonic-bazel-registry` main branch for shared SONiC modules and BCR for compatible public modules. Sysmgr and FIPS source are owned by this checkout and selected locally:
 
-- First-party component modules (e.g. `sonic-build-infra`, `sonic-swss-common`, `sonic-sysmgr`), discovered automatically from `src/`.
+- Shared first-party components such as `sonic-build-infra` and `sonic-swss-common` use the explicit landed versions in the root module. Sysmgr and FIPS use local source overrides; their standalone module declarations retain dependency versions.
 - Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet.
 - Patched third-party libraries such as `libnl3` use existing registry modules. Buildimage selects `libnl3` `3.7.0-sonic.2`; its source rules, patch and package targets are maintained in the registry, while `src/libnl3` retains the legacy Make packaging.
 - Rulesets we need to patch from the Bazel Central Registry (e.g. `rules_go`). These are maintained directly in `sonic-bazel-registry` (there's no `sonic-buildimage`-side tooling for them), and are often temporary until the patches have been merged and released upstream.
@@ -106,11 +106,20 @@ bazel run //tools/bazel/registry:publish_to_remote_registry -- src/sonic-sysmgr
 
 #### Unpinned Mode In Buildimage
 
-*Inside* `sonic-buildimage`, that version string doesn't actually matter for modules under `src/`:
-`sonic-buildimage`'s own `.bazelrc` unconditionally overrides every top-level `src/` module with [`--override_module`](https://bazel.build/reference/command-line-reference#common_options-flag--override_module),
-so Bazel builds it from `src/` instead of resolving it through any registry at all.
+The root keeps the shared Common and build-infrastructure versions declared in
+`MODULE.bazel`. Only the source-owned sysmgr and FIPS modules use local source
+overrides by default. Normal builds and CI retain the maintained registry graph.
 
-These configurations come from [`tools/bazel/root-unpinned-modules-config.bazelrc`](/tools/bazel/root-unpinned-modules-config.bazelrc), which is generated and kept up-to-date by [`tools/bazel/registry/root_config_test.py`](/tools/bazel/registry/root_config_test.py).
+For intentional development against all initialized local component checkouts,
+pass the generated configuration explicitly:
+
+```sh
+bazel --bazelrc=tools/bazel/root-unpinned-modules-config.bazelrc build --config=local-modules ...
+```
+
+This optional configuration uses [`--override_module`](https://bazel.build/reference/command-line-reference#common_options-flag--override_module).
+[`root_config_test.py`](/tools/bazel/registry/root_config_test.py) keeps its
+module inventory complete; the root `.bazelrc` does not import or enable it.
 
 #### Unpinned Mode In Submodules
 
@@ -122,7 +131,7 @@ cd src/sonic-swss-common
 bazel build --config=unpinned-sonic-build-infra ...
 ```
 
-This applies `--override_module=sonic-build-infra=<path-to-src/sonic-build-infra>`, the same mechanism the root `.bazelrc` uses unconditionally for every top-level `src/` module.
+This applies `--override_module=sonic-build-infra=<path-to-src/sonic-build-infra>` only to the explicitly selected dependency. The root offers the separate optional `local-modules` configuration described above.
 
 > [!warning]
 > Please see [`tools/bazel/submodule-config.bazelrc`](/tools/bazel/submodule-config.bazelrc) for an explanation of the gotchas.
@@ -989,15 +998,19 @@ So, we only have to capture it in the `BUILD.bazel` file, as any other source fi
 ```starlark
 # dockers/docker-sysmgr/BUILD.bazel
 
-load("//tools/bazel/oci:docker_archive_to_oci.bzl", "docker_archive_to_oci_layout")
+load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 
-docker_archive_to_oci_layout(
+oci_base_layout(
     name = "config_engine_base_layout",
-    src = "//:target/docker-config-engine-trixie.gz",
+    srcs = ["//:config_engine_oci_files", "//:target/docker-config-engine-trixie.oci/oci-layout"],
+    root = "target/docker-config-engine-trixie.oci",
+    marker = "$(execpath //:target/docker-config-engine-trixie.oci/oci-layout)",
+    expected_platform = "linux/amd64",
 )
 ```
 
-`docker_archive_to_oci_layout` is important here. The Make-based build system produces Docker images, which do not conform to the OCI standard. We have written a small script to take those images, transform them, and lay them out on disk in a format that `rules_oci` can consume.
+Make prepares the archive through the shared OCI conversion helper before the
+Bazel invocation. The rule declares the complete layout and verifies its platform.
 
 With that done, we can fill out the `base` attribute:
 

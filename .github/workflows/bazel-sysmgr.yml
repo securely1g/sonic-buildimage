@@ -47,9 +47,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize the recorded Bazel component sources
+      - name: Initialize vendored schemas and optional local-module checks
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # The root MODULE.bazel selects maintained registry Common/infra.
+          # These gitlinks are inspected by the optional development-rc checks;
+          # they do not override the source revisions in the root build graph.
           git submodule update --init --depth 1 --jobs 4 -- \
             src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
 
