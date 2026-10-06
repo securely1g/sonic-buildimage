@@ -1269,6 +1269,10 @@ class TestJ2Files(TestCase):
 
     def test_swss_switch_render_template_multi_asic(self):
         # verify the ECMP hash seed changes per namespace
+        if "NAMESPACE_ID" in os.environ:
+            self.addCleanup(os.environ.__setitem__, "NAMESPACE_ID", os.environ["NAMESPACE_ID"])
+        else:
+            self.addCleanup(os.environ.pop, "NAMESPACE_ID", None)
         switch_template = os.path.join(
             self.test_dir, '..', '..', '..', 'dockers', 'docker-orchagent',
             'switch.json.j2'
@@ -1298,6 +1302,10 @@ class TestJ2Files(TestCase):
 
     def test_swss_switch_render_template_t2(self):
         # verify the ECMP hash seed changes per namespace
+        if "NAMESPACE_ID" in os.environ:
+            self.addCleanup(os.environ.__setitem__, "NAMESPACE_ID", os.environ["NAMESPACE_ID"])
+        else:
+            self.addCleanup(os.environ.pop, "NAMESPACE_ID", None)
         switch_template = os.path.join(
             self.test_dir, '..', '..', '..', 'dockers', 'docker-orchagent',
             'switch.json.j2'
