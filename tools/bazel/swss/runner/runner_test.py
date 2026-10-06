@@ -226,7 +226,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
             lock = home / "register.lock"
             account = SimpleNamespace(pw_uid=1001, pw_gid=1001)
             token_input = io.StringIO("short-lived\n")
-            workspace_gib = 300.5
+            workspace_gib = 100.5
             checked_workspaces = []
             extracted_attempts = []
 
@@ -246,7 +246,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                             SimpleNamespace(free=n * 1024**3) for n in (workspace_gib, 150)]), \
                             patch.object(preflight.os, "stat", side_effect=[
                                 SimpleNamespace(st_dev=n) for n in (1, 2)]):
-                        preflight.check_disk(workspace, "/docker", 300, 100)
+                        preflight.check_disk(workspace, "/docker", 100, 100)
                 else:
                     self.fail(f"Unexpected runner command after capacity was exhausted: {command[0]}")
 
@@ -263,7 +263,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                     patch.object(rearm.subprocess, "run") as run, \
                     patch.object(rearm.sys, "stdin", token_input), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
-                with self.assertRaisesRegex(RuntimeError, "300 GiB workspace"):
+                with self.assertRaisesRegex(RuntimeError, "100 GiB workspace"):
                     rearm.register(SimpleNamespace(repo="owner/repo", pr=9))
 
             self.assertEqual(len(extracted_attempts), 1)
@@ -401,18 +401,18 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
             self.assertNotEqual(original, rearm.archive_digest(path))
 
     def test_shared_filesystem_does_not_count_capacity_twice(self):
-        with patch.object(preflight.shutil, "disk_usage", return_value=SimpleNamespace(free=350 * 1024**3)), \
+        with patch.object(preflight.shutil, "disk_usage", return_value=SimpleNamespace(free=150 * 1024**3)), \
                 patch.object(preflight.os, "stat", return_value=SimpleNamespace(st_dev=1)), \
                 contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaisesRegex(RuntimeError, "400 GiB"):
-                preflight.check_disk("/workspace", "/docker", 300, 100)
+            with self.assertRaisesRegex(RuntimeError, "200 GiB"):
+                preflight.check_disk("/workspace", "/docker", 100, 100)
 
     def test_separate_filesystems_each_need_their_own_budget(self):
         with patch.object(preflight.shutil, "disk_usage", side_effect=[SimpleNamespace(free=n * 1024**3) for n in (444, 90)]), \
                 patch.object(preflight.os, "stat", side_effect=[SimpleNamespace(st_dev=n) for n in (1, 2)]), \
                 contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(RuntimeError, "100 GiB Docker"):
-                preflight.check_disk("/workspace", "/docker", 300, 100)
+                preflight.check_disk("/workspace", "/docker", 100, 100)
 
 
 if __name__ == "__main__":

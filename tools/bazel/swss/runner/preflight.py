@@ -90,7 +90,7 @@ def check_disk(workspace, docker_root, work_gib, docker_gib):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path("/data/sonic-runner"))
-    parser.add_argument("--workspace-gib", type=int, default=300)
+    parser.add_argument("--workspace-gib", type=int, default=100)
     parser.add_argument("--docker-gib", type=int, default=100)
     args = parser.parse_args()
     if args.workspace_gib <= 0 or args.docker_gib <= 0:

@@ -33,11 +33,11 @@ installation. Install `gh` separately using its linked instructions, and verify
 that `/dev/kvm` exists after enabling CPU virtualization in the host firmware.
 `make init` uses host `wget` to download the build hooks' trusted signing keys.
 
-Use a local, persistent `/data` mount with at least 300 GiB free for workspaces.
+Use a local, persistent `/data` mount with at least 100 GiB free for workspaces.
 Budget another 100 GiB free for Docker; if they share a filesystem, preflight
-requires 400 GiB total. The Docker figure is this tool's conservative planning
-allowance, not a measured maximum or a workflow requirement; the workflow itself
-requires 300 GiB workspace space. Docker's containerd image store can also use
+requires 200 GiB total. These are admission thresholds, not measured maximum
+build sizes; monitor available space during the build. The workflow itself
+requires 100 GiB workspace space. Docker's containerd image store can also use
 `/var/lib/containerd`; if separately mounted, budget and monitor that filesystem
 as well. The initial host keeps both Docker and containerd on the root filesystem.
 Prefer at least 12 GiB RAM available; the image installer VM alone requests 10 GiB.
@@ -177,11 +177,11 @@ If the workflow rejects workspace capacity, use its reported path and free
 space to inspect the actual filesystem; an extraction-time capacity change is
 only one possible cause. Restore the documented workspace and Docker budgets
 before rearming. A PR update does not refresh the installed helper under
-`/opt`. On an already bootstrapped, idle host, install this rearm update from
+`/opt`. On an already bootstrapped, idle host, install the updated helpers from
 the reviewed checkout, then recheck capacity and arm the desired queued run:
 
 ```sh
-sudo install -m 0755 -o root -g root tools/bazel/swss/runner/rearm.py /opt/sonic-runner-tools/runner/rearm.py
+sudo install -m 0755 -o root -g root tools/bazel/swss/runner/preflight.py tools/bazel/swss/runner/rearm.py /opt/sonic-runner-tools/runner/
 sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.py
 python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
 ```
