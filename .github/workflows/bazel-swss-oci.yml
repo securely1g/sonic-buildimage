@@ -46,7 +46,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils build-essential busybox ca-certificates git j2cli jq libtool pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libtool pkg-config python3 python3-jinja2 tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -242,7 +242,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils build-essential busybox ca-certificates \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates \
             gdb git j2cli jq libtool make pigz pkg-config python3 python3-jinja2 tar unzip zstd
 
       - name: Checkout repository
@@ -409,6 +409,17 @@ jobs:
           make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
             2>&1 | tee artifacts/vs/build.log
+
+      - name: Verify P4RT packaged split debug symbols
+        run: |
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            SONIC_RUN_CMDS="python3 -B tools/bazel/ci/verify_p4rt_debug.py \
+              --runtime-deb target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
+              --debug-deb target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
+              --source-root src/sonic-p4rt/sonic-pins \
+              --output artifacts/vs/p4rt-debug-verification.json" \
+            2>&1 | tee artifacts/vs/p4rt-debug-verification.log
 
       - name: Remove this job's remaining build containers
         if: always()

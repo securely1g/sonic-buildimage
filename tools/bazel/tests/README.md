@@ -12,7 +12,8 @@ python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
 
 The suite uses Python 3, Make, Bash, Git, `j2` from `j2cli`, `jq`, a C compiler,
 `readelf` and `objcopy`. The Make tests use a controlled Bazel executable and small local
-archives. Fixture generators also live here so CI's real Bazel cache and Make
+archives. The AMD64 P4RT split-debug checks also require GNU `dwp` and GDB;
+Trixie supplies `dwp` through `binutils-gold`. Fixture generators also live here so CI's real Bazel cache and Make
 export checks use the same inputs.
 
 Two unrelated container families exercise independent runtime/debug builder
@@ -87,6 +88,7 @@ replacements; they do not build or boot a VS image.
 | [manifest_labels_test.py](manifest_labels_test.py) | Preserve nested values, unknown fields and quoting when converting a JSON manifest to one OCI label line. Reject malformed JSON, non-object manifests and non-JSON numbers. |
 | [oci_base_layout_test.py](oci_base_layout_test.py) | Validate an OCI base's platform, index, descriptors and blob contents before consumption. Reject ambiguous, missing, corrupted or unsafe entries. |
 | [oci_base_make_test.py](oci_base_make_test.py) | Ensure Make prepares and revalidates each declared OCI base before its consumers, including parallel runtime/debug requests and changed archives with misleading timestamps. |
+| [p4rt_debug_test.py](p4rt_debug_test.py) | Require a populated AMD64 DWP that independently supplies matching function types and source lines in GDB. Reject empty, unrelated or malformed symbols and loose-DWO fallback. Fixtures compile ELF files without generating packages. |
 | [prepare_oci_base_test.py](prepare_oci_base_test.py) | Publish native OCI entries from Docker-save fixtures without changing source archives. Protect stable timestamps, prior readers, corruption recovery and concurrent publication. |
 | [python_packages_test.py](python_packages_test.py) | Retain direct or zipped Python test receipts and reject missing XML/inventories, wheel hashes that differ from the installation test, or results from another architecture. |
 | [resolution_test.py](resolution_test.py) | Require complete module-graph evidence and recognize only the explicitly supported extension diagnostics. Unknown, incomplete or mismatched failures remain fatal. |

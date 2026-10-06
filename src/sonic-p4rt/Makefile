@@ -5,8 +5,10 @@ SHELL = /bin/bash
 BAZEL_TARGET_PATH = p4rt_app
 BAZEL_BUILD_TARGETS = //p4rt_app:p4rt_deb //p4rt_app:p4rt_dbg_deb
 
-# Enable debug symbols for remote debugging (generate a .dwp).
-BAZEL_BUILD_OPTS += --copt=-gsplit-dwarf
+# Let Bazel collect split debug symbols into the .dwp for optimized builds.
+# Explicit -g overrides the toolchain's optimized-build default of -g0.
+# GNU dwp 2.44 cannot package GCC 14's default DWARF 5 debug information.
+BAZEL_BUILD_OPTS += --fission=opt --copt=-g --copt=-gdwarf-4
 
 # Override sonic_swss_common to use the version specific to this buildimage.
 BAZEL_BUILD_OPTS += --override_repository=sonic_swss_common=/sonic/src/sonic-swss-common
@@ -15,7 +17,7 @@ BAZEL_BUILD_OPTS += --override_repository=sonic_swss_common=/sonic/src/sonic-sws
 BAZEL_BUILD_OPTS += --copt=-Wno-array-bounds
 BAZEL_BUILD_OPTS += --copt=-Wno-stringop-overflow
 
-# Build optimized, stripped binaries.
+# Keep optimized binaries with the skeleton debug information for the .dwp.
 BAZEL_BUILD_OPTS += -c opt
 
 # Use a host directory to store Bazel cache, if mounted. This will speed up
