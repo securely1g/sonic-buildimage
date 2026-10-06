@@ -27,7 +27,7 @@ TESTS = [
     "//tools/bazel/equivalence_checker:reporter_test",
     "//tools/bazel/equivalence_checker:deployment_tar_test",
     "//tools/bazel/oci:docker_archive_to_oci_layout_test",
-    "//tools/bazel/dpkg:test_dpkg_patterns_up_to_date",
+    "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
 ]
 PACKAGES = {
     "protobuf-runtime.tar": "@sonic_protobuf//:libprotobuf_pkg",
