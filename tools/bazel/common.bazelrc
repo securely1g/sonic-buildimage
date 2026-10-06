@@ -1,0 +1,14 @@
+common --lockfile_mode=update
+
+# This opt-in container path supports native AMD64 Debian Trixie.
+common --platforms=@sonic_build_infra//platforms:x86_64_trixie
+# Build-time cfggen has native Common/YANG dependencies too. Select the declared
+# Trixie toolchain for execution tools instead of the ambient host compiler.
+common --host_platform=@sonic_build_infra//platforms:x86_64_trixie
+common --@sonic_swss_common//tools/bazel:yang_modules=True
+common --noincompatible_disallow_empty_glob
+build --@rules_rust//rust/settings:experimental_use_allocator_libraries_with_mangled_symbols=True
+build:release --compilation_mode=opt
+test --test_output=errors
+
+try-import %workspace%/.bazelrc.user

@@ -77,6 +77,16 @@
 #  *                 BLDENV/arch; reuse at own risk if stale vs. current slave Dockerfiles.
 #  *                 With DPKG cache write modes, a reused tag that differs from the computed
 #  *                 base tag is rejected.
+#  * BUILD_WITH_BAZEL_WHEN_AVAILABLE: Build targets registered in
+#  *                 SONIC_BAZEL_DOCKER_IMAGES with Bazel instead of the legacy
+#  *                 `docker build` flow.
+#  *                 When disabled they fall back to the normal Make docker build.
+#  *                 Default: n
+#  *                 Values: y,n
+#  * SONIC_BAZEL_CACHE_SOURCE: Host directory for persistent Bazel repository,
+#  *                 action and Bazelisk caches for all Bazel builds.
+#  *                 Default: $(SONIC_DPKG_CACHE_SOURCE)/bazel, independent of
+#  *                 BUILD_WITH_BAZEL_WHEN_AVAILABLE. Empty disables the mount.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -292,11 +302,20 @@ PREPARE_DOCKER=BUILD_SLAVE=y \
 
 $(shell $(PREPARE_DOCKER) )
 
+# The generated hook package contains timestamps; hash its source names and
+# contents instead. Include local additions and symlinks, but not build outputs.
+SONIC_BUILD_HOOKS_HASH := $(shell \
+	find src/sonic-build-hooks/Makefile src/sonic-build-hooks/scripts \
+		src/sonic-build-hooks/hooks src/sonic-build-hooks/debian \
+		\( -type f -o -type l \) -print0 \
+	| LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $$1}')
+
 # Add the versions in the tag, if the version change, need to rebuild the slave
 SLAVE_BASE_TAG_COMPUTED := $(shell \
+	(printf 'sonic-build-hooks=%s\n' '$(SONIC_BUILD_HOOKS_HASH)'; \
 	cat $(SLAVE_DIR)/Dockerfile \
 		$(SLAVE_DIR)/sources.list.* \
-		$(SLAVE_DIR)/buildinfo/versions/versions-* 2>/dev/null \
+		$(SLAVE_DIR)/buildinfo/versions/versions-* 2>/dev/null) \
 	| sha1sum \
 	| awk '{print substr($$1,0,11);}')
 
@@ -309,7 +328,8 @@ endif
 
 # Calculate the slave TAG based on $(USER)/$(PWD)/$(CONFIGURED_ARCH) to get unique SHA ID
 SLAVE_TAG = $(shell \
-	(cat $(SLAVE_DIR)/Dockerfile \
+	(printf 'sonic-build-hooks=%s\n' '$(SONIC_BUILD_HOOKS_HASH)'; \
+	 cat $(SLAVE_DIR)/Dockerfile \
 		 $(SLAVE_DIR)/sources.list.* \
 		 $(SLAVE_DIR)/buildinfo/versions/versions-* \
 	&& echo $(USER)/$(PWD)/$(CONFIGURED_ARCH)) \
@@ -487,6 +507,18 @@ endif
 
 ifneq ($(SONIC_VERSION_CACHE_SOURCE),)
 	DOCKER_RUN += -v "$(SONIC_VERSION_CACHE_SOURCE):/vcache:rw"
+endif
+
+# Reuse downloads and action outputs across disposable builder containers.
+# Create the bind source as the host build user, before Docker can create a
+# root-owned directory. Keep the output base private to each builder/check-out.
+ifneq ($(strip $(SONIC_BAZEL_CACHE_SOURCE)),)
+SONIC_BAZEL_CACHE_ABS := $(shell realpath -m -- '$(subst ','"'"',$(SONIC_BAZEL_CACHE_SOURCE))')
+SONIC_BAZEL_CACHE_QUOTED := '$(subst ','"'"',$(SONIC_BAZEL_CACHE_ABS))'
+DOCKER_RUN := mkdir -p -- $(SONIC_BAZEL_CACHE_QUOTED) && test -w $(SONIC_BAZEL_CACHE_QUOTED) && $(DOCKER_RUN) \
+	-v $(SONIC_BAZEL_CACHE_QUOTED):/bazel_cache:rw \
+	-e BAZELISK_HOME=/bazel_cache/bazelisk \
+	-v '$(subst ','"'"',$(PWD)/tools/bazel/slave.bazelrc)':/etc/bazel.bazelrc:ro
 endif
 
 # User name and tag for "docker-*" images created by native dockerd mode.
@@ -753,6 +785,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 						   SBOM_INCLUDE_LICENSES=$(SBOM_INCLUDE_LICENSES) \
 						   SBOM_STRICT=$(SBOM_STRICT) \
 						   SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+						   BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(BUILD_WITH_BAZEL_WHEN_AVAILABLE) \
                            $(SONIC_OVERRIDE_BUILD_VARS)
 
 .PHONY: sonic-slave-build sonic-slave-bash sonic-slave-run init reset

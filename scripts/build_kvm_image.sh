@@ -40,19 +40,18 @@ create_disk()
 }
 
 prepare_installer_disk()
-{
-    fallocate -l 5120M $INSTALLER_DISK
-
-    mkfs.ext2 $INSTALLER_DISK
-
+(
+    local tmpdir
     tmpdir=$(mktemp -d)
+    trap 'rm -rf -- "$tmpdir"' EXIT
+    # Match the ext2 root directory instead of mktemp's private mode.
+    chmod 0755 "$tmpdir"
+    cp --reflink=auto -- "$INSTALLER" "$tmpdir/onie-installer.bin"
 
-    mount -o loop $INSTALLER_DISK $tmpdir
-
-    cp $INSTALLER $tmpdir/onie-installer.bin
-
-    umount $tmpdir
-}
+    fallocate -l 5120M "$INSTALLER_DISK"
+    # Populate directly so this step does not require a host loop device.
+    mkfs.ext2 -d "$tmpdir" "$INSTALLER_DISK"
+)
 
 wait_kvm_ready()
 {
