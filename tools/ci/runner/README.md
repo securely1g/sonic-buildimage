@@ -223,6 +223,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Ephemeral runner disappears after a job | Explicit one-command rearm, fresh token, no restart loop |
 | Ephemeral registration leaves local state behind | Preserve diagnostics; explicit cleanup and host rebuild policy |
 | Cancelled job left its build container compiling | Per-attempt container labels, saved container logs and cleanup on cancellation/failure |
+| Builder cleanup deleted groff device files, breaking Bash manual generation | Preserve groff runtime data in slave images while retaining runtime-image cleanup |
 | Host AppArmor blocked Ghostscript PDF output even in a privileged builder | Managed gs-only owner allowance for `/sonic/**.{ps,pdf}`, profile reload and preflight configuration check |
 | Host Docker worked but nested Docker could not initialize legacy NAT | Load and persist host `iptable_nat`; preflight also recognizes built-in support |
 
