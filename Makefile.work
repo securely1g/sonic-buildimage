@@ -68,12 +68,25 @@
 #  * ENABLE_VRF_STRICT: Enable VRF strict mode.
 #  *                 Default: unset
 #  *                 Values: y
+#  * SONIC_SLAVE_REUSE_<release>_IMAGE / SONIC_SLAVE_REUSE_<release>_TAG (optional): Use
+#  *                 an existing local sonic-slave **base** image instead of building when
+#  *                 the computed base tag changes. Supported keys for this tree: TRIXIE and
+#  *                 BOOKWORM only (other BLDENV values do not use reuse variables here).
+#  *                 Set both for the current BLDENV from `make showtag` before the change.
+#  *                 Skips slave-base docker build; fails if the image is missing. Must match
+#  *                 BLDENV/arch; reuse at own risk if stale vs. current slave Dockerfiles.
+#  *                 With DPKG cache write modes, a reused tag that differs from the computed
+#  *                 base tag is rejected.
 #  * BUILD_WITH_BAZEL_WHEN_AVAILABLE: Build targets registered in
 #  *                 SONIC_BAZEL_DOCKER_IMAGES with Bazel instead of the legacy
 #  *                 `docker build` flow.
 #  *                 When disabled they fall back to the normal Make docker build.
 #  *                 Default: n
 #  *                 Values: y,n
+#  * SONIC_BAZEL_CACHE_SOURCE: Host directory for persistent Bazel repository,
+#  *                 action and Bazelisk caches for all Bazel builds.
+#  *                 Default: $(SONIC_DPKG_CACHE_SOURCE)/bazel, independent of
+#  *                 BUILD_WITH_BAZEL_WHEN_AVAILABLE. Empty disables the mount.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -160,12 +173,6 @@ include rules/config
 -include rules/config.user
 include rules/sonic-fips.mk
 
-ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
-ifneq ($(BLDENV),trixie)
-$(error BUILD_WITH_BAZEL_WHEN_AVAILABLE=y only supports BLDENV=trixie (got '$(BLDENV)'))
-endif
-endif
-
 ifneq ($(DEFAULT_CONTAINER_REGISTRY),)
 override DEFAULT_CONTAINER_REGISTRY := $(DEFAULT_CONTAINER_REGISTRY)/
 endif
@@ -195,6 +202,38 @@ endif
 endif
 endif
 SLAVE_IMAGE = $(SLAVE_BASE_IMAGE)-$(USER_LC)
+
+# Optional per-BLDENV reuse of an existing sonic-slave-base image (see header comment).
+SONIC_SLAVE_REUSE_SLAVE :=
+SONIC_SLAVE_REUSE_KIND :=
+SONIC_SLAVE_REUSE_EFFECTIVE_IMAGE :=
+SONIC_SLAVE_REUSE_EFFECTIVE_TAG :=
+ifeq ($(BLDENV),trixie)
+SONIC_SLAVE_REUSE_KIND := TRIXIE
+SONIC_SLAVE_REUSE_EFFECTIVE_IMAGE := $(strip $(SONIC_SLAVE_REUSE_TRIXIE_IMAGE))
+SONIC_SLAVE_REUSE_EFFECTIVE_TAG := $(strip $(SONIC_SLAVE_REUSE_TRIXIE_TAG))
+else ifeq ($(BLDENV),bookworm)
+SONIC_SLAVE_REUSE_KIND := BOOKWORM
+SONIC_SLAVE_REUSE_EFFECTIVE_IMAGE := $(strip $(SONIC_SLAVE_REUSE_BOOKWORM_IMAGE))
+SONIC_SLAVE_REUSE_EFFECTIVE_TAG := $(strip $(SONIC_SLAVE_REUSE_BOOKWORM_TAG))
+endif
+
+ifneq ($(strip $(SONIC_SLAVE_REUSE_EFFECTIVE_IMAGE)),)
+ifeq ($(strip $(SONIC_SLAVE_REUSE_EFFECTIVE_TAG)),)
+$(error SONIC_SLAVE_REUSE_$(SONIC_SLAVE_REUSE_KIND)_TAG must be set when SONIC_SLAVE_REUSE_$(SONIC_SLAVE_REUSE_KIND)_IMAGE is set)
+endif
+endif
+ifneq ($(strip $(SONIC_SLAVE_REUSE_EFFECTIVE_TAG)),)
+ifeq ($(strip $(SONIC_SLAVE_REUSE_EFFECTIVE_IMAGE)),)
+$(error SONIC_SLAVE_REUSE_$(SONIC_SLAVE_REUSE_KIND)_IMAGE must be set when SONIC_SLAVE_REUSE_$(SONIC_SLAVE_REUSE_KIND)_TAG is set)
+endif
+endif
+ifneq ($(strip $(SONIC_SLAVE_REUSE_EFFECTIVE_IMAGE)),)
+ifneq ($(strip $(SONIC_SLAVE_REUSE_EFFECTIVE_TAG)),)
+SONIC_SLAVE_REUSE_SLAVE = y
+endif
+endif
+
 DOCKER_ROOT = $(PWD)/fsroot.docker.$(BLDENV)
 
 ifeq ($(INCLUDE_FIPS), n)
@@ -209,8 +248,6 @@ SONIC_OVERRIDE_BUILD_VARS += SONIC_VERSION_CACHE_SOURCE=$(SONIC_VERSION_CACHE_SO
 export SONIC_VERSION_CACHE SONIC_VERSION_CACHE_SOURCE
 $(shell test -d $(SONIC_VERSION_CACHE_SOURCE) || \
     mkdir -p $(SONIC_VERSION_CACHE_SOURCE) && chmod -f 777 $(SONIC_VERSION_CACHE_SOURCE) 2>/dev/null )
-
-$(shell mkdir -p -m 0777 "$(SONIC_BAZEL_CACHE_SOURCE)" 2>/dev/null)
 
 # Generate the version control build info
 $(shell \
@@ -265,17 +302,34 @@ PREPARE_DOCKER=BUILD_SLAVE=y \
 
 $(shell $(PREPARE_DOCKER) )
 
+# The generated hook package contains timestamps; hash its source names and
+# contents instead. Include local additions and symlinks, but not build outputs.
+SONIC_BUILD_HOOKS_HASH := $(shell \
+	find src/sonic-build-hooks/Makefile src/sonic-build-hooks/scripts \
+		src/sonic-build-hooks/hooks src/sonic-build-hooks/debian \
+		\( -type f -o -type l \) -print0 \
+	| LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $$1}')
+
 # Add the versions in the tag, if the version change, need to rebuild the slave
-SLAVE_BASE_TAG = $(shell \
+SLAVE_BASE_TAG_COMPUTED := $(shell \
+	(printf 'sonic-build-hooks=%s\n' '$(SONIC_BUILD_HOOKS_HASH)'; \
 	cat $(SLAVE_DIR)/Dockerfile \
 		$(SLAVE_DIR)/sources.list.* \
-		$(SLAVE_DIR)/buildinfo/versions/versions-* 2>/dev/null \
+		$(SLAVE_DIR)/buildinfo/versions/versions-* 2>/dev/null) \
 	| sha1sum \
 	| awk '{print substr($$1,0,11);}')
 
-# Calculate the slave TAG based on $(USER)/$(PWD)/$(CONFIGURED_PLATFORM) to get unique SHA ID
+ifeq ($(SONIC_SLAVE_REUSE_SLAVE),y)
+override SLAVE_BASE_IMAGE := $(SONIC_SLAVE_REUSE_EFFECTIVE_IMAGE)
+override SLAVE_BASE_TAG := $(strip $(SONIC_SLAVE_REUSE_EFFECTIVE_TAG))
+else
+SLAVE_BASE_TAG := $(SLAVE_BASE_TAG_COMPUTED)
+endif
+
+# Calculate the slave TAG based on $(USER)/$(PWD)/$(CONFIGURED_ARCH) to get unique SHA ID
 SLAVE_TAG = $(shell \
-	(cat $(SLAVE_DIR)/Dockerfile \
+	(printf 'sonic-build-hooks=%s\n' '$(SONIC_BUILD_HOOKS_HASH)'; \
+	 cat $(SLAVE_DIR)/Dockerfile \
 		 $(SLAVE_DIR)/sources.list.* \
 		 $(SLAVE_DIR)/buildinfo/versions/versions-* \
 	&& echo $(USER)/$(PWD)/$(CONFIGURED_ARCH)) \
@@ -410,6 +464,9 @@ DOCKER_RUN := docker run --rm=true $(DOCKER_PRIVMODE) --init \
     --ulimit nofile=524288:524288 \
     $(SONIC_BUILDER_EXTRA_CMDLINE)
 
+export PASSWORD
+DOCKER_RUN += -e PASSWORD
+
 # Mount the $(DOCKER_ROOT) to /var/lib/docker in the slave container, the overlay fs is not supported as dockerd root folder.
 ifneq ($(filter $(SONIC_SLAVE_DOCKER_DRIVER),overlay overlay2),)
 	DOCKER_RUN += -v $(DOCKER_ROOT):/var/lib/docker
@@ -452,19 +509,16 @@ ifneq ($(SONIC_VERSION_CACHE_SOURCE),)
 	DOCKER_RUN += -v "$(SONIC_VERSION_CACHE_SOURCE):/vcache:rw"
 endif
 
-# Create a volume to store Bazel caches into
-# See the documentation in rules/config for more information
-#
-# Only mount it if the host directory actually exists:
-# SONIC_BAZEL_CACHE_SOURCE can be non-empty even when the mkdir silently failed
-# (e.g. an unwritable parent on some CI agents), and passing that to Docker has unintended consequences.
-ifneq ($(wildcard $(SONIC_BAZEL_CACHE_SOURCE)),)
-	DOCKER_RUN += -v "$(SONIC_BAZEL_CACHE_SOURCE):/bazel_cache:rw"
-	# Persist bazelisk downloads in the cache
-	DOCKER_RUN += -e "BAZELISK_HOME=/bazel_cache/bazelisk"
-	# Apply the slave Bazel cache config as a system RC file, which Bazel reads regardless of cwd.
-	# Ref: https://bazel.build/run/bazelrc#bazelrc-file-locations
-	DOCKER_RUN += -v "$(PWD)/tools/bazel/slave.bazelrc:/etc/bazel.bazelrc:ro"
+# Reuse downloads and action outputs across disposable builder containers.
+# Create the bind source as the host build user, before Docker can create a
+# root-owned directory. Keep the output base private to each builder/check-out.
+ifneq ($(strip $(SONIC_BAZEL_CACHE_SOURCE)),)
+SONIC_BAZEL_CACHE_ABS := $(shell realpath -m -- '$(subst ','"'"',$(SONIC_BAZEL_CACHE_SOURCE))')
+SONIC_BAZEL_CACHE_QUOTED := '$(subst ','"'"',$(SONIC_BAZEL_CACHE_ABS))'
+DOCKER_RUN := mkdir -p -- $(SONIC_BAZEL_CACHE_QUOTED) && test -w $(SONIC_BAZEL_CACHE_QUOTED) && $(DOCKER_RUN) \
+	-v $(SONIC_BAZEL_CACHE_QUOTED):/bazel_cache:rw \
+	-e BAZELISK_HOME=/bazel_cache/bazelisk \
+	-v '$(subst ','"'"',$(PWD)/tools/bazel/slave.bazelrc)':/etc/bazel.bazelrc:ro
 endif
 
 # User name and tag for "docker-*" images created by native dockerd mode.
@@ -598,6 +652,25 @@ DOCKER_SLAVE_BASE_PULL_REGISTRY = \
 		$(COLLECT_DOCKER); \
 	}\
 
+ifeq ($(SONIC_SLAVE_REUSE_SLAVE),y)
+SONIC_SLAVE_BASE_BUILD = \
+	{ \
+		echo Checking sonic-slave-base image \(reuse\): $(SLAVE_BASE_IMAGE):$(SLAVE_BASE_TAG); \
+		docker inspect --type image $(SLAVE_BASE_IMAGE):$(SLAVE_BASE_TAG) &> /dev/null; \
+	} || \
+	{ \
+		echo "ERROR: Slave base image $(SLAVE_BASE_IMAGE):$(SLAVE_BASE_TAG) not found. Build once without SONIC_SLAVE_REUSE_$(SONIC_SLAVE_REUSE_KIND)_* (e.g. make sonic-slave-build), or set SONIC_SLAVE_REUSE_$(SONIC_SLAVE_REUSE_KIND)_IMAGE and SONIC_SLAVE_REUSE_$(SONIC_SLAVE_REUSE_KIND)_TAG for this BLDENV from output of make showtag."; \
+		exit 1; \
+	}; \
+	if [ "$(SLAVE_BASE_TAG)" != "$(SLAVE_BASE_TAG_COMPUTED)" ]; then \
+		if [ -n "$(filter cache wcache rwcache,$(SONIC_DPKG_CACHE_METHOD) $(SONIC_DPKG_CACHE_METHOD_OVERRIDE))" ]; then \
+			echo "ERROR: Reused slave base image $(SLAVE_BASE_IMAGE):$(SLAVE_BASE_TAG) differs from the computed slave base tag $(SLAVE_BASE_TAG_COMPUTED). Refusing to use a stale image while DPKG cache writes are enabled."; \
+			exit 1; \
+		else \
+			echo "WARNING: Reused slave base image $(SLAVE_BASE_IMAGE):$(SLAVE_BASE_TAG) differs from the computed slave base tag $(SLAVE_BASE_TAG_COMPUTED)."; \
+		fi; \
+	fi
+else
 SONIC_SLAVE_BASE_BUILD = \
 	{ \
 		$(DOCKER_SLAVE_BASE_INSPECT); \
@@ -612,6 +685,7 @@ SONIC_SLAVE_BASE_BUILD = \
 		$(DOCKER_SLAVE_BASE_BUILD) ; \
 		$(COLLECT_DOCKER) ; \
 	}
+endif
 
 SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
                            -f slave.mk \
@@ -638,7 +712,6 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
                            SONIC_INSTALL_DEBUG_TOOLS=$(INSTALL_DEBUG_TOOLS) \
                            SONIC_SAITHRIFT_V2=$(SAITHRIFT_V2) \
                            MDEBUG=$(MDEBUG) \
-                           PASSWORD=$(PASSWORD) \
                            USERNAME=$(USERNAME) \
 			   CHANGE_DEFAULT_PASSWORD=$(CHANGE_DEFAULT_PASSWORD) \
                            SONIC_BUILD_JOBS=$(SONIC_BUILD_JOBS) \

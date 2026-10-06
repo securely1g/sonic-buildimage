@@ -172,8 +172,6 @@ use_repo(bindgen, "rules_rust_bindgen")
 
 register_toolchains("@rules_rust_bindgen//:all")
 
-bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
-
 toolchains = use_extension("@tar.bzl//tar:extensions.bzl", "toolchains")
 use_repo(toolchains, "bsd_tar_toolchains")
 
@@ -202,18 +200,34 @@ apt.install(
 )
 use_repo(apt, "eventd_deps")
 
+# System-manager and FIPS source files are owned by this checkout. Shared
+# Common and build infrastructure keep the root's landed registry selections.
+bazel_dep(name = "sonic-sysmgr", version = "0.0.0", repo_name = "sonic_sysmgr")
+local_path_override(
+    module_name = "sonic-sysmgr",
+    path = "src/sonic-sysmgr",
+)
+
+bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
+local_path_override(
+    module_name = "sonic-fips",
+    path = "src/sonic-fips",
+)
+
+bazel_dep(name = "protobuf-legacy", version = "3.21.12-sonic.1", repo_name = "sonic_protobuf")
+bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
+bazel_dep(name = "bazel_lib", version = "3.1.1")
+bazel_dep(name = "aspect_rules_py", version = "1.11.2")
+
+bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = True)
+
+uv = use_extension("@aspect_rules_py//uv/unstable:extension.bzl", "uv")
+use_repo(uv, "pypi")
+
+include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
+
 # Commit suffixes do not sort by source date; keep the selected compiler revision.
 single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",
 )
-
-uv = use_extension("@aspect_rules_py//uv/unstable:extension.bzl", "uv")
-use_repo(uv, "pypi")
-
-# Everything the Make/Bazel equivalence check needs.
-include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
-
-bazel_dep(name = "protobuf-legacy", version = "3.21.12-sonic.1", repo_name = "sonic_protobuf")
-
-bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")

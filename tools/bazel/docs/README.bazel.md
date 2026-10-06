@@ -61,44 +61,18 @@ There are two mechanisms for this:
 - The `BUILD_WITH_BAZEL_WHEN_AVAILABLE` Flag: A global flag that toggles whether every container that could be built with Bazel should be built with Bazel.
 - The `SONIC_BAZEL_DOCKER_IMAGES` Make Target: A new target type that will use `bazel build` to build the containers, instead of Make. [Documentation](/README.buildsystem.md#bazel-docker-images).
 
-To mark a container as buildable with Bazel, add it to `SONIC_BAZEL_DOCKER_IMAGES` only if `BUILD_WITH_BAZEL_WHEN_AVAILABLE` is enabled:
-
-```makefile
-# rules/docker-sysmgr.mk
-
-# Image identity and metadata are the same no matter the build system
-$(DOCKER_SYSMGR)_PATH = $(DOCKERS_PATH)/$(DOCKER_SYSMGR_STEM)
-$(DOCKER_SYSMGR)_VERSION = 1.0.0
-$(DOCKER_SYSMGR)_PACKAGE_NAME = sysmgr
-
-ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),n)
-
-# Usual Make-based build
-...
-
-else
-
-# When BUILD_WITH_BAZEL_WHEN_AVAILABLE is enabled, build this docker with Bazel.
-$(DOCKER_SYSMGR)_BAZEL_BASE += $(DOCKER_CONFIG_ENGINE_TRIXIE)
-SONIC_BAZEL_DOCKER_IMAGES += $(DOCKER_SYSMGR)
-SONIC_BAZEL_DBG_DOCKER_IMAGES += $(DOCKER_SYSMGR_DBG)
-
-endif
-
-SONIC_DOCKER_IMAGES += $(DOCKER_SYSMGR)
-SONIC_INSTALL_DOCKER_IMAGES += $(DOCKER_SYSMGR)
-
-SONIC_DOCKER_DBG_IMAGES += $(DOCKER_SYSMGR_DBG)
-SONIC_INSTALL_DOCKER_DBG_IMAGES += $(DOCKER_SYSMGR_DBG)
-```
-
-`_BAZEL_BASE` lists the Make-built images the Bazel build consumes as a base layer; `slave.mk` turns those into prerequisites of the Bazel target.
+Container owners select their supported configuration and declare `_BAZEL_TARGET`,
+`_BAZEL_DEPENDS` and `_PATH` for the shared `tools/bazel/docker.mk` bridge.
+System-manager registers native AMD64 Trixie with ASAN disabled; unsupported
+configurations keep their Make recipes. The runtime/debug archives share the
+validated `docker-config-engine-trixie.oci` base prepared by Make.
+See `rules/docker-sysmgr.mk` and the [shared container contract](../README.md).
 
 ## Bazel Rules Dependencies
 
-This build uses the maintained `securely1g/sonic-bazel-registry` main branch. Everything that isn't a plain upstream BCR dependency lives in that external registry:
+This build uses the maintained `securely1g/sonic-bazel-registry` main branch for shared SONiC modules and BCR for compatible public modules. Sysmgr and FIPS source are owned by this checkout and selected locally:
 
-- First-party component modules (e.g. `sonic-build-infra`, `sonic-swss-common`, `sonic-sysmgr`), discovered automatically from `src/`.
+- Shared first-party components such as `sonic-build-infra` and `sonic-swss-common` use the explicit landed versions in the root module. Sysmgr and FIPS use local source overrides; their standalone module declarations retain dependency versions.
 - Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet.
 - Patched third-party libraries such as `libnl3` use existing registry modules. Buildimage selects `libnl3` `3.7.0-sonic.2`; its source rules, patch and package targets are maintained in the registry, while `src/libnl3` retains the legacy Make packaging.
 - Rulesets we need to patch from the Bazel Central Registry (e.g. `rules_go`). These are maintained directly in `sonic-bazel-registry` (there's no `sonic-buildimage`-side tooling for them), and are often temporary until the patches have been merged and released upstream.
@@ -107,9 +81,12 @@ Please see [Depending on Other Modules](/tools/bazel/docs/patterns-detail.md#dep
 
 ### Unpinned Mode
 
-For development inside `sonic-buildimage`, `sonic-buildimage`'s own `.bazelrc` unconditionally overrides them with
-`--override_module` to build from `src/` tree, regardless of what version any consumer's `bazel_dep` declares.
-See [`tools/bazel/root-unpinned-modules-config.bazelrc`](/tools/bazel/root-unpinned-modules-config.bazelrc), kept complete by [`tools/bazel/registry/root_config_test.py`](/tools/bazel/registry/root_config_test.py).
+The root uses maintained registry revisions for shared Common and build infrastructure.
+Only the source-owned sysmgr and FIPS modules use `local_path_override` by default.
+The generated `root-unpinned-modules-config.bazelrc` remains an explicit development
+option; normal CI does not import or enable it. Supply it explicitly with
+`bazel --bazelrc=tools/bazel/root-unpinned-modules-config.bazelrc build --config=local-modules ...`
+when intentionally validating local shared module changes.
 
 Each module still declares a real, externally-meaningful pinned version in its own `MODULE.bazel`, for when it's built standalone (or published) outside of `sonic-buildimage`.
 
