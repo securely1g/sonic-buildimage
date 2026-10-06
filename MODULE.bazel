@@ -1,26 +1,86 @@
-module(name = "sonic-buildimage")
+module(
+    name = "sonic-buildimage",
+    bazel_compatibility = [
+        ">=8.5.1",
+        "<=8.5.1",
+    ],
+)
 
+bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
-bazel_dep(name = "rules_oci", version = "2.2.6")
-bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
-bazel_dep(name = "rules_python", version = "1.7.0")
-bazel_dep(name = "bazel_lib", version = "3.1.1")
 bazel_dep(name = "pigz", version = "2.8")
-bazel_dep(name = "aspect_rules_py", version = "1.11.2")
-
-bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = True)
-
-python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(python_version = "3.11.6")
-
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_cc", version = "0.2.20")
 bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+bazel_dep(name = "rules_gzip", version = "1.0.0")
+bazel_dep(name = "rules_multirun", version = "0.14.0")
+bazel_dep(name = "rules_oci", version = "2.2.6")
+bazel_dep(name = "rules_python", version = "1.8.0")
+bazel_dep(name = "rules_rs", version = "0.1.0")
+bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
+bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
-# Keep the shared archive and package fixes selected over upstream releases
-# and historical dotted versions requested by older component modules.
+# rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
+register_toolchains("//tools/bazel/gzip:toolchain")
+
+# Build SWSS and its runtime libraries from source without changing the source
+# submodules selected by the rest of the Make image build.
+bazel_dep(
+    name = "sonic-build-infra",
+    version = "0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a",
+    repo_name = "sonic_build_infra",
+)
+bazel_dep(
+    name = "sonic-dash-api",
+    version = "0.0.4-2a6e390b96a4fc17c191fa0da4b7ed1f40aed069",
+    repo_name = "sonic_dash_api",
+)
+bazel_dep(
+    name = "sonic-sairedis",
+    version = "0.0.0-e9402b77ba43aee6323665921598ef67e66293f9",
+    repo_name = "sonic_sairedis",
+)
+bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-swss-common", version = "0.0.1-6e0204634f2f78605abdd94ea2b013a46e0660ac", repo_name = "sonic_swss_common")
+bazel_dep(
+    name = "sonic-yang-mgmt",
+    version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
+    repo_name = "sonic_yang_mgmt",
+)
+bazel_dep(
+    name = "sonic-yang-models",
+    version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
+    repo_name = "sonic_yang_models",
+)
+
+# SWSS is not registered yet. Select its maintained-branch merge explicitly.
+git_override(
+    module_name = "sonic-swss",
+    commit = "34de0503eb9d1cf54af3492d8307dcf7c3022a0e",
+    remote = "https://github.com/securely1g/sonic-swss.git",
+)
+
+# Commit suffixes do not sort by source history. Keep transitive requests from
+# selecting an older infrastructure commit over the landed fix.
 single_version_override(
-    module_name = "tar.bzl",
-    version = "0.10.5-sonic.1",
+    module_name = "sonic-build-infra",
+    version = "0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a",
+)
+
+# Dependency overrides do not propagate from imported modules. Retain their
+# compatible rule implementations, including tar's timestamp handling and the
+# Distroless native protobuf fix.
+# Dependency overrides do not propagate from Common. Keep its cgo header
+# repair selected when another module requests the unpatched stable release.
+single_version_override(
+    module_name = "rules_go",
+    version = "0.64.1-sonic.1",
+)
+
+single_version_override(
+    module_name = "rules_cc",
+    version = "0.2.20",
 )
 
 single_version_override(
@@ -28,42 +88,164 @@ single_version_override(
     version = "0.9.4-sonic.1",
 )
 
-# Distroless loads rules_cc's private cc_import. Newer releases require a
-# runtime toolchain type that Bazel 8.5.1 does not provide.
 single_version_override(
-    module_name = "rules_cc",
-    version = "0.2.20",
+    module_name = "tar.bzl",
+    version = "0.10.5-sonic.1",
 )
 
-# Reuse the patched source and package targets published in the SONiC registry.
-bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
-
-# Historical dotted versions requested by older components sort above this release.
 single_version_override(
     module_name = "libnl3",
     version = "3.7.0-sonic.2",
 )
 
-bazel_dep(name = "protobuf-legacy", version = "3.21.12-sonic.1", repo_name = "sonic_protobuf")
+single_version_override(
+    module_name = "re2",
+    version = "2024-07-02.bcr.1",
+)
 
-# Dependencies built from this repository's submodule checkouts.
-# Their versions are overridden in root-unpinned-modules-config.bazelrc.
-bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
-bazel_dep(name = "sonic-build-infra", version = "0.0.0", repo_name = "sonic_build_infra")
-bazel_dep(name = "sonic-sysmgr", version = "0.0.0", repo_name = "sonic_sysmgr")
-bazel_dep(name = "sonic-swss-common", version = "0.0.0", repo_name = "sonic_swss_common")
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = "3.13",
+)
+python.toolchain(python_version = "3.11")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+
+# Keep the Redis dump behavior identical to Make by reusing its existing patch.
+# The second Make patch only changes setup.py, which is not part of the wheel.
+pip.override(
+    file = "redis_dump_load-1.1-py3-none-any.whl",
+    patch_strip = 1,
+    patches = ["//src/redis-dump-load.patch:0001-Use-pipelines-when-dumping-52.patch"],
+)
+pip.parse(
+    # bitarray 2.8.1 builds from source on Python 3.13. Use the native GCC
+    # execution tools installed by CI rather than standalone Python's clang.
+    environment = {
+        "CC": "gcc",
+        "CXX": "g++",
+    },
+    hub_name = "config_engine_pip",
+    python_version = "3.13",
+    requirements_lock = "//src/sonic-config-engine:requirements_lock.txt",
+)
+pip.parse(
+    hub_name = "swss_config_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-orchagent/config:requirements_lock.txt",
+)
+use_repo(pip, "config_engine_pip", "swss_config_pip")
+
+gcc = use_extension("@sonic_build_infra//toolchains/gcc:extensions.bzl", "gcc")
+use_repo(gcc, "gcc_toolchains")
+
+register_toolchains("@gcc_toolchains//:all")
+
+# Common owns its Rust library and public Serde targets. rules_rs reads the
+# tracked Cargo locks directly; no generated Cargo.Bazel.lock is required.
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
+
+rust = use_extension("@rules_rs//rs:rules_rust_reexported_extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    extra_target_triples = [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ],
+    versions = ["1.90.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+bindgen = use_extension("@rules_rs//rs:rules_rust_bindgen.bzl", "rules_rust_bindgen")
+use_repo(bindgen, "rules_rust_bindgen")
+
+register_toolchains("@rules_rust_bindgen//:all")
+
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+
+# This consumer only configures the owners' Cargo graphs. rules_rs requires a
+# config tag for such consumers; an empty config preserves Cargo's defaults.
+crate.config(cargo_config_toml = "//tools/bazel:cargo-config.toml")
+
+override_repo(
+    crate,
+    **{
+        "swss_crates__github.com_securely1g_sonic-swss-common.git_6e020463": "sonic_swss_common",
+        "swss_crates__serde-1.0.228": "sonic_swss_common",
+        "swss_crates__serde_core-1.0.228": "sonic_swss_common",
+    }
+)
 
 toolchains = use_extension("@tar.bzl//tar:extensions.bzl", "toolchains")
 use_repo(toolchains, "bsd_tar_toolchains")
 
 register_toolchains("@bsd_tar_toolchains//:all")
 
-# The actual dependencies are listed in src/sonic-build-infra/MODULE.bazel, and re-exported.
+# The imported build infrastructure pins the Debian package snapshots.
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
-use_repo(apt, "trixie")
+apt.install(
+    dependency_set = "orchagent_debian",
+    packages = [
+        "arping",
+        "bridge-utils",
+        "conntrack",
+        # Require the concrete Trixie implementation instead of virtual Provides.
+        "ifupdown (>= 0.8.44)",
+        "iproute2",
+        "iputils-ping",
+        "libgssrpc4t64",
+        "libjansson4",
+        "libjemalloc2",
+        "libkadm5clnt-mit12",
+        "libkadm5srv-mit12",
+        "libkdb5-10t64",
+        "libprotobuf-lite32t64",
+        "libteam5",
+        "libteamdctl0",
+        "libxml2",
+        "libyaml-cpp0.8",
+        "ndisc6",
+        "ndppd",
+        "pciutils",
+        "python3-click",
+        "python3-netifaces",
+        "python3-protobuf",
+        "tcpdump",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "orchagent_debian", "trixie")
+
+# System-manager and FIPS source files are owned by this checkout. Shared
+# Common and build infrastructure keep the root's landed registry selections.
+bazel_dep(name = "sonic-sysmgr", version = "0.0.0", repo_name = "sonic_sysmgr")
+local_path_override(
+    module_name = "sonic-sysmgr",
+    path = "src/sonic-sysmgr",
+)
+
+bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
+local_path_override(
+    module_name = "sonic-fips",
+    path = "src/sonic-fips",
+)
+
+bazel_dep(name = "protobuf-legacy", version = "3.21.12-sonic.1", repo_name = "sonic_protobuf")
+bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
+bazel_dep(name = "bazel_lib", version = "3.1.1")
+bazel_dep(name = "aspect_rules_py", version = "1.11.2")
+
+bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = True)
 
 uv = use_extension("@aspect_rules_py//uv/unstable:extension.bzl", "uv")
 use_repo(uv, "pypi")
 
-# Everything the Make/Bazel equivalence check needs.
 include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
