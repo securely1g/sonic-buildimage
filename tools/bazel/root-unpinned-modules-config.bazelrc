@@ -5,9 +5,9 @@
 #
 # ==============================================================================
 #
-# Imported unconditionally by sonic-buildimage's own .bazelrc.
-# Always builds these src/ modules from the checked-out tree,
-# regardless of what version any consumer's bazel_dep declares.
+# Optional development configuration; the root .bazelrc does not import it.
+# Import this file and select --config=local-modules to build all these src/
+# modules from the checked-out tree instead of their selected registry versions.
 #
 # This bypasses registry lookup and version-string resolution entirely,
 # regardless of what any of the submodule's MODULE.bazel declare.

@@ -1,12 +1,12 @@
 ##
 ## Slave-specific config
 ##
-# Mounted into the slave container as /etc/bazel.bazelrc so every Bazel build in
-# that container uses the shared caches without requiring a command-line config.
-# Ref: https://bazel.build/run/bazelrc#bazelrc-file-locations
-
-# Keep Bazel server and output state in its default per-user directory inside
-# each slave container. Only the download and action caches below are shared.
+# Mounted into the slave container as /etc/bazel.bazelrc,
+# which means it'll be picked up automatically by anything that builds on that container.
+#  Ref: https://bazel.build/run/bazelrc#bazelrc-file-locations
+#
+# Share downloaded inputs and completed results, while each builder keeps its
+# own output base, execution directory and Bazel server state.
 
 # Caches for the slave
 #
