@@ -1,25 +1,3 @@
-# Package marker so .bzl files in this directory (e.g. gzip.bzl) are loadable.
-# Also includes generally useful targets.
+# Shared Bazel support packages.
 
-load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
-
-exports_files([
-    "submodule-config.bazelrc",
-    "root-unpinned-modules-config.bazelrc",
-])
-
-sonic_layer(
-    name = "debug_utils_pkg",
-    tars = [
-        "@trixie//gdb",
-        "@trixie//gdbserver",
-        "@trixie//strace",
-        "@trixie//openssh-client",
-        "@trixie//sshpass",
-        "@trixie//libgpm2",
-        "@sonic_build_infra//deps/vim:vim_pkg",
-        "@sonic_build_infra//deps/vim:vim_runtime_pkg",
-        "@sonic_build_infra//deps/vim:vim_alternatives_pkg",
-    ],
-    visibility = ["//visibility:public"],
-)
+exports_files(["cargo-config.toml"])

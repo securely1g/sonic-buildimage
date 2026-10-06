@@ -1,0 +1,17 @@
+# Template inputs remain owned by the containers whose configuration is tested.
+filegroup(
+    name = "config_engine_test_data",
+    testonly = True,
+    srcs = glob([
+        "docker-dhcp-relay/*.j2",
+        "docker-fpm-frr/frr/**/*.j2",
+        "docker-lldp/*.j2",
+        "docker-router-advertiser/*.j2",
+        "docker-snmp/*.j2",
+    ]) + [
+        "//dockers/docker-orchagent:ipinip.json.j2",
+        "//dockers/docker-orchagent:ports.json.j2",
+        "//dockers/docker-orchagent:switch.json.j2",
+    ],
+    visibility = ["//tools/bazel/tests:__pkg__"],
+)

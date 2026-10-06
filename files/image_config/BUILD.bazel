@@ -1,0 +1,10 @@
+filegroup(
+    name = "config_engine_test_data",
+    testonly = True,
+    srcs = glob([
+        "interfaces/*.j2",
+        "resolv-config/*.j2",
+        "rsyslog/*.j2",
+    ]),
+    visibility = ["//tools/bazel/tests:__pkg__"],
+)

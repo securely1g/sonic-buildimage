@@ -1,0 +1,11 @@
+# Device templates consumed by the existing config-engine regression suite.
+filegroup(
+    name = "config_engine_test_data",
+    testonly = True,
+    srcs = glob([
+        "**/*.j2",
+        "**/*.json",
+        "**/*.ini",
+    ]),
+    visibility = ["//tools/bazel/tests:__pkg__"],
+)
