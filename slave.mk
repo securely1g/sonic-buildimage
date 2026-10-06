@@ -168,12 +168,6 @@ include $(RULES_PATH)/config
 -include $(RULES_PATH)/config.organization
 -include $(RULES_PATH)/config.user
 
-ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
-ifneq ($(BLDENV),trixie)
-$(error BUILD_WITH_BAZEL_WHEN_AVAILABLE=y only supports BLDENV=trixie (got '$(BLDENV)'))
-endif
-endif
-
 ifneq ($(strip $(SONIC_EXTRA_EXPORT_VARS)),)
 export $(SONIC_EXTRA_EXPORT_VARS)
 endif
@@ -224,6 +218,24 @@ endif
 
 ifeq ($(SONIC_INSTALL_DEBUG_TOOLS),y)
 INSTALL_DEBUG_TOOLS = y
+endif
+
+# SPLIT_DBGSYM: whether a separate dbgsym package is produced.
+# Default y (production): runtime .deb is stripped, symbols go into the dbgsym.
+# SONIC_DEBUGGING_ON / SONIC_PROFILING_ON export DEB_BUILD_OPTIONS=nostrip
+# (profiling also adds noopt). DWARF then stays in the runtime .deb, no dbgsym
+# is emitted, and SPLIT_DBGSYM is n so package rules do not register one.
+# If both flags are set, the profiling assignment wins (nostrip noopt).
+# Unrelated to INSTALL_DEBUG_TOOLS, which only decides whether debug images
+# ship in the installer; debug images can be built either way.
+SPLIT_DBGSYM = y
+ifeq ($(SONIC_DEBUGGING_ON),y)
+DEB_BUILD_OPTIONS_GENERIC := nostrip
+SPLIT_DBGSYM = n
+endif
+ifeq ($(SONIC_PROFILING_ON),y)
+DEB_BUILD_OPTIONS_GENERIC := nostrip noopt
+SPLIT_DBGSYM = n
 endif
 
 ifeq ($(SONIC_SAITHRIFT_V2),y)
@@ -333,14 +345,6 @@ else
 $(warning PASSWORD given on command line: could be visible to other users)
 endif
 
-ifeq ($(SONIC_DEBUGGING_ON),y)
-DEB_BUILD_OPTIONS_GENERIC := nostrip
-endif
-
-ifeq ($(SONIC_PROFILING_ON),y)
-DEB_BUILD_OPTIONS_GENERIC := nostrip noopt
-endif
-
 # ccache configuration - prepend /usr/lib/ccache to PATH so that gcc/g++/cc/c++
 # calls are intercepted by ccache symlinks. Cache is stored under target/ccache/
 # and persists across builds for near-instant recompilation of unchanged files.
@@ -448,6 +452,7 @@ export FRR_USER_UID
 export FRR_USER_GID
 export INCLUDE_FIPS
 export ENABLE_FIPS
+export ENABLE_DIALOUT
 
 ###############################################################################
 ## Build Options
@@ -471,7 +476,7 @@ $(info "USE_NATIVE_DOCKERD_FOR_BUILD"    : "$(SONIC_CONFIG_USE_NATIVE_DOCKERD_FO
 $(info "USE_DOCKER_CACHE"               : "$(SONIC_CONFIG_USE_DOCKER_CACHE)")
 $(info "SONIC_CONFIG_USE_CCACHE"         : "$(SONIC_CONFIG_USE_CCACHE)")
 $(info "USERNAME"                        : "$(USERNAME)")
-$(info "PASSWORD"                        : "$(PASSWORD)")
+$(info "PASSWORD"                        : "<redacted>")
 $(info "CHANGE_DEFAULT_PASSWORD"         : "$(CHANGE_DEFAULT_PASSWORD)")
 $(info "SECURE_UPGRADE_MODE"             : "$(SECURE_UPGRADE_MODE)")
 $(info "SECURE_UPGRADE_DEV_SIGNING_KEY"  : "$(SECURE_UPGRADE_DEV_SIGNING_KEY)")
@@ -531,6 +536,7 @@ $(info "INCLUDE_DASH_HA"                 : "$(INCLUDE_DASH_HA)")
 $(info "INCLUDE_ROUTER_ADVERTISER"       : "$(INCLUDE_ROUTER_ADVERTISER)")
 $(info "INCLUDE_SNMP"                    : "$(INCLUDE_SNMP)")
 $(info "INCLUDE_LLDP"                    : "$(INCLUDE_LLDP)")
+$(info "INCLUDE_REDFISH"                 : "$(INCLUDE_REDFISH)")
 $(info "INCLUDE_BOOTCHART                : "$(INCLUDE_BOOTCHART)")
 $(info "ENABLE_BOOTCHART                 : "$(ENABLE_BOOTCHART)")
 $(info "INCLUDE_FIPS"                    : "$(INCLUDE_FIPS)")
@@ -673,7 +679,12 @@ define docker-image-save
     @echo "Saving docker image $(1):$(call docker-get-tag,$(1))" $(LOG)
         docker save $(1):$(call docker-get-tag,$(1)) | pigz -c > $(2)
     # Emit SBOM fragment for the saved docker archive (no-op when ENABLE_SBOM != y).
-    $(call sbom_emit_fragment,$(2),DOCKER_IMAGE,,,,,)
+    # SRC_PATH is the docker's own build context ($(DOCKERS_PATH)/<name>, or a
+    # platform directory). Without it nothing records that a lockfile under
+    # e.g. dockers/docker-gnmi-watchdog/watchdog belongs to something the image
+    # ships, so its crates were classified as build toolchain and dropped out
+    # of the scanned component set. Empty for a -dbg archive, as before.
+    $(call sbom_emit_fragment,$(2),DOCKER_IMAGE,$($(notdir $(2))_PATH),,,,)
     # For test containers that don't ship in any .bin (docker-ptf,
     # docker-sonic-mgmt, etc.), emit a standalone per-container SBOM
     # so they can be security-scanned independently. No-op for the
@@ -1356,11 +1367,7 @@ endif
 endif
 endif
 
-# Bazel dockers (opted in via SONIC_BAZEL_DOCKER_IMAGES in their recipe) are
-# built by the Bazel rule further below, not the normal `docker build` rule.
-# Drop them from DOCKER_IMAGES so they don't also get the normal recipe.
-# When Bazel is disabled, SONIC_BAZEL_DOCKER_IMAGES will be empty.
-# Same applies for `DOCKER_DBG_IMAGES`
+# Each owning recipe selects its Bazel archives; all others stay on Make.
 DOCKER_IMAGES := $(filter-out $(SONIC_BAZEL_DOCKER_IMAGES),$(DOCKER_IMAGES))
 DOCKER_DBG_IMAGES := $(filter-out $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$(DOCKER_DBG_IMAGES))
 
@@ -1492,44 +1499,8 @@ $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES))
 
-# Let Bazel check its inputs whenever Make requests one of its images. Publish
-# changed archives atomically and preserve unchanged archive timestamps so
-# downstream Make targets remain incremental.
-.PHONY: bazel-docker-force
-bazel-docker-force:
-
-define build-bazel-docker
-	bazel build //dockers/$(1):$(2) $(LOG)
-	bazel_bin=$$(bazel info bazel-bin)
-	(
-		bazel_archive="$$bazel_bin/dockers/$(1)/$(2)"
-		if [ -f "$@" ] && [ ! -L "$@" ] && cmp -s "$$bazel_archive" "$@"; then
-			if [ "$$(stat -c %a "$@")" != 644 ]; then chmod 0644 "$@"; fi
-			exit 0
-		fi
-		mkdir -p "$(@D)"
-		bazel_archive_tmp=$$(mktemp "$@.tmp.XXXXXX")
-		trap 'rm -f "$$bazel_archive_tmp"' EXIT
-		install -m 0644 -T "$$bazel_archive" "$$bazel_archive_tmp"
-		mv -fT "$$bazel_archive_tmp" "$@"
-	)
-endef
-
-# Targets for building docker images (and debug images) with Bazel.
-$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform bazel-docker-force \
-		$$(addprefix $(TARGET_PATH)/,$$($$*.gz_BAZEL_BASE))
-	$(HEADER)
-	$(call build-bazel-docker,$*,$*.gz)
-	$(FOOTER)
-
-$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DBG_DOCKER_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform bazel-docker-force \
-		$$(addprefix $(TARGET_PATH)/,$$($$*.gz_BAZEL_BASE))
-	$(HEADER)
-	$(call build-bazel-docker,$*,$*-$(DBG_IMAGE_MARK).gz)
-	$(FOOTER)
-
-SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES))
-SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DBG_DOCKER_IMAGES))
+# Load the shared container rules after all owners declare their metadata.
+include tools/bazel/docker.mk
 
 # Targets for building docker debug images
 $(addprefix $(TARGET_PATH)/, $(DOCKER_DBG_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform docker-start \
@@ -1606,8 +1577,8 @@ DOCKER_LOAD_TARGETS = $(addsuffix -load,$(addprefix $(TARGET_PATH)/, \
 		      $(COPY_DOCKER_IMAGES) \
 		      $(DOCKER_IMAGES) \
 		      $(SONIC_BAZEL_DOCKER_IMAGES) \
-		      $(DOCKER_DBG_IMAGES) \
-		      $(SONIC_BAZEL_DBG_DOCKER_IMAGES)))
+		      $(SONIC_BAZEL_DBG_DOCKER_IMAGES) \
+		      $(DOCKER_DBG_IMAGES)))
 
 ifeq ($(BLDENV),trixie)
 DOCKER_LOAD_TARGETS += $(addsuffix -load,$(addprefix $(TARGET_PATH)/, \
@@ -1628,11 +1599,13 @@ $(DOCKER_LOAD_TARGETS) : $(TARGET_PATH)/%.gz-load : .platform docker-start $$(TA
 ## Installers
 ###############################################################################
 
+$(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
+$(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
         .platform \
         build_debian.sh \
         $(SONIC_DEBIAN_EXTENSION_DEPENDS) \
-        $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) $(LINUX_KERNEL) $(GRUB2_COMMON)) \
+        $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) $(LINUX_KERNEL)) \
         $$(addprefix $(TARGET_PATH)/,$$($$*_DEPENDENT_RFS)) \
         $(call dpkg_depend,$(TARGET_PATH)/%.dep)
 	$(HEADER)
@@ -1660,10 +1633,10 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 		RFS_SQUASHFS_NAME=$* \
 		USERNAME="$(USERNAME)" \
-		PASSWORD="$(PASSWORD)" \
+		PASSWORD="$${PASSWORD}" \
 		CHANGE_DEFAULT_PASSWORD="$(CHANGE_DEFAULT_PASSWORD)" \
 		BMC_NOS_ACCOUNT_USERNAME="$(BMC_NOS_ACCOUNT_USERNAME)" \
-		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)" \
+		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$${BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD}" \
 		TARGET_MACHINE=$(machine) \
 		IMAGE_TYPE=$($(installer)_IMAGE_TYPE) \
 		TARGET_PATH=$(TARGET_PATH) \
@@ -1685,6 +1658,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 	$(FOOTER)
 
 # targets for building installers with base image
+$(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
+$(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         .platform \
         onie-image.conf \
@@ -1694,8 +1669,13 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         $(SONIC_DEBIAN_EXTENSION_DEPENDS) \
         scripts/dbg_files.sh \
         scripts/build_sbom.sh \
+        scripts/build_sbom.py \
         scripts/install_sbom_tool.sh \
         scripts/sbom_fragment.py \
+        scripts/sbom_cve_refs.py \
+        scripts/sbom_purl.py \
+        scripts/sbom_parse_lockfiles.py \
+        scripts/sbom_extract_vex_from_patches.py \
         build_image.sh \
         $$(addsuffix -install,$$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_DEPENDS))) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_INSTALLS)) \
@@ -1728,8 +1708,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
                 $(BASH_TACPLUS) \
                 $(AUDISP_TACPLUS) \
                 $(SYSLOG_COUNTER) \
-                $(SEDUTIL) \
-                $(GRUB2_COMMON)) \
+                $(SEDUTIL)) \
         $$(addprefix $(TARGET_PATH)/,$$($$*_DOCKERS)) \
         $$(addprefix $(TARGET_PATH)/,$$(SONIC_PACKAGES_LOCAL)) \
         $$(addprefix $(FILES_PATH)/,$$($$*_FILES)) \
@@ -1791,6 +1770,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	export include_p4rt="$(INCLUDE_P4RT)"
 	export include_snmp="$(INCLUDE_SNMP)"
 	export include_lldp="$(INCLUDE_LLDP)"
+	export include_redfish="$(INCLUDE_REDFISH)"
 	export include_sflow="$(INCLUDE_SFLOW)"
 	export enable_auto_tech_support="$(ENABLE_AUTO_TECH_SUPPORT)"
 	export enable_asan="$(ENABLE_ASAN)"
@@ -1940,10 +1920,10 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 		DEBUG_IMG="$(INSTALL_DEBUG_TOOLS)" \
 		DEBUG_SRC_ARCHIVE_FILE="$(DBG_SRC_ARCHIVE_FILE)" \
 		USERNAME="$(USERNAME)" \
-		PASSWORD="$(PASSWORD)" \
+		PASSWORD="$${PASSWORD}" \
 		CHANGE_DEFAULT_PASSWORD="$(CHANGE_DEFAULT_PASSWORD)" \
 		BMC_NOS_ACCOUNT_USERNAME="$(BMC_NOS_ACCOUNT_USERNAME)" \
-		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)" \
+		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$${BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD}" \
 		TARGET_MACHINE=$(dep_machine) \
 		IMAGE_TYPE=$($*_IMAGE_TYPE) \
 		TARGET_PATH=$(TARGET_PATH) \
@@ -1970,9 +1950,9 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 			./build_debian.sh $(LOG)
 
 		USERNAME="$(USERNAME)" \
-		PASSWORD="$(PASSWORD)" \
+		PASSWORD="$${PASSWORD}" \
 		BMC_NOS_ACCOUNT_USERNAME="$(BMC_NOS_ACCOUNT_USERNAME)" \
-		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)" \
+		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$${BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD}" \
 		TARGET_MACHINE=$(dep_machine) \
 		IMAGE_TYPE=$($*_IMAGE_TYPE) \
 		ONIE_IMAGE_PART_SIZE=$(ONIE_IMAGE_PART_SIZE) \

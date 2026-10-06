@@ -197,7 +197,7 @@ This is opt-in: a recipe only registers the image here when `BUILD_WITH_BAZEL_WH
 
 The image is still registered in `SONIC_DOCKER_IMAGES` / `SONIC_INSTALL_DOCKER_IMAGES`, and still carries `_PATH`, `_VERSION` and `_PACKAGE_NAME`, so it is installed and listed in the sonic-package-manager catalog exactly as a Make-built one.
 
-Bazel currently only supports trixie-based images.
+The sysmgr Bazel path supports native AMD64 Trixie with ASAN disabled. Other configurations retain Make.
 
 For example, build the sysmgr image with Bazel while disabling the default Bookworm build:
 
@@ -206,22 +206,18 @@ make NOBOOKWORM=1 BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/docker-sysmgr.gz
 ```
 
 For a direct Bazel build on AMD64, initialize the required submodules and provide
-`target/docker-config-engine-trixie.gz` from a Trixie Make build (or a previously
-built archive with known provenance). Bazel imports that base image; it does not
-build the full SONiC installer.
+`target/docker-config-engine-trixie.oci` prepared by the shared Make helper from a Trixie archive with known provenance. Bazel imports that base image; it does not build the full SONiC installer.
 
 ```sh
-git submodule update --init src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
+git submodule update --init src/sonic-sysmgr/gnoi
 bazel build //dockers/docker-sysmgr:docker-sysmgr.gz \
     @sonic_sysmgr//:sysmgr_pkg @sonic_sysmgr//:sysmgr_debug_pkg
-bazel run //dockers/docker-sysmgr:write_docker-sysmgr.gz
 bazel test //dockers/docker-sysmgr:debug_symbols_test
 ```
 
 The debug container is `//dockers/docker-sysmgr:docker-sysmgr-dbg.gz`. It also
 needs the prebuilt FIPS packages pinned in `src/sonic-fips/MODULE.bazel`; these
-are separate from the split symbols in `sysmgr_debug_pkg`. The root Bazel build
-currently disables YANG. See [the Bazel guide](tools/bazel/docs/README.bazel.md)
+are separate from the split symbols in `sysmgr_debug_pkg`. The root retains the maintained SWSS/Common graph with YANG enabled. See [the Bazel guide](tools/bazel/docs/README.bazel.md)
 for the build graph and component workflow.
 
 Define:
@@ -231,7 +227,8 @@ SOME_DOCKER = some_docker.gz # name of your docker (must match dockers/<name>/BU
 $(SOME_DOCKER)_PATH = path/to/your/docker # path to the docker's directory
 $(SOME_DOCKER)_VERSION = 1.0.0 # version recorded in the package catalog
 $(SOME_DOCKER)_PACKAGE_NAME = some_package # sonic-package-manager package name
-$(SOME_DOCKER)_BAZEL_BASE += $(SOME_BASE_DOCKER) # base docker(s) the Bazel build depends on
+$(SOME_DOCKER)_BAZEL_TARGET = //dockers/some_docker:$(SOME_DOCKER)
+$(SOME_DOCKER)_BAZEL_DEPENDS += target/base.oci # explicit prepared inputs
 SONIC_BAZEL_DOCKER_IMAGES += $(SOME_DOCKER) # build this docker with Bazel
 SONIC_DOCKER_IMAGES += $(SOME_DOCKER) # still a regular docker image downstream of the .gz
 SONIC_INSTALL_DOCKER_IMAGES += $(SOME_DOCKER) # install it into the final image
