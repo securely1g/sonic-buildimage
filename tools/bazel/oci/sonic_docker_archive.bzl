@@ -6,22 +6,20 @@ gzipped `docker save` archive.
 This macro replicates that process in Bazel, creating intermediary targets when necessary.
 """
 
-load("@bazel_lib//lib:write_source_files.bzl", "write_source_files")
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
 load("@rules_oci//oci:defs.bzl", "oci_load")
-load("//tools/bazel:gzip.bzl", "gzip")
 
 def sonic_docker_archive(name, image, visibility = None):
     """Packages an `oci_image` into `target/<name>`, where the Make build expects it.
 
-    For `name = "docker-sysmgr.gz"`, this defines:
-
     The archive is always tagged `<name without .gz>:latest`,
     as expected by `sonic_debian_extension.j2`.
 
-    This macro generates several intermediate targets, derived from `name`. Here are the useful ones:
+    For `name = "docker-orchagent.gz"`, useful targets include:
 
-    - `:{name}.load`, an `oci_load` tagged `{name}:latest`. Can be run with `bazel run` to load the image into a local registry.
-    - `:write_{name}.gz`, a `write_source_files` that copies it back into the repo-root `target/`.
+    - `:docker-orchagent.gz`, the compressed archive exported by the Make bridge.
+    - `:docker-orchagent.load`, which loads the image into the local Docker engine.
 
     Args:
         name: File name of the archive, including the `.gz` suffix. Must match the
@@ -48,20 +46,19 @@ def sonic_docker_archive(name, image, visibility = None):
         visibility = visibility,
     )
 
-    gzip(
-        name = name,
+    # gzip_compress names its output <input basename>.gz. Give each input the
+    # expected stem so runtime/debug archives keep their Make-compatible names.
+    copy_file(
+        name = stem + ".gzip_input",
         src = stem + ".tar",
-        visibility = visibility,
+        out = stem + ".gzip_input/" + stem,
+        allow_symlink = True,
+        visibility = ["//visibility:private"],
     )
 
-    write_source_files(
-        name = "write_" + name,
-        check_that_out_file_exists = False,
-        diff_test = False,  # We cannot generate diff tests for now. When running in pure Bazel, we can't ensure that we have a base image to build the tars.
-        files = {
-            # Root-package label so the file lands in the repo-root target/,
-            # where SONiC expects it.
-            "//:target/" + name: name,
-        },
+    gzip_compress(
+        name = name,
+        src = stem + ".gzip_input",
+        level = 6,
         visibility = visibility,
     )

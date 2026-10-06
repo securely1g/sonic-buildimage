@@ -1,3 +1,9 @@
+load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
+load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files(glob([
@@ -6,3 +12,127 @@ exports_files(glob([
     "*.sh",
     "*.py",
 ]))
+
+# Keep direct Bazel calls within the same boundary as the Make selector.
+_COMPATIBLE_WITH = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+] + select({
+    "@sonic_swss//tools/bazel:asan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
+# Make publishes the config-engine image as OCI files before invoking Bazel.
+# Its Python/config-engine utilities and libnl/libyang runtime are retained.
+oci_base_layout(
+    name = "config_engine_base_layout",
+    srcs = [
+        "//:config_engine_oci_files",
+        "//:target/docker-config-engine-trixie.oci/oci-layout",
+    ],
+    expected_platform = "linux/amd64",
+    marker = "$(execpath //:target/docker-config-engine-trixie.oci/oci-layout)",
+    root = "target/docker-config-engine-trixie.oci",
+)
+
+sonic_layer(
+    name = "apt_deps",
+    tars = [
+        "@orchagent_debian//arping",
+        "@orchagent_debian//bridge-utils",
+        "@orchagent_debian//conntrack",
+        "@orchagent_debian//ifupdown",
+        "@orchagent_debian//iproute2",
+        "@orchagent_debian//iputils-ping",
+        "@orchagent_debian//libgssrpc4t64",
+        "@orchagent_debian//libjansson4",
+        "@orchagent_debian//libjemalloc2",
+        "@orchagent_debian//libkadm5clnt-mit12",
+        "@orchagent_debian//libkadm5srv-mit12",
+        "@orchagent_debian//libkdb5-10t64",
+        "@orchagent_debian//libprotobuf-lite32t64",
+        "@orchagent_debian//libteam5",
+        "@orchagent_debian//libteamdctl0",
+        "@orchagent_debian//libxml2",
+        "@orchagent_debian//libyaml-cpp0.8",
+        "@orchagent_debian//ndisc6",
+        "@orchagent_debian//ndppd",
+        "@orchagent_debian//pciutils",
+        "@orchagent_debian//python3-click",
+        "@orchagent_debian//python3-netifaces",
+        "@orchagent_debian//python3-protobuf",
+        "@orchagent_debian//tcpdump",
+    ],
+)
+
+sonic_layer(
+    name = "rdeps",
+    root_owned = True,
+    tars = [
+        "@sonic_swss//dist:swss_pkg",
+        "@sonic_swss_common//:libswsscommon_pkg",
+        "@sonic_sairedis//lib:libsairedis_pkg",
+        "@sonic_sairedis//meta:libsaimetadata_pkg",
+        "@sonic_dash_api//:libdashapi_pkg",
+        "@sonic_dash_api//:protobuf_runtime_pkg",
+    ],
+)
+
+# Check the runtime dependencies' transitive symbols without requiring the
+# config-engine base container that Make builds for complete image assembly.
+debug_symbols_layer(
+    name = "rdeps_debug_symbols",
+    image = ":rdeps",
+)
+
+oci_image(
+    name = "docker-orchagent",
+    base = ":config_engine_base_layout",
+    entrypoint = ["/usr/bin/docker-init.sh"],
+    env = {"DEBIAN_FRONTEND": "noninteractive"},
+    labels = "//dockers/docker-orchagent/config:labels",
+    target_compatible_with = _COMPATIBLE_WITH,
+    tars = [
+        ":apt_deps",
+        ":rdeps",
+        "//dockers/docker-orchagent/config:python_runtime",
+        "//dockers/docker-orchagent/config:files",
+    ],
+)
+
+sonic_docker_archive(
+    name = "docker-orchagent.gz",
+    image = ":docker-orchagent",
+    visibility = ["//visibility:public"],
+)
+
+debug_symbols_layer(
+    name = "docker-orchagent.debug_symbols",
+    image = ":docker-orchagent",
+)
+
+sonic_layer(
+    name = "debug_tools",
+    tars = [
+        "@trixie//gdb",
+        "@trixie//gdbserver",
+        "@trixie//strace",
+    ],
+)
+
+oci_image(
+    name = "docker-orchagent-dbg",
+    base = ":docker-orchagent",
+    labels = "//dockers/docker-orchagent/config:debug_labels",
+    target_compatible_with = _COMPATIBLE_WITH,
+    tars = [
+        ":debug_tools",
+        ":docker-orchagent.debug_symbols",
+    ],
+)
+
+sonic_docker_archive(
+    name = "docker-orchagent-dbg.gz",
+    image = ":docker-orchagent-dbg",
+    visibility = ["//visibility:public"],
+)

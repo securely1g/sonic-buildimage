@@ -1,14 +1,35 @@
-# Files needed for the Bazel build
-_BAZEL_FILES = [
-    "MODULE.bazel",
-]
-
+# Expose Make-generated inputs to Bazel.
+#
+# Make prepares the config-engine OCI base, Scapy wheel and service manifests
+# under target/ before Bazel assembles the SWSS image. This file declares those
+# existing files as Bazel inputs; it does not generate them or invoke Make.
+#
+# target/ has no BUILD.bazel of its own, so its files belong to this root Bazel
+# package. Keep this input boundary here for now. Source exports, configuration
+# rules and image assembly belong in their owners' BUILD.bazel files, such as
+# dockers/docker-orchagent/BUILD.bazel and its config/BUILD.bazel.
+#
+# Empty globs allow this package to load before Make has prepared the inputs.
+# The files must exist before building the Bazel targets that consume them.
 exports_files(
-    # Capture files produced by Make (e.g. the base docker layers).
-    # allow_empty: on a clean tree Make has not produced anything yet.
     glob(
-        ["target/*"],
+        [
+            "target/docker-config-engine-trixie.oci/oci-layout",
+            "target/bazel-manifests/*/manifest.json",
+            "target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl",
+        ],
         allow_empty = True,
-    ) +
-    _BAZEL_FILES,
+    ),
+)
+
+# Track every OCI metadata file and blob, not just the oci-layout marker exported
+# above, so changed contents and newly published layers invalidate Bazel actions.
+filegroup(
+    name = "config_engine_oci_files",
+    srcs = glob(
+        ["target/docker-config-engine-trixie.oci/**"],
+        allow_empty = True,
+        exclude = ["target/docker-config-engine-trixie.oci/oci-layout"],
+    ),
+    visibility = ["//visibility:public"],
 )

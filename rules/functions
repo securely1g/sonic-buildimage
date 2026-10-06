@@ -208,7 +208,7 @@ endef
 ## TODO: changelog generation
 ###############################################################################
 # call:
-#     generate_manifest some_docker.gz, version_suffix
+#     generate_manifest docker_stem, version_suffix, optional_output_directory
 define generate_manifest
     $(eval export version=$($(1).gz_VERSION))
     $(eval export version_suffix=$(2))
@@ -232,11 +232,12 @@ define generate_manifest
     $(eval export show_cli_plugin=$($(1).gz_CLI_SHOW_PLUGIN))
     $(eval export clear_cli_plugin=$($(1).gz_CLI_CLEAR_PLUGIN))
     $(eval export support_rate_limit=$($(1).gz_SUPPORT_RATE_LIMIT))
-    j2 --customize scripts/j2cli/json_filter.py files/build_templates/manifest.json.j2 > $($(1).gz_PATH)/manifest.common.json
+    manifest_dir="$(if $(strip $(3)),$(3),$($(1).gz_PATH))"
+    j2 --customize scripts/j2cli/json_filter.py files/build_templates/manifest.json.j2 > "$$manifest_dir/manifest.common.json"
     if [ -f $($*.gz_PATH)/manifest.part.json.j2 ]; then
-        j2 --customize scripts/j2cli/json_filter.py $($(1).gz_PATH)/manifest.part.json.j2 > $($(1).gz_PATH)/manifest.part.json
-        jq -s '.[0] * .[1]' $($(1).gz_PATH)/manifest.common.json $($(1).gz_PATH)/manifest.part.json > $($(1).gz_PATH)/manifest.json
+        j2 --customize scripts/j2cli/json_filter.py $($(1).gz_PATH)/manifest.part.json.j2 > "$$manifest_dir/manifest.part.json"
+        jq -s '.[0] * .[1]' "$$manifest_dir/manifest.common.json" "$$manifest_dir/manifest.part.json" > "$$manifest_dir/manifest.json"
     else
-        mv $($(1).gz_PATH)/manifest.common.json $($(1).gz_PATH)/manifest.json
+        mv "$$manifest_dir/manifest.common.json" "$$manifest_dir/manifest.json"
     fi
 endef

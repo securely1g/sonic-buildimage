@@ -83,6 +83,10 @@
 #  *                 When disabled they fall back to the normal Make docker build.
 #  *                 Default: n
 #  *                 Values: y,n
+#  * SONIC_BAZEL_CACHE_SOURCE: Host directory for persistent Bazel repository,
+#  *                 action and Bazelisk caches for all Bazel builds.
+#  *                 Default: $(SONIC_DPKG_CACHE_SOURCE)/bazel, independent of
+#  *                 BUILD_WITH_BAZEL_WHEN_AVAILABLE. Empty disables the mount.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -244,9 +248,6 @@ SONIC_OVERRIDE_BUILD_VARS += SONIC_VERSION_CACHE_SOURCE=$(SONIC_VERSION_CACHE_SO
 export SONIC_VERSION_CACHE SONIC_VERSION_CACHE_SOURCE
 $(shell test -d $(SONIC_VERSION_CACHE_SOURCE) || \
     mkdir -p $(SONIC_VERSION_CACHE_SOURCE) && chmod -f 777 $(SONIC_VERSION_CACHE_SOURCE) 2>/dev/null )
-
-$(shell test -d $(SONIC_BAZEL_CACHE_SOURCE) || \
-    mkdir -p $(SONIC_BAZEL_CACHE_SOURCE) && chmod -f 777 $(SONIC_BAZEL_CACHE_SOURCE) 2>/dev/null )
 
 # Generate the version control build info
 $(shell \
@@ -498,19 +499,16 @@ ifneq ($(SONIC_VERSION_CACHE_SOURCE),)
 	DOCKER_RUN += -v "$(SONIC_VERSION_CACHE_SOURCE):/vcache:rw"
 endif
 
-# Create a volume to store Bazel caches into
-# See the documentation in rules/config for more information
-#
-# Only mount it if the host directory actually exists:
-# SONIC_BAZEL_CACHE_SOURCE can be non-empty even when the mkdir silently failed
-# (e.g. an unwritable parent on some CI agents), and passing that to Docker has unintended consequences.
-ifneq ($(wildcard $(SONIC_BAZEL_CACHE_SOURCE)),)
-	DOCKER_RUN += -v "$(SONIC_BAZEL_CACHE_SOURCE):/bazel_cache:rw"
-	# Persist bazelisk downloads in the cache
-	DOCKER_RUN += -e "BAZELISK_HOME=/bazel_cache/bazelisk"
-	# Apply the slave Bazel cache config as a system RC file, which Bazel reads regardless of cwd.
-	# Ref: https://bazel.build/run/bazelrc#bazelrc-file-locations
-	DOCKER_RUN += -v "$(PWD)/tools/bazel/slave.bazelrc:/etc/bazel.bazelrc:ro"
+# Reuse downloads and action outputs across disposable builder containers.
+# Create the bind source as the host build user, before Docker can create a
+# root-owned directory. Keep the output base private to each builder/check-out.
+ifneq ($(strip $(SONIC_BAZEL_CACHE_SOURCE)),)
+SONIC_BAZEL_CACHE_ABS := $(shell realpath -m -- '$(subst ','"'"',$(SONIC_BAZEL_CACHE_SOURCE))')
+SONIC_BAZEL_CACHE_QUOTED := '$(subst ','"'"',$(SONIC_BAZEL_CACHE_ABS))'
+DOCKER_RUN := mkdir -p -- $(SONIC_BAZEL_CACHE_QUOTED) && test -w $(SONIC_BAZEL_CACHE_QUOTED) && $(DOCKER_RUN) \
+	-v $(SONIC_BAZEL_CACHE_QUOTED):/bazel_cache:rw \
+	-e BAZELISK_HOME=/bazel_cache/bazelisk \
+	-v '$(subst ','"'"',$(PWD)/tools/bazel/slave.bazelrc)':/etc/bazel.bazelrc:ro
 endif
 
 # User name and tag for "docker-*" images created by native dockerd mode.

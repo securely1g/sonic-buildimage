@@ -1,17 +1,35 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
-# Run via the hermetic Python toolchain (see MODULE.bazel), not system python3.
-# Used as the default `_converter` of docker_archive_to_oci_layout.
-py_binary(
-    name = "docker_archive_to_oci_layout",
-    srcs = ["docker_archive_to_oci_layout.py"],
+exports_files(["prepare_oci_base.py"])
+
+py_library(
+    name = "manifest_labels_lib",
+    srcs = ["manifest_labels.py"],
+    imports = ["."],
 )
 
-py_test(
-    name = "docker_archive_to_oci_layout_test",
-    size = "small",
-    srcs = ["docker_archive_to_oci_layout_test.py"],
-    data = [":docker_archive_to_oci_layout"],
+py_binary(
+    name = "manifest_labels",
+    srcs = ["manifest_labels.py"],
+)
+
+# The same validator is used by Make publication and the Bazel consumer.
+py_library(
+    name = "oci_layout",
+    srcs = ["oci_layout.py"],
+    imports = ["."],
+)
+
+py_binary(
+    name = "validate_oci_layout",
+    srcs = ["oci_layout.py"],
+    main = "oci_layout.py",
+)
+
+py_binary(
+    name = "prepare_oci_base",
+    srcs = ["prepare_oci_base.py"],
+    deps = [":oci_layout"],
 )

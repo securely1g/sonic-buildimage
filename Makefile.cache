@@ -308,7 +308,18 @@ define LOAD_FROM_CACHE
 	# Load the cache if cache is enabled and cache file is present in the cache
 	# Update the cache_loaded variable
 	$(if $(and $(CACHE_FILE_SELECT),$(call CHECK_RCACHE_ENABLED,$(1))),
-		$(if $(LOAD_DRV_DEB), $($(1)_CACHE_USER) tar -C $($(1)_BASE_PATH) -mxzvf $(CACHE_FILE_SELECT) 1>> $($(1)_DST_PATH)/$(1).log ,echo );
+		$(if $($(1)_CACHE_FORCE_RESTORE),
+			# Switchable container archives must replace the other builder's output.
+			# Stage this single-output restore so an invalid cache preserves the old
+			# archive and leaves its newer method stamp to trigger another attempt.
+			(
+				cache_restore_dir=$$(mktemp -d "$($(1)_DST_PATH)/.cache-restore.XXXXXX")
+				trap '$($(1)_CACHE_USER) rm -rf "$$cache_restore_dir"' EXIT
+				$($(1)_CACHE_USER) tar -C "$$cache_restore_dir" -mxzvf $(CACHE_FILE_SELECT) $(2) $($(1)_DST_PATH)/$(1).cached.log 1>> $($(1)_DST_PATH)/$(1).log
+				$($(1)_CACHE_USER) mv -f "$$cache_restore_dir/$($(1)_DST_PATH)/$(1).cached.log" "$($(1)_DST_PATH)/$(1).cached.log"
+				$($(1)_CACHE_USER) mv -f "$$cache_restore_dir/$(2)" "$(2)"
+			),
+			$(if $(LOAD_DRV_DEB), $($(1)_CACHE_USER) tar -C $($(1)_BASE_PATH) -mxzvf $(CACHE_FILE_SELECT) 1>> $($(1)_DST_PATH)/$(1).log ,echo ));
 		echo "File $(CACHE_FILE_SELECT) is loaded from cache into $($(1)_BASE_PATH)" >> $($(1)_DST_PATH)/$(1).log
 		$(eval $(1)_CACHE_LOADED := Yes)
 		$(if $(call CHECK_WCACHE_ENABLED,$(1)), $(shell touch $(CACHE_FILE_SELECT)))

@@ -14,7 +14,7 @@ def cache_options(cache_directory):
         return []
     root = Path(cache_directory).expanduser().resolve()
     options = []
-    for name, flag in (("repository", "repository_cache"), ("disk", "disk_cache")):
+    for name, flag in (("repository_cache", "repository_cache"), ("disk_cache", "disk_cache")):
         path = root / name
         path.mkdir(parents=True, exist_ok=True)
         options.append(f"--{flag}={path}")

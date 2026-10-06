@@ -1,6 +1,15 @@
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@config_engine_pip//:requirements.bzl", "requirement")
-load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
+load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("//src/sonic-config-engine:template.bzl", "sonic_cfggen_template")
+load("//tools/bazel/dpkg:defs.bzl", "PATH_INCLUDES")
+load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
+load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
+load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -94,6 +103,8 @@ py_test(
     ],
 )
 
+# Reuse component behavior tests with the real source-built Common extension.
+# Explicit file arguments keep the shared runner independent of source layout.
 py_test(
     name = "sonic_py_common_test",
     srcs = [
@@ -115,6 +126,39 @@ py_test(
         "//src/sonic-py-common:sonic_py_common",
         requirement("pytest"),
     ],
+)
+
+manifest_labels(
+    name = "runtime_manifest_fixture",
+    testonly = True,
+    manifest = "manifest_fixture.json",
+)
+
+manifest_labels(
+    name = "debug_manifest_fixture",
+    testonly = True,
+    manifest = "manifest_fixture-dbg.json",
+)
+
+py_test(
+    name = "manifest_labels_action_test",
+    size = "small",
+    srcs = ["integration/manifest_labels_action_test.py"],
+    args = [
+        "--tool=$(rootpath //tools/bazel/oci:manifest_labels)",
+        "--runtime-manifest=$(rootpath :manifest_fixture.json)",
+        "--debug-manifest=$(rootpath :manifest_fixture-dbg.json)",
+        "--runtime-labels=$(rootpath :runtime_manifest_fixture)",
+        "--debug-labels=$(rootpath :debug_manifest_fixture)",
+    ],
+    data = [
+        "manifest_fixture.json",
+        "manifest_fixture-dbg.json",
+        ":debug_manifest_fixture",
+        ":runtime_manifest_fixture",
+        "//tools/bazel/oci:manifest_labels",
+    ],
+    main = "integration/manifest_labels_action_test.py",
 )
 
 sonic_cfggen_template(
@@ -146,4 +190,257 @@ py_test(
         "//src/sonic-config-engine:sonic_cfggen",
     ],
     main = "integration/cfggen_template_test.py",
+)
+
+py_test(
+    name = "manifest_labels_test",
+    size = "small",
+    srcs = ["manifest_labels_test.py"],
+    deps = ["//tools/bazel/oci:manifest_labels_lib"],
+)
+
+py_test(
+    name = "prepare_oci_base_test",
+    size = "small",
+    srcs = [
+        "prepare_oci_base_test.py",
+        "//tools/bazel/oci:prepare_oci_base.py",
+    ],
+    deps = ["//tools/bazel/oci:oci_layout"],
+)
+
+py_library(
+    name = "oci_base_fixture_lib",
+    srcs = ["oci_base_fixture.py"],
+    imports = ["."],
+)
+
+py_binary(
+    name = "oci_base_fixture",
+    srcs = ["oci_base_fixture.py"],
+    data = ["//tools/bazel/oci:prepare_oci_base"],
+    deps = ["@rules_python//python/runfiles"],
+)
+
+py_test(
+    name = "oci_base_layout_test",
+    size = "small",
+    srcs = ["oci_base_layout_test.py"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:oci_layout",
+    ],
+)
+
+# Different outer archive timestamps must leave the original OCI bytes intact.
+# Each fixture invokes Make's actual publication helper before Bazel reads it.
+run_binary(
+    name = "oci_fixture_first",
+    args = [
+        "--out",
+        "$@",
+        "--mtime",
+        "946684800",
+    ],
+    out_dirs = ["oci-fixture-first"],
+    tool = ":oci_base_fixture",
+)
+
+run_binary(
+    name = "oci_fixture_second",
+    args = [
+        "--out",
+        "$@",
+        "--mtime",
+        "1700000000",
+    ],
+    out_dirs = ["oci-fixture-second"],
+    tool = ":oci_base_fixture",
+)
+
+oci_base_layout(
+    name = "oci_base_first",
+    srcs = [":oci_fixture_first"],
+    expected_platform = "linux/amd64",
+    marker = "$(execpath :oci_fixture_first)/oci-layout",
+    root = "tools/bazel/tests/oci-fixture-first",
+)
+
+oci_base_layout(
+    name = "oci_base_second",
+    srcs = [":oci_fixture_second"],
+    expected_platform = "linux/amd64",
+    marker = "$(execpath :oci_fixture_second)/oci-layout",
+    root = "tools/bazel/tests/oci-fixture-second",
+)
+
+genrule(
+    name = "oci_fixture_overlay",
+    outs = ["oci-overlay.tar"],
+    cmd = "$(execpath :oci_base_fixture) --overlay $@",
+    tools = [":oci_base_fixture"],
+)
+
+oci_image(
+    name = "oci-consumer-first",
+    base = ":oci_base_first",
+    env = {"CONSUMER_FIXTURE": "added"},
+    tars = [":oci_fixture_overlay"],
+)
+
+oci_image(
+    name = "oci-consumer-second",
+    base = ":oci_base_second",
+    env = {"CONSUMER_FIXTURE": "added"},
+    tars = [":oci_fixture_overlay"],
+)
+
+sonic_docker_archive(
+    name = "oci-consumer-first.gz",
+    image = ":oci-consumer-first",
+)
+
+sonic_docker_archive(
+    name = "oci-consumer-second.gz",
+    image = ":oci-consumer-second",
+)
+
+py_test(
+    name = "oci_base_consumer_test",
+    size = "small",
+    srcs = ["integration/oci_base_consumer_test.py"],
+    args = [
+        "--first-layout=$(location :oci_base_first)",
+        "--second-layout=$(location :oci_base_second)",
+        "--first-image=$(location :oci-consumer-first)",
+        "--second-image=$(location :oci-consumer-second)",
+        "--first-export=$(location :oci-consumer-first.gz)",
+        "--second-export=$(location :oci-consumer-second.gz)",
+    ],
+    data = [
+        ":oci-consumer-first",
+        ":oci-consumer-first.gz",
+        ":oci-consumer-second",
+        ":oci-consumer-second.gz",
+        ":oci_base_first",
+        ":oci_base_second",
+    ],
+    main = "integration/oci_base_consumer_test.py",
+    deps = [":oci_base_fixture_lib"],
+)
+
+# A source-only fixture exercises the production archive macro on both native
+# CI architectures without requiring Make-built components or a Docker daemon.
+py_binary(
+    name = "archive_fixture",
+    srcs = ["archive_fixture.py"],
+)
+
+genrule(
+    name = "archive_fixture_layer",
+    outs = ["archive-layer.tar"],
+    cmd = "$(execpath :archive_fixture) --layer $@",
+    tools = [":archive_fixture"],
+)
+
+oci_image(
+    name = "archive-fixture",
+    architecture = select({
+        "@platforms//cpu:aarch64": "arm64",
+        "//conditions:default": "amd64",
+    }),
+    os = "linux",
+    tars = [":archive-layer.tar"],
+)
+
+sonic_docker_archive(
+    name = "archive-fixture.gz",
+    image = ":archive-fixture",
+)
+
+genrule(
+    name = "archive_fixture_sources",
+    srcs = [":archive-fixture.tar"],
+    outs = [
+        "archive-first.tar",
+        "different-source-name.tar",
+    ],
+    cmd = "$(execpath :archive_fixture) --copy $(location :archive-fixture.tar) " +
+          "--first $(location :archive-first.tar) " +
+          "--second $(location :different-source-name.tar)",
+    tools = [":archive_fixture"],
+)
+
+gzip_compress(
+    name = "archive_fixture_first",
+    src = ":archive-first.tar",
+    level = 6,
+)
+
+gzip_compress(
+    name = "archive_fixture_second",
+    src = ":different-source-name.tar",
+    level = 6,
+)
+
+py_test(
+    name = "sonic_docker_archive_test",
+    size = "small",
+    srcs = ["integration/sonic_docker_archive_test.py"],
+    args = [
+        "--archive=$(location :archive-fixture.gz)",
+        "--first=$(location :archive_fixture_first)",
+        "--second=$(location :archive_fixture_second)",
+        "--first-source=$(location :archive-first.tar)",
+        "--second-source=$(location :different-source-name.tar)",
+    ] + select({
+        "@platforms//cpu:aarch64": ["--architecture=arm64"],
+        "//conditions:default": ["--architecture=amd64"],
+    }),
+    data = [
+        ":archive-first.tar",
+        ":archive-fixture.gz",
+        ":archive_fixture_first",
+        ":archive_fixture_second",
+        ":different-source-name.tar",
+    ],
+    main = "integration/sonic_docker_archive_test.py",
+)
+
+# Validate SWSS startup and labels against the manifests prepared by Make.
+py_test(
+    name = "swss_render_test",
+    srcs = ["integration/swss_render_test.py"],
+    args = [
+        "$(location //dockers/docker-orchagent/config:docker-init.sh)",
+        "$(location //dockers/docker-orchagent/config:manifest.json)",
+        "$(location //dockers/docker-orchagent/config:manifest-dbg.json)",
+        "$(location //dockers/docker-orchagent/config:manifest.labels)",
+        "$(location //dockers/docker-orchagent/config:manifest-dbg.labels)",
+    ],
+    data = [
+        "//dockers/docker-orchagent/config:docker-init.sh",
+        "//dockers/docker-orchagent/config:manifest.json",
+        "//dockers/docker-orchagent/config:manifest.labels",
+        "//dockers/docker-orchagent/config:manifest-dbg.json",
+        "//dockers/docker-orchagent/config:manifest-dbg.labels",
+    ],
+    main = "integration/swss_render_test.py",
+)
+
+# Keep the checked-in dpkg include patterns aligned with Make's source list.
+write_file(
+    name = "declared_includes",
+    out = "declared_includes.txt",
+    # The trailing "" gives the final newline awk's print writes.
+    content = PATH_INCLUDES + [""],
+)
+
+# Catch drift between the generated dpkg include patterns and PATH_INCLUDES.
+# This compares text files; it neither checks exclude patterns nor builds DEBs.
+diff_test(
+    name = "test_dpkg_patterns_up_to_date",
+    size = "small",
+    file1 = "declared_includes.txt",
+    file2 = "//tools/bazel/dpkg:dpkg_includes.txt",
 )

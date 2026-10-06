@@ -1,7 +1,3 @@
-load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
-load("@bazel_skylib//rules:write_file.bzl", "write_file")
-load(":defs.bzl", "PATH_INCLUDES")
-
 # Translate the paths dpkg filters under Make (/etc/dpkg/dpkg.cfg.d)
 # into the format bsdtar wants them.
 genrule(
@@ -23,18 +19,4 @@ genrule(
     ]),
     tools = ["@gawk"],
     visibility = ["//visibility:public"],
-)
-
-write_file(
-    name = "declared_includes",
-    out = "declared_includes.txt",
-    # The trailing "" gives the final newline awk's print writes.
-    content = PATH_INCLUDES + [""],
-)
-
-diff_test(
-    name = "test_dpkg_patterns_up_to_date",
-    size = "small",
-    file1 = "declared_includes.txt",
-    file2 = "dpkg_includes.txt",
 )

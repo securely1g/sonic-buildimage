@@ -1367,11 +1367,7 @@ endif
 endif
 endif
 
-# Bazel dockers (opted in via SONIC_BAZEL_DOCKER_IMAGES in their recipe) are
-# built by the Bazel rule further below, not the normal `docker build` rule.
-# Drop them from DOCKER_IMAGES so they don't also get the normal recipe.
-# When Bazel is disabled, SONIC_BAZEL_DOCKER_IMAGES will be empty.
-# Same applies for `DOCKER_DBG_IMAGES`
+# Each owning recipe selects its Bazel archives; all others stay on Make.
 DOCKER_IMAGES := $(filter-out $(SONIC_BAZEL_DOCKER_IMAGES),$(DOCKER_IMAGES))
 DOCKER_DBG_IMAGES := $(filter-out $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$(DOCKER_DBG_IMAGES))
 
@@ -1503,21 +1499,8 @@ $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES))
 
-# Targets for building docker images (and debug images) with Bazel.
-$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform \
-		$$(addprefix $(TARGET_PATH)/,$$($$*.gz_BAZEL_BASE))
-	$(HEADER)
-	bazel run //dockers/$*:write_$*.gz $(LOG)
-	$(FOOTER)
-
-$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DBG_DOCKER_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform \
-		$$(addprefix $(TARGET_PATH)/,$$($$*.gz_BAZEL_BASE))
-	$(HEADER)
-	bazel run //dockers/$*:write_$*-$(DBG_IMAGE_MARK).gz $(LOG)
-	$(FOOTER)
-
-SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES))
-SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DBG_DOCKER_IMAGES))
+# Load the shared container rules after all owners declare their metadata.
+include tools/bazel/docker.mk
 
 # Targets for building docker debug images
 $(addprefix $(TARGET_PATH)/, $(DOCKER_DBG_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform docker-start \
@@ -1593,6 +1576,8 @@ DOCKER_LOAD_TARGETS = $(addsuffix -load,$(addprefix $(TARGET_PATH)/, \
 		      $(DOWNLOADED_DOCKER_IMAGES) \
 		      $(COPY_DOCKER_IMAGES) \
 		      $(DOCKER_IMAGES) \
+		      $(SONIC_BAZEL_DOCKER_IMAGES) \
+		      $(SONIC_BAZEL_DBG_DOCKER_IMAGES) \
 		      $(DOCKER_DBG_IMAGES)))
 
 ifeq ($(BLDENV),trixie)
