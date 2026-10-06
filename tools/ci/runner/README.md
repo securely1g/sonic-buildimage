@@ -226,6 +226,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Builder cleanup deleted groff device files, breaking Bash manual generation | Preserve groff runtime data in slave images while retaining runtime-image cleanup |
 | Host AppArmor blocked Ghostscript PDF output even in a privileged builder | Managed gs-only owner allowance for `/sonic/**.{ps,pdf}`, profile reload and preflight configuration check |
 | Host Docker worked but nested Docker could not initialize legacy NAT | Load and persist host `iptable_nat`; preflight also recognizes built-in support |
+| Cached builder tags ignored changes to their installed build hooks | Include build-hook source content in builder tags so hook repairs rebuild cached environments |
 
 Ephemeral registration does **not** erase the machine, Docker state, user home,
 or other attempts. Docker group membership grants root-equivalent host access.
