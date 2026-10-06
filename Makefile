@@ -130,3 +130,12 @@ clean showtag docker-cleanup clean-docker sonic-slave-build sonic-slave-bash :
 # Freeze the versions, see more detail options: scripts/versions_manager.py freeze -h
 freeze:
 	@scripts/versions_manager.py freeze $(FREEZE_VERSION_OPTIONS)
+
+# Let the inner build check changed sources and Make/Bazel builder switches even
+# when these outputs already exist. Keep the outputs non-phony so they retain
+# the implicit forwarding recipe above, in both builder modes.
+.PHONY: sonic-swss-forward
+sonic-swss-forward:
+
+target/docker-orchagent.gz target/docker-orchagent-dbg.gz \
+target/sonic-vs.bin target/sonic-vs.img.gz target/sonic-vs.raw: sonic-swss-forward
