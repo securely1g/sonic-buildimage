@@ -409,7 +409,7 @@ def copy_bundle(source_bundle, destination, workspace):
     return result
 
 
-def plan(workspace, state, remote_cache, upload, draft, *, ca_bundle=None, java_trust_store=None):
+def plan(workspace, state, remote_cache, upload, draft, *, ca_bundle=None, java_trust_store=None, distdir=None):
     workspace = workspace.resolve(strict=True)
     state = state.resolve()
     require(state != workspace and state not in workspace.parents and not state.exists(),
@@ -419,6 +419,21 @@ def plan(workspace, state, remote_cache, upload, draft, *, ca_bundle=None, java_
             "kernel state and Make input directory must not overlap")
     bundle = state / "bundle"
     source = source_state(workspace)
+    source_directory = None
+    if distdir:
+        directory = Path(distdir).resolve(strict=True)
+        require(directory.is_dir(), "kernel source archive directory must exist")
+        require(state != directory and state not in directory.parents and directory not in state.parents,
+                "kernel state and source archive directory must not overlap")
+        expected_archives = {item["name"]: item["sha256"] for item in source["source_archives"]}
+        require({path.name for path in directory.iterdir()} == set(expected_archives),
+                "kernel source archive directory must contain exactly the pinned archives")
+        files = []
+        for name, expected_sha256 in sorted(expected_archives.items()):
+            path = regular(directory / name)
+            require(sha256(path) == expected_sha256, "kernel source archive SHA256 differs: " + name)
+            files.append({"name": name, "sha256": expected_sha256, "size": path.stat().st_size})
+        source_directory = {"path": str(directory), "files": files}
     registry = DRAFT_REGISTRY if draft else DEFAULT_REGISTRY
     if remote_cache:
         remote_cache = endpoint(remote_cache)
@@ -431,6 +446,8 @@ def plan(workspace, state, remote_cache, upload, draft, *, ca_bundle=None, java_
         command += ["--remote-cache", remote_cache]
     if not upload:
         command.append("--remote-cache-read-only")
+    if source_directory:
+        command += ["--distdir", source_directory["path"]]
     trust = {}
     for option, path in (("ca-bundle", ca_bundle), ("java-trust-store", java_trust_store)):
         if path:
@@ -442,14 +459,14 @@ def plan(workspace, state, remote_cache, upload, draft, *, ca_bundle=None, java_
     return {"schema": 1, "source": source, "registry": registry, "target": TARGET,
             "source_kind": "local_override", "state": str(state), "bundle": str(bundle),
             "remote_cache": remote_cache, "upload_local_results": upload, "disk_cache": None,
-            "execution_trust": trust,
+            "execution_trust": trust, "distdir": source_directory,
             "worker_limits": {"cpus": 4, "memory_bytes": 12 * 1024 ** 3, "bazel_jobs": 1, "kbuild_jobs": 4},
             "argv": command}
 
 
-def build(workspace, state, remote_cache, upload, draft, *, ca_bundle=None, java_trust_store=None, execute=None, fetch=None):
+def build(workspace, state, remote_cache, upload, draft, *, ca_bundle=None, java_trust_store=None, distdir=None, execute=None, fetch=None):
     prepared = plan(workspace, state, remote_cache, upload, draft,
-                    ca_bundle=ca_bundle, java_trust_store=java_trust_store)
+                    ca_bundle=ca_bundle, java_trust_store=java_trust_store, distdir=distdir)
     workspace = workspace.resolve(strict=True)
     state = Path(prepared["state"])
     state.mkdir(parents=True, exist_ok=False)
@@ -486,6 +503,7 @@ def main():
     parser.add_argument("--draft-registry", action="store_true")
     parser.add_argument("--ca-bundle", type=Path)
     parser.add_argument("--java-trust-store", type=Path)
+    parser.add_argument("--distdir", type=Path)
     args = parser.parse_args()
     workspace = args.workspace.resolve(strict=True)
     if args.command in {"plan", "build"}:
@@ -493,9 +511,9 @@ def main():
             parser.error("plan/build require --state-dir and write its bundle subdirectory")
         function = plan if args.command == "plan" else build
         result = function(workspace, args.state_dir, args.remote_cache, args.upload_local_results, args.draft_registry,
-                          ca_bundle=args.ca_bundle, java_trust_store=args.java_trust_store)
+                          ca_bundle=args.ca_bundle, java_trust_store=args.java_trust_store, distdir=args.distdir)
     else:
-        if args.state_dir or args.remote_cache or args.upload_local_results or args.draft_registry or args.ca_bundle or args.java_trust_store:
+        if args.state_dir or args.remote_cache or args.upload_local_results or args.draft_registry or args.ca_bundle or args.java_trust_store or args.distdir:
             parser.error("verify/stage do not accept build options")
         bundle = (args.bundle or workspace / INPUTS).resolve(strict=True)
         if args.command == "verify":

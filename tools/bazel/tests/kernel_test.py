@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -348,6 +349,28 @@ class KernelConfigurationTest(unittest.TestCase):
             selected = (workspace / ".bazelrc").read_text()
             self.assertEqual(selected.count(kernel.REGISTRY_PREFIX), 1)
             self.assertIn("common --registry=https://bcr.bazel.build", selected)
+
+    def test_distdir_requires_exact_pinned_source_archives(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            directory = workspace / "archives"
+            directory.mkdir()
+            files = []
+            for name in ("linux_6.12.41-1.dsc", "linux_6.12.41.orig.tar.xz", "linux_6.12.41-1.debian.tar.xz"):
+                path = directory / name
+                path.write_bytes(name.encode())
+                files.append({"name": name, "sha256": kernel.sha256(path)})
+            with patch.object(kernel, "source_state", return_value={"source_archives": files}):
+                prepared = kernel.plan(workspace, workspace / "state", None, False, True, distdir=directory)
+                self.assertEqual(prepared["argv"][prepared["argv"].index("--distdir") + 1], str(directory))
+                self.assertEqual({item["name"] for item in prepared["distdir"]["files"]}, {item["name"] for item in files})
+                path.write_bytes(b"changed archive")
+                with self.assertRaisesRegex(ValueError, "source archive SHA256 differs"):
+                    kernel.plan(workspace, workspace / "state", None, False, True, distdir=directory)
+                path.write_bytes(path.name.encode())
+                (directory / "unrelated").write_bytes(b"unrelated input")
+                with self.assertRaisesRegex(ValueError, "exactly the pinned archives"):
+                    kernel.plan(workspace, workspace / "state", None, False, True, distdir=directory)
 
     def test_native_version_change_requires_a_kernel_contract_update(self):
         with tempfile.TemporaryDirectory() as directory:

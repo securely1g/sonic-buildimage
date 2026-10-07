@@ -40,7 +40,10 @@ Use a new state path for each invocation. The producer writes the verified
 bundle to `<state-dir>/bundle`. The separate `stage` command copies it to the
 Make input directory in a checkout at the same source commit. Optional
 `--ca-bundle` and `--java-trust-store` inputs supply public trust material for
-fetching; the plan records their hashes.
+fetching; the plan records their hashes. `--distdir` can supply the three pinned
+Debian source archives from a local directory. The producer requires exactly
+those files, checks their SHA-256 hashes, and passes the directory to the source
+launcher's existing read-only mount; Bazel verifies the hashes again.
 
 For a source/cache experiment, the producer can add `--upload-local-results`
 when writing to its dedicated empty remote cache. A second invocation uses a
