@@ -187,6 +187,7 @@ class MakeImportTest(unittest.TestCase):
     def test_make_overrides_reach_the_importer_before_staging(self):
         self.make("consumer")
         for option, error in (
+            ("DASH_SAI_COMMIT=", "DASH source revision differs"),
             ("DASH_SAI_COMMIT=" + "0" * 40, "DASH source revision differs"),
             ("DASH_SAI_VERSION=2.0.0", "Make package versions differ"),
             ("P4LANG_PI_VERSION_FULL=9.9.9-1", "Make package versions differ"),
