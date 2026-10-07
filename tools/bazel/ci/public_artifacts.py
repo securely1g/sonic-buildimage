@@ -36,6 +36,11 @@ STATUSES = {
     "PASSED", "FLAKY", "TIMEOUT", "FAILED", "INCOMPLETE", "REMOTE_FAILURE",
     "FAILED_TO_BUILD", "BLAZE_HALTED_BEFORE_TESTING", "NO_STATUS",
 }
+SYSMGR_OUTPUTS = (
+    "protobuf-runtime.tar", "protobuf-debug.tar", "gnoi-runtime-probe",
+    "sysmgr-runtime.tar", "sysmgr-debug.tar", "runtime-layer.tar",
+    "config-layer.tar", "debug-layer.tar",
+)
 FILES = {
     "archive": [
         ("fixture-gzip", "artifacts/archive/archive-fixture.gz", "binary"),
@@ -66,6 +71,10 @@ FILES = {
         ("module-graph", "artifacts/syncd-vs/bazel/module-graph.json", "graph"),
     ],
     "vs": [],
+    "sysmgr-test": [("module-lock", "artifacts/test/MODULE.bazel.lock", "lock")],
+    "sysmgr-build": [
+        (name, "artifacts/build/" + name, "binary") for name in SYSMGR_OUTPUTS
+    ] + [("module-lock", "artifacts/build/MODULE.bazel.lock", "lock")],
 }
 BEP = {
     "archive": [
@@ -75,12 +84,16 @@ BEP = {
     "source": [("source-tests", "artifacts/swss/test-events.jsonl", 12)],
     "syncd": [],
     "vs": [],
+    "sysmgr-test": [("sysmgr-tests", "artifacts/test/bep.json", 7)],
+    "sysmgr-build": [("sysmgr-build", "artifacts/build/bep.json", 0)],
 }
 SUMMARY = {
     "archive": "artifacts/archive/public-summary.json",
     "source": "artifacts/swss/public-summary.json",
     "syncd": "artifacts/syncd-vs/public-summary.json",
     "vs": "artifacts/vs/public-summary.json",
+    "sysmgr-test": "artifacts/test/public-summary.json",
+    "sysmgr-build": "artifacts/build/public-summary.json",
 }
 
 
@@ -250,6 +263,29 @@ def relative_name(value):
 
 def receipt_summary(value, kind):
     require(isinstance(value, dict), "invalid-receipt")
+    if kind == "sysmgr":
+        require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
+        require(value.get("mode") in {"test", "build"}, "invalid-sysmgr-mode")
+        revision = value.get("revision")
+        require(revision is None or isinstance(revision, str) and REVISION.fullmatch(revision), "invalid-revision")
+        require(value.get("architecture") in {None, "amd64"}, "invalid-architecture")
+        tests = value.get("tests", {})
+        require(isinstance(tests, dict), "invalid-tests")
+        for name, status in tests.items():
+            label(name)
+            require(status in STATUSES, "invalid-test-status")
+        outputs = {}
+        require(isinstance(value.get("artifacts", {}), dict), "invalid-artifacts")
+        for name, item in value.get("artifacts", {}).items():
+            require(name in SYSMGR_OUTPUTS and isinstance(item, dict), "invalid-sysmgr-output")
+            outputs[name] = {"target": label(item.get("target")),
+                             "sha256": digest(item.get("sha256")), "bytes": integer(item.get("bytes"))}
+        validation = value.get("validation", {})
+        require(isinstance(validation, dict) and isinstance(validation.get("runtime_debug_pairs", []), list), "invalid-validation")
+        return {"status": value["status"], "mode": value["mode"], "revision": revision,
+                "architecture": value.get("architecture"), "tests": tests, "artifacts": outputs,
+                "runtime_debug_pair_count": len(validation.get("runtime_debug_pairs", [])),
+                "image_layer_test_count": integer(validation.get("image_layer_tests", 0))}
     if kind == "python":
         require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
         require(value.get("architecture") in {"amd64", "arm64"}, "invalid-architecture")
@@ -384,6 +420,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
         "source": [("source", "artifacts/swss/receipt.json", "source")],
         "syncd": [("syncd", "artifacts/syncd-vs/bazel/report.json", "syncd")],
         "vs": [("p4rt", "artifacts/vs/p4rt-debug-verification.json", "p4rt")],
+        "sysmgr-test": [("sysmgr", "artifacts/test/receipt.json", "sysmgr")],
+        "sysmgr-build": [("sysmgr", "artifacts/build/receipt.json", "sysmgr")],
     }
     for logical, relative, receipt_kind in receipt_specs[kind]:
         value = read_json(logical + "-receipt", relative)
@@ -429,6 +467,26 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             blocked.append({"input": "syncd-receipt", "reason": "module-lock-mismatch"})
         if kind == "vs" and not receipts.get("p4rt", {}).get("source_found"):
             blocked.append({"input": "p4rt-receipt", "reason": "incomplete-p4rt-verification"})
+        if kind.startswith("sysmgr-"):
+            value = receipts.get("sysmgr", {})
+            mode = kind.removeprefix("sysmgr-")
+            if (value.get("status"), value.get("mode"), value.get("revision"), value.get("architecture")) != (
+                    "passed", mode, revision, architecture):
+                blocked.append({"input": "sysmgr-receipt", "reason": "incomplete-or-mismatched-receipt"})
+            if builds.get("sysmgr-tests" if mode == "test" else "sysmgr-build", {}).get("command") != mode:
+                blocked.append({"input": "sysmgr-build-events", "reason": "command-mismatch"})
+            if mode == "test":
+                tests = value.get("tests", {})
+                if len(tests) != 7 or set(tests.values()) != {"PASSED"}:
+                    blocked.append({"input": "sysmgr-receipt", "reason": "incomplete-tests"})
+            else:
+                outputs = value.get("artifacts", {})
+                if set(outputs) != set(SYSMGR_OUTPUTS) or any(
+                        {key: item[key] for key in ("sha256", "bytes")} != selected.get(name)
+                        for name, item in outputs.items()):
+                    blocked.append({"input": "sysmgr-receipt", "reason": "output-mismatch"})
+                if (value.get("runtime_debug_pair_count"), value.get("image_layer_test_count")) != (3, 2):
+                    blocked.append({"input": "sysmgr-receipt", "reason": "incomplete-package-validation"})
 
     summary = {"schema": 1, "kind": kind, "job_status": job_status, "revision": revision, "architecture": architecture,
                "head_sha": head_sha or None, "base_sha": base_sha or None, "files": selected,

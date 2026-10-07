@@ -428,11 +428,14 @@ SWSS Common and gNOI gitlinks, and use the checkout's AMD64 Trixie platform.
   A loader check then runs the gNOI probe against the extracted image libraries,
   verifying that Protobuf resolves to the packaged source build.
 
-The workflow retains seven runtime/debug archives and the gNOI probe, revision and gitlink
-receipts, SHA256 digests, command logs, test results and build profile for 14 days.
+The workflow retains seven runtime/debug archives and the gNOI probe, with checked
+SHA-256 digests and sizes, revision, test status and package-validation counts for
+14 days. The public artifact selector validates these fields before uploading
+an explicit file list. Failed jobs may retain only a partial status summary.
 Each job starts without `MODULE.bazel.lock` and uses `--lockfile_mode=update`.
-Its artifacts also retain the generated lock and module graph, with SHA-256
-hashes in the receipt. The lock stays ignored; CI rejects changes to tracked
+Public artifacts also retain the validated generated lock. Raw command and test
+logs, build events/profile, detailed receipts and the text module graph remain
+in the job workspace. The lock stays ignored; CI rejects changes to tracked
 source files. Module versions, source checksums and other package locks remain
 checked-in inputs.
 

@@ -111,7 +111,25 @@ def seed(root, kind, architecture="amd64"):
             values = {"lock": lock(), "graph": {"key": "<root>", "name": "sonic-buildimage", "version": "", "dependencies": []}, "cache": cache()}
             write_json(root, name, values[file_kind])
     for _logical, name, count in artifacts.BEP[kind]:
-        write(root, name, events(count))
+        write(root, name, events(count).replace('"command": "test"', '"command": "build"')
+              if kind == "sysmgr-build" else events(count))
+    if kind.startswith("sysmgr-"):
+        mode = kind.removeprefix("sysmgr-")
+        value = {"status": "passed", "mode": mode, "revision": REVISION, "architecture": "amd64",
+                 "commands": [{"argv": [SYNTHETIC_JOB_TOKEN]}], "error": SENTINEL}
+        if mode == "test":
+            value["tests"] = {"//tests:contract_" + str(number): "PASSED" for number in range(7)}
+        else:
+            value["artifacts"] = {
+                name: {"target": "//tests:output", "bytes": (root / "artifacts/build" / name).stat().st_size,
+                       "sha256": hashlib.sha256((root / "artifacts/build" / name).read_bytes()).hexdigest()}
+                for name in artifacts.SYSMGR_OUTPUTS}
+            value["validation"] = {"runtime_debug_pairs": [SENTINEL] * 3, "image_layer_tests": 2,
+                                   "packaged_runtime_probe": SENTINEL, "packaged_loader_resolution": SYNTHETIC_JOB_TOKEN}
+        write_json(root, "artifacts/" + mode + "/receipt.json", value)
+        write(root, "artifacts/" + mode + "/profile.json.gz", SYNTHETIC_JOB_TOKEN)
+        write(root, "artifacts/" + mode + "/module-graph.txt", SYNTHETIC_JOB_TOKEN)
+        return
     receipts = {"archive": ("artifacts/config-engine/receipt.json", "python"),
                 "source": ("artifacts/swss/receipt.json", "source"),
                 "syncd": ("artifacts/syncd-vs/bazel/report.json", "syncd"),
@@ -154,7 +172,7 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertNotIn("file://", encoded)
 
     def test_cli_success_never_selects_secret_bearing_raw_inputs(self):
-        for kind in ("archive", "source"):
+        for kind in ("archive", "source", "sysmgr-test", "sysmgr-build"):
             with self.subTest(kind=kind):
                 root = self.root / kind
                 root.mkdir()
@@ -185,7 +203,7 @@ class PublicArtifactsTest(unittest.TestCase):
 
     def test_cli_failed_or_cancelled_jobs_publish_only_safe_partial_status(self):
         for status in ("failure", "cancelled"):
-            for kind in ("archive", "source"):
+            for kind in ("archive", "source", "sysmgr-test", "sysmgr-build"):
                 with self.subTest(status=status, kind=kind):
                     root = self.root / (status + "-" + kind)
                     root.mkdir()
@@ -228,6 +246,43 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
+
+    def test_sysmgr_build_rejects_changed_output_or_incomplete_debug_validation(self):
+        for field in ("output", "hash", "debug_pairs", "layer_tests"):
+            with self.subTest(field=field):
+                seed(self.root, "sysmgr-build")
+                receipt_path = self.root / "artifacts/build/receipt.json"
+                value = json.loads(receipt_path.read_text())
+                if field == "output":
+                    write(self.root, "artifacts/build/sysmgr-runtime.tar", b"different output\n")
+                elif field == "hash":
+                    value["artifacts"]["sysmgr-runtime.tar"]["sha256"] = "0" * 64
+                elif field == "debug_pairs":
+                    value["validation"]["runtime_debug_pairs"].pop()
+                else:
+                    value["validation"]["image_layer_tests"] = 1
+                write_json(self.root, "artifacts/build/receipt.json", value)
+                summary, paths, ready = self.prepare("sysmgr-build")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertTrue(summary["blocked"])
+
+    def test_sysmgr_success_requires_matching_receipt_and_complete_tests(self):
+        for field in ("revision", "mode", "architecture", "status", "tests", "test_status"):
+            with self.subTest(field=field):
+                seed(self.root, "sysmgr-test")
+                path = self.root / "artifacts/test/receipt.json"
+                value = json.loads(path.read_text())
+                if field == "tests":
+                    value["tests"].pop("//tests:contract_0")
+                elif field == "test_status":
+                    value["tests"]["//tests:contract_0"] = "FAILED"
+                else:
+                    value[field] = {"revision": "0" * 40, "mode": "build", "architecture": "arm64", "status": "failed"}[field]
+                write_json(self.root, "artifacts/test/receipt.json", value)
+                _summary, paths, ready = self.prepare("sysmgr-test")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")

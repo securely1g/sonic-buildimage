@@ -81,15 +81,26 @@ jobs:
       - name: Run Bazel checks and validate outputs
         run: python3 tools/bazel/ci/sysmgr/run.py "${{ matrix.mode }}" --artifacts "artifacts/${{ matrix.mode }}"
 
-      - name: Upload build evidence and runtime/debug tars
+      - name: Prepare public artifact list
+        id: public_artifacts
         if: always()
+        env:
+          CI_JOB_STATUS: ${{ job.status }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py "sysmgr-${{ matrix.mode }}" \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture amd64 --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload public evidence and runtime/debug tars
+        if: always() && steps.public_artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: buildimage-bazel-sysmgr-${{ matrix.mode }}-amd64
-          path: |
-            artifacts/
-            bazel-testlogs/**/test.log
-            bazel-testlogs/**/test.xml
+          path: ${{ steps.public_artifacts.outputs.paths }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
