@@ -28,7 +28,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a",
+    version = "0.0.15-93b1a3766830ae61239683bb1868f6768b2ef470",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -61,11 +61,12 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Commit suffixes do not sort by source history. Keep transitive requests from
-# selecting an older infrastructure commit over the landed fix.
-single_version_override(
+# Draft dependency: infrastructure #27 and registry #45 publish the shared APT rule.
+# Remove this exact source override after the module lands in the main registry.
+git_override(
     module_name = "sonic-build-infra",
-    version = "0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a",
+    commit = "93b1a3766830ae61239683bb1868f6768b2ef470",
+    remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
 # Dependency overrides do not propagate from imported modules. Retain their
@@ -222,4 +223,9 @@ apt.install(
         "trixie-security",
     ],
 )
-use_repo(apt, "orchagent_debian", "trixie")
+apt.install(
+    dependency_set = "orchagent_debug_debian",
+    packages = ["gdb", "gdbserver", "strace"],
+    suites = ["trixie", "trixie-updates", "trixie-security"],
+)
+use_repo(apt, "orchagent_debian", "orchagent_debug_debian", "trixie")
