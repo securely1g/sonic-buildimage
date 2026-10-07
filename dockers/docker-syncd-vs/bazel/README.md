@@ -230,11 +230,15 @@ python3 -B dockers/docker-syncd-vs/bazel/ci.py --bazel bazel \
 
 The CI helper audits and runs seven explicit JSON, tar, OCI-fixture, lock, and
 manifest tests. It retains the selected execution audit fields, required test
-logs, the generated `MODULE.bazel.lock`, and the module graph. Raw action JSON is
-temporary and is removed after the audit. The checked APT content lock remains in Git; the generated
-Bazel resolution lock remains ignored. `.github/workflows/bazel-syncd-vs-oci.yml`
-runs this contract suite on native AMD64 Trixie. It does not run a production OCI
-or installer build.
+logs, the generated `MODULE.bazel.lock`, and the module graph in the job workspace.
+Raw action JSON is temporary and is removed after the audit. The public workflow
+uses the shared [`public_artifacts.py`](../../../tools/bazel/ci/public_artifacts.py)
+selector to retain validated dependency records, input/source hashes, the target
+list and execution-audit counts. Raw logs and test XML stay in the workspace;
+failed jobs may retain only a partial status summary. The checked APT content lock
+remains in Git, and the generated Bazel resolution lock remains ignored.
+`.github/workflows/bazel-syncd-vs-oci.yml` runs this contract suite on native
+AMD64 Trixie. It does not run a production OCI or installer build.
 
 For the complete image, prepare the normal supported Make context and request:
 
