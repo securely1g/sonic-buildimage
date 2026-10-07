@@ -11,7 +11,11 @@ bazel-p4-import: .platform
 
 $(addprefix $(DEBS_PATH)/,$(SONIC_BAZEL_P4_DEBS)): $(DEBS_PATH)/%: bazel-p4-import
 	test -s "$@"
-	$(call sbom_emit_fragment,$@,ONLINE_DEB,$($*_SRC_PATH),,$($*_DEPENDS),$($*_RDEPENDS),$($*_MAIN_DEB))
+	# Record the published binary origin, not the current native source checkout.
+	if [ "$(ENABLE_SBOM)" = y ]; then
+		p4_package_url="$$(python3 -c 'import json, sys; print(next(p["url"] for p in json.load(open(sys.argv[1]))["packages"] if p["filename"] == sys.argv[2]))' tools/bazel/p4/packages.lock.json "$*")"
+		$(call sbom_emit_fragment,$@,ONLINE_DEB,,$$p4_package_url,$($*_DEPENDS),$($*_RDEPENDS),$($*_MAIN_DEB))
+	fi
 
 SONIC_TARGET_LIST += $(addprefix $(DEBS_PATH)/,$(SONIC_BAZEL_P4_DEBS))
 else
