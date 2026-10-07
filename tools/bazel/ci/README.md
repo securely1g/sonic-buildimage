@@ -30,6 +30,11 @@ importing container-specific code.
   payloads. Update this helper's declared paths, test counts and receipt fields
   with the owning workflow when its outputs change. The helper does not run a
   build, and its direct tests use synthetic records only.
+  The sysmgr test/build modes retain a validated generated module lock and safe
+  test/package summaries. A successful build also retains its eight declared
+  runtime/debug outputs, checked against the producer's hashes and sizes.
+  Sysmgr command logs, raw build events/profiles, receipt diagnostics and the
+  text module graph remain local to the job workspace.
 - `python_packages.py` exports the config-engine and py-common wheels and retains
   source-suite logs/XML, collected-test inventories and the installed-wheel
   receipt. It requires matching wheel hashes, native architecture and Python
