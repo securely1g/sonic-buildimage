@@ -17,7 +17,12 @@ importing container-specific code.
   checks. Callers retain their target lists, platform options and package policy.
 - `command_log.py` captures command output and timings while keeping diagnostic
   messages separate from queried artifact paths. Callers supply the working
-  directory and evidence directory.
+  directory and evidence directory. Orchagent and syncd use the same runner;
+  syncd sends raw action-graph stdout to a temporary private file, retaining
+  only stderr in the log and removing the raw graph after its execution audit.
+- `bazel_commands.py` inspects action graphs for DEB outputs and packaging
+  wrappers. The owning CI selects its targets and decides when execution is
+  permitted; the helper does not run commands.
 - `public_artifacts.py` prepares explicit public upload lists for the archive,
   SWSS source, VS and syncd contract jobs. Successful jobs retain their expected
   build outputs and validated dependency JSON, plus summaries containing only

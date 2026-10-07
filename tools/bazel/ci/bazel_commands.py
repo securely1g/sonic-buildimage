@@ -1,37 +1,7 @@
-"""Run Bazel commands and audit action graphs before package-producing execution."""
+"""Audit Bazel action graphs before package-producing execution."""
 import hashlib
 import json
-from pathlib import Path
 import re
-import shlex
-import subprocess
-from tools.bazel.ci.artifact_validation import require
-
-def run(arguments, log_path, *, workspace, output_path=None):
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    output = output_path.open("w") if output_path else subprocess.PIPE
-    try:
-        with log_path.open("w") as log:
-            log.write("$ " + shlex.join(arguments) + "\n")
-            process = subprocess.Popen(arguments, cwd=workspace, stdout=output,
-                                       stderr=subprocess.PIPE if output_path else subprocess.STDOUT,
-                                       text=True, bufsize=1)
-            stream = process.stderr if output_path else process.stdout
-            for line in stream:
-                log.write(line)
-                log.flush()
-                print(line, end="", flush=True)
-            result = process.wait()
-            require(result == 0, "command failed with exit " + str(result) + ": " + str(log_path))
-    finally:
-        if output_path:
-            output.close()
-
-
-def capture(arguments, log_path, *, workspace):
-    output_path = log_path.with_suffix(log_path.suffix + ".stdout")
-    run(arguments, log_path, workspace=workspace, output_path=output_path)
-    return output_path.read_text().strip()
 
 
 def inspect_actions(path):

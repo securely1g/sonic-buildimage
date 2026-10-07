@@ -2,19 +2,23 @@
 """Run the explicit syncd OCI contract tests without production image builds."""
 
 import argparse
+from functools import partial
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 OWNER = Path(__file__).absolute().parent
 ROOT = OWNER.parents[2]
 sys.path.insert(0, str(OWNER))
 sys.path.insert(0, str(ROOT))
-from tools.bazel.ci.bazel_commands import capture, inspect_actions, run
-from tools.bazel.ci import resolution
+from tools.bazel.ci.bazel_commands import inspect_actions
+from tools.bazel.ci import command_log, resolution
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.gzip.source_archive import check_versions
+
+execute = partial(command_log.execute, cwd=ROOT)
 
 TARGET_NAMES = [
     "apt_lock_check",
@@ -39,20 +43,21 @@ def main():
     parser.add_argument("--bazel-arg", action="append", default=[])
     parser.add_argument("--artifacts", required=True, type=Path)
     args = parser.parse_args()
+    artifacts = args.artifacts.absolute()
+    artifacts.mkdir(parents=True, exist_ok=False)
+    receipt = {"status": "running", "commands": []}
     try:
-        artifacts = args.artifacts.absolute()
-        artifacts.mkdir(parents=True, exist_ok=False)
         for variant in ("docker-syncd-vs", "docker-syncd-vs-dbg"):
             require((ROOT / "target/bazel-manifests" / variant / "manifest.json").is_file(),
                     "prepare the syncd Make manifests before running contract CI")
         before = source_hashes()
-        version = capture([args.bazel, "--version"], artifacts / "bazel-version.log", workspace=ROOT)
+        version = execute([args.bazel, "--version"], artifacts, receipt, "bazel-version").strip()
         require(version == "bazel " + (ROOT / ".bazelversion").read_text().strip(), "unexpected Bazel version: " + version)
         actions = artifacts / "actions.raw.json"
         actions.touch(mode=0o600, exist_ok=False)
         try:
-            run([args.bazel, "aquery"] + args.bazel_arg + ["deps(set(" + " ".join(TARGETS) + "))", "--output=jsonproto"],
-                artifacts / "actions.log", workspace=ROOT, output_path=actions)
+            execute([args.bazel, "aquery"] + args.bazel_arg + ["deps(set(" + " ".join(TARGETS) + "))", "--output=jsonproto"],
+                    artifacts, receipt, "actions", output_path=actions)
             audit = inspect_actions(actions)
         finally:
             # Publish the selected audit fields; action environments stay temporary.
@@ -60,8 +65,8 @@ def main():
         audit["targets"] = TARGETS
         (artifacts / "execution-gate-audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
         require(not audit["deb_outputs"] and not audit["packaging_wrappers"], "contract tests contain a DEB or packaging wrapper action")
-        run([args.bazel, "test"] + args.bazel_arg + ["--nocache_test_results", "--test_output=errors"] + TARGETS,
-            artifacts / "tests.log", workspace=ROOT)
+        execute([args.bazel, "test"] + args.bazel_arg + ["--nocache_test_results", "--test_output=errors"] + TARGETS,
+                artifacts, receipt, "tests")
         test_outputs = []
         for name in TARGET_NAMES:
             for filename in ("test.log", "test.xml"):
@@ -80,9 +85,13 @@ def main():
                   "execution_gate_audit": "execution-gate-audit.json",
                   "scope": "Safe contract and manifest tests; no production OCI image, native predecessor, or Bazel DEB-producing target executed."}
         (artifacts / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        receipt["status"] = "passed"
         print(json.dumps(report, indent=2, sort_keys=True))
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        receipt.update(status="failed", error=str(error))
         parser.exit(1, "syncd contract CI failed: " + str(error) + "\n")
+    finally:
+        (artifacts / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

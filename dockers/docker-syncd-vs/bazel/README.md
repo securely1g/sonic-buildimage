@@ -89,8 +89,12 @@ Both paths use `tools/bazel/oci/oci_layout.py` to validate and read OCI metadata
 The shared `tools/bazel/ci/artifact_validation.py` supplies streamed file hashes,
 archive metadata, ELF headers, build IDs, DWARF checks, and debug-link checksums.
 Syncd adds its package ownership, overlay, SONAME, and preserved symbol-gap policy.
-Its CI uses the shared module-resolution collector, and its synthetic image tests
-use `tools/bazel/tests/oci_base_fixture.py` alongside the SWSS archive tests.
+Its CI uses orchagent's shared `command_log` runner and module-resolution
+collector, retaining command timings and failure receipts. The action-graph
+audit keeps raw action environments in a temporary private file and removes it
+before publication. Syncd retains its explicit contract-test targets; orchagent
+retains its source-layer build targets and package checks. Its synthetic image
+tests use `tools/bazel/tests/oci_base_fixture.py` alongside the SWSS archive tests.
 
 The remaining syncd code checks the Make-produced package handoff, filters locked
 APT inputs against the base and Make packages, and reconstructs the reviewed
