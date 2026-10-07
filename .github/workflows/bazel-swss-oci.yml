@@ -200,31 +200,27 @@ jobs:
           (directory / "resolution.json").write_text(json.dumps(evidence, indent=2) + "\n")
           PY
 
-      - name: Upload archive checks and dependency evidence
+      - name: Prepare public artifact list
+        id: public_artifacts
         if: always()
+        env:
+          CI_JOB_STATUS: ${{ job.status }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py archive \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture "${{ matrix.architecture }}" \
+            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload public archive evidence
+        if: always() && steps.public_artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: container-archive-${{ matrix.architecture }}
-          path: |
-            artifacts/archive/
-            artifacts/config-engine/
-            bazel-testlogs/tools/bazel/tests/sonic_py_common_test/
-            bazel-testlogs/tools/bazel/tests/sonic_py_common_full_test/
-            bazel-testlogs/tools/bazel/tests/sonic_config_engine_full_test/
-            bazel-testlogs/tools/bazel/tests/sonic_python_wheels_test/
-            bazel-testlogs/src/sonic-config-engine/sonic_cfggen_cli_test/
-            bazel-testlogs/tools/bazel/tests/manifest_labels_test/
-            bazel-testlogs/tools/bazel/tests/manifest_labels_action_test/
-            bazel-testlogs/tools/bazel/tests/cfggen_template_test/
-            bazel-testlogs/tools/bazel/tests/swss_render_test/
-            bazel-testlogs/tools/bazel/tests/sonic_docker_archive_test/test.log
-            bazel-testlogs/tools/bazel/tests/sonic_docker_archive_test/test.xml
-            bazel-testlogs/tools/bazel/tests/oci_base_layout_test/test.log
-            bazel-testlogs/tools/bazel/tests/oci_base_layout_test/test.xml
-            bazel-testlogs/tools/bazel/tests/prepare_oci_base_test/test.log
-            bazel-testlogs/tools/bazel/tests/prepare_oci_base_test/test.xml
-            bazel-testlogs/tools/bazel/tests/oci_base_consumer_test/test.log
-            bazel-testlogs/tools/bazel/tests/oci_base_consumer_test/test.xml
+          path: ${{ steps.public_artifacts.outputs.paths }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
@@ -290,17 +286,38 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bazel-repository-inputs
-          path: artifacts/repository-inputs/
+          path: |
+            artifacts/repository-inputs/ape-1.0.1/src.tar.gz
+            artifacts/repository-inputs/download_utils-1.0.1/src.tar.gz
+            artifacts/repository-inputs/rules_coreutils-1.0.1/src.tar.gz
+            artifacts/repository-inputs/rules_gzip-1.0.0/src.tar.gz
+            artifacts/repository-inputs/toolchain_utils-1.0.2/src.tar.gz
+            artifacts/repository-inputs/receipt.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
 
-      - name: Upload source layers and build evidence
+      - name: Prepare public artifact list
+        id: public_artifacts
         if: always()
+        env:
+          CI_JOB_STATUS: ${{ job.status }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py source \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture "amd64" \
+            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload public source layers and evidence
+        if: always() && steps.public_artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: swss-source-layers-amd64
-          path: artifacts/swss/
+          path: ${{ steps.public_artifacts.outputs.paths }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
@@ -444,16 +461,28 @@ jobs:
             fi
           fi
 
-      - name: Upload VS build diagnostics
+      - name: Prepare public artifact list
+        id: public_artifacts
         if: always()
+        env:
+          CI_JOB_STATUS: ${{ job.status }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py vs \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture "amd64" \
+            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload public VS build summary
+        if: always() && steps.public_artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-build-diagnostics-amd64
-          path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/**/*.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/sonic-slave-*/*.log
-          if-no-files-found: warn
+          path: ${{ steps.public_artifacts.outputs.paths }}
+          if-no-files-found: error
           retention-days: 14
           compression-level: 1
 
