@@ -6,17 +6,26 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from typing import NamedTuple
 
 
-def validate_layout(directory: Path, expected_platform: str) -> None:
-    """Require one complete image for the requested OS and architecture."""
+class OciLayout(NamedTuple):
+    """Validated image metadata and its hash-checked layer paths."""
+    descriptor: dict
+    manifest: dict
+    config: dict
+    layers: tuple[Path, ...]
+
+
+def validate_layout(directory: Path, expected_platform: str) -> OciLayout:
+    """Require one complete image and return its validated metadata and layers."""
     try:
-        _validate_layout(directory, expected_platform)
+        return _validate_layout(directory, expected_platform)
     except (AttributeError, KeyError, TypeError) as error:
         raise ValueError("invalid OCI layout metadata structure") from error
 
 
-def _validate_layout(directory: Path, expected_platform: str) -> None:
+def _validate_layout(directory: Path, expected_platform: str) -> OciLayout:
     if len(expected_platform.split("/")) != 2 or not all(expected_platform.split("/")):
         raise ValueError("expected platform must be os/architecture")
     marker = json.loads((directory / "oci-layout").read_bytes())
@@ -57,8 +66,7 @@ def _validate_layout(directory: Path, expected_platform: str) -> None:
     rootfs = config.get("rootfs", {})
     if rootfs.get("type") != "layers" or len(rootfs.get("diff_ids", [])) != len(layers):
         raise ValueError("OCI layer count does not match image rootfs")
-    for layer in layers:
-        blob(layer)
+    return OciLayout(descriptor, manifest, config, tuple(blob(layer) for layer in layers))
 
 
 def main() -> None:

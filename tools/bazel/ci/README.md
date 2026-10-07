@@ -3,10 +3,11 @@
 These helpers validate buildimage artifacts and preserve build evidence without
 importing container-specific code.
 
-- `artifact_validation.py` inspects tar contents, ownership, modes, file hashes
-  and little-endian ELF64 metadata, and checks matching split debug symbols.
-  Consumers supply expected files and platform requirements; SWSS's inventory
-  and protobuf expectations stay in `dockers/docker-orchagent/bazel/package_contract.py`.
+- `artifact_validation.py` streams tar contents to record ownership, modes, file
+  hashes and little-endian ELF64 metadata, and checks matching split debug symbols.
+  SWSS and syncd share its ELF inspection and debug-link checks; each consumer
+  supplies its package inventory and platform policy. SWSS's inventory and
+  protobuf expectations stay in `dockers/docker-orchagent/bazel/package_contract.py`.
   `debug_archives` combines a runtime tar and its symbols tar, rejects payload
   collisions and foreign debug paths, checks the caller's ELF architecture,
   safely extracts the pair and verifies matching build IDs, DWARF and debug links.

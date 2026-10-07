@@ -14,43 +14,22 @@ import unittest
 
 OWNER = Path(__file__).absolute().parents[2]
 ROOT = OWNER.parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OWNER / "bazel"))
+from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as layer, write_layout
 import validate_image as subject
 import validate_payloads
 
 
-def layer(entries):
-    output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode="w", format=tarfile.GNU_FORMAT) as archive:
-        for name, data, mode in entries:
-            item = tarfile.TarInfo(name)
-            item.size = len(data)
-            item.mode = mode
-            archive.addfile(item, io.BytesIO(data))
-    return output.getvalue()
-
-
 def write_image(path, layers, manifest, *, entrypoint=None):
-    blobs = path / "blobs/sha256"
-    blobs.mkdir(parents=True, exist_ok=True)
-    (path / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}\n')
-    def blob(data, media_type):
-        digest = hashlib.sha256(data).hexdigest()
-        (blobs / digest).write_bytes(data)
-        return {"mediaType": media_type, "digest": "sha256:" + digest, "size": len(data)}
-    layer_descriptors = [blob(data, "application/vnd.oci.image.layer.v1.tar") for data in layers]
     config = {
-        "architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": [
-            "sha256:" + hashlib.sha256(data).hexdigest() for data in layers]},
+        "architecture": "amd64", "os": "linux",
+        "rootfs": {"type": "layers", "diff_ids": [digest(data) for data in layers]},
         "config": {"Entrypoint": entrypoint or ["/usr/local/bin/supervisord"],
                    "Env": ["DEBIAN_FRONTEND=noninteractive"],
                    "Labels": {"com.azure.sonic.manifest": json.dumps(manifest, separators=(",", ":"))}},
     }
-    config_descriptor = blob(json.dumps(config, separators=(",", ":")).encode(), "application/vnd.oci.image.config.v1+json")
-    value = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-             "config": config_descriptor, "layers": layer_descriptors}
-    descriptor = blob(json.dumps(value, separators=(",", ":")).encode(), "application/vnd.oci.image.manifest.v1+json")
-    (path / "index.json").write_text(json.dumps({"schemaVersion": 2, "manifests": [descriptor]}))
+    write_layout(path, oci_files(json.dumps(config, separators=(",", ":")).encode(), layers))
 
 
 class ValidateImageTest(unittest.TestCase):

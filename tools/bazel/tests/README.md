@@ -14,7 +14,8 @@ The suite uses Python 3, Make, Bash, Git, `j2` from `j2cli`, `jq`, a C compiler,
 `readelf` and `objcopy`. The Make tests use a controlled Bazel executable and small local
 archives. The AMD64 P4RT split-debug checks also require GNU `dwp` and GDB;
 Trixie supplies `dwp` through `binutils-gold`. Fixture generators also live here so CI's real Bazel cache and Make
-export checks use the same inputs.
+export checks use the same inputs. `oci_base_fixture.py` also supplies the OCI
+metadata and ordered tar-file builders used by syncd's image contract tests.
 
 Two unrelated container families exercise independent runtime/debug builder
 switches with caching off and with the real Make package-cache loader. A corrupt

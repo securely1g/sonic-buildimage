@@ -7,41 +7,19 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
-import struct
 import sys
 import tarfile
 
 ROOT = Path(__file__).absolute().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).absolute().parent))
+from tools.bazel.ci.artifact_validation import file_metadata, metadata, path_name as member_name, require, sha
 from tools.bazel.oci.oci_layout import validate_layout
 import validate_payloads
 
 
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def sha(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
 def image(directory):
-    validate_layout(directory, "linux/amd64")
-    index = json.loads((directory / "index.json").read_bytes())
-    descriptor = index["manifests"][0]
-    blob = lambda value: directory / "blobs/sha256" / value["digest"][7:]
-    manifest = json.loads(blob(descriptor).read_bytes())
-    config = json.loads(blob(manifest["config"]).read_bytes())
-    return descriptor, manifest, config, [blob(layer) for layer in manifest["layers"]]
-
-
-def member_name(value):
-    name = PurePosixPath(value)
-    require(not name.is_absolute() and ".." not in name.parts, "unsafe OCI layer path: " + value)
-    return str(name)
+    return validate_layout(directory, "linux/amd64")
 
 
 def assert_overlay_paths(entries, files):
@@ -75,21 +53,10 @@ def apply_layer(path, files, *, merged_usr=False, checked_overlay=False):
             if pure.name.startswith(".wh."):
                 whiteouts.append((str(pure.parent / pure.name[4:]), False))
                 continue
-            kind = ("file" if member.isfile() else "directory" if member.isdir() else
-                    "symlink" if member.issym() else "hardlink" if member.islnk() else "other")
-            item = {"kind": kind, "mode": member.mode, "uid": member.uid, "gid": member.gid}
-            if kind in ("symlink", "hardlink"):
-                item["linkname"] = str(PurePosixPath(normalized.linkname))
-            if kind == "file":
-                stream = archive.extractfile(member)
-                prefix = stream.read(64)
-                hasher = hashlib.sha256(prefix)
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    hasher.update(chunk)
-                item.update(sha256=hasher.hexdigest(), size=member.size)
-                if prefix.startswith(b"\x7fELF"):
-                    require(len(prefix) >= 20 and prefix[:6] == b"\x7fELF\x02\x01", "expected little-endian ELF64: " + name)
-                    item["elf_type"], item["elf_machine"] = struct.unpack_from("<HH", prefix, 16)
+            item = metadata(normalized)
+            if member.isfile():
+                with archive.extractfile(member) as stream:
+                    item.update(file_metadata(stream, name))
             entries[name] = item
     if checked_overlay:
         require(not whiteouts, "added OCI layer contains a whiteout")

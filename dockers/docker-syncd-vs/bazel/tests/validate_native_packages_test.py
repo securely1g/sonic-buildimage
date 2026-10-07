@@ -123,7 +123,7 @@ class ValidateNativePackagesTest(unittest.TestCase):
         altered = self.root / "altered.debug"
         altered.write_bytes(self.symbols.read_bytes() + b"changed debug bytes")
         self.runtime_manifest, self.debug_manifest = self.handoffs(symbols=altered)
-        with self.assertRaisesRegex(ValueError, "debug-link filename or checksum differs"):
+        with self.assertRaisesRegex(ValueError, "debuglink CRC differs"):
             self.validate()
 
     def test_required_symbols_cannot_be_omitted(self):

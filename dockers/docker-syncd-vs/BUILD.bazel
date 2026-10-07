@@ -16,6 +16,12 @@ _COMPATIBLE_WITH = [
     "@platforms//os:linux",
 ]
 
+_VALIDATION_DEPS = [
+    "//tools/bazel/ci:artifact_validation",
+    "//tools/bazel/oci:oci_layout",
+]
+_TEST_DEPS = _VALIDATION_DEPS + ["//tools/bazel/tests:oci_base_fixture_lib"]
+
 oci_base_layout(
     name = "config_engine_base_layout",
     srcs = [
@@ -42,7 +48,7 @@ py_binary(
     srcs = ["bazel/validate_payloads.py"],
     main = "bazel/validate_payloads.py",
     visibility = ["//visibility:private"],
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = _VALIDATION_DEPS,
 )
 
 py_binary(
@@ -55,7 +61,7 @@ py_binary(
     ],
     main = "bazel/select_apt_payloads.py",
     visibility = ["//visibility:private"],
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = _VALIDATION_DEPS,
 )
 
 py_binary(
@@ -68,7 +74,7 @@ py_binary(
     ],
     main = "bazel/package_state_layer.py",
     visibility = ["//visibility:private"],
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = _VALIDATION_DEPS,
 )
 
 run_binary(
@@ -291,7 +297,7 @@ py_test(
         "bazel/validate_payloads.py",
     ],
     main = "bazel/tests/validate_payloads_test.py",
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = _TEST_DEPS,
 )
 
 py_test(
@@ -308,7 +314,7 @@ py_test(
         "//dockers/docker-base-trixie:dpkg_01_drop",
     ],
     main = "bazel/tests/validate_image_test.py",
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = _TEST_DEPS,
 )
 
 py_test(
@@ -321,7 +327,7 @@ py_test(
         "bazel/validate_payloads.py",
     ],
     main = "bazel/tests/select_apt_payloads_test.py",
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = _TEST_DEPS,
 )
 
 py_test(
@@ -344,7 +350,7 @@ py_test(
         "bazel/validate_payloads.py",
     ],
     main = "bazel/tests/package_state_layer_test.py",
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = _TEST_DEPS,
 )
 
 py_test(

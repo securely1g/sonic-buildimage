@@ -11,7 +11,9 @@ import tempfile
 import unittest
 
 OWNER = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
+from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 import validate_payloads as subject
 
 
@@ -27,11 +29,7 @@ class ValidatePayloadsTest(unittest.TestCase):
         package = "syncd-vs" if variant == "runtime" else "syncd-vs-dbgsym"
         payload = directory / "payload.tar"
         data = b"sample installed data\n"
-        with tarfile.open(payload, "w", format=tarfile.GNU_FORMAT) as archive:
-            entry = tarfile.TarInfo("usr/share/" + package + "/data")
-            entry.size = len(data)
-            entry.mode = 0o644
-            archive.addfile(entry, io.BytesIO(data))
+        payload.write_bytes(tar_entries([("usr/share/" + package + "/data", data, 0o644)]))
         digest = hashlib.sha256(payload.read_bytes()).hexdigest()
         record = {
             "package": package, "version": "1.0", "architecture": "amd64",
@@ -60,12 +58,6 @@ class ValidatePayloadsTest(unittest.TestCase):
 
     def merged_base(self, *, lib_target="usr/lib"):
         path = self.root / "base.oci"
-        blobs = path / "blobs/sha256"
-        blobs.mkdir(parents=True)
-        def blob(data, media_type):
-            digest = hashlib.sha256(data).hexdigest()
-            (blobs / digest).write_bytes(data)
-            return {"mediaType": media_type, "digest": "sha256:" + digest, "size": len(data)}
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w", format=tarfile.GNU_FORMAT) as archive:
             for name, value in subject.DIRECTORY_ALIASES.items():
@@ -76,13 +68,10 @@ class ValidatePayloadsTest(unittest.TestCase):
                 alias.type, alias.mode = tarfile.SYMTYPE, 0o777
                 alias.linkname = lib_target if name == "lib" else value["linkname"]
                 archive.addfile(alias)
-        layer = blob(data.getvalue(), "application/vnd.oci.image.layer.v1.tar")
-        config = blob(json.dumps({"architecture": "amd64", "os": "linux", "rootfs": {
-            "type": "layers", "diff_ids": [layer["digest"]]}}).encode(), "application/vnd.oci.image.config.v1+json")
-        manifest = blob(json.dumps({"schemaVersion": 2, "config": config, "layers": [layer]}).encode(),
-                        "application/vnd.oci.image.manifest.v1+json")
-        (path / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}')
-        (path / "index.json").write_text(json.dumps({"schemaVersion": 2, "manifests": [manifest]}))
+        layer = data.getvalue()
+        config = {"architecture": "amd64", "os": "linux",
+                  "rootfs": {"type": "layers", "diff_ids": [digest(layer)]}}
+        write_layout(path, oci_files(json.dumps(config).encode(), [layer]))
         return path
 
     def test_valid_payload_returns_exact_receipt(self):

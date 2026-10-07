@@ -2,7 +2,6 @@
 """Run the explicit syncd OCI contract tests without production image builds."""
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -14,6 +13,8 @@ sys.path.insert(0, str(OWNER))
 sys.path.insert(0, str(ROOT))
 import apt_lock
 from refresh_apt_lock import capture, inspect_actions, run
+from tools.bazel.ci import resolution
+from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.gzip.source_archive import check_versions
 
 TARGET_NAMES = [
@@ -26,16 +27,6 @@ TARGET_NAMES = [
     "validate_payloads_test",
 ]
 TARGETS = ["//dockers/docker-syncd-vs:" + name for name in TARGET_NAMES]
-
-
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def sha(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def source_hashes():
@@ -83,12 +74,9 @@ def main():
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, destination)
                 test_outputs.append(str(destination.relative_to(artifacts)))
-        graph = artifacts / "module-graph.json"
-        run([args.bazel, "mod", "graph", "--output=json"], artifacts / "module-graph.log", output_path=graph)
-        check_versions(graph)
+        resolution.collect(ROOT, artifacts, bazel=[args.bazel])
+        check_versions(artifacts / "module-graph.json")
         module_lock = ROOT / "MODULE.bazel.lock"
-        require(module_lock.is_file(), "Bazel did not generate MODULE.bazel.lock")
-        shutil.copyfile(module_lock, artifacts / "MODULE.bazel.lock")
         require(source_hashes() == before, "contract CI changed a checked source or package lock")
         report = {"schema": 1, "bazel_version": version, "targets": TARGETS, "test_outputs": test_outputs,
                   "source_hashes": before, "module_lock_sha256": sha(module_lock),

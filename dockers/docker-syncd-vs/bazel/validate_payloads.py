@@ -11,22 +11,13 @@ import sys
 import tarfile
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
+from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.oci.oci_layout import validate_layout
 
 FEATURES = {"include_vs_dash_sai": "y", "include_fips": "y", "enable_asan": "n", "enable_syncd_rpc": "n"}
 MERGED_USR = {"bin": "usr/bin", "lib": "usr/lib", "lib64": "usr/lib64", "sbin": "usr/sbin"}
 DIRECTORY_ALIASES = {name: {"linkname": target, "target": target} for name, target in MERGED_USR.items()}
 DIRECTORY_ALIASES["var/run"] = {"linkname": "/run", "target": "run"}
-
-
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def sha(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def normalized_path(value):
@@ -65,16 +56,13 @@ def normalized_member(member):
 
 
 def base_aliases(base):
-    validate_layout(base, "linux/amd64")
-    index = json.loads((base / "index.json").read_bytes())
-    descriptor = index["manifests"][0]
-    manifest = json.loads((base / "blobs/sha256" / descriptor["digest"][7:]).read_bytes())
+    descriptor, _, _, layers = validate_layout(base, "linux/amd64")
     targets = set(DIRECTORY_ALIASES) | {entry["target"] for entry in DIRECTORY_ALIASES.values()}
     observed = {}
-    for layer in manifest["layers"]:
+    for layer in layers:
         additions = {}
         removals = set()
-        with tarfile.open(base / "blobs/sha256" / layer["digest"][7:], "r:*") as archive:
+        with tarfile.open(layer, "r:*") as archive:
             for member in archive:
                 pure = PurePosixPath(member.name)
                 require(not pure.is_absolute() and ".." not in pure.parts, "unsafe OCI base path")

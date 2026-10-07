@@ -206,7 +206,10 @@ py_test(
         "prepare_oci_base_test.py",
         "//tools/bazel/oci:prepare_oci_base.py",
     ],
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:oci_layout",
+    ],
 )
 
 py_library(

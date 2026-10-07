@@ -2,49 +2,31 @@
 """Check that syncd APT assembly preserves locked content and base ELF files."""
 
 import hashlib
-import io
 import json
 from pathlib import Path
 import struct
 import sys
-import tarfile
 import tempfile
 import unittest
 
 OWNER = Path(__file__).absolute().parents[2]
+sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
+from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 import apt_lock
 import select_apt_payloads as subject
 import validate_payloads
 
 
 def tar_bytes(entries):
-    output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode="w", format=tarfile.GNU_FORMAT) as archive:
-        for name, data in entries:
-            item = tarfile.TarInfo(name)
-            item.size = len(data)
-            item.mode = 0o644
-            archive.addfile(item, io.BytesIO(data))
-    return output.getvalue()
+    return tar_entries((name, data, 0o644) for name, data in entries)
 
 
 def write_oci(path, entries):
-    blobs = path / "blobs/sha256"
-    blobs.mkdir(parents=True, exist_ok=True)
-    (path / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}\n')
-    def blob(data, media_type):
-        digest = hashlib.sha256(data).hexdigest()
-        (blobs / digest).write_bytes(data)
-        return {"mediaType": media_type, "digest": "sha256:" + digest, "size": len(data)}
-    data = tar_bytes(entries)
-    layer = blob(data, "application/vnd.oci.image.layer.v1.tar")
+    layer = tar_bytes(entries)
     config = {"architecture": "amd64", "os": "linux",
-              "rootfs": {"type": "layers", "diff_ids": ["sha256:" + hashlib.sha256(data).hexdigest()]}}
-    config_descriptor = blob(json.dumps(config).encode(), "application/vnd.oci.image.config.v1+json")
-    manifest = {"schemaVersion": 2, "config": config_descriptor, "layers": [layer]}
-    descriptor = blob(json.dumps(manifest).encode(), "application/vnd.oci.image.manifest.v1+json")
-    (path / "index.json").write_text(json.dumps({"schemaVersion": 2, "manifests": [descriptor]}))
+              "rootfs": {"type": "layers", "diff_ids": [digest(layer)]}}
+    write_layout(path, oci_files(json.dumps(config).encode(), [layer]))
 
 
 class SelectAptPayloadsTest(unittest.TestCase):

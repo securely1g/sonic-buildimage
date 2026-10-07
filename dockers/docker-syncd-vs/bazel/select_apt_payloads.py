@@ -9,20 +9,12 @@ import subprocess
 import sys
 import tarfile
 
+sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
 sys.path.insert(0, str(Path(__file__).absolute().parent))
+from tools.bazel.ci.artifact_validation import require, sha
 import apt_lock
 import validate_image
 import validate_payloads
-
-
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def sha(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def base_packages(layers):

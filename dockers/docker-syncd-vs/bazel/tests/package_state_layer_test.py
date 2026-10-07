@@ -2,7 +2,6 @@
 """Check generated package files against their locked owners and link targets."""
 
 import hashlib
-import io
 import json
 from pathlib import Path
 import struct
@@ -12,40 +11,22 @@ import tempfile
 import unittest
 
 OWNER = Path(__file__).absolute().parents[2]
+sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
+from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as tar_bytes, write_layout
 import apt_lock
 import package_state_layer as subject
 import validate_image
 import validate_payloads
 
 
-def tar_bytes(entries):
-    output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode="w", format=tarfile.GNU_FORMAT) as archive:
-        for name, data, mode in entries:
-            entry = tarfile.TarInfo(name)
-            entry.size = len(data)
-            entry.mode = mode
-            archive.addfile(entry, io.BytesIO(data))
-    return output.getvalue()
-
-
 def write_oci(path, entries):
-    blobs = path / "blobs/sha256"
-    blobs.mkdir(parents=True, exist_ok=True)
-    (path / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}\n')
-    def blob(data, media_type):
-        digest = hashlib.sha256(data).hexdigest()
-        (blobs / digest).write_bytes(data)
-        return {"mediaType": media_type, "digest": "sha256:" + digest, "size": len(data)}
-    data = tar_bytes(entries)
-    layer = blob(data, "application/vnd.oci.image.layer.v1.tar")
-    config = {"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": [layer["digest"]]}}
-    config_descriptor = blob(json.dumps(config).encode(), "application/vnd.oci.image.config.v1+json")
-    manifest = {"schemaVersion": 2, "config": config_descriptor, "layers": [layer]}
-    descriptor = blob(json.dumps(manifest).encode(), "application/vnd.oci.image.manifest.v1+json")
-    (path / "index.json").write_text(json.dumps({"schemaVersion": 2, "manifests": [descriptor]}))
-    return descriptor["digest"]
+    layer = tar_bytes(entries)
+    config = {"architecture": "amd64", "os": "linux",
+              "rootfs": {"type": "layers", "diff_ids": [digest(layer)]}}
+    files = oci_files(json.dumps(config).encode(), [layer])
+    write_layout(path, files)
+    return json.loads(files["index.json"])["manifests"][0]["digest"]
 
 
 class PackageStateLayerTest(unittest.TestCase):

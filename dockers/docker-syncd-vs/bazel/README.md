@@ -79,6 +79,24 @@ package therefore lives under `dockers/`. Its `legacy/` source symlinks point to
 the existing Dockerfile and startup files under `platform/vs/docker-syncd-vs`.
 Edit those original files; the Bazel inputs follow their contents.
 
+## Shared OCI build and test code
+
+The producer uses the same `oci_base_layout`, `sonic_layer`, `manifest_labels`,
+`oci_image`, `sonic_docker_archive`, and Make bridge as SWSS. The owner BUILD file
+supplies syncd's layer order, entrypoint, labels, and supported configuration.
+
+Both paths use `tools/bazel/oci/oci_layout.py` to validate and read OCI metadata.
+The shared `tools/bazel/ci/artifact_validation.py` supplies streamed file hashes,
+archive metadata, ELF headers, build IDs, DWARF checks, and debug-link checksums.
+Syncd adds its package ownership, overlay, SONAME, and preserved symbol-gap policy.
+Its CI uses the shared module-resolution collector, and its synthetic image tests
+use `tools/bazel/tests/oci_base_fixture.py` alongside the SWSS archive tests.
+
+The remaining syncd code checks the Make-produced package handoff, filters locked
+APT inputs against the base and Make packages, and reconstructs the reviewed
+package-generated state. SWSS consumes source-built tar layers and does not need
+those package contracts.
+
 ## Make package handoff
 
 `inputs.mk` uses the existing dependency-first `expand(...,RDEPENDS)` lists. It
