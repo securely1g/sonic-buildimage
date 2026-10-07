@@ -30,6 +30,9 @@ P4 packages do not enter `SONIC_MAKE_DEBS` or `SONIC_DERIVED_DEBS` in this profi
 so neither native compilation nor `LOAD_CACHE`/`SAVE_CACHE` runs for them.
 Installation dependencies remain intact. Other Make consumers retain the
 package-lock identity in their own dependency keys.
+When SBOM generation is enabled, each imported package records its pinned
+download URL and SHA256, without attributing it to the current native source
+checkout.
 
 Debug, profiling, ASAN, cross/QEMU, source-archive and other unsupported profiles
 keep their native rules. Switching back after an import fails with a specific
@@ -75,6 +78,8 @@ The integration verifier requires committed changes and exports fresh source
 trees without outputs or generated locks. It checks a cold fetch, a separate
 checkout and Bazel output base with repository downloads disabled, package
 metadata and native ELF architecture, and an action graph with no package
-generation. Missing cached bytes, corrupt bytes and incorrect pins must fail.
+generation. It also runs the production Make SBOM recipe on a restored package,
+checking its download URL, hash and source attribution without invoking a package
+producer. Missing cached bytes, corrupt bytes and incorrect pins must fail.
 It only modifies its own temporary cache. These tests validate importing and
 restoring existing packages; they do not recompile the native P4 chain.
