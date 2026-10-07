@@ -7,7 +7,7 @@ load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 load(":bazel/apt_packages.bzl", "SYNCD_DEBUG_APT_KEYS", "SYNCD_RUNTIME_APT_KEYS")
-load(":bazel/syncd_apt_layer.bzl", "syncd_apt_layer")
+load("@sonic_build_infra//apt:apt_layer.bzl", "apt_layer")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -17,6 +17,7 @@ _COMPATIBLE_WITH = [
 ]
 
 _VALIDATION_DEPS = [
+    "@sonic_build_infra//apt:lib",
     "//tools/bazel/ci:artifact_validation",
     "//tools/bazel/oci:oci_layout",
 ]
@@ -54,7 +55,6 @@ py_binary(
 py_binary(
     name = "select_apt_payloads",
     srcs = [
-        "bazel/apt_lock.py",
         "bazel/select_apt_payloads.py",
         "bazel/validate_image.py",
         "bazel/validate_payloads.py",
@@ -67,7 +67,6 @@ py_binary(
 py_binary(
     name = "package_state_layer",
     srcs = [
-        "bazel/apt_lock.py",
         "bazel/package_state_layer.py",
         "bazel/validate_image.py",
         "bazel/validate_payloads.py",
@@ -145,12 +144,14 @@ sonic_layer(
     ],
 )
 
-syncd_apt_layer(
+apt_layer(
     name = "selected_runtime_apt",
     base = ":config_engine_base_layout",
     hub = "@syncd_vs_debian//:packages",
+    dependency_set = "syncd_vs_debian",
+    selector = ":select_apt_payloads",
     lock = ":bazel/apt.lock.json",
-    make_manifest = "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
+    retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
     package_keys = SYNCD_RUNTIME_APT_KEYS,
     variant = "runtime",
 )
@@ -243,12 +244,14 @@ sonic_docker_archive(
     image = ":docker-syncd-vs",
 )
 
-syncd_apt_layer(
+apt_layer(
     name = "selected_debug_apt",
     base = ":docker-syncd-vs",
     hub = "@syncd_vs_debug_debian//:packages",
+    dependency_set = "syncd_vs_debug_debian",
+    selector = ":select_apt_payloads",
     lock = ":bazel/apt.lock.json",
-    make_manifest = "//:target/bazel-inputs/docker-syncd-vs/debug/manifest.json",
+    retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/debug/manifest.json",
     package_keys = SYNCD_DEBUG_APT_KEYS,
     variant = "debug",
 )
@@ -320,7 +323,6 @@ py_test(
 py_test(
     name = "select_apt_payloads_test",
     srcs = [
-        "bazel/apt_lock.py",
         "bazel/select_apt_payloads.py",
         "bazel/tests/select_apt_payloads_test.py",
         "bazel/validate_image.py",
@@ -332,18 +334,14 @@ py_test(
 
 py_test(
     name = "refresh_apt_lock_test",
-    srcs = [
-        "bazel/apt_lock.py",
-        "bazel/refresh_apt_lock.py",
-        "bazel/tests/refresh_apt_lock_test.py",
-    ],
-    main = "bazel/tests/refresh_apt_lock_test.py",
+    srcs = ["@sonic_build_infra//apt:tests/refresh_test.py"],
+    main = "@sonic_build_infra//apt:tests/refresh_test.py",
+    deps = ["@sonic_build_infra//apt:lib"],
 )
 
 py_test(
     name = "package_state_layer_test",
     srcs = [
-        "bazel/apt_lock.py",
         "bazel/package_state_layer.py",
         "bazel/tests/package_state_layer_test.py",
         "bazel/validate_image.py",
@@ -355,9 +353,13 @@ py_test(
 
 py_test(
     name = "apt_lock_check",
-    srcs = ["bazel/apt_lock.py"],
+    srcs = ["@sonic_build_infra//apt:python/sonic_apt/lock.py"],
     args = [
         "--check",
+        "--architecture=amd64",
+        "--label-prefix=SYNCD_",
+        "--group=runtime",
+        "--group=debug",
         "--lock",
         "$(location bazel/apt.lock.json)",
         "--output",
@@ -367,7 +369,8 @@ py_test(
         "bazel/apt.lock.json",
         "bazel/apt_packages.bzl",
     ],
-    main = "bazel/apt_lock.py",
+    main = "@sonic_build_infra//apt:python/sonic_apt/lock.py",
+    deps = ["@sonic_build_infra//apt:lib"],
 )
 
 py_test(

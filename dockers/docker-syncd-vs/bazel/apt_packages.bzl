@@ -1,4 +1,4 @@
-# Generated from apt.lock.json by apt_lock.py. Do not edit this label list.
+# Generated from apt.lock.json by sonic-build-infra //apt:lock. Do not edit.
 
 SYNCD_RUNTIME_APT_KEYS = [
     "/trixie-security/libc-ares-dev:amd64=1.34.5-1+deb13u1",

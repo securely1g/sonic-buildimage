@@ -14,7 +14,7 @@ import tarfile
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
 sys.path.insert(0, str(Path(__file__).absolute().parent))
 from tools.bazel.ci.artifact_validation import require, sha
-import apt_lock
+from sonic_apt import lock as apt_lock
 import validate_image
 import validate_payloads
 
@@ -84,7 +84,7 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
             "package state contract lacks reference identity")
     require(sha(dockerfile) == reference["legacy_dockerfile_sha256"], "legacy Dockerfile changed; review package state")
     require(contract.get("apt_lock_sha256") == sha(lock_path), "APT content lock changed; review package state")
-    locked = apt_lock.closure(json.loads(lock_path.read_bytes()), "runtime")
+    locked = apt_lock.closure(json.loads(lock_path.read_bytes()), "runtime", architecture="amd64")
     by_name = {}
     for package in locked.values():
         by_name.setdefault(package["name"], package)

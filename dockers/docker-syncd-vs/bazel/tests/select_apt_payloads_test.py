@@ -13,7 +13,7 @@ OWNER = Path(__file__).absolute().parents[2]
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
-import apt_lock
+from sonic_apt import lock as apt_lock
 import select_apt_payloads as subject
 import validate_payloads
 
@@ -144,14 +144,14 @@ class SelectAptPayloadsTest(unittest.TestCase):
             self.select()
         value["locked"].pop()
         self.mapping.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "declared syncd APT payloads differ"):
+        with self.assertRaisesRegex(ValueError, "declared APT payloads differ"):
             self.select()
 
     def test_foreign_locked_package_is_rejected(self):
         lock = json.loads(self.lock.read_bytes())
         lock["roots"]["runtime"].append("/trixie/foreign:arm64=1.0")
         with self.assertRaisesRegex(ValueError, "foreign architecture"):
-            apt_lock.closure(lock, "runtime")
+            apt_lock.closure(lock, "runtime", architecture="amd64")
 
     def test_identical_package_sources_are_deduplicated(self):
         lock = json.loads(self.lock.read_bytes())
@@ -178,7 +178,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.assertEqual(receipt["duplicate_sources"][0]["package"], "new-runtime")
         lock["packages"][duplicate_key]["sha256"] = "b" * 64
         with self.assertRaisesRegex(ValueError, "different versions or content"):
-            apt_lock.closure(lock, "runtime")
+            apt_lock.closure(lock, "runtime", architecture="amd64")
 
 
 if __name__ == "__main__":

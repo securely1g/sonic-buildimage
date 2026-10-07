@@ -139,6 +139,12 @@ runtime filesystem.
 
 ## Checked APT content
 
+The shared implementation is [infrastructure #27](https://github.com/securely1g/sonic-build-infra/pull/27),
+published by [registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45).
+While these dependencies are unmerged, the Draft consumer pins the same source
+commit explicitly. Remove its temporary `git_override` after the registry entry
+lands and verify normal module resolution before marking this PR ready.
+
 The root module declares separate runtime and debug APT sets using the same dated
 Trixie sources as SWSS. `apt.lock.json` records the direct and transitive package
 keys, reviewed source URLs and DEB hashes, and the exact data/control outputs
@@ -151,7 +157,9 @@ current public package-set output with that list and validates the content
 hashes before assembly. The source DEB hash and URL identify the reviewed import;
 the data/control hashes enforce the actual files this image consumes.
 
-`syncd_apt_layer.bzl` and `select_apt_payloads.py` then:
+`@sonic_build_infra//apt:apt_layer.bzl` and the shared `sonic_apt` library
+implement the reusable APT behavior. `select_apt_payloads.py` only adapts syncd's
+Make manifest and existing OCI inventory to that API. The shared implementation:
 
 1. Retain packages already supplied by the OCI base or the Make handoff.
 2. Reject a selected APT payload that changes a base ELF file.
@@ -168,8 +176,13 @@ that retained versions satisfy the added libraries and tools.
 To prepare a lock update, use a new artifact directory:
 
 ```sh
-python3 -B dockers/docker-syncd-vs/bazel/refresh_apt_lock.py \
-  --bazel bazel --artifacts artifacts/syncd-apt-candidate
+bazel run @sonic_build_infra//apt:refresh -- \
+  --lock "$PWD/dockers/docker-syncd-vs/bazel/apt.lock.json" \
+  --output "$PWD/dockers/docker-syncd-vs/bazel/apt_packages.bzl" \
+  --architecture amd64 --label-prefix SYNCD_ \
+  --dependency-set runtime=syncd_vs_debian \
+  --dependency-set debug=syncd_vs_debug_debian \
+  --bazel bazel --artifacts "$PWD/artifacts/syncd-apt-candidate"
 ```
 
 The helper checks the resolved rule version, package URLs and hashes, audits the
@@ -177,7 +190,10 @@ selected action graph, and builds only the existing data/control targets. It
 stops if that graph contains a DEB output or packaging wrapper. A changed lock is
 written as a candidate in the artifact directory. Review it, then rerun with a
 new artifact directory and `--update` to publish the checked lock and label list.
-`apt_lock.py --check` verifies the derived list without invoking Bazel.
+`//dockers/docker-syncd-vs:apt_lock_check` checks the derived list through the
+shared lock reader. Package lists, lock data, and the native package-state
+contract remain image-owned; reusable APT code and its unit tests live in
+`sonic-build-infra/apt` and are published through `sonic-bazel-registry`.
 
 ## Generated files and startup behavior
 
@@ -226,10 +242,12 @@ match its deployed ELF files.
 Run the direct helper tests with:
 
 ```sh
-python3 -B -m unittest discover -s dockers/docker-syncd-vs/bazel/tests -p '*_test.py' -v
-python3 -B dockers/docker-syncd-vs/bazel/apt_lock.py --check
+for test in prepare_packages_test.py validate_native_packages_test.py make_integration_test.py; do
+  python3 -B -m unittest discover -s dockers/docker-syncd-vs/bazel/tests -p "$test" -v
+done
 ```
 
+Tests that import the shared APT library run in the Bazel suite below.
 The direct suite creates sample DEBs with native `dpkg-deb` and compiles a small
 ELF with native tools. These commands run outside Bazel.
 

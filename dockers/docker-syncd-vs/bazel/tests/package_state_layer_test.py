@@ -14,7 +14,7 @@ OWNER = Path(__file__).absolute().parents[2]
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as tar_bytes, write_layout
-import apt_lock
+from sonic_apt import lock as apt_lock
 import package_state_layer as subject
 import validate_image
 import validate_payloads

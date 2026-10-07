@@ -43,7 +43,6 @@ jobs:
           git check-ignore MODULE.bazel.lock
           mkdir -p artifacts/syncd-vs
           git rev-parse HEAD > artifacts/syncd-vs/revision.txt
-          python3 -B dockers/docker-syncd-vs/bazel/apt_lock.py --check
           sha256sum dockers/docker-syncd-vs/bazel/apt.lock.json \
             dockers/docker-syncd-vs/bazel/runtime_package_state.json > artifacts/syncd-vs/input-locks.sha256
 
@@ -60,8 +59,9 @@ jobs:
         run: |
           set -euo pipefail
           # Sample DEBs are created here by native dpkg-deb, outside Bazel.
-          python3 -B -m unittest discover -s dockers/docker-syncd-vs/bazel/tests -p '*_test.py' -v \
-            2>&1 | tee artifacts/syncd-vs/direct-tests.log
+          for test in prepare_packages_test.py validate_native_packages_test.py make_integration_test.py; do
+            python3 -B -m unittest discover -s dockers/docker-syncd-vs/bazel/tests -p "$test" -v
+          done 2>&1 | tee artifacts/syncd-vs/direct-tests.log
 
       - name: Prepare only the registered Make manifests
         run: |

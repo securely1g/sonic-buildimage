@@ -11,8 +11,7 @@ OWNER = Path(__file__).absolute().parent
 ROOT = OWNER.parents[2]
 sys.path.insert(0, str(OWNER))
 sys.path.insert(0, str(ROOT))
-import apt_lock
-from refresh_apt_lock import capture, inspect_actions, run
+from tools.bazel.ci.bazel_commands import capture, inspect_actions, run
 from tools.bazel.ci import resolution
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.gzip.source_archive import check_versions
@@ -47,15 +46,13 @@ def main():
             require((ROOT / "target/bazel-manifests" / variant / "manifest.json").is_file(),
                     "prepare the syncd Make manifests before running contract CI")
         before = source_hashes()
-        require((OWNER / "apt_packages.bzl").read_text() == apt_lock.render(json.loads((OWNER / "apt.lock.json").read_bytes())),
-                "syncd APT label export differs from its checked content lock")
-        version = capture([args.bazel, "--version"], artifacts / "bazel-version.log")
-        require(version == "bazel " + apt_lock.BAZEL_VERSION, "unexpected Bazel version: " + version)
+        version = capture([args.bazel, "--version"], artifacts / "bazel-version.log", workspace=ROOT)
+        require(version == "bazel " + (ROOT / ".bazelversion").read_text().strip(), "unexpected Bazel version: " + version)
         actions = artifacts / "actions.raw.json"
         actions.touch(mode=0o600, exist_ok=False)
         try:
             run([args.bazel, "aquery"] + args.bazel_arg + ["deps(set(" + " ".join(TARGETS) + "))", "--output=jsonproto"],
-                artifacts / "actions.log", output_path=actions)
+                artifacts / "actions.log", workspace=ROOT, output_path=actions)
             audit = inspect_actions(actions)
         finally:
             # Publish the selected audit fields; action environments stay temporary.
@@ -64,7 +61,7 @@ def main():
         (artifacts / "execution-gate-audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
         require(not audit["deb_outputs"] and not audit["packaging_wrappers"], "contract tests contain a DEB or packaging wrapper action")
         run([args.bazel, "test"] + args.bazel_arg + ["--nocache_test_results", "--test_output=errors"] + TARGETS,
-            artifacts / "tests.log")
+            artifacts / "tests.log", workspace=ROOT)
         test_outputs = []
         for name in TARGET_NAMES:
             for filename in ("test.log", "test.xml"):
