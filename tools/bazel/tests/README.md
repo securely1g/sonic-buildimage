@@ -52,13 +52,14 @@ bazel test \
 ```
 
 `BUILD.bazel` declares the production helpers and generated files each check
-needs. CI selects the same tests explicitly and retains their logs and cache
-receipts. The [workflow](../../../.github/workflows/bazel-swss-oci.yml) supplies
-the supported native AMD64/ARM64 platform flags and execution dependencies.
+needs. CI selects the same tests explicitly and retains raw logs and cache
+records in the job workspace. The [workflow](../../../.github/workflows/bazel-swss-oci.yml)
+supplies the supported native AMD64/ARM64 platform flags and execution dependencies.
 The Python checks run both complete component test directories and install both
-source-built wheels. The native archive artifacts retain the wheels, hashes,
-required test logs/XML, collected test inventories and the installed-wheel
-receipt. Missing evidence or mismatched installed wheel hashes fail collection.
+source-built wheels. Public archive artifacts retain the wheels, hashes and
+extracted test counts/status. Collection still requires test logs/XML, collected
+test inventories and the installed-wheel receipt locally. Missing evidence or
+mismatched installed wheel hashes fail collection.
 The SWSS source job also selects these tests.
 The Make command prepares the SWSS JSON inputs consumed by `swss_render_test`.
 The same metadata preparation works on an ARM64 execution host; this helper
@@ -90,6 +91,7 @@ replacements; they do not build or boot a VS image.
 | [oci_base_make_test.py](oci_base_make_test.py) | Ensure Make prepares and revalidates each declared OCI base before its consumers, including parallel runtime/debug requests and changed archives with misleading timestamps. |
 | [p4rt_debug_test.py](p4rt_debug_test.py) | Require a populated AMD64 DWP that independently supplies matching function types and source lines in GDB. Reject empty, unrelated or malformed symbols and loose-DWO fallback. Fixtures compile ELF files without generating packages. |
 | [prepare_oci_base_test.py](prepare_oci_base_test.py) | Publish native OCI entries from Docker-save fixtures without changing source archives. Protect stable timestamps, prior readers, corruption recovery and concurrent publication. |
+| [public_artifacts_test.py](public_artifacts_test.py) | Select explicit public outputs and extract safe status summaries for success, failure and cancellation. Reject synthetic credentials, unsafe paths, incomplete results and changed sysmgr outputs without running Bazel. |
 | [python_packages_test.py](python_packages_test.py) | Retain direct or zipped Python test receipts and reject missing XML/inventories, wheel hashes that differ from the installation test, or results from another architecture. |
 | [resolution_test.py](resolution_test.py) | Require complete module-graph evidence and recognize only the explicitly supported extension diagnostics. Unknown, incomplete or mismatched failures remain fatal. |
 | [swss_ci_test.py](swss_ci_test.py) | Keep SWSS source selection in its CI caller and require the resolved source to provide its install declarations. |

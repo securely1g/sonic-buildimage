@@ -17,6 +17,24 @@ importing container-specific code.
 - `command_log.py` captures command output and timings while keeping diagnostic
   messages separate from queried artifact paths. Callers supply the working
   directory and evidence directory.
+- `public_artifacts.py` prepares explicit public upload lists for the archive,
+  SWSS source, VS and syncd contract jobs. Successful jobs retain their expected
+  build outputs and validated dependency JSON, plus summaries containing only
+  declared status, count, revision and hash fields. Failed jobs may retain only a
+  partial summary. The helper excludes raw command, Bazel event/execution and
+  test logs/XML from uploads; these records remain in the job workspace.
+  It rejects missing successful outputs, symlinked inputs, nonempty recorded
+  environments, diagnostic command fields, credential-bearing URLs, common token
+  formats and known host build or
+  cache paths. The owning build step remains responsible for validating binary
+  payloads. Update this helper's declared paths, test counts and receipt fields
+  with the owning workflow when its outputs change. The helper does not run a
+  build, and its direct tests use synthetic records only.
+  The sysmgr test/build modes retain a validated generated module lock and safe
+  test/package summaries. A successful build also retains its eight declared
+  runtime/debug outputs, checked against the producer's hashes and sizes.
+  Sysmgr command logs, raw build events/profiles, receipt diagnostics and the
+  text module graph remain local to the job workspace.
 - `python_packages.py` exports the config-engine and py-common wheels and retains
   source-suite logs/XML, collected-test inventories and the installed-wheel
   receipt. It requires matching wheel hashes, native architecture and Python
