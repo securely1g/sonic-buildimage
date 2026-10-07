@@ -12,7 +12,7 @@ bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.20")
-bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.2")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -28,7 +28,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-93b1a3766830ae61239683bb1868f6768b2ef470",
+    version = "0.0.15-d8f9396d1fcc792c78524c9693035a64ee8c8bd0",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -65,7 +65,7 @@ git_override(
 # Remove this exact source override after the module lands in the main registry.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "93b1a3766830ae61239683bb1868f6768b2ef470",
+    commit = "d8f9396d1fcc792c78524c9693035a64ee8c8bd0",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
@@ -86,7 +86,7 @@ single_version_override(
 
 single_version_override(
     module_name = "rules_distroless",
-    version = "0.9.4-sonic.1",
+    version = "0.9.4-sonic.2",
 )
 
 single_version_override(
@@ -188,44 +188,12 @@ register_toolchains("@bsd_tar_toolchains//:all")
 
 # The imported build infrastructure pins the Debian package snapshots.
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
-apt.install(
-    dependency_set = "orchagent_debian",
-    packages = [
-        "arping",
-        "bridge-utils",
-        "conntrack",
-        # Require the concrete Trixie implementation instead of virtual Provides.
-        "ifupdown (>= 0.8.44)",
-        "iproute2",
-        "iputils-ping",
-        "libgssrpc4t64",
-        "libjansson4",
-        "libjemalloc2",
-        "libkadm5clnt-mit12",
-        "libkadm5srv-mit12",
-        "libkdb5-10t64",
-        "libprotobuf-lite32t64",
-        "libteam5",
-        "libteamdctl0",
-        "libxml2",
-        "libyaml-cpp0.8",
-        "ndisc6",
-        "ndppd",
-        "pciutils",
-        "python3-click",
-        "python3-netifaces",
-        "python3-protobuf",
-        "tcpdump",
-    ],
-    suites = [
-        "trixie",
-        "trixie-updates",
-        "trixie-security",
-    ],
+apt.from_lock(
+    name = "orchagent_debian",
+    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
 )
-apt.install(
-    dependency_set = "orchagent_debug_debian",
-    packages = ["gdb", "gdbserver", "strace"],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+apt.from_lock(
+    name = "orchagent_debug_debian",
+    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
 )
 use_repo(apt, "orchagent_debian", "orchagent_debug_debian", "trixie")

@@ -49,13 +49,12 @@ def main():
     parser.add_argument("--retained-manifest", dest="policy", required=True, type=Path)
     parser.add_argument("--mapping", required=True, type=Path)
     parser.add_argument("--variant", required=True, choices=("runtime", "debug"))
-    parser.add_argument("--bsdtar", required=True)
-    parser.add_argument("--out-tar", required=True, type=Path)
+    parser.add_argument("--out-manifest", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
     args = parser.parse_args()
     try:
         selected, receipt = select(args.base, args.lock, args.policy, args.mapping, variant=args.variant)
-        selection.assemble(selected, args.out_tar, args.bsdtar)
+        args.out_manifest.write_text("".join(str(path) + "\n" for path in selected))
         args.receipt.parent.mkdir(parents=True, exist_ok=True)
         args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError) as error:

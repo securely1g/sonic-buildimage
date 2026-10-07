@@ -1,0 +1,44 @@
+# Explicit refresh inputs: replace this owner's two apt.from_lock tags with
+# these apt.install tags in a temporary clean checkout, then export the hub lock.
+
+apt.install(
+    dependency_set = "orchagent_debian",
+    packages = [
+        "arping",
+        "bridge-utils",
+        "conntrack",
+        # Require the concrete Trixie implementation instead of virtual Provides.
+        "ifupdown (>= 0.8.44)",
+        "iproute2",
+        "iputils-ping",
+        "libgssrpc4t64",
+        "libjansson4",
+        "libjemalloc2",
+        "libkadm5clnt-mit12",
+        "libkadm5srv-mit12",
+        "libkdb5-10t64",
+        "libprotobuf-lite32t64",
+        "libteam5",
+        "libteamdctl0",
+        "libxml2",
+        "libyaml-cpp0.8",
+        "ndisc6",
+        "ndppd",
+        "pciutils",
+        "python3-click",
+        "python3-netifaces",
+        "python3-protobuf",
+        "tcpdump",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+
+apt.install(
+    dependency_set = "orchagent_debug_debian",
+    packages = ["gdb", "gdbserver", "strace"],
+    suites = ["trixie", "trixie-updates", "trixie-security"],
+)

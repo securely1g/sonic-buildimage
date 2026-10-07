@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Use the maintained registry endpoint in the workspace rc.
-  BAZEL: bazel
+  # Temporary Draft registry selection while PRs #45/#46 publish the APT API.
+  BAZEL: ./tools/bazel/ci/draft_bazel.sh
 
 jobs:
   archive:
@@ -107,7 +107,6 @@ jobs:
             //tools/bazel/tests:prepare_oci_base_test \
             //tools/bazel/tests:oci_base_consumer_test \
             //dockers/docker-orchagent/bazel:select_apt_payloads_test \
-            //dockers/docker-orchagent/bazel:apt_lock_check \
             2>&1 | tee artifacts/archive/test.log
           output=$("$BAZEL" cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \

@@ -31,10 +31,14 @@ startup files remain unchanged. The runtime roots are the existing
 `orchagent_debian` list; debug roots remain `gdb`, `gdbserver` and `strace` in
 `orchagent_debug_debian`, using the same dated Debian repositories.
 
-`apt.lock.json` records the complete selected package sets, reviewed source DEB
-identities and the exact data/control bytes consumed by the layer. The derived
-`apt_packages.bzl` lists those checked targets. The rule validates the current
-Distroless outputs against the lock before assembling either layer.
+`apt.lock.json` is the canonical Distroless v2 lock with reviewed source DEB
+identities and exact data/control hashes and sizes. `apt.from_lock` imports the
+checked sets directly; normal image builds do not resolve them again.
+Distroless owns dependency closure, package imports, the public
+`@orchagent_debian//:package_set` provider, and tar assembly. The shared SONiC
+rule passes that provider to the owner selector, then invokes upstream `flatten`
+with its ordered selected-input manifest. Generated package-key lists and
+private repository-name adapters are unnecessary.
 
 The owner adapter preserves packages already installed in the base and rejects
 changes to its executable/shared-library files, including source-built runtime
@@ -66,24 +70,49 @@ consumer uses their exact source revision via a temporary `git_override`, while
 `.bazelrc` continues to use the registry's `main` URL. Remove the override and
 verify normal resolution after publication before marking this PR ready.
 
-To prepare a package-lock update in a clean Trixie build environment:
+The public Distroless API is supplied by
+[Distroless #1](https://github.com/securely1g/rules_distroless/pull/1) and
+[registry #46](https://github.com/securely1g/sonic-bazel-registry/pull/46).
+Until both registry entries land, reproduce Draft builds with
+`./tools/bazel/ci/draft_bazel.sh` wherever these examples use `bazel`.
+This explicit wrapper selects only the `codex/distroless-locked-apt` SONiC
+registry plus BCR, and imports the existing build settings. CI uses the same
+wrapper. The normal `.bazelrc` still selects `main`, which currently lacks the
+new Distroless version. The wrapper preserves the reviewed Make cache settings
+when `/bazel_cache` is mounted. Remove the Draft wrapper/rc, restore CI to
+`BAZEL=bazel`, remove the infrastructure source override, and validate normal
+resolution from `main` before marking the PR ready.
 
-```sh
-bazel run @sonic_build_infra//apt:refresh -- \
-  --lock "$PWD/dockers/docker-orchagent/bazel/apt.lock.json" \
-  --output "$PWD/dockers/docker-orchagent/bazel/apt_packages.bzl" \
-  --architecture amd64 --label-prefix ORCHAGENT_ \
-  --dependency-set runtime=orchagent_debian \
-  --dependency-set debug=orchagent_debug_debian \
-  --bazel bazel --artifacts "$PWD/artifacts/orchagent-apt-candidate"
-```
+To refresh packages, use a separate clean checkout and artifact directory:
 
-Review the generated candidate and run with a new artifact directory and
-`--update` to publish it. The shared helper audits the action graph and builds
-only existing data/control targets, stopping on DEB-producing outputs/wrappers.
-CI on native AMD64 and ARM64 runs `bazel:apt_lock_check` and the selector's
-negative regression tests using tar/OCI fixtures. Those tests do not establish
-ARM64 image support; the full SWSS image remains native AMD64.
+1. Replace this owner's two `apt.from_lock` declarations temporarily with the
+   checked `apt.install` declarations in `apt-resolve.MODULE.bazel`. Adjust only
+   the intended package roots or dated sources, then let Distroless resolve them.
+2. Export the public hub lock, without reading private extension state:
+
+   ```sh
+   mkdir -p artifacts/apt-candidate
+   bazel query @orchagent_debian//:lock.json
+   bazel cquery @orchagent_debian//:lock.json --output=files > artifacts/apt-candidate/lock-path.txt
+   cp "$(cat artifacts/apt-candidate/lock-path.txt)" artifacts/apt-candidate/apt.lock.json
+   ```
+
+3. Review the canonical dependency sets, source URLs, versions, checksums and
+   closure. Keep only this owner's runtime/debug sets and their complete package
+   closure. Preserve existing reviewed data/control hashes only when their source
+   package identity is unchanged. For changed imports, audit the selected action
+   graph before extracting the public provider's data/control files, then review
+   and record their actual SHA-256 values and sizes in the canonical packages.
+   Do not run DEB-producing actions as part of this refresh.
+4. Publish the reviewed canonical lock and restore `apt.from_lock`. Rebuild both
+   selected layers and validate their receipts against the intended base images.
+   Re-run owner policy tests and the installed loader/runtime checks for any
+   changed package or retained-version relationship.
+
+CI runs selector regressions on native AMD64 and ARM64 with tar/OCI fixtures.
+Those tests do not establish ARM64 image support; the complete image profile
+remains native AMD64. Canonical lock parsing and package-set provider behavior
+are validated by the upstream Distroless tests and actual AMD64 image actions.
 
 ## Startup configuration
 

@@ -15,7 +15,6 @@ OWNER = Path(__file__).absolute().parents[2]
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, layer_tar, write_layout
-from sonic_apt import lock as apt_lock
 from tools.bazel.oci.oci_inventory import assert_overlay_paths
 import select_apt_payloads as subject
 
@@ -60,15 +59,16 @@ class SelectAptPayloadsTest(unittest.TestCase):
                              "payload_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "payload_size": path.stat().st_size,
                              "control_sha256": hashlib.sha256(control.read_bytes()).hexdigest(), "control_size": control.stat().st_size}
             roots.append(key)
-            mapping.append({"key": key, "payload": str(path), "control": str(control)})
+            mapping.append({"key": key, "package": packages[key], "payload": str(path), "control": str(control)})
             self.paths[name], self.controls[name] = path, control
         self.lock = self.root / "apt.lock.json"
-        self.lock.write_text(json.dumps({"schema": 1, "bazel_version": apt_lock.BAZEL_VERSION,
-            "rules_distroless_version": apt_lock.DISTROLESS_VERSION, "roots": {"runtime": roots, "debug": roots},
+        self.lock.write_text(json.dumps({"version": 2, "facts": {},
+            "dependency_sets": {group: {"sets": {"amd64": dict(key.rsplit("=", 1) for key in roots)}}
+                                for group in ("runtime", "debug")},
             "sources": {"trixie": {"uris": ["https://snapshot.debian.org/archive/debian/20260727T143429Z"]}},
             "packages": packages}))
         self.mapping = self.root / "mapping.json"
-        self.mapping.write_text(json.dumps({"locked": mapping, "hub_paths": [str(path) for path in self.paths.values()]}))
+        self.mapping.write_text(json.dumps({"architecture": "amd64", "locked": mapping}))
         self.policy = self.root / "policy.json"
         self.policy.write_bytes((OWNER / "bazel/apt_policy.json").read_bytes())
 
@@ -85,8 +85,17 @@ class SelectAptPayloadsTest(unittest.TestCase):
         package = next(value for value in lock["packages"].values() if value["name"] == name)
         package.update(payload_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), payload_size=path.stat().st_size)
         self.lock.write_text(json.dumps(lock))
+        mapping = json.loads(self.mapping.read_bytes())
+        for item in mapping["locked"]:
+            item["package"] = lock["packages"][item["key"]]
+        self.mapping.write_text(json.dumps(mapping))
 
     def select(self):
+        value = json.loads(self.mapping.read_bytes())
+        packages = json.loads(self.lock.read_bytes())["packages"]
+        for item in value["locked"]:
+            item["package"] = packages[item["key"]]
+        self.mapping.write_text(json.dumps(value))
         return subject.select(self.base, self.lock, self.policy, self.mapping, variant="runtime")
 
     def test_base_packages_are_retained(self):
@@ -137,22 +146,19 @@ class SelectAptPayloadsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid orchagent APT policy"):
             self.select()
 
-    def test_current_hub_and_declared_content_must_match_the_lock(self):
+    def test_duplicate_provider_entries_are_rejected(self):
         value = json.loads(self.mapping.read_bytes())
-        value["hub_paths"].pop()
+        value["locked"].append(value["locked"][0])
         self.mapping.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "current Distroless package set differs"):
-            self.select()
-        value["locked"].pop()
-        self.mapping.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "declared APT payloads differ"):
+        with self.assertRaisesRegex(ValueError, "duplicate package in APT package set"):
             self.select()
 
-    def test_foreign_locked_package_is_rejected(self):
+    def test_foreign_provider_package_is_rejected(self):
         lock = json.loads(self.lock.read_bytes())
-        lock["roots"]["runtime"].append("/trixie/foreign:arm64=1.0")
+        next(iter(lock["packages"].values()))["architecture"] = "arm64"
+        self.lock.write_text(json.dumps(lock))
         with self.assertRaisesRegex(ValueError, "foreign architecture"):
-            apt_lock.closure(lock, "runtime", architecture="amd64")
+            self.select()
 
     def test_identical_package_sources_are_deduplicated(self):
         lock = json.loads(self.lock.read_bytes())
@@ -161,8 +167,9 @@ class SelectAptPayloadsTest(unittest.TestCase):
         duplicate = dict(lock["packages"][original_key])
         duplicate.update(suite="trixie-security", filename="pool/updates/new-runtime.deb")
         lock["packages"][duplicate_key] = duplicate
-        lock["roots"]["runtime"].append(duplicate_key)
-        lock["roots"]["debug"].append(duplicate_key)
+        for group in ("runtime", "debug"):
+            key, version = duplicate_key.rsplit("=", 1)
+            lock["dependency_sets"][group]["sets"]["amd64"][key] = version
         lock["sources"]["trixie-security"] = {"uris": ["https://snapshot.debian.org/archive/debian-security/20260726T121236Z"]}
         self.lock.write_text(json.dumps(lock))
         payload = self.root / "duplicate.tar"
@@ -170,16 +177,12 @@ class SelectAptPayloadsTest(unittest.TestCase):
         control = self.root / "duplicate.control"
         control.write_bytes(self.controls["new-runtime"].read_bytes())
         mapping = json.loads(self.mapping.read_bytes())
-        mapping["locked"].append({"key": duplicate_key, "payload": str(payload), "control": str(control)})
-        mapping["hub_paths"].append(str(payload))
+        mapping["locked"].append({"key": duplicate_key, "package": duplicate, "payload": str(payload), "control": str(control)})
         self.mapping.write_text(json.dumps(mapping))
         paths, receipt = self.select()
         self.assertEqual(len(paths), 1)
         self.assertEqual(len(receipt["duplicate_sources"]), 1)
         self.assertEqual(receipt["duplicate_sources"][0]["package"], "new-runtime")
-        lock["packages"][duplicate_key]["sha256"] = "b" * 64
-        with self.assertRaisesRegex(ValueError, "different versions or content"):
-            apt_lock.closure(lock, "runtime", architecture="amd64")
 
     def test_debug_tools_cannot_change_a_source_built_runtime_library(self):
         # Source-built SWSS payloads need not have a dpkg-status entry. Inspect
