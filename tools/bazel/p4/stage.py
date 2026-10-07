@@ -58,7 +58,7 @@ def validate_package(path, package):
 
 def stage(args):
     lock = load_lock()
-    if args.dash_sai_commit and args.dash_sai_commit != lock["source_revisions"]["dash_sai"]:
+    if args.dash_sai_commit is not None and args.dash_sai_commit != lock["source_revisions"]["dash_sai"]:
         raise ValueError("DASH source revision changed; rebuild outside Bazel and refresh the pins")
     if args.expected_package and set(args.expected_package) != {p["filename"] for p in lock["packages"]}:
         raise ValueError("Make selected different P4 package versions; refresh the pins")
