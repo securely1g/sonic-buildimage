@@ -5,7 +5,6 @@ load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
-load("//dockers/docker-orchagent/bazel:apt_packages.bzl", "ORCHAGENT_DEBUG_APT_KEYS", "ORCHAGENT_RUNTIME_APT_KEYS")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -43,12 +42,9 @@ oci_base_layout(
 apt_layer(
     name = "selected_runtime_apt",
     base = ":config_engine_base_layout",
-    hub = "@orchagent_debian//:packages",
-    dependency_set = "orchagent_debian",
+    package_set = "@orchagent_debian//:package_set",
     selector = "//dockers/docker-orchagent/bazel:select_apt_payloads",
-    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
     retained_manifest = "//dockers/docker-orchagent/bazel:apt_policy.json",
-    package_keys = ORCHAGENT_RUNTIME_APT_KEYS,
     variant = "runtime",
 )
 
@@ -114,12 +110,9 @@ debug_symbols_layer(
 apt_layer(
     name = "selected_debug_apt",
     base = ":docker-orchagent",
-    hub = "@orchagent_debug_debian//:packages",
-    dependency_set = "orchagent_debug_debian",
+    package_set = "@orchagent_debug_debian//:package_set",
     selector = "//dockers/docker-orchagent/bazel:select_apt_payloads",
-    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
     retained_manifest = "//dockers/docker-orchagent/bazel:apt_policy.json",
-    package_keys = ORCHAGENT_DEBUG_APT_KEYS,
     variant = "debug",
 )
 

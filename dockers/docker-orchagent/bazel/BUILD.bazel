@@ -2,7 +2,7 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 
 package(default_visibility = ["//dockers/docker-orchagent:__pkg__"])
 
-exports_files(["apt.lock.json", "apt_packages.bzl", "apt_policy.json"])
+exports_files(["apt.lock.json", "apt_policy.json"])
 
 _SELECTION_DEPS = [
     "@sonic_build_infra//apt:lib",
@@ -24,21 +24,4 @@ py_test(
     main = "tests/select_apt_payloads_test.py",
     data = ["apt_policy.json"],
     deps = _SELECTION_DEPS + ["//tools/bazel/tests:oci_base_fixture_lib"],
-)
-
-py_test(
-    name = "apt_lock_check",
-    srcs = ["@sonic_build_infra//apt:python/sonic_apt/lock.py"],
-    main = "@sonic_build_infra//apt:python/sonic_apt/lock.py",
-    args = [
-        "--check",
-        "--architecture=amd64",
-        "--label-prefix=ORCHAGENT_",
-        "--group=runtime",
-        "--group=debug",
-        "--lock", "$(location apt.lock.json)",
-        "--output", "$(location apt_packages.bzl)",
-    ],
-    data = ["apt.lock.json", "apt_packages.bzl"],
-    deps = ["@sonic_build_infra//apt:lib"],
 )
