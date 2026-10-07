@@ -103,9 +103,11 @@ registered outputs can also be requested as direct Make targets.
 Add the resulting `$(TARGET_PATH)/docker-example-base.oci` to the consuming
 container's `_BAZEL_DEPENDS` as in the [bridge example](../README.md#example-another-runtime-and-debug-archive).
 
-SWSS uses this interface to publish `target/docker-config-engine-trixie.oci`
+SWSS and syncd VS use this interface to publish `target/docker-config-engine-trixie.oci`
 from `target/docker-config-engine-trixie.gz`, with image platform `linux/amd64`.
-It remains the only production opt-in, supporting native AMD64 Trixie VS builds.
+Each owner keeps its own configuration guards. The syncd VS
+[owner guide](../../../dockers/docker-syncd-vs/bazel/README.md) records its
+image validation requirements and remaining runtime checks.
 The pinned Docker 28.5.2 saves both
 Docker metadata and an OCI layout in the same archive. Make extracts the existing
 OCI files without changing the index, config or layer bytes. Both outputs

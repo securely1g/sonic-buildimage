@@ -1,0 +1,92 @@
+name: Bazel syncd-vs OCI contracts
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bazel-syncd-vs-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Syncd OCI contracts (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            binutils build-essential ca-certificates git j2cli jq make python3 python3-jinja2 tar unzip zstd
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check source and dependency state
+        run: |
+          test "$(uname -m)" = x86_64
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+          mkdir -p artifacts/syncd-vs
+          git rev-parse HEAD > artifacts/syncd-vs/revision.txt
+          python3 -B dockers/docker-syncd-vs/bazel/apt_lock.py --check
+          sha256sum dockers/docker-syncd-vs/bazel/apt.lock.json \
+            dockers/docker-syncd-vs/bazel/runtime_package_state.json > artifacts/syncd-vs/input-locks.sha256
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: buildimage-syncd-vs-contracts-amd64
+          cache-version: "8.5.1"
+
+      - name: Check native handoff helpers
+        run: |
+          set -euo pipefail
+          # Sample DEBs are created here by native dpkg-deb, outside Bazel.
+          python3 -B -m unittest discover -s dockers/docker-syncd-vs/bazel/tests -p '*_test.py' -v \
+            2>&1 | tee artifacts/syncd-vs/direct-tests.log
+
+      - name: Prepare only the registered Make manifests
+        run: |
+          set -euo pipefail
+          make -f tools/bazel/prepare_manifests.mk \
+            MANIFEST_METADATA=platform/vs/docker-syncd-vs.mk \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
+            INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n DBG_IMAGE_MARK=dbg \
+            PLATFORM_PATH=platform/vs DOCKERS_PATH=dockers \
+            2>&1 | tee artifacts/syncd-vs/manifests.log
+
+      - name: Audit and run explicit Bazel contract tests
+        run: |
+          python3 -B dockers/docker-syncd-vs/bazel/ci.py --bazel bazel \
+            --artifacts artifacts/syncd-vs/bazel \
+            --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
+            --bazel-arg=--local_resources=memory=10000
+          git diff --exit-code
+
+      - name: Upload contract evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: syncd-vs-oci-contracts-amd64
+          path: artifacts/syncd-vs/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
