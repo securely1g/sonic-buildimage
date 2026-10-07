@@ -333,6 +333,8 @@ endif
 include $(PLATFORM_PATH)/rules.mk
 endif
 
+include tools/bazel/p4/inputs.mk
+
 ifeq ($(USERNAME),)
 override USERNAME := $(DEFAULT_USERNAME)
 else
@@ -889,6 +891,8 @@ SONIC_TARGET_LIST += $(addprefix $(PHONY_PATH)/, $(SONIC_PHONIES))
 ## Debian package related targets
 ###############################################################################
 
+include tools/bazel/p4/debs.mk
+
 # Build project using build.sh script
 # They are essentially a one-time build projects that get sources from some URL
 # and compile them
@@ -1074,6 +1078,7 @@ SONIC_TARGET_LIST += $(addprefix $(DEBS_PATH)/, $(SONIC_EXTRA_DEBS))
 
 # Targets for installing debian packages prior to build one that depends on them
 SONIC_INSTALL_DEBS = $(addsuffix -install,$(addprefix $(DEBS_PATH)/, \
+			$(SONIC_BAZEL_IMPORTED_DEBS) \
 			$(SONIC_ONLINE_DEBS) \
 			$(SONIC_COPY_DEBS) \
 			$(SONIC_MAKE_DEBS) \
@@ -2031,6 +2036,7 @@ SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS))
 ###############################################################################
 
 SONIC_CLEAN_DEBS = $(addsuffix -clean,$(addprefix $(DEBS_PATH)/, \
+		   $(SONIC_BAZEL_IMPORTED_DEBS) \
 		   $(SONIC_ONLINE_DEBS) \
 		   $(SONIC_COPY_DEBS) \
 		   $(SONIC_MAKE_DEBS) \
