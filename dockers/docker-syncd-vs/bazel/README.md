@@ -79,6 +79,32 @@ package therefore lives under `dockers/`. Its `legacy/` source symlinks point to
 the existing Dockerfile and startup files under `platform/vs/docker-syncd-vs`.
 Edit those original files; the Bazel inputs follow their contents.
 
+## Image build structure
+
+The top-level [`BUILD.bazel`](../BUILD.bazel) follows the same assembly stages as
+orchagent: supported configuration, checked base and Make labels, runtime inputs,
+runtime image and archive, debug inputs, and debug image and archive. Layer order,
+entrypoints, package lists, and output names stay visible in the image owner.
+
+[`bazel/BUILD.bazel`](BUILD.bazel) holds the Make-package validation actions,
+package-state action, and focused contract tests beside their source files. The
+existing image, archive, selection, intermediate-payload, tool, and contract-test labels
+in `//dockers/docker-syncd-vs` remain available. CI names the actual tests in
+`//dockers/docker-syncd-vs/bazel` and collects their logs from that package.
+
+The debug tools deliberately change five root-owned Vim alternatives from
+`/usr/bin/vim.tiny` to `/usr/bin/vim.basic`: `editor`, `ex`, `rview`, `vi`, and
+`view`. Complete-image validation allows only these exact symlink changes in
+the debug-tools layer, checks both AMD64 Vim binaries, and requires every
+inherited ELF to remain unchanged. All other inherited-link, parent-path and
+whiteout checks still use the shared inventory guard; APT selection has no such
+exception. The image report records the approved alternative paths.
+
+The input adapter is intentionally different from orchagent's source-built
+runtime tars and collected `DebugSymbolsInfo`: syncd consumes Make's checked
+package payload and its matching debug-package handoff. This assembly does not
+compile PI, BMv2, p4c, DASH SAI, or syncd from source with Bazel.
+
 ## Shared OCI build and test code
 
 The producer uses the same `oci_base_layout`, `sonic_layer`, `manifest_labels`,
@@ -86,6 +112,9 @@ The producer uses the same `oci_base_layout`, `sonic_layer`, `manifest_labels`,
 supplies syncd's layer order, entrypoint, labels, and supported configuration.
 
 Both paths use `tools/bazel/oci/oci_layout.py` to validate and read OCI metadata.
+`tools/bazel/oci/oci_inventory.py` supplies shared layer inventory, whiteout and
+parent-symlink and inherited ELF-link checks; syncd supplies its reviewed
+merged-usr path adapter.
 The shared `tools/bazel/ci/artifact_validation.py` supplies streamed file hashes,
 archive metadata, ELF headers, build IDs, DWARF checks, and debug-link checksums.
 Syncd adds its package ownership, overlay, SONAME, and preserved symbol-gap policy.
@@ -269,7 +298,8 @@ python3 -B dockers/docker-syncd-vs/bazel/ci.py --bazel bazel \
 ```
 
 The CI helper audits and runs seven explicit JSON, tar, OCI-fixture, lock, and
-manifest tests. It retains the selected execution audit fields, required test
+manifest tests from the owner subpackage. Its source-hash record includes both
+image and adapter BUILD files alongside the reviewed package locks. It retains the selected execution audit fields, required test
 logs, the generated `MODULE.bazel.lock`, and the module graph in the job workspace.
 Raw action JSON is temporary and is removed after the audit. The public workflow
 uses the shared [`public_artifacts.py`](../../../tools/bazel/ci/public_artifacts.py)
@@ -306,3 +336,29 @@ The current layer assembly does not execute Debian maintainer scripts, update
 the dpkg database, or regenerate loader/Python caches. The checked generated
 files cover the recorded runtime effects. Complete validation reports the
 remaining database, cache, unpacked-rootfs, and runtime checks explicitly.
+
+## Completion and cache evidence
+
+Treat each validation result according to the outputs it actually exercised:
+
+| Evidence | What it establishes |
+| --- | --- |
+| Contract suite | Input checks, lock/label consistency, fixture overlays, and failure behavior. |
+| Both real OCI images and exported archives | Base/runtime/debug ancestry, declared payloads, image settings, labels and Make-compatible archive identity. |
+| Unpacked images and native/runtime checks | Actual link application, SONAME/loading behavior, matching symbols and debugger lookup, and required service behavior. |
+| Full VS validation | Installer construction, guest boot and forwarding for the supported profile. |
+
+A successful contract suite does not complete the later rows. The package-manager
+and generated-cache gaps above remain explicit even when structural validation
+reports `complete` mode. Repeat image and runtime checks when imported package
+hashes change; reference-image hashes are comparison evidence, not proof of a
+fresh source build.
+
+The shared Make bridge and slave cache configuration apply here too:
+`SONIC_BAZEL_CACHE_SOURCE` supplies repository and action caches through
+`/bazel_cache`; each builder keeps its output directory private. Package input
+preparation preserves unchanged generations, and archive export preserves an
+unchanged output's timestamp. To claim cache reuse, record a cold build and a
+representative changed-input build with action evidence; an unchanged rerun alone
+does not establish which work was reused. Changing the Make/Bazel selector must
+invalidate the previous producer's output through the shared builder stamp.

@@ -29,12 +29,13 @@ TARGET_NAMES = [
     "validate_image_test",
     "validate_payloads_test",
 ]
-TARGETS = ["//dockers/docker-syncd-vs:" + name for name in TARGET_NAMES]
+TARGETS = ["//dockers/docker-syncd-vs/bazel:" + name for name in TARGET_NAMES]
 
 
 def source_hashes():
     return {str(path.relative_to(ROOT)): sha(path) for path in (
-        ROOT / "MODULE.bazel", OWNER / "apt.lock.json", OWNER / "apt_packages.bzl", OWNER / "runtime_package_state.json")}
+        ROOT / "MODULE.bazel", OWNER.parent / "BUILD.bazel", OWNER / "BUILD.bazel",
+        OWNER / "apt.lock.json", OWNER / "apt_packages.bzl", OWNER / "runtime_package_state.json")}
 
 
 def main():
@@ -70,7 +71,7 @@ def main():
         test_outputs = []
         for name in TARGET_NAMES:
             for filename in ("test.log", "test.xml"):
-                source = ROOT / "bazel-testlogs/dockers/docker-syncd-vs" / name / filename
+                source = ROOT / "bazel-testlogs/dockers/docker-syncd-vs/bazel" / name / filename
                 require(source.is_file() and source.stat().st_size > 0, "missing required test evidence: " + str(source))
                 destination = artifacts / "tests" / name / filename
                 destination.parent.mkdir(parents=True, exist_ok=True)

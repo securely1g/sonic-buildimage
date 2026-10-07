@@ -5,7 +5,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import sys
 import tarfile
@@ -13,7 +13,9 @@ import tarfile
 ROOT = Path(__file__).absolute().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).absolute().parent))
-from tools.bazel.ci.artifact_validation import file_metadata, metadata, path_name as member_name, require, sha
+from tools.bazel.ci.artifact_validation import path_name as member_name, require, sha
+from tools.bazel.oci import oci_inventory
+from tools.bazel.oci.oci_inventory import assert_overlay_paths
 from tools.bazel.oci.oci_layout import validate_layout
 import validate_payloads
 
@@ -22,52 +24,37 @@ def image(directory):
     return validate_layout(directory, "linux/amd64")
 
 
-def assert_overlay_paths(entries, files):
-    for name, item in entries.items():
-        require(not (item["kind"] == "directory" and files.get(name, {}).get("kind") == "symlink"),
-                "added OCI layer replaces a directory symlink: " + name)
-        parts = PurePosixPath(name).parts
-        for index in range(1, len(parts)):
-            parent = "/".join(parts[:index])
-            previous = entries.get(parent, files.get(parent))
-            require(previous is None or previous["kind"] == "directory",
-                    "added OCI layer path crosses a non-directory: " + name + " via " + parent)
-
-
 def apply_layer(path, files, *, merged_usr=False, checked_overlay=False):
+    return oci_inventory.apply_layer(
+        path, files, checked_overlay=checked_overlay,
+        normalize_member=validate_payloads.normalized_member if merged_usr else None)
+
+
+VIM_ALTERNATIVES = tuple("etc/alternatives/" + name for name in ("editor", "ex", "rview", "vi", "view"))
+
+
+def apply_debug_tools_layer(path, files):
+    """Allow the explicit Vim alternative update without changing inherited ELFs."""
     entries = {}
-    whiteouts = []
-    with tarfile.open(path, "r:*") as archive:
-        for member in archive:
-            if merged_usr:
-                normalized = validate_payloads.normalized_member(member)
-                if normalized is None:
-                    continue
-            else:
-                normalized = member
-            name = member_name(normalized.name)
-            pure = PurePosixPath(name)
-            if pure.name == ".wh..wh..opq":
-                whiteouts.append((str(pure.parent), True))
-                continue
-            if pure.name.startswith(".wh."):
-                whiteouts.append((str(pure.parent / pure.name[4:]), False))
-                continue
-            item = metadata(normalized)
-            if member.isfile():
-                with archive.extractfile(member) as stream:
-                    item.update(file_metadata(stream, name))
-            entries[name] = item
-    if checked_overlay:
-        require(not whiteouts, "added OCI layer contains a whiteout")
-        assert_overlay_paths(entries, files)
-    for name, opaque in whiteouts:
-        prefix = "" if name == "." else name + "/"
-        for current in list(files):
-            if current.startswith(prefix) or (not opaque and current == name):
-                del files[current]
-    files.update(entries)
-    return entries
+    apply_layer(path, entries)
+    old_link = {"kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0, "linkname": "/usr/bin/vim.tiny"}
+    new_link = dict(old_link, linkname="/usr/bin/vim.basic")
+    for name in VIM_ALTERNATIVES:
+        require(files.get(name) == old_link and entries.get(name) == new_link,
+                "unexpected debug Vim alternative: " + name)
+    inherited_vim = oci_inventory.resolve_path("usr/bin/vim.tiny", files)
+    require(files.get(inherited_vim, {}).get("elf_machine") == 62 and
+            entries.get("usr/bin/vim.basic", {}).get("elf_machine") == 62,
+            "debug Vim alternatives require the expected AMD64 binaries")
+    # Approve only those exact links, then check the entire original tar. The
+    # shared path/whiteout checks and APT selection policy remain unchanged.
+    checked = dict(files)
+    checked.update({name: entries[name] for name in VIM_ALTERNATIVES})
+    apply_layer(path, checked, checked_overlay=True)
+    assert_payload({name: item for name, item in files.items() if "elf_machine" in item},
+                   checked, "debug tools change an inherited ELF")
+    files.clear()
+    files.update(checked)
 
 
 def payloads(manifest_path, variant, runtime_manifest=None):
@@ -280,7 +267,10 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             apply_layer(layer, checked_files)
         for layer in runtime_layers[len(base_layers):]:
             apply_layer(layer, checked_files, checked_overlay=True)
-        for layer in debug_layers[len(runtime_layers):]:
+        added_debug_layers = debug_layers[len(runtime_layers):]
+        require(added_debug_layers, "debug image lacks the tools layer")
+        apply_debug_tools_layer(added_debug_layers[0], checked_files)
+        for layer in added_debug_layers[1:]:
             apply_layer(layer, checked_files, checked_overlay=True)
         validate_payloads.base_aliases(runtime_path)
         validate_payloads.base_aliases(debug_path)
@@ -312,6 +302,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         assert_payload(debug_overlay, debug_files, "debug OCI overlay payload")
         overlay_report = {"base_manifest_digest": base_descriptor["digest"], "runtime_entries": len(runtime_overlay),
                           "debug_entries": len(debug_overlay), "package_state_entries": len(state),
+                          "debug_vim_alternative_links": list(VIM_ALTERNATIVES),
                           "runtime_apt_selected": len(runtime_selection["selected"]),
                           "runtime_apt_skipped_base": len(runtime_selection["skipped_base"]),
                           "runtime_apt_skipped_make": len(runtime_selection["skipped_make"]),

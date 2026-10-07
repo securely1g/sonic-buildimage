@@ -181,3 +181,12 @@ On native ARM64 Trixie, also select
 `--platforms=@sonic_build_infra//platforms:aarch64_trixie` and
 `--host_platform=@sonic_build_infra//platforms:aarch64_trixie`. This test validates
 compression and archive structure; it does not build a production ARM64 image.
+
+## Inspect image layers
+
+`oci_inventory.py` applies layer metadata and OCI whiteouts to a filesystem
+inventory and checks that added package layers preserve inherited directory
+symlinks and links to ELF files. Link resolution uses the image inventory, never
+the build host filesystem. Image owners supply any reviewed legacy-path normalization as a
+callback. Syncd keeps its merged-usr/package policy in its owner adapter; the
+shared helper contains no image-specific package names or feature settings.

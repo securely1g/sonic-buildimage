@@ -217,7 +217,7 @@ class ValidateImageTest(unittest.TestCase):
     def test_checked_overlay_rejects_parent_symlink_changes(self):
         base = {"lib": {"kind": "symlink", "linkname": "usr/lib"},
                 "usr": {"kind": "directory"}, "usr/lib": {"kind": "directory"}}
-        with self.assertRaisesRegex(ValueError, "replaces a directory symlink"):
+        with self.assertRaisesRegex(ValueError, "changes a base directory link"):
             subject.assert_overlay_paths({"lib": {"kind": "directory"}}, base)
         with self.assertRaisesRegex(ValueError, "crosses a non-directory"):
             subject.assert_overlay_paths({"lib/library.so": {"kind": "file"}}, base)
@@ -229,6 +229,102 @@ class ValidateImageTest(unittest.TestCase):
                                          "usr/share/man/man1/example.1", "usr/lib/libexample.so")}
         self.assertEqual(set(subject.dpkg_filtered(files, ROOT)),
                          {"usr/share/doc/example/copyright", "usr/lib/libexample.so"})
+
+
+    def test_checked_overlay_preserves_links_to_inherited_elfs(self):
+        elf = {"kind": "file", "elf_machine": 62, "sha256": "a" * 64}
+        for kind, target in (("hardlink", "usr/lib/library.so.1"),
+                             ("symlink", "library.so.1"),
+                             ("symlink", "/usr/lib/library.so.1")):
+            with self.subTest(kind=kind, target=target):
+                link = {"kind": kind, "linkname": target}
+                base = {"usr/lib/library.so.1": elf, "usr/lib/library.so": link}
+                subject.assert_overlay_paths({"usr/lib/library.so": link}, base)
+                for replacement in ({**elf, "sha256": "b" * 64},
+                                    {"kind": "symlink", "linkname": "other.so"}):
+                    with self.assertRaisesRegex(ValueError, "changes a base ELF link"):
+                        subject.assert_overlay_paths({"usr/lib/library.so": replacement}, base)
+
+    def test_inherited_elf_links_resolve_image_directory_aliases(self):
+        base = {"lib": {"kind": "symlink", "linkname": "usr/lib"},
+                "usr/lib/library.so.1": {"kind": "file", "elf_machine": 62},
+                "usr/lib/library.so": {"kind": "symlink", "linkname": "/lib/library.so.1"},
+                "etc/cycle": {"kind": "symlink", "linkname": "cycle"}}
+        with self.assertRaisesRegex(ValueError, "changes a base ELF link"):
+            subject.assert_overlay_paths({"usr/lib/library.so": {"kind": "symlink", "linkname": "other.so"}}, base)
+        subject.assert_overlay_paths({"etc/cycle": {"kind": "file"}}, base)
+
+    def test_checked_overlay_preserves_directories_and_aliases_containing_elfs(self):
+        base = {"lib": {"kind": "symlink", "linkname": "usr/lib"},
+                "usr/lib": {"kind": "directory"},
+                "usr/lib/library.so.1": {"kind": "file", "elf_machine": 62}}
+        subject.assert_overlay_paths({"lib": base["lib"], "usr/lib": base["usr/lib"]}, base)
+        with self.assertRaisesRegex(ValueError, "changes a base directory link"):
+            subject.assert_overlay_paths({"lib": {"kind": "symlink", "linkname": "opt/lib"}}, base)
+        for kind in ("symlink", "file"):
+            with self.subTest(kind=kind):
+                with self.assertRaisesRegex(ValueError, "hides a base ELF directory"):
+                    subject.assert_overlay_paths({"usr/lib": {"kind": kind, "linkname": "elsewhere"}}, base)
+
+    def vim_tools(self, *, target="/usr/bin/vim.basic", uid=0, replace_binary=False, whiteout=False):
+        header = bytearray(64)
+        header[:6] = b"\x7fELF\x02\x01"
+        struct.pack_into("<HH", header, 16, 3, 62)
+        tiny = self.root / "vim-base.tar"
+        tiny.write_bytes(layer([("usr/bin/vim", bytes(header) + b"tiny", 0o755)]))
+        files = {}
+        subject.apply_layer(tiny, files)
+        files["usr/bin/vim.tiny"] = {"kind": "hardlink", "mode": 0o755, "uid": 0, "gid": 0,
+                                    "linkname": "usr/bin/vim"}
+        files.update({name: {"kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0,
+                             "linkname": "/usr/bin/vim.tiny"} for name in subject.VIM_ALTERNATIVES})
+        path = self.root / "vim-tools.tar"
+        with tarfile.open(path, "w") as archive:
+            for name in subject.VIM_ALTERNATIVES:
+                member = tarfile.TarInfo(name)
+                member.type, member.mode, member.uid, member.linkname = tarfile.SYMTYPE, 0o777, uid, target
+                archive.addfile(member)
+            binaries = [("usr/bin/vim.basic", bytes(header) + b"basic")]
+            if replace_binary:
+                binaries.append(("usr/bin/vim", bytes(header) + b"replacement"))
+            if whiteout:
+                binaries.append(("usr/bin/.wh.vim.tiny", b""))
+            for name, data in binaries:
+                member = tarfile.TarInfo(name)
+                member.mode, member.size = 0o755, len(data)
+                archive.addfile(member, io.BytesIO(data))
+        return path, files
+
+    def test_debug_vim_alternatives_allow_only_the_declared_link_change(self):
+        path, files = self.vim_tools()
+        old_binary = dict(files["usr/bin/vim.tiny"])
+        with self.assertRaisesRegex(ValueError, "changes a base ELF link"):
+            subject.apply_layer(path, dict(files), checked_overlay=True)
+        subject.apply_debug_tools_layer(path, files)
+        self.assertEqual(files["usr/bin/vim.tiny"], old_binary)
+        for name in subject.VIM_ALTERNATIVES:
+            self.assertEqual(files[name]["linkname"], "/usr/bin/vim.basic")
+
+    def test_debug_vim_alternatives_reject_other_targets_or_owners(self):
+        for kwargs in ({"target": "/usr/bin/other"}, {"uid": 1}):
+            with self.subTest(kwargs=kwargs):
+                path, files = self.vim_tools(**kwargs)
+                with self.assertRaisesRegex(ValueError, "unexpected debug Vim alternative"):
+                    subject.apply_debug_tools_layer(path, files)
+        path, files = self.vim_tools()
+        files["etc/alternatives/editor"]["linkname"] = "/usr/bin/other"
+        with self.assertRaisesRegex(ValueError, "unexpected debug Vim alternative"):
+            subject.apply_debug_tools_layer(path, files)
+
+    def test_debug_vim_policy_preserves_binary_and_whiteout_checks(self):
+        for kwargs, message in (({"replace_binary": True}, "change an inherited ELF"),
+                                ({"whiteout": True}, "contains a whiteout")):
+            with self.subTest(kwargs=kwargs):
+                path, files = self.vim_tools(**kwargs)
+                before = dict(files)
+                with self.assertRaisesRegex(ValueError, message):
+                    subject.apply_debug_tools_layer(path, files)
+                self.assertEqual(files, before)
 
 
 if __name__ == "__main__":

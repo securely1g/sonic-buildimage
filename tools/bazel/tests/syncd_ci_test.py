@@ -27,7 +27,8 @@ class ContractRunnerTest(unittest.TestCase):
         self.root = Path(temporary.name)
         self.owner = self.root / "dockers/docker-syncd-vs/bazel"
         self.owner.mkdir(parents=True)
-        for path in (self.root / "MODULE.bazel", self.owner / "apt.lock.json",
+        for path in (self.root / "MODULE.bazel", self.owner.parent / "BUILD.bazel",
+                     self.owner / "BUILD.bazel", self.owner / "apt.lock.json",
                      self.owner / "apt_packages.bzl", self.owner / "runtime_package_state.json"):
             path.write_text("checked input\n")
         (self.root / ".bazelversion").write_text("8.5.1\n")
