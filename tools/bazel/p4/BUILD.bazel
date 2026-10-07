@@ -1,0 +1,15 @@
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["packages.lock.json"])
+
+# These are verified external inputs, not outputs of a packaging action.
+filegroup(
+    name = "debs",
+    srcs = [
+        "@p4_prebuilt_bmv2//file",
+        "@p4_prebuilt_dash//file",
+        "@p4_prebuilt_dash_dev//file",
+        "@p4_prebuilt_p4c//file",
+        "@p4_prebuilt_pi//file",
+    ],
+)
