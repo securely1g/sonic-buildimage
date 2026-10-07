@@ -121,3 +121,16 @@ container boot, live service health or forwarding behavior.
 and Make export checks. [oci_base_fixture.py](oci_base_fixture.py) supplies native
 OCI/Docker-save inputs for base preparation and consumer checks. These are fixture
 generators, not additional test suites.
+
+## Kernel bundle checks
+
+`kernel_test.py` exercises the source and package verifier, the separate
+producer command, and the actual Make copy recipe. Run it with Python:
+
+```sh
+python3 -B tools/bazel/tests/kernel_test.py
+```
+
+The test creates small Debian packages with `dpkg-deb` outside Bazel. It is
+included in the existing Python discovery step and is not registered as a
+Bazel test target. It does not compile a kernel or validate an installer.

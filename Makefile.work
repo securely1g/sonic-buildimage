@@ -83,6 +83,10 @@
 #  *                 When disabled they fall back to the normal Make docker build.
 #  *                 Default: n
 #  *                 Values: y,n
+#  * SONIC_BAZEL_KERNEL_PACKAGES: Select the verified kernel bundle at
+#  *                 target/bazel-kernel-inputs for native AMD64 Trixie VS.
+#  *                 The wrapper selects it only for the Trixie slave phase;
+#  *                 empty keeps the existing kernel Make producer.
 #  * SONIC_BAZEL_CACHE_SOURCE: Host directory for persistent Bazel repository,
 #  *                 action and Bazelisk caches for all Bazel builds.
 #  *                 Default: $(SONIC_DPKG_CACHE_SOURCE)/bazel, independent of
@@ -786,6 +790,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 						   SBOM_STRICT=$(SBOM_STRICT) \
 						   SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 						   BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(BUILD_WITH_BAZEL_WHEN_AVAILABLE) \
+						   SONIC_BAZEL_KERNEL_PACKAGES=$(if $(filter trixie,$(BLDENV)),$(SONIC_BAZEL_KERNEL_PACKAGES)) \
                            $(SONIC_OVERRIDE_BUILD_VARS)
 
 .PHONY: sonic-slave-build sonic-slave-bash sonic-slave-run init reset
