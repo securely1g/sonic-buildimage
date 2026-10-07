@@ -204,11 +204,12 @@ exercise the Make OCI producer, Bazel base consumer and archive macro with tiny
 images. They verify unchanged base bytes, platform checks, reproducible gzip
 headers and bytes, Docker-save contents and the expected image tag without
 building Debian packages or needing Make outputs. Artifacts retain the fixture
-tar and gzip files, hashes, test results, generated module lock and resolved
-module graph. A separate cache regression builds the archive in two fresh
-checkouts with separate Bazel output bases and one new local disk cache. It checks
-cache hits and identical bytes, then changes a source input and requires a rebuild.
-Receipts and execution logs are retained with the archive evidence. See the [archive guide](../../../tools/bazel/oci/README.md#reproducible-docker-archives).
+tar and gzip files, hashes, summarized test results, generated module lock and
+resolved module graph. A separate cache regression builds the archive in two
+fresh checkouts with separate Bazel output bases and one new local disk cache. It
+checks cache hits and identical bytes, then changes a source input and requires
+a rebuild. Its public result retains action names, cache status and archive
+hashes. See the [archive guide](../../../tools/bazel/oci/README.md#reproducible-docker-archives).
 
 The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
 the Make handoff, OCI base publication, configuration rendering and package
@@ -219,9 +220,19 @@ test and checks the Debian path-filter rules. CI prepares manifests with Make
 before running the shared label actions and orchagent contract tests under Bazel.
 It verifies the source install
 inventory, installed bytes and modes, AMD64 ELF files, build IDs, DWARF and debug links. Its artifact
-includes the five tar files, hashes, command logs, build events, generated module
-lock and resolved module graph. CI starts without a module lock and rejects
-tracked input changes.
+includes the five tar files, hashes, summarized test and debug validation,
+generated module lock and resolved module graph. CI starts without a module lock
+and rejects tracked input changes.
+
+The shared [`public_artifacts.py`](../../../tools/bazel/ci/public_artifacts.py)
+step prepares each public upload. Bazel event records can include client
+environment values, so uploads use extracted status fields and explicit output
+paths. Raw command, event, execution and test logs/XML stay in the job workspace.
+Successful jobs retain validated outputs and dependency records. A failed job
+may retain only a partial status summary. Artifact preparation fails if a required
+successful output is missing or a selected record fails validation. The VS
+summary retains P4RT package/debug hashes, lookup counts and output sizes; the
+separate VS image and SWSS archive upload keeps its existing files.
 
 The `Make VS with Bazel SWSS (AMD64)` job builds the complete OCI
 archives and final VS image after the source-layer check succeeds. It runs

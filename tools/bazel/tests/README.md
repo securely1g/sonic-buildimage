@@ -52,13 +52,14 @@ bazel test \
 ```
 
 `BUILD.bazel` declares the production helpers and generated files each check
-needs. CI selects the same tests explicitly and retains their logs and cache
-receipts. The [workflow](../../../.github/workflows/bazel-swss-oci.yml) supplies
-the supported native AMD64/ARM64 platform flags and execution dependencies.
+needs. CI selects the same tests explicitly and retains raw logs and cache
+records in the job workspace. The [workflow](../../../.github/workflows/bazel-swss-oci.yml)
+supplies the supported native AMD64/ARM64 platform flags and execution dependencies.
 The Python checks run both complete component test directories and install both
-source-built wheels. The native archive artifacts retain the wheels, hashes,
-required test logs/XML, collected test inventories and the installed-wheel
-receipt. Missing evidence or mismatched installed wheel hashes fail collection.
+source-built wheels. Public archive artifacts retain the wheels, hashes and
+extracted test counts/status. Collection still requires test logs/XML, collected
+test inventories and the installed-wheel receipt locally. Missing evidence or
+mismatched installed wheel hashes fail collection.
 The SWSS source job also selects these tests.
 The Make command prepares the SWSS JSON inputs consumed by `swss_render_test`.
 The same metadata preparation works on an ARM64 execution host; this helper
