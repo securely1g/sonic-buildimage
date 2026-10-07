@@ -46,3 +46,12 @@ python3 -B tools/bazel/ci/verify_agent_cache.py \
 The workspace rc uses the [maintained registry selection](../README.md#registry-selection).
 Resolution receipts retain the actual registry URLs from the generated lock
 instead of inferring them from the default `.bazelrc`.
+
+## Public build evidence
+
+Container CI uses `public_artifacts.py` from the public upload work in
+[Image12](https://github.com/securely1g/sonic-buildimage/pull/12). It uploads
+explicit build outputs, checked dependency records, and summaries of build and
+test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
+out of public artifacts. A failed job publishes only a validated partial summary.
+The selector fails closed for unsafe dependency data or missing successful outputs.
