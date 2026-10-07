@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the pinned P4 package import with fresh checkouts and output bases.
 
-Only the private repository cache is shared. No DEB is generated, Make is never
-called, and the agent's existing build outputs or caches are not changed.
+Only the private repository cache is shared. Make only emits an SBOM fragment
+for an imported package. No DEB is generated, and the agent's existing build
+outputs or caches are not changed.
 """
 
 import argparse
@@ -108,6 +109,45 @@ def assert_no_actions(path):
     return {"registered_actions": 0, "target": TARGET}
 
 
+def verify_sbom(source, output, package, evidence):
+    """Exercise the production Make recipe and SBOM emitter on an existing DEB."""
+    macro = next(line for line in (source / "slave.mk").read_text().splitlines()
+                 if line.startswith("sbom_emit_fragment = "))
+    filename = package["filename"]
+    artifact = output / filename
+    makefile = evidence / "sbom.mk"
+    makefile.write_text("\n".join([
+        "SHELL := /bin/bash", ".ONESHELL:", ".SHELLFLAGS := -ec",
+        "ENABLE_SBOM := y", "SBOM_STRICT := y",
+        "CONFIGURED_PLATFORM := vs", "CONFIGURED_ARCH := amd64",
+        "DEBS_PATH := " + str(output),
+        "SONIC_BAZEL_P4_DEBS := " + filename,
+        "SONIC_BAZEL_P4_CANDIDATES := " + filename,
+        # Native metadata remains present: the imported recipe must not use it
+        # to claim that the current checkout produced these historical bytes.
+        filename + "_SRC_PATH := src/p4lang",
+        macro, "include tools/bazel/p4/debs.mk", "",
+    ]))
+    # The package was already fetched and verified. Run its actual metadata
+    # recipe while treating the import prerequisite as already complete.
+    command = ["make", "--no-print-directory", "-B", "-o", "bazel-p4-import",
+               "-f", str(makefile), str(artifact)]
+    run(command, source, evidence / "sbom.log")
+    fragment_path = Path(str(artifact) + ".cdx.json")
+    fragment = json.loads(fragment_path.read_text())
+    component = next(item for item in fragment["components"] if item["name"] == package["name"])
+    if component.get("externalReferences") != [{"type": "distribution", "url": package["url"]}]:
+        raise ValueError("P4 SBOM did not record the pinned package URL")
+    if component.get("hashes") != [{"alg": "SHA-256", "content": package["sha256"]}]:
+        raise ValueError("P4 SBOM did not record the imported package hash")
+    properties = {item["name"]: item["value"] for item in component["properties"]}
+    if "sonic:src_path" in properties or "sonic:submodule_commit" in properties or "pedigree" in component:
+        raise ValueError("P4 SBOM incorrectly attributed imported bytes to the current checkout")
+    shutil.copyfile(fragment_path, evidence / "p4-package.cdx.json")
+    return {"filename": filename, "distribution_url": package["url"],
+            "sha256": package["sha256"], "native_source_attribution": False}
+
+
 def phase(args, work, name, cache, *, offline=False, success=True, change_lock=None):
     source = work / (name + "-checkout")
     checkout(ROOT, source)
@@ -139,6 +179,7 @@ def phase(args, work, name, cache, *, offline=False, success=True, change_lock=N
         return receipt
     receipt["packages"] = [package_details(output / item["filename"], item,
                                           lock["architecture"]) for item in lock["packages"]]
+    receipt["sbom"] = verify_sbom(source, output, lock["packages"][0], evidence)
     command = [wrapper, "aquery", "--output=jsonproto", "--lockfile_mode=update",
                "--repository_cache=" + str(cache / "repository_cache"),
                "--disk_cache=", "--remote_cache=", "--remote_executor=", TARGET]
@@ -178,7 +219,9 @@ def verify(args, work):
                   ["git", "show", "-s", "--format=%P", "HEAD"], cwd=ROOT, text=True).split(),
               "github_sha": os.environ.get("GITHUB_SHA"),
               "architecture": platform.machine(), "target": TARGET,
-              "package_count": len(lock["packages"]), "make_invoked": False,
+              "package_count": len(lock["packages"]), "make_invoked": True,
+              "make_scope": "SBOM emission only; package import prerequisite skipped",
+              "native_package_producer_invoked": False,
               "phases": {}}
     result["phases"]["cold"] = phase(args, work, "cold", cache)
     result["phases"]["warm"] = phase(args, work, "warm", cache, offline=True)
