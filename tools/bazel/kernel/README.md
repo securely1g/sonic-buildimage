@@ -1,5 +1,16 @@
 # Kernel bundle handoff
 
+The `Bazel kernel bundle` PR check builds this source bundle on native AMD64,
+stages it into the Make input directory, and verifies the staged copy. Its
+artifact collector checks the four packages, source manifest and handoff
+provenance, then uploads the four packages and a fixed validation summary.
+The summary identifies the source commits and hashes the complete generated
+module lock, module graph, tools source record, manifest and handoff provenance.
+Complete metadata and raw diagnostics remain in private runner scratch; a
+durable private destination for those records remains required. These public
+artifacts are not the six-file installer handoff. Installer assembly and guest
+validation are separate.
+
 The kernel bundle producer connects the existing source-owned
 `@sonic_linux_kernel//:kernel_packages` target to the current Make VS build.
 It supports native Linux AMD64 execution, Debian Trixie, AMD64 VS, unsigned

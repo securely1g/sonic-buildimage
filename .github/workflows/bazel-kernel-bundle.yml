@@ -1,0 +1,78 @@
+name: Bazel kernel bundle
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bazel-kernel-bundle-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  kernel-bundle:
+    name: Kernel source bundle and Make handoff (AMD64)
+    # The current Draft validation grant covers the kernel integration PR.
+    if: github.event_name != 'pull_request' || github.event.pull_request.number == 6
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize the pinned kernel source
+        run: git submodule update --init -- src/sonic-linux-kernel
+      - name: Check the producer and artifact contracts
+        run: |
+          python3 -B tools/bazel/tests/kernel_test.py
+          python3 -B tools/bazel/tests/public_artifacts_test.py
+          python3 -B tools/bazel/tests/kernel_artifacts_test.py
+      - name: Allocate space on this disposable runner
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          python3 - <<'PY'
+          import os, shutil
+          if shutil.disk_usage(os.environ['RUNNER_TEMP']).free < 45 * 2**30:
+              raise SystemExit('Kernel source validation requires 45 GiB free scratch space')
+          PY
+      - name: Build and verify the exact kernel source bundle
+        run: |
+          umask 077
+          if python3 -B tools/bazel/ci/kernel.py build \
+            --state-dir "$RUNNER_TEMP/kernel-bundle-state" --draft-registry \
+            > "$RUNNER_TEMP/kernel-bundle-build.log" 2>&1; then
+            echo 'Kernel source bundle verification passed.'
+          else
+            status=$?
+            echo "Kernel source bundle failed with exit code $status."
+            exit "$status"
+          fi
+      - name: Stage and verify the Make input directory
+        run: |
+          umask 077
+          python3 -B tools/bazel/ci/kernel.py stage \
+            --bundle "$RUNNER_TEMP/kernel-bundle-state/bundle" \
+            > "$RUNNER_TEMP/kernel-bundle-stage.log" 2>&1
+          python3 -B tools/bazel/ci/kernel.py verify \
+            --bundle target/bazel-kernel-inputs \
+            > "$RUNNER_TEMP/kernel-bundle-verify.log" 2>&1
+      - name: Select verified packages and a public validation summary
+        id: artifacts
+        run: |
+          umask 077
+          python3 -B tools/bazel/ci/kernel_artifacts.py \
+            --state-dir "$RUNNER_TEMP/kernel-bundle-state" \
+            --output "$RUNNER_TEMP/kernel-bundle-artifacts" \
+            > "$RUNNER_TEMP/kernel-bundle-collection.log" 2>&1
+      - name: Retain verified packages and the validation summary
+        if: success() && steps.artifacts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kernel-source-bundle-amd64
+          retention-days: 7
+          if-no-files-found: error
+          path: ${{ runner.temp }}/kernel-bundle-artifacts
