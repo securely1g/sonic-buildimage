@@ -5,7 +5,7 @@ With `y`, containers that register Bazel targets for the selected build
 configuration use Bazel. Other containers keep their existing Make build.
 With `n`, all containers use Make.
 
-SWSS is currently the only container registered for Bazel. On native AMD64
+For SWSS on native AMD64
 Debian Trixie with `PLATFORM=vs` and ASAN disabled, the switch makes Bazel compile
 SWSS and assemble its runtime and debug OCI images. Other SWSS configurations
 continue to use Make, even with the switch set to `y`.
@@ -22,6 +22,68 @@ create Debian packages in this path.
 Make selects the builder before starting the build. Missing or invalid metadata
 for a selected Bazel target, a missing Bazel executable, or a Bazel build failure
 fails the build; it does not trigger a retry with Make.
+
+## Checked APT layers
+
+Runtime and debug package files use the shared
+`@sonic_build_infra//apt:apt_layer.bzl` rule. The component runtime targets and
+startup files remain unchanged. The runtime roots are the existing
+`orchagent_debian` list; debug roots remain `gdb`, `gdbserver` and `strace` in
+`orchagent_debug_debian`, using the same dated Debian repositories.
+
+`apt.lock.json` records the complete selected package sets, reviewed source DEB
+identities and the exact data/control bytes consumed by the layer. The derived
+`apt_packages.bzl` lists those checked targets. The rule validates the current
+Distroless outputs against the lock before assembling either layer.
+
+The owner adapter preserves packages already installed in the base and rejects
+changes to its executable/shared-library files, including source-built runtime
+libraries when adding debug tools. Identical packages from multiple repositories
+are included once. Non-binary file replacements are recorded for review. It
+rejects package paths traversing inherited directory symlinks.
+
+Orchagent has no Make-produced native DEB handoff: its component payloads come
+from source-owned Bazel targets. `apt_policy.json` declares that supported image
+profile and empty retained-package list. Runtime APT selection reads the checked
+config-engine base; debug selection reads the exact completed orchagent runtime.
+The native payload and its `DebugSymbolsInfo` remain in the normal source graph.
+
+The `runtime_apt_selection` and `debug_apt_selection` targets expose JSON reports
+with the base digest, lock/policy hashes, selected packages, retained versions,
+duplicates and changed non-binary paths. Both variants still use `sonic_layer`
+for Make's file filtering and `sonic_docker_archive` for the existing archive
+outputs. The Make owner also exposes each complete OCI target for consumers
+that need an image directory.
+
+Retention does not solve new dependencies against the retained versions.
+Verify native library loading and service behavior for the actual base/image
+pair. This action assembles existing package files: it does not run maintainer
+scripts, update the dpkg database or regenerate loader/Python caches. Source
+symbols still require the existing exact-runtime validation.
+
+The shared rule is pending infrastructure PR #27 and registry PR #45. This Draft
+consumer uses their exact source revision via a temporary `git_override`, while
+`.bazelrc` continues to use the registry's `main` URL. Remove the override and
+verify normal resolution after publication before marking this PR ready.
+
+To prepare a package-lock update in a clean Trixie build environment:
+
+```sh
+bazel run @sonic_build_infra//apt:refresh -- \
+  --lock "$PWD/dockers/docker-orchagent/bazel/apt.lock.json" \
+  --output "$PWD/dockers/docker-orchagent/bazel/apt_packages.bzl" \
+  --architecture amd64 --label-prefix ORCHAGENT_ \
+  --dependency-set runtime=orchagent_debian \
+  --dependency-set debug=orchagent_debug_debian \
+  --bazel bazel --artifacts "$PWD/artifacts/orchagent-apt-candidate"
+```
+
+Review the generated candidate and run with a new artifact directory and
+`--update` to publish it. The shared helper audits the action graph and builds
+only existing data/control targets, stopping on DEB-producing outputs/wrappers.
+CI on native AMD64 and ARM64 runs `bazel:apt_lock_check` and the selector's
+negative regression tests using tar/OCI fixtures. Those tests do not establish
+ARM64 image support; the full SWSS image remains native AMD64.
 
 ## Startup configuration
 

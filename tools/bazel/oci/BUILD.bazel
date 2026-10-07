@@ -2,6 +2,12 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
+py_library(
+    name = "oci_inventory",
+    srcs = ["oci_inventory.py"],
+    deps = ["//tools/bazel/ci:artifact_validation"],
+)
+
 exports_files(["prepare_oci_base.py"])
 
 py_library(

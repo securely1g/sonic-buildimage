@@ -43,6 +43,26 @@ def metadata(member):
     return result
 
 
+def elf_header(prefix, name):
+    """Inspect the common ELF header without reading the rest of a file."""
+    if not prefix.startswith(b"\x7fELF"):
+        return {}
+    require(len(prefix) >= 20 and prefix[:6] == b"\x7fELF\x02\x01", "expected little-endian ELF64: " + name)
+    elf_type, elf_machine = struct.unpack_from("<HH", prefix, 16)
+    return {"elf_type": elf_type, "elf_machine": elf_machine}
+
+
+def file_metadata(stream, name):
+    """Hash a file stream in bounded memory and record its ELF header when present."""
+    prefix = stream.read(64)
+    hasher = hashlib.sha256(prefix)
+    size = len(prefix)
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        hasher.update(chunk)
+        size += len(chunk)
+    return {"sha256": hasher.hexdigest(), "size": size, **elf_header(prefix, name)}
+
+
 def payload(path, require_root=True):
     result = {}
     with tarfile.open(path) as archive:
