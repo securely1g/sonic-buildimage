@@ -1,7 +1,6 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//apt:apt_layer.bzl", "apt_layer")
 load("@tar.bzl", "tar")
-load("//dockers/docker-syncd-vs/bazel:apt_packages.bzl", "SYNCD_DEBUG_APT_KEYS", "SYNCD_RUNTIME_APT_KEYS")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
@@ -52,12 +51,9 @@ manifest_labels(
 apt_layer(
     name = "selected_runtime_apt",
     base = ":config_engine_base_layout",
-    hub = "@syncd_vs_debian//:packages",
-    dependency_set = "syncd_vs_debian",
+    package_set = "@syncd_vs_debian//:package_set",
     selector = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
-    lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
     retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
-    package_keys = SYNCD_RUNTIME_APT_KEYS,
     variant = "runtime",
 )
 
@@ -146,12 +142,9 @@ sonic_layer(
 apt_layer(
     name = "selected_debug_apt",
     base = ":docker-syncd-vs",
-    hub = "@syncd_vs_debug_debian//:packages",
-    dependency_set = "syncd_vs_debug_debian",
+    package_set = "@syncd_vs_debug_debian//:package_set",
     selector = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
-    lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
     retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/debug/manifest.json",
-    package_keys = SYNCD_DEBUG_APT_KEYS,
     variant = "debug",
 )
 
@@ -224,18 +217,8 @@ alias(
 )
 
 alias(
-    name = "refresh_apt_lock_test",
-    actual = "//dockers/docker-syncd-vs/bazel:refresh_apt_lock_test",
-)
-
-alias(
     name = "package_state_layer_test",
     actual = "//dockers/docker-syncd-vs/bazel:package_state_layer_test",
-)
-
-alias(
-    name = "apt_lock_check",
-    actual = "//dockers/docker-syncd-vs/bazel:apt_lock_check",
 )
 
 alias(

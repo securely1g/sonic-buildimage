@@ -178,55 +178,73 @@ While these dependencies are unmerged, the Draft consumer pins the same source
 commit explicitly. Remove its temporary `git_override` after the registry entry
 lands and verify normal module resolution before marking this PR ready.
 
-The root module declares separate runtime and debug APT sets using the same dated
-Trixie sources as SWSS. `apt.lock.json` records the direct and transitive package
-keys, reviewed source URLs and DEB hashes, and the exact data/control outputs
-consumed by this image. `apt_packages.bzl` is a derived label list.
+The root module imports separate runtime and debug package sets with
+Distroless `apt.from_lock`. `apt.lock.json` is the canonical Distroless v2 lock:
+it records direct and transitive packages, dated source repositories, source
+DEB identities, and the reviewed data/control hashes and sizes. Normal builds
+consume this lock directly and do not resolve those package sets again.
 
-With Bazel 8.5.1, the selected Distroless extension uses its facts API and does
-not consume its older `apt.lock` tag. The image therefore consumes existing
-Distroless `data` and `control` targets by their checked keys. It compares the
-current public package-set output with that list and validates the content
-hashes before assembly. The source DEB hash and URL identify the reviewed import;
-the data/control hashes enforce the actual files this image consumes.
+Distroless owns dependency closure, package imports, the public
+`@syncd_vs_debian//:package_set` provider, and tar assembly. The shared
+`@sonic_build_infra//apt:apt_layer.bzl` rule passes the provider to the owner
+selector, then calls upstream `flatten` with its selected-input manifest.
+There are no generated package-key lists or private repository-name adapters.
 
-`@sonic_build_infra//apt:apt_layer.bzl` and the shared `sonic_apt` library
-implement the reusable APT behavior. `select_apt_payloads.py` only adapts syncd's
-Make manifest and existing OCI inventory to that API. The shared implementation:
-
-1. Retain packages already supplied by the OCI base or the Make handoff.
-2. Reject a selected APT payload that changes a base ELF file.
-3. Include a byte-identical package once when two suites supply it, while keeping
-   both source records in the lock.
-4. Record selected packages, retained versions, duplicate sources, and changed
-   non-ELF base paths for review.
+`select_apt_payloads.py` adapts syncd's Make manifest and OCI inventory to the
+SONiC policy checks. These preserve base and Make packages, reject changed ELF
+files and unsafe inherited links, deduplicate identical imports, and report
+changed non-ELF paths. Its receipt binds the exact canonical lock, base manifest,
+Make handoff, and actual extracted content hashes. The reviewed hashes in the
+lock are checked even for packages retained from the base or Make handoff.
 
 Runtime selection checks the managed config-engine base. Debug selection checks
 the exact runtime OCI image and the debug Make handoff. This keeps Debian copies
 from replacing FIPS and SONiC-patched libraries. Complete validation must confirm
 that retained versions satisfy the added libraries and tools.
 
-To prepare a lock update, use a new artifact directory:
+The public Distroless API is supplied by
+[Distroless #1](https://github.com/securely1g/rules_distroless/pull/1) and
+[registry #46](https://github.com/securely1g/sonic-bazel-registry/pull/46).
+Until both registry entries land, reproduce Draft builds with
+`./tools/bazel/ci/draft_bazel.sh` wherever these examples use `bazel`.
+This explicit wrapper selects only the `codex/distroless-locked-apt` SONiC
+registry plus BCR, and imports the existing build settings. CI uses the same
+wrapper. The normal `.bazelrc` still selects `main`, which currently lacks the
+new Distroless version. The wrapper preserves the reviewed Make cache settings
+when `/bazel_cache` is mounted. Remove the Draft wrapper/rc, restore CI to
+`BAZEL=bazel`, remove the infrastructure source override, and validate normal
+resolution from `main` before marking the PR ready.
 
-```sh
-bazel run @sonic_build_infra//apt:refresh -- \
-  --lock "$PWD/dockers/docker-syncd-vs/bazel/apt.lock.json" \
-  --output "$PWD/dockers/docker-syncd-vs/bazel/apt_packages.bzl" \
-  --architecture amd64 --label-prefix SYNCD_ \
-  --dependency-set runtime=syncd_vs_debian \
-  --dependency-set debug=syncd_vs_debug_debian \
-  --bazel bazel --artifacts "$PWD/artifacts/syncd-apt-candidate"
-```
+To refresh packages, use a separate clean checkout and artifact directory:
 
-The helper checks the resolved rule version, package URLs and hashes, audits the
-selected action graph, and builds only the existing data/control targets. It
-stops if that graph contains a DEB output or packaging wrapper. A changed lock is
-written as a candidate in the artifact directory. Review it, then rerun with a
-new artifact directory and `--update` to publish the checked lock and label list.
-`//dockers/docker-syncd-vs:apt_lock_check` checks the derived list through the
-shared lock reader. Package lists, lock data, and the native package-state
-contract remain image-owned; reusable APT code and its unit tests live in
-`sonic-build-infra/apt` and are published through `sonic-bazel-registry`.
+1. Replace this owner's two `apt.from_lock` declarations temporarily with the
+   checked `apt.install` declarations in `apt-resolve.MODULE.bazel`. Adjust only
+   the intended package roots or dated sources, then let Distroless resolve them.
+2. Export the public hub lock, without reading private extension state:
+
+   ```sh
+   mkdir -p artifacts/apt-candidate
+   bazel query @syncd_vs_debian//:lock.json
+   bazel cquery @syncd_vs_debian//:lock.json --output=files > artifacts/apt-candidate/lock-path.txt
+   cp "$(cat artifacts/apt-candidate/lock-path.txt)" artifacts/apt-candidate/apt.lock.json
+   ```
+
+3. Review the canonical dependency sets, source URLs, versions, checksums and
+   closure. Keep only this owner's runtime/debug sets and their complete package
+   closure. Preserve existing reviewed data/control hashes only when their source
+   package identity is unchanged. For changed imports, audit the selected action
+   graph before extracting the public provider's data/control files, then review
+   and record their actual SHA-256 values and sizes in the canonical packages.
+   Do not run DEB-producing actions as part of this refresh.
+4. Publish the reviewed canonical lock and restore `apt.from_lock`. Rebuild both
+   selected layers and validate their receipts against the intended base images.
+   Re-run owner policy tests and the installed loader/runtime checks for any
+   changed package or retained-version relationship.
+
+Also update `runtime_package_state.json`'s lock hash after reviewing its exact
+control/payload owners. Changes to those owners require a new package-state
+review; a new hash alone does not establish generated-state compatibility.
+The committed-state test checks that these bindings match the canonical lock.
 
 ## Generated files and startup behavior
 
@@ -297,7 +315,7 @@ python3 -B dockers/docker-syncd-vs/bazel/ci.py --bazel bazel \
   --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 --bazel-arg=--local_resources=memory=10000
 ```
 
-The CI helper audits and runs seven explicit JSON, tar, OCI-fixture, lock, and
+The CI helper audits and runs five explicit JSON, tar, OCI-fixture, package-state, and
 manifest tests from the owner subpackage. Its source-hash record includes both
 image and adapter BUILD files alongside the reviewed package locks. It retains the selected execution audit fields, required test
 logs, the generated `MODULE.bazel.lock`, and the module graph in the job workspace.

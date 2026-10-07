@@ -1,5 +1,66 @@
 {
-  "bazel_version": "8.5.1",
+  "dependency_sets": {
+    "syncd_vs_debian": {
+      "sets": {
+        "amd64": {
+          "/trixie/clang:amd64": "1:19.0-63",
+          "/trixie/cpp:amd64": "4:14.2.0-1",
+          "/trixie/iproute2:amd64": "6.15.0-1",
+          "/trixie/libabsl20240722:amd64": "20240722.0-4",
+          "/trixie/libboost1.83-all-dev:amd64": "1.83.0-4.2",
+          "/trixie/libbpf-dev:amd64": "1:1.5.0-3",
+          "/trixie/libcap2-bin:amd64": "1:2.75-10+deb13u1+b1",
+          "/trixie/libcares2:amd64": "1.34.5-1+deb13u1",
+          "/trixie/libelf-dev:amd64": "0.192-4",
+          "/trixie/libfl-dev:amd64": "2.6.4-8.2+b4",
+          "/trixie/libgc-dev:amd64": "1:8.2.8-1",
+          "/trixie/libgc1:amd64": "1:8.2.8-1",
+          "/trixie/libgmp-dev:amd64": "2:6.3.0+dfsg-3",
+          "/trixie/libgrpc++-dev:amd64": "1.51.1-6",
+          "/trixie/libgrpc++1.51t64:amd64": "1.51.1-6",
+          "/trixie/libgrpc-dev:amd64": "1.51.1-6",
+          "/trixie/libgrpc29t64:amd64": "1.51.1-6",
+          "/trixie/libnanomsg-dev:amd64": "1.1.5+dfsg-1.1+b1",
+          "/trixie/libnanomsg5:amd64": "1.1.5+dfsg-1.1+b1",
+          "/trixie/libpcap-dev:amd64": "1.10.5-2",
+          "/trixie/libpcap0.8t64:amd64": "1.10.5-2",
+          "/trixie/libprotobuf-dev:amd64": "3.21.12-11+deb13u1",
+          "/trixie/libprotobuf32t64:amd64": "3.21.12-11+deb13u1",
+          "/trixie/libprotoc-dev:amd64": "3.21.12-11+deb13u1",
+          "/trixie/libreadline8t64:amd64": "8.2-6",
+          "/trixie/libthrift-dev:amd64": "0.19.0-4+b1",
+          "/trixie/libtool:amd64": "2.5.4-4",
+          "/trixie/llvm:amd64": "1:19.0-63",
+          "/trixie/net-tools:amd64": "2.10-1.3",
+          "/trixie/pkgconf:amd64": "1.8.1-4",
+          "/trixie/protobuf-compiler-grpc:amd64": "1.51.1-6",
+          "/trixie/protobuf-compiler:amd64": "3.21.12-11+deb13u1",
+          "/trixie/python3-grpcio:amd64": "1.51.1-6",
+          "/trixie/python3-ply:amd64": "3.11-9",
+          "/trixie/python3-protobuf:amd64": "3.21.12-11+deb13u1",
+          "/trixie/python3-pyroute2:amd64": "0.7.7-4",
+          "/trixie/python3-scapy:amd64": "2.6.1+dfsg-1",
+          "/trixie/python3-setuptools:amd64": "78.1.1-0.1",
+          "/trixie/python3-six:amd64": "1.17.0-1",
+          "/trixie/python3-thrift:amd64": "0.19.0-4+b1",
+          "/trixie/tcpdump:amd64": "4.99.5-2",
+          "/trixie/thrift-compiler:amd64": "0.19.0-4+b1"
+        }
+      }
+    },
+    "syncd_vs_debug_debian": {
+      "sets": {
+        "amd64": {
+          "/trixie/gdb:amd64": "16.3-1",
+          "/trixie/gdbserver:amd64": "16.3-1",
+          "/trixie/libgpm2:amd64": "1.20.7-11+b2",
+          "/trixie/sshpass:amd64": "1.10-0.1",
+          "/trixie/strace:amd64": "6.13+ds-1"
+        }
+      }
+    }
+  },
+  "facts": {},
   "packages": {
     "/trixie-security/libc-ares-dev:amd64=1.34.5-1+deb13u1": {
       "architecture": "amd64",
@@ -12628,61 +12689,6 @@
       "version": "1:1.3.dfsg+really1.3.1-1+b1"
     }
   },
-  "roots": {
-    "debug": [
-      "/trixie/gdb:amd64=16.3-1",
-      "/trixie/gdbserver:amd64=16.3-1",
-      "/trixie/libgpm2:amd64=1.20.7-11+b2",
-      "/trixie/sshpass:amd64=1.10-0.1",
-      "/trixie/strace:amd64=6.13+ds-1"
-    ],
-    "runtime": [
-      "/trixie/clang:amd64=1:19.0-63",
-      "/trixie/cpp:amd64=4:14.2.0-1",
-      "/trixie/iproute2:amd64=6.15.0-1",
-      "/trixie/libabsl20240722:amd64=20240722.0-4",
-      "/trixie/libboost1.83-all-dev:amd64=1.83.0-4.2",
-      "/trixie/libbpf-dev:amd64=1:1.5.0-3",
-      "/trixie/libcap2-bin:amd64=1:2.75-10+deb13u1+b1",
-      "/trixie/libcares2:amd64=1.34.5-1+deb13u1",
-      "/trixie/libelf-dev:amd64=0.192-4",
-      "/trixie/libfl-dev:amd64=2.6.4-8.2+b4",
-      "/trixie/libgc-dev:amd64=1:8.2.8-1",
-      "/trixie/libgc1:amd64=1:8.2.8-1",
-      "/trixie/libgmp-dev:amd64=2:6.3.0+dfsg-3",
-      "/trixie/libgrpc++-dev:amd64=1.51.1-6",
-      "/trixie/libgrpc++1.51t64:amd64=1.51.1-6",
-      "/trixie/libgrpc-dev:amd64=1.51.1-6",
-      "/trixie/libgrpc29t64:amd64=1.51.1-6",
-      "/trixie/libnanomsg-dev:amd64=1.1.5+dfsg-1.1+b1",
-      "/trixie/libnanomsg5:amd64=1.1.5+dfsg-1.1+b1",
-      "/trixie/libpcap-dev:amd64=1.10.5-2",
-      "/trixie/libpcap0.8t64:amd64=1.10.5-2",
-      "/trixie/libprotobuf-dev:amd64=3.21.12-11+deb13u1",
-      "/trixie/libprotobuf32t64:amd64=3.21.12-11+deb13u1",
-      "/trixie/libprotoc-dev:amd64=3.21.12-11+deb13u1",
-      "/trixie/libreadline8t64:amd64=8.2-6",
-      "/trixie/libthrift-dev:amd64=0.19.0-4+b1",
-      "/trixie/libtool:amd64=2.5.4-4",
-      "/trixie/llvm:amd64=1:19.0-63",
-      "/trixie/net-tools:amd64=2.10-1.3",
-      "/trixie/pkgconf:amd64=1.8.1-4",
-      "/trixie/protobuf-compiler-grpc:amd64=1.51.1-6",
-      "/trixie/protobuf-compiler:amd64=3.21.12-11+deb13u1",
-      "/trixie/python3-grpcio:amd64=1.51.1-6",
-      "/trixie/python3-ply:amd64=3.11-9",
-      "/trixie/python3-protobuf:amd64=3.21.12-11+deb13u1",
-      "/trixie/python3-pyroute2:amd64=0.7.7-4",
-      "/trixie/python3-scapy:amd64=2.6.1+dfsg-1",
-      "/trixie/python3-setuptools:amd64=78.1.1-0.1",
-      "/trixie/python3-six:amd64=1.17.0-1",
-      "/trixie/python3-thrift:amd64=0.19.0-4+b1",
-      "/trixie/tcpdump:amd64=4.99.5-2",
-      "/trixie/thrift-compiler:amd64=0.19.0-4+b1"
-    ]
-  },
-  "rules_distroless_version": "0.9.4-sonic.1",
-  "schema": 1,
   "sources": {
     "trixie": {
       "architectures": [
@@ -12723,5 +12729,6 @@
         "https://snapshot.debian.org/archive/debian/20260727T143429Z"
       ]
     }
-  }
+  },
+  "version": 2
 }

@@ -13,6 +13,10 @@ concurrency:
   group: bazel-syncd-vs-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
+env:
+  # Temporary Draft registry selection while PRs #45/#46 publish the APT API.
+  BAZEL: ./tools/bazel/ci/draft_bazel.sh
+
 jobs:
   contracts:
     name: Syncd OCI contracts (AMD64)
@@ -75,7 +79,7 @@ jobs:
 
       - name: Audit and run explicit Bazel contract tests
         run: |
-          python3 -B dockers/docker-syncd-vs/bazel/ci.py --bazel bazel \
+          python3 -B dockers/docker-syncd-vs/bazel/ci.py --bazel "$BAZEL" \
             --artifacts artifacts/syncd-vs/bazel \
             --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
             --bazel-arg=--local_resources=memory=10000

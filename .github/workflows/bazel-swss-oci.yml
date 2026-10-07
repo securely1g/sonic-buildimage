@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Use the maintained registry endpoint in the workspace rc.
-  BAZEL: bazel
+  # Temporary Draft registry selection while PRs #45/#46 publish the APT API.
+  BAZEL: ./tools/bazel/ci/draft_bazel.sh
 
 jobs:
   archive:

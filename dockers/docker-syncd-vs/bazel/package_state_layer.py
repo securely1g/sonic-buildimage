@@ -14,7 +14,6 @@ import tarfile
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
 sys.path.insert(0, str(Path(__file__).absolute().parent))
 from tools.bazel.ci.artifact_validation import require, sha
-from sonic_apt import lock as apt_lock
 import validate_image
 import validate_payloads
 
@@ -84,16 +83,23 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
             "package state contract lacks reference identity")
     require(sha(dockerfile) == reference["legacy_dockerfile_sha256"], "legacy Dockerfile changed; review package state")
     require(contract.get("apt_lock_sha256") == sha(lock_path), "APT content lock changed; review package state")
-    locked = apt_lock.closure(json.loads(lock_path.read_bytes()), "runtime", architecture="amd64")
-    by_name = {}
-    for package in locked.values():
-        by_name.setdefault(package["name"], package)
+    lock = json.loads(lock_path.read_bytes())
+    require(lock.get("version") == 2, "unsupported Distroless package lock")
     selection = json.loads(selection_path.read_bytes())
     require(selection.get("schema") == 1 and selection.get("variant") == "runtime" and
             selection.get("apt_lock_sha256") == sha(lock_path) and
             selection.get("make_manifest_sha256") == sha(make_manifest_path), "APT selection does not match the package state inputs")
     selected = {item["package"]: item for item in selection.get("selected", [])}
     require(len(selected) == len(selection.get("selected", [])), "APT selection repeats a package")
+    # Distroless validates closure at repository creation; bind the actual
+    # selected owners to that exact canonical lock and the reviewed state.
+    by_name = {}
+    for name, item in selected.items():
+        package = lock["packages"].get(item["key"])
+        require(package is not None and package["name"] == name and
+                package["architecture"] in ("amd64", "all"),
+                "selected package is absent from the checked lock: " + name)
+        by_name[name] = package
     for group, field in (("package_controls", "control_sha256"), ("package_payloads", "payload_sha256")):
         expected = contract.get(group)
         require(isinstance(expected, dict) and expected, "package state contract lacks " + group)

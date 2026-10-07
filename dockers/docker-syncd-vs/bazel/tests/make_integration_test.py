@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check syncd-vs selection and package prerequisites without running Bazel."""
 
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -168,11 +169,18 @@ target/debs/trixie/%.deb:
         concrete = {"libgrpc++1.51": "libgrpc++1.51t64", "libgrpc29": "libgrpc29t64",
                     "libprotobuf32": "libprotobuf32t64", "libpcap0.8": "libpcap0.8t64"}
         packages = {concrete.get(name, name) for name in packages}
-        module = (ROOT / "MODULE.bazel").read_text()
+        module = (ROOT / "dockers/docker-syncd-vs/bazel/apt-resolve.MODULE.bazel").read_text()
         block = module.split('dependency_set = "syncd_vs_debian"', 1)[1].split("suites =", 1)[0]
         declared = set(re.findall(r'"([^":]+):amd64(?: [^"]+)?"', block))
         self.assertTrue(packages.issubset(declared), "Dockerfile APT packages missing from OCI inputs: " +
                         repr(sorted(packages - declared)))
+        lock = json.loads((ROOT / "dockers/docker-syncd-vs/bazel/apt.lock.json").read_text())
+        roots = lock["dependency_sets"]["syncd_vs_debian"]["sets"]["amd64"]
+        locked = {key.rsplit("/", 1)[1].split(":", 1)[0] for key in roots}
+        providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
+        concrete_packages = {providers.get(name, name) for name in packages}
+        self.assertTrue(concrete_packages.issubset(locked), "Dockerfile APT packages missing from canonical lock: " +
+                        repr(sorted(concrete_packages - locked)))
 
 
 if __name__ == "__main__":

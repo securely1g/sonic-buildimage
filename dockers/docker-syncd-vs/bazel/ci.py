@@ -21,10 +21,8 @@ from tools.bazel.gzip.source_archive import check_versions
 execute = partial(command_log.execute, cwd=ROOT)
 
 TARGET_NAMES = [
-    "apt_lock_check",
     "manifest_labels_test",
     "package_state_layer_test",
-    "refresh_apt_lock_test",
     "select_apt_payloads_test",
     "validate_image_test",
     "validate_payloads_test",
@@ -35,7 +33,7 @@ TARGETS = ["//dockers/docker-syncd-vs/bazel:" + name for name in TARGET_NAMES]
 def source_hashes():
     return {str(path.relative_to(ROOT)): sha(path) for path in (
         ROOT / "MODULE.bazel", OWNER.parent / "BUILD.bazel", OWNER / "BUILD.bazel",
-        OWNER / "apt.lock.json", OWNER / "apt_packages.bzl", OWNER / "runtime_package_state.json")}
+        OWNER / "apt.lock.json", OWNER / "apt-resolve.MODULE.bazel", OWNER / "runtime_package_state.json")}
 
 
 def main():

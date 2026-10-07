@@ -178,13 +178,6 @@ py_test(
 )
 
 py_test(
-    name = "refresh_apt_lock_test",
-    srcs = ["@sonic_build_infra//apt:tests/refresh_test.py"],
-    main = "@sonic_build_infra//apt:tests/refresh_test.py",
-    deps = ["@sonic_build_infra//apt:lib"],
-)
-
-py_test(
     name = "package_state_layer_test",
     srcs = [
         "package_state_layer.py",
@@ -193,29 +186,8 @@ py_test(
         "validate_payloads.py",
     ],
     main = "tests/package_state_layer_test.py",
+    data = ["apt.lock.json", "runtime_package_state.json"],
     deps = _TEST_DEPS,
-)
-
-py_test(
-    name = "apt_lock_check",
-    srcs = ["@sonic_build_infra//apt:python/sonic_apt/lock.py"],
-    args = [
-        "--check",
-        "--architecture=amd64",
-        "--label-prefix=SYNCD_",
-        "--group=runtime",
-        "--group=debug",
-        "--lock",
-        "$(location apt.lock.json)",
-        "--output",
-        "$(location apt_packages.bzl)",
-    ],
-    data = [
-        "apt.lock.json",
-        "apt_packages.bzl",
-    ],
-    main = "@sonic_build_infra//apt:python/sonic_apt/lock.py",
-    deps = ["@sonic_build_infra//apt:lib"],
 )
 
 py_test(

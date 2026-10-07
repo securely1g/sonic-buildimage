@@ -14,7 +14,6 @@ OWNER = Path(__file__).absolute().parents[2]
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as tar_bytes, write_layout
-from sonic_apt import lock as apt_lock
 import package_state_layer as subject
 import validate_image
 import validate_payloads
@@ -27,6 +26,21 @@ def write_oci(path, entries):
     files = oci_files(json.dumps(config).encode(), [layer])
     write_layout(path, files)
     return json.loads(files["index.json"])["manifests"][0]["digest"]
+
+
+class CommittedPackageStateTest(unittest.TestCase):
+    def test_reviewed_state_owners_match_committed_canonical_lock(self):
+        lock_path = OWNER / "bazel/apt.lock.json"
+        lock = json.loads(lock_path.read_bytes())
+        contract = json.loads((OWNER / "bazel/runtime_package_state.json").read_bytes())
+        self.assertEqual(contract["apt_lock_sha256"], hashlib.sha256(lock_path.read_bytes()).hexdigest())
+        self.assertEqual(lock["version"], 2)
+        for group, field in (("package_controls", "control_sha256"), ("package_payloads", "payload_sha256")):
+            for name, identity in contract[group].items():
+                owners = [item for item in lock["packages"].values() if item["name"] == name]
+                self.assertTrue(owners, name)
+                for item in owners:
+                    self.assertEqual(identity, {"version": item["version"], field: item[field]}, name)
 
 
 class PackageStateLayerTest(unittest.TestCase):
@@ -49,8 +63,8 @@ class PackageStateLayerTest(unittest.TestCase):
                    "filename": "pool/tool.deb", "sha256": "a" * 64, "size": 1, "depends_on": [],
                    "payload_sha256": "b" * 64, "payload_size": 1, "control_sha256": "c" * 64, "control_size": 1}
         self.lock = self.root / "apt.lock.json"
-        self.lock.write_text(json.dumps({"schema": 1, "bazel_version": apt_lock.BAZEL_VERSION,
-            "rules_distroless_version": apt_lock.DISTROLESS_VERSION, "roots": {"runtime": [key], "debug": [key]},
+        self.lock.write_text(json.dumps({"version": 2, "facts": {},
+            "dependency_sets": {"runtime": {"sets": {"amd64": {key.rsplit("=", 1)[0]: "1.0"}}}},
             "sources": {"trixie": {"uris": ["https://snapshot.debian.org/archive/debian/20260727T143429Z"]}},
             "packages": {key: package}}))
         script_sha = hashlib.sha256(b"postinst").hexdigest()
@@ -121,6 +135,11 @@ class PackageStateLayerTest(unittest.TestCase):
     def test_changed_owner_control_is_rejected(self):
         self.mutate(self.contract, lambda value: value["package_controls"]["tool-package"].update(control_sha256="e" * 64))
         with self.assertRaisesRegex(ValueError, "package state owner changed"):
+            self.build()
+
+    def test_selected_owner_must_match_canonical_lock_key(self):
+        self.mutate(self.selection, lambda value: value["selected"][0].update(key="/trixie/other:amd64=1.0"))
+        with self.assertRaisesRegex(ValueError, "selected package is absent from the checked lock"):
             self.build()
 
     def test_unselected_owner_is_rejected(self):
