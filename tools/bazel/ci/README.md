@@ -68,3 +68,7 @@ explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
 out of public artifacts. A failed job publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
+
+Pull requests run the native archive and source-layer checks automatically. The full VS/P4RT package build remains available through manual dispatch after its execution scope is approved; leave `skip_vs=true` for native checks only. Before executing selected Bazel build/test targets, CI checks the action graph for DEB outputs and package-building wrappers.
+
+The P4 import job uploads only a validated `public-summary.json`: revision and package hashes, native architecture and bounded cold/offline/negative-cache results. Command records, logs, action graphs, generated locks and SBOM diagnostics stay in the runner workspace. This import check does not compile the package producer.
