@@ -23,6 +23,7 @@ py_binary(
     name = "validate_payloads",
     srcs = ["validate_payloads.py"],
     main = "validate_payloads.py",
+    python_version = "3.11",
     deps = _VALIDATION_DEPS,
 )
 
@@ -34,6 +35,7 @@ py_binary(
         "validate_payloads.py",
     ],
     main = "select_apt_payloads.py",
+    python_version = "3.11",
     deps = _VALIDATION_DEPS,
 )
 
@@ -45,6 +47,7 @@ py_binary(
         "validate_payloads.py",
     ],
     main = "package_state_layer.py",
+    python_version = "3.11",
     deps = _VALIDATION_DEPS,
 )
 
@@ -145,6 +148,7 @@ py_test(
         "validate_payloads.py",
     ],
     main = "tests/validate_payloads_test.py",
+    python_version = "3.11",
     deps = _TEST_DEPS,
 )
 
@@ -162,6 +166,7 @@ py_test(
         "//dockers/docker-base-trixie:dpkg_01_drop",
     ],
     main = "tests/validate_image_test.py",
+    python_version = "3.11",
     deps = _TEST_DEPS,
 )
 
@@ -174,6 +179,7 @@ py_test(
         "validate_payloads.py",
     ],
     main = "tests/select_apt_payloads_test.py",
+    python_version = "3.11",
     deps = _TEST_DEPS,
 )
 
@@ -187,6 +193,7 @@ py_test(
     ],
     main = "tests/package_state_layer_test.py",
     data = ["apt.lock.json", "runtime_package_state.json"],
+    python_version = "3.11",
     deps = _TEST_DEPS,
 )
 

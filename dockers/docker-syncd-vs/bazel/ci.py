@@ -33,7 +33,7 @@ TARGETS = ["//dockers/docker-syncd-vs/bazel:" + name for name in TARGET_NAMES]
 def source_hashes():
     return {str(path.relative_to(ROOT)): sha(path) for path in (
         ROOT / "MODULE.bazel", OWNER.parent / "BUILD.bazel", OWNER / "BUILD.bazel",
-        OWNER / "apt.lock.json", OWNER / "apt-resolve.MODULE.bazel", OWNER / "runtime_package_state.json")}
+        OWNER / "apt.lock.json", OWNER / "apt_packages.bzl", OWNER / "runtime_package_state.json")}
 
 
 def main():

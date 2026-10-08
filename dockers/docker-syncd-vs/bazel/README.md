@@ -125,7 +125,7 @@ before publication. Syncd retains its explicit contract-test targets; orchagent
 retains its source-layer build targets and package checks. Its synthetic image
 tests use `tools/bazel/tests/oci_base_fixture.py` alongside the SWSS archive tests.
 
-The remaining syncd code checks the Make-produced package handoff, filters locked
+The remaining syncd code checks the Make-produced package handoff, checks explicit
 APT inputs against the base and Make packages, and reconstructs the reviewed
 package-generated state. SWSS consumes source-built tar layers and does not need
 those package contracts.
@@ -178,78 +178,65 @@ While these dependencies are unmerged, the Draft consumer pins the same source
 commit explicitly. Remove its temporary `git_override` after the registry entry
 lands and verify normal module resolution before marking this PR ready.
 
-The root module imports separate runtime and debug package sets with
-Distroless `apt.from_lock`. `apt.lock.json` is the canonical Distroless v2 lock:
-it records direct and transitive packages, dated source repositories, source
-DEB identities, and the reviewed data/control hashes and sizes. Normal builds
-consume this lock directly and do not resolve those package sets again.
+The root module uses the existing Distroless `apt.install` API with exact
+package versions and dated Debian repositories. `apt_packages.bzl` lists the
+packages this image actually adds. The checker consumes each public `:data`
+and `:control` target; it never layers the root target's implicit dependency
+closure over the base image.
 
-Distroless owns dependency closure, package imports, the public
-`@syncd_vs_debian//:package_set` provider, and tar assembly. The shared
-`@sonic_build_infra//apt:apt_layer.bzl` rule passes the provider to the owner
-selector, then calls upstream `flatten` with its selected-input manifest.
-There are no generated package-key lists or private repository-name adapters.
+For example, adding `tcpdump` uses its data and `libpcap` data. The base's
+`libssl3t64` remains in place if its version satisfies tcpdump's declared
+requirement. A duplicate base package, an unsatisfied dependency, or a changed
+base library fails the build with the package or path responsible. This does
+not silently skip incompatible packages or perform an implicit upgrade.
 
-`select_apt_payloads.py` adapts syncd's Make manifest and OCI inventory to the
-SONiC policy checks. These preserve base and Make packages, reject changed ELF
-files and unsafe inherited links, deduplicate identical imports, and report
-changed non-ELF paths. Its receipt binds the exact canonical lock, base manifest,
-Make handoff, and actual extracted content hashes. The reviewed hashes in the
-lock are checked even for packages retained from the base or Make handoff.
+The shared `checked_apt_packages` rule only validates these explicit inputs.
+The existing `sonic_layer` uses Distroless `flatten` to assemble their tar files,
+and `oci_image` adds the resulting layer. It requires no new Distroless lock,
+provider, or tar-manifest API and uses the existing `0.9.4-sonic.1` registry
+version with its previously registered protobuf-header fix.
 
-Runtime selection checks the managed config-engine base. Debug selection checks
-the exact runtime OCI image and the debug Make handoff. This keeps Debian copies
-from replacing FIPS and SONiC-patched libraries. Complete validation must confirm
-that retained versions satisfy the added libraries and tools.
+`apt.lock.json` remains a reviewed content manifest: exact source identities
+and data/control hashes are checked against the public package outputs. It is
+not a second package resolver or a custom import path. The validation receipt
+records the base identity, actual package versions, dependency checks and
+changed non-binary paths. Debug validation also reads runtime overlay controls,
+because adding package data does not update the inherited dpkg database.
 
-Infrastructure owns the patches in `third_party/rules_distroless/patches`.
-The root `archive_override` downloads upstream Distroless 0.9.4 and applies
-those patches by immutable infrastructure commit and integrity hash. This
-retains the protobuf header-fragment fix and adds checked APT lock imports,
-package metadata and selected tar assembly. No Distroless fork or additional
-registry version is required.
+To change a package, edit its exact version in `MODULE.bazel` and its explicit
+entry in `apt_packages.bzl`. Audit the Bazel action graph, build only its public
+`:data`/`:control` targets, and review the changed package identity, contents,
+checksums and dependencies before updating the content manifest. Rebuild both
+image variants and run their installed loader/runtime checks. These operations
+import existing Debian packages; they must not create DEBs.
 
-Bazel 8.5.1 applies dependency overrides only from the root module and rejects
-patch labels from another module. The root therefore names the infrastructure
-patch URLs, without keeping another copy of their content. Refresh those URLs
-with the infrastructure pin. Both local builds and CI use ordinary `bazel` and
-the maintained registry `main` URL.
+The six development packages for Python, libc, libcap and expat must match the
+versions already installed in the config-engine base. Their separate
+`syncd_vs_base_debian` set uses Debian's `stable` suite at the dated
+`20261008T000000Z` snapshot. It imports only the six listed public data archives;
+it does not replace the base libraries or change the toolchain's July `trixie`
+sources. The generated Bazel lock records dependency resolution separately from
+this image's checked content manifest.
 
-For native AMD64/ARM64 test and source-layer CI without a full VS build, dispatch
-`Bazel SWSS OCI` with `skip_vs=true`. This leaves the existing full-build default
-unchanged. Each selected Bazel scope is checked for DEB-producing actions before
-execution.
+The debug Make handoff intentionally replaces the runtime OpenSSH package with
+its FIPS build. The inventory adapter records this one declared replacement,
+checks unchanged dependency relationships and binds its source, payload and
+control hashes. Existing handoff and image checks still verify actual payload
+bytes and the allowed ELF owner; other conflicting package records fail.
 
-To refresh packages, use a separate clean checkout and artifact directory:
+The checker uses infrastructure `d78ffc8253bef78c9993f8ff664a9f152e748c58` through
+the temporary source override. `.bazelrc` continues to use the registry's `main`
+URL. No local copy of a Distroless patch is needed.
 
-1. Replace this owner's two `apt.from_lock` declarations temporarily with the
-   checked `apt.install` declarations in `apt-resolve.MODULE.bazel`. Adjust only
-   the intended package roots or dated sources, then let Distroless resolve them.
-2. Export the public hub lock, without reading private extension state:
-
-   ```sh
-   mkdir -p artifacts/apt-candidate
-   bazel query @syncd_vs_debian//:lock.json
-   bazel cquery @syncd_vs_debian//:lock.json --output=files > artifacts/apt-candidate/lock-path.txt
-   cp "$(cat artifacts/apt-candidate/lock-path.txt)" artifacts/apt-candidate/apt.lock.json
-   ```
-
-3. Review the canonical dependency sets, source URLs, versions, checksums and
-   closure. Keep only this owner's runtime/debug sets and their complete package
-   closure. Preserve existing reviewed data/control hashes only when their source
-   package identity is unchanged. For changed imports, audit the selected action
-   graph before extracting the public provider's data/control files, then review
-   and record their actual SHA-256 values and sizes in the canonical packages.
-   Do not run DEB-producing actions as part of this refresh.
-4. Publish the reviewed canonical lock and restore `apt.from_lock`. Rebuild both
-   selected layers and validate their receipts against the intended base images.
-   Re-run owner policy tests and the installed loader/runtime checks for any
-   changed package or retained-version relationship.
+Native AMD64/ARM64 CI runs the package and image contract tests. The complete
+image profile remains native AMD64. Dispatch `Bazel SWSS OCI` with `skip_vs=true`
+to validate source layers and contracts without starting a full VS image build.
+Each selected Bazel scope is checked for DEB-producing actions before execution.
 
 Also update `runtime_package_state.json`'s lock hash after reviewing its exact
 control/payload owners. Changes to those owners require a new package-state
 review; a new hash alone does not establish generated-state compatibility.
-The committed-state test checks that these bindings match the canonical lock.
+The committed-state test checks that these bindings match the content manifest.
 
 ## Generated files and startup behavior
 

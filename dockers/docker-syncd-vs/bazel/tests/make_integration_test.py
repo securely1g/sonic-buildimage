@@ -169,9 +169,11 @@ target/debs/trixie/%.deb:
         concrete = {"libgrpc++1.51": "libgrpc++1.51t64", "libgrpc29": "libgrpc29t64",
                     "libprotobuf32": "libprotobuf32t64", "libpcap0.8": "libpcap0.8t64"}
         packages = {concrete.get(name, name) for name in packages}
-        module = (ROOT / "dockers/docker-syncd-vs/bazel/apt-resolve.MODULE.bazel").read_text()
+        module = (ROOT / "MODULE.bazel").read_text()
         block = module.split('dependency_set = "syncd_vs_debian"', 1)[1].split("suites =", 1)[0]
-        declared = set(re.findall(r'"([^":]+):amd64(?: [^"]+)?"', block))
+        declared = set(re.findall(r'"([^" ]+) \(= [^\)]+\) \[amd64\]"', block))
+        providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
+        packages = {providers.get(name, name) for name in packages}
         self.assertTrue(packages.issubset(declared), "Dockerfile APT packages missing from OCI inputs: " +
                         repr(sorted(packages - declared)))
         lock = json.loads((ROOT / "dockers/docker-syncd-vs/bazel/apt.lock.json").read_text())

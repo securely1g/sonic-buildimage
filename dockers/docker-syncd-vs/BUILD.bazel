@@ -1,10 +1,11 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
-load("@sonic_build_infra//apt:apt_layer.bzl", "apt_layer")
+load("@sonic_build_infra//apt:apt_layer.bzl", "checked_apt_packages")
 load("@tar.bzl", "tar")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+load("//dockers/docker-syncd-vs/bazel:apt_packages.bzl", "DEBUG_APT_PACKAGES", "RUNTIME_APT_PACKAGES")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -46,13 +47,15 @@ manifest_labels(
 
 # Runtime inputs. Make still builds PI/BMv2/p4c, DASH SAI and syncd packages.
 # Use the same shared dpkg path filtering as SWSS. The Make handoff supplies
-# one ordered data tar from the complete selected package closure. Validation
+# one ordered data tar from the native package closure. Validation
 # preserves the base's merged-usr aliases before the layer is flattened.
-apt_layer(
+checked_apt_packages(
     name = "selected_runtime_apt",
     base = ":config_engine_base_layout",
-    package_set = "@syncd_vs_debian//:package_set",
-    selector = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
+    packages = RUNTIME_APT_PACKAGES,
+    dependency_set = "syncd_vs_debian",
+    lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
+    checker = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
     retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
     variant = "runtime",
 )
@@ -139,11 +142,14 @@ sonic_layer(
     ],
 )
 
-apt_layer(
+checked_apt_packages(
     name = "selected_debug_apt",
     base = ":docker-syncd-vs",
-    package_set = "@syncd_vs_debug_debian//:package_set",
-    selector = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
+    packages = DEBUG_APT_PACKAGES,
+    dependency_set = "syncd_vs_debug_debian",
+    lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
+    provided_packages = RUNTIME_APT_PACKAGES,
+    checker = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
     retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/debug/manifest.json",
     variant = "debug",
 )

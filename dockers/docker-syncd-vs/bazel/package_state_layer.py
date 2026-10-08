@@ -91,8 +91,8 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
             selection.get("make_manifest_sha256") == sha(make_manifest_path), "APT selection does not match the package state inputs")
     selected = {item["package"]: item for item in selection.get("selected", [])}
     require(len(selected) == len(selection.get("selected", [])), "APT selection repeats a package")
-    # Distroless validates closure at repository creation; bind the actual
-    # selected owners to that exact canonical lock and the reviewed state.
+    # Bind the explicitly checked package owners to their reviewed content
+    # manifest and generated state; shared checks validate their dependencies.
     by_name = {}
     for name, item in selected.items():
         package = lock["packages"].get(item["key"])
