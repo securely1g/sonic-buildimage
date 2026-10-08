@@ -64,3 +64,9 @@ python3 -B tools/bazel/ci/verify_agent_cache.py \
 The workspace rc uses the [maintained registry selection](../README.md#registry-selection).
 Resolution receipts retain the actual registry URLs from the generated lock
 instead of inferring them from the default `.bazelrc`.
+
+PR and maintained-branch CI run native archive, source-layer and sysmgr checks.
+Before their Bazel targets execute, the action audit rejects Debian package
+outputs and Make or dpkg packaging wrappers. The full VS job retains its existing
+steps and runner requirements; invoke it manually with `skip_vs` set to false
+only within the approved full-image execution scope. The default skips VS.
