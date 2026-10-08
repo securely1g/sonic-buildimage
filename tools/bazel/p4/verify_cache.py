@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import shutil
 import struct
@@ -196,6 +197,64 @@ def phase(args, work, name, cache, *, offline=False, success=True, change_lock=N
     return receipt
 
 
+def public_summary(result, lock, bazel_version):
+    """Project successful verification onto fields safe for a public artifact."""
+    def require(condition):
+        if not condition:
+            raise ValueError("invalid P4 public verification receipt")
+
+    def commit(value):
+        require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value))
+        return value
+
+    require(re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", bazel_version))
+    require(isinstance(result["bazel_version"], str))
+    version_lines = result["bazel_version"].splitlines()
+    require(len(version_lines) in (1, 2) and version_lines[-1] == "bazel " + bazel_version)
+    require(len(version_lines) == 1 or re.fullmatch(r"Bazelisk v[0-9]+(?:\.[0-9]+){2}", version_lines[0]))
+    require(result["architecture"] == "x86_64" and lock["architecture"] == "amd64")
+    require(result["target"] == TARGET and result["make_invoked"] is True)
+    require(result["native_package_producer_invoked"] is False)
+    require(result["package_count"] == len(lock["packages"]) > 0)
+    require(set(result["phases"]) == {"cold", "warm", "missing", "tampered", "wrong-pin"})
+    require(isinstance(result["revision_parents"], list))
+    summary = {"schema": 1, "status": "passed", "revision": commit(result["revision"]),
+               "revision_parents": [commit(value) for value in result["revision_parents"]],
+               "bazel_version": bazel_version, "architecture": "amd64", "target": TARGET,
+               "package_count": len(lock["packages"]), "packages": [], "phases": {},
+               "native_package_producer_invoked": False, "make_scope": "SBOM emission only"}
+    for package in lock["packages"]:
+        require(isinstance(package["filename"], str) and
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+~:-]*\.deb", package["filename"]))
+        require(isinstance(package["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", package["sha256"]))
+        require(type(package["size"]) is int and package["size"] > 0)
+        summary["packages"].append({"filename": package["filename"], "sha256": package["sha256"],
+                                    "bytes": package["size"]})
+    for name, phase in result["phases"].items():
+        require(type(phase["exit_code"]) is int)
+        require((phase["exit_code"] == 0) == (name in ("cold", "warm")))
+        require(phase["fresh_checkout"] is True and phase["fresh_output_base"] is True)
+        offline = name in ("warm", "missing", "tampered")
+        require(phase["repository_downloads_disabled"] is offline)
+        summary["phases"][name] = {"passed": True, "exit_code": phase["exit_code"],
+                                  "repository_downloads_disabled": offline}
+        if name not in ("cold", "warm"):
+            continue
+        require(phase["action_audit"] == {"registered_actions": 0, "target": TARGET})
+        require(len(phase["packages"]) == len(lock["packages"]))
+        for observed, expected in zip(phase["packages"], lock["packages"]):
+            require(observed["filename"] == expected["filename"] and
+                    observed["sha256"] == expected["sha256"] and observed["bytes"] == expected["size"])
+            require(observed["control"] == {"Package": expected["name"], "Version": expected["version"],
+                                            "Architecture": "amd64"})
+            require(observed["elf_machine"] == "AMD64")
+        package = lock["packages"][0]
+        require(phase["sbom"] == {"filename": package["filename"], "distribution_url": package["url"],
+                                  "sha256": package["sha256"], "native_source_attribution": False})
+        summary["phases"][name].update(registered_actions=0, sbom_verified=True)
+    return summary
+
+
 def cache_entry(cache, digest):
     entry = cache / "repository_cache/content_addressable/sha256" / digest / "file"
     if not entry.is_file() or sha256(entry) != digest:
@@ -276,7 +335,10 @@ def main():
     try:
         result = verify(args, work)
         (args.artifacts / "result.json").write_text(json.dumps(result, indent=2) + "\n")
-        print(json.dumps(result, indent=2))
+        summary = public_summary(result, json.loads((ROOT / LOCK).read_text()),
+                                 (ROOT / ".bazelversion").read_text().strip())
+        (args.artifacts / "public-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        print(json.dumps(summary, indent=2))
     finally:
         remove_work(work)
 
