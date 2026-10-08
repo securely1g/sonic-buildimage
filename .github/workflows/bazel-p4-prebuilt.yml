@@ -63,12 +63,11 @@ jobs:
             --bazel bazel
           git diff --exit-code
 
-      - name: Retain cache and package verification evidence
-        if: always()
+      - name: Retain validated public cache verification summary
+        if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: p4-package-import-amd64
-          path: artifacts/p4-repository-cache/
-          include-hidden-files: true
+          path: artifacts/p4-repository-cache/public-summary.json
           if-no-files-found: error
           retention-days: 14
