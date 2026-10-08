@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select orchagent APT files while preserving its base and exact runtime image."""
+"""Check explicit orchagent package files against its base and dependencies."""
 
 import argparse
 import json
@@ -12,6 +12,16 @@ from sonic_apt import selection
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.oci.oci_inventory import apply_layer, assert_overlay_paths
 from tools.bazel.oci.oci_layout import validate_layout
+
+
+def provided_packages(mapping_path):
+    """Read runtime overlays that are not recorded in the inherited dpkg status."""
+    records = {}
+    for item in json.loads(mapping_path.read_bytes()).get("provided_packages", []):
+        record = selection.control_record(Path(item["control"]), architecture="amd64")
+        require(record["Package"] not in records, "duplicate provided runtime package")
+        records[record["Package"]] = record
+    return records
 
 
 def select(base, lock, policy_path, mapping, *, variant):
@@ -32,14 +42,15 @@ def select(base, lock, policy_path, mapping, *, variant):
         apply_layer(path, entries, checked_overlay=True)
         return entries
 
-    selected, receipt = selection.select(
+    receipt = selection.validate(
         lock, mapping, group=variant, architecture="amd64",
         installed=selection.base_packages(layout.layers, architecture="amd64"),
         base_files=files, retained_packages={}, inspect_payload=inspect_payload,
-        check_overlay=assert_overlay_paths)
+        check_overlay=assert_overlay_paths,
+        provided_packages=provided_packages(mapping))
     receipt.update(image="docker-orchagent", base_manifest_digest=layout.descriptor["digest"],
                    policy_sha256=sha(policy_path))
-    return selected, receipt
+    return receipt
 
 
 def main():
@@ -49,16 +60,14 @@ def main():
     parser.add_argument("--retained-manifest", dest="policy", required=True, type=Path)
     parser.add_argument("--mapping", required=True, type=Path)
     parser.add_argument("--variant", required=True, choices=("runtime", "debug"))
-    parser.add_argument("--out-manifest", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
     args = parser.parse_args()
     try:
-        selected, receipt = select(args.base, args.lock, args.policy, args.mapping, variant=args.variant)
-        args.out_manifest.write_text("".join(str(path) + "\n" for path in selected))
+        receipt = select(args.base, args.lock, args.policy, args.mapping, variant=args.variant)
         args.receipt.parent.mkdir(parents=True, exist_ok=True)
         args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError) as error:
-        parser.exit(1, "orchagent APT selection failed: " + str(error) + "\n")
+        parser.exit(1, "orchagent APT validation failed: " + str(error) + "\n")
 
 
 if __name__ == "__main__":
