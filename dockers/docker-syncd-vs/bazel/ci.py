@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from urllib.parse import unquote, urlparse
 
 OWNER = Path(__file__).absolute().parent
 ROOT = OWNER.parents[2]
@@ -34,6 +35,39 @@ def source_hashes():
     return {str(path.relative_to(ROOT)): sha(path) for path in (
         ROOT / "MODULE.bazel", OWNER.parent / "BUILD.bazel", OWNER / "BUILD.bazel",
         OWNER / "apt.lock.json", OWNER / "apt_packages.bzl", OWNER / "runtime_package_state.json")}
+
+
+def collect_test_outputs(events, artifacts):
+    """Use the tested configuration's paths, including Python transitions."""
+    outputs = {}
+    for line in events.read_text().splitlines():
+        event = json.loads(line)
+        target = event.get("id", {}).get("testResult", {}).get("label")
+        if target not in TARGETS:
+            continue
+        for output in event.get("testResult", {}).get("testActionOutput", []):
+            filename = output.get("name")
+            if filename not in ("test.log", "test.xml"):
+                continue
+            uri = urlparse(output.get("uri", ""))
+            require(uri.scheme == "file" and not uri.netloc,
+                    "test evidence is not a local file: " + target + "/" + filename)
+            source = Path(unquote(uri.path))
+            key = (target, filename)
+            require(key not in outputs or outputs[key] == source,
+                    "ambiguous configured test evidence: " + target + "/" + filename)
+            outputs[key] = source
+    collected = []
+    for target in TARGETS:
+        for filename in ("test.log", "test.xml"):
+            source = outputs.get((target, filename))
+            require(source is not None and source.is_file() and source.stat().st_size > 0,
+                    "missing required test evidence: " + target + "/" + filename)
+            destination = artifacts / "tests" / target.rsplit(":", 1)[1] / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            collected.append(str(destination.relative_to(artifacts)))
+    return collected
 
 
 def main():
@@ -64,17 +98,15 @@ def main():
         audit["targets"] = TARGETS
         (artifacts / "execution-gate-audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
         require(not audit["deb_outputs"] and not audit["packaging_wrappers"], "contract tests contain a DEB or packaging wrapper action")
-        execute([args.bazel, "test"] + args.bazel_arg + ["--nocache_test_results", "--test_output=errors"] + TARGETS,
-                artifacts, receipt, "tests")
-        test_outputs = []
-        for name in TARGET_NAMES:
-            for filename in ("test.log", "test.xml"):
-                source = ROOT / "bazel-testlogs/dockers/docker-syncd-vs/bazel" / name / filename
-                require(source.is_file() and source.stat().st_size > 0, "missing required test evidence: " + str(source))
-                destination = artifacts / "tests" / name / filename
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, destination)
-                test_outputs.append(str(destination.relative_to(artifacts)))
+        test_events = artifacts / "tests.raw.json"
+        test_events.touch(mode=0o600, exist_ok=False)
+        try:
+            execute([args.bazel, "test"] + args.bazel_arg + ["--nocache_test_results", "--test_output=errors",
+                    "--build_event_json_file=" + str(test_events)] + TARGETS, artifacts, receipt, "tests")
+            test_outputs = collect_test_outputs(test_events, artifacts)
+        finally:
+            # Retain the selected logs/XML, not raw event or command metadata.
+            test_events.unlink(missing_ok=True)
         resolution.collect(ROOT, artifacts, bazel=[args.bazel])
         check_versions(artifacts / "module-graph.json")
         module_lock = ROOT / "MODULE.bazel.lock"

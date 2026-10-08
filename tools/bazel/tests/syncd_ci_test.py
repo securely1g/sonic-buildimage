@@ -57,13 +57,24 @@ elif command == "aquery":
     if mode == "query-failure": sys.exit(7)
 elif command == "test":
     if mode == "test-failure": sys.exit(9)
+    events = []
     for target in sys.argv[2:]:
         if not target.startswith("//"): continue
         package, name = target[2:].split(":")
-        directory = root / "bazel-testlogs" / package / name
+        # The default symlink cannot locate tests with a Python transition.
+        configuration = "default" if name == "manifest_labels_test" else "python-3.11"
+        directory = root / "configured testlogs" / configuration / package / name
         directory.mkdir(parents=True)
+        outputs = []
         for filename in ("test.log", "test.xml"):
+            if mode == "missing-evidence" and name == "package_state_layer_test" and filename == "test.xml":
+                continue
             (directory / filename).write_text("passed\\n")
+            outputs.append({"name": filename, "uri": (directory / filename).as_uri()})
+        events.append({"id": {"testResult": {"label": target, "configuration": {"id": configuration}}},
+                       "testResult": {"testActionOutput": outputs}})
+    event_path = next(arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--build_event_json_file="))
+    Path(event_path).write_text("".join(json.dumps(event) + "\\n" for event in events))
     (root / "MODULE.bazel.lock").write_text("{}\\n")
 else:
     raise SystemExit("unexpected command: " + command)
@@ -87,6 +98,7 @@ else:
                     ci.main()
                 self.assertEqual(failure.exception.code, 1)
         self.assertFalse((self.artifacts / "actions.raw.json").exists())
+        self.assertFalse((self.artifacts / "tests.raw.json").exists())
         self.assertNotIn("private-action-data", console.getvalue())
         for path in self.artifacts.rglob("*"):
             if path.is_file():
@@ -124,6 +136,12 @@ else:
         receipt = self.run_ci("test-failure")
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual([item["returncode"] for item in receipt["commands"]], [0, 0, 9])
+        self.assertFalse((self.artifacts / "report.json").exists())
+
+    def test_missing_configured_output_fails_without_success_report(self):
+        receipt = self.run_ci("missing-evidence")
+        self.assertEqual(receipt["status"], "failed")
+        self.assertIn("package_state_layer_test/test.xml", receipt["error"])
         self.assertFalse((self.artifacts / "report.json").exists())
 
 
