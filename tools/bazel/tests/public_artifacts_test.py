@@ -167,6 +167,24 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
 
+    def test_archive_requires_all_five_native_workflow_tests(self):
+        for architecture in ("amd64", "arm64"):
+            with self.subTest(architecture=architecture):
+                seed(self.root, "archive", architecture)
+                event_path = "artifacts/archive/test-events.jsonl"
+                write(self.root, event_path, events(5))
+                summary, paths, ready = self.prepare("archive", architecture=architecture)
+                self.assertTrue(ready)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 5)
+                self.assertTrue(paths)
+
+                write(self.root, event_path, events(4))
+                summary, paths, ready = self.prepare("archive", architecture=architecture)
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
+                              summary["blocked"])
+
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")
         name = artifacts.BEP["archive"][0][1]
