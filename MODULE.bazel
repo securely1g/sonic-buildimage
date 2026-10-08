@@ -12,7 +12,7 @@ bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.20")
-bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.2")
+bazel_dep(name = "rules_distroless", version = "0.9.4")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -28,7 +28,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-d8f9396d1fcc792c78524c9693035a64ee8c8bd0",
+    version = "0.0.15-92fa6873df54e79a4600745a4a463fcb29e05782",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -66,7 +66,7 @@ git_override(
 # the matching version. Remove this override after that entry lands on main.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "d8f9396d1fcc792c78524c9693035a64ee8c8bd0",
+    commit = "92fa6873df54e79a4600745a4a463fcb29e05782",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
@@ -85,9 +85,19 @@ single_version_override(
     version = "0.2.20",
 )
 
-single_version_override(
+# Bazel 8.5.1 applies overrides only from the root module and cannot load
+# patch labels from another module. Fetch the single maintained patch copy
+# from the same immutable infrastructure revision selected above.
+archive_override(
     module_name = "rules_distroless",
-    version = "0.9.4-sonic.2",
+    urls = ["https://github.com/bazel-contrib/rules_distroless/releases/download/v0.9.4/rules_distroless-v0.9.4.tar.gz"],
+    integrity = "sha256-XUP09E8PD7YUGUoHptz3spM4z8irf2EprR5EA8GtHHM=",
+    strip_prefix = "rules_distroless-0.9.4",
+    remote_patches = {
+        "https://raw.githubusercontent.com/securely1g/sonic-build-infra/92fa6873df54e79a4600745a4a463fcb29e05782/third_party/rules_distroless/patches/0001-include-fragments.patch": "sha256-AKuASTTmj5ZgOn//G8fHHU5tupttzaVWZDvBc9sCAws=",
+        "https://raw.githubusercontent.com/securely1g/sonic-build-infra/92fa6873df54e79a4600745a4a463fcb29e05782/third_party/rules_distroless/patches/0002-locked-apt-layers.patch": "sha256-hVmABwx7y/w5bdtZxwj1L3xHyouBxQ5i2cZuHE5WsVI=",
+    },
+    remote_patch_strip = 1,
 )
 
 single_version_override(
