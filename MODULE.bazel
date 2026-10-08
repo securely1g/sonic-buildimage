@@ -12,7 +12,7 @@ bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.20")
-bazel_dep(name = "rules_distroless", version = "0.9.4")
+bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -28,7 +28,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-92fa6873df54e79a4600745a4a463fcb29e05782",
+    version = "0.0.15-d78ffc8253bef78c9993f8ff664a9f152e748c58",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -65,7 +65,7 @@ git_override(
 # Remove this exact source override after the module lands in the main registry.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "92fa6873df54e79a4600745a4a463fcb29e05782",
+    commit = "d78ffc8253bef78c9993f8ff664a9f152e748c58",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
@@ -84,19 +84,10 @@ single_version_override(
     version = "0.2.20",
 )
 
-# Bazel 8.5.1 applies overrides only from the root module and cannot load
-# patch labels from another module. Fetch the single maintained patch copy
-# from the same immutable infrastructure revision selected above.
-archive_override(
+# Keep the registered upstream release with its existing protobuf header fix.
+single_version_override(
     module_name = "rules_distroless",
-    urls = ["https://github.com/bazel-contrib/rules_distroless/releases/download/v0.9.4/rules_distroless-v0.9.4.tar.gz"],
-    integrity = "sha256-XUP09E8PD7YUGUoHptz3spM4z8irf2EprR5EA8GtHHM=",
-    strip_prefix = "rules_distroless-0.9.4",
-    remote_patches = {
-        "https://raw.githubusercontent.com/securely1g/sonic-build-infra/92fa6873df54e79a4600745a4a463fcb29e05782/third_party/rules_distroless/patches/0001-include-fragments.patch": "sha256-AKuASTTmj5ZgOn//G8fHHU5tupttzaVWZDvBc9sCAws=",
-        "https://raw.githubusercontent.com/securely1g/sonic-build-infra/92fa6873df54e79a4600745a4a463fcb29e05782/third_party/rules_distroless/patches/0002-locked-apt-layers.patch": "sha256-hVmABwx7y/w5bdtZxwj1L3xHyouBxQ5i2cZuHE5WsVI=",
-    },
-    remote_patch_strip = 1,
+    version = "0.9.4-sonic.1",
 )
 
 single_version_override(
@@ -198,12 +189,65 @@ register_toolchains("@bsd_tar_toolchains//:all")
 
 # The imported build infrastructure pins the Debian package snapshots.
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
-apt.from_lock(
-    name = "orchagent_debian",
-    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
+apt.install(
+    dependency_set = "orchagent_debian",
+    packages = [
+        "arping (= 2.25-1) [amd64]",
+        "bridge-utils (= 1.7.1-4+b1) [amd64]",
+        "conntrack (= 1:1.4.8-2) [amd64]",
+        "ifupdown (= 0.8.44+deb13u1) [amd64]",
+        "iproute2 (= 6.15.0-1) [amd64]",
+        "iputils-ping (= 3:20240905-3) [amd64]",
+        "libjansson4 (= 2.14-2+b3) [amd64]",
+        "libjemalloc2 (= 5.3.0-3) [amd64]",
+        "libkmod2 (= 34.2-2) [amd64]",
+        "libnet1 (= 1.3+dfsg-2) [amd64]",
+        "libnetfilter-conntrack3 (= 1.1.0-1) [amd64]",
+        "libnfnetlink0 (= 1.0.2-3) [amd64]",
+        "libpcap0.8t64 (= 1.10.5-2) [amd64]",
+        "libpci3 (= 1:3.13.0-2) [amd64]",
+        "libprotobuf-lite32t64 (= 3.21.12-11+deb13u1) [amd64]",
+        "libprotobuf32t64 (= 3.21.12-11+deb13u1) [amd64]",
+        "libteam5 (= 1.31-1+b2) [amd64]",
+        "libteamdctl0 (= 1.31-1+b2) [amd64]",
+        "libxml2 (= 2.12.7+dfsg+really2.9.14-2.1+deb13u3) [amd64]",
+        "libyaml-cpp0.8 (= 0.8.0+dfsg-7) [amd64]",
+        "ndisc6 (= 1.0.7-1) [amd64]",
+        "ndppd (= 0.2.5-6) [amd64]",
+        "pci.ids (= 0.0~2025.06.09-1) [amd64]",
+        "pciutils (= 1:3.13.0-2) [amd64]",
+        "python3-click (= 8.2.0+0.really.8.1.8-1) [amd64]",
+        "python3-netifaces (= 0.11.0-2+b6) [amd64]",
+        "python3-protobuf (= 3.21.12-11+deb13u1) [amd64]",
+        "tcpdump (= 4.99.5-2) [amd64]",
+    ],
+    suites = ["trixie", "trixie-updates", "trixie-security"],
 )
-apt.from_lock(
-    name = "orchagent_debug_debian",
-    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
+apt.install(
+    dependency_set = "orchagent_debug_debian",
+    packages = [
+        "gdb (= 16.3-1) [amd64]",
+        "gdbserver (= 16.3-1) [amd64]",
+        "libbabeltrace1 (= 1.5.11-4+b2) [amd64]",
+        "libcurl3t64-gnutls (= 8.14.1-2+deb13u4) [amd64]",
+        "libdebuginfod-common (= 0.192-4) [amd64]",
+        "libdebuginfod1t64 (= 0.192-4) [amd64]",
+        "libdw1t64 (= 0.192-4) [amd64]",
+        "libglib2.0-0t64 (= 2.84.4-3~deb13u3) [amd64]",
+        "libipt2 (= 2.1.2-1) [amd64]",
+        "libjson-c5 (= 0.18+ds-1) [amd64]",
+        "libmpfr6 (= 4.2.2-1) [amd64]",
+        "libngtcp2-16 (= 1.11.0-1+deb13u1) [amd64]",
+        "libngtcp2-crypto-gnutls8 (= 1.11.0-1+deb13u1) [amd64]",
+        "libsource-highlight-common (= 3.1.9-4.3) [amd64]",
+        "libsource-highlight4t64 (= 3.1.9-4.3+b1) [amd64]",
+        "libtext-charwidth-perl (= 0.04-11+b4) [amd64]",
+        "libtext-wrapi18n-perl (= 0.06-10) [amd64]",
+        "libunwind8 (= 1.8.1-0.1) [amd64]",
+        "sensible-utils (= 0.0.25) [amd64]",
+        "strace (= 6.13+ds-1) [amd64]",
+        "ucf (= 3.0052) [amd64]",
+    ],
+    suites = ["trixie", "trixie-updates", "trixie-security"],
 )
 use_repo(apt, "orchagent_debian", "orchagent_debug_debian", "trixie")
