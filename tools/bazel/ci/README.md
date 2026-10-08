@@ -73,3 +73,9 @@ explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
 out of public artifacts. A failed job publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
+
+PR and maintained-branch CI run native archive, source-layer and sysmgr checks.
+Before their Bazel targets execute, the action audit rejects Debian package
+outputs and Make or dpkg packaging wrappers. The full VS job retains its existing
+steps and runner requirements; invoke it manually with `skip_vs` set to false
+only within the approved full-image execution scope. The default skips VS.

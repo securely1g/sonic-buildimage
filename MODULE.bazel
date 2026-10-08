@@ -12,7 +12,8 @@ bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.20")
-bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+# The patched release sorts above upstream 0.9.4 without a root override.
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -28,7 +29,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a",
+    version = "0.0.15-8043a299756436464a8b58662921dfd50172a3ff",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -61,16 +62,6 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Commit suffixes do not sort by source history. Keep transitive requests from
-# selecting an older infrastructure commit over the landed fix.
-single_version_override(
-    module_name = "sonic-build-infra",
-    version = "0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a",
-)
-
-# Dependency overrides do not propagate from imported modules. Retain their
-# compatible rule implementations, including tar's timestamp handling and the
-# Distroless native protobuf fix.
 # Dependency overrides do not propagate from Common. Keep its cgo header
 # repair selected when another module requests the unpatched stable release.
 single_version_override(
@@ -81,11 +72,6 @@ single_version_override(
 single_version_override(
     module_name = "rules_cc",
     version = "0.2.20",
-)
-
-single_version_override(
-    module_name = "rules_distroless",
-    version = "0.9.4-sonic.1",
 )
 
 single_version_override(
@@ -185,44 +171,19 @@ use_repo(toolchains, "bsd_tar_toolchains")
 
 register_toolchains("@bsd_tar_toolchains//:all")
 
-# The imported build infrastructure pins the Debian package snapshots.
-apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
-apt.install(
-    dependency_set = "orchagent_debian",
-    packages = [
-        "arping",
-        "bridge-utils",
-        "conntrack",
-        # Require the concrete Trixie implementation instead of virtual Provides.
-        "ifupdown (>= 0.8.44)",
-        "iproute2",
-        "iputils-ping",
-        "libgssrpc4t64",
-        "libjansson4",
-        "libjemalloc2",
-        "libkadm5clnt-mit12",
-        "libkadm5srv-mit12",
-        "libkdb5-10t64",
-        "libprotobuf-lite32t64",
-        "libteam5",
-        "libteamdctl0",
-        "libxml2",
-        "libyaml-cpp0.8",
-        "ndisc6",
-        "ndppd",
-        "pciutils",
-        "python3-click",
-        "python3-netifaces",
-        "python3-protobuf",
-        "tcpdump",
-    ],
-    suites = [
-        "trixie",
-        "trixie-updates",
-        "trixie-security",
-    ],
+# Ordinary Distroless declarations exported from the reviewed image lock.
+# Infrastructure supplies the pinned Debian snapshot sources.
+include("//dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel")
+
+# Generate BUILD input labels from the same reviewed lock during repository setup.
+apt_inputs = use_repo_rule("@sonic_build_infra//apt:inputs_repository.bzl", "apt_inputs")
+apt_inputs(
+    name = "orchagent_apt_inputs",
+    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
 )
-use_repo(apt, "orchagent_debian", "trixie")
+
+apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+use_repo(apt, "trixie")
 
 # System-manager and FIPS source files are owned by this checkout. Shared
 # Common and build infrastructure keep the root's landed registry selections.
