@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       skip_vs:
-        description: Run native tests and source layers without the full VS build
+        description: Skip the full VS/P4RT build; clear only for approved package execution
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -361,10 +361,8 @@ jobs:
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: source
-    # Only repository writers may send code to this privileged build host.
-    if: >-
-      ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_vs) &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # Keep native PR checks automatic; package-producing VS builds require opt-in.
+    if: github.event_name == 'workflow_dispatch' && !inputs.skip_vs
     # Keep a one-job runner from accepting an older, unrelated PR's queued job.
     runs-on:
       - self-hosted
