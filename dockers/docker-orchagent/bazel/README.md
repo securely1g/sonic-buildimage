@@ -70,18 +70,23 @@ consumer uses their exact source revision via a temporary `git_override`, while
 `.bazelrc` continues to use the registry's `main` URL. Remove the override and
 verify normal resolution after publication before marking this PR ready.
 
-The public Distroless API is supplied by
-[Distroless #1](https://github.com/securely1g/rules_distroless/pull/1) and
-[registry #46](https://github.com/securely1g/sonic-bazel-registry/pull/46).
-Until both registry entries land, reproduce Draft builds with
-`./tools/bazel/ci/draft_bazel.sh` wherever these examples use `bazel`.
-This explicit wrapper selects only the `codex/distroless-locked-apt` SONiC
-registry plus BCR, and imports the existing build settings. CI uses the same
-wrapper. The normal `.bazelrc` still selects `main`, which currently lacks the
-new Distroless version. The wrapper preserves the reviewed Make cache settings
-when `/bazel_cache` is mounted. Remove the Draft wrapper/rc, restore CI to
-`BAZEL=bazel`, remove the infrastructure source override, and validate normal
-resolution from `main` before marking the PR ready.
+Infrastructure owns the patches in `third_party/rules_distroless/patches`.
+The root `archive_override` downloads upstream Distroless 0.9.4 and applies
+those patches by immutable infrastructure commit and integrity hash. This
+retains the protobuf header-fragment fix and adds checked APT lock imports,
+package metadata and selected tar assembly. No Distroless fork or additional
+registry version is required.
+
+Bazel 8.5.1 applies dependency overrides only from the root module and rejects
+patch labels from another module. The root therefore names the infrastructure
+patch URLs, without keeping another copy of their content. Refresh those URLs
+with the infrastructure pin. Both local builds and CI use ordinary `bazel` and
+the maintained registry `main` URL.
+
+For native AMD64/ARM64 test and source-layer CI without a full VS build, dispatch
+`Bazel SWSS OCI` with `skip_vs=true`. This leaves the existing full-build default
+unchanged. Each selected Bazel scope is checked for DEB-producing actions before
+execution.
 
 To refresh packages, use a separate clean checkout and artifact directory:
 
