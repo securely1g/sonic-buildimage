@@ -13,7 +13,6 @@ _SELECTION_DEPS = [
 
 py_binary(
     name = "select_apt_payloads",
-    python_version = "3.11",
     srcs = ["select_apt_payloads.py"],
     deps = _SELECTION_DEPS,
 )
@@ -21,7 +20,6 @@ py_binary(
 # These tests inspect tar/OCI fixtures and never produce Debian packages.
 py_test(
     name = "select_apt_payloads_test",
-    python_version = "3.11",
     srcs = ["select_apt_payloads.py", "tests/select_apt_payloads_test.py"],
     main = "tests/select_apt_payloads_test.py",
     data = ["apt_policy.json"],

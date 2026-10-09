@@ -23,61 +23,119 @@ Make selects the builder before starting the build. Missing or invalid metadata
 for a selected Bazel target, a missing Bazel executable, or a Bazel build failure
 fails the build; it does not trigger a retry with Make.
 
-## Checked APT package additions
+## Automatically retain base packages in APT layers
 
-The root module uses the existing Distroless `apt.install` API with exact
-package versions and dated Debian repositories. `apt_packages.bzl` lists the
-packages this image actually adds. The checker consumes each public `:data`
-and `:control` target; it never layers the root target's implicit dependency
-closure over the base image.
+Runtime and debug package files use the shared `apt_layer` rule from
+`sonic-build-infra`. Pass the full checked dependency set; the selector removes
+packages already supplied by the actual base image. No separate list of missing
+transitive dependencies needs to be maintained in the image BUILD file.
 
-For example, adding `tcpdump` uses its data and `libpcap` data. The base's
-`libssl3t64` remains in place if its version satisfies tcpdump's declared
-requirement. A duplicate base package, an unsatisfied dependency, or a changed
-base library fails the build with the package or path responsible. This does
-not silently skip incompatible packages or perform an implicit upgrade.
+For example, the snapshot's tcpdump 4.99.5-2 pulls in Debian `libssl3t64`
+3.5.6-1~deb13u2, while the config-engine base already has
+`libssl3t64` 3.5.7-1~deb13u2+fips. The selector finds that installed package name
+in the base's `/var/lib/dpkg/status` and skips the Debian OpenSSL payload. It
+adds tcpdump and libpcap when missing, preserving the base's `libssl.so.3` and
+`libcrypto.so.3`. The retained OpenSSL satisfies tcpdump's >= 3.0.0 requirement
+in this tested image.
 
-The runtime adds 25 packages, matching an APT simulation against the same base
-and package candidates with zero upgrades. Four unused Kerberos administration
-libraries from the earlier Bazel list are omitted: their Debian metadata
-requires an exact Kerberos version different from the FIPS base, and neither
-the Make Dockerfile nor the checked SWSS runtime loader closures requires them.
+This is automatic retention by name, not dependency-version resolution. The
+selector skips a matching package even when versions differ and does not
+check `Depends`/`Pre-Depends`. Loader and installed-image tests must verify the
+chosen base and additions together. Hash, path and library-collision errors
+still fail the build.
 
-The shared `checked_apt_packages` rule only validates these explicit inputs.
-The existing `sonic_layer` uses Distroless `flatten` to assemble their tar files,
-and `oci_image` adds the resulting layer. It requires no new Distroless lock,
-provider, or tar-manifest API and uses the existing `0.9.4-sonic.1` registry
-version with its previously registered protobuf-header fix.
+The reviewed runtime roots remain in `orchagent_debian`; four unused Kerberos
+administration packages remain omitted. Debug roots are `gdb`, `gdbserver` and
+`strace` in `orchagent_debug_debian`, using the same dated Debian repositories.
 
-`apt.lock.json` remains a reviewed content manifest: exact source identities
-and data/control hashes are checked against the public package outputs. It is
-not a second package resolver or a custom import path. The validation receipt
-records the base identity, actual package versions, dependency checks and
-changed non-binary paths. Debug validation also reads runtime overlay controls,
-because adding package data does not update the inherited dpkg database.
+`apt.lock.json` is the canonical Distroless v2 lock with reviewed source DEB
+identities and exact data/control hashes and sizes. `apt.from_lock` imports the
+checked sets directly; normal image builds do not resolve them again.
+Distroless owns dependency closure, package imports, the public
+`@orchagent_debian//:package_set` provider, and tar assembly. The shared SONiC
+rule passes that provider to the owner selector, then invokes upstream `flatten`
+with its ordered selected-input manifest. Generated package-key lists and
+private repository-name adapters are unnecessary.
 
-To change a package, edit its exact version in `MODULE.bazel` and its explicit
-entry in `apt_packages.bzl`. Audit the Bazel action graph, build only its public
-`:data`/`:control` targets, and review the changed package identity, contents,
-checksums and dependencies before updating the content manifest. Rebuild both
-image variants and run their installed loader/runtime checks. These operations
-import existing Debian packages; they must not create DEBs.
+The owner adapter preserves packages already installed in the base and rejects
+changes to its executable/shared-library files, including source-built runtime
+libraries when adding debug tools. Identical packages from multiple repositories
+are included once. Non-binary file replacements are recorded for review. It
+rejects package paths traversing inherited directory symlinks.
 
-The shared checker is pending [infrastructure #27](https://github.com/securely1g/sonic-build-infra/pull/27)
-and [registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45).
-This Draft consumer selects that source revision through a temporary
-`git_override`; `.bazelrc` continues to use the registry's `main` URL. Remove the
-override and verify normal resolution after publication.
+Orchagent has no Make-produced native DEB handoff: its component payloads come
+from source-owned Bazel targets. `apt_policy.json` declares that supported image
+profile and empty retained-package list. Runtime APT selection reads the checked
+config-engine base; debug selection reads the exact completed orchagent runtime.
+The native payload and its `DebugSymbolsInfo` remain in the normal source graph.
 
-Native AMD64/ARM64 CI runs the package and image contract tests. The complete
-image profile remains native AMD64. Dispatch `Bazel SWSS OCI` with `skip_vs=true`
-to validate source layers and contracts without starting a full VS image build.
-Each selected Bazel scope is checked for DEB-producing actions before execution.
+The `runtime_apt_selection` and `debug_apt_selection` targets expose JSON reports
+with the base digest, lock/policy hashes, selected packages, retained versions,
+duplicates and changed non-binary paths. Both variants still use `sonic_layer`
+for Make's file filtering and `sonic_docker_archive` for the existing archive
+outputs. The Make owner also exposes each complete OCI target for consumers
+that need an image directory.
 
-Orchagent's source-built binaries and debug symbols remain in their owning
-repositories. `apt_policy.json` declares the supported image profile and no
-Make-produced native package handoff. These checks do not run package scripts,
-update dpkg state, or regenerate loader/Python caches.
+Retention does not solve new dependencies against the retained versions.
+Verify native library loading and service behavior for the actual base/image
+pair. This action assembles existing package files: it does not run maintainer
+scripts, update the dpkg database or regenerate loader/Python caches. Source
+symbols still require the existing exact-runtime validation.
+
+The shared rule is pending infrastructure PR #27 and registry PR #45. This Draft
+consumer uses their exact source revision via a temporary `git_override`, while
+`.bazelrc` continues to use the registry's `main` URL. Remove the override and
+verify normal resolution after publication before marking this PR ready.
+
+Infrastructure owns the patches in `third_party/rules_distroless/patches`.
+The root `archive_override` downloads upstream Distroless 0.9.4 and applies
+those patches by immutable infrastructure commit and integrity hash. This
+retains the protobuf header-fragment fix and adds checked APT lock imports,
+package metadata and selected tar assembly. No Distroless fork or additional
+registry version is required.
+
+Bazel 8.5.1 applies dependency overrides only from the root module and rejects
+patch labels from another module. The root therefore names the infrastructure
+patch URLs, without keeping another copy of their content. Refresh those URLs
+with the infrastructure pin. Both local builds and CI use ordinary `bazel` and
+the maintained registry `main` URL.
+
+Native AMD64/ARM64 archive checks and AMD64 source-layer checks run on PR
+updates. Manual `Bazel SWSS OCI` dispatch also defaults to `skip_vs=true`. The
+full VS/P4RT build runs only when a manual dispatch explicitly sets
+`skip_vs=false`. Each selected Bazel scope is checked for DEB-producing actions
+before execution.
+
+To refresh packages, use a separate clean checkout and artifact directory:
+
+1. Replace this owner's two `apt.from_lock` declarations temporarily with the
+   checked `apt.install` declarations in `apt-resolve.MODULE.bazel`. Adjust only
+   the intended package roots or dated sources, then let Distroless resolve them.
+2. Export the public hub lock, without reading private extension state:
+
+   ```sh
+   mkdir -p artifacts/apt-candidate
+   bazel query @orchagent_debian//:lock.json
+   bazel cquery @orchagent_debian//:lock.json --output=files > artifacts/apt-candidate/lock-path.txt
+   cp "$(cat artifacts/apt-candidate/lock-path.txt)" artifacts/apt-candidate/apt.lock.json
+   ```
+
+3. Review the canonical dependency sets, source URLs, versions, checksums and
+   closure. Keep only this owner's runtime/debug sets and their complete package
+   closure. Preserve existing reviewed data/control hashes only when their source
+   package identity is unchanged. For changed imports, audit the selected action
+   graph before extracting the public provider's data/control files, then review
+   and record their actual SHA-256 values and sizes in the canonical packages.
+   Do not run DEB-producing actions as part of this refresh.
+4. Publish the reviewed canonical lock and restore `apt.from_lock`. Rebuild both
+   selected layers and validate their receipts against the intended base images.
+   Re-run owner policy tests and the installed loader/runtime checks for any
+   changed package or retained-version relationship.
+
+CI runs selector regressions on native AMD64 and ARM64 with tar/OCI fixtures.
+Those tests do not establish ARM64 image support; the complete image profile
+remains native AMD64. Canonical lock parsing and package-set provider behavior
+are validated by the upstream Distroless tests and actual AMD64 image actions.
 
 ## Startup configuration
 
