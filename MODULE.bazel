@@ -28,7 +28,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-389b5fbbd0baad2bfce32ffc67cfb607e7e11c38",
+    version = "0.0.15-2acd739d8f2c3d3e52b9ccd8ff31dbbd7bde213f",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -65,7 +65,7 @@ git_override(
 # Remove this exact source override after the module lands in the main registry.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "389b5fbbd0baad2bfce32ffc67cfb607e7e11c38",
+    commit = "2acd739d8f2c3d3e52b9ccd8ff31dbbd7bde213f",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
@@ -190,5 +190,13 @@ register_toolchains("@bsd_tar_toolchains//:all")
 # Ordinary Distroless declarations exported from the reviewed image lock.
 # Infrastructure supplies the pinned Debian snapshot sources.
 include("//dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel")
+
+# Generate BUILD input labels from the same reviewed lock during repository setup.
+apt_inputs = use_repo_rule("@sonic_build_infra//apt:inputs_repository.bzl", "apt_inputs")
+apt_inputs(
+    name = "orchagent_apt_inputs",
+    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
+)
+
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
 use_repo(apt, "trixie")

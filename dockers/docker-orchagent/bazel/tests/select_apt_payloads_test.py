@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check that orchagent APT assembly preserves locked content and base ELF files."""
 
+import ast
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import tarfile
 import tempfile
 import unittest
 
+GENERATED_INPUTS = Path(sys.argv.pop(1))
 OWNER = Path(__file__).absolute().parents[2]
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
@@ -102,7 +104,9 @@ class SelectAptPayloadsTest(unittest.TestCase):
         from sonic_apt.inputs import declarations
         module, bzl = declarations(json.loads((OWNER / "bazel/apt.lock.json").read_bytes()))
         self.assertEqual((OWNER / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
-        self.assertEqual((OWNER / "bazel/apt_inputs.bzl").read_text(), bzl)
+        expected = ast.literal_eval(bzl.split("APT_INPUTS =", 1)[1])
+        actual = ast.literal_eval(GENERATED_INPUTS.read_text().split("APT_INPUTS =", 1)[1])
+        self.assertEqual(actual, expected)
 
     def test_base_packages_are_retained(self):
         paths, receipt = self.select()
