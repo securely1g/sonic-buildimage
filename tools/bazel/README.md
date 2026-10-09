@@ -297,7 +297,7 @@ landed `sonic-build-infra` version
 `0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a` on registry `main`
 at `5c85252b0ebc888e53bfcbd95f07278e54450f98`. It registers the landed fix
 from [build-infra #26](https://github.com/securely1g/sonic-build-infra/pull/26).
-The current Draft instead selects the exact source commit from
+The current proposal selects the landed source commit from
 [build-infra #27](https://github.com/securely1g/sonic-build-infra/pull/27), pending
 [registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45).
 Its Git override prevents older transitive commit-suffixed versions from winning;
