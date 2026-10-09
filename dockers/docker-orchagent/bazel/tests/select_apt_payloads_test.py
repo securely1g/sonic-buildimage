@@ -98,6 +98,12 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.mapping.write_text(json.dumps(value))
         return subject.select(self.base, self.lock, self.policy, self.mapping, variant="runtime")
 
+    def test_public_input_declarations_match_the_reviewed_lock(self):
+        from sonic_apt.inputs import declarations
+        module, bzl = declarations(json.loads((OWNER / "bazel/apt.lock.json").read_bytes()))
+        self.assertEqual((OWNER / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
+        self.assertEqual((OWNER / "bazel/apt_inputs.bzl").read_text(), bzl)
+
     def test_base_packages_are_retained(self):
         paths, receipt = self.select()
         self.assertEqual(paths, [self.paths["new-runtime"]])
@@ -153,7 +159,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate package in APT package set"):
             self.select()
 
-    def test_foreign_provider_package_is_rejected(self):
+    def test_foreign_candidate_package_is_rejected(self):
         lock = json.loads(self.lock.read_bytes())
         next(iter(lock["packages"].values()))["architecture"] = "arm64"
         self.lock.write_text(json.dumps(lock))
