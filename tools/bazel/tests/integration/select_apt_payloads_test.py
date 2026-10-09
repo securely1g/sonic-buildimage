@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 GENERATED_INPUTS = Path(sys.argv.pop(1))
 POLICY = Path(sys.argv.pop(1))
@@ -23,6 +24,11 @@ import select_apt_payloads as subject
 
 def tar_bytes(entries):
     return layer_tar(dict(entries))
+
+
+def control_tar(fields):
+    text = "".join(name + ": " + value + "\n" for name, value in fields.items())
+    return tar_bytes([("control", text.encode())])
 
 
 def write_oci(path, entries):
@@ -46,15 +52,19 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.base = self.root / "base.oci"
         self.write_base()
         packages, roots, mapping = {}, [], []
-        self.paths, self.controls = {}, {}
+        self.paths, self.controls, self.control_fields = {}, {}, {}
         for name, version in (("libssl3t64", "3.5.6"), ("new-runtime", "1.0")):
             key = "/trixie/" + name + ":amd64=" + version
             path = self.root / (name + ".tar")
             data = ([("usr/lib/libssl.so.3", bytes(header) + b"Debian runtime")] if name == "libssl3t64" else
                     [("usr/share/" + name + "/data", name.encode())])
             path.write_bytes(tar_bytes(data))
-            control = self.root / (name + ".control")
-            control.write_text("Package: " + name + "\nVersion: " + version + "\n")
+            control = self.root / (name + ".control.tar")
+            fields = {"Package": name, "Version": version, "Architecture": "amd64"}
+            if name == "new-runtime":
+                fields["Depends"] = "libssl3t64 (>= 3.5)"
+            control.write_bytes(control_tar(fields))
+            self.control_fields[name] = fields
             packages[key] = {"name": name, "version": version, "architecture": "amd64", "suite": "trixie",
                              "sha256": hashlib.sha256(name.encode()).hexdigest(), "size": 1,
                              "filename": "pool/" + name + ".deb", "depends_on": [],
@@ -92,6 +102,45 @@ class SelectAptPayloadsTest(unittest.TestCase):
             item["package"] = lock["packages"][item["key"]]
         self.mapping.write_text(json.dumps(mapping))
 
+    def update_control(self, name, **fields):
+        self.control_fields[name].update(fields)
+        control = self.controls[name]
+        control.write_bytes(control_tar(self.control_fields[name]))
+        lock = json.loads(self.lock.read_bytes())
+        package = next(value for value in lock["packages"].values() if value["name"] == name)
+        package.update(control_sha256=hashlib.sha256(control.read_bytes()).hexdigest(),
+                       control_size=control.stat().st_size)
+        self.lock.write_text(json.dumps(lock))
+
+    def debug_inputs(self):
+        """Model a debug package that needs a runtime addition absent from dpkg status."""
+        _, receipt = self.select()
+        metadata = self.root / "runtime-selection.json"
+        metadata.write_text(json.dumps(receipt))
+        write_oci(self.base, [("var/lib/dpkg/status", self.status),
+                             ("usr/lib/libssl.so.3", self.base_elf),
+                             ("usr/share/new-runtime/data", b"new-runtime")])
+        payload = self.root / "debug-tool.tar"
+        payload.write_bytes(tar_bytes([("usr/share/debug-tool/data", b"debug")]))
+        control = self.root / "debug-tool.control.tar"
+        control.write_bytes(control_tar({"Package": "debug-tool", "Version": "1.0",
+                                         "Architecture": "amd64", "Depends": "new-runtime (>= 1.0)"}))
+        key = "/trixie/debug-tool:amd64=1.0"
+        lock = json.loads(self.lock.read_bytes())
+        lock["packages"] = {key: {"name": "debug-tool", "version": "1.0", "architecture": "amd64",
+                                  "sha256": hashlib.sha256(b"debug-tool").hexdigest(), "depends_on": [],
+                                  "payload_sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+                                  "payload_size": payload.stat().st_size,
+                                  "control_sha256": hashlib.sha256(control.read_bytes()).hexdigest(),
+                                  "control_size": control.stat().st_size}}
+        lock["dependency_sets"] = {"debug": {"sets": {"amd64": {key.rsplit("=", 1)[0]: "1.0"}}}}
+        lock_path = self.root / "debug.lock.json"
+        lock_path.write_text(json.dumps(lock))
+        mapping = self.root / "debug.inputs.json"
+        mapping.write_text(json.dumps({"architecture": "amd64", "locked": [
+            {"key": key, "payload": str(payload), "control": str(control)}]}))
+        return lock_path, mapping, metadata, payload
+
     def select(self):
         value = json.loads(self.mapping.read_bytes())
         packages = json.loads(self.lock.read_bytes())["packages"]
@@ -117,6 +166,73 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.assertEqual(receipt["skipped_retained"], [])
         self.assertEqual(receipt["image"], "docker-orchagent")
         self.assertEqual(receipt["base_elf_count"], 1)
+        self.assertEqual(receipt["dependency_check"]["status"], "satisfied")
+        self.assertEqual(receipt["dependency_check"]["package_count"], 2)
+
+    def test_added_package_requires_a_compatible_retained_base_version(self):
+        """Reject an addition whose minimum version exceeds the actual FIPS base."""
+        self.update_control("new-runtime", Depends="libssl3t64 (>= 3.5.8)")
+        with self.assertRaisesRegex(ValueError, "unsatisfied Depends: libssl3t64"):
+            self.select()
+
+    def test_unselected_candidate_cannot_satisfy_a_dependency_alternative(self):
+        """Do not count the skipped Debian candidate as the installed FIPS version."""
+        self.update_control("new-runtime", Depends="libssl3t64 (= 3.5.6) | absent-provider")
+        with self.assertRaisesRegex(ValueError, "unsatisfied Depends: libssl3t64"):
+            self.select()
+
+    def test_debug_dependencies_use_inherited_runtime_control_metadata(self):
+        """Require runtime evidence for dependencies missing from unchanged dpkg status."""
+        lock, mapping, metadata, payload = self.debug_inputs()
+        with self.assertRaisesRegex(ValueError, "unsatisfied Depends: new-runtime"):
+            subject.select(self.base, lock, self.policy, mapping, variant="debug")
+        paths, receipt = subject.select(self.base, lock, self.policy, mapping, variant="debug",
+                                        base_package_metadata=metadata)
+        self.assertEqual(paths, [payload])
+        self.assertEqual(receipt["dependency_check"]["package_count"], 3)
+        self.assertEqual(receipt["dependency_check"]["packages"]["new-runtime"]["Version"], "1.0")
+
+    def test_selector_cli_forwards_inherited_runtime_metadata(self):
+        """Keep dependency evidence available through the selector's command-line path."""
+        lock, mapping, metadata, payload = self.debug_inputs()
+        output, receipt = self.root / "debug-output", self.root / "debug-selection.json"
+        args = ["select_apt_payloads.py", "--base", str(self.base), "--lock", str(lock),
+                "--retained-manifest", str(self.policy), "--mapping", str(mapping),
+                "--variant", "debug", "--base-package-metadata", str(metadata),
+                "--out-dir", str(output), "--receipt", str(receipt)]
+        with mock.patch.object(sys, "argv", args):
+            subject.main()
+        self.assertEqual(json.loads(receipt.read_bytes())["dependency_check"]["package_count"], 3)
+        self.assertEqual((output / "000001.tar").read_bytes(), payload.read_bytes())
+
+    def test_inherited_metadata_must_match_the_base_package_inventory(self):
+        """Reject a runtime receipt from a different dpkg package inventory."""
+        lock, mapping, metadata, _ = self.debug_inputs()
+        self.status = self.status.replace(b"3.5.7+fips", b"3.5.8+fips")
+        self.write_base()
+        with self.assertRaisesRegex(ValueError, "does not match the inherited dpkg inventory"):
+            subject.select(self.base, lock, self.policy, mapping, variant="debug",
+                           base_package_metadata=metadata)
+
+    def test_inherited_metadata_requires_a_successful_dependency_check(self):
+        """Reject incomplete or failed runtime dependency evidence."""
+        lock, mapping, metadata, _ = self.debug_inputs()
+        receipt = json.loads(metadata.read_bytes())
+        receipt["dependency_check"]["status"] = "failed"
+        metadata.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, "lacks a successful dependency check"):
+            subject.select(self.base, lock, self.policy, mapping, variant="debug",
+                           base_package_metadata=metadata)
+
+    def test_inherited_metadata_cannot_rewrite_an_installed_base_version(self):
+        """Reject altered control records even when the receipt keeps the right base hash."""
+        lock, mapping, metadata, _ = self.debug_inputs()
+        receipt = json.loads(metadata.read_bytes())
+        receipt["dependency_check"]["packages"]["libssl3t64"]["Version"] = "9.0"
+        metadata.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, "changes an installed package control record"):
+            subject.select(self.base, lock, self.policy, mapping, variant="debug",
+                           base_package_metadata=metadata)
 
     def test_another_package_cannot_replace_a_base_elf(self):
         self.update_payload("new-runtime", [("usr/lib/libssl.so.3", self.base_elf + b"changed")])
