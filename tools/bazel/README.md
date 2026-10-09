@@ -283,17 +283,14 @@ Local commands default to the maintained SONiC registry `main` endpoint from
 `.bazelrc`, alongside Bazel Central Registry. Module versions, source commits,
 checksums and package snapshots remain pinned.
 
-This Draft requests `rules_distroless` 0.9.4.sonic.1, which is being registered
-on `codex/distroless-dotted-version`. CI temporarily replaces the single SONiC
-endpoint with that branch. For local Draft validation, pass both registry flags
-to replace the defaults:
+`rules_distroless` 0.9.4.sonic.1 is available on the maintained registry after
+[registry #49](https://github.com/securely1g/sonic-bazel-registry/pull/49) landed.
+CI and local validation use the same `main` endpoint. The dotted version sorts
+above plain 0.9.4, so Distroless needs no root version override.
 
 ```sh
-bazel test --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/distroless-dotted-version --registry=https://bcr.bazel.build //tools/bazel/tests:select_apt_payloads_test
+bazel test //tools/bazel/tests:select_apt_payloads_test
 ```
-
-Remove the temporary CI steps and use `main` after the entry lands. The dotted
-version sorts above plain 0.9.4, so Distroless needs no root version override.
 
 [Registry #44](https://github.com/securely1g/sonic-bazel-registry/pull/44)
 landed `sonic-build-infra` version
