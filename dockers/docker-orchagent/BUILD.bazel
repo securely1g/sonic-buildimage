@@ -113,6 +113,7 @@ debug_symbols_layer(
 apt_layer(
     name = "selected_debug_apt",
     base = ":docker-orchagent",
+    base_package_metadata = ":runtime_apt_selection",
     packages = APT_INPUTS["orchagent_debug_debian"]["amd64"],
     dependency_set = "orchagent_debug_debian",
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",

@@ -14,7 +14,7 @@ from tools.bazel.oci.oci_inventory import apply_layer, assert_overlay_paths
 from tools.bazel.oci.oci_layout import validate_layout
 
 
-def select(base, lock, policy_path, mapping, *, variant):
+def select(base, lock, policy_path, mapping, *, variant, base_package_metadata=None):
     require(variant in ("runtime", "debug"), "unsupported orchagent APT variant")
     policy = json.loads(policy_path.read_bytes())
     # Orchagent adds its native source-built tar targets after the APT layer.
@@ -36,7 +36,7 @@ def select(base, lock, policy_path, mapping, *, variant):
         lock, mapping, group=variant, architecture="amd64",
         installed=selection.base_packages(layout.layers, architecture="amd64"),
         base_files=files, retained_packages={}, inspect_payload=inspect_payload,
-        check_overlay=assert_overlay_paths)
+        check_overlay=assert_overlay_paths, base_package_metadata=base_package_metadata)
     receipt.update(image="docker-orchagent", base_manifest_digest=layout.descriptor["digest"],
                    policy_sha256=sha(policy_path))
     return selected, receipt
@@ -48,12 +48,14 @@ def main():
     parser.add_argument("--lock", required=True, type=Path)
     parser.add_argument("--retained-manifest", dest="policy", required=True, type=Path)
     parser.add_argument("--mapping", required=True, type=Path)
+    parser.add_argument("--base-package-metadata", type=Path)
     parser.add_argument("--variant", required=True, choices=("runtime", "debug"))
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
     args = parser.parse_args()
     try:
-        selected, receipt = select(args.base, args.lock, args.policy, args.mapping, variant=args.variant)
+        selected, receipt = select(args.base, args.lock, args.policy, args.mapping, variant=args.variant,
+                                   base_package_metadata=args.base_package_metadata)
         selection.stage_payloads(selected, args.out_dir)
         args.receipt.parent.mkdir(parents=True, exist_ok=True)
         args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")

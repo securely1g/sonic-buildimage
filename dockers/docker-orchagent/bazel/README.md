@@ -38,11 +38,14 @@ adds tcpdump and libpcap when missing, preserving the base's `libssl.so.3` and
 `libcrypto.so.3`. The retained OpenSSL satisfies tcpdump's >= 3.0.0 requirement
 in this tested image.
 
-This is automatic retention by name, not dependency-version resolution. The
-selector skips a matching package even when versions differ and does not
-check `Depends`/`Pre-Depends`. Loader and installed-image tests must verify the
-chosen base and additions together. Hash, path and library-collision errors
-still fail the build.
+After selection, the shared helper checks every known package's `Depends` and
+`Pre-Depends` against the final package inventory. It uses Debian version order,
+alternative dependencies and virtual providers. A compatible base version is
+retained even when it differs from the lock; an unsatisfied requirement fails
+the build without replacing the base package. The check does not install or
+configure packages, establish `Pre-Depends` installation ordering, or evaluate
+`Conflicts`/`Breaks`. Loader and installed-image tests remain necessary for runtime
+compatibility. Hash, path and library-collision errors still fail the build.
 
 The reviewed runtime roots remain in `orchagent_debian`; four unused Kerberos
 administration packages remain omitted. Debug roots are `gdb`, `gdbserver` and
@@ -77,10 +80,17 @@ Protobuf header fix.
 Orchagent has no Make-produced native DEB handoff: its component payloads come
 from source-owned Bazel targets. `apt_policy.json` records that profile and the
 empty retained-package list. Runtime selection reads the checked config-engine
-base; debug selection reads the completed Orchagent runtime. The
-`runtime_apt_selection` and `debug_apt_selection` targets expose receipts with
-the base digest, lock/policy hashes, selected and skipped packages, duplicates
-and non-binary path changes. Source payloads, symbols and archive outputs use
+base; debug selection reads the completed Orchagent runtime and receives its
+`runtime_apt_selection` receipt as the declared `base_package_metadata` input.
+This carries the runtime APT packages and their requirements because archive
+assembly leaves the inherited dpkg database unchanged. The child checks that
+metadata against the actual dpkg baseline and validates the combined set again.
+Source-built payloads still rely on their owner contracts and runtime checks;
+this does not synthesize Debian metadata for them.
+
+The `runtime_apt_selection` and `debug_apt_selection` targets expose receipts with
+the base digest, lock/policy hashes, selected and skipped packages, the validated
+dependency inventory, duplicates and non-binary path changes. Source payloads, symbols and archive outputs use
 the existing owner rules.
 
 The shared rule is introduced by infrastructure PR #27 and registry PR #45.
