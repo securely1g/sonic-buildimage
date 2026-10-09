@@ -62,12 +62,11 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Infrastructure #27 landed; registry #45 publishes this shared APT source.
-# Remove this exact source override after the module lands in the main registry.
-git_override(
+# Commit suffixes do not sort by source history. Keep the landed APT source
+# selected over the older transitive 0.0.15-6653ac1 snapshot.
+single_version_override(
     module_name = "sonic-build-infra",
-    commit = "62a7892228a72a1a98b9659432d67842172a9266",
-    remote = "https://github.com/securely1g/sonic-build-infra.git",
+    version = "0.0.15-62a7892228a72a1a98b9659432d67842172a9266",
 )
 
 # Dependency overrides do not propagate from Common. Keep its cgo header
