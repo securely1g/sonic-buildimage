@@ -29,7 +29,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-a834af0971cd7d17c82ed1689adc7f82a488732a",
+    version = "0.0.15-62a7892228a72a1a98b9659432d67842172a9266",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -62,11 +62,11 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Draft dependency: infrastructure #27 and registry #45 publish the shared APT rule.
+# Infrastructure #27 landed; registry #45 publishes this shared APT source.
 # Remove this exact source override after the module lands in the main registry.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "a834af0971cd7d17c82ed1689adc7f82a488732a",
+    commit = "62a7892228a72a1a98b9659432d67842172a9266",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
