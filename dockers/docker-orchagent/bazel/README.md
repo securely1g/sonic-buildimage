@@ -91,6 +91,12 @@ full VS/P4RT build requires a manual dispatch with `skip_vs=false` and appropria
 package-build authorization. Every selected Bazel scope is audited for DEB
 production before execution.
 
+Generated Bazel files carry an `AUTO-GENERATED. DO NOT EDIT MANUALLY.` header
+that names their generator. The package lock and generated JSON inputs/receipts
+use `_generated` metadata for the same notice. Keep this notice when refreshing
+the lock; its package resolution and extracted-content hashes must be reviewed.
+The package request recipe and policy remain handwritten inputs.
+
 To update packages in a separate clean checkout:
 
 1. Use `apt-resolve.MODULE.bazel` to resolve the intended runtime/debug roots
