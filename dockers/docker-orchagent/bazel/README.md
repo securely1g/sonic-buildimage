@@ -77,6 +77,13 @@ that directory into a layer. It needs no new lock importer, package provider or
 selected-manifest patch. Distroless `0.9.4.sonic.1` retains the existing Protobuf
 header fix and sorts above plain 0.9.4 without a root override.
 
+The shared `//tools/bazel/oci:apt_selection` library owns OCI validation, base
+and candidate file inventories, the call into `sonic_apt.selection`, and the
+command-line staging/receipt handling. Other containers, including syncd-vs,
+use that same implementation. This directory's `select_apt_payloads.py` only
+checks Orchagent's AMD64/Trixie policy and adds its image/policy receipt fields;
+the `:apt_policy` library exposes that small owner adapter to its tests.
+
 Orchagent has no Make-produced native DEB handoff: its component payloads come
 from source-owned Bazel targets. `apt_policy.json` records that profile and the
 empty retained-package list. Runtime selection reads the checked config-engine

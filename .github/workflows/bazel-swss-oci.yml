@@ -162,6 +162,7 @@ jobs:
             --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
             --bazel-arg=--local_resources=memory=10000 \
             --output artifacts/config-engine/action-audit.json \
+            //tools/bazel/tests:apt_selection_test \
             //tools/bazel/tests:sonic_py_common_test \
             //tools/bazel/tests:sonic_py_common_full_test \
             //tools/bazel/tests:sonic_config_engine_full_test \
@@ -179,6 +180,7 @@ jobs:
             --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
             --nocache_test_results --test_output=all \
             --build_event_json_file="$PWD/artifacts/config-engine/test-events.jsonl" \
+            //tools/bazel/tests:apt_selection_test \
             //tools/bazel/tests:sonic_py_common_test \
             //tools/bazel/tests:sonic_py_common_full_test \
             //tools/bazel/tests:sonic_config_engine_full_test \

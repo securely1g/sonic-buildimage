@@ -70,9 +70,9 @@ FILES = {
 BEP = {
     "archive": [
         ("archive-tests", "artifacts/archive/test-events.jsonl", 5),
-        ("python-tests", "artifacts/config-engine/test-events.jsonl", 9),
+        ("python-tests", "artifacts/config-engine/test-events.jsonl", 10),
     ],
-    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 11)],
+    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 12)],
     "syncd": [],
     "vs": [],
 }
@@ -414,7 +414,7 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
         receipts["outputs"] = outputs
 
     if job_status == "success":
-        expected = {"archive": ("python", 5), "source": ("source", 11), "syncd": ("syncd", 7)}
+        expected = {"archive": ("python", 5), "source": ("source", 12), "syncd": ("syncd", 7)}
         if kind in expected:
             receipt_name, count = expected[kind]
             value = receipts.get(receipt_name, {})

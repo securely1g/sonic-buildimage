@@ -209,6 +209,18 @@ py_test(
     deps = ["//tools/bazel/oci:oci_layout"],
 )
 
+# Shared OCI selection and CLI coverage has no container-owned inputs.
+py_test(
+    name = "apt_selection_test",
+    size = "small",
+    srcs = ["integration/apt_selection_test.py"],
+    main = "integration/apt_selection_test.py",
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:apt_selection",
+    ],
+)
+
 # This suite needs the generated package mapping and inspects tar/OCI fixtures.
 # It does not produce Debian packages or require a complete Orchagent image.
 py_test(
@@ -230,7 +242,7 @@ py_test(
     ],
     deps = [
         ":oci_base_fixture_lib",
-        "//dockers/docker-orchagent/bazel:select_apt_payloads_lib",
+        "//dockers/docker-orchagent/bazel:apt_policy",
         "//tools/bazel/oci:oci_inventory",
         "@sonic_build_infra//apt:lib",
     ],

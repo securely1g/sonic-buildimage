@@ -82,7 +82,7 @@ def receipt(kind, architecture="amd64"):
                     for number in range(5)}}
     if kind == "source":
         return {"status": "passed", "revision": REVISION, **unsafe,
-                "tests": {"//tests:source_" + str(number): "passed" for number in range(11)},
+                "tests": {"//tests:source_" + str(number): "passed" for number in range(12)},
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST}}}
     if kind == "syncd":

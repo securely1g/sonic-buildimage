@@ -5,10 +5,8 @@ package(default_visibility = ["//dockers/docker-orchagent:__pkg__"])
 exports_files(["apt.lock.json", "apt_policy.json", "apt_inputs.MODULE.bazel"])
 
 _SELECTION_DEPS = [
-    "@sonic_build_infra//apt:lib",
     "//tools/bazel/ci:artifact_validation",
-    "//tools/bazel/oci:oci_inventory",
-    "//tools/bazel/oci:oci_layout",
+    "//tools/bazel/oci:apt_selection",
 ]
 
 py_binary(
@@ -17,9 +15,9 @@ py_binary(
     deps = _SELECTION_DEPS,
 )
 
-# Keep the production selector with the image; central tests import this library.
+# Only Orchagent's policy stays here; OCI selection and the CLI are shared.
 py_library(
-    name = "select_apt_payloads_lib",
+    name = "apt_policy",
     srcs = ["select_apt_payloads.py"],
     imports = ["."],
     deps = _SELECTION_DEPS,
