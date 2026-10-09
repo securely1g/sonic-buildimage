@@ -3,6 +3,7 @@
     "syncd_vs_debian": {
       "sets": {
         "amd64": {
+          "/trixie-security/libcares2:amd64": "1.34.5-1+deb13u1",
           "/trixie/clang:amd64": "1:19.0-63",
           "/trixie/cpp:amd64": "4:14.2.0-1",
           "/trixie/iproute2:amd64": "6.15.0-1",
@@ -10,7 +11,6 @@
           "/trixie/libboost1.83-all-dev:amd64": "1.83.0-4.2",
           "/trixie/libbpf-dev:amd64": "1:1.5.0-3",
           "/trixie/libcap2-bin:amd64": "1:2.75-10+deb13u1+b1",
-          "/trixie/libcares2:amd64": "1.34.5-1+deb13u1",
           "/trixie/libelf-dev:amd64": "0.192-4",
           "/trixie/libfl-dev:amd64": "2.6.4-8.2+b4",
           "/trixie/libgc-dev:amd64": "1:8.2.8-1",
@@ -66,6 +66,9 @@
       "architecture": "amd64",
       "control_sha256": "be1f9ed60d9909c4801dedff4f2e8b1fd4d0fe7ce0080aaba319c7d0c0572305",
       "control_size": 780,
+      "depends_on": [
+        "/trixie/libc6:amd64=2.41-12+deb13u3"
+      ],
       "filename": "pool/main/g/glibc/libc-dev-bin_2.41-12+deb13u4_amd64.deb",
       "name": "libc-dev-bin",
       "payload_sha256": "5125c6b52f5bf66c4f88baed2a3a48ce184914fed07e0ad3d877984ff1c00426",
@@ -79,7 +82,16 @@
       "architecture": "amd64",
       "control_sha256": "71cfb3444344b3ed56e3730c46c9008e2e3a8318a8c2ff238d7d9e7d0610954f",
       "control_size": 13776,
+      "depends_on": [
+        "/stable/libc-dev-bin:amd64=2.41-12+deb13u4",
+        "/trixie-security/linux-libc-dev:amd64=6.12.96-1",
+        "/trixie/libcrypt-dev:amd64=1:4.4.38-1",
+        "/trixie/rpcsvc-proto:amd64=1.4.3-1"
+      ],
       "filename": "pool/main/g/glibc/libc6-dev_2.41-12+deb13u4_amd64.deb",
+      "inherited_requirements": [
+        "libc6 (= 2.41-12+deb13u4)"
+      ],
       "name": "libc6-dev",
       "payload_sha256": "e7f7ab98dc2ba9cb92b74369b4e94c3cae974b5edd07bb343bb7dedf6ab6e49a",
       "payload_size": 3212951,
@@ -92,7 +104,13 @@
       "architecture": "amd64",
       "control_sha256": "9b42a96f73a5f638ff68625eddc1713016f78c50b1cb70915885419c42dc6eb7",
       "control_size": 1636,
+      "depends_on": [
+        "/trixie/libc6:amd64=2.41-12+deb13u3"
+      ],
       "filename": "pool/main/libc/libcap2/libcap-dev_2.75-10+deb13u1+b3_amd64.deb",
+      "inherited_requirements": [
+        "libcap2 (= 1:2.75-10+deb13u1+b3)"
+      ],
       "name": "libcap-dev",
       "payload_sha256": "126581b815c02ca51b56a3f0213d260a359c523f6a7fd037bb3df266b8974e75",
       "payload_size": 1221638,
@@ -105,7 +123,13 @@
       "architecture": "amd64",
       "control_sha256": "a6c3142ff89d65b18b8cb5197477479426d23a7c7c0bdcf7ea6ba9609c85032b",
       "control_size": 1440,
+      "depends_on": [
+        "/stable/libc6-dev:amd64=2.41-12+deb13u4"
+      ],
       "filename": "pool/main/e/expat/libexpat1-dev_2.8.3-1~deb13u1_amd64.deb",
+      "inherited_requirements": [
+        "libexpat1 (= 2.8.3-1~deb13u1)"
+      ],
       "name": "libexpat1-dev",
       "payload_sha256": "517b1f338be219339ec842093b9147bef1dce5c41b00fd8eb7240eba22411d4c",
       "payload_size": 291294,
@@ -118,7 +142,15 @@
       "architecture": "amd64",
       "control_sha256": "dc3c514a5f9afea196e98248ed7d200a526bcf8275a9db6de887b10bf2cf465b",
       "control_size": 7688,
+      "depends_on": [
+        "/stable/libexpat1-dev:amd64=2.8.3-1~deb13u1",
+        "/trixie/zlib1g-dev:amd64=1:1.3.dfsg+really1.3.1-1+b1"
+      ],
       "filename": "pool/main/p/python3.13/libpython3.13-dev_3.13.5-2+deb13u5_amd64.deb",
+      "inherited_requirements": [
+        "libpython3.13-stdlib (= 3.13.5-2+deb13u5)",
+        "libpython3.13 (= 3.13.5-2+deb13u5)"
+      ],
       "name": "libpython3.13-dev",
       "payload_sha256": "f019c9e552e70c515703cb9a1d2dd7d35310587290973f1a8a7db9b8fbb3b6cd",
       "payload_size": 7581198,
@@ -131,7 +163,14 @@
       "architecture": "amd64",
       "control_sha256": "7e9e1a4c4b89896ded290ccc197ff1a9c670198be5de6ae4778d33a8888c6313",
       "control_size": 780,
+      "depends_on": [
+        "/stable/libpython3.13-dev:amd64=3.13.5-2+deb13u5"
+      ],
       "filename": "pool/main/p/python3.13/python3.13-dev_3.13.5-2+deb13u5_amd64.deb",
+      "inherited_requirements": [
+        "python3.13 (= 3.13.5-2+deb13u5)",
+        "libpython3.13 (= 3.13.5-2+deb13u5)"
+      ],
       "name": "python3.13-dev",
       "payload_sha256": "a9cb423815afb37e1c6b81bbcf9bd548e0ee29f6e669e5889a1b595369e9527e",
       "payload_size": 503281,

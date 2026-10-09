@@ -172,55 +172,77 @@ runtime filesystem.
 
 ## Checked APT content
 
-The shared implementation is [infrastructure #27](https://github.com/securely1g/sonic-build-infra/pull/27),
+The shared `apt_layer` implementation comes from
+[infrastructure #27](https://github.com/securely1g/sonic-build-infra/pull/27),
 published by [registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45).
-While these dependencies are unmerged, the Draft consumer pins the same source
-commit explicitly. Remove its temporary `git_override` after the registry entry
-lands and verify normal module resolution before marking this PR ready.
+The Draft consumer selects the follow-up
+[infrastructure #28](https://github.com/securely1g/sonic-build-infra/pull/28) through
+[registry #50](https://github.com/securely1g/sonic-bazel-registry/pull/50), which
+adds an explicit inherited-package replacement. The infrastructure Git override
+is removed. A version override chooses this SHA-suffixed candidate over older
+transitive prereleases whose names otherwise sort later.
 
-The root module uses the existing Distroless `apt.install` API with exact
-package versions and dated Debian repositories. `apt_packages.bzl` lists the
-packages this image actually adds. The checker consumes each public `:data`
-and `:control` target; it never layers the root target's implicit dependency
-closure over the base image.
+CI uses Registry #50's reviewed `codex/retained-apt-replacements` endpoint.
+For immutable local validation, preserve the same configuration and replace only
+that endpoint with its reviewed snapshot:
 
-For example, adding `tcpdump` uses its data and `libpcap` data. The base's
-`libssl3t64` remains in place if its version satisfies tcpdump's declared
-requirement. A duplicate base package, an unsatisfied dependency, or a changed
-base library fails the build with the package or path responsible. This does
-not silently skip incompatible packages or perform an implicit upgrade.
+```sh
+sed 's@sonic-bazel-registry/codex/retained-apt-replacements@sonic-bazel-registry/82b55f61a5d08c1c885336fd18edfe4debeaaf24@' .bazelrc > /tmp/syncd-registry.bazelrc
+bazel --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc=/tmp/syncd-registry.bazelrc test \
+  //dockers/docker-syncd-vs/bazel:select_apt_payloads_test
+```
 
-The shared `checked_apt_packages` rule only validates these explicit inputs.
-The existing `sonic_layer` uses Distroless `flatten` to assemble their tar files,
-and `oci_image` adds the resulting layer. It requires no new Distroless lock,
-provider, or tar-manifest API and uses the existing `0.9.4-sonic.1` registry
-version with its previously registered protobuf-header fix.
+Each configuration uses one SONiC registry endpoint plus BCR. After the source
+and registration land, move CI back to maintained `main`, select their landed
+revisions, and rerun image validation.
 
-`apt.lock.json` remains a reviewed content manifest: exact source identities
-and data/control hashes are checked against the public package outputs. It is
-not a second package resolver or a custom import path. The validation receipt
-records the base identity, actual package versions, dependency checks and
-changed non-binary paths. Debug validation also reads runtime overlay controls,
-because adding package data does not update the inherited dpkg database.
+The root module uses Distroless `apt.install` with exact package versions and
+dated Debian repositories. The shared `apt_inputs` repository rule derives each
+candidate's public `:data` and `:control` labels from `apt.lock.json`. `apt_layer`
+checks every candidate before selecting only packages absent from the installed,
+retained Make and inherited runtime inventories. Standard Distroless `flatten`
+assembles the selected archives; `oci_image` adds the layer.
 
-To change a package, edit its exact version in `MODULE.bazel` and its explicit
-entry in `apt_packages.bzl`. Audit the Bazel action graph, build only its public
-`:data`/`:control` targets, and review the changed package identity, contents,
-checksums and dependencies before updating the content manifest. Rebuild both
-image variants and run their installed loader/runtime checks. These operations
-import existing Debian packages; they must not create DEBs.
+For example, a locked older `libssl3t64` is retained as a candidate, but the
+installed FIPS package supplies the final dependency instead. Selection fails
+if that actual package cannot satisfy a required version. File checks still
+reject replacement of inherited ELF files or unsafe paths.
 
-The six development packages for Python, libc, libcap and expat must match the
-versions already installed in the config-engine base. Their separate
-`syncd_vs_base_debian` set uses Debian's `stable` suite at the dated
-`20261008T000000Z` snapshot. It imports only the six listed public data archives;
-it does not replace the base libraries or change the toolchain's July `trixie`
-sources. The generated Bazel lock records dependency resolution separately from
-this image's checked content manifest.
+`apt.lock.json` is the reviewed candidate/content manifest, with exact source
+identities and optional checked data/control hashes. Its `depends_on` edges
+identify candidate inputs; final `Depends`, `Pre-Depends`, `Provides` and
+`Multi-Arch` checks use the original package controls and actual image inventory.
+The six refreshed development packages record `inherited_requirements` where
+an exact runtime dependency is supplied by the newer config-engine base rather
+than a candidate in the lock. These records document the boundary; shared
+selection independently validates the control relationships and versions.
+
+The six development packages for Python, libc, libcap and expat use Debian's
+`stable` suite at snapshot `20261008T000000Z`. Their source and content hashes
+are unchanged. The original toolchain's July `trixie` inputs and inherited
+runtime libraries remain intact. Identical `libcares2` archives published by
+two suites share one active candidate key; both historical source records remain.
+
+To update candidates, review their source/control identities and dependencies in
+`apt.lock.json`, then regenerate `apt_inputs.MODULE.bazel`
+with `python3 PATH_TO_INFRA/apt/export_inputs.py --lock
+dockers/docker-syncd-vs/bazel/apt.lock.json --module
+dockers/docker-syncd-vs/bazel/apt_inputs.MODULE.bazel` (one command).
+The selector tests enforce that this generated fragment matches the lock. Audit the Bazel action graph
+before building the public data/control targets or image boundaries. These
+operations import existing Debian packages and must not create DEBs. Rebuild
+both image variants and run their installed loader/runtime checks.
+
+Runtime receipts retain the full validated package inventory. Debug selection
+requires the exact runtime receipt and its Make manifest hash, preserving
+runtime Make records even when those development packages are absent from the
+debug handoff. Make preparation preserves all original Debian control fields,
+including identity and `Multi-Arch`; old incomplete handoffs must be regenerated
+from the original source DEBs.
 
 The debug Make handoff intentionally replaces the runtime OpenSSH package with
 its FIPS build. The inventory adapter records this one declared replacement,
-checks unchanged dependency relationships and binds its source, payload and
+checks unchanged dependency and Multi-Arch relationships and binds its source, payload and
 control hashes. Existing handoff and image checks still verify actual payload
 bytes and the allowed ELF owner; other conflicting package records fail.
 

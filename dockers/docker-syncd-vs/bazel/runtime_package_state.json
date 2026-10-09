@@ -21,7 +21,7 @@
       "uid": 0
     }
   ],
-  "apt_lock_sha256": "539a530ed4ba209290e1b6550a665b5be60a185b1d8fdc5bc64005a255d9053e",
+  "apt_lock_sha256": "5d4e7673b73207e4d5bab1bf34481727caa3b8bea8fb3bac2bb5ac5c4302571a",
   "entries": [
     {
       "gid": 0,
@@ -488,7 +488,18 @@
     "libnl-3-200": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libc6 (>= 2.38)"
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38)",
+        "Description": "library for dealing with netlink sockets\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.",
+        "Homepage": "http://www.infradead.org/~tgr/libnl/",
+        "Installed-Size": "185",
+        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libnl-3-200",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "libnl3",
+        "Version": "3.7.0-0.2+b1sonic1"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -498,10 +509,21 @@
     "libnl-3-dev": {
       "architecture": "amd64",
       "control_fields": {
+        "Architecture": "amd64",
         "Breaks": "libnl3-dev",
         "Conflicts": "libnl-dev, libnl2-dev",
         "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1)",
-        "Replaces": "libnl3-dev"
+        "Description": "development library and headers for libnl-3\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n This package contains the headers needed by all libraries and the  files\n that are needed to build applications using libnl3.",
+        "Homepage": "http://www.infradead.org/~tgr/libnl/",
+        "Installed-Size": "618",
+        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libnl-3-dev",
+        "Priority": "optional",
+        "Replaces": "libnl3-dev",
+        "Section": "libdevel",
+        "Source": "libnl3",
+        "Version": "3.7.0-0.2+b1sonic1"
       },
       "maintainer_scripts": {},
       "version": "3.7.0-0.2+b1sonic1"
@@ -509,7 +531,18 @@
     "libnl-cli-3-200": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-genl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.38)"
+        "Architecture": "amd64",
+        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-genl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.38)",
+        "Description": "library for dealing with netlink sockets - cli helpers\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n Library for cli helpers in libnl-utils.",
+        "Homepage": "http://www.infradead.org/~tgr/libnl/",
+        "Installed-Size": "230",
+        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libnl-cli-3-200",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "libnl3",
+        "Version": "3.7.0-0.2+b1sonic1"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -519,7 +552,18 @@
     "libnl-genl-3-200": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.4)"
+        "Architecture": "amd64",
+        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.4)",
+        "Description": "library for dealing with netlink sockets - generic netlink\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n API to the generic netlink protocol, an extended version of the netlink\n protocol.",
+        "Homepage": "http://www.infradead.org/~tgr/libnl/",
+        "Installed-Size": "53",
+        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libnl-genl-3-200",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "libnl3",
+        "Version": "3.7.0-0.2+b1sonic1"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -529,7 +573,18 @@
     "libnl-nf-3-200": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.14)"
+        "Architecture": "amd64",
+        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.14)",
+        "Description": "library for dealing with netlink sockets - netfilter interface\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n API to netlink based netfilter configuration and monitoring interfaces.",
+        "Homepage": "http://www.infradead.org/~tgr/libnl/",
+        "Installed-Size": "150",
+        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libnl-nf-3-200",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "libnl3",
+        "Version": "3.7.0-0.2+b1sonic1"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -539,7 +594,18 @@
     "libnl-route-3-200": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.38)"
+        "Architecture": "amd64",
+        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.38)",
+        "Description": "library for dealing with netlink sockets - route interface\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n API to the configuration interfaces of the NETLINK_ROUTE family.",
+        "Homepage": "http://www.infradead.org/~tgr/libnl/",
+        "Installed-Size": "660",
+        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libnl-route-3-200",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "libnl3",
+        "Version": "3.7.0-0.2+b1sonic1"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -549,14 +615,34 @@
     "libnl-route-3-dev": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libnl-3-dev (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1)"
+        "Architecture": "amd64",
+        "Depends": "libnl-3-dev (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1)",
+        "Description": "development library and headers for libnl-route-3\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n This package contains the files that are needed to build applications using\n libnl-route-3.",
+        "Homepage": "http://www.infradead.org/~tgr/libnl/",
+        "Installed-Size": "1222",
+        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libnl-route-3-dev",
+        "Priority": "optional",
+        "Section": "libdevel",
+        "Source": "libnl3",
+        "Version": "3.7.0-0.2+b1sonic1"
       },
       "maintainer_scripts": {},
       "version": "3.7.0-0.2+b1sonic1"
     },
     "libsai": {
       "architecture": "amd64",
-      "control_fields": {},
+      "control_fields": {
+        "Architecture": "amd64",
+        "Description": "This package contains DASH libsai",
+        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
+        "Package": "libsai",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "dash",
+        "Version": "1.0.0"
+      },
       "maintainer_scripts": {
         "triggers": "957f8a87f6641013d828285b82905ec7cc0ba8a376994de8f1ddb18c974f8923"
       },
@@ -565,7 +651,16 @@
     "libsaimetadata": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)"
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Description": "This package contains SAI-Metadata implementation for SONiC project.",
+        "Installed-Size": "4763",
+        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
+        "Package": "libsaimetadata",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -575,7 +670,16 @@
     "libsairedis": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)"
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Description": "This package contains SAI-Redis implementation for SONiC project.",
+        "Installed-Size": "1918",
+        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
+        "Package": "libsairedis",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -585,7 +689,16 @@
     "libsaivs": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libsaimetadata (>= 1.0.0), libstdc++6 (>= 13.1)"
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libsaimetadata (>= 1.0.0), libstdc++6 (>= 13.1)",
+        "Description": "This package contains SAI-VirtualSwitch implementation for SONiC project.",
+        "Installed-Size": "1927",
+        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
+        "Package": "libsaivs",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -595,7 +708,16 @@
     "libswsscommon": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libboost-serialization1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libnl-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (>= 3.7.0-0.2+b1sonic1), libstdc++6 (>= 13.1), libuuid1 (>= 2.16), libyang3 (>= 3.12.2), libzmq5 (>= 4.0.1+dfsg)"
+        "Architecture": "amd64",
+        "Depends": "libboost-serialization1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libnl-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (>= 3.7.0-0.2+b1sonic1), libstdc++6 (>= 13.1), libuuid1 (>= 2.16), libyang3 (>= 3.12.2), libzmq5 (>= 4.0.1+dfsg)",
+        "Description": "This package contains Switch State Service common library.",
+        "Installed-Size": "1877",
+        "Maintainer": "Shuotian Cheng <shuche@microsoft.com>",
+        "Package": "libswsscommon",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -605,9 +727,20 @@
     "libyang3": {
       "architecture": "amd64",
       "control_fields": {
+        "Architecture": "amd64",
         "Breaks": "libyang2, libyang2t64",
         "Depends": "libc6 (>= 2.38), libpcre2-8-0 (>= 10.22), libxxhash0 (>= 0.7.0)",
-        "Replaces": "libyang2, libyang2t64"
+        "Description": "parser toolkit for IETF YANG data modeling language (library)\n YANG is a data modeling language for the definition of data sent over network\n management protocols (RFC 6020/7950). It can be used to model both configuration\n data as well as state data of network elements and is primarily used by larger\n network equipment like routers and switches.\n .\n This package contains the shared library.",
+        "Homepage": "https://github.com/CESNET/libyang",
+        "Installed-Size": "1479",
+        "Maintainer": "Daniel Baumann <daniel@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libyang3",
+        "Priority": "optional",
+        "Replaces": "libyang2, libyang2t64",
+        "Section": "libs",
+        "Source": "libyang",
+        "Version": "3.12.2-1"
       },
       "maintainer_scripts": {
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
@@ -617,7 +750,16 @@
     "p4lang-bmv2": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libboost-filesystem1.83.0 (>= 1.83.0), libboost-program-options1.83.0 (>= 1.83.0), libboost-thread1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgmp10 (>= 2:6.3.0+dfsg), libgrpc++1.51t64 (>= 1.51.1), libgrpc29t64 (>= 1.51.1), libnanomsg5 (>= 1.1.5), libpcap0.8t64 (>= 1.5.1), libprotobuf32t64 (>= 3.21.12), libstdc++6 (>= 14), libthrift-0.19.0t64 (>= 0.19.0-1~), p4lang-pi (>= 0.1.3), python3:any, libtool, pkg-config, protobuf-compiler, protobuf-compiler-grpc, python-thrift | python3-thrift | python3-thriftpy, thrift-compiler"
+        "Architecture": "amd64",
+        "Depends": "libboost-filesystem1.83.0 (>= 1.83.0), libboost-program-options1.83.0 (>= 1.83.0), libboost-thread1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgmp10 (>= 2:6.3.0+dfsg), libgrpc++1.51t64 (>= 1.51.1), libgrpc29t64 (>= 1.51.1), libnanomsg5 (>= 1.1.5), libpcap0.8t64 (>= 1.5.1), libprotobuf32t64 (>= 3.21.12), libstdc++6 (>= 14), libthrift-0.19.0t64 (>= 0.19.0-1~), p4lang-pi (>= 0.1.3), python3:any, libtool, pkg-config, protobuf-compiler, protobuf-compiler-grpc, python-thrift | python3-thrift | python3-thriftpy, thrift-compiler",
+        "Description": "P4 behavioral-model\n The reference P4 software switch.",
+        "Homepage": "https://github.com/p4lang/behavioral-model",
+        "Installed-Size": "62790",
+        "Maintainer": "Radostin Stoyanov <radostin@stoyanov.io>",
+        "Package": "p4lang-bmv2",
+        "Priority": "optional",
+        "Section": "net",
+        "Version": "1.15.0-9"
       },
       "maintainer_scripts": {
         "postinst": "8eb4c922e105e6df697f10cbd6a5e6766d32a7e3488223104cfd4e8f16ec6f84",
@@ -629,7 +771,16 @@
     "p4lang-p4c": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libboost-iostreams1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgc1 (>= 1:8.0), libgcc-s1 (>= 3.4), libstdc++6 (>= 14), python3:any, cpp, libboost1.83-all-dev | libboost-all-dev (>= 1.83), libfl-dev, libgc-dev, libgmp-dev, libbpf-dev, pkg-config, tcpdump, libelf-dev, llvm, clang, iproute2, net-tools, python3-pyroute2, python3-ply, python3-setuptools, python3-thrift, libprotobuf-dev, libprotoc-dev, protobuf-compiler, libgrpc-dev, libgrpc++-dev, protobuf-compiler-grpc, libthrift-dev, thrift-compiler, p4lang-bmv2"
+        "Architecture": "amd64",
+        "Depends": "libboost-iostreams1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgc1 (>= 1:8.0), libgcc-s1 (>= 3.4), libstdc++6 (>= 14), python3:any, cpp, libboost1.83-all-dev | libboost-all-dev (>= 1.83), libfl-dev, libgc-dev, libgmp-dev, libbpf-dev, pkg-config, tcpdump, libelf-dev, llvm, clang, iproute2, net-tools, python3-pyroute2, python3-ply, python3-setuptools, python3-thrift, libprotobuf-dev, libprotoc-dev, protobuf-compiler, libgrpc-dev, libgrpc++-dev, protobuf-compiler-grpc, libthrift-dev, thrift-compiler, p4lang-bmv2",
+        "Description": "P4 language compiler\n A reference compiler for the P4 programming language.",
+        "Homepage": "https://github.com/p4lang/p4c",
+        "Installed-Size": "508420",
+        "Maintainer": "Radostin Stoyanov <radostin@stoyanov.io>",
+        "Package": "p4lang-p4c",
+        "Priority": "optional",
+        "Section": "devel",
+        "Version": "1.2.4.2-3"
       },
       "maintainer_scripts": {},
       "version": "1.2.4.2-3"
@@ -637,7 +788,16 @@
     "p4lang-pi": {
       "architecture": "amd64",
       "control_fields": {
-        "Depends": "libabsl20240722 (>= 20240722.0-1), libc6 (>= 2.34), libgcc-s1 (>= 3.0), libgrpc++1.51t64 (>= 1.51.1), libgrpc29t64 (>= 1.51.1), libprotobuf32t64 (>= 3.21.12), libreadline8t64 (>= 6.0), libstdc++6 (>= 14), python3:any, libboost1.83-dev, libboost-system1.83-dev, libboost-thread1.83-dev, libprotobuf-dev, libprotoc-dev, protobuf-compiler, libgrpc++-dev, libgrpc-dev, protobuf-compiler-grpc"
+        "Architecture": "amd64",
+        "Depends": "libabsl20240722 (>= 20240722.0-1), libc6 (>= 2.34), libgcc-s1 (>= 3.0), libgrpc++1.51t64 (>= 1.51.1), libgrpc29t64 (>= 1.51.1), libprotobuf32t64 (>= 3.21.12), libreadline8t64 (>= 6.0), libstdc++6 (>= 14), python3:any, libboost1.83-dev, libboost-system1.83-dev, libboost-thread1.83-dev, libprotobuf-dev, libprotoc-dev, protobuf-compiler, libgrpc++-dev, libgrpc-dev, protobuf-compiler-grpc",
+        "Description": "Implementation framework of a P4Runtime server\n Protocol Independent API (PI or P4 Runtime) defines a set of APIs that allow\n interacting with entities defined in a P4 program.\n These include: tables, counters, meters.\n .\n PI APIs are defined at the level of properties that can be effected.\n Examples include adding and deleting table entries. They are\n independent from the actual\n instance of the controlled object (and thus the name) which is passed\n as a parameter to the API.\n .\n This is the p4lang pi software",
+        "Homepage": "https://github.com/p4lang/PI",
+        "Installed-Size": "15887",
+        "Maintainer": "P4lang Authors <p4-dev@p4.org>",
+        "Package": "p4lang-pi",
+        "Priority": "optional",
+        "Section": "net",
+        "Version": "0.1.3-2"
       },
       "maintainer_scripts": {
         "postinst": "7a47ddb73031866f5c22dd028b4cb7f1102c0c995f383d4ce344b1e1da29df22",
@@ -649,9 +809,18 @@
     "syncd-vs": {
       "architecture": "amd64",
       "control_fields": {
+        "Architecture": "amd64",
         "Conflicts": "syncd, syncd-rpc",
         "Depends": "init-system-helpers (>= 1.54~)",
-        "Recommends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libprotobuf32t64 (>= 3.21.12), libsaimetadata (>= 1.0.0), libsairedis (>= 1.0.0), libsaivs (>= 1.0.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0), libzmq5 (>= 3.2.3+dfsg), p4lang-pi (>= 0.1.3), zlib1g (>= 1:1.1.4)"
+        "Description": "This package contains sync daemon for SONiC project linked with virtual switch.\n  This sync daemon syncs the ASIC_DB in Redis database and the real ASIC via SAI.",
+        "Installed-Size": "13392",
+        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
+        "Package": "syncd-vs",
+        "Priority": "optional",
+        "Recommends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libprotobuf32t64 (>= 3.21.12), libsaimetadata (>= 1.0.0), libsairedis (>= 1.0.0), libsaivs (>= 1.0.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0), libzmq5 (>= 3.2.3+dfsg), p4lang-pi (>= 0.1.3), zlib1g (>= 1:1.1.4)",
+        "Section": "net",
+        "Source": "sonic",
+        "Version": "1.0.0"
       },
       "maintainer_scripts": {
         "postinst": "8b8c215904908d5b3ef6133c9d3bf0ac6621c05b62b7d38a018b71ee7111a1d1",

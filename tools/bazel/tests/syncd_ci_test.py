@@ -29,7 +29,8 @@ class ContractRunnerTest(unittest.TestCase):
         self.owner.mkdir(parents=True)
         for path in (self.root / "MODULE.bazel", self.owner.parent / "BUILD.bazel",
                      self.owner / "BUILD.bazel", self.owner / "apt.lock.json",
-                     self.owner / "apt_packages.bzl", self.owner / "runtime_package_state.json"):
+                     self.owner / "apt_inputs.MODULE.bazel", self.owner / "select_apt_payloads.py", self.owner / "prepare_packages.py",
+                     self.owner / "runtime_package_state.json"):
             path.write_text("checked input\n")
         (self.root / ".bazelversion").write_text("8.5.1\n")
         for variant in ("docker-syncd-vs", "docker-syncd-vs-dbg"):

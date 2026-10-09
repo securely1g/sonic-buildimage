@@ -109,9 +109,7 @@ def prepare_package(source, index, temporary, dpkg_deb):
         "source_size": copied.stat().st_size,
         "control_sha256": hashlib.sha256(control).hexdigest(),
         "control_files": control_files,
-        "control_fields": {name: fields[name] for name in (
-            "Depends", "Pre-Depends", "Provides", "Conflicts", "Replaces", "Breaks", "Recommends"
-        ) if name in fields},
+        "control_fields": fields,
         "_payload": payload_name,
         "payload_sha256": sha(payload),
         "payload_size": payload.stat().st_size,

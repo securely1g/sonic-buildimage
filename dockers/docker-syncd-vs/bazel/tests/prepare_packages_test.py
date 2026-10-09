@@ -39,7 +39,7 @@ class PreparePackagesTest(unittest.TestCase):
         (tree / "DEBIAN/control").write_text(
             f"Package: {name}\nVersion: {version}\nArchitecture: {architecture}\n"
             "Maintainer: SONiC test <test@example.invalid>\nDescription: sample package\n"
-            "Depends: libc6 (>= 2.38)\n")
+            "Depends: libc6 (>= 2.38)\nMulti-Arch: foreign\n")
         data = tree / "usr/share" / name
         data.mkdir(parents=True)
         (data / "data").write_bytes(value)
@@ -81,6 +81,10 @@ class PreparePackagesTest(unittest.TestCase):
                          ("syncd-vs", "1.0", "amd64"))
         self.assertIn("control", record["control_files"])
         self.assertEqual(record["control_fields"]["Depends"], "libc6 (>= 2.38)")
+        self.assertEqual(record["control_fields"]["Multi-Arch"], "foreign")
+        self.assertEqual(record["control_fields"]["Package"], "syncd-vs")
+        self.assertEqual(record["control_fields"]["Version"], "1.0")
+        self.assertEqual(record["control_fields"]["Architecture"], "amd64")
         self.assertEqual(result["package_count"], 1)
 
     def test_repeat_preserves_publication_and_changed_bytes_make_a_new_generation(self):

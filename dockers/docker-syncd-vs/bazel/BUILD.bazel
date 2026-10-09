@@ -7,6 +7,7 @@ package(default_visibility = ["//dockers/docker-syncd-vs:__pkg__"])
 
 exports_files([
     "apt.lock.json",
+    "apt_inputs.MODULE.bazel",
     "runtime_package_state.json",
 ])
 
@@ -178,6 +179,7 @@ py_test(
         "validate_image.py",
         "validate_payloads.py",
     ],
+    data = ["apt.lock.json", "apt_inputs.MODULE.bazel"],
     main = "tests/select_apt_payloads_test.py",
     python_version = "3.11",
     deps = _TEST_DEPS,

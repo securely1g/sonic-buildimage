@@ -15,6 +15,7 @@ sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 import select_apt_payloads as subject
 import validate_payloads
+from sonic_apt.inputs import declarations
 
 
 def tar_bytes(entries):
@@ -41,20 +42,21 @@ class SelectAptPayloadsTest(unittest.TestCase):
                        "Status: install ok installed\n\n").encode()
         self.base = self.root / "base.oci"
         self.write_base()
-        self.paths, self.controls = {}, {}
+        self.paths, self.controls, self.provided = {}, {}, {}
         self.lock = self.root / "apt.lock.json"
         self.lock.write_text(json.dumps({"version": 2, "facts": {},
-            "dependency_sets": {}, "sources": {"trixie": {
+            "dependency_sets": {"runtime": {"sets": {"amd64": {}}}}, "sources": {"trixie": {
                 "uris": ["https://snapshot.debian.org/archive/debian/20260727T143429Z"]}},
             "packages": {}}))
         self.mapping = self.root / "mapping.json"
-        self.mapping.write_text(json.dumps({"architecture": "amd64", "packages": []}))
+        self.mapping.write_text(json.dumps({"architecture": "amd64", "locked": [], "dependency_set": "runtime"}))
         self.add_package("new-runtime", depends="libssl3t64 (>= 3.0.0)")
         self.runtime = self.root / "runtime.json"
         self.runtime.write_text(json.dumps({"schema": 1, "image": "docker-syncd-vs", "variant": "runtime",
             "architecture": "amd64", "distribution": "trixie", "features": dict(validate_payloads.FEATURES),
             "packages": [{"package": "libnl-3-200", "version": "3.7.0-2sonic1", "architecture": "amd64",
-                          "control_fields": {}, "source_sha256": "a" * 64}]}))
+                          "control_fields": {"Package": "libnl-3-200", "Version": "3.7.0-2sonic1",
+                                             "Architecture": "amd64"}, "source_sha256": "a" * 64}]}))
 
     def write_base(self, *, status=True):
         entries = [("usr/lib/libssl.so.3", self.base_elf), ("etc/base", b"base config")]
@@ -78,11 +80,15 @@ class SelectAptPayloadsTest(unittest.TestCase):
             "filename": "pool/" + name + ".deb", "depends_on": [],
             "payload_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "payload_size": path.stat().st_size,
             "control_sha256": hashlib.sha256(control.read_bytes()).hexdigest(), "control_size": control.stat().st_size}
+        if not provided:
+            lock["dependency_sets"]["runtime"]["sets"]["amd64"][key.split("=")[0]] = version
+            mapping = json.loads(self.mapping.read_bytes())
+            mapping["locked"].append({"key": key, "payload": str(path), "control": str(control)})
+            self.mapping.write_text(json.dumps(mapping))
+        else:
+            self.provided[name] = subject.dependencies.control_fields(
+                subject.dependencies.package_from_control(fields, origin="test"))
         self.lock.write_text(json.dumps(lock))
-        mapping = json.loads(self.mapping.read_bytes())
-        mapping.setdefault("provided_packages" if provided else "packages", []).append(
-            {"payload": str(path), "control": str(control)})
-        self.mapping.write_text(json.dumps(mapping))
 
     def update_payload(self, name, entries):
         path = self.paths[name]
@@ -93,17 +99,21 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.lock.write_text(json.dumps(lock))
 
     def select(self):
-        return subject.select(self.base, self.lock, self.runtime, self.mapping, variant="runtime")
+        return subject.select(self.base, self.lock, self.runtime, self.mapping, variant="runtime")[1]
+
+    def test_apt_declarations_match_reviewed_lock(self):
+        module, _ = declarations(json.loads((OWNER / "bazel/apt.lock.json").read_bytes()))
+        self.assertEqual((OWNER / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
 
     def test_base_openssl_satisfies_new_package_without_being_added(self):
         receipt = self.select()
         self.assertEqual([item["package"] for item in receipt["selected"]], ["new-runtime"])
         self.assertEqual(receipt["base_elf_count"], 1)
 
-    def test_explicit_base_package_is_rejected(self):
+    def test_base_package_is_retained_instead_of_old_candidate(self):
         self.add_package("libssl3t64", version="3.5.6")
-        with self.assertRaisesRegex(ValueError, "base|already|supplied"):
-            self.select()
+        receipt = self.select()
+        self.assertEqual(receipt["skipped_base"][0]["base_version"], "3.5.7+fips")
 
     def test_base_openssl_too_old_is_rejected(self):
         self.status = self.status.replace(b"3.5.7+fips", b"2.9.0")
@@ -114,8 +124,11 @@ class SelectAptPayloadsTest(unittest.TestCase):
     def test_runtime_overlay_can_satisfy_debug_dependency(self):
         self.add_package("runtime-lib", version="2.0", provided=True)
         self.add_package("debug-tool", depends="runtime-lib (>= 2.0)")
-        receipt = self.select()
-        self.assertEqual([item["package"] for item in receipt["selected"]], ["new-runtime", "debug-tool"])
+        value = json.loads(self.runtime.read_bytes())
+        value["variant"] = "debug"
+        self.runtime.write_text(json.dumps(value))
+        receipt = self.select_debug()
+        self.assertEqual({item["package"] for item in receipt["selected"]}, {"new-runtime", "debug-tool"})
 
     def debug_replacement(self, *, name="openssh-client", version="1:10.0p1-7+fips",
                           depends="libssl3t64 (>= 3.0.0)"):
@@ -125,13 +138,25 @@ class SelectAptPayloadsTest(unittest.TestCase):
         value["variant"] = "debug"
         replacement = {"package": name, "version": version, "architecture": "amd64",
                        "source_sha256": "b" * 64, "payload_sha256": "c" * 64,
-                       "control_sha256": "d" * 64, "control_fields": {"Depends": depends}}
+                       "control_sha256": "d" * 64, "control_fields": {"Depends": depends,
+                           "Package": name, "Version": version, "Architecture": "amd64"}}
         value["packages"].append(replacement)
         self.runtime.write_text(json.dumps(value))
         return replacement
 
     def select_debug(self):
-        return subject.select(self.base, self.lock, self.runtime, self.mapping, variant="debug")
+        installed = subject.dependencies.installed_packages(self.status, origin="test")
+        fields = {name: subject.dependencies.control_fields(record) for name, record in sorted(installed.items())}
+        digest = hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        metadata = self.root / "base-metadata.json"
+        metadata.write_text(json.dumps({"variant": "runtime", "make_manifest_sha256": "e" * 64,
+            "dependency_check": {"schema": 1, "status": "satisfied",
+                "base_package_inventory_sha256": digest, "packages": {**fields, **self.provided}}}))
+        value = json.loads(self.runtime.read_bytes())
+        value["runtime_manifest_sha256"] = "e" * 64
+        self.runtime.write_text(json.dumps(value))
+        return subject.select(self.base, self.lock, self.runtime, self.mapping, variant="debug",
+                              base_package_metadata=metadata)[1]
 
     def test_debug_fips_openssh_replaces_only_its_runtime_overlay_record(self):
         replacement = self.debug_replacement()
@@ -141,24 +166,27 @@ class SelectAptPayloadsTest(unittest.TestCase):
             "package": "openssh-client", "runtime_version": "1:10.0p1-7+deb13u4",
             "debug_version": replacement["version"], "source_sha256": "b" * 64,
             "payload_sha256": "c" * 64, "control_sha256": "d" * 64}])
-        self.assertEqual([r["package"] for r in receipt["selected"]], ["new-runtime", "debug-tool"])
+        self.assertEqual({r["package"] for r in receipt["selected"]}, {"new-runtime", "debug-tool"})
 
     def test_runtime_cannot_override_its_openssh_record(self):
         self.debug_replacement()
         value = json.loads(self.runtime.read_bytes())
         value["variant"] = "runtime"
         self.runtime.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "conflicting provided package"):
-            self.select()
+        metadata = self.root / "base-metadata.json"
+        metadata.write_text("{}")
+        with self.assertRaisesRegex(ValueError, "runtime cannot consume"):
+            subject.select(self.base, self.lock, self.runtime, self.mapping, variant="runtime",
+                           base_package_metadata=metadata)
 
     def test_debug_cannot_override_another_runtime_package(self):
         self.debug_replacement(name="another-client")
-        with self.assertRaisesRegex(ValueError, "conflicting provided package"):
+        with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
             self.select_debug()
 
     def test_debug_non_fips_openssh_conflict_is_rejected(self):
         self.debug_replacement(version="1:10.0p1-8")
-        with self.assertRaisesRegex(ValueError, "conflicting provided package"):
+        with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
             self.select_debug()
 
     def test_debug_fips_replacement_cannot_change_dependency_requirements(self):
@@ -179,8 +207,38 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.status += ("Package: openssh-client\nVersion: 1:10.0p1-7+deb13u4\n"
                         "Architecture: amd64\nStatus: install ok installed\n\n").encode()
         self.write_base()
-        with self.assertRaisesRegex(ValueError, "conflicting provided package"):
+        with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
             self.select_debug()
+
+    def test_debug_fips_replacement_cannot_change_multi_arch(self):
+        self.debug_replacement()
+        value = json.loads(self.runtime.read_bytes())
+        value["packages"][-1]["control_fields"]["Multi-Arch"] = "foreign"
+        self.runtime.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "changes runtime package relationships"):
+            self.select_debug()
+
+    def test_retained_package_requires_full_original_identity(self):
+        value = json.loads(self.runtime.read_bytes())
+        value["packages"][0]["control_fields"].pop("Package")
+        self.runtime.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "full original control metadata"):
+            self.select()
+
+    def test_debug_requires_the_runtime_selection_receipt(self):
+        self.debug_replacement()
+        with self.assertRaisesRegex(ValueError, "debug requires the runtime"):
+            subject.select(self.base, self.lock, self.runtime, self.mapping, variant="debug")
+
+    def test_debug_rejects_a_receipt_for_a_different_make_handoff(self):
+        self.debug_replacement()
+        self.select_debug()
+        value = json.loads(self.runtime.read_bytes())
+        value["runtime_manifest_sha256"] = "f" * 64
+        self.runtime.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "does not match the runtime Make"):
+            subject.select(self.base, self.lock, self.runtime, self.mapping, variant="debug",
+                           base_package_metadata=self.root / "base-metadata.json")
 
     def test_another_package_cannot_replace_a_base_elf(self):
         self.update_payload("new-runtime", [("usr/lib/libssl.so.3", self.base_elf + b"changed")])
