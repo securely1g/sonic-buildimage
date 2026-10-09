@@ -12,7 +12,8 @@ bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.20")
-bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+# The patched release sorts above upstream 0.9.4 without a root override.
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -28,7 +29,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-592f95037bab21a99900d7326a536d6c57981e1f",
+    version = "0.0.15-27024f95e203bbdcfc930c74ac207aad8ddc6c97",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -65,13 +66,10 @@ git_override(
 # Remove this exact source override after the module lands in the main registry.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "592f95037bab21a99900d7326a536d6c57981e1f",
+    commit = "27024f95e203bbdcfc930c74ac207aad8ddc6c97",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
-# Dependency overrides do not propagate from imported modules. Retain their
-# compatible rule implementations, including tar's timestamp handling and the
-# Distroless native protobuf fix.
 # Dependency overrides do not propagate from Common. Keep its cgo header
 # repair selected when another module requests the unpatched stable release.
 single_version_override(
@@ -82,12 +80,6 @@ single_version_override(
 single_version_override(
     module_name = "rules_cc",
     version = "0.2.20",
-)
-
-# Retain the published Protobuf header fix; no APT patch is required.
-single_version_override(
-    module_name = "rules_distroless",
-    version = "0.9.4-sonic.1",
 )
 
 single_version_override(
