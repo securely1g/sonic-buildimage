@@ -61,9 +61,10 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Temporary Draft source selection while the matching APT registry entry lands.
-# Infrastructure PR #27 supplies the shared rules; registry PR #45 publishes
-# the matching version. Remove this override after that entry lands on main.
+# Retain the checked_apt_packages API used by this image. Infrastructure PR #27
+# and registry PR #45 now propose apt_layer with a package-set selector instead.
+# Migrate this consumer and validate its images before selecting that API;
+# remove the override only after its compatible source and registration land.
 git_override(
     module_name = "sonic-build-infra",
     commit = "d78ffc8253bef78c9993f8ff664a9f152e748c58",
