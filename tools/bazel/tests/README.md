@@ -25,6 +25,10 @@ Manifest tests run Make's existing generator with unrelated containers, computed
 and conditional metadata, service discovery and manifest overlays. They check
 runtime/debug isolation, stable timestamps and publication failures before Bazel.
 
+The Orchagent APT suite lives in `integration/select_apt_payloads_test.py` and
+runs as `//tools/bazel/tests:select_apt_payloads_test`. It consumes the generated
+package mapping and the image-owned lock and policy through declared inputs.
+
 The checks under `integration/` require generated build outputs and rendering tools.
 They run through Bazel, separately from Python unit-test discovery. On native
 AMD64 Debian Trixie, run the explicit helper and artifact checks with:

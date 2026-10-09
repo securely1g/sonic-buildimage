@@ -31,7 +31,7 @@ OPTIONS = [
     "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no",
 ]
 TESTS = [
-    "//dockers/docker-orchagent/bazel:select_apt_payloads_test",
+    "//tools/bazel/tests:select_apt_payloads_test",
     "//tools/bazel/tests:sonic_py_common_test",
     "//tools/bazel/tests:sonic_py_common_full_test",
     "//tools/bazel/tests:sonic_config_engine_full_test",

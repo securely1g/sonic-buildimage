@@ -1,4 +1,4 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//dockers/docker-orchagent:__pkg__"])
 
@@ -17,12 +17,11 @@ py_binary(
     deps = _SELECTION_DEPS,
 )
 
-# These tests inspect tar/OCI fixtures and never produce Debian packages.
-py_test(
-    name = "select_apt_payloads_test",
-    srcs = ["select_apt_payloads.py", "tests/select_apt_payloads_test.py"],
-    main = "tests/select_apt_payloads_test.py",
-    args = ["$(rootpath @orchagent_apt_inputs//:apt_inputs.bzl)"],
-    data = ["apt_policy.json", "apt.lock.json", "apt_inputs.MODULE.bazel", "@orchagent_apt_inputs//:apt_inputs.bzl"],
-    deps = _SELECTION_DEPS + ["//tools/bazel/tests:oci_base_fixture_lib"],
+# Keep the production selector with the image; central tests import this library.
+py_library(
+    name = "select_apt_payloads_lib",
+    srcs = ["select_apt_payloads.py"],
+    imports = ["."],
+    deps = _SELECTION_DEPS,
+    visibility = ["//tools/bazel/tests:__pkg__"],
 )

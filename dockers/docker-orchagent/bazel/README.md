@@ -63,7 +63,9 @@ preparation or checked-in copy of `apt_inputs.bzl` is required.
 
 These declarations describe all candidates, not a manually maintained list of
 missing packages. The owner test checks both the committed MODULE fragment and
-the generated mapping against the reviewed lock.
+the generated mapping against the reviewed lock. The suite lives in
+`tools/bazel/tests/integration/select_apt_payloads_test.py` and runs with
+`bazel test //tools/bazel/tests:select_apt_payloads_test`.
 
 The shared adapter passes these inputs to the existing name-based selector.
 After checking hashes and file overlaps, the selector copies the selected

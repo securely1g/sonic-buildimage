@@ -13,9 +13,9 @@ import tempfile
 import unittest
 
 GENERATED_INPUTS = Path(sys.argv.pop(1))
-OWNER = Path(__file__).absolute().parents[2]
-sys.path.insert(0, str(OWNER.parents[1]))
-sys.path.insert(0, str(OWNER / "bazel"))
+POLICY = Path(sys.argv.pop(1))
+LOCK = Path(sys.argv.pop(1))
+MODULE_INPUTS = Path(sys.argv.pop(1))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, layer_tar, write_layout
 from tools.bazel.oci.oci_inventory import assert_overlay_paths
 import select_apt_payloads as subject
@@ -72,7 +72,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.mapping = self.root / "mapping.json"
         self.mapping.write_text(json.dumps({"architecture": "amd64", "locked": mapping}))
         self.policy = self.root / "policy.json"
-        self.policy.write_bytes((OWNER / "bazel/apt_policy.json").read_bytes())
+        self.policy.write_bytes(POLICY.read_bytes())
 
     def write_base(self, *, status=True):
         entries = [("usr/lib/libssl.so.3", self.base_elf), ("etc/base", b"base config")]
@@ -102,8 +102,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
 
     def test_public_input_declarations_match_the_reviewed_lock(self):
         from sonic_apt.inputs import declarations
-        module, bzl = declarations(json.loads((OWNER / "bazel/apt.lock.json").read_bytes()))
-        self.assertEqual((OWNER / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
+        module, bzl = declarations(json.loads(LOCK.read_bytes()))
+        self.assertEqual(MODULE_INPUTS.read_text(), module)
         expected = ast.literal_eval(bzl.split("APT_INPUTS =", 1)[1])
         actual = ast.literal_eval(GENERATED_INPUTS.read_text().split("APT_INPUTS =", 1)[1])
         self.assertEqual(actual, expected)
