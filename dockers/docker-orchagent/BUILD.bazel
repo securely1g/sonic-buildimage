@@ -1,10 +1,9 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
-load("@sonic_build_infra//apt:apt_layer.bzl", "checked_apt_packages")
+load("@sonic_build_infra//apt:apt_layer.bzl", "apt_layer")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
-load("//dockers/docker-orchagent/bazel:apt_packages.bzl", "DEBUG_APT_PACKAGES", "RUNTIME_APT_PACKAGES")
 
 
 package(default_visibility = ["//visibility:public"])
@@ -38,15 +37,13 @@ oci_base_layout(
     root = "target/docker-config-engine-trixie.oci",
 )
 
-# Add only the declared package data. Validate dependencies against the base
-# before the standard Distroless layer assembly; base packages are never overlaid.
-checked_apt_packages(
+# Select checked Debian contents before filtering the final layer. Packages
+# already supplied by the config-engine base retain their existing versions.
+apt_layer(
     name = "selected_runtime_apt",
     base = ":config_engine_base_layout",
-    packages = RUNTIME_APT_PACKAGES,
-    dependency_set = "orchagent_debian",
-    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
-    checker = "//dockers/docker-orchagent/bazel:select_apt_payloads",
+    package_set = "@orchagent_debian//:package_set",
+    selector = "//dockers/docker-orchagent/bazel:select_apt_payloads",
     retained_manifest = "//dockers/docker-orchagent/bazel:apt_policy.json",
     variant = "runtime",
 )
@@ -110,14 +107,11 @@ debug_symbols_layer(
 
 # Inspect the completed runtime image when adding debugger tools, including
 # its source-built SWSS libraries. Debug additions cannot replace runtime ELF.
-checked_apt_packages(
+apt_layer(
     name = "selected_debug_apt",
     base = ":docker-orchagent",
-    packages = DEBUG_APT_PACKAGES,
-    dependency_set = "orchagent_debug_debian",
-    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
-    provided_packages = RUNTIME_APT_PACKAGES,
-    checker = "//dockers/docker-orchagent/bazel:select_apt_payloads",
+    package_set = "@orchagent_debug_debian//:package_set",
+    selector = "//dockers/docker-orchagent/bazel:select_apt_payloads",
     retained_manifest = "//dockers/docker-orchagent/bazel:apt_policy.json",
     variant = "debug",
 )
