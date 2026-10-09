@@ -74,8 +74,8 @@ The shared adapter passes these inputs to the existing name-based selector.
 After checking hashes and file overlaps, the selector copies the selected
 archives intact into a declared directory. Standard Distroless `flatten` merges
 that directory into a layer. It needs no new lock importer, package provider or
-selected-manifest patch. The pinned Distroless `0.9.4-sonic.1` retains the existing
-Protobuf header fix.
+selected-manifest patch. Distroless `0.9.4.sonic.1` retains the existing Protobuf
+header fix and sorts above plain 0.9.4 without a root override.
 
 Orchagent has no Make-produced native DEB handoff: its component payloads come
 from source-owned Bazel targets. `apt_policy.json` records that profile and the
