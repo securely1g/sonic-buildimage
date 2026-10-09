@@ -115,6 +115,11 @@ Both paths use `tools/bazel/oci/oci_layout.py` to validate and read OCI metadata
 `tools/bazel/oci/oci_inventory.py` supplies shared layer inventory, whiteout and
 parent-symlink and inherited ELF-link checks; syncd supplies its reviewed
 merged-usr path adapter.
+`tools/bazel/oci/apt_selection.py` supplies the OCI inspection, APT selection,
+payload staging, receipt writing, and command-line handling used by both
+container selectors. Syncd's `select_apt_payloads.py` validates its Make package
+manifest, authorizes the checked debug FIPS OpenSSH replacement, and adds its
+receipt fields. The package rules themselves remain in `sonic_apt.selection`.
 The shared `tools/bazel/ci/artifact_validation.py` supplies streamed file hashes,
 archive metadata, ELF headers, build IDs, DWARF checks, and debug-link checksums.
 Syncd adds its package ownership, overlay, SONAME, and preserved symbol-gap policy.

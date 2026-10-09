@@ -32,12 +32,11 @@ py_binary(
     name = "select_apt_payloads",
     srcs = [
         "select_apt_payloads.py",
-        "validate_image.py",
         "validate_payloads.py",
     ],
     main = "select_apt_payloads.py",
     python_version = "3.11",
-    deps = _VALIDATION_DEPS,
+    deps = _VALIDATION_DEPS + ["//tools/bazel/oci:apt_selection"],
 )
 
 py_binary(
@@ -176,13 +175,12 @@ py_test(
     srcs = [
         "select_apt_payloads.py",
         "tests/select_apt_payloads_test.py",
-        "validate_image.py",
         "validate_payloads.py",
     ],
     data = ["apt.lock.json", "apt_inputs.MODULE.bazel"],
     main = "tests/select_apt_payloads_test.py",
     python_version = "3.11",
-    deps = _TEST_DEPS,
+    deps = _TEST_DEPS + ["//tools/bazel/oci:apt_selection"],
 )
 
 py_test(

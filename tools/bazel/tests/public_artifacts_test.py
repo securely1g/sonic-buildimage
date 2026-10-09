@@ -80,7 +80,7 @@ def receipt(kind, architecture="amd64"):
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST}}}
     if kind == "syncd":
-        return {"targets": ["//tests:syncd_" + str(number) for number in range(5)],
+        return {"targets": ["//tests:syncd_" + str(number) for number in range(6)],
                 "source_hashes": {"bazel/apt.lock.json": DIGEST}, "module_lock_sha256": DIGEST,
                 "test_outputs": [SENTINEL], **unsafe}
     return {"status": "passed", "runtime_sha256": DIGEST, "dwp_sha256": DIGEST,

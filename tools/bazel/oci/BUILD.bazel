@@ -3,6 +3,17 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 package(default_visibility = ["//visibility:public"])
 
 py_library(
+    name = "apt_selection",
+    srcs = ["apt_selection.py"],
+    deps = [
+        ":oci_inventory",
+        ":oci_layout",
+        "//tools/bazel/ci:artifact_validation",
+        "@sonic_build_infra//apt:lib",
+    ],
+)
+
+py_library(
     name = "oci_inventory",
     srcs = ["oci_inventory.py"],
     deps = ["//tools/bazel/ci:artifact_validation"],

@@ -28,12 +28,15 @@ TARGET_NAMES = [
     "validate_image_test",
     "validate_payloads_test",
 ]
-TARGETS = ["//dockers/docker-syncd-vs/bazel:" + name for name in TARGET_NAMES]
+TARGETS = ["//dockers/docker-syncd-vs/bazel:" + name for name in TARGET_NAMES] + [
+    "//tools/bazel/tests:apt_selection_test",
+]
 
 
 def source_hashes():
     return {str(path.relative_to(ROOT)): sha(path) for path in (
         ROOT / "MODULE.bazel", OWNER.parent / "BUILD.bazel", OWNER / "BUILD.bazel",
+        ROOT / "tools/bazel/oci/BUILD.bazel", ROOT / "tools/bazel/oci/apt_selection.py",
         OWNER / "apt.lock.json", OWNER / "apt_inputs.MODULE.bazel", OWNER / "select_apt_payloads.py", OWNER / "prepare_packages.py",
         OWNER / "runtime_package_state.json")}
 

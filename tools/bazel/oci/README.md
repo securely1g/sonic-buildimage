@@ -1,5 +1,46 @@
 # Shared container manifest labels and OCI tools
 
+## Select APT additions for a container
+
+`//tools/bazel/oci:apt_selection` provides the common implementation used by
+container policy adapters. It validates the OCI platform and blob contents,
+reads the inherited package/file inventories, invokes the dependency and
+collision checks in `sonic-build-infra`, and records the base manifest digest.
+Its `main()` function implements the shared `apt_layer` command-line contract,
+stages the selected archives, and writes the selection receipt.
+
+An owner adapter validates its policy or Make package manifest, then calls:
+
+```python
+from tools.bazel.oci import apt_selection
+
+selected, receipt = apt_selection.select(
+    base, lock, mapping,
+    variant=variant,
+    architecture="amd64",
+    retained_packages=retained_packages,
+    base_package_metadata=runtime_receipt,
+)
+```
+
+Orchagent supplies an empty retained-package map because its native payloads
+are source-built. Syncd-vs supplies checked Make package records and authorizes
+its specific debug FIPS OpenSSH replacement before invoking the same helper.
+Owners keep their expected image/distribution/features and receipt additions;
+the shared helper imports no container-specific code. Pass
+`retained_replacements` only when an owner authorizes that transition and its
+selected infrastructure version supports the option.
+
+Keep the owner executable as the `apt_layer(selector = ...)` target. Its
+`main()` delegates to `apt_selection.main(select, description=__doc__,
+error_prefix="container APT selection failed")`, where `select` is the owner's
+policy adapter. Both `--retained-manifest` and the existing `--make-manifest`
+alias are accepted. All policy, package and inherited-receipt files remain
+declared Bazel inputs. Shared helper tests are
+`//tools/bazel/tests:apt_selection_test`; owner suites check their policies.
+
+## Render container manifests
+
 Make renders container manifests with the existing `generate_manifest` in
 `rules/functions`. Bazel consumes the resulting JSON as an explicit input and
 serializes it into the `com.azure.sonic.manifest` image label. Make remains

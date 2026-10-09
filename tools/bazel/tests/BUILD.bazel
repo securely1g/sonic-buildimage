@@ -447,3 +447,15 @@ diff_test(
     file1 = "declared_includes.txt",
     file2 = "//tools/bazel/dpkg:dpkg_includes.txt",
 )
+
+# Shared OCI selection and CLI coverage has no container-owned inputs.
+py_test(
+    name = "apt_selection_test",
+    size = "small",
+    srcs = ["integration/apt_selection_test.py"],
+    main = "integration/apt_selection_test.py",
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:apt_selection",
+    ],
+)
