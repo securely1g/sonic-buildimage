@@ -111,7 +111,7 @@ jobs:
             //tools/bazel/tests:oci_base_layout_test \
             //tools/bazel/tests:prepare_oci_base_test \
             //tools/bazel/tests:oci_base_consumer_test \
-            //dockers/docker-orchagent/bazel:select_apt_payloads_test \
+            //tools/bazel/tests:select_apt_payloads_test \
             //tools/bazel/tests:archive-fixture.gz \
             //tools/bazel/tests:oci-consumer-first.gz
           "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
@@ -123,7 +123,7 @@ jobs:
             //tools/bazel/tests:oci_base_layout_test \
             //tools/bazel/tests:prepare_oci_base_test \
             //tools/bazel/tests:oci_base_consumer_test \
-            //dockers/docker-orchagent/bazel:select_apt_payloads_test \
+            //tools/bazel/tests:select_apt_payloads_test \
             2>&1 | tee artifacts/archive/test.log
           output=$("$BAZEL" cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \

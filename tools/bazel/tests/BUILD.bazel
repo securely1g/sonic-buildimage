@@ -209,6 +209,33 @@ py_test(
     deps = ["//tools/bazel/oci:oci_layout"],
 )
 
+# This suite needs the generated package mapping and inspects tar/OCI fixtures.
+# It does not produce Debian packages or require a complete Orchagent image.
+py_test(
+    name = "select_apt_payloads_test",
+    size = "small",
+    srcs = ["integration/select_apt_payloads_test.py"],
+    main = "integration/select_apt_payloads_test.py",
+    args = [
+        "$(rootpath @orchagent_apt_inputs//:apt_inputs.bzl)",
+        "$(rootpath //dockers/docker-orchagent/bazel:apt_policy.json)",
+        "$(rootpath //dockers/docker-orchagent/bazel:apt.lock.json)",
+        "$(rootpath //dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel)",
+    ],
+    data = [
+        "@orchagent_apt_inputs//:apt_inputs.bzl",
+        "//dockers/docker-orchagent/bazel:apt_policy.json",
+        "//dockers/docker-orchagent/bazel:apt.lock.json",
+        "//dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel",
+    ],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//dockers/docker-orchagent/bazel:select_apt_payloads_lib",
+        "//tools/bazel/oci:oci_inventory",
+        "@sonic_build_infra//apt:lib",
+    ],
+)
+
 py_library(
     name = "oci_base_fixture_lib",
     srcs = ["oci_base_fixture.py"],
