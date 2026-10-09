@@ -25,8 +25,6 @@ docker-config-engine-trixie.oci_OCI_ARCHIVE = $(TARGET_PATH)/$(DOCKER_CONFIG_ENG
 docker-config-engine-trixie.oci_OCI_PLATFORM = linux/amd64
 $(DOCKER_ORCHAGENT)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT)
 $(DOCKER_ORCHAGENT_DBG)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT_DBG)
-$(DOCKER_ORCHAGENT)_BAZEL_OCI_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT_STEM)
-$(DOCKER_ORCHAGENT_DBG)_BAZEL_OCI_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT_STEM)-$(DBG_IMAGE_MARK)
 $(DOCKER_ORCHAGENT)_BAZEL_DEPENDS = $(TARGET_PATH)/docker-config-engine-trixie.oci $(PYTHON_WHEELS_PATH)/$(SCAPY)
 # Both variants use runtime metadata, with Make adding the debug suffix.
 SONIC_BAZEL_MANIFESTS += $(DOCKER_ORCHAGENT_STEM) $(DOCKER_ORCHAGENT_STEM)-$(DBG_IMAGE_MARK)
