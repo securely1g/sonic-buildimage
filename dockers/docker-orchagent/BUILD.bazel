@@ -4,7 +4,7 @@ load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
-load("//dockers/docker-orchagent/bazel:apt_inputs.bzl", "APT_INPUTS")
+load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 
 
 package(default_visibility = ["//visibility:public"])

@@ -49,12 +49,21 @@ administration packages remain omitted. Debug roots are `gdb`, `gdbserver` and
 `strace` in `orchagent_debug_debian`, using the same dated Debian repositories.
 
 `apt.lock.json` remains the canonical reviewed package record, including exact
-source identities and data/control hashes. The shared export script derives
-`apt_inputs.MODULE.bazel` and `apt_inputs.bzl` from that lock. The MODULE fragment
-uses ordinary `apt.install` with exact versions for all candidates, and the
-BUILD declarations reference their public `:data` and `:control` targets. These
-exports are not a manually maintained list of missing packages. The owner test
-checks that both still match the canonical lock.
+source identities and data/control hashes. The shared export script generates
+`apt_inputs.MODULE.bazel` from that lock. This MODULE fragment uses ordinary
+`apt.install` with exact versions for all candidates.
+
+Bazel generates the matching BUILD input labels automatically. The `apt_inputs`
+repository rule reads the same lock and writes `apt_inputs.bzl` in the generated
+`@orchagent_apt_inputs` repository. The image loads `APT_INPUTS` from there to
+reference each candidate's public `:data` and `:control` targets. This step reads
+local metadata; Distroless still resolves and imports the packages. Bazel tracks
+the lock as an input, regenerating the mapping when it changes. No manual
+preparation or checked-in copy of `apt_inputs.bzl` is required.
+
+These declarations describe all candidates, not a manually maintained list of
+missing packages. The owner test checks both the committed MODULE fragment and
+the generated mapping against the reviewed lock.
 
 The shared adapter passes these inputs to the existing name-based selector.
 After checking hashes and file overlaps, the selector copies the selected
@@ -94,11 +103,11 @@ To update packages in a separate clean checkout:
    ```sh
    python3 PATH_TO_INFRA/apt/export_inputs.py \
      --lock dockers/docker-orchagent/bazel/apt.lock.json \
-     --module dockers/docker-orchagent/bazel/apt_inputs.MODULE.bazel \
-     --bzl dockers/docker-orchagent/bazel/apt_inputs.bzl
+     --module dockers/docker-orchagent/bazel/apt_inputs.MODULE.bazel
    ```
 
-4. Commit the lock and both exports together. Run the owner tests and rebuild
+4. Commit the lock and MODULE export together. Bazel generates the BUILD mapping
+   automatically. Run the owner tests and rebuild
    both images; check the automatic selection receipts and installed consumers.
 
 The selector does not evaluate dependency-version requirements or run package
