@@ -170,7 +170,9 @@ target/debs/trixie/%.deb:
                     "libprotobuf32": "libprotobuf32t64", "libpcap0.8": "libpcap0.8t64"}
         packages = {concrete.get(name, name) for name in packages}
         module = (ROOT / "MODULE.bazel").read_text()
-        block = module.split('dependency_set = "syncd_vs_debian"', 1)[1].split("suites =", 1)[0]
+        self.assertIn('include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")', module)
+        declarations = (ROOT / "dockers/docker-syncd-vs/bazel/apt_inputs.MODULE.bazel").read_text()
+        block = declarations.split('dependency_set = "syncd_vs_debian"', 1)[1].split("suites =", 1)[0]
         declared = set(re.findall(r'"([^" ]+) \(= [^\)]+\) \[amd64\]"', block))
         providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
         packages = {providers.get(name, name) for name in packages}
