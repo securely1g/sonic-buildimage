@@ -2,42 +2,63 @@
 
 ## Select APT additions for a container
 
-`//tools/bazel/oci:apt_selection` provides the common implementation used by
-container policy adapters. It validates the OCI platform and blob contents,
-reads the inherited package/file inventories, invokes the dependency and
-collision checks in `sonic-build-infra`, and records the base manifest digest.
-Its `main()` function implements the shared `apt_layer` command-line contract,
-stages the selected archives, and writes the selection receipt.
+Load `//tools/bazel/oci:apt_layer.bzl` and declare the container policy in its
+`BUILD.bazel`. There is no container-specific selector executable or Python
+callback:
 
-An owner adapter validates its policy or Make package manifest, then calls:
+```starlark
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 
-```python
-from tools.bazel.oci import apt_selection
-
-selected, receipt = apt_selection.select(
-    base, lock, mapping,
-    variant=variant,
-    architecture="amd64",
-    retained_packages=retained_packages,
-    base_package_metadata=runtime_receipt,
+apt_layer(
+    name = "selected_runtime_apt",
+    packages = APT_INPUTS["example_debian"]["amd64"],
+    lock = ":apt.lock.json",
+    dependency_set = "example_debian",
+    base = ":base_layout",
+    variant = "runtime",
+    policy = {
+        "schema": 1,
+        "image": "docker-example",
+        "architecture": "amd64",
+        "distribution": "trixie",
+        "retained_source": "none",
+        "features": {},
+        "debug_replacements": [],
+    },
 )
 ```
 
-Orchagent supplies an empty retained-package map because its native payloads
-are source-built. Syncd-vs supplies checked Make package records and authorizes
-its specific debug FIPS OpenSSH replacement before invoking the same helper.
-Owners keep their expected image/distribution/features and receipt additions;
-the shared helper imports no container-specific code. Pass
-`retained_replacements` only when an owner authorizes that transition and its
-selected infrastructure version supports the option.
+The macro writes `selected_runtime_apt_policy.json` and passes it as a declared
+input to `//tools/bazel/oci:select_apt_payloads`. That shared Python tool runs
+when OCI layouts and package archives exist: it checks the platform, inventories
+the inherited files/packages, applies the policy, invokes dependency/collision
+validation in `sonic-build-infra`, and stages selected TARs plus a receipt.
+Starlark declares those actions; it cannot inspect their generated OCI/TAR
+contents during analysis. Container tests can consume the generated
+`:selected_runtime_apt_policy` target to verify the real BUILD policy.
 
-Keep the owner executable as the `apt_layer(selector = ...)` target. Its
-`main()` delegates to `apt_selection.main(select, description=__doc__,
-error_prefix="container APT selection failed")`, where `select` is the owner's
-policy adapter. Both `--retained-manifest` and the existing `--make-manifest`
-alias are accepted. All policy, package and inherited-receipt files remain
-declared Bazel inputs. Shared helper tests are
-`//tools/bazel/tests:apt_selection_test`; owner suites check their policies.
+Orchagent uses `retained_source = "none"` because its native payloads are
+source-built. For imported Make packages, use `retained_source = "make"`,
+provide exact `features`, and pass the generated package JSON as
+`retained_manifest`. The selector verifies image, variant, architecture,
+distribution, features and complete original package controls before retention.
+Debug selection also requires `base_package_metadata` from the exact runtime
+selection receipt and matching runtime Make-manifest hash.
+
+Syncd-vs declares `debug_replacements = [{"package": "openssh-client",
+"version_contains": "+fips"}]`. The shared tool checks all source/payload/control
+hashes, architecture, and unchanged Depends/Pre-Depends/Provides/Multi-Arch before
+authorizing that replacement. Unlisted packages receive no exception, and the
+infrastructure selector still forbids changing dpkg-installed packages. Existing
+container payload/image checks bind the inventory to the actual FIPS files.
+
+The shared tool preserves the existing receipt formats: source-built containers
+receive `group`, `skipped_retained`, `image` and `policy_sha256`; Make consumers
+receive `variant`, `skipped_make`, `make_manifest_sha256` and
+`provided_package_replacements`. Both include the base manifest digest and
+complete dependency-check evidence. Shared tests run as
+`//tools/bazel/tests:apt_selection_test`; container suites check their declared
+policies, package contracts and replacement restrictions.
 
 ## Render container manifests
 
@@ -229,5 +250,7 @@ compression and archive structure; it does not build a production ARM64 image.
 inventory and checks that added package layers preserve inherited directory
 symlinks and links to ELF files. Link resolution uses the image inventory, never
 the build host filesystem. Image owners supply any reviewed legacy-path normalization as a
-callback. Syncd keeps its merged-usr/package policy in its owner adapter; the
-shared helper contains no image-specific package names or feature settings.
+callback. Syncd keeps its merged-usr path normalization in its payload and image
+validators. APT package policy is declared in BUILD and applied by the shared
+selector; shared inventory helpers contain no image-specific package names or
+feature settings.

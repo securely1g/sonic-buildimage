@@ -13,6 +13,13 @@ py_library(
     ],
 )
 
+py_binary(
+    name = "select_apt_payloads",
+    srcs = ["apt_selection.py"],
+    main = "apt_selection.py",
+    deps = [":apt_selection"],
+)
+
 py_library(
     name = "oci_inventory",
     srcs = ["oci_inventory.py"],

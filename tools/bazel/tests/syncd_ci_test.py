@@ -29,8 +29,9 @@ class ContractRunnerTest(unittest.TestCase):
         self.owner.mkdir(parents=True)
         for path in (self.root / "MODULE.bazel", self.owner.parent / "BUILD.bazel",
                      self.root / "tools/bazel/oci/BUILD.bazel", self.root / "tools/bazel/oci/apt_selection.py",
+                     self.root / "tools/bazel/oci/apt_layer.bzl",
                      self.owner / "BUILD.bazel", self.owner / "apt.lock.json",
-                     self.owner / "apt_inputs.MODULE.bazel", self.owner / "select_apt_payloads.py", self.owner / "prepare_packages.py",
+                     self.owner / "apt_inputs.MODULE.bazel", self.owner / "prepare_packages.py",
                      self.owner / "runtime_package_state.json"):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("checked input\n")

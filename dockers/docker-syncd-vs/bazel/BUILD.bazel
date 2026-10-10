@@ -29,17 +29,6 @@ py_binary(
 )
 
 py_binary(
-    name = "select_apt_payloads",
-    srcs = [
-        "select_apt_payloads.py",
-        "validate_payloads.py",
-    ],
-    main = "select_apt_payloads.py",
-    python_version = "3.11",
-    deps = _VALIDATION_DEPS + ["//tools/bazel/oci:apt_selection"],
-)
-
-py_binary(
     name = "package_state_layer",
     srcs = [
         "package_state_layer.py",
@@ -173,11 +162,15 @@ py_test(
 py_test(
     name = "select_apt_payloads_test",
     srcs = [
-        "select_apt_payloads.py",
         "tests/select_apt_payloads_test.py",
         "validate_payloads.py",
     ],
-    data = ["apt.lock.json", "apt_inputs.MODULE.bazel"],
+    args = ["--policy=$(rootpath //dockers/docker-syncd-vs:selected_runtime_apt_policy)"],
+    data = [
+        "apt.lock.json",
+        "apt_inputs.MODULE.bazel",
+        "//dockers/docker-syncd-vs:selected_runtime_apt_policy",
+    ],
     main = "tests/select_apt_payloads_test.py",
     python_version = "3.11",
     deps = _TEST_DEPS + ["//tools/bazel/oci:apt_selection"],

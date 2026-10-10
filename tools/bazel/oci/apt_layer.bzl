@@ -1,0 +1,47 @@
+"""Checked OCI APT layers with container policy declared in BUILD.bazel.
+
+Use retained_source="none" for source-built native layers, or "make" with a
+retained_manifest for imported Make packages. Debug replacement entries name a
+package and required version marker; the common selector always checks hashes,
+architecture, unchanged dependency relationships and the exact runtime receipt.
+"""
+
+load("@sonic_build_infra//apt:apt_layer.bzl", _apt_layer = "apt_layer")
+
+def _policy_impl(ctx):
+    output = ctx.actions.declare_file(ctx.label.name + ".json")
+    ctx.actions.write(output, ctx.attr.document + "\n")
+    return [DefaultInfo(files = depset([output]))]
+
+_policy = rule(
+    implementation = _policy_impl,
+    attrs = {"document": attr.string(mandatory = True)},
+)
+
+def apt_layer(name, packages, lock, dependency_set, base, policy, variant,
+              retained_manifest = None, base_package_metadata = None, **kwargs):
+    """Generate a declared policy input and select/flatten checked APT payloads.
+
+    The generated <name>_policy target can also be used by container policy
+    tests. Runtime/debug layers share the same policy; dynamic package controls
+    and retained package identities come from the declared Make manifest.
+    """
+    _policy(
+        name = name + "_policy",
+        document = json.encode(policy),
+        visibility = kwargs.get("visibility", None),
+    )
+    _apt_layer(
+        name = name,
+        packages = packages,
+        lock = lock,
+        dependency_set = dependency_set,
+        base = base,
+        policy = ":" + name + "_policy",
+        selector = "//tools/bazel/oci:select_apt_payloads",
+        architecture = policy["architecture"],
+        variant = variant,
+        retained_manifest = retained_manifest,
+        base_package_metadata = base_package_metadata,
+        **kwargs
+    )

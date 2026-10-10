@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise shared APT selection with local OCI/control TARs and owner callbacks.
+"""Exercise shared APT selection with local OCI/control TARs and declarative policies.
 
 The fixtures contain no Debian package archives and require no container build.
-Image-specific policy and FIPS replacement authorization stay in owner suites.
+Container suites additionally exercise their actual BUILD policies and FIPS inputs.
 """
 
 import contextlib
@@ -69,8 +69,15 @@ class Fixture:
         self.mapping = self.root / "mapping.json"
         self.mapping.write_text(json.dumps({"architecture": architecture, "locked": mapping}))
         self.policy = self.root / "policy.json"
-        self.policy.write_text(json.dumps({"image": image, "architecture": architecture,
-                                          "retained_packages": self.retained}))
+        self.policy.write_text(json.dumps({"schema": 1, "image": image,
+            "architecture": architecture, "distribution": "trixie", "retained_source": "make",
+            "features": {}, "debug_replacements": []}))
+        self.manifest = self.root / "manifest.json"
+        self.manifest.write_text(json.dumps({"schema": 1, "image": image,
+            "architecture": architecture, "distribution": "trixie", "variant": "runtime",
+            "features": {}, "packages": [{"package": "local-driver", "version": "2.0",
+                "architecture": architecture, "source_sha256": "a" * 64,
+                "control_fields": self.retained["local-driver"]["control"]}]}))
 
     def write_base(self):
         config = {"architecture": self.architecture, "os": "linux", "rootfs": {
@@ -80,10 +87,9 @@ class Fixture:
         write_layout(self.base, files)
 
     def select(self, **options):
-        return subject.select(self.base, self.lock, self.mapping,
+        return subject.select(self.base, self.lock, self.policy, self.mapping,
                               variant=options.pop("variant", "runtime"),
-                              architecture=options.pop("architecture", self.architecture),
-                              retained_packages=self.retained, **options)
+                              retained_manifest=self.manifest, **options)
 
     def replace_payload(self, entries):
         path = self.paths[self.addition]
@@ -110,7 +116,7 @@ class AptSelectionTest(unittest.TestCase):
                 self.assertEqual(paths, [fixture.paths[fixture.addition]])
                 self.assertEqual(receipt["base_manifest_digest"], fixture.manifest_digest)
                 self.assertEqual(receipt["skipped_base"][0]["base_version"], "3.0")
-                self.assertEqual(receipt["skipped_retained"][0]["source_sha256"], "a" * 64)
+                self.assertEqual(receipt["skipped_make"][0]["source_sha256"], "a" * 64)
                 self.assertEqual(receipt["changed_non_elf_base_paths"], [])
                 self.assertEqual(receipt["dependency_check"]["status"], "satisfied")
                 records = receipt["dependency_check"]["packages"]
@@ -121,9 +127,15 @@ class AptSelectionTest(unittest.TestCase):
     def test_platform_mismatch_fails_before_package_selection(self):
         """Reject a base for another architecture before handing its state to infrastructure."""
         fixture = Fixture(self.root)
+        policy = json.loads(fixture.policy.read_bytes())
+        policy["architecture"] = "arm64"
+        fixture.policy.write_text(json.dumps(policy))
+        manifest = json.loads(fixture.manifest.read_bytes())
+        manifest["architecture"] = "arm64"
+        fixture.manifest.write_text(json.dumps(manifest))
         with mock.patch.object(subject.selection, "select") as select:
             with self.assertRaisesRegex(ValueError, "platform"):
-                fixture.select(architecture="arm64")
+                fixture.select()
         select.assert_not_called()
 
     def test_added_payload_uses_checked_inventory(self):
@@ -133,58 +145,45 @@ class AptSelectionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "added OCI layer contains a whiteout"):
             fixture.select()
 
-    def test_ordinary_selection_supports_the_older_infrastructure_api(self):
-        """Do not send replacement keywords to pins that only support ordinary retention."""
+    def test_policy_rejects_incomplete_or_ambiguous_authorization(self):
+        """An omitted selector mode or empty replacement marker cannot relax validation."""
         fixture = Fixture(self.root)
-        metadata = fixture.root / "runtime-receipt.json"
+        original = json.loads(fixture.policy.read_bytes())
+        invalid = [dict(original, schema=2), dict(original, retained_source="automatic"),
+                   dict(original, unknown_option=True),
+                   dict(original, debug_replacements=[{"package": "driver", "version_contains": ""}]),
+                   dict(original, retained_source="none", features={"fips": "y"}),
+                   {key: value for key, value in original.items() if key != "retained_source"}]
+        for policy in invalid:
+            with self.subTest(policy=policy):
+                fixture.policy.write_text(json.dumps(policy))
+                with self.assertRaises(ValueError):
+                    fixture.select()
 
-        def older_api(lock, mapping, *, group, architecture, installed, base_files,
-                      retained_packages, inspect_payload, check_overlay, base_package_metadata):
-            self.assertEqual((lock, mapping, group, architecture),
-                             (fixture.lock, fixture.mapping, "debug", "amd64"))
-            self.assertEqual(installed["platform-lib"].version, "3.0")
-            self.assertIs(retained_packages, fixture.retained)
-            self.assertEqual(base_package_metadata, metadata)
-            entries = inspect_payload(fixture.paths[fixture.addition])
-            self.assertEqual(entries["etc/shared.conf"], base_files["etc/shared.conf"])
-            check_overlay(entries, base_files)
-            return [fixture.paths[fixture.addition]], {"owner_evidence": "preserved"}
-
-        with mock.patch.object(subject.selection, "select", side_effect=older_api) as select:
-            _, receipt = fixture.select(variant="debug", base_package_metadata=metadata)
-        select.assert_called_once()
-        self.assertEqual(receipt, {"owner_evidence": "preserved",
-                                  "base_manifest_digest": fixture.manifest_digest})
-
-    def test_explicit_replacement_authorization_reaches_infrastructure_unchanged(self):
-        """Preserve both empty and populated owner authorizations for newer infrastructure pins."""
+    def test_manifest_cannot_be_injected_or_omitted(self):
+        """BUILD policy explicitly decides whether Make controls are part of selection."""
         fixture = Fixture(self.root)
-        for replacements in ({}, {"local-driver": fixture.retained["local-driver"]["control"]}):
-            with self.subTest(replacements=replacements):
-                with mock.patch.object(subject.selection, "select", return_value=([], {})) as select:
-                    fixture.select(retained_replacements=replacements)
-                self.assertIs(select.call_args.kwargs["retained_replacements"], replacements)
+        with self.assertRaisesRegex(ValueError, "requires a retained manifest"):
+            subject.select(fixture.base, fixture.lock, fixture.policy, fixture.mapping, variant="runtime")
+        policy = json.loads(fixture.policy.read_bytes())
+        policy["retained_source"] = "none"
+        fixture.policy.write_text(json.dumps(policy))
+        with self.assertRaisesRegex(ValueError, "does not permit a retained manifest"):
+            fixture.select()
 
     def cli_arguments(self, fixture, *, manifest_flag="--retained-manifest", variant="runtime",
                       metadata=None):
         output, receipt = fixture.root / "selected", fixture.root / "receipts" / "selection.json"
         arguments = ["selector", "--base", str(fixture.base), "--lock", str(fixture.lock),
-                     manifest_flag, str(fixture.policy), "--mapping", str(fixture.mapping),
+                     "--policy", str(fixture.policy), manifest_flag, str(fixture.manifest),
+                     "--mapping", str(fixture.mapping),
                      "--variant", variant, "--out-dir", str(output), "--receipt", str(receipt)]
         if metadata is not None:
             arguments += ["--base-package-metadata", str(metadata)]
         return arguments, output, receipt
 
-    def test_cli_stages_owner_selected_payloads_and_inherited_metadata(self):
-        """Keep both manifest spellings and owner receipts working through the real staging path."""
-        def owner_policy(base, lock, policy, mapping, *, variant, base_package_metadata):
-            document = json.loads(policy.read_bytes())
-            paths, receipt = subject.select(
-                base, lock, mapping, variant=variant, architecture=document["architecture"],
-                retained_packages=document["retained_packages"], base_package_metadata=base_package_metadata)
-            receipt["image"] = document["image"]
-            return paths, receipt
-
+    def test_cli_stages_policy_selected_payloads_and_inherited_metadata(self):
+        """Both manifest spellings use the shared executable path and exact runtime provenance."""
         cases = (("telemetry", "amd64", "runtime", "--retained-manifest"),
                  ("time-service", "arm64", "debug", "--make-manifest"))
         for image, architecture, variant, flag in cases:
@@ -197,19 +196,19 @@ class AptSelectionTest(unittest.TestCase):
                     metadata.write_text(json.dumps(inherited))
                     fixture.layers.append(fixture.paths[fixture.addition].read_bytes())
                     fixture.write_base()
+                    manifest = json.loads(fixture.manifest.read_bytes())
+                    manifest.update(variant="debug", runtime_manifest_sha256=inherited["make_manifest_sha256"])
+                    fixture.manifest.write_text(json.dumps(manifest))
                 arguments, output, receipt = self.cli_arguments(
                     fixture, manifest_flag=flag, variant=variant, metadata=metadata)
-                adapter = mock.Mock(wraps=owner_policy)
                 with mock.patch.object(sys, "argv", arguments):
-                    subject.main(adapter, description="Example owner policy", error_prefix=image)
-                adapter.assert_called_once_with(
-                    fixture.base, fixture.lock, fixture.policy, fixture.mapping,
-                    variant=variant, base_package_metadata=metadata)
+                    subject.main()
                 document = json.loads(receipt.read_bytes())
-                self.assertEqual(document["image"], image)
-                self.assertEqual(document["group"], variant)
+                self.assertEqual(document["variant"], variant)
                 self.assertEqual(document["base_manifest_digest"], fixture.manifest_digest)
                 self.assertEqual(document["dependency_check"]["package_count"], 3)
+                self.assertEqual(document["make_manifest_sha256"], hashlib.sha256(fixture.manifest.read_bytes()).hexdigest())
+                self.assertEqual(document["provided_package_replacements"], [])
                 expected = [] if variant == "debug" else ["000001.tar"]
                 self.assertEqual(sorted(path.name for path in output.iterdir()),
                                  ["000000-empty.tar", *expected])
@@ -223,13 +222,13 @@ class AptSelectionTest(unittest.TestCase):
         """Keep an owner's rejected policy from creating a success receipt or staged archive."""
         fixture = Fixture(self.root)
         arguments, output, receipt = self.cli_arguments(fixture)
+        fixture.policy.write_text('{"schema": 2}')
         diagnostic = io.StringIO()
         with mock.patch.object(sys, "argv", arguments), contextlib.redirect_stderr(diagnostic):
             with self.assertRaises(SystemExit) as failure:
-                subject.main(mock.Mock(side_effect=ValueError("policy rejected")),
-                             description="Example owner policy", error_prefix="time-service APT")
+                subject.main()
         self.assertEqual(failure.exception.code, 1)
-        self.assertEqual(diagnostic.getvalue(), "time-service APT: policy rejected\n")
+        self.assertEqual(diagnostic.getvalue(), "APT selection failed: invalid APT policy fields\n")
         self.assertFalse(output.exists())
         self.assertFalse(receipt.exists())
 
@@ -242,13 +241,12 @@ class AptSelectionTest(unittest.TestCase):
         sentinel.write_bytes(b"previous output")
         receipt.parent.mkdir()
         receipt.write_bytes(b"previous receipt\n")
-        adapter = mock.Mock(return_value=([fixture.paths[fixture.addition]], {"new": "receipt"}))
         diagnostic = io.StringIO()
         with mock.patch.object(sys, "argv", arguments), contextlib.redirect_stderr(diagnostic):
             with self.assertRaises(SystemExit) as failure:
-                subject.main(adapter, description="Example owner policy", error_prefix="telemetry APT")
+                subject.main()
         self.assertEqual(failure.exception.code, 1)
-        self.assertIn("telemetry APT: selected archive directory must be empty", diagnostic.getvalue())
+        self.assertIn("APT selection failed: selected archive directory must be empty", diagnostic.getvalue())
         self.assertEqual(receipt.read_bytes(), b"previous receipt\n")
         self.assertEqual(sentinel.read_bytes(), b"previous output")
         self.assertEqual(list(output.iterdir()), [sentinel])

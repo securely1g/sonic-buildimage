@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check that syncd APT assembly preserves locked content and base ELF files."""
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -13,7 +14,8 @@ OWNER = Path(__file__).absolute().parents[2]
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
-import select_apt_payloads as subject
+from tools.bazel.oci import apt_selection as subject
+from sonic_apt import dependencies
 import validate_payloads
 from sonic_apt.inputs import declarations
 
@@ -30,10 +32,13 @@ def write_oci(path, entries):
 
 
 class SelectAptPayloadsTest(unittest.TestCase):
+    policy_path: Path
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="syncd-apt-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.policy = self.policy_path
         header = bytearray(64)
         header[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<HH", header, 16, 3, 62)
@@ -86,8 +91,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
             mapping["locked"].append({"key": key, "payload": str(path), "control": str(control)})
             self.mapping.write_text(json.dumps(mapping))
         else:
-            self.provided[name] = subject.dependencies.control_fields(
-                subject.dependencies.package_from_control(fields, origin="test"))
+            self.provided[name] = dependencies.control_fields(
+                dependencies.package_from_control(fields, origin="test"))
         self.lock.write_text(json.dumps(lock))
 
     def update_payload(self, name, entries):
@@ -99,7 +104,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.lock.write_text(json.dumps(lock))
 
     def select(self):
-        return subject.select(self.base, self.lock, self.runtime, self.mapping, variant="runtime")[1]
+        return subject.select(self.base, self.lock, self.policy, self.mapping,
+                              retained_manifest=self.runtime, variant="runtime")[1]
 
     def test_apt_declarations_match_reviewed_lock(self):
         module, _ = declarations(json.loads((OWNER / "bazel/apt.lock.json").read_bytes()))
@@ -145,8 +151,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
         return replacement
 
     def select_debug(self):
-        installed = subject.dependencies.installed_packages(self.status, origin="test")
-        fields = {name: subject.dependencies.control_fields(record) for name, record in sorted(installed.items())}
+        installed = dependencies.installed_packages(self.status, origin="test")
+        fields = {name: dependencies.control_fields(record) for name, record in sorted(installed.items())}
         digest = hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         metadata = self.root / "base-metadata.json"
         metadata.write_text(json.dumps({"variant": "runtime", "make_manifest_sha256": "e" * 64,
@@ -155,7 +161,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
         value = json.loads(self.runtime.read_bytes())
         value["runtime_manifest_sha256"] = "e" * 64
         self.runtime.write_text(json.dumps(value))
-        return subject.select(self.base, self.lock, self.runtime, self.mapping, variant="debug",
+        return subject.select(self.base, self.lock, self.policy, self.mapping,
+                              retained_manifest=self.runtime, variant="debug",
                               base_package_metadata=metadata)[1]
 
     def test_debug_fips_openssh_replaces_only_its_runtime_overlay_record(self):
@@ -168,6 +175,14 @@ class SelectAptPayloadsTest(unittest.TestCase):
             "payload_sha256": "c" * 64, "control_sha256": "d" * 64}])
         self.assertEqual({r["package"] for r in receipt["selected"]}, {"new-runtime", "debug-tool"})
 
+        with self.subTest(debug_replacements="not declared"):
+            policy = json.loads(self.policy.read_bytes())
+            policy["debug_replacements"] = []
+            self.policy = self.root / "without-debug-replacements.json"
+            self.policy.write_text(json.dumps(policy))
+            with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
+                self.select_debug()
+
     def test_runtime_cannot_override_its_openssh_record(self):
         self.debug_replacement()
         value = json.loads(self.runtime.read_bytes())
@@ -176,7 +191,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
         metadata = self.root / "base-metadata.json"
         metadata.write_text("{}")
         with self.assertRaisesRegex(ValueError, "runtime cannot consume"):
-            subject.select(self.base, self.lock, self.runtime, self.mapping, variant="runtime",
+            subject.select(self.base, self.lock, self.policy, self.mapping,
+                           retained_manifest=self.runtime, variant="runtime",
                            base_package_metadata=metadata)
 
     def test_debug_cannot_override_another_runtime_package(self):
@@ -228,7 +244,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
     def test_debug_requires_the_runtime_selection_receipt(self):
         self.debug_replacement()
         with self.assertRaisesRegex(ValueError, "debug requires the runtime"):
-            subject.select(self.base, self.lock, self.runtime, self.mapping, variant="debug")
+            subject.select(self.base, self.lock, self.policy, self.mapping,
+                           retained_manifest=self.runtime, variant="debug")
 
     def test_debug_rejects_a_receipt_for_a_different_make_handoff(self):
         self.debug_replacement()
@@ -237,7 +254,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
         value["runtime_manifest_sha256"] = "f" * 64
         self.runtime.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, "does not match the runtime Make"):
-            subject.select(self.base, self.lock, self.runtime, self.mapping, variant="debug",
+            subject.select(self.base, self.lock, self.policy, self.mapping,
+                           retained_manifest=self.runtime, variant="debug",
                            base_package_metadata=self.root / "base-metadata.json")
 
     def test_another_package_cannot_replace_a_base_elf(self):
@@ -274,9 +292,13 @@ class SelectAptPayloadsTest(unittest.TestCase):
         value = json.loads(self.runtime.read_bytes())
         value["features"]["include_fips"] = "n"
         self.runtime.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "invalid syncd Make package manifest"):
+        with self.assertRaisesRegex(ValueError, "invalid Make package manifest"):
             self.select()
 
 
 if __name__ == "__main__":
-    unittest.main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--policy", required=True, type=Path)
+    args, remaining = parser.parse_known_args()
+    SelectAptPayloadsTest.policy_path = args.policy
+    unittest.main(argv=[sys.argv[0], *remaining])

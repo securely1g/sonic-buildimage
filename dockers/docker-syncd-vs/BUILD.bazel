@@ -1,7 +1,7 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
-load("@sonic_build_infra//apt:apt_layer.bzl", "apt_layer")
 load("@tar.bzl", "tar")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
@@ -22,6 +22,24 @@ _COMPATIBLE_WITH = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
 ]
+
+# Keep Make package ownership and the reviewed debug replacement with the image.
+_APT_POLICY = {
+    "schema": 1,
+    "image": "docker-syncd-vs",
+    "architecture": "amd64",
+    "distribution": "trixie",
+    "retained_source": "make",
+    "features": {
+        "include_vs_dash_sai": "y",
+        "include_fips": "y",
+        "enable_asan": "n",
+        "enable_syncd_rpc": "n",
+    },
+    "debug_replacements": [
+        {"package": "openssh-client", "version_contains": "+fips"},
+    ],
+}
 
 # Base and Make metadata. The same shared rules are used by docker-orchagent.
 oci_base_layout(
@@ -55,7 +73,7 @@ apt_layer(
     packages = APT_INPUTS["syncd_vs_debian"]["amd64"],
     dependency_set = "syncd_vs_debian",
     lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
-    selector = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
+    policy = _APT_POLICY,
     retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
     variant = "runtime",
 )
@@ -149,7 +167,7 @@ apt_layer(
     dependency_set = "syncd_vs_debug_debian",
     lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
     base_package_metadata = ":runtime_apt_selection",
-    selector = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
+    policy = _APT_POLICY,
     retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/debug/manifest.json",
     variant = "debug",
 )
@@ -190,16 +208,11 @@ sonic_docker_archive(
     image = ":docker-syncd-vs-dbg",
 )
 
-# Public tool and contract-test labels remain stable. CI runs the owner tests.
+# Public validation and contract-test labels. CI runs the owner tests.
 # See bazel/README.md for separate complete-image, runtime and installer checks.
 alias(
     name = "validate_payloads",
     actual = "//dockers/docker-syncd-vs/bazel:validate_payloads",
-)
-
-alias(
-    name = "select_apt_payloads",
-    actual = "//dockers/docker-syncd-vs/bazel:select_apt_payloads",
 )
 
 alias(

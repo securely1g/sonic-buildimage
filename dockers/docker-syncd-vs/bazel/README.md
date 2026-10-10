@@ -115,11 +115,12 @@ Both paths use `tools/bazel/oci/oci_layout.py` to validate and read OCI metadata
 `tools/bazel/oci/oci_inventory.py` supplies shared layer inventory, whiteout and
 parent-symlink and inherited ELF-link checks; syncd supplies its reviewed
 merged-usr path adapter.
-`tools/bazel/oci/apt_selection.py` supplies the OCI inspection, APT selection,
-payload staging, receipt writing, and command-line handling used by both
-container selectors. Syncd's `select_apt_payloads.py` validates its Make package
-manifest, authorizes the checked debug FIPS OpenSSH replacement, and adds its
-receipt fields. The package rules themselves remain in `sonic_apt.selection`.
+`tools/bazel/oci/apt_layer.bzl` binds the shared `apt_selection.py` executable to
+the policy declared in this container's `BUILD.bazel`. The policy identifies its
+Make package manifest, supported features, and checked debug FIPS OpenSSH
+replacement. Both images use the same OCI inspection, APT selection, payload
+staging, receipt writing, and command-line implementation. The package rules
+remain in `sonic_apt.selection`; there is no container-owned Python selector.
 The shared `tools/bazel/ci/artifact_validation.py` supplies streamed file hashes,
 archive metadata, ELF headers, build IDs, DWARF checks, and debug-link checksums.
 Syncd adds its package ownership, overlay, SONAME, and preserved symbol-gap policy.
@@ -180,26 +181,18 @@ runtime filesystem.
 The shared `apt_layer` implementation comes from
 [infrastructure #27](https://github.com/securely1g/sonic-build-infra/pull/27),
 published by [registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45).
-The Draft consumer selects the follow-up
-[infrastructure #28](https://github.com/securely1g/sonic-build-infra/pull/28) through
-[registry #50](https://github.com/securely1g/sonic-bazel-registry/pull/50), which
-adds an explicit inherited-package replacement. The infrastructure Git override
-is removed. A version override chooses this SHA-suffixed candidate over older
-transitive prereleases whose names otherwise sort later.
+[Infrastructure #29](https://github.com/securely1g/sonic-build-infra/pull/29),
+registered by [#51](https://github.com/securely1g/sonic-bazel-registry/pull/51), builds on
+[infrastructure #28](https://github.com/securely1g/sonic-build-infra/pull/28)'s
+explicit inherited-package replacement and adds a separately declared policy
+input. While that source and its registry entry are under review, the Draft
+consumer uses an exact `git_override` source commit for `sonic-build-infra`.
+This includes both changes without depending on another registry branch.
 
-CI uses Registry #50's reviewed `codex/retained-apt-replacements` endpoint.
-For immutable local validation, preserve the same configuration and replace only
-that endpoint with its reviewed snapshot:
-
-```sh
-sed 's@sonic-bazel-registry/codex/retained-apt-replacements@sonic-bazel-registry/82b55f61a5d08c1c885336fd18edfe4debeaaf24@' .bazelrc > /tmp/syncd-registry.bazelrc
-bazel --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc=/tmp/syncd-registry.bazelrc test \
-  //dockers/docker-syncd-vs/bazel:select_apt_payloads_test
-```
-
-Each configuration uses one SONiC registry endpoint plus BCR. After the source
-and registration land, move CI back to maintained `main`, select their landed
-revisions, and rerun image validation.
+Local builds and CI use the maintained SONiC registry `main` endpoint plus BCR.
+The source commit in `MODULE.bazel` fixes the temporary infrastructure override.
+After the source and registration land, select their landed module version,
+remove the temporary Git override, and rerun image validation.
 
 The root module uses Distroless `apt.install` with exact package versions and
 dated Debian repositories. The shared `apt_inputs` repository rule derives each
