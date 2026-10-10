@@ -21,7 +21,10 @@ exports_files([
 _COMPATIBLE_WITH = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
-]
+] + select({
+    "//dockers/docker-syncd-vs/bazel:supported_source_configuration": [],
+    "//conditions:default": ["@platforms//:incompatible"],
+})
 
 # FIPS is selected in the runtime handoff; debug inherits those package records.
 _APT_POLICY = {
@@ -60,10 +63,9 @@ manifest_labels(
     manifest = "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
 )
 
-# Runtime inputs. Make still builds PI/BMv2/p4c, DASH SAI and syncd packages.
-# Use the same shared dpkg path filtering as SWSS. The Make handoff supplies
-# one ordered data tar from the native package closure. Validation
-# preserves the base's merged-usr aliases before the layer is flattened.
+# Runtime inputs. Common, sairedis and metadata reuse SWSS's source targets.
+# Make still supplies PI/BMv2/p4c, DASH SAI, VS SAI and DASH-enabled syncd.
+# Both input adapters preserve the base's merged-usr directory aliases.
 apt_layer(
     name = "runtime_layer",
     base = ":config_engine_base_layout",
@@ -71,7 +73,7 @@ apt_layer(
     dependency_set = "syncd_vs_debian",
     lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
     policy = _APT_POLICY,
-    retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
+    retained_manifest = "//dockers/docker-syncd-vs/bazel:runtime_retained_packages",
     variant = "runtime",
 )
 
@@ -95,6 +97,7 @@ sonic_layer(
     name = "runtime_packages",
     tars = [
         ":checked_runtime_payloads",
+        "//dockers/docker-syncd-vs/bazel:source_runtime_payloads",
     ],
 )
 
@@ -154,6 +157,7 @@ sonic_layer(
     name = "debug_packages",
     tars = [
         ":checked_debug_payloads",
+        "//dockers/docker-syncd-vs/bazel:source_debug_payloads",
     ],
 )
 
@@ -165,7 +169,7 @@ apt_layer(
     lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
     base_package_metadata = ":runtime_apt_selection",
     policy = _APT_POLICY,
-    retained_manifest = "//:target/bazel-inputs/docker-syncd-vs/debug/manifest.json",
+    retained_manifest = "//dockers/docker-syncd-vs/bazel:debug_retained_packages",
     variant = "debug",
 )
 
