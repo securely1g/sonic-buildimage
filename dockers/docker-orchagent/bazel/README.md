@@ -70,23 +70,26 @@ the generated mapping against the reviewed lock. The suite lives in
 `tools/bazel/tests/integration/select_apt_payloads_test.py` and runs with
 `bazel test //tools/bazel/tests:select_apt_payloads_test`.
 
-The shared adapter passes these inputs to the existing name-based selector.
+The shared `//tools/bazel/oci:apt_layer.bzl` macro passes these inputs to the
+existing name-based selector.
 After checking hashes and file overlaps, the selector copies the selected
 archives intact into a declared directory. Standard Distroless `flatten` merges
 that directory into a layer. It needs no new lock importer, package provider or
 selected-manifest patch. Distroless `0.9.4.sonic.1` retains the existing Protobuf
 header fix and sorts above plain 0.9.4 without a root override.
 
-The shared `//tools/bazel/oci:apt_selection` library owns OCI validation, base
-and candidate file inventories, the call into `sonic_apt.selection`, and the
-command-line staging/receipt handling. Other containers, including syncd-vs,
-use that same implementation. This directory's `select_apt_payloads.py` only
-checks Orchagent's AMD64/Trixie policy and adds its image/policy receipt fields;
-the `:apt_policy` library exposes that small owner adapter to its tests.
+The shared `//tools/bazel/oci:apt_selection` library validates the declared
+policy, inspects OCI base and candidate files, calls `sonic_apt.selection`, and
+stages the selected archives and receipt. Other containers, including syncd-vs,
+use that same implementation. Orchagent declares its AMD64/Trixie policy in
+`dockers/docker-orchagent/BUILD.bazel`; the macro generates the policy JSON and
+selects the shared command-line program. The owner suite checks the actual
+`:selected_runtime_apt_policy` output used by the runtime layer.
 
 Orchagent has no Make-produced native DEB handoff: its component payloads come
-from source-owned Bazel targets. `apt_policy.json` records that profile and the
-empty retained-package list. Runtime selection reads the checked config-engine
+from source-owned Bazel targets. Its `retained_source = "none"` policy records
+that profile, with no retained-package manifest, feature requirements or debug
+replacements. Runtime selection reads the checked config-engine
 base; debug selection reads the completed Orchagent runtime and receives its
 `runtime_apt_selection` receipt as the declared `base_package_metadata` input.
 This carries the runtime APT packages and their requirements because archive
@@ -100,9 +103,13 @@ the base digest, lock/policy hashes, selected and skipped packages, the validate
 dependency inventory, duplicates and non-binary path changes. Source payloads, symbols and archive outputs use
 the existing owner rules.
 
-The shared rule is introduced by infrastructure PR #27 and registry PR #45.
-This consumer selects the exact source revision with a temporary `git_override`;
-registry URLs remain on `main`. Normal publication replaces that source override.
+Dependency checking was introduced by infrastructure PR #27 and registry PR #45.
+[Infrastructure #29](https://github.com/securely1g/sonic-build-infra/pull/29)
+and [registry #51](https://github.com/securely1g/sonic-bazel-registry/pull/51) supply
+the declarative `apt_layer` policy input API and registration; it provides
+the generated policy argument used here. This draft consumer temporarily selects
+that source with an exact `git_override`; registry URLs remain on `main`.
+Remove the source override after its registered version lands.
 
 Native AMD64/ARM64 archive checks and AMD64 source-layer checks are configured
 for PR updates. Manual `Bazel SWSS OCI` dispatch defaults to `skip_vs=true`. A

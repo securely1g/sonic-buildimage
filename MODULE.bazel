@@ -29,7 +29,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-62a7892228a72a1a98b9659432d67842172a9266",
+    version = "0.0.15-26a75d4b0378796b7b33acedf30677b6def609ac",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -62,11 +62,12 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Commit suffixes do not sort by source history. Keep the landed APT source
-# selected over the older transitive 0.0.15-6653ac1 snapshot.
-single_version_override(
+# Draft validation of declarative APT policies from sonic-build-infra PR #29.
+# Remove this exact source override after registry PR #51 lands.
+git_override(
     module_name = "sonic-build-infra",
-    version = "0.0.15-62a7892228a72a1a98b9659432d67842172a9266",
+    commit = "26a75d4b0378796b7b33acedf30677b6def609ac",
+    remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
 # Dependency overrides do not propagate from Common. Keep its cgo header

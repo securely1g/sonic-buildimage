@@ -18,8 +18,8 @@ POLICY = Path(sys.argv.pop(1))
 LOCK = Path(sys.argv.pop(1))
 MODULE_INPUTS = Path(sys.argv.pop(1))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, layer_tar, write_layout
+from tools.bazel.oci import apt_selection as subject
 from tools.bazel.oci.oci_inventory import assert_overlay_paths
-import select_apt_payloads as subject
 
 
 def tar_bytes(entries):
@@ -151,6 +151,11 @@ class SelectAptPayloadsTest(unittest.TestCase):
 
     def test_public_input_declarations_match_the_reviewed_lock(self):
         from sonic_apt.inputs import declarations
+        self.assertEqual(json.loads(POLICY.read_bytes()), {
+            "schema": 1, "image": "docker-orchagent", "architecture": "amd64",
+            "distribution": "trixie", "retained_source": "none",
+            "features": {}, "debug_replacements": [],
+        })
         module, bzl = declarations(json.loads(LOCK.read_bytes()))
         self.assertEqual(MODULE_INPUTS.read_text(), module)
         expected = ast.literal_eval(bzl.split("APT_INPUTS =", 1)[1])
@@ -196,8 +201,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
         """Keep dependency evidence available through the selector's command-line path."""
         lock, mapping, metadata, payload = self.debug_inputs()
         output, receipt = self.root / "debug-output", self.root / "debug-selection.json"
-        args = ["select_apt_payloads.py", "--base", str(self.base), "--lock", str(lock),
-                "--retained-manifest", str(self.policy), "--mapping", str(mapping),
+        args = ["apt_selection.py", "--base", str(self.base), "--lock", str(lock),
+                "--policy", str(self.policy), "--mapping", str(mapping),
                 "--variant", "debug", "--base-package-metadata", str(metadata),
                 "--out-dir", str(output), "--receipt", str(receipt)]
         with mock.patch.object(sys, "argv", args):
@@ -269,7 +274,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         value = json.loads(self.policy.read_bytes())
         value["architecture"] = "arm64"
         self.policy.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "invalid orchagent APT policy"):
+        with self.assertRaisesRegex(ValueError, "does not match"):
             self.select()
 
     def test_duplicate_provider_entries_are_rejected(self):
@@ -349,7 +354,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
             self.select()
 
     def test_unknown_variant_and_foreign_base_are_rejected(self):
-        with self.assertRaisesRegex(ValueError, "unsupported orchagent APT variant"):
+        with self.assertRaisesRegex(ValueError, "unsupported APT variant"):
             subject.select(self.base, self.lock, self.policy, self.mapping, variant="other")
         layer = tar_bytes([("var/lib/dpkg/status", self.status)])
         config = {"architecture": "arm64", "os": "linux",

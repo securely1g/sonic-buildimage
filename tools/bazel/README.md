@@ -292,15 +292,17 @@ above plain 0.9.4, so Distroless needs no root version override.
 bazel test //tools/bazel/tests:select_apt_payloads_test
 ```
 
-[Registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45)
-publishes the landed shared APT implementation from
+The shared APT baseline was published by
+[registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45) from
 [build-infra #27](https://github.com/securely1g/sonic-build-infra/pull/27).
-The selected version is
-`0.0.15-62a7892228a72a1a98b9659432d67842172a9266`.
-A version override selects this registered source without a Git override.
-Without it, the older transitive `0.0.15-6653ac1...` version outranks
-`0.0.15-62a789...` and lacks the required APT rule. Commit suffixes do not sort
-by source history.
+Declarative policy inputs use
+[build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29), proposed
+in [registry #51](https://github.com/securely1g/sonic-bazel-registry/pull/51).
+The Draft consumer pins source `26a75d4b0378796b7b33acedf30677b6def609ac`
+with a temporary `git_override`, while registry URLs remain on `main`.
+After source and registration land, remove that override and select the landed
+registered version. Commit suffixes do not sort by source history; verify
+resolution against transitive version requests when removing the override.
 
 Use `bazel help --announce_rc` to inspect the effective rc selection. Keep one
 SONiC registry endpoint; do not add another endpoint in a home or user rc.

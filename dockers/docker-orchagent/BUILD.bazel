@@ -1,7 +1,7 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
-load("@sonic_build_infra//apt:apt_layer.bzl", "apt_layer")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
@@ -25,6 +25,17 @@ _COMPATIBLE_WITH = [
     "//conditions:default": [],
 })
 
+# Native SWSS payloads follow the APT layer; no Make package handoff is retained.
+_APT_POLICY = {
+    "schema": 1,
+    "image": "docker-orchagent",
+    "architecture": "amd64",
+    "distribution": "trixie",
+    "retained_source": "none",
+    "features": {},
+    "debug_replacements": [],
+}
+
 # Make publishes the config-engine image as OCI files before invoking Bazel.
 # Its Python/config-engine utilities and libnl/libyang runtime are retained.
 oci_base_layout(
@@ -46,8 +57,7 @@ apt_layer(
     packages = APT_INPUTS["orchagent_debian"]["amd64"],
     dependency_set = "orchagent_debian",
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
-    selector = "//dockers/docker-orchagent/bazel:select_apt_payloads",
-    retained_manifest = "//dockers/docker-orchagent/bazel:apt_policy.json",
+    policy = _APT_POLICY,
     variant = "runtime",
 )
 
@@ -117,8 +127,7 @@ apt_layer(
     packages = APT_INPUTS["orchagent_debug_debian"]["amd64"],
     dependency_set = "orchagent_debug_debian",
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
-    selector = "//dockers/docker-orchagent/bazel:select_apt_payloads",
-    retained_manifest = "//dockers/docker-orchagent/bazel:apt_policy.json",
+    policy = _APT_POLICY,
     variant = "debug",
 )
 

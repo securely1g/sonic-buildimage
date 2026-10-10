@@ -27,14 +27,15 @@ runtime/debug isolation, stable timestamps and publication failures before Bazel
 
 The shared APT suite runs as `//tools/bazel/tests:apt_selection_test`. It checks
 OCI layer ordering, retained package state, platform selection and the common
-CLI with unrelated AMD64 and ARM64 container fixtures. It also preserves the
-older infrastructure API and checks that failed selection or staging cannot
+CLI with unrelated AMD64 and ARM64 container fixtures. It rejects incomplete policy declarations and missing/unexpected Make manifests,
+and checks that failed selection or staging cannot
 publish a new success receipt. These checks create TARs, not Debian packages.
 
 The Orchagent APT suite lives in `integration/select_apt_payloads_test.py` and
 runs as `//tools/bazel/tests:select_apt_payloads_test`. It consumes the generated
-package mapping and the image-owned lock and policy through declared inputs.
-It checks retained-version requirements and carries runtime package metadata into
+package mapping, image-owned lock and generated BUILD policy through declared
+inputs. It verifies the exact Orchagent policy, checks retained-version
+requirements and carries runtime package metadata into
 debug selection, rejecting absent, stale or altered inherited inventories.
 
 The checks under `integration/` require declared Bazel dependencies or generated
@@ -119,7 +120,7 @@ container boot, live service health or forwarding behavior.
 
 | Integration check | Purpose |
 | --- | --- |
-| [apt_selection_test.py](integration/apt_selection_test.py) | Exercise shared OCI inspection, package retention and CLI staging with unrelated AMD64/ARM64 fixtures. Preserve compatibility with older infrastructure APIs, forward explicit replacement authorization, and prevent selection or staging failures from publishing success evidence. |
+| [apt_selection_test.py](integration/apt_selection_test.py) | Exercise shared OCI inspection, package retention and CLI staging with unrelated AMD64/ARM64 fixtures. Reject incomplete policies and undeclared Make handoffs, and prevent selection or staging failures from publishing success evidence. |
 | [cfggen_template_test.py](integration/cfggen_template_test.py) | Check literal JSON values, declared template includes and build namespace isolation in generated output. A failing cfggen invocation must not publish an output file. |
 | [oci_base_consumer_test.py](integration/oci_base_consumer_test.py) | Follow timestamp-varied Make OCI bases through layered Bazel images and Docker exports, checking content, configuration, whiteouts and reproducibility. The fixture uses AMD64 metadata even on an ARM64 host. |
 | [manifest_labels_action_test.py](integration/manifest_labels_action_test.py) | Check that separate Bazel actions encode their supplied runtime/debug JSON without changing its values. Exercise changed inputs, missing or invalid manifests, and failure handling that preserves an existing label. |

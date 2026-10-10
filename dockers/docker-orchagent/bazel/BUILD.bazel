@@ -1,25 +1,3 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_library")
-
 package(default_visibility = ["//dockers/docker-orchagent:__pkg__"])
 
-exports_files(["apt.lock.json", "apt_policy.json", "apt_inputs.MODULE.bazel"])
-
-_SELECTION_DEPS = [
-    "//tools/bazel/ci:artifact_validation",
-    "//tools/bazel/oci:apt_selection",
-]
-
-py_binary(
-    name = "select_apt_payloads",
-    srcs = ["select_apt_payloads.py"],
-    deps = _SELECTION_DEPS,
-)
-
-# Only Orchagent's policy stays here; OCI selection and the CLI are shared.
-py_library(
-    name = "apt_policy",
-    srcs = ["select_apt_payloads.py"],
-    imports = ["."],
-    deps = _SELECTION_DEPS,
-    visibility = ["//tools/bazel/tests:__pkg__"],
-)
+exports_files(["apt.lock.json", "apt_inputs.MODULE.bazel"])
