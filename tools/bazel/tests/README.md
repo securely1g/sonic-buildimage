@@ -69,7 +69,7 @@ bazel test \
 
 `BUILD.bazel` declares the production helpers and generated files each check
 needs. CI selects the same tests explicitly and retains raw logs and cache
-records in the job workspace. The [workflow](../../../.github/workflows/bazel-swss-oci.yml)
+records in the job workspace. The [workflow](../../../.github/workflows/bazel-oci.yml)
 supplies the supported native AMD64/ARM64 platform flags and execution dependencies.
 The Python checks run both complete component test directories and install both
 source-built wheels. Public archive artifacts retain the wheels, hashes and

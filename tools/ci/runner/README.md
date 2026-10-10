@@ -126,7 +126,7 @@ label selects the pool, not an individual PR, commit or run.
 
 ```sh
 gh auth status
-gh run list --repo securely1g/sonic-buildimage --workflow bazel-swss-oci.yml --limit 10
+gh run list --repo securely1g/sonic-buildimage --workflow bazel-oci.yml --limit 10
 python3 /opt/sonic-runner-tools/runner/rearm.py --master --dry-run
 python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```

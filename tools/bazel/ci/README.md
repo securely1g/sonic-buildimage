@@ -3,6 +3,14 @@
 These helpers validate buildimage artifacts and preserve build evidence without
 importing container-specific code.
 
+[`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
+the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
+archive checks, SWSS source checks, Syncd contract checks and the existing full
+VS integration job. Add checks for future OCI containers as jobs in this
+workflow, keeping their target lists and package contracts with each container.
+Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
+job after the SWSS source checks pass.
+
 - `artifact_validation.py` streams tar contents to record ownership, modes, file
   hashes and little-endian ELF64 metadata, and checks matching split debug symbols.
   SWSS and syncd share its ELF inspection and debug-link checks; each consumer
