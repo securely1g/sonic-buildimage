@@ -59,6 +59,7 @@ class SourcePackagesTest(unittest.TestCase):
         self.contract.write_bytes(subject.json_bytes(self.value))
         self.packages, self.debug_packages, self.modules = {}, {}, {}
         self.entries = {}
+        debug_entries = []
         for index, record in enumerate(self.value["packages"]):
             name = record["package"]
             entries = [("./", b"", 0o755, "directory", 123)]
@@ -74,7 +75,9 @@ class SourcePackagesTest(unittest.TestCase):
             archive(path, entries)
             self.packages[name] = path
             path = self.root / (name + ".debug.tar")
-            archive(path, [("usr/lib/debug/.build-id/ab/" + str(index) + "cdef.debug", elf(), 0o644, "file", 0)])
+            symbols = ("usr/lib/debug/.build-id/ab/" + str(index) + "cdef.debug", elf(), 0o644, "file", 0)
+            archive(path, [symbols])
+            debug_entries.append(symbols)
             self.debug_packages[name] = path
             source = record["source"]
             path = self.root / (source["module"] + ".MODULE.bazel")
@@ -97,10 +100,10 @@ class SourcePackagesTest(unittest.TestCase):
         write_layout(self.base, oci_files(json.dumps(config).encode(), [layer]))
         self.runtime_tar, self.debug_tar = self.root / "runtime.tar", self.root / "debug.tar"
         self.receipt = self.root / "receipt.json"
+        archive(self.debug_tar, debug_entries)
 
     def build(self):
-        result = subject.assemble(self.contract, self.packages, self.debug_packages, self.modules,
-                                  self.base, self.runtime_tar, self.debug_tar)
+        result = subject.assemble(self.contract, self.packages, self.modules, self.base, self.runtime_tar)
         self.receipt.write_bytes(subject.json_bytes(result))
         return result
 
@@ -110,7 +113,7 @@ class SourcePackagesTest(unittest.TestCase):
         self.assertEqual(subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar), result)
         for record in result["packages"]:
             self.assertEqual(record["input_tar_sha256"], subject.sha(self.packages[record["package"]]))
-            self.assertEqual(record["debug"]["input_tar_sha256"], subject.sha(self.debug_packages[record["package"]]))
+            self.assertNotIn("debug", record)
             self.assertNotIn("source_deb", record)
             self.assertNotIn("source_sha256", record)
             self.assertNotIn("control_sha256", record)
@@ -158,7 +161,6 @@ class SourcePackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "resolved source module differs"):
             self.build()
         self.assertFalse(self.runtime_tar.exists())
-        self.assertFalse(self.debug_tar.exists())
 
     def test_missing_owner_payload_and_required_library_are_rejected(self):
         """A tar binding and its real install inventory must both supply every shared library."""
@@ -203,27 +205,32 @@ class SourcePackagesTest(unittest.TestCase):
             self.build()
 
     def test_debug_payload_must_contain_source_symbols_only(self):
-        """The symbol adapter cannot smuggle replacement runtime files into the debug image."""
-        archive(self.debug_packages["libsairedis"], [("usr/bin/syncd", elf(), 0o755, "file", 0)])
+        """The shared symbol layer cannot replace runtime files in the debug image."""
+        archive(self.debug_tar, [("usr/bin/syncd", elf(), 0o755, "file", 0)])
         with self.assertRaisesRegex(ValueError, "symbols contain an unexpected file"):
-            self.build()
-        archive(self.debug_packages["libsairedis"], [])
+            subject.debug_inventory(self.debug_tar)
+        archive(self.debug_tar, [])
         with self.assertRaisesRegex(ValueError, "no debug symbols"):
-            self.build()
+            subject.debug_inventory(self.debug_tar)
 
-    def test_identical_transitive_symbols_keep_both_owners_without_duplicate_tar_members(self):
-        """Shared debug providers may expose one symbol file twice; only equal bytes can be reused."""
-        first = self.debug_packages["libswsscommon"]
-        second = self.debug_packages["libsairedis"]
-        second.write_bytes(first.read_bytes())
-        value = self.build()
-        common, sairedis = value["packages"][:2]
-        self.assertEqual(common["debug"]["files"], sairedis["debug"]["files"])
-        subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar)
-        path = next(iter(common["debug"]["files"]))
-        archive(second, [(path, elf() + b"different", 0o644, "file", 0)])
-        with self.assertRaisesRegex(ValueError, "source packages overlap"):
-            self.build()
+    def test_runtime_assembly_does_not_require_debug_archives(self):
+        """Building runtime metadata and libraries must not request the debug image's symbols."""
+        self.debug_tar.unlink()
+        for path in self.debug_packages.values():
+            path.unlink()
+        result = self.build()
+        self.assertEqual(result["schema"], 2)
+        self.assertNotIn("debug_payload", result)
+        self.assertTrue(all("debug" not in package for package in result["packages"]))
+        self.assertEqual(subject.validate_receipt(self.receipt, self.runtime_tar), result)
+
+    def test_obsolete_combined_receipts_are_rejected(self):
+        """Old receipts coupling runtime and debug inputs must be regenerated, never misinterpreted."""
+        result = self.build()
+        result["schema"] = 1
+        self.receipt.write_bytes(subject.json_bytes(result))
+        with self.assertRaisesRegex(ValueError, "runtime-only schema 2"):
+            subject.validate_receipt(self.receipt, self.runtime_tar)
 
     def test_receipt_binds_archive_hashes_and_per_package_file_ownership(self):
         """Final validators reject changed archives and owner inventories even with valid JSON."""
