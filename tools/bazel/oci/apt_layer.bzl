@@ -1,9 +1,9 @@
 """Checked OCI APT layers with container policy declared in BUILD.bazel.
 
 Use retained_source="none" for source-built native layers, or "make" with a
-retained_manifest for imported Make packages. Debug replacement entries name a
-package and required version marker; the common selector always checks hashes,
-architecture, unchanged dependency relationships and the exact runtime receipt.
+retained_manifest for imported Make packages. The common selector validates
+package controls and binds debug selection to the exact runtime receipt and
+Make manifest. Conflicting inherited package records are rejected.
 """
 
 load("@sonic_build_infra//apt:apt_layer.bzl", _apt_layer = "apt_layer")
