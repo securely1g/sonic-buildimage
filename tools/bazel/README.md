@@ -298,7 +298,7 @@ The shared APT baseline was published by
 Declarative policy inputs use
 [build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29), proposed
 in [registry #51](https://github.com/securely1g/sonic-bazel-registry/pull/51).
-The Draft consumer pins source `26a75d4b0378796b7b33acedf30677b6def609ac`
+The Draft consumer pins source `29af37b179d9160cd2a6db0a295492db64017945`
 with a temporary `git_override`, while registry URLs remain on `main`.
 After source and registration land, remove that override and select the landed
 registered version. Commit suffixes do not sort by source history; verify

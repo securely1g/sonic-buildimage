@@ -18,7 +18,7 @@ def read_policy(path):
     policy = json.loads(path.read_bytes())
     require(isinstance(policy, dict) and set(policy) == {
         "schema", "image", "architecture", "distribution", "retained_source",
-        "features", "debug_replacements"}, "invalid APT policy fields")
+        "features"}, "invalid APT policy fields")
     require(type(policy["schema"]) is int and policy["schema"] == 1 and
             all(isinstance(policy[key], str) and policy[key]
                 for key in ("image", "architecture", "distribution")) and
@@ -26,16 +26,7 @@ def read_policy(path):
     require(isinstance(policy["features"], dict) and
             all(isinstance(key, str) and isinstance(value, str)
                 for key, value in policy["features"].items()), "invalid APT policy features")
-    rules = policy["debug_replacements"]
-    require(isinstance(rules, list), "invalid APT replacement policy")
-    names = set()
-    for rule in rules:
-        require(isinstance(rule, dict) and set(rule) == {"package", "version_contains"} and
-                all(isinstance(value, str) and value for value in rule.values()),
-                "invalid APT replacement policy")
-        require(rule["package"] not in names, "duplicate APT replacement policy")
-        names.add(rule["package"])
-    require(policy["retained_source"] == "make" or not (policy["features"] or rules),
+    require(policy["retained_source"] == "make" or not policy["features"],
             "Make policy requires retained_source=make")
     return policy
 
@@ -61,45 +52,17 @@ def retained_packages(path, *, policy, variant):
     return retained, make, hashlib.sha256(document_bytes).hexdigest()
 
 
-def inherited_replacements(metadata_path, *, variant, retained, make, policy):
-    """Allow listed debug replacements only with unchanged dependency relationships.
-
-    The runtime receipt must describe this exact Make handoff. All three package
-    hashes are mandatory. The infrastructure selector checks the original record
-    and prevents replacement of dpkg-installed packages; container payload/image
-    checks bind the resulting inventory to the actual files.
-    """
+def check_runtime_manifest(metadata_path, *, variant, make):
+    """Bind the debug package inventory to its exact runtime Make handoff."""
     if variant == "runtime":
         require(metadata_path is None, "runtime cannot consume inherited package metadata")
-        return {}, []
+        return
     require(metadata_path is not None, "debug requires the runtime package selection receipt")
     document = json.loads(metadata_path.read_bytes())
     require(document.get("variant") == "runtime" and
             make.get("runtime_manifest_sha256") == document.get("make_manifest_sha256") and
             re.fullmatch(r"[0-9a-f]{64}", make.get("runtime_manifest_sha256", "")),
             "debug manifest does not match the runtime Make package selection")
-    records = document.get("dependency_check", {}).get("packages", {})
-    replacements, evidence = {}, []
-    for rule in policy["debug_replacements"]:
-        name = rule["package"]
-        replacement, previous = retained.get(name, {}), records.get(name)
-        if previous and rule["version_contains"] in replacement.get("version", ""):
-            require(all(re.fullmatch(r"[0-9a-f]{64}", replacement.get(field, ""))
-                        for field in ("source_sha256", "payload_sha256", "control_sha256")),
-                    "debug replacement lacks Make package identity: " + name)
-            current = replacement["control"]
-            require(current["Package"] == name and
-                    current["Architecture"] == previous["Architecture"] == policy["architecture"],
-                    "invalid debug replacement package record: " + name)
-            require(all(current.get(field, "") == previous.get(field, "")
-                        for field in ("Depends", "Pre-Depends", "Provides", "Multi-Arch")),
-                    "debug replacement changes runtime package relationships: " + name)
-            replacements[name] = previous
-            evidence.append({"package": name, "runtime_version": previous["Version"],
-                             "debug_version": current["Version"],
-                             **{field: replacement[field] for field in
-                                ("source_sha256", "payload_sha256", "control_sha256")}})
-    return replacements, evidence
 
 
 def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
@@ -107,13 +70,12 @@ def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
     """Apply a declarative policy without importing any container-owned Python."""
     require(variant in ("runtime", "debug"), "unsupported APT variant")
     policy = read_policy(policy_path)
-    retained, replacements, evidence = {}, {}, []
+    retained = {}
     if policy["retained_source"] == "make":
         require(retained_manifest is not None, "Make policy requires a retained manifest")
         retained, make, manifest_digest = retained_packages(
             retained_manifest, policy=policy, variant=variant)
-        replacements, evidence = inherited_replacements(
-            base_package_metadata, variant=variant, retained=retained, make=make, policy=policy)
+        check_runtime_manifest(base_package_metadata, variant=variant, make=make)
     else:
         require(retained_manifest is None, "APT policy does not permit a retained manifest")
 
@@ -132,11 +94,11 @@ def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
         installed=selection.base_packages(layout.layers, architecture=policy["architecture"]),
         base_files=files, retained_packages=retained,
         inspect_payload=inspect_payload, check_overlay=assert_overlay_paths,
-        base_package_metadata=base_package_metadata, retained_replacements=replacements)
+        base_package_metadata=base_package_metadata)
     receipt["base_manifest_digest"] = layout.descriptor["digest"]
     # Keep the existing receipt contracts consumed by image/package-state checks.
     if policy["retained_source"] == "make":
-        receipt["provided_package_replacements"] = evidence
+        receipt["provided_package_replacements"] = []
         receipt["variant"] = receipt.pop("group")
         receipt["skipped_make"] = receipt.pop("skipped_retained")
         receipt["make_manifest_sha256"] = manifest_digest

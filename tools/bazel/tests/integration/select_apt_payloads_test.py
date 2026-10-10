@@ -154,7 +154,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.assertEqual(json.loads(POLICY.read_bytes()), {
             "schema": 1, "image": "docker-orchagent", "architecture": "amd64",
             "distribution": "trixie", "retained_source": "none",
-            "features": {}, "debug_replacements": [],
+            "features": {},
         })
         module, bzl = declarations(json.loads(LOCK.read_bytes()))
         self.assertEqual(MODULE_INPUTS.read_text(), module)
