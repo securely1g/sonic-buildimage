@@ -1,9 +1,11 @@
 """Syncd startup files and Make-owned image labels."""
 
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@tar.bzl", "tar")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 
-package(default_visibility = ["//dockers/docker-syncd-vs:__subpackages__"])
+package(default_visibility = ["//dockers/docker-syncd-vs:__subpackages__", "//tools/bazel/tests:__pkg__"])
 
 manifest_labels(
     name = "labels",
@@ -33,4 +35,60 @@ tar(
         "./etc/supervisor/conf.d/supervisord.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location //dockers/docker-syncd-vs:legacy/supervisord.conf)",
         "./etc/supervisor/critical_processes uid=0 gid=0 mode=0644 time=0 type=file content=$(location //dockers/docker-syncd-vs:legacy/critical_processes)",
     ],
+)
+
+exports_files(["runtime_package_state.json", "source_packages.json"], visibility = ["//visibility:public"])
+
+py_library(
+    name = "package_state_lib",
+    srcs = ["package_state_layer.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//dockers/docker-syncd-vs:package_contract_lib",
+        "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:oci_inventory",
+        "//tools/bazel/oci:oci_layout",
+    ],
+)
+
+py_binary(
+    name = "package_state_layer",
+    srcs = ["package_state_layer.py"],
+    main = "package_state_layer.py",
+    deps = [":package_state_lib"],
+)
+
+run_binary(
+    name = "runtime_package_state",
+    srcs = [
+        "//dockers/docker-syncd-vs/bazel:apt.lock.json",
+        "runtime_package_state.json",
+        "//dockers/docker-syncd-vs:apt_deps",
+        "//dockers/docker-syncd-vs:config_engine_base_layout",
+        "//dockers/docker-syncd-vs:runtime_apt_selection",
+        "//dockers/docker-syncd-vs:runtime_packages",
+        "//dockers/docker-syncd-vs:runtime_import_manifest",
+    ],
+    outs = ["runtime_package_state.tar"],
+    args = [
+        "--contract",
+        "$(execpath runtime_package_state.json)",
+        "--apt-lock",
+        "$(execpath //dockers/docker-syncd-vs/bazel:apt.lock.json)",
+        "--selection",
+        "$(execpath //dockers/docker-syncd-vs:runtime_apt_selection)",
+        "--base",
+        "$(execpath //dockers/docker-syncd-vs:config_engine_base_layout)",
+        "--apt-layer",
+        "$(execpath //dockers/docker-syncd-vs:apt_deps)",
+        "--runtime-layer",
+        "$(execpath //dockers/docker-syncd-vs:runtime_packages)",
+        "--make-manifest",
+        "$(execpath //dockers/docker-syncd-vs:runtime_import_manifest)",
+        "--out",
+        "$@",
+    ],
+    mnemonic = "BuildSyncdPackageState",
+    tool = ":package_state_layer",
 )
