@@ -43,12 +43,13 @@ def github_json(endpoint, deadline):
         raise GitHubApiError("GitHub returned an invalid JSON response") from error
 
 
-def wait_until_ready(repo, registration, timeout=READY_TIMEOUT):
+def wait_until_ready(repo, registration, timeout=READY_TIMEOUT, api=None):
+    api = github_json if api is None else api
     deadline = time.monotonic() + timeout
     last_status = "No runner status received"
     while time.monotonic() < deadline:
         try:
-            runner = github_json(f"repos/{repo}/actions/runners/{registration['id']}", deadline)
+            runner = api(f"repos/{repo}/actions/runners/{registration['id']}", deadline)
             if runner.get("id") != registration["id"] or runner.get("name") != registration["name"]:
                 last_status = "GitHub returned a different runner identity"
                 break
@@ -70,8 +71,9 @@ def wait_until_ready(repo, registration, timeout=READY_TIMEOUT):
         "Also check whether this ephemeral runner already consumed a job and unregistered.")
 
 
-def register_from_operator(command, token):
-    result = subprocess.run(command, input=token + "\n", text=True, stdout=subprocess.PIPE)
+def register_from_operator(command, token, env=None):
+    options = {} if env is None else {"env": env}
+    result = subprocess.run(command, input=token + "\n", text=True, stdout=subprocess.PIPE, **options)
     registration = None
     for line in result.stdout.splitlines():
         if line.startswith(REGISTRATION_PREFIX):

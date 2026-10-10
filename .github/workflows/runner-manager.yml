@@ -1,0 +1,31 @@
+name: Self-hosted runner manager
+
+on:
+  pull_request:
+    paths:
+      - tools/ci/runner/**
+      - .github/workflows/runner-manager.yml
+  push:
+    branches: [master]
+    paths:
+      - tools/ci/runner/**
+      - .github/workflows/runner-manager.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test runner lifecycle and installation without registering runners
+        run: python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py' -v
+      - name: Check installer preview and bootstrap syntax
+        run: |
+          bash -n tools/ci/runner/bootstrap.sh
+          python3 -B tools/ci/runner/install_manager.py --operator example --master --dry-run
