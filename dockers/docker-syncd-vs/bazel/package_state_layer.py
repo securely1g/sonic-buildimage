@@ -20,6 +20,20 @@ from package_policy import FEATURES, reject_source_packages
 SCRIPTS = {"preinst", "postinst", "prerm", "postrm", "triggers"}
 
 
+def differing_fields(expected, actual, prefix=""):
+    """Name changed contract fields without printing package metadata values."""
+    fields = []
+    for key in sorted(expected.keys() | actual.keys()):
+        name = prefix + key
+        if key not in expected or key not in actual:
+            fields.append(name)
+        elif isinstance(expected[key], dict) and isinstance(actual[key], dict):
+            fields.extend(differing_fields(expected[key], actual[key], name + "."))
+        elif expected[key] != actual[key]:
+            fields.append(name)
+    return fields
+
+
 def safe_path(value):
     path = PurePosixPath(value)
     require(isinstance(value, str) and str(path) == value and value != "." and
@@ -122,7 +136,14 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
         for field in ("source_sha256", "control_sha256"):
             if field in expected_make[name]:
                 actual[field] = item.get(field)
-        require(actual == expected_make[name], "Make package relationships or scripts changed; review package state: " + name)
+        expected = dict(expected_make[name])
+        # A rebuilt binary's size does not change alternatives or installation
+        # scripts. Preserve all other control fields, including future fields.
+        for record in (actual, expected):
+            record["control_fields"] = {key: value for key, value in record["control_fields"].items()
+                                        if key != "Installed-Size"}
+        require(actual == expected, "Make package relationships or scripts changed; review package state: " + name +
+                " (" + ", ".join(differing_fields(expected, actual)) + ")")
     descriptor, _, _, base_layers = validate_layout(base, "linux/amd64")
     require(selection.get("base_manifest_digest") == descriptor["digest"], "package state uses a different OCI base")
     base_files = {}

@@ -324,6 +324,10 @@ APT lock with the reviewed baseline; normal assembly checks the actual inputs
 that determine the installed state. It resolves every recorded link against the base, APT, and Make
 layers and rejects ELF replacement. Ordinary binary checksum changes can pass
 when package relationships, scripts, and relevant state inputs are unchanged.
+`Installed-Size` is only a size estimate and may change when a package is rebuilt;
+it is excluded from the state comparison. All other control fields, script hashes
+and explicitly pinned FIPS archive hashes remain checked. A failure names the
+changed fields so the next review can identify the actual difference.
 
 When these inputs change, compare a current native image and its package control
 scripts, update the recorded entries and identities, and rerun the complete
