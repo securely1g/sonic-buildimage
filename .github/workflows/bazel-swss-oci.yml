@@ -363,14 +363,18 @@ jobs:
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: source
-    # Keep native PR checks automatic; package-producing VS builds require opt-in.
-    if: github.event_name == 'workflow_dispatch' && !inputs.skip_vs
-    # Keep a one-job runner from accepting an older, unrelated PR's queued job.
+    # Build full VS images for PR branches in this repository after source checks.
+    # Manual runs retain their skip option; external-fork PRs use hosted checks.
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
+    # Share the existing P330 pool; checkout still uses this event's ref and SHA.
     runs-on:
       - self-hosted
       - linux
       - x64
-      - ${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}
+      - sonic-vs-source-master
     timeout-minutes: 720
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
