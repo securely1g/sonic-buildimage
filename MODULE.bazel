@@ -28,7 +28,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-29af37b179d9160cd2a6db0a295492db64017945",
+    version = "0.0.15-8043a299756436464a8b58662921dfd50172a3ff",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -61,11 +61,11 @@ git_override(
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
-# Draft validation of declarative APT policies from sonic-build-infra PR #29.
+# Select the landed declarative APT policy source from infrastructure PR #29.
 # Remove this exact source override after registry PR #51 lands.
 git_override(
     module_name = "sonic-build-infra",
-    commit = "29af37b179d9160cd2a6db0a295492db64017945",
+    commit = "8043a299756436464a8b58662921dfd50172a3ff",
     remote = "https://github.com/securely1g/sonic-build-infra.git",
 )
 
