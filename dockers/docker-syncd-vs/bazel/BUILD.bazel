@@ -1,0 +1,210 @@
+"""Syncd's checked Make-package adapters and focused OCI contract tests."""
+
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+
+package(default_visibility = ["//dockers/docker-syncd-vs:__pkg__"])
+
+exports_files([
+    "apt.lock.json",
+    "apt_inputs.MODULE.bazel",
+    "runtime_package_state.json",
+])
+
+_VALIDATION_DEPS = [
+    "@sonic_build_infra//apt:lib",
+    "//tools/bazel/ci:artifact_validation",
+    "//tools/bazel/oci:oci_layout",
+    "//tools/bazel/oci:oci_inventory",
+]
+_TEST_DEPS = _VALIDATION_DEPS + ["//tools/bazel/tests:oci_base_fixture_lib"]
+
+# These actions consume the existing Make manifest and ordered tar; no DEB is built.
+py_binary(
+    name = "validate_payloads",
+    srcs = ["validate_payloads.py"],
+    main = "validate_payloads.py",
+    python_version = "3.11",
+    deps = _VALIDATION_DEPS,
+)
+
+py_binary(
+    name = "package_state_layer",
+    srcs = [
+        "package_state_layer.py",
+        "validate_image.py",
+        "validate_payloads.py",
+    ],
+    main = "package_state_layer.py",
+    python_version = "3.11",
+    deps = _VALIDATION_DEPS,
+)
+
+run_binary(
+    name = "checked_runtime_payloads",
+    srcs = [
+        "//dockers/docker-syncd-vs:config_engine_base_layout",
+        "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
+        "//:target/bazel-inputs/docker-syncd-vs/runtime/payload.tar",
+    ],
+    outs = ["runtime_payloads.checked.tar"],
+    args = [
+        "--manifest",
+        "$(execpath //:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json)",
+        "--payload",
+        "$(execpath //:target/bazel-inputs/docker-syncd-vs/runtime/payload.tar)",
+        "--variant",
+        "runtime",
+        "--base",
+        "$(execpath //dockers/docker-syncd-vs:config_engine_base_layout)",
+        "--out-tar",
+        "$@",
+    ],
+    mnemonic = "ValidateSyncdRuntimePayloads",
+    tool = ":validate_payloads",
+)
+
+run_binary(
+    name = "checked_debug_payloads",
+    srcs = [
+        "//dockers/docker-syncd-vs:docker-syncd-vs",
+        "//:target/bazel-inputs/docker-syncd-vs/debug/manifest.json",
+        "//:target/bazel-inputs/docker-syncd-vs/debug/payload.tar",
+        "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
+    ],
+    outs = ["debug_payloads.checked.tar"],
+    args = [
+        "--manifest",
+        "$(execpath //:target/bazel-inputs/docker-syncd-vs/debug/manifest.json)",
+        "--payload",
+        "$(execpath //:target/bazel-inputs/docker-syncd-vs/debug/payload.tar)",
+        "--variant",
+        "debug",
+        "--runtime-manifest",
+        "$(execpath //:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json)",
+        "--base",
+        "$(execpath //dockers/docker-syncd-vs:docker-syncd-vs)",
+        "--out-tar",
+        "$@",
+    ],
+    mnemonic = "ValidateSyncdDebugPayloads",
+    tool = ":validate_payloads",
+)
+
+run_binary(
+    name = "runtime_package_state",
+    srcs = [
+        "apt.lock.json",
+        "runtime_package_state.json",
+        "//dockers/docker-syncd-vs:legacy/Dockerfile.j2",
+        "//dockers/docker-syncd-vs:apt_deps",
+        "//dockers/docker-syncd-vs:config_engine_base_layout",
+        "//dockers/docker-syncd-vs:runtime_apt_selection",
+        "//dockers/docker-syncd-vs:runtime_packages",
+        "//:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json",
+    ],
+    outs = ["runtime_package_state.tar"],
+    args = [
+        "--contract",
+        "$(execpath runtime_package_state.json)",
+        "--apt-lock",
+        "$(execpath apt.lock.json)",
+        "--selection",
+        "$(execpath //dockers/docker-syncd-vs:runtime_apt_selection)",
+        "--base",
+        "$(execpath //dockers/docker-syncd-vs:config_engine_base_layout)",
+        "--apt-layer",
+        "$(execpath //dockers/docker-syncd-vs:apt_deps)",
+        "--runtime-layer",
+        "$(execpath //dockers/docker-syncd-vs:runtime_packages)",
+        "--make-manifest",
+        "$(execpath //:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json)",
+        "--dockerfile",
+        "$(execpath //dockers/docker-syncd-vs:legacy/Dockerfile.j2)",
+        "--out",
+        "$@",
+    ],
+    mnemonic = "BuildSyncdPackageState",
+    tool = ":package_state_layer",
+)
+
+# This test uses only tar fixtures and creates no Debian packages. The native
+# preparation tests are intentionally run directly with Python instead.
+py_test(
+    name = "validate_payloads_test",
+    srcs = [
+        "tests/validate_payloads_test.py",
+        "validate_payloads.py",
+    ],
+    main = "tests/validate_payloads_test.py",
+    python_version = "3.11",
+    deps = _TEST_DEPS,
+)
+
+py_test(
+    name = "validate_image_test",
+    srcs = [
+        "tests/validate_image_test.py",
+        "validate_image.py",
+        "validate_payloads.py",
+    ],
+    data = [
+        "//dockers/docker-syncd-vs:legacy/critical_processes",
+        "//dockers/docker-syncd-vs:legacy/start.sh",
+        "//dockers/docker-syncd-vs:legacy/supervisord.conf",
+        "//dockers/docker-base-trixie:dpkg_01_drop",
+    ],
+    main = "tests/validate_image_test.py",
+    python_version = "3.11",
+    deps = _TEST_DEPS,
+)
+
+py_test(
+    name = "select_apt_payloads_test",
+    srcs = [
+        "tests/select_apt_payloads_test.py",
+        "validate_payloads.py",
+    ],
+    args = ["--policy=$(rootpath //dockers/docker-syncd-vs:runtime_layer_policy)"],
+    data = [
+        "apt.lock.json",
+        "apt_inputs.MODULE.bazel",
+        "//dockers/docker-syncd-vs:runtime_layer_policy",
+    ],
+    main = "tests/select_apt_payloads_test.py",
+    python_version = "3.11",
+    deps = _TEST_DEPS + ["//tools/bazel/oci:apt_selection"],
+)
+
+py_test(
+    name = "package_state_layer_test",
+    srcs = [
+        "package_state_layer.py",
+        "tests/package_state_layer_test.py",
+        "validate_image.py",
+        "validate_payloads.py",
+    ],
+    main = "tests/package_state_layer_test.py",
+    data = ["apt.lock.json", "runtime_package_state.json"],
+    python_version = "3.11",
+    deps = _TEST_DEPS,
+)
+
+py_test(
+    name = "manifest_labels_test",
+    size = "small",
+    srcs = ["tests/integration/manifest_labels_test.py"],
+    args = [
+        "--runtime-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs/manifest.json)",
+        "--debug-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json)",
+        "--runtime-labels=$(rootpath //dockers/docker-syncd-vs:labels)",
+        "--debug-labels=$(rootpath //dockers/docker-syncd-vs:debug_labels)",
+    ],
+    data = [
+        "//dockers/docker-syncd-vs:debug_labels",
+        "//dockers/docker-syncd-vs:labels",
+        "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
+        "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
+    ],
+    main = "tests/integration/manifest_labels_test.py",
+)

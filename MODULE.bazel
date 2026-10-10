@@ -244,3 +244,15 @@ single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.16-0c1d31528ad50c6505117a6df7409ccebee863cf",
 )
+
+# Syncd's ABI-locked development additions use the reviewed October snapshot.
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = ["stable"],
+    types = ["deb"],
+    uris = ["https://snapshot.debian.org/archive/debian/20261008T000000Z"],
+)
+
+include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
+apt_inputs(name = "syncd_apt_inputs", lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json")
