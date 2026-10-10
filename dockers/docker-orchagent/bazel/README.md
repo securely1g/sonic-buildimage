@@ -113,10 +113,11 @@ that source with an exact `git_override`; registry URLs remain on `main`.
 Remove the source override after its registered version lands.
 
 Native AMD64/ARM64 archive checks and AMD64 source-layer checks are configured
-for PR updates. Manual `Bazel SWSS OCI` dispatch defaults to `skip_vs=true`. A
-full VS/P4RT build requires a manual dispatch with `skip_vs=false` and appropriate
-package-build authorization. Every selected Bazel scope is audited for DEB
-production before execution.
+for PR updates. Full VS/P4RT builds also run automatically for PR branches in
+this repository after the source checks pass. External-fork PRs keep hosted
+checks only. Manual `Bazel SWSS OCI` dispatch defaults to `skip_vs=true`; select
+`skip_vs=false` to include the full image job. A push to `master` keeps its
+hosted checks without an automatic full VS build.
 
 Generated Bazel files carry an `AUTO-GENERATED. DO NOT EDIT MANUALLY.` header
 that names their generator. The package lock and generated JSON inputs/receipts
@@ -361,10 +362,11 @@ separate VS image and SWSS archive upload keeps its existing files.
 
 The `Make VS with Bazel SWSS (AMD64)` job builds the complete OCI
 archives and final VS image after the source-layer check succeeds. It runs
-automatically for pull requests and pushes to `master`, and on manual workflow
-dispatch. It requires a disposable runner with the labels `self-hosted`, `linux`,
-`x64` and `sonic-vs-source-pr-NUMBER` for a pull request, or
-`sonic-vs-source-master` for push/manual runs. The host needs Docker, KVM, `j2`
+automatically for same-repository pull requests, and on manual workflow dispatch
+with `skip_vs=false`. It uses the shared pool with labels `self-hosted`, `linux`,
+`x64` and `sonic-vs-source-master`. The pool label does not select the checkout:
+PR jobs still build their event's merge revision and consume artifacts from
+that same workflow run. The host needs Docker, KVM, `j2`
 and at least 100 GiB free for the workspace plus room for Docker storage.
 The [runner setup and recovery guide](../../../tools/ci/runner/README.md) provides checked
 provisioning, host preflight and one-job rearming, including PR #9 examples.
