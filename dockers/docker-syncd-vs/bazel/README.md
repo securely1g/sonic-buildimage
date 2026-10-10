@@ -89,10 +89,10 @@ orchagent: supported configuration, checked base and Make labels, runtime inputs
 runtime image and archive, debug inputs, and debug image and archive. Layer order,
 entrypoints, package lists, and output names stay visible in the image owner.
 
-[`bazel/BUILD.bazel`](BUILD.bazel) holds the Make-package validation actions,
-package-state action, and focused contract tests beside their source files. The
-existing image, archive, selection, intermediate-payload, tool, and contract-test labels
-in `//dockers/docker-syncd-vs` remain available. CI names the actual tests in
+[`config/BUILD.bazel`](../config/BUILD.bazel) owns the labels and startup files,
+as it does for Orchagent. [`bazel/BUILD.bazel`](BUILD.bazel) holds the source and
+Make input adapters, package-state action and focused contract tests. Image and
+archive targets remain in `//dockers/docker-syncd-vs`; CI names the tests in
 `//dockers/docker-syncd-vs/bazel` and collects their logs from that package.
 
 The debug tools deliberately change five root-owned Vim alternatives from
@@ -118,18 +118,32 @@ image does not copy those components' C++ build rules or include SWSS daemons.
 `source_packages.json` records the reviewed package dependency contracts, owner
 module versions/revisions, target labels and required installed paths.
 `source_packages.py` checks the resolved owner MODULE files, normalizes the
-runtime paths and root ownership, and records the actual source TAR and symbol
-hashes. These records describe source outputs, not Debian archives. Changing an
+runtime paths and root ownership, and records the actual source runtime TAR
+hashes. This metadata remains necessary to check the dependencies of the
+remaining Make packages against the selected source libraries. These records describe source outputs, not Debian archives. Changing an
 owner version requires reviewing this contract and checking the remaining Make
 executables and the base's Python bindings against the new libraries.
 
-The source action produces `source_runtime.tar`, `source_debug.tar` and
-`source_packages.receipt.json`. Separate runtime/debug actions combine that
-receipt with each original Make manifest for APT dependency checks. Make and
-source packages remain separate inventories; duplicate ownership is rejected.
-Runtime does not depend on the Make debug handoff. Debug must use the same
-source receipt as runtime, and complete image validation checks both TARs and
-all matching symbols against the actual deployed bytes.
+The source adapter produces a runtime TAR and a schema-2 runtime-only receipt. The shared layer
+filter preserves the owner targets for debug discovery, and a separate
+`debug_symbols_layer` collects their matching symbols, following Orchagent's
+runtime/debug structure. Building runtime does not require the source debug TAR
+or the Make debug handoff.
+
+Runtime and debug APT selection combine the same source runtime receipt with
+their respective Make manifests. Source and Make packages remain separate
+inventories; duplicate ownership is rejected. Complete image and native checks
+verify the collected symbols against the actual deployed libraries.
+
+```text
+runtime = base + APT + source libraries + Make payloads + config/state
+debug   = runtime + debug tools + source symbols + Make symbols
+```
+
+`package_policy.py` defines the common checks used when preparing and consuming
+the Make inputs: supported features, FIPS OpenSSH and exclusion of libraries
+already supplied by Bazel. The inherited `libsonicdbcli` symbol exception remains
+limited to its checked companion and DWZ supplement.
 
 ## Shared OCI build and test code
 
@@ -286,8 +300,8 @@ the original source, control and payload hashes and verify actual payload bytes.
 `.bazelrc` uses the registry's maintained `main` URL. No local copy of a
 Distroless patch is needed.
 
-Native AMD64/ARM64 CI runs the package and image contract tests. The complete
-image profile remains native AMD64. Dispatch `Bazel SWSS OCI` with `skip_vs=true`
+Shared archive CI runs on native AMD64 and ARM64. Syncd's contract CI and
+complete image profile use native AMD64. Dispatch `Bazel SWSS OCI` with `skip_vs=true`
 to validate source layers and contracts without starting a full VS image build.
 Each selected Bazel scope is checked for DEB-producing actions before execution.
 
@@ -303,9 +317,11 @@ and library links, syncd init links, and two copyright aliases needed when
 Distroless selects the concrete providers for `pkg-config` and `libc-ares2`.
 The aliases use byte-identical provider files.
 
-`package_state_layer.py` checks the Dockerfile, APT lock, selected package
-owners, Make dependency/script fields, and the syncd init file before writing
-that layer. It resolves every recorded link against the base, APT, and Make
+`package_state_layer.py` checks the selected package owners, Make
+dependency/script fields, and the syncd init file before writing that layer.
+The explicit package-state CI test compares the historical Dockerfile and whole
+APT lock with the reviewed baseline; normal assembly checks the actual inputs
+that determine the installed state. It resolves every recorded link against the base, APT, and Make
 layers and rejects ELF replacement. Ordinary binary checksum changes can pass
 when package relationships, scripts, and relevant state inputs are unchanged.
 

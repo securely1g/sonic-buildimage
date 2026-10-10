@@ -11,29 +11,10 @@ import sys
 import tarfile
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
+sys.path.insert(0, str(Path(__file__).absolute().parent))
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.oci.oci_layout import validate_layout
-
-FEATURES = {"include_vs_dash_sai": "y", "include_fips": "y", "enable_asan": "n", "enable_syncd_rpc": "n"}
-SOURCE_PACKAGE_NAMES = frozenset({
-    "libswsscommon", "libsairedis", "libsaimetadata",
-    "libswsscommon-dbgsym", "libsairedis-dbgsym", "libsaimetadata-dbgsym",
-})
-
-
-def reject_source_packages(records, *, allow_base_symbols=False):
-    """Reject stale Make libraries and symbols now owned by the shared Bazel targets."""
-    unexpected = []
-    for record in records:
-        name = record.get("package")
-        if name not in SOURCE_PACKAGE_NAMES:
-            continue
-        if allow_base_symbols and name == "libswsscommon-dbgsym":
-            import base_debug_symbols
-            base_debug_symbols.check_record(record)
-        else:
-            unexpected.append(name)
-    require(not unexpected, "Make handoff contains packages now built from source: " + ", ".join(sorted(set(unexpected))))
+from package_policy import DEBUG_APT_PACKAGES, FEATURES, SOURCE_PACKAGE_NAMES, reject_source_packages, require_runtime_fips
 
 
 MERGED_USR = {"bin": "usr/bin", "lib": "usr/lib", "lib64": "usr/lib64", "sbin": "usr/sbin"}
@@ -124,17 +105,6 @@ def normalize(payload_path, base, output_path):
     return {"base_manifest_digest": base_digest, "directory_aliases": DIRECTORY_ALIASES, **counts}
 
 
-def require_runtime_fips(records):
-    matches = [record for record in records if record.get("package") == "openssh-client"]
-    require(len(matches) == 1 and "+fips" in matches[0].get("version", ""),
-            "runtime package handoff requires the Make FIPS openssh-client")
-    record = matches[0]
-    fields = record.get("control_fields", {})
-    require(fields.get("Package") == record["package"] and fields.get("Version") == record["version"] and
-            fields.get("Architecture") == record.get("architecture") == "amd64",
-            "runtime FIPS openssh-client identity differs from its Debian control")
-
-
 def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
@@ -203,7 +173,7 @@ def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
             previous = runtime_packages.get(record["package"])
             require(previous is None or previous["source_sha256"] == record["source_sha256"],
                     "debug package handoff changes a runtime package: " + record["package"])
-        require(set(manifest.get("debug_apt_packages", [])) == {"gdb", "gdbserver", "sshpass", "strace", "vim"},
+        require(set(manifest.get("debug_apt_packages", [])) == DEBUG_APT_PACKAGES,
                 "debug package handoff has an unsupported tool set")
     else:
         require(runtime_manifest is None and "runtime_manifest_sha256" not in manifest and

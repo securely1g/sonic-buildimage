@@ -78,7 +78,7 @@ def payloads(manifest_path, variant, runtime_manifest=None):
 
 
 def source_payloads(runtime_tar, debug_tar, receipt_path, *, contract_path=None):
-    """Bind normalized source layers to the owner targets and exact input archives."""
+    """Bind runtime to its receipt and inspect the separate shared symbol layer."""
     import source_packages
     receipt = source_packages.validate_receipt(receipt_path, runtime_tar, debug_tar, contract_path=contract_path)
     runtime, debug = {}, {}
@@ -373,6 +373,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         "runtime_package_count": runtime_receipt["package_count"], "debug_package_count": debug_receipt["package_count"],
         "runtime_payload_entries": len(expected_runtime), "debug_payload_entries": len(expected_debug),
         "source_receipt_sha256": sha(source_receipt) if has_source else None,
+        "source_debug_tar_sha256": sha(source_debug_tar) if has_source else None,
         "source_packages": source_provenance,
         "source_runtime_payload_entries": len(expected_source_runtime),
         "source_debug_payload_entries": len(expected_source_debug),

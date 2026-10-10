@@ -14,9 +14,9 @@ OWNER = Path(__file__).absolute().parents[2]
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as tar_bytes, write_layout
+from tools.bazel.oci.oci_inventory import apply_layer
+from package_policy import FEATURES
 import package_state_layer as subject
-import validate_image
-import validate_payloads
 
 
 def write_oci(path, entries):
@@ -41,7 +41,18 @@ class CommittedPackageStateTest(unittest.TestCase):
         self.assertEqual(contract["make_package_files"]["etc/init.d/syncd"]["package"], "syncd-vs")
         self.assertIn("+fips", make["openssh-client"]["version"])
 
+    def test_historical_reference_matches_legacy_dockerfile(self):
+        """CI detects changes to the legacy installation recipe without making it a build input."""
+        contract = json.loads((OWNER / "bazel/runtime_package_state.json").read_bytes())
+        reference = contract["reference"]
+        self.assertRegex(reference["buildimage_revision"], r"^[0-9a-f]{40}$")
+        for field in ("base_archive_sha256", "runtime_archive_sha256", "legacy_dockerfile_sha256"):
+            self.assertRegex(reference[field], r"^[0-9a-f]{64}$")
+        self.assertEqual(reference["legacy_dockerfile_sha256"],
+                         hashlib.sha256((OWNER / "legacy/Dockerfile.j2").read_bytes()).hexdigest())
+
     def test_reviewed_state_owners_match_committed_canonical_lock(self):
+        """CI requests a state-contract review when the canonical lock or its package owners change."""
         lock_path = OWNER / "bazel/apt.lock.json"
         lock = json.loads(lock_path.read_bytes())
         contract = json.loads((OWNER / "bazel/runtime_package_state.json").read_bytes())
@@ -82,7 +93,7 @@ class PackageStateLayerTest(unittest.TestCase):
         script_sha = hashlib.sha256(b"postinst").hexdigest()
         self.make_manifest = self.root / "make.json"
         self.make_manifest.write_text(json.dumps({"schema": 1, "image": "docker-syncd-vs", "variant": "runtime",
-            "features": dict(validate_payloads.FEATURES), "packages": [{"package": "make-package", "version": "1.0",
+            "features": dict(FEATURES), "packages": [{"package": "make-package", "version": "1.0",
             "architecture": "amd64", "control_fields": {"Depends": "libc6"},
             "control_files": {"postinst": script_sha, "md5sums": "d" * 64}}]}))
         self.selection = self.root / "selection.json"
@@ -130,12 +141,12 @@ class PackageStateLayerTest(unittest.TestCase):
 
     def build(self):
         return subject.build(self.contract, self.lock, self.selection, self.base, self.apt,
-                             self.runtime_layer, self.make_manifest, self.dockerfile, self.output)
+                             self.runtime_layer, self.make_manifest, self.output)
 
     def test_checked_links_state_and_alias_are_published(self):
         result = self.build()
         files = {}
-        validate_image.apply_layer(self.output, files)
+        apply_layer(self.output, files)
         self.assertEqual(result["links_checked"], 3)
         self.assertEqual(result["aliases"], 1)
         self.assertEqual(files["usr/bin/tool"]["linkname"], "/etc/alternatives/tool")
@@ -237,15 +248,26 @@ class PackageStateLayerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Make package state file changed"):
             self.build()
 
-    def test_dockerfile_changes_require_review(self):
+    def test_historical_reference_is_not_an_assembly_input(self):
+        """Normal assembly uses selected content; historical reference changes are checked separately in CI."""
+        self.build()
+        before = self.output.read_bytes()
         self.dockerfile.write_text("FROM changed\n")
-        with self.assertRaisesRegex(ValueError, "legacy Dockerfile changed"):
-            self.build()
+        self.mutate(self.contract, lambda value: value.update(reference={}, apt_lock_sha256="0" * 64))
+        self.build()
+        self.assertEqual(self.output.read_bytes(), before)
 
-    def test_apt_lock_changes_require_review(self):
+    def test_unrelated_lock_change_requires_fresh_selection_not_new_state(self):
+        """Keep selection bound to the real lock, but do not rebuild state declarations for unrelated lock metadata."""
+        self.build()
+        before = self.output.read_bytes()
         self.mutate(self.lock, lambda value: value.update(note="changed selection"))
-        with self.assertRaisesRegex(ValueError, "APT content lock changed"):
+        with self.assertRaisesRegex(ValueError, "APT selection does not match"):
             self.build()
+        self.mutate(self.selection, lambda value: value.update(
+            apt_lock_sha256=hashlib.sha256(self.lock.read_bytes()).hexdigest()))
+        self.build()
+        self.assertEqual(self.output.read_bytes(), before)
 
 
 if __name__ == "__main__":

@@ -161,20 +161,19 @@ class ValidateImageTest(unittest.TestCase):
             runtime_path, debug_path = directory / (package + ".tar"), directory / (package + "-debug.tar")
             runtime_path.write_bytes(layer(runtime))
             debug_path.write_bytes(layer(debug))
-            record.update(input_tar_sha256=subject.sha(runtime_path), files=source_packages.inventory(runtime_path),
-                          debug={"input_tar_sha256": subject.sha(debug_path), "files": source_packages.inventory(debug_path)})
+            record.update(input_tar_sha256=subject.sha(runtime_path), files=source_packages.inventory(runtime_path))
             runtime_entries.extend(runtime)
             debug_entries.extend(debug)
         runtime_tar, debug_tar = directory / "runtime.tar", directory / "debug.tar"
         runtime_tar.write_bytes(layer(runtime_entries))
         debug_tar.write_bytes(layer(debug_entries))
-        receipt = {**source_packages.IDENTITY, "kind": "bazel_source", "packages": records,
+        receipt = {**source_packages.IDENTITY, "schema": source_packages.RECEIPT_SCHEMA,
+                   "kind": "bazel_source", "packages": records,
                    "contract_sha256": subject.sha(OWNER / "bazel/source_packages.json"),
                    "base_manifest_digest": "sha256:" + "b" * 64,
                    "module_file_sha256": {name: "a" * 64 for name in ("sonic-swss-common", "sonic-sairedis")}}
-        for field, path in (("payload", runtime_tar), ("debug_payload", debug_tar)):
-            receipt[field] = {"sha256": subject.sha(path), "size": path.stat().st_size,
-                              "members": len(source_packages.inventory(path))}
+        receipt["payload"] = {"sha256": subject.sha(runtime_tar), "size": runtime_tar.stat().st_size,
+                              "members": len(source_packages.inventory(runtime_tar))}
         receipt_path = directory / "receipt.json"
         receipt_path.write_text(json.dumps(receipt))
         self.runtime_layers.append(runtime_tar.read_bytes())

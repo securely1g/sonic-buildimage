@@ -28,6 +28,7 @@ import validate_payloads
 PACKAGES = ("libswsscommon", "libsairedis", "libsaimetadata")
 CONTROL_FIELDS = {"Package", "Version", "Architecture", "Depends", "Pre-Depends", "Provides", "Multi-Arch"}
 SOURCE_FIELDS = {"module", "version", "commit", "target"}
+RECEIPT_SCHEMA = 2
 IDENTITY = {"schema": 1, "image": "docker-syncd-vs", "architecture": "amd64", "distribution": "trixie"}
 
 
@@ -147,7 +148,7 @@ def inventory(path):
     return files
 
 
-def combine_tars(contract, paths, output_path, base_files, *, debug=False):
+def combine_tars(contract, paths, output_path, base_files):
     """Normalize declared owner tars, preserving per-package inventories and bytes."""
     require(set(paths) == set(PACKAGES), "missing or unexpected shared-library tar inputs")
     files, records = {}, {}
@@ -158,7 +159,7 @@ def combine_tars(contract, paths, output_path, base_files, *, debug=False):
             package_files = {}
             with tarfile.open(paths[name], "r:*") as source:
                 for member in source:
-                    normalized = normalized_source_member(member, path_modes=None if debug else record.get("path_modes"))
+                    normalized = normalized_source_member(member, path_modes=record.get("path_modes"))
                     if normalized is None:
                         continue
                     path = path_name(normalized.name)
@@ -166,35 +167,27 @@ def combine_tars(contract, paths, output_path, base_files, *, debug=False):
                     if member.isfile():
                         item.update(file_metadata(source.extractfile(member), path))
                     require(path not in package_files or
-                            ((debug or item["kind"] == "directory") and package_files[path] == item),
+                            (item["kind"] == "directory" and package_files[path] == item),
                             "duplicate source package path: " + name + ":" + path)
                     require("elf_machine" not in item or item["elf_machine"] == 62,
                             "source package has a foreign ELF architecture: " + name + ":" + path)
-                    if debug and item["kind"] != "directory":
-                        require(re.fullmatch(r"usr/lib/debug/\.build-id/[0-9a-f]{2}/[0-9a-f]+\.debug", path) and
-                                item.get("elf_machine") == 62,
-                                "source symbols contain an unexpected file: " + name + ":" + path)
                     package_files[path] = item
                     if path in files:
-                        require((debug or item["kind"] == "directory") and files[path] == item,
+                        require(item["kind"] == "directory" and files[path] == item,
                                 "shared source packages overlap: " + path)
                         continue
                     files[path] = item
                     output.addfile(normalized, source.extractfile(member) if member.isfile() else None)
             require(sha(paths[name]) == before, "source package tar changed during assembly: " + name)
-            if debug:
-                require(any(item.get("elf_machine") == 62 for item in package_files.values()),
-                        "source package has no debug symbols: " + name)
-            else:
-                for path, kind in record["required_paths"].items():
-                    item = package_files.get(path, {})
-                    require(item.get("kind") == ("file" if kind == "elf" else kind) and
-                            (kind != "elf" or item.get("elf_machine") == 62),
-                            "source package lacks a required installed path: " + name + ":" + path)
-                for path, mode in record.get("path_modes", {}).items():
-                    require(package_files.get(path, {}).get("kind") == "file" and
-                            package_files[path]["mode"] == mode,
-                            "source package lacks a reviewed file mode: " + name + ":" + path)
+            for path, kind in record["required_paths"].items():
+                item = package_files.get(path, {})
+                require(item.get("kind") == ("file" if kind == "elf" else kind) and
+                        (kind != "elf" or item.get("elf_machine") == 62),
+                        "source package lacks a required installed path: " + name + ":" + path)
+            for path, mode in record.get("path_modes", {}).items():
+                require(package_files.get(path, {}).get("kind") == "file" and
+                        package_files[path]["mode"] == mode,
+                        "source package lacks a reviewed file mode: " + name + ":" + path)
             records[name] = {"input_tar_sha256": before, "files": package_files}
     assert_overlay_paths(files, base_files)
     installed = base_files | files
@@ -205,8 +198,12 @@ def combine_tars(contract, paths, output_path, base_files, *, debug=False):
     return records, {"sha256": sha(output_path), "size": output_path.stat().st_size, "members": len(files)}
 
 
-def assemble(contract_path, packages, debug_packages, module_files, base, runtime_tar, debug_tar):
-    """Produce checked runtime/symbol archives and their source-owned receipt."""
+def assemble(contract_path, packages, module_files, base, runtime_tar):
+    """Normalize runtime owner archives and record their dependency metadata.
+
+    Debug symbols follow the owners' DebugSymbolsInfo graph independently, just
+    as in Orchagent; a runtime build never consumes a debug-symbol archive.
+    """
     contract = read_contract(contract_path)
     modules = verify_modules(contract, module_files)
     base_digest = validate_payloads.base_aliases(base)
@@ -220,34 +217,33 @@ def assemble(contract_path, packages, debug_packages, module_files, base, runtim
                     "source package requires unchanged inherited content: " + path)
             inherited[path] = expected
     runtime_tar.parent.mkdir(parents=True, exist_ok=True)
-    debug_tar.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".source-packages-", dir=runtime_tar.parent) as temporary:
-        runtime_output, debug_output = Path(temporary) / "runtime.tar", Path(temporary) / "debug.tar"
+        runtime_output = Path(temporary) / "runtime.tar"
         runtime_records, payload = combine_tars(contract, packages, runtime_output, base_files)
         runtime_files = dict(base_files)
         apply_layer(runtime_output, runtime_files, checked_overlay=True)
         require(all(runtime_files.get(path) == expected for path, expected in inherited.items()),
                 "source package changes required inherited content")
-        debug_records, debug_payload = combine_tars(contract, debug_packages, debug_output, runtime_files, debug=True)
         records = []
         for record in contract["packages"]:
             name = record["package"]
             records.append({key: copy.deepcopy(record[key]) for key in
                             ("package", "version", "architecture", "control_fields", "source")} |
-                           runtime_records[name] | {"debug": debug_records[name]})
-        result = {**IDENTITY, "kind": "bazel_source", "contract_sha256": sha(contract_path),
+                           runtime_records[name])
+        result = {**IDENTITY, "schema": RECEIPT_SCHEMA, "kind": "bazel_source", "contract_sha256": sha(contract_path),
                   "base_manifest_digest": base_digest, "module_file_sha256": modules,
-                  "packages": records, "payload": payload, "debug_payload": debug_payload,
+                  "packages": records, "payload": payload,
                   "inherited_files": inherited}
         runtime_output.replace(runtime_tar)
-        debug_output.replace(debug_tar)
     return result
 
 
 def receipt_records(value):
     """Check receipt structure before consuming package ownership or provenance."""
-    require(isinstance(value, dict) and all(value.get(key) == expected for key, expected in IDENTITY.items()) and
-            value.get("kind") == "bazel_source", "unsupported source package receipt")
+    require(isinstance(value, dict) and value.get("schema") == RECEIPT_SCHEMA and
+            all(value.get(key) == expected for key, expected in IDENTITY.items() if key != "schema") and
+            value.get("kind") == "bazel_source" and "debug_payload" not in value,
+            "unsupported source package receipt; expected runtime-only schema 2")
     require(re.fullmatch(r"[0-9a-f]{64}", value.get("contract_sha256", "")) and
             re.fullmatch(r"sha256:[0-9a-f]{64}", value.get("base_manifest_digest", "")),
             "source receipt lacks its contract or base identity")
@@ -261,10 +257,10 @@ def receipt_records(value):
             "source receipt must contain the three shared packages")
     for record in records:
         package_identity(record)
-        for inputs in (record, record.get("debug", {})):
-            require(re.fullmatch(r"[0-9a-f]{64}", inputs.get("input_tar_sha256", "")) and
-                    isinstance(inputs.get("files"), dict) and inputs["files"],
-                    "source receipt lacks a package tar identity and inventory")
+        require("debug" not in record, "runtime source receipt must not contain debug inputs")
+        require(re.fullmatch(r"[0-9a-f]{64}", record.get("input_tar_sha256", "")) and
+                isinstance(record.get("files"), dict) and record["files"],
+                "source receipt lacks a package tar identity and inventory")
     return records
 
 
@@ -294,22 +290,36 @@ def validate_receipt(receipt_path, runtime_tar, debug_tar=None, *, contract_path
                 item = record["files"].get(path, {})
                 require(item.get("kind") == "file" and item.get("mode") == mode,
                         "source receipt differs from a reviewed file mode: " + path)
-    for path, field, section in ((runtime_tar, "payload", None), (debug_tar, "debug_payload", "debug")):
-        if path is None:
-            continue
-        descriptor = value.get(field, {})
-        require(path.is_file() and sha(path) == descriptor.get("sha256") and
-                path.stat().st_size == descriptor.get("size"), "source receipt archive hash differs: " + field)
-        expected = {}
-        for record in records:
-            for name, item in (record[section] if section else record)["files"].items():
-                require(name not in expected or ((section == "debug" or item.get("kind") == "directory") and
-                                                expected[name] == item),
-                        "source receipt packages overlap: " + name)
-                expected[name] = item
-        require(inventory(path) == expected and len(expected) == descriptor.get("members"),
-                "source receipt archive inventory differs: " + field)
+    descriptor = value.get("payload", {})
+    require(runtime_tar.is_file() and sha(runtime_tar) == descriptor.get("sha256") and
+            runtime_tar.stat().st_size == descriptor.get("size"), "source receipt archive hash differs: payload")
+    expected = {}
+    for record in records:
+        for name, item in record["files"].items():
+            require(name not in expected or (item.get("kind") == "directory" and expected[name] == item),
+                    "source receipt packages overlap: " + name)
+            expected[name] = item
+    require(inventory(runtime_tar) == expected and len(expected) == descriptor.get("members"),
+            "source receipt archive inventory differs: payload")
+    if debug_tar is not None:
+        debug_inventory(debug_tar)
     return value
+
+
+def debug_inventory(path):
+    """Check the shared collector's symbol-only tar before native/image validation.
+
+    The runtime receipt deliberately has no debug dependency. Native validation
+    binds each supplied symbol to deployed runtime bytes by build ID and debuglink
+    CRC; image validation checks that these exact symbols enter the debug image.
+    """
+    files = inventory(path)
+    require(any(item.get("elf_machine") == 62 for item in files.values()), "source layer has no debug symbols")
+    for name, item in files.items():
+        require(item["kind"] == "directory" or (
+            re.fullmatch(r"usr/lib/debug/\.build-id/[0-9a-f]{2}/[0-9a-f]+\.debug", name) and
+            item.get("elf_machine") == 62), "source symbols contain an unexpected file: " + name)
+    return files
 
 
 def retained_manifest(manifest_path, receipt, receipt_sha256, *, variant):
@@ -344,28 +354,21 @@ def main():
     parser.add_argument("--contract", type=Path)
     parser.add_argument("--base", type=Path)
     parser.add_argument("--package", action="append", default=[])
-    parser.add_argument("--debug-package", action="append", default=[])
     parser.add_argument("--module", action="append", default=[])
     parser.add_argument("--out-tar", type=Path)
-    parser.add_argument("--out-debug-tar", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--merge-manifest", type=Path)
     parser.add_argument("--source-receipt", type=Path)
     parser.add_argument("--out-manifest", type=Path)
-    for variant in ("runtime", "debug"):
-        parser.add_argument("--" + variant + "-manifest", type=Path)
-        parser.add_argument("--" + variant + "-retained-manifest", type=Path)
     args = parser.parse_args()
     try:
         if args.merge_manifest is not None:
             require(args.source_receipt is not None and args.out_manifest is not None,
                     "manifest merge requires a source receipt and output manifest")
-            require(not any((args.contract, args.base, args.out_tar, args.out_debug_tar, args.receipt,
-                             args.package, args.debug_package, args.module, args.runtime_manifest,
-                             args.debug_manifest, args.runtime_retained_manifest, args.debug_retained_manifest)),
+            require(not any((args.contract, args.base, args.out_tar, args.receipt, args.package, args.module)),
                     "manifest merge cannot also assemble source packages")
-            # The receipt is an output of the declared source assembly action;
-            # its runtime/debug archives are verified there and by image checks.
+            # Both APT variants consume the same checked runtime metadata.
+            # Debug symbols are independent additions, not package dependencies.
             result = json.loads(args.source_receipt.read_bytes())
             variant = json.loads(args.merge_manifest.read_bytes()).get("variant")
             combined = retained_manifest(args.merge_manifest, result, sha(args.source_receipt), variant=variant)
@@ -373,24 +376,11 @@ def main():
             args.out_manifest.write_bytes(json_bytes(combined))
             return
         require(args.source_receipt is None and args.out_manifest is None and
-                all((args.contract, args.base, args.out_tar, args.out_debug_tar, args.receipt)),
-                "source assembly requires its contract, base, archives and receipt")
-        result = assemble(args.contract, bindings(args.package), bindings(args.debug_package), bindings(args.module),
-                          args.base, args.out_tar, args.out_debug_tar)
-        receipt_bytes = json_bytes(result)
-        digest = hashlib.sha256(receipt_bytes).hexdigest()
-        combined = []
-        for variant in ("runtime", "debug"):
-            source = getattr(args, variant + "_manifest")
-            destination = getattr(args, variant + "_retained_manifest")
-            require((source is None) == (destination is None), "retained manifest requires both input and output")
-            if source is not None:
-                combined.append((destination, json_bytes(retained_manifest(source, result, digest, variant=variant))))
+                all((args.contract, args.base, args.out_tar, args.receipt)),
+                "source assembly requires its contract, base, runtime archive and receipt")
+        result = assemble(args.contract, bindings(args.package), bindings(args.module), args.base, args.out_tar)
         args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        args.receipt.write_bytes(receipt_bytes)
-        for destination, contents in combined:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(contents)
+        args.receipt.write_bytes(json_bytes(result))
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError) as error:
         parser.exit(1, "Syncd source package validation failed: " + str(error) + "\n")
 

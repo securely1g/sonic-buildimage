@@ -35,16 +35,25 @@ TARGETS = ["//dockers/docker-syncd-vs/bazel:" + name for name in TARGET_NAMES] +
 ]
 
 
+SOURCE_FILES = (
+    "MODULE.bazel",
+    "dockers/docker-syncd-vs/BUILD.bazel",
+    "dockers/docker-syncd-vs/config/BUILD.bazel",
+    "tools/bazel/oci/BUILD.bazel",
+    "tools/bazel/oci/apt_selection.py",
+    "tools/bazel/oci/apt_layer.bzl",
+    "tools/bazel/oci/source_modules.bzl",
+) + tuple("dockers/docker-syncd-vs/bazel/" + name for name in (
+    "BUILD.bazel", "apt.lock.json", "apt_inputs.MODULE.bazel", "prepare_packages.py",
+    "package_policy.py", "package_state_layer.py", "runtime_package_state.json",
+    "source_packages.json", "source_packages.py", "base_debug_symbols.py",
+    "base_debug_symbols.json", "validate_image.py", "validate_native_packages.py",
+    "validate_payloads.py",
+))
+
+
 def source_hashes():
-    return {str(path.relative_to(ROOT)): sha(path) for path in (
-        ROOT / "MODULE.bazel", OWNER.parent / "BUILD.bazel", OWNER / "BUILD.bazel",
-        ROOT / "tools/bazel/oci/BUILD.bazel", ROOT / "tools/bazel/oci/apt_selection.py",
-        ROOT / "tools/bazel/oci/apt_layer.bzl",
-        OWNER / "apt.lock.json", OWNER / "apt_inputs.MODULE.bazel", OWNER / "prepare_packages.py",
-        OWNER / "runtime_package_state.json", OWNER / "source_packages.json",
-        OWNER / "base_debug_symbols.py", OWNER / "base_debug_symbols.json",
-        OWNER / "source_packages.py", OWNER / "validate_image.py", OWNER / "validate_native_packages.py",
-        ROOT / "tools/bazel/oci/source_modules.bzl")}
+    return {name: sha(ROOT / name) for name in SOURCE_FILES}
 
 
 def collect_test_outputs(events, artifacts):

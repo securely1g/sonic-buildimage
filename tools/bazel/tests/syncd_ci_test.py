@@ -27,16 +27,8 @@ class ContractRunnerTest(unittest.TestCase):
         self.root = Path(temporary.name)
         self.owner = self.root / "dockers/docker-syncd-vs/bazel"
         self.owner.mkdir(parents=True)
-        for path in (self.root / "MODULE.bazel", self.owner.parent / "BUILD.bazel",
-                     self.root / "tools/bazel/oci/BUILD.bazel", self.root / "tools/bazel/oci/apt_selection.py",
-                     self.root / "tools/bazel/oci/apt_layer.bzl",
-                     self.owner / "BUILD.bazel", self.owner / "apt.lock.json",
-                     self.owner / "apt_inputs.MODULE.bazel", self.owner / "prepare_packages.py",
-                     self.owner / "runtime_package_state.json", self.owner / "source_packages.json",
-                     self.owner / "base_debug_symbols.py", self.owner / "base_debug_symbols.json",
-                     self.owner / "source_packages.py", self.owner / "validate_image.py",
-                     self.owner / "validate_native_packages.py",
-                     self.root / "tools/bazel/oci/source_modules.bzl"):
+        for name in ci.SOURCE_FILES:
+            path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("checked input\n")
         (self.root / ".bazelversion").write_text("8.5.1\n")
