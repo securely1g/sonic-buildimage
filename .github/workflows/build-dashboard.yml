@@ -97,6 +97,7 @@ jobs:
             --output site/data.json "${args[@]}"
           cp tools/ci/build_dashboard/web/index.html tools/ci/build_dashboard/web/app.js \
             tools/ci/build_dashboard/web/styles.css site/
+          cp LICENSE site/
           touch site/.nojekyll
       - name: Preserve history independently of artifact retention
         shell: bash
