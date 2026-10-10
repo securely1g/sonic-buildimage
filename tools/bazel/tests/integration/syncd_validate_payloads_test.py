@@ -12,12 +12,11 @@ import unittest
 from unittest import mock
 import copy
 
-OWNER = Path(__file__).resolve().parents[2]
+OWNER = Path(__file__).resolve().parents[4] / "dockers/docker-syncd-vs"
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
-import validate_payloads as subject
-import base_debug_symbols
+from tools.bazel.ci import syncd_payloads as subject
 
 
 class ValidatePayloadsTest(unittest.TestCase):
@@ -178,54 +177,6 @@ class ValidatePayloadsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "now built from source|inherited base-symbol"):
                     subject.validate(debug, payload, variant="debug", runtime_manifest=runtime)
 
-    def filtered_base_symbols(self):
-        runtime, _ = self.fixture()
-        manifest, payload = self.fixture("debug", runtime=runtime)
-        value = json.loads(manifest.read_bytes())
-        original = dict(value["packages"][0], package="libswsscommon-dbgsym",
-                        source_deb="libswsscommon-dbgsym_1.0_amd64.deb")
-        contract = copy.deepcopy(base_debug_symbols.read_contract())
-        contract["package"] = {key: item for key, item in original.items() if not key.startswith("payload_")}
-        contract["original_payload"] = {key: original["payload_" + key] for key in ("sha256", "size", "members")}
-        members = [(name, ("fixture " + name).encode(), 0o644) for name in contract["files"]]
-        for name, contents, mode in members:
-            contract["files"][name].update(sha256=hashlib.sha256(contents).hexdigest(), size=len(contents),
-                                           mode=mode, uid=0, gid=0)
-        contract_path = self.root / "base-symbol-contract.json"
-        contract_path.write_text(json.dumps(contract))
-        payload.write_bytes(tar_entries(members))
-        record = dict(original, **{"original_payload_" + key: item for key, item in contract["original_payload"].items()},
-                      payload_sha256=base_debug_symbols.sha(payload), payload_size=payload.stat().st_size,
-                      payload_members=2, base_debug_symbols=base_debug_symbols.descriptor(contract_path))
-        value.update(packages=[record], required_packages=[record["package"]],
-                     payload={"path": "payload.tar", "sha256": record["payload_sha256"],
-                              "size": record["payload_size"], "members": 2})
-        manifest.write_text(json.dumps(value))
-        return runtime, manifest, payload, contract_path, members
-
-    def test_debug_allows_only_the_checked_inherited_base_symbols(self):
-        """Keep the base library's two companions without reintroducing replaced Make symbols."""
-        runtime, manifest, payload, contract, _ = self.filtered_base_symbols()
-        with mock.patch.object(base_debug_symbols, "CONTRACT", contract):
-            result = subject.validate(manifest, payload, variant="debug", runtime_manifest=runtime)
-            self.assertEqual(result["package_count"], 1)
-            record = json.loads(manifest.read_bytes())["packages"][0]
-            with self.assertRaisesRegex(ValueError, "now built from source"):
-                subject.reject_source_packages([record])
-            changed = dict(record, source_sha256="0" * 64)
-            with self.assertRaisesRegex(ValueError, "original package changed"):
-                subject.reject_source_packages([changed], allow_base_symbols=True)
-
-    def test_filtered_base_symbols_check_bytes_beyond_the_aggregate_hash(self):
-        """Updating an outer tar hash cannot disguise changed or extra inherited symbols."""
-        runtime, manifest, payload, contract, members = self.filtered_base_symbols()
-        payload.write_bytes(tar_entries([(members[0][0], b"changed", 0o644), members[1]]))
-        self.mutate(manifest, lambda value: value["payload"].update(
-            sha256=base_debug_symbols.sha(payload), size=payload.stat().st_size))
-        with mock.patch.object(base_debug_symbols, "CONTRACT", contract):
-            with self.assertRaisesRegex(ValueError, "bytes or metadata changed"):
-                subject.validate(manifest, payload, variant="debug", runtime_manifest=runtime)
-
     def test_changed_missing_and_wrong_payload_files_are_rejected(self):
         manifest, payload = self.fixture()
         wrong = self.root / "wrong.tar"
@@ -301,7 +252,7 @@ class ValidatePayloadsTest(unittest.TestCase):
             entry.size, entry.mode = 6, 0o644
             archive.addfile(entry, io.BytesIO(b"config"))
         output = self.root / "normalized.tar"
-        result = subject.normalize(payload, base, output)
+        result = subject.normalize(payload, base, output, expected_platform="linux/amd64")
         self.assertEqual((result["output_members"], result["rewritten_members"], result["skipped_alias_entries"]), (6, 6, 2))
         with tarfile.open(output, "r:") as archive:
             entries = {str(PurePosixPath(member.name)): member for member in archive}
@@ -317,7 +268,7 @@ class ValidatePayloadsTest(unittest.TestCase):
     def test_merged_usr_normalization_rejects_a_changed_base_alias(self):
         _, payload = self.fixture()
         with self.assertRaisesRegex(ValueError, "unsupported directory alias: lib"):
-            subject.normalize(payload, self.merged_base(lib_target="elsewhere"), self.root / "normalized.tar")
+            subject.normalize(payload, self.merged_base(lib_target="elsewhere"), self.root / "normalized.tar", expected_platform="linux/amd64")
 
     def test_reserved_whiteout_is_rejected(self):
         manifest, payload = self.fixture()

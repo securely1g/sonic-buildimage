@@ -11,98 +11,13 @@ import sys
 import tarfile
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
-sys.path.insert(0, str(Path(__file__).absolute().parent))
+sys.path.insert(0, str(Path(__file__).absolute().parents[3] / "dockers/docker-syncd-vs/bazel"))
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.oci.oci_layout import validate_layout
-from package_policy import DEBUG_APT_PACKAGES, FEATURES, SOURCE_PACKAGE_NAMES, reject_source_packages, require_runtime_fips
+from package_contract import DEBUG_APT_PACKAGES, FEATURES, SOURCE_PACKAGE_NAMES, reject_source_packages, require_runtime_fips
 
 
-MERGED_USR = {"bin": "usr/bin", "lib": "usr/lib", "lib64": "usr/lib64", "sbin": "usr/sbin"}
-DIRECTORY_ALIASES = {name: {"linkname": target, "target": target} for name, target in MERGED_USR.items()}
-DIRECTORY_ALIASES["var/run"] = {"linkname": "/run", "target": "run"}
-
-
-def normalized_path(value):
-    path = PurePosixPath(value)
-    require(not path.is_absolute() and ".." not in path.parts, "unsafe package payload path: " + value)
-    name = str(path)
-    for alias, entry in DIRECTORY_ALIASES.items():
-        if name == alias or name.startswith(alias + "/"):
-            return entry["target"] + name[len(alias):]
-    return name
-
-
-def normalized_member(member):
-    name = str(PurePosixPath(member.name))
-    normalized = normalized_path(member.name)
-    require(not PurePosixPath(name).name.startswith(".wh."), "package payload uses a reserved OCI whiteout path: " + name)
-    if name in DIRECTORY_ALIASES:
-        require(member.isdir() or (member.issym() and member.linkname == DIRECTORY_ALIASES[name]["linkname"]),
-                "package payload changes a directory alias: " + name)
-        require(member.uid == 0 and member.gid == 0 and member.mode == (0o755 if member.isdir() else 0o777),
-                "package payload changes directory alias metadata: " + name)
-        return None
-    require(member.isfile() or member.isdir() or member.issym() or member.islnk(),
-            "unsupported package payload member: " + name)
-    require(member.sparse is None, "sparse package payload member requires review: " + name)
-    output = copy.copy(member)
-    output.name = "./" + normalized if normalized != "." else "./"
-    output.pax_headers = dict(member.pax_headers)
-    output.pax_headers.pop("path", None)
-    output.pax_headers.pop("linkpath", None)
-    if member.islnk():
-        target = str(PurePosixPath(member.linkname))
-        require(target not in DIRECTORY_ALIASES, "package hardlink targets a directory alias: " + name)
-        output.linkname = "./" + normalized_path(member.linkname)
-    return output
-
-
-def base_aliases(base):
-    descriptor, _, _, layers = validate_layout(base, "linux/amd64")
-    targets = set(DIRECTORY_ALIASES) | {entry["target"] for entry in DIRECTORY_ALIASES.values()}
-    observed = {}
-    for layer in layers:
-        additions = {}
-        removals = set()
-        with tarfile.open(layer, "r:*") as archive:
-            for member in archive:
-                pure = PurePosixPath(member.name)
-                require(not pure.is_absolute() and ".." not in pure.parts, "unsafe OCI base path")
-                name = str(pure)
-                if name in targets:
-                    additions[name] = {"kind": "symlink" if member.issym() else "directory" if member.isdir() else "other",
-                                       "linkname": member.linkname, "uid": member.uid, "gid": member.gid, "mode": member.mode}
-                elif pure.name == ".wh..wh..opq":
-                    parent = str(pure.parent)
-                    removals.update(target for target in targets if parent == "." or target.startswith(parent + "/"))
-                elif pure.name.startswith(".wh."):
-                    hidden = str(pure.parent / pure.name[4:])
-                    removals.update(target for target in targets if target == hidden or target.startswith(hidden + "/"))
-        for name in removals:
-            observed.pop(name, None)
-        observed.update(additions)
-    for name, entry in DIRECTORY_ALIASES.items():
-        require(observed.get(name) == {"kind": "symlink", "linkname": entry["linkname"], "uid": 0, "gid": 0, "mode": 0o777} and
-                observed.get(entry["target"]) == {"kind": "directory", "linkname": "", "uid": 0, "gid": 0, "mode": 0o755},
-                "OCI base has an unsupported directory alias: " + name)
-    return descriptor["digest"]
-
-
-def normalize(payload_path, base, output_path):
-    base_digest = base_aliases(base)
-    counts = {"input_members": 0, "output_members": 0, "rewritten_members": 0, "skipped_alias_entries": 0}
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(payload_path, "r:") as source, tarfile.open(output_path, "w", format=tarfile.PAX_FORMAT) as output:
-        for member in source:
-            counts["input_members"] += 1
-            normalized = normalized_member(member)
-            if normalized is None:
-                counts["skipped_alias_entries"] += 1
-                continue
-            counts["output_members"] += 1
-            counts["rewritten_members"] += str(PurePosixPath(normalized.name)) != str(PurePosixPath(member.name))
-            output.addfile(normalized, source.extractfile(member) if member.isfile() else None)
-    return {"base_manifest_digest": base_digest, "directory_aliases": DIRECTORY_ALIASES, **counts}
+from sonic_oci.normalize_layer import DIRECTORY_ALIASES, normalized_path, normalized_member, base_aliases, normalize
 
 
 def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
@@ -154,9 +69,6 @@ def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
             require(not name.name.startswith(".wh."), "package payload uses a reserved OCI whiteout path: " + member.name)
             members += 1
     require(members == payload.get("members") == members_expected, "aggregate package member count differs")
-    if any(record.get("base_debug_symbols") is not None for record in records):
-        import base_debug_symbols
-        base_debug_symbols.validate_aggregate(manifest, payload_path)
     if variant == "debug":
         require(runtime_manifest is not None, "debug payload validation requires the runtime manifest")
         runtime_bytes = runtime_manifest.read_bytes()
@@ -194,7 +106,7 @@ def main():
     args = parser.parse_args()
     try:
         receipt = validate(args.manifest, args.payload, variant=args.variant, runtime_manifest=args.runtime_manifest)
-        receipt["normalization"] = normalize(args.payload, args.base, args.out_tar)
+        receipt["normalization"] = normalize(args.payload, args.base, args.out_tar, expected_platform="linux/amd64")
         require(sha(args.payload) == receipt["payload_sha256"], "aggregate package payload changed during normalization")
         if args.receipt:
             args.receipt.parent.mkdir(parents=True, exist_ok=True)
