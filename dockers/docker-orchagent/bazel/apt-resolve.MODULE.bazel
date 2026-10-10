@@ -32,9 +32,16 @@ apt.install(
         "trixie-security",
     ],
 )
-
 apt.install(
     dependency_set = "orchagent_debug_debian",
-    packages = ["gdb", "gdbserver", "strace"],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+    packages = [
+        "gdb",
+        "gdbserver",
+        "strace",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
