@@ -65,27 +65,33 @@ def collect(manifest_path, temporary, prefix):
 
 
 def collect_source(archive_path, receipt, temporary, variant):
-    """Associate every normalized source ELF/link with its owning source target."""
+    """Extract source ELFs; runtime owners come from the checked runtime receipt.
+
+    Symbols come from the same shared collector used by Orchagent. Their owning
+    runtime ELF is established below through build ID, DWARF and debuglink CRC,
+    rather than duplicating a symbol inventory for every package in the receipt.
+    """
     owners = {}
-    for package in receipt["packages"]:
-        files = package["files"] if variant == "runtime" else package["debug"]["files"]
-        for name, metadata in files.items():
-            require(name not in owners or metadata["kind"] == "directory" or variant == "debug",
-                    "source packages share a non-directory path: " + name)
-            owners.setdefault(name, []).append(package)
+    if variant == "runtime":
+        for package in receipt["packages"]:
+            for name, metadata in package["files"].items():
+                require(name not in owners or metadata["kind"] == "directory",
+                        "source packages share a non-directory path: " + name)
+                owners[name] = package
     files = {}
     with tarfile.open(archive_path, "r:") as archive:
         for index, member in enumerate(archive):
             name = path_name(member.name)
-            require(name in owners, "source archive member has no package owner: " + name)
-            package = owners[name][0]
+            require(variant == "debug" or name in owners, "source archive member has no package owner: " + name)
             kind = ("file" if member.isfile() else "symlink" if member.issym() else
                     "hardlink" if member.islnk() else "directory")
-            item = {"kind": kind, "package": package["package"], "path": name,
-                    "origin": "bazel_source", "source": package["source"],
-                    "source_owners": [owner["package"] for owner in owners[name]],
-                    "source_runtime_input_tar_sha256": package["input_tar_sha256"],
-                    "source_debug_input_tar_sha256": package["debug"]["input_tar_sha256"]}
+            item = {"kind": kind, "path": name, "origin": "bazel_source"}
+            if variant == "runtime":
+                package = owners[name]
+                item.update(package=package["package"], source=package["source"],
+                            source_runtime_input_tar_sha256=package["input_tar_sha256"])
+            else:
+                item["package"] = "source_symbols"
             if kind in ("symlink", "hardlink"):
                 item["linkname"] = member.linkname
             elif kind == "file":
@@ -218,6 +224,7 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
             "source runtime tar, debug tar, and receipt must be supplied together")
     require(fixture or has_source, "native validation requires source runtime tar, debug tar, and receipt")
     receipt = None
+    source_debug_sha256 = sha(source_debug_tar) if has_source else None
     if has_source:
         import source_packages
         receipt = source_packages.validate_receipt(
@@ -254,7 +261,8 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
             record = {"path": name, "package": item["package"], **info}
             if item.get("origin") == "bazel_source":
                 record.update({key: item[key] for key in
-                               ("origin", "source", "source_runtime_input_tar_sha256", "source_debug_input_tar_sha256")})
+                               ("origin", "source", "source_runtime_input_tar_sha256")})
+                record["source_debug_tar_sha256"] = source_debug_sha256
                 require(info["build_id"] and info["has_debuglink"] and not info["has_dwarf"],
                         "source runtime ELF must be stripped with a build ID and debuglink: " + name)
             if info["soname"]:
@@ -276,8 +284,8 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
                 symbols = resolve(debug, debug_name)
                 require(symbols.get("file") is not None, "debug path is not an ELF: " + debug_name)
                 if item.get("origin") == "bazel_source":
-                    require(symbols.get("origin") == "bazel_source" and item["package"] in symbols["source_owners"],
-                            "source runtime and debug symbols have different owners: " + name)
+                    require(symbols.get("origin") == "bazel_source",
+                            "source runtime requires symbols from its source collector: " + name)
                 symbol_info = elf_info(symbols["file"], readelf=readelf, timeout=120)
                 require(symbol_info["build_id"] == identifier and symbol_info["has_dwarf"],
                         "debug ELF does not match runtime build ID or lacks DWARF: " + name)

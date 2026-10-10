@@ -28,6 +28,7 @@ syncd-vs-bazel-inputs-force:
 
 $(SYNCD_VS_BAZEL_INPUT_ROOT)/runtime/manifest.json: syncd-vs-bazel-inputs-force \
         dockers/docker-syncd-vs/bazel/prepare_packages.py \
+        dockers/docker-syncd-vs/bazel/package_policy.py \
         $$(addprefix $$(SYNCD_VS_BAZEL_DEBS_PATH)/,$$(SYNCD_VS_BAZEL_RUNTIME_DEBS))
 	python3 dockers/docker-syncd-vs/bazel/prepare_packages.py \
 	    --output $(SYNCD_VS_BAZEL_INPUT_ROOT)/runtime --variant runtime \
@@ -39,6 +40,7 @@ $(SYNCD_VS_BAZEL_INPUT_ROOT)/runtime/manifest.json: syncd-vs-bazel-inputs-force 
 
 $(SYNCD_VS_BAZEL_INPUT_ROOT)/debug/manifest.json: syncd-vs-bazel-inputs-force \
         dockers/docker-syncd-vs/bazel/prepare_packages.py \
+        dockers/docker-syncd-vs/bazel/package_policy.py \
         dockers/docker-syncd-vs/bazel/base_debug_symbols.py \
         dockers/docker-syncd-vs/bazel/base_debug_symbols.json \
         $(SYNCD_VS_BAZEL_INPUT_ROOT)/runtime/manifest.json \

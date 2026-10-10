@@ -2,7 +2,6 @@
 
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
-load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 
 package(default_visibility = ["//dockers/docker-syncd-vs:__pkg__"])
 
@@ -30,7 +29,15 @@ py_test(
     deps = [":base_debug_symbols"],
 )
 
+py_library(
+    name = "package_policy",
+    srcs = ["package_policy.py"],
+    imports = ["."],
+    deps = [":base_debug_symbols"],
+)
+
 _VALIDATION_DEPS = [
+    ":package_policy",
     ":base_debug_symbols",
     "@sonic_build_infra//apt:lib",
     "//tools/bazel/ci:artifact_validation",
@@ -64,14 +71,6 @@ _SOURCE_PACKAGES = {
     "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
 }
 
-[
-    debug_symbols_layer(
-        name = name + "_source_debug",
-        image = target,
-    )
-    for name, target in _SOURCE_PACKAGES.items()
-]
-
 py_binary(
     name = "source_packages",
     srcs = ["source_packages.py", "validate_payloads.py"],
@@ -81,16 +80,15 @@ py_binary(
 )
 
 run_binary(
-    name = "checked_source_packages",
+    name = "checked_source_runtime",
     srcs = [
         "source_packages.json",
         "//dockers/docker-syncd-vs:config_engine_base_layout",
         "@syncd_source_modules//:sonic-swss-common.MODULE.bazel",
         "@syncd_source_modules//:sonic-sairedis.MODULE.bazel",
-    ] + _SOURCE_PACKAGES.values() + [":" + name + "_source_debug" for name in _SOURCE_PACKAGES],
+    ] + _SOURCE_PACKAGES.values(),
     outs = [
         "source_runtime.tar",
-        "source_debug.tar",
         "source_packages.receipt.json",
     ],
     args = [
@@ -99,11 +97,9 @@ run_binary(
         "--module=sonic-swss-common=$(execpath @syncd_source_modules//:sonic-swss-common.MODULE.bazel)",
         "--module=sonic-sairedis=$(execpath @syncd_source_modules//:sonic-sairedis.MODULE.bazel)",
         "--out-tar=$(execpath source_runtime.tar)",
-        "--out-debug-tar=$(execpath source_debug.tar)",
         "--receipt=$(execpath source_packages.receipt.json)",
-    ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()] +
-           ["--debug-package=" + name + "=$(execpath :" + name + "_source_debug)" for name in _SOURCE_PACKAGES],
-    mnemonic = "ValidateSyncdSourcePackages",
+    ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()],
+    mnemonic = "ValidateSyncdSourceRuntime",
     tool = ":source_packages",
     target_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"] + select({
         ":supported_source_configuration": [],
@@ -139,10 +135,15 @@ run_binary(
     )
     for name, output in {
         "source_runtime_payloads": "source_runtime.tar",
-        "source_debug_payloads": "source_debug.tar",
         "source_package_receipt": "source_packages.receipt.json",
     }.items()
 ]
+
+# Keep the public symbol label while collecting once from the shared owner graph.
+alias(
+    name = "source_debug_payloads",
+    actual = "//dockers/docker-syncd-vs:rdeps_debug_symbols",
+)
 
 py_test(
     name = "source_packages_test",
@@ -164,11 +165,7 @@ py_binary(
 
 py_binary(
     name = "package_state_layer",
-    srcs = [
-        "package_state_layer.py",
-        "validate_image.py",
-        "validate_payloads.py",
-    ],
+    srcs = ["package_state_layer.py"],
     main = "package_state_layer.py",
     python_version = "3.11",
     deps = _VALIDATION_DEPS,
@@ -230,7 +227,6 @@ run_binary(
     srcs = [
         "apt.lock.json",
         "runtime_package_state.json",
-        "//dockers/docker-syncd-vs:legacy/Dockerfile.j2",
         "//dockers/docker-syncd-vs:apt_deps",
         "//dockers/docker-syncd-vs:config_engine_base_layout",
         "//dockers/docker-syncd-vs:runtime_apt_selection",
@@ -253,8 +249,6 @@ run_binary(
         "$(execpath //dockers/docker-syncd-vs:runtime_packages)",
         "--make-manifest",
         "$(execpath //:target/bazel-inputs/docker-syncd-vs/runtime/manifest.json)",
-        "--dockerfile",
-        "$(execpath //dockers/docker-syncd-vs:legacy/Dockerfile.j2)",
         "--out",
         "$@",
     ],
@@ -317,11 +311,13 @@ py_test(
     srcs = [
         "package_state_layer.py",
         "tests/package_state_layer_test.py",
-        "validate_image.py",
-        "validate_payloads.py",
     ],
     main = "tests/package_state_layer_test.py",
-    data = ["apt.lock.json", "runtime_package_state.json"],
+    data = [
+        "apt.lock.json",
+        "runtime_package_state.json",
+        "//dockers/docker-syncd-vs:legacy/Dockerfile.j2",
+    ],
     python_version = "3.11",
     deps = _TEST_DEPS,
 )
@@ -333,12 +329,12 @@ py_test(
     args = [
         "--runtime-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs/manifest.json)",
         "--debug-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json)",
-        "--runtime-labels=$(rootpath //dockers/docker-syncd-vs:labels)",
-        "--debug-labels=$(rootpath //dockers/docker-syncd-vs:debug_labels)",
+        "--runtime-labels=$(rootpath //dockers/docker-syncd-vs/config:labels)",
+        "--debug-labels=$(rootpath //dockers/docker-syncd-vs/config:debug_labels)",
     ],
     data = [
-        "//dockers/docker-syncd-vs:debug_labels",
-        "//dockers/docker-syncd-vs:labels",
+        "//dockers/docker-syncd-vs/config:debug_labels",
+        "//dockers/docker-syncd-vs/config:labels",
         "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
         "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
     ],
