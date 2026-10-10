@@ -1,7 +1,8 @@
-"""Syncd's checked Make-package adapters and focused OCI contract tests."""
+"""Syncd's source-package and Make-package inputs, with OCI contract tests."""
 
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
-load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 
 package(default_visibility = ["//dockers/docker-syncd-vs:__pkg__"])
 
@@ -9,15 +10,148 @@ exports_files([
     "apt.lock.json",
     "apt_inputs.MODULE.bazel",
     "runtime_package_state.json",
+    "source_packages.json",
+    "base_debug_symbols.json",
 ])
 
+py_library(
+    name = "base_debug_symbols",
+    srcs = ["base_debug_symbols.py"],
+    data = ["base_debug_symbols.json"],
+    imports = ["."],
+    deps = ["//tools/bazel/ci:artifact_validation"],
+)
+
+py_test(
+    name = "base_debug_symbols_test",
+    srcs = ["tests/base_debug_symbols_test.py"],
+    main = "tests/base_debug_symbols_test.py",
+    python_version = "3.11",
+    deps = [":base_debug_symbols"],
+)
+
 _VALIDATION_DEPS = [
+    ":base_debug_symbols",
     "@sonic_build_infra//apt:lib",
     "//tools/bazel/ci:artifact_validation",
     "//tools/bazel/oci:oci_layout",
     "//tools/bazel/oci:oci_inventory",
 ]
 _TEST_DEPS = _VALIDATION_DEPS + ["//tools/bazel/tests:oci_base_fixture_lib"]
+
+# The shared libraries use SWSS's ordinary source configuration. DASH remains
+# enabled for the separate Make-built syncd executable and SAI implementation.
+config_setting(
+    name = "supported_source_configuration",
+    flag_values = {
+        "@sonic_swss_common//tools/bazel:yang_modules": "true",
+        "@sonic_sairedis//:sai_backend": "vs",
+        "@sonic_sairedis//:asic_platform": "generic",
+        "@sonic_sairedis//:enable_debug": "false",
+        "@sonic_sairedis//:enable_coverage": "false",
+        "@sonic_sairedis//:enable_asan": "false",
+        "@sonic_sairedis//:enable_vpp": "false",
+        "@sonic_sairedis//:enable_rpcserver": "false",
+        "@sonic_sairedis//:enable_dashsai": "false",
+    },
+)
+
+# These are the exact owner targets also consumed by Orchagent. The source
+# libraries and their symbols share Bazel's normal dependency and cache graph.
+_SOURCE_PACKAGES = {
+    "libswsscommon": "@sonic_swss_common//:libswsscommon_pkg",
+    "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
+    "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
+}
+
+[
+    debug_symbols_layer(
+        name = name + "_source_debug",
+        image = target,
+    )
+    for name, target in _SOURCE_PACKAGES.items()
+]
+
+py_binary(
+    name = "source_packages",
+    srcs = ["source_packages.py", "validate_payloads.py"],
+    main = "source_packages.py",
+    python_version = "3.11",
+    deps = _VALIDATION_DEPS,
+)
+
+run_binary(
+    name = "checked_source_packages",
+    srcs = [
+        "source_packages.json",
+        "//dockers/docker-syncd-vs:config_engine_base_layout",
+        "@syncd_source_modules//:sonic-swss-common.MODULE.bazel",
+        "@syncd_source_modules//:sonic-sairedis.MODULE.bazel",
+    ] + _SOURCE_PACKAGES.values() + [":" + name + "_source_debug" for name in _SOURCE_PACKAGES],
+    outs = [
+        "source_runtime.tar",
+        "source_debug.tar",
+        "source_packages.receipt.json",
+    ],
+    args = [
+        "--contract=$(execpath source_packages.json)",
+        "--base=$(execpath //dockers/docker-syncd-vs:config_engine_base_layout)",
+        "--module=sonic-swss-common=$(execpath @syncd_source_modules//:sonic-swss-common.MODULE.bazel)",
+        "--module=sonic-sairedis=$(execpath @syncd_source_modules//:sonic-sairedis.MODULE.bazel)",
+        "--out-tar=$(execpath source_runtime.tar)",
+        "--out-debug-tar=$(execpath source_debug.tar)",
+        "--receipt=$(execpath source_packages.receipt.json)",
+    ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()] +
+           ["--debug-package=" + name + "=$(execpath :" + name + "_source_debug)" for name in _SOURCE_PACKAGES],
+    mnemonic = "ValidateSyncdSourcePackages",
+    tool = ":source_packages",
+    target_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"] + select({
+        ":supported_source_configuration": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+# Keep runtime independent of Make's debug handoff. Each selection input binds
+# its own original manifest to the same checked source outputs.
+[
+    run_binary(
+        name = variant + "_retained_packages",
+        srcs = [
+            "source_packages.receipt.json",
+            "//:target/bazel-inputs/docker-syncd-vs/" + variant + "/manifest.json",
+        ],
+        outs = [variant + "_retained_packages.json"],
+        args = [
+            "--merge-manifest=$(execpath //:target/bazel-inputs/docker-syncd-vs/" + variant + "/manifest.json)",
+            "--source-receipt=$(execpath source_packages.receipt.json)",
+            "--out-manifest=$@",
+        ],
+        mnemonic = "SyncdRetainedPackages",
+        tool = ":source_packages",
+    )
+    for variant in ["runtime", "debug"]
+]
+
+[
+    filegroup(
+        name = name,
+        srcs = [output],
+    )
+    for name, output in {
+        "source_runtime_payloads": "source_runtime.tar",
+        "source_debug_payloads": "source_debug.tar",
+        "source_package_receipt": "source_packages.receipt.json",
+    }.items()
+]
+
+py_test(
+    name = "source_packages_test",
+    srcs = ["tests/source_packages_test.py", "source_packages.py", "validate_payloads.py"],
+    main = "tests/source_packages_test.py",
+    data = ["source_packages.json"],
+    python_version = "3.11",
+    deps = _TEST_DEPS,
+)
 
 # These actions consume the existing Make manifest and ordered tar; no DEB is built.
 py_binary(
@@ -144,11 +278,13 @@ py_test(
 py_test(
     name = "validate_image_test",
     srcs = [
+        "source_packages.py",
         "tests/validate_image_test.py",
         "validate_image.py",
         "validate_payloads.py",
     ],
     data = [
+        "source_packages.json",
         "//dockers/docker-syncd-vs:legacy/critical_processes",
         "//dockers/docker-syncd-vs:legacy/start.sh",
         "//dockers/docker-syncd-vs:legacy/supervisord.conf",
