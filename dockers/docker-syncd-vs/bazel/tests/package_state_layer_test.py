@@ -29,6 +29,18 @@ def write_oci(path, entries):
 
 
 class CommittedPackageStateTest(unittest.TestCase):
+    def test_make_state_excludes_source_libraries_and_keeps_syncd_init_owner(self):
+        """Shared source libraries carry no imported Make scripts; DASH syncd still supplies the init script."""
+        contract = json.loads((OWNER / "bazel/runtime_package_state.json").read_bytes())
+        make = contract["make_package_state_inputs"]
+        self.assertEqual(set(make), {
+            "libnl-3-200", "libnl-3-dev", "libnl-cli-3-200", "libnl-genl-3-200", "libnl-nf-3-200",
+            "libnl-route-3-200", "libnl-route-3-dev", "libsai", "libsaivs", "libyang3",
+            "openssh-client", "p4lang-bmv2", "p4lang-p4c", "p4lang-pi", "syncd-vs",
+        })
+        self.assertEqual(contract["make_package_files"]["etc/init.d/syncd"]["package"], "syncd-vs")
+        self.assertIn("+fips", make["openssh-client"]["version"])
+
     def test_reviewed_state_owners_match_committed_canonical_lock(self):
         lock_path = OWNER / "bazel/apt.lock.json"
         lock = json.loads(lock_path.read_bytes())
@@ -171,6 +183,29 @@ class PackageStateLayerTest(unittest.TestCase):
         self.update_make_selection()
         with self.assertRaisesRegex(ValueError, "relationships or scripts changed"):
             self.build()
+
+    def test_missing_or_extra_make_owners_require_review(self):
+        """Keep the remaining imported package set exact when source-owned packages leave the handoff."""
+        original = self.make_manifest.read_bytes()
+        for change in ("missing", "extra"):
+            self.make_manifest.write_bytes(original)
+            if change == "missing":
+                self.mutate(self.make_manifest, lambda value: value.update(packages=[]))
+            else:
+                self.mutate(self.make_manifest, lambda value: value["packages"].append({"package": "unexpected-package"}))
+            self.update_make_selection()
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "Make package set changed"):
+                self.build()
+
+    def test_source_library_cannot_be_reintroduced_as_a_make_state_owner(self):
+        """Even matching edited state and manifest records cannot assign source packages back to Make."""
+        for package in ("libswsscommon", "libsairedis", "libsaimetadata"):
+            self.mutate(self.make_manifest, lambda value: value["packages"][0].update(package=package))
+            self.mutate(self.contract, lambda value: value.update(make_package_state_inputs={
+                package: next(iter(value["make_package_state_inputs"].values()))}))
+            self.update_make_selection()
+            with self.subTest(package=package), self.assertRaisesRegex(ValueError, "packages now built from source"):
+                self.build()
 
     def test_unrelated_package_md5_changes_keep_state_bytes(self):
         self.build()

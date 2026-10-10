@@ -113,6 +113,7 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
     make = json.loads(make_manifest_path.read_bytes())
     require(make.get("schema") == 1 and make.get("image") == "docker-syncd-vs" and make.get("variant") == "runtime" and
             make.get("features") == validate_payloads.FEATURES, "invalid Make package state input")
+    validate_payloads.reject_source_packages(make.get("packages", []))
     make_packages = {item["package"]: item for item in make.get("packages", [])}
     expected_make = contract.get("make_package_state_inputs", {})
     require(expected_make and len(make_packages) == len(make.get("packages", [])) and set(make_packages) == set(expected_make),
