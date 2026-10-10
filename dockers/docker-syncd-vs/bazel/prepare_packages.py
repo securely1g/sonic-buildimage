@@ -22,12 +22,10 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import base_debug_symbols
+from package_policy import DEBUG_APT_PACKAGES, FEATURES, reject_source_packages, require_runtime_fips
 
 SCHEMA = 1
 IMAGE = "docker-syncd-vs"
-DEBUG_APT_PACKAGES = {"gdb", "gdbserver", "sshpass", "strace", "vim"}
-SOURCE_PACKAGES = {"libswsscommon", "libsairedis", "libsaimetadata"}
-SOURCE_PACKAGE_NAMES = SOURCE_PACKAGES | {name + "-dbgsym" for name in SOURCE_PACKAGES}
 
 
 def require(condition, message):
@@ -133,28 +131,6 @@ def check_generation(path, manifest_bytes, payload):
             "existing package generation has a damaged payload: " + str(archive))
 
 
-def require_runtime_fips(records):
-    matches = [record for record in records if record.get("package") == "openssh-client"]
-    require(len(matches) == 1 and "+fips" in matches[0].get("version", ""),
-            "runtime package handoff requires the Make FIPS openssh-client")
-    record = matches[0]
-    fields = record.get("control_fields", {})
-    require(fields.get("Package") == record["package"] and fields.get("Version") == record["version"] and
-            fields.get("Architecture") == record.get("architecture") == "amd64",
-            "runtime FIPS openssh-client identity differs from its Debian control")
-
-
-def reject_source_packages(records, *, allow_base_symbols=False):
-    """Prevent Make payloads from overwriting the shared source libraries or symbols."""
-    unexpected = set()
-    for record in records:
-        if allow_base_symbols and record.get("package") == base_debug_symbols.PACKAGE:
-            base_debug_symbols.check_record(record)
-        elif record.get("package") in SOURCE_PACKAGE_NAMES:
-            unexpected.add(record["package"])
-    require(not unexpected, "Make package handoff contains source-built packages: " + ", ".join(sorted(unexpected)))
-
-
 def prepare(args):
     require(args.architecture == "amd64" and args.distribution == "trixie",
             "syncd-vs OCI package preparation supports native AMD64 Trixie only")
@@ -164,7 +140,7 @@ def prepare(args):
         "enable_asan": normalized_switch(args.enable_asan),
         "enable_syncd_rpc": normalized_switch(args.enable_syncd_rpc),
     }
-    require(features == {"include_vs_dash_sai": "y", "include_fips": "y", "enable_asan": "n", "enable_syncd_rpc": "n"},
+    require(features == FEATURES,
             "unsupported syncd-vs OCI feature configuration")
     require(args.package, "the syncd-vs package handoff is empty")
     require("GNU tar" in command([args.tar, "--version"]).decode().splitlines()[0],
