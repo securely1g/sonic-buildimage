@@ -62,12 +62,12 @@ elif command == "test":
         if not target.startswith("//"): continue
         package, name = target[2:].split(":")
         # The default symlink cannot locate tests with a Python transition.
-        configuration = "default" if name == "manifest_labels_test" else "python-3.11"
+        configuration = "default" if name == "syncd_manifest_labels_test" else "python-3.11"
         directory = root / "configured testlogs" / configuration / package / name
         directory.mkdir(parents=True)
         outputs = []
         for filename in ("test.log", "test.xml"):
-            if mode == "missing-evidence" and name == "package_state_layer_test" and filename == "test.xml":
+            if mode == "missing-evidence" and name == "syncd_package_state_layer_test" and filename == "test.xml":
                 continue
             (directory / filename).write_text("passed\\n")
             outputs.append({"name": filename, "uri": (directory / filename).as_uri()})
