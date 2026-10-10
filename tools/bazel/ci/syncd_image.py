@@ -12,12 +12,12 @@ import tarfile
 
 ROOT = Path(__file__).absolute().parents[3]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(Path(__file__).absolute().parent))
+sys.path.insert(0, str(Path(__file__).absolute().parents[3] / "dockers/docker-syncd-vs/bazel"))
 from tools.bazel.ci.artifact_validation import path_name as member_name, require, sha
 from tools.bazel.oci import oci_inventory
 from tools.bazel.oci.oci_inventory import assert_overlay_paths
 from tools.bazel.oci.oci_layout import validate_layout
-import validate_payloads
+from tools.bazel.ci import syncd_payloads as validate_payloads
 
 
 def image(directory):
@@ -79,7 +79,7 @@ def payloads(manifest_path, variant, runtime_manifest=None):
 
 def source_payloads(runtime_tar, debug_tar, receipt_path, *, contract_path=None):
     """Bind runtime to its receipt and inspect the separate shared symbol layer."""
-    import source_packages
+    import package_contract as source_packages
     receipt = source_packages.validate_receipt(receipt_path, runtime_tar, debug_tar, contract_path=contract_path)
     runtime, debug = {}, {}
     apply_layer(runtime_tar, runtime)
@@ -179,7 +179,8 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                     base_path=None, apt_layer=None, debug_tools_layer=None,
                     runtime_apt_selection=None, debug_apt_selection=None, package_state_contract=None,
                     runtime_archive=None, debug_archive=None,
-                    source_runtime_tar=None, source_debug_tar=None, source_receipt=None):
+                    source_runtime_tar=None, source_debug_tar=None, source_receipt=None,
+                    base_debug_symbols=None, base_debug_receipt=None, base_debug_package_manifest=None):
     complete_inputs = (base_path, apt_layer, debug_tools_layer, runtime_apt_selection, debug_apt_selection,
                        package_state_contract, runtime_archive, debug_archive)
     complete = all(value is not None for value in complete_inputs)
@@ -190,13 +191,25 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     require(has_source or not any(value is not None for value in source_inputs),
             "source runtime tar, debug tar, and receipt must be supplied together")
     require(fixture or has_source, "complete validation requires source runtime tar, debug tar, and receipt")
+    require((base_debug_symbols is None) == (base_debug_receipt is None),
+            "imported base symbols and receipt must be supplied together")
+    require(fixture or (base_debug_symbols is not None and base_debug_package_manifest is not None),
+            "complete validation requires imported base symbols, package manifest, and receipt")
     source_provenance, expected_source_runtime, expected_source_debug = None, {}, {}
     if has_source:
         source_provenance, expected_source_runtime, expected_source_debug = source_payloads(
             source_runtime_tar, source_debug_tar, source_receipt,
-            contract_path=None if fixture else source_root / "dockers/docker-syncd-vs/bazel/source_packages.json")
+            contract_path=None if fixture else source_root / "dockers/docker-syncd-vs/config/source_packages.json")
     runtime_descriptor, runtime_manifest, runtime_config, runtime_layers = image(runtime_path)
     debug_descriptor, debug_manifest, debug_config, debug_layers = image(debug_path)
+    inherited_symbols_receipt, expected_inherited_symbols = None, {}
+    if base_debug_symbols is not None:
+        from tools.bazel.ci.syncd_native_packages import imported_symbol_receipt
+        inherited_symbols_receipt, expected_inherited_symbols = imported_symbol_receipt(
+            base_debug_symbols, base_debug_receipt, runtime_descriptor["digest"], base_debug_package_manifest)
+        required = "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0"
+        require(required in {pair["runtime_path"] for pair in inherited_symbols_receipt["pairs"]},
+                "required inherited runtime has no imported symbol pair")
     runtime_settings = runtime_config.get("config", {})
     debug_settings = debug_config.get("config", {})
     require(runtime_settings.get("Entrypoint") == ["/usr/local/bin/supervisord"],
@@ -233,6 +246,10 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     assert_disjoint_source(expected_debug, expected_source_runtime)
     assert_payload(expected_source_runtime, runtime_files, "runtime source package payload")
     assert_payload(expected_source_debug, debug_files, "debug source package payload")
+    assert_payload(expected_inherited_symbols, debug_files, "debug imported base symbols")
+    for pair in (inherited_symbols_receipt or {}).get("pairs", []):
+        require(runtime_files.get(pair["runtime_path"], {}).get("sha256") == pair["runtime_sha256"],
+                "imported base symbols use different runtime bytes")
     assert_payload({name: item for name, item in expected_source_runtime.items() if item["kind"] != "directory"},
                    debug_files, "debug image changes the source runtime payload")
     assert_payload(expected_runtime, runtime_files, "runtime package payload")
@@ -298,13 +315,6 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             assert_payload(inherited, checked_files, "source receipt inherited base payload")
             assert_payload(inherited, runtime_files, "runtime image changes the required base payload")
             assert_payload(inherited, debug_files, "debug image changes the required base payload")
-            if inherited:
-                import base_debug_symbols
-                for name, expected in base_debug_symbols.read_contract()["files"].items():
-                    observed = debug_files.get(name, {})
-                    require(observed.get("kind") == "file" and all(observed.get(key) == expected[key]
-                            for key in ("sha256", "size", "mode", "uid", "gid")),
-                            "debug image lacks the checked inherited symbols: " + name)
         for layer in runtime_layers[len(base_layers):]:
             apply_layer(layer, checked_files, checked_overlay=True)
         added_debug_layers = debug_layers[len(runtime_layers):]
@@ -312,8 +322,8 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         apply_debug_tools_layer(added_debug_layers[0], checked_files)
         for layer in added_debug_layers[1:]:
             apply_layer(layer, checked_files, checked_overlay=True)
-        validate_payloads.base_aliases(runtime_path)
-        validate_payloads.base_aliases(debug_path)
+        validate_payloads.base_aliases(runtime_path, expected_platform="linux/amd64")
+        validate_payloads.base_aliases(debug_path, expected_platform="linux/amd64")
         lock_sha = sha(source_root / "dockers/docker-syncd-vs/bazel/apt.lock.json")
         runtime_selection = json.loads(runtime_apt_selection.read_bytes())
         debug_selection = json.loads(debug_apt_selection.read_bytes())
@@ -344,6 +354,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         apply_layer(debug_tools_layer, debug_overlay)
         debug_overlay.update(expected_debug)
         debug_overlay.update(expected_source_debug)
+        debug_overlay.update(expected_inherited_symbols)
         assert_payload(debug_overlay, debug_files, "debug OCI overlay payload")
         overlay_report = {"base_manifest_digest": base_descriptor["digest"], "runtime_entries": len(runtime_overlay),
                           "debug_entries": len(debug_overlay), "package_state_entries": len(state),
@@ -375,6 +386,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         "source_receipt_sha256": sha(source_receipt) if has_source else None,
         "source_debug_tar_sha256": sha(source_debug_tar) if has_source else None,
         "source_packages": source_provenance,
+        "inherited_base_symbols": inherited_symbols_receipt,
         "source_runtime_payload_entries": len(expected_source_runtime),
         "source_debug_payload_entries": len(expected_source_debug),
         "runtime_elf_count": len(runtime_elfs), "allowed_debug_package_replacements": [],
@@ -403,6 +415,9 @@ def main():
     parser.add_argument("--source-runtime-tar", type=Path)
     parser.add_argument("--source-debug-tar", type=Path)
     parser.add_argument("--source-receipt", type=Path)
+    parser.add_argument("--base-debug-symbols", type=Path)
+    parser.add_argument("--base-debug-receipt", type=Path)
+    parser.add_argument("--base-debug-package-manifest", type=Path)
     parser.add_argument("--fixture", action="store_true")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
@@ -413,7 +428,9 @@ def main():
                                  runtime_apt_selection=args.runtime_apt_selection, debug_apt_selection=args.debug_apt_selection,
                                  package_state_contract=args.package_state_contract, runtime_archive=args.runtime_archive,
                                  debug_archive=args.debug_archive, source_runtime_tar=args.source_runtime_tar,
-                                 source_debug_tar=args.source_debug_tar, source_receipt=args.source_receipt)
+                                 source_debug_tar=args.source_debug_tar, source_receipt=args.source_receipt, base_debug_symbols=args.base_debug_symbols,
+                                 base_debug_receipt=args.base_debug_receipt,
+                                 base_debug_package_manifest=args.base_debug_package_manifest)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError) as error:
