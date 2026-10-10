@@ -79,7 +79,7 @@ BEP = {
     "syncd": [],
     "vs": [],
 }
-RECEIPT_TEST_COUNTS = {"archive": ("python", 11), "source": ("source", 18), "syncd": ("syncd", 6)}
+RECEIPT_TEST_COUNTS = {"archive": ("python", 11), "source": ("source", 18), "syncd": ("syncd", 8)}
 SUMMARY = {
     "archive": "artifacts/archive/public-summary.json",
     "source": "artifacts/swss/public-summary.json",
