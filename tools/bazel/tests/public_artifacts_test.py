@@ -147,7 +147,7 @@ class PublicArtifactsTest(unittest.TestCase):
         """Adding a package suite must not make successful CI unpublishable."""
         for kind, filename in (
             ("archive", "tools/bazel/ci/python_packages.py"),
-            ("source", "dockers/docker-orchagent/bazel/ci.py"),
+            ("source", "dockers/docker-orchagent/bazel/ci_config.py"),
         ):
             tree = ast.parse((ROOT / filename).read_text())
             suites = next(ast.literal_eval(node.value) for node in tree.body
