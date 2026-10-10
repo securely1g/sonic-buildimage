@@ -18,8 +18,17 @@ _policy = rule(
     attrs = {"document": attr.string(mandatory = True)},
 )
 
-def apt_layer(name, packages, lock, dependency_set, base, policy, variant,
-              retained_manifest = None, base_package_metadata = None, **kwargs):
+def apt_layer(
+        name,
+        packages,
+        lock,
+        dependency_set,
+        base,
+        policy,
+        variant,
+        retained_manifest = None,
+        base_package_metadata = None,
+        **kwargs):
     """Generate a declared policy input and select/flatten checked APT payloads.
 
     The generated <name>_policy target can also be used by container policy

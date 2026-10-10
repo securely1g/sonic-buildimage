@@ -1,0 +1,12 @@
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+
+# Exercise the production layer's debug provider without a Make-built base.
+debug_symbols_layer(
+    name = "symbols_raw",
+    image = "//dockers/docker-sysmgr:rdeps",
+)
+
+filegroup(
+    name = "symbols",
+    srcs = [":symbols_raw"],
+)

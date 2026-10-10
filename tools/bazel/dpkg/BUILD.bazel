@@ -20,3 +20,10 @@ genrule(
     tools = ["@gawk"],
     visibility = ["//visibility:public"],
 )
+
+# Preserve the sysmgr CI target name while sharing the maintained test.
+alias(
+    name = "test_dpkg_patterns_up_to_date",
+    actual = "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
+    visibility = ["//visibility:public"],
+)
