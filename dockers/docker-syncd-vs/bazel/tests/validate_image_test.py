@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise syncd-vs OCI checks with complete synthetic OCI layouts and tars."""
 
+import copy
 import gzip
 import hashlib
 import io
@@ -19,6 +20,7 @@ sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as layer, write_layout
 import validate_image as subject
 import validate_payloads
+import source_packages
 
 
 def write_image(path, layers, manifest, *, entrypoint=None):
@@ -133,10 +135,93 @@ class ValidateImageTest(unittest.TestCase):
         write_image(self.root / "debug.oci", self.debug_layers, json.loads(self.debug_manifest.read_bytes()),
                     entrypoint=runtime_entrypoint)
 
-    def validate(self):
+    def validate(self, **kwargs):
         return subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
                                        self.runtime_handoff, self.debug_handoff,
-                                       self.runtime_manifest, self.debug_manifest, ROOT, fixture=True)
+                                       self.runtime_manifest, self.debug_manifest, ROOT, fixture=True, **kwargs)
+
+    def source_archives(self):
+        """Model owner tar payloads independently of Make's remaining package handoff."""
+        records = copy.deepcopy(json.loads((OWNER / "bazel/source_packages.json").read_bytes())["packages"])
+        directory = self.root / "source"
+        directory.mkdir()
+        runtime_entries, debug_entries = [], []
+        for index, record in enumerate(records):
+            package = record["package"]
+            runtime = []
+            for name, kind in record.pop("required_paths").items():
+                if kind == "symlink":
+                    # The OCI fixture helper supports regular files only, so
+                    # the source inventory here contains the substantive paths.
+                    continue
+                data = self.ssh_elf + package.encode() if kind == "elf" else b"source data"
+                runtime.append((name, data, 0o755 if kind == "elf" else 0o644))
+            debug = [("usr/lib/debug/.build-id/ab/" + str(index) * 38 + ".debug",
+                      self.ssh_elf + b"symbols" + package.encode(), 0o644)]
+            runtime_path, debug_path = directory / (package + ".tar"), directory / (package + "-debug.tar")
+            runtime_path.write_bytes(layer(runtime))
+            debug_path.write_bytes(layer(debug))
+            record.update(input_tar_sha256=subject.sha(runtime_path), files=source_packages.inventory(runtime_path),
+                          debug={"input_tar_sha256": subject.sha(debug_path), "files": source_packages.inventory(debug_path)})
+            runtime_entries.extend(runtime)
+            debug_entries.extend(debug)
+        runtime_tar, debug_tar = directory / "runtime.tar", directory / "debug.tar"
+        runtime_tar.write_bytes(layer(runtime_entries))
+        debug_tar.write_bytes(layer(debug_entries))
+        receipt = {**source_packages.IDENTITY, "kind": "bazel_source", "packages": records,
+                   "contract_sha256": subject.sha(OWNER / "bazel/source_packages.json"),
+                   "base_manifest_digest": "sha256:" + "b" * 64,
+                   "module_file_sha256": {name: "a" * 64 for name in ("sonic-swss-common", "sonic-sairedis")}}
+        for field, path in (("payload", runtime_tar), ("debug_payload", debug_tar)):
+            receipt[field] = {"sha256": subject.sha(path), "size": path.stat().st_size,
+                              "members": len(source_packages.inventory(path))}
+        receipt_path = directory / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt))
+        self.runtime_layers.append(runtime_tar.read_bytes())
+        self.debug_layers = self.runtime_layers + [self.debug_payload.read_bytes(), debug_tar.read_bytes()]
+        self.write_images()
+        return {"source_runtime_tar": runtime_tar, "source_debug_tar": debug_tar, "source_receipt": receipt_path}
+
+    def test_source_payloads_and_receipt_are_bound_to_the_images(self):
+        """Final validation proves the reused source bytes and their recorded owners are present."""
+        inputs = self.source_archives()
+        result = self.validate(**inputs)
+        self.assertEqual(result["source_receipt_sha256"], subject.sha(inputs["source_receipt"]))
+        self.assertEqual({item["package"] for item in result["source_packages"]["packages"]}, set(source_packages.PACKAGES))
+        self.assertGreater(result["source_runtime_payload_entries"], 3)
+        self.assertEqual(result["source_debug_payload_entries"], 3)
+        inputs["source_runtime_tar"].write_bytes(inputs["source_runtime_tar"].read_bytes() + b"changed")
+        with self.assertRaisesRegex(ValueError, "source receipt archive hash differs"):
+            self.validate(**inputs)
+
+    def test_debug_cannot_replace_a_source_library(self):
+        """Debug adds matching symbols while preserving every source-built runtime ELF."""
+        inputs = self.source_archives()
+        self.debug_layers.append(layer([("usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0",
+                                         self.ssh_elf + b"different library", 0o755)]))
+        self.write_images()
+        with self.assertRaisesRegex(ValueError, "debug image changes the source runtime payload"):
+            self.validate(**inputs)
+
+    def test_missing_source_layer_is_rejected(self):
+        """A valid source receipt cannot stand in for installing its runtime library archive."""
+        inputs = self.source_archives()
+        self.runtime_layers.pop()
+        self.debug_layers = self.runtime_layers + [self.debug_payload.read_bytes(), inputs["source_debug_tar"].read_bytes()]
+        self.write_images()
+        with self.assertRaisesRegex(ValueError, "runtime source package payload differs"):
+            self.validate(**inputs)
+
+    def test_source_inputs_must_be_complete_and_are_required_for_production(self):
+        """Require both owner archives and their receipt before claiming complete validation."""
+        with self.assertRaisesRegex(ValueError, "must be supplied together"):
+            self.validate(source_runtime_tar=self.runtime_payload)
+        complete = {name: self.runtime_payload for name in
+                    ("base_path", "apt_layer", "debug_tools_layer", "runtime_apt_selection", "debug_apt_selection",
+                     "package_state_contract", "runtime_archive", "debug_archive")}
+        with self.assertRaisesRegex(ValueError, "complete validation requires source"):
+            subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci", self.runtime_handoff,
+                                    self.debug_handoff, self.runtime_manifest, self.debug_manifest, ROOT, **complete)
 
     def test_complete_fixture_preserves_configuration_and_payloads(self):
         result = self.validate()
