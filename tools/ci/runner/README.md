@@ -4,6 +4,7 @@ These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
 runner for one full VS image job. The default repository is
 `securely1g/sonic-buildimage`; select a job explicitly with `--pr NUMBER` or
 `--master`, and pass `--repo owner/name` to select another repository.
+The optional manager below registers replacements automatically after each job.
 The workflow routes PR jobs to `sonic-vs-source-pr-NUMBER` and push/manual jobs
 to `sonic-vs-source-master`. A runner gets only its selected custom label plus
 GitHub's default `self-hosted`, `linux`, `x64` labels.
@@ -112,7 +113,77 @@ labels and cancellation cleanup as the build. It does not test child-container
 DNS or HTTPS access. Run it only while no other builder uses that checkout:
 Make clears the checkout's inner Docker store before each invocation.
 
-## Arm a runner for the next attempt
+## Keep a runner available automatically
+
+On an already prepared host, install the manager from a reviewed checkout.
+Run `gh api user --jq .login` as the normal operator first; it should report
+`securely1g` for the default setup. The installer verifies that this login also
+works noninteractively before enabling the manager.
+
+```sh
+python3 tools/ci/runner/install_manager.py --operator "$USER" --master --dry-run
+sudo python3 tools/ci/runner/install_manager.py --operator "$USER" --master
+sudo systemctl status sonic-vs-runner-manager.timer --no-pager
+sudo journalctl -u sonic-vs-runner-manager.service -n 50 --no-pager
+```
+
+For P330, the operator is `lgh`. `--master` selects the
+`sonic-vs-source-master` routing label used by push/manual VS jobs. To maintain a
+runner for one reviewed PR instead, select `--pr NUMBER`. The manager maintains
+only the configured route; it does not dispatch workflows, cancel queued runs,
+or change the source revision of an existing job.
+
+The systemd timer checks 30 seconds after boot and one minute after each check
+finishes. It waits while a runner service, Listener/Worker process or Docker
+container is active. Once the host is idle, it checks the configured GitHub
+identity, runs preflight, and uses `rearm.py` to create one fresh ephemeral
+runner. After that runner consumes a job and unregisters, the next timer check
+registers its replacement. Build caches and previous attempt directories remain
+in place. Authentication or preflight failures appear in the service journal
+and can be retried by the next timer check after the underlying issue is fixed.
+
+After a reboot, the manager verifies a retained registration with GitHub before
+starting it again. It defers if GitHub still reports that runner busy. If GitHub
+confirms that the registration is absent, it can clear only the matching local
+registration and create a replacement. Conflicting identities or an uncertain
+registration attempt require inspection instead of repeated registrations.
+
+The manager runs as root for systemd and runner-account operations. GitHub API
+calls run as the configured operator with a clean environment and that user's
+existing `gh` login. Only a short-lived registration token is sent to the
+registration helper through standard input; no token is stored in the manager
+configuration. No passwordless sudo rule for the operator is needed.
+
+The installer writes root-owned helpers under `/opt/sonic-runner-tools/runner`,
+configuration at `/etc/sonic-vs-runner-manager.json`, and the manager service and
+timer. Generated configuration and units identify their generator and say
+`AUTO-GENERATED. DO NOT EDIT MANUALLY.` Rerun the installer to update the selected
+operator, GitHub account (`--github-account`), repository (`--repo`) or route.
+Use `--no-enable` to install while leaving automatic registration disabled.
+The installer updates only manager units; the separate job service keeps its
+existing lifecycle.
+
+To pause automatic registration:
+
+```sh
+sudo systemctl disable --now sonic-vs-runner-manager.timer
+```
+
+An already running manager check may finish, and the current job continues.
+Resume with `sudo systemctl enable --now sonic-vs-runner-manager.timer`.
+Inspect the manager journal and preserved attempt before clearing uncertain
+registration state. Keep this one-runner host idle for full VS builds; unrelated
+running containers also defer registration.
+
+An interrupted registration may leave
+`/var/lib/sonic-vs-runner-manager/pending.json`. The manager clears this marker
+when it can verify the matching registration locally and on GitHub. Otherwise,
+inspect the journal, runner inventory and preserved attempt using the recovery
+steps below. After resolving that attempt and confirming the host is idle,
+remove only this marker to allow a fresh registration; reinstalling the manager
+does not clear it. The marker contains configuration and time, never tokens.
+
+## Arm a runner manually for the next attempt
 
 Run these as the normal operator who is already authenticated to GitHub with
 repository runner administration access. Keep that login out of `sonic-runner`.
@@ -150,7 +221,8 @@ service started; the extracted attempt and previous attempts remain intact.
 Only a short-lived registration token crosses to the runner, through standard
 input and its environment rather than command arguments; the operator's
 personal token and SSH agent are not copied. The service has `Restart=no` and
-starts only when `.runner` exists. No automatic registration occurs at boot.
+starts only when `.runner` exists. The optional manager is responsible for
+automatic registration and boot recovery; the job service itself does neither.
 Rearm waits up to 90 seconds for GitHub to report that exact runner online or
 busy. If it cannot verify the connection, it reports the attempt directory and
 journal command; it leaves the service intact for diagnosis. Check whether the
