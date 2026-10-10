@@ -307,7 +307,10 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
 
       - name: Build and inspect SWSS runtime and debug layers
-        run: python3 -B dockers/docker-orchagent/bazel/ci.py --bazel "$BAZEL" --artifacts artifacts/swss
+        run: |
+          python3 -B tools/bazel/ci/container.py \
+            --config dockers/docker-orchagent/bazel/ci_config.py \
+            --bazel "$BAZEL" --artifacts artifacts/swss
 
       - name: Retain the verified GitLab source downloads
         run: |
@@ -408,23 +411,11 @@ jobs:
           python3 -B -m unittest discover -s tools/bazel/tests -p 'syncd_make_integration_test.py' -v \
             2>&1 | tee artifacts/syncd-vs/direct-tests.log
 
-      - name: Prepare only the registered Make manifests
+      - name: Prepare manifests and run audited Bazel contract tests
         run: |
-          set -euo pipefail
-          make -f tools/bazel/prepare_manifests.mk \
-            MANIFEST_METADATA=platform/vs/docker-syncd-vs.mk \
-            DEBS_PATH=target/debs/trixie \
-            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
-            INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n DBG_IMAGE_MARK=dbg \
-            PLATFORM_PATH=platform/vs DOCKERS_PATH=dockers \
-            2>&1 | tee artifacts/syncd-vs/manifests.log
-
-      - name: Audit and run explicit Bazel contract tests
-        run: |
-          python3 -B dockers/docker-syncd-vs/bazel/ci.py --bazel "$BAZEL" \
-            --artifacts artifacts/syncd-vs/bazel \
-            --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000
+          python3 -B tools/bazel/ci/container.py \
+            --config dockers/docker-syncd-vs/bazel/ci_config.py \
+            --bazel "$BAZEL" --artifacts artifacts/syncd-vs/bazel
           git diff --exit-code
 
       - name: Prepare public artifact list

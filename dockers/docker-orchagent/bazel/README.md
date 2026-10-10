@@ -391,13 +391,18 @@ version available, and run from a clean checkout:
 for tests in tools/bazel/tests tools/ci/tests tools/ci/runner; do
   python3 -B -m unittest discover -s "$tests" -p '*_test.py' || exit 1
 done
-python3 -B dockers/docker-orchagent/bazel/ci.py --bazel bazel --artifacts artifacts/swss
+python3 -B tools/bazel/ci/container.py \
+  --config dockers/docker-orchagent/bazel/ci_config.py \
+  --bazel bazel --artifacts artifacts/swss
 ```
 
 ## Change the build
 
-This directory keeps SWSS's CI target selection (`ci.py`) and package expectations
-(`package_contract.py`); their tests live under `tools/bazel/tests`.
+This directory keeps SWSS's CI target selection and archive-validation callback
+(`ci_config.py`) and package expectations (`package_contract.py`); their tests
+live under `tools/bazel/tests`. The shared `tools/bazel/ci/container.py` runner
+owns manifest preparation, execution audits, tests, archive collection and
+receipts for both SWSS and Syncd. Container settings do not duplicate that lifecycle.
 SWSS owns its opt-in guards, archive
 labels and Make prerequisites. It registers both runtime and debug archives in
 `SONIC_BAZEL_SWITCHABLE_IMAGES` even when the selector is off; the shared Make
