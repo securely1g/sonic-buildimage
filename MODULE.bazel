@@ -237,3 +237,15 @@ single_version_override(
 )
 
 bazel_dep(name = "sonic-fips", version = "0.0.2-6ef4c4f2e81efa4ac456f7274398c0fb16a62c24", repo_name = "sonic_fips")
+
+# Syncd's ABI-locked development additions use the reviewed October snapshot.
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = ["stable"],
+    types = ["deb"],
+    uris = ["https://snapshot.debian.org/archive/debian/20261008T000000Z"],
+)
+
+include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
+apt_inputs(name = "syncd_apt_inputs", lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json")
