@@ -16,13 +16,18 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import base_debug_symbols
 
 SCHEMA = 1
 IMAGE = "docker-syncd-vs"
 DEBUG_APT_PACKAGES = {"gdb", "gdbserver", "sshpass", "strace", "vim"}
+SOURCE_PACKAGES = {"libswsscommon", "libsairedis", "libsaimetadata"}
+SOURCE_PACKAGE_NAMES = SOURCE_PACKAGES | {name + "-dbgsym" for name in SOURCE_PACKAGES}
 
 
 def require(condition, message):
@@ -139,6 +144,17 @@ def require_runtime_fips(records):
             "runtime FIPS openssh-client identity differs from its Debian control")
 
 
+def reject_source_packages(records, *, allow_base_symbols=False):
+    """Prevent Make payloads from overwriting the shared source libraries or symbols."""
+    unexpected = set()
+    for record in records:
+        if allow_base_symbols and record.get("package") == base_debug_symbols.PACKAGE:
+            base_debug_symbols.check_record(record)
+        elif record.get("package") in SOURCE_PACKAGE_NAMES:
+            unexpected.add(record["package"])
+    require(not unexpected, "Make package handoff contains source-built packages: " + ", ".join(sorted(unexpected)))
+
+
 def prepare(args):
     require(args.architecture == "amd64" and args.distribution == "trixie",
             "syncd-vs OCI package preparation supports native AMD64 Trixie only")
@@ -186,6 +202,11 @@ def prepare(args):
                        for index, source in enumerate(sources)]
             package_names = [record["package"] for record in records]
             require(len(package_names) == len(set(package_names)), "different DEBs provide the same package name")
+            if args.variant == "debug":
+                for record in records:
+                    if record["package"] == base_debug_symbols.PACKAGE:
+                        base_debug_symbols.filter_payload(record, temporary / record["_payload"])
+            reject_source_packages(records, allow_base_symbols=args.variant == "debug")
             require(set(args.required_package).issubset(package_names),
                     "missing required syncd-vs packages: " + ", ".join(sorted(set(args.required_package) - set(package_names))))
             if args.variant == "runtime":
@@ -217,6 +238,7 @@ def prepare(args):
                 "packages": records,
                 "payload": payload,
             }
+            base_debug_symbols.validate_aggregate(manifest, aggregate)
             if args.runtime_manifest is not None:
                 runtime_path = Path(args.runtime_manifest)
                 runtime_bytes = runtime_path.read_bytes()
@@ -224,6 +246,7 @@ def prepare(args):
                 require(runtime.get("schema") == SCHEMA and runtime.get("image") == IMAGE and
                         runtime.get("variant") == "runtime" and runtime.get("features") == features,
                         "invalid or incompatible runtime package manifest")
+                reject_source_packages(runtime["packages"])
                 require_runtime_fips(runtime["packages"])
                 runtime_packages = {record["package"]: record for record in runtime["packages"]}
                 for record in records:

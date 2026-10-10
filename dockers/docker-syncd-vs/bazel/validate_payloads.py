@@ -15,6 +15,27 @@ from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.oci.oci_layout import validate_layout
 
 FEATURES = {"include_vs_dash_sai": "y", "include_fips": "y", "enable_asan": "n", "enable_syncd_rpc": "n"}
+SOURCE_PACKAGE_NAMES = frozenset({
+    "libswsscommon", "libsairedis", "libsaimetadata",
+    "libswsscommon-dbgsym", "libsairedis-dbgsym", "libsaimetadata-dbgsym",
+})
+
+
+def reject_source_packages(records, *, allow_base_symbols=False):
+    """Reject stale Make libraries and symbols now owned by the shared Bazel targets."""
+    unexpected = []
+    for record in records:
+        name = record.get("package")
+        if name not in SOURCE_PACKAGE_NAMES:
+            continue
+        if allow_base_symbols and name == "libswsscommon-dbgsym":
+            import base_debug_symbols
+            base_debug_symbols.check_record(record)
+        else:
+            unexpected.append(name)
+    require(not unexpected, "Make handoff contains packages now built from source: " + ", ".join(sorted(set(unexpected))))
+
+
 MERGED_USR = {"bin": "usr/bin", "lib": "usr/lib", "lib64": "usr/lib64", "sbin": "usr/sbin"}
 DIRECTORY_ALIASES = {name: {"linkname": target, "target": target} for name, target in MERGED_USR.items()}
 DIRECTORY_ALIASES["var/run"] = {"linkname": "/run", "target": "run"}
@@ -125,6 +146,7 @@ def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
     records = manifest.get("packages")
     require(isinstance(records, list) and records, "syncd-vs package manifest has no packages")
     require(all(isinstance(record, dict) for record in records), "invalid syncd-vs package record")
+    reject_source_packages(records, allow_base_symbols=variant == "debug")
     names = [record.get("package") for record in records]
     require(all(isinstance(name, str) and name for name in names) and len(names) == len(set(names)),
             "syncd-vs package names are missing or duplicated")
@@ -162,6 +184,9 @@ def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
             require(not name.name.startswith(".wh."), "package payload uses a reserved OCI whiteout path: " + member.name)
             members += 1
     require(members == payload.get("members") == members_expected, "aggregate package member count differs")
+    if any(record.get("base_debug_symbols") is not None for record in records):
+        import base_debug_symbols
+        base_debug_symbols.validate_aggregate(manifest, payload_path)
     if variant == "debug":
         require(runtime_manifest is not None, "debug payload validation requires the runtime manifest")
         runtime_bytes = runtime_manifest.read_bytes()
@@ -171,6 +196,7 @@ def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
         require(runtime.get("schema") == 1 and runtime.get("image") == "docker-syncd-vs" and
                 runtime.get("variant") == "runtime" and runtime.get("features") == FEATURES,
                 "invalid runtime package manifest")
+        reject_source_packages(runtime["packages"])
         require_runtime_fips(runtime["packages"])
         runtime_packages = {record["package"]: record for record in runtime["packages"]}
         for record in records:

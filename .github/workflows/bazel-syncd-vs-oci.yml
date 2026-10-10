@@ -47,7 +47,9 @@ jobs:
           mkdir -p artifacts/syncd-vs
           git rev-parse HEAD > artifacts/syncd-vs/revision.txt
           sha256sum dockers/docker-syncd-vs/bazel/apt.lock.json \
-            dockers/docker-syncd-vs/bazel/runtime_package_state.json > artifacts/syncd-vs/input-locks.sha256
+            dockers/docker-syncd-vs/bazel/runtime_package_state.json \
+            dockers/docker-syncd-vs/bazel/source_packages.json \
+            dockers/docker-syncd-vs/bazel/base_debug_symbols.json > artifacts/syncd-vs/input-locks.sha256
 
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
