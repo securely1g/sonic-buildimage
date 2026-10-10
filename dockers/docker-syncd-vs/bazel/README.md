@@ -43,6 +43,8 @@ All labels below are in `//dockers/docker-syncd-vs`.
 | `:docker-syncd-vs-dbg` | Complete debug OCI directory extending the exact runtime OCI layers |
 | `:docker-syncd-vs.gz` | Gzipped Docker-save archive tagged `docker-syncd-vs:latest` |
 | `:docker-syncd-vs-dbg.gz` | Gzipped Docker-save archive tagged `docker-syncd-vs-dbg:latest` |
+| `:runtime_layer` | Checked APT additions layered onto the config-engine base |
+| `:debug_layer` | Checked debug APT additions layered onto the runtime image |
 | `:runtime_apt_selection` | JSON describing checked, retained, and selected runtime APT inputs |
 | `:debug_apt_selection` | JSON describing the equivalent check against the runtime image for debug tools |
 

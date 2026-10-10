@@ -68,7 +68,7 @@ manifest_labels(
 # one ordered data tar from the native package closure. Validation
 # preserves the base's merged-usr aliases before the layer is flattened.
 apt_layer(
-    name = "selected_runtime_apt",
+    name = "runtime_layer",
     base = ":config_engine_base_layout",
     packages = APT_INPUTS["syncd_vs_debian"]["amd64"],
     dependency_set = "syncd_vs_debian",
@@ -80,13 +80,13 @@ apt_layer(
 
 filegroup(
     name = "runtime_apt_selection",
-    srcs = [":selected_runtime_apt"],
+    srcs = [":runtime_layer"],
     output_group = "selection",
 )
 
 sonic_layer(
     name = "apt_deps",
-    tars = [":selected_runtime_apt"],
+    tars = [":runtime_layer"],
 )
 
 alias(
@@ -161,7 +161,7 @@ sonic_layer(
 )
 
 apt_layer(
-    name = "selected_debug_apt",
+    name = "debug_layer",
     base = ":docker-syncd-vs",
     packages = APT_INPUTS["syncd_vs_debug_debian"]["amd64"],
     dependency_set = "syncd_vs_debug_debian",
@@ -174,7 +174,7 @@ apt_layer(
 
 filegroup(
     name = "debug_apt_selection",
-    srcs = [":selected_debug_apt"],
+    srcs = [":debug_layer"],
     output_group = "selection",
 )
 
@@ -184,7 +184,7 @@ filegroup(
 sonic_layer(
     name = "debug_tools",
     tars = [
-        ":selected_debug_apt",
+        ":debug_layer",
         "@sonic_build_infra//deps/vim:vim_pkg",
         "@sonic_build_infra//deps/vim:vim_runtime_pkg",
         "@sonic_build_infra//deps/vim:vim_alternatives_pkg",

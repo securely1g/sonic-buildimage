@@ -10,7 +10,7 @@ callback:
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 
 apt_layer(
-    name = "selected_runtime_apt",
+    name = "runtime_layer",
     packages = APT_INPUTS["example_debian"]["amd64"],
     lock = ":apt.lock.json",
     dependency_set = "example_debian",
@@ -28,14 +28,14 @@ apt_layer(
 )
 ```
 
-The macro writes `selected_runtime_apt_policy.json` and passes it as a declared
+The macro writes `runtime_layer_policy.json` and passes it as a declared
 input to `//tools/bazel/oci:select_apt_payloads`. That shared Python tool runs
 when OCI layouts and package archives exist: it checks the platform, inventories
 the inherited files/packages, applies the policy, invokes dependency/collision
 validation in `sonic-build-infra`, and stages selected TARs plus a receipt.
 Starlark declares those actions; it cannot inspect their generated OCI/TAR
 contents during analysis. Container tests can consume the generated
-`:selected_runtime_apt_policy` target to verify the real BUILD policy.
+`:runtime_layer_policy` target to verify the real BUILD policy.
 
 Orchagent uses `retained_source = "none"` because its native payloads are
 source-built. For imported Make packages, use `retained_source = "make"`,

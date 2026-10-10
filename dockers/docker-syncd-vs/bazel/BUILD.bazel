@@ -165,11 +165,11 @@ py_test(
         "tests/select_apt_payloads_test.py",
         "validate_payloads.py",
     ],
-    args = ["--policy=$(rootpath //dockers/docker-syncd-vs:selected_runtime_apt_policy)"],
+    args = ["--policy=$(rootpath //dockers/docker-syncd-vs:runtime_layer_policy)"],
     data = [
         "apt.lock.json",
         "apt_inputs.MODULE.bazel",
-        "//dockers/docker-syncd-vs:selected_runtime_apt_policy",
+        "//dockers/docker-syncd-vs:runtime_layer_policy",
     ],
     main = "tests/select_apt_payloads_test.py",
     python_version = "3.11",
