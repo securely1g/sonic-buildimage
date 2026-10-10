@@ -77,6 +77,22 @@ def payloads(manifest_path, variant, runtime_manifest=None):
     return receipt, files, owners, manifest
 
 
+def source_payloads(runtime_tar, debug_tar, receipt_path, *, contract_path=None):
+    """Bind normalized source layers to the owner targets and exact input archives."""
+    import source_packages
+    receipt = source_packages.validate_receipt(receipt_path, runtime_tar, debug_tar, contract_path=contract_path)
+    runtime, debug = {}, {}
+    apply_layer(runtime_tar, runtime)
+    apply_layer(debug_tar, debug)
+    return receipt, runtime, debug
+
+
+def assert_disjoint_source(make_files, source_files):
+    overlaps = sorted(name for name, item in source_files.items()
+                      if name in make_files and not (item["kind"] == make_files[name]["kind"] == "directory"))
+    require(not overlaps, "source package overlaps a Make payload: " + ", ".join(overlaps[:20]))
+
+
 def dpkg_filtered(files, source_root):
     rules = []
     for line in (source_root / "dockers/docker-base-trixie/dpkg_01_drop").read_text().splitlines():
@@ -162,12 +178,23 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                     runtime_manifest_path, debug_manifest_path, source_root, *, fixture=False,
                     base_path=None, apt_layer=None, debug_tools_layer=None,
                     runtime_apt_selection=None, debug_apt_selection=None, package_state_contract=None,
-                    runtime_archive=None, debug_archive=None):
+                    runtime_archive=None, debug_archive=None,
+                    source_runtime_tar=None, source_debug_tar=None, source_receipt=None):
     complete_inputs = (base_path, apt_layer, debug_tools_layer, runtime_apt_selection, debug_apt_selection,
                        package_state_contract, runtime_archive, debug_archive)
     complete = all(value is not None for value in complete_inputs)
     require(complete or not any(value is not None for value in complete_inputs), "complete overlay validation inputs must be supplied together")
     require(fixture or complete, "complete validation requires the base, APT layers/selections, package state contract, and archives")
+    source_inputs = (source_runtime_tar, source_debug_tar, source_receipt)
+    has_source = all(value is not None for value in source_inputs)
+    require(has_source or not any(value is not None for value in source_inputs),
+            "source runtime tar, debug tar, and receipt must be supplied together")
+    require(fixture or has_source, "complete validation requires source runtime tar, debug tar, and receipt")
+    source_provenance, expected_source_runtime, expected_source_debug = None, {}, {}
+    if has_source:
+        source_provenance, expected_source_runtime, expected_source_debug = source_payloads(
+            source_runtime_tar, source_debug_tar, source_receipt,
+            contract_path=None if fixture else source_root / "dockers/docker-syncd-vs/bazel/source_packages.json")
     runtime_descriptor, runtime_manifest, runtime_config, runtime_layers = image(runtime_path)
     debug_descriptor, debug_manifest, debug_config, debug_layers = image(debug_path)
     runtime_settings = runtime_config.get("config", {})
@@ -200,6 +227,14 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     debug_receipt, expected_debug, _, _ = payloads(debug_handoff, "debug", runtime_handoff)
     expected_runtime = dpkg_filtered(expected_runtime, source_root)
     expected_debug = dpkg_filtered(expected_debug, source_root)
+    assert_disjoint_source(expected_runtime, expected_source_runtime)
+    assert_disjoint_source(expected_debug, expected_source_debug)
+    assert_disjoint_source(expected_runtime, expected_source_debug)
+    assert_disjoint_source(expected_debug, expected_source_runtime)
+    assert_payload(expected_source_runtime, runtime_files, "runtime source package payload")
+    assert_payload(expected_source_debug, debug_files, "debug source package payload")
+    assert_payload({name: item for name, item in expected_source_runtime.items() if item["kind"] != "directory"},
+                   debug_files, "debug image changes the source runtime payload")
     assert_payload(expected_runtime, runtime_files, "runtime package payload")
     assert_payload(expected_debug, debug_files, "debug package payload")
     require(runtime_owners.get("usr/bin/ssh") == "openssh-client" and
@@ -229,6 +264,9 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     archive_report = None
     if complete:
         base_descriptor, base_manifest, base_config, base_layers = image(base_path)
+        if has_source:
+            require(source_provenance.get("base_manifest_digest") == base_descriptor["digest"],
+                    "source packages were prepared for a different OCI base")
         require(runtime_manifest["layers"][:len(base_manifest["layers"])] == base_manifest["layers"] and
                 runtime_config["rootfs"]["diff_ids"][:len(base_config["rootfs"]["diff_ids"])] == base_config["rootfs"]["diff_ids"],
                 "runtime image does not extend the exact managed OCI base")
@@ -255,6 +293,18 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         checked_files = {}
         for layer in base_layers:
             apply_layer(layer, checked_files)
+        if has_source:
+            inherited = source_provenance.get("inherited_files", {})
+            assert_payload(inherited, checked_files, "source receipt inherited base payload")
+            assert_payload(inherited, runtime_files, "runtime image changes the required base payload")
+            assert_payload(inherited, debug_files, "debug image changes the required base payload")
+            if inherited:
+                import base_debug_symbols
+                for name, expected in base_debug_symbols.read_contract()["files"].items():
+                    observed = debug_files.get(name, {})
+                    require(observed.get("kind") == "file" and all(observed.get(key) == expected[key]
+                            for key in ("sha256", "size", "mode", "uid", "gid")),
+                            "debug image lacks the checked inherited symbols: " + name)
         for layer in runtime_layers[len(base_layers):]:
             apply_layer(layer, checked_files, checked_overlay=True)
         added_debug_layers = debug_layers[len(runtime_layers):]
@@ -274,9 +324,13 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             require(selection.get("schema") == 1 and selection.get("variant") == variant and
                     selection.get("base_manifest_digest") == base_digest and selection.get("apt_lock_sha256") == lock_sha and
                     selection.get("make_manifest_sha256") == make_sha, variant + " APT selection identity differs")
+            if has_source:
+                require(selection.get("source_receipt_sha256") == sha(source_receipt),
+                        variant + " APT selection uses a different source receipt")
         runtime_overlay = {}
         apply_layer(apt_layer, runtime_overlay)
         runtime_overlay.update(expected_runtime)
+        runtime_overlay.update(expected_source_runtime)
         require(json.loads(package_state_contract.read_bytes()).get("apt_lock_sha256") == lock_sha,
                 "runtime package state contract uses a different APT lock")
         state = expected_state(package_state_contract)
@@ -289,6 +343,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         debug_overlay = {}
         apply_layer(debug_tools_layer, debug_overlay)
         debug_overlay.update(expected_debug)
+        debug_overlay.update(expected_source_debug)
         assert_payload(debug_overlay, debug_files, "debug OCI overlay payload")
         overlay_report = {"base_manifest_digest": base_descriptor["digest"], "runtime_entries": len(runtime_overlay),
                           "debug_entries": len(debug_overlay), "package_state_entries": len(state),
@@ -317,6 +372,10 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         "runtime_layers": len(runtime_layers), "debug_layers": len(debug_layers),
         "runtime_package_count": runtime_receipt["package_count"], "debug_package_count": debug_receipt["package_count"],
         "runtime_payload_entries": len(expected_runtime), "debug_payload_entries": len(expected_debug),
+        "source_receipt_sha256": sha(source_receipt) if has_source else None,
+        "source_packages": source_provenance,
+        "source_runtime_payload_entries": len(expected_source_runtime),
+        "source_debug_payload_entries": len(expected_source_debug),
         "runtime_elf_count": len(runtime_elfs), "allowed_debug_package_replacements": [],
         "changed_non_elf_runtime_paths_in_debug": changed_non_elf, "overlay_checks": overlay_report,
         "archives": archive_report, "remaining_checks": remaining,
@@ -340,6 +399,9 @@ def main():
     parser.add_argument("--package-state-contract", type=Path)
     parser.add_argument("--runtime-archive", type=Path)
     parser.add_argument("--debug-archive", type=Path)
+    parser.add_argument("--source-runtime-tar", type=Path)
+    parser.add_argument("--source-debug-tar", type=Path)
+    parser.add_argument("--source-receipt", type=Path)
     parser.add_argument("--fixture", action="store_true")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
@@ -349,7 +411,8 @@ def main():
                                  base_path=args.base, apt_layer=args.apt_layer, debug_tools_layer=args.debug_tools_layer,
                                  runtime_apt_selection=args.runtime_apt_selection, debug_apt_selection=args.debug_apt_selection,
                                  package_state_contract=args.package_state_contract, runtime_archive=args.runtime_archive,
-                                 debug_archive=args.debug_archive)
+                                 debug_archive=args.debug_archive, source_runtime_tar=args.source_runtime_tar,
+                                 source_debug_tar=args.source_debug_tar, source_receipt=args.source_receipt)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError) as error:
