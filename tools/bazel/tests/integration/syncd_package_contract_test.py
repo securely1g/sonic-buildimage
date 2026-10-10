@@ -16,11 +16,11 @@ import tarfile
 import tempfile
 import unittest
 
-OWNER = Path(__file__).resolve().parents[2]
+OWNER = Path(__file__).resolve().parents[4] / "dockers/docker-syncd-vs"
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, write_layout
-import source_packages as subject
+import package_contract as subject
 
 
 def elf(machine=62):
@@ -50,7 +50,7 @@ class SourcePackagesTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.contract = self.root / "source_packages.json"
-        self.contract.write_bytes((OWNER / "bazel/source_packages.json").read_bytes())
+        self.contract.write_bytes((OWNER / "config/source_packages.json").read_bytes())
         self.value = json.loads(self.contract.read_bytes())
         for record in self.value["packages"]:
             for item in record.get("required_inherited_files", {}).values():
@@ -85,7 +85,7 @@ class SourcePackagesTest(unittest.TestCase):
             self.modules[source["module"]] = path
         base_layer = self.root / "base.tar"
         entries = []
-        for name, entry in subject.validate_payloads.DIRECTORY_ALIASES.items():
+        for name, entry in subject.normalization.DIRECTORY_ALIASES.items():
             entries += [(entry["target"], b"", 0o755, "directory", 0),
                         (name, entry["linkname"], 0o777, "symlink", 0)]
         entries += [("usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0", elf(), 0o644, "file", 0),
@@ -279,9 +279,10 @@ class SourcePackagesTest(unittest.TestCase):
     def test_retained_manifest_keeps_make_and_source_provenance_separate(self):
         """APT sees source dependencies while the original Make input and debug binding remain exact."""
         result = self.build()
-        value = {**subject.IDENTITY, "variant": "debug", "features": dict(subject.validate_payloads.FEATURES),
+        value = {**subject.IDENTITY, "variant": "debug", "features": dict(subject.FEATURES),
                  "packages": [{"package": "syncd-vs", "source_deb": "syncd-vs_1.0.0_amd64.deb"}],
-                 "runtime_manifest_sha256": "1" * 64, "required_packages": ["syncd-vs"]}
+                 "runtime_manifest_sha256": "1" * 64, "required_packages": ["syncd-vs"],
+                 "debug_apt_packages": sorted(subject.DEBUG_APT_PACKAGES)}
         path = self.root / "make.json"
         path.write_bytes(subject.json_bytes(value))
         combined = subject.retained_manifest(path, result, subject.sha(self.receipt), variant="debug")
@@ -296,44 +297,16 @@ class SourcePackagesTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "packages now built from source"):
                 subject.retained_manifest(path, result, subject.sha(self.receipt), variant="debug")
 
-    def test_retained_manifest_allows_only_reviewed_base_common_symbols_in_debug(self):
-        """Keep the inherited CLI library's symbols while rejecting the old Common runtime/symbol payloads."""
-        import base_debug_symbols
-
-        contract = base_debug_symbols.read_contract()
-        retained = copy.deepcopy(contract["package"])
-        retained.update(original_payload_sha256=contract["original_payload"]["sha256"],
-                        original_payload_size=contract["original_payload"]["size"],
-                        original_payload_members=contract["original_payload"]["members"],
-                        base_debug_symbols=base_debug_symbols.descriptor(),
-                        payload_sha256="a" * 64, payload_size=307200, payload_members=2)
+    def test_imports_cannot_bypass_symbol_matching_with_common_debug_packages(self):
+        """Common's old DEB belongs only to the matcher; ordinary imports cannot carry stale symbols."""
         result = self.build()
-        value = {**subject.IDENTITY, "variant": "debug", "features": dict(subject.validate_payloads.FEATURES),
-                 "packages": [retained], "runtime_manifest_sha256": "1" * 64}
         path = self.root / "make-base-symbols.json"
-        path.write_bytes(subject.json_bytes(value))
-        combined = subject.retained_manifest(path, result, subject.sha(self.receipt), variant="debug")
-        self.assertEqual(combined["packages"], [retained])
-        self.assertEqual(combined["source_packages"], result["packages"])
-
-        value["variant"] = "runtime"
-        path.write_bytes(subject.json_bytes(value))
-        with self.assertRaisesRegex(ValueError, "packages now built from source"):
-            subject.retained_manifest(path, result, subject.sha(self.receipt), variant="runtime")
-        value["variant"] = "debug"
-        for change in ("unfiltered", "wrong_source", "extra_member"):
-            with self.subTest(change=change):
-                record = copy.deepcopy(retained)
-                if change == "unfiltered":
-                    del record["base_debug_symbols"]
-                elif change == "wrong_source":
-                    record["source_sha256"] = "b" * 64
-                else:
-                    record["payload_members"] = 3
-                value["packages"] = [record]
-                path.write_bytes(subject.json_bytes(value))
-                with self.assertRaises(ValueError):
-                    subject.retained_manifest(path, result, subject.sha(self.receipt), variant="debug")
+        for variant in ("runtime", "debug"):
+            value = {**subject.IDENTITY, "variant": variant, "features": dict(subject.FEATURES),
+                     "packages": [{"package": "libswsscommon-dbgsym"}]}
+            path.write_bytes(subject.json_bytes(value))
+            with self.assertRaisesRegex(ValueError, "packages now built from source"):
+                subject.retained_manifest(path, result, subject.sha(self.receipt), variant=variant)
 
 
 if __name__ == "__main__":
