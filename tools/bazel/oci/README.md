@@ -163,9 +163,11 @@ registered outputs can also be requested as direct Make targets.
 Add the resulting `$(TARGET_PATH)/docker-example-base.oci` to the consuming
 container's `_BAZEL_DEPENDS` as in the [bridge example](../README.md#example-another-runtime-and-debug-archive).
 
-SWSS uses this interface to publish `target/docker-config-engine-trixie.oci`
+SWSS and syncd VS use this interface to publish `target/docker-config-engine-trixie.oci`
 from `target/docker-config-engine-trixie.gz`, with image platform `linux/amd64`.
-It remains the only production opt-in, supporting native AMD64 Trixie VS builds.
+Each owner keeps its own configuration guards. The syncd VS
+[owner guide](../../../dockers/docker-syncd-vs/bazel/README.md) records its
+image validation requirements and remaining runtime checks.
 The pinned Docker 28.5.2 saves both
 Docker metadata and an OCI layout in the same archive. Make extracts the existing
 OCI files without changing the index, config or layer bytes. Both outputs
@@ -239,3 +241,14 @@ On native ARM64 Trixie, also select
 `--platforms=@sonic_build_infra//platforms:aarch64_trixie` and
 `--host_platform=@sonic_build_infra//platforms:aarch64_trixie`. This test validates
 compression and archive structure; it does not build a production ARM64 image.
+
+## Inspect image layers
+
+`oci_inventory.py` applies layer metadata and OCI whiteouts to a filesystem
+inventory and checks that added package layers preserve inherited directory
+symlinks and links to ELF files. Link resolution uses the image inventory, never
+the build host filesystem. Image owners supply any reviewed legacy-path normalization as a
+callback. Syncd keeps its merged-usr path normalization in its payload and image
+validators. APT package policy is declared in BUILD and applied by the shared
+selector; shared inventory helpers contain no image-specific package names or
+feature settings.
