@@ -1,0 +1,135 @@
+name: Build time dashboard
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/build-dashboard.yml'
+      - 'tools/ci/build_dashboard/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/build-dashboard.yml'
+      - 'tools/ci/build_dashboard/**'
+  workflow_run:
+    workflows: ['Bazel SWSS OCI', 'Bazel OCI', 'Bazel']
+    types: [completed]
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: Re-read completed run attempts from GitHub
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Serialize the complete publication, including deployment. A coalesced event
+# loses no history: each collection also checks for changes since the last run.
+concurrency:
+  group: build-time-dashboard-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'publish' }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Build dashboard checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test metadata collection
+        run: python3 -B -m unittest discover -s tools/ci/build_dashboard -p 'test_*.py' -v
+      - name: Check dashboard JavaScript
+        run: |
+          node --check tools/ci/build_dashboard/web/app.js
+          node --test tools/ci/build_dashboard/web/app_test.js
+
+  publish:
+    name: Collect build timings
+    needs: checks
+    if: >-
+      github.repository == 'securely1g/sonic-buildimage' &&
+      github.ref == 'refs/heads/master' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: securely1g/sonic-buildimage
+      BACKFILL: ${{ inputs.backfill || false }}
+    steps:
+      # workflow_run data never selects executable code. Only the maintained
+      # default-branch revision that passed checks supplies the collector/site.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Restore durable timing history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init history
+          git -C history remote add origin "https://github.com/$REPOSITORY.git"
+          if git -C history ls-remote --exit-code --heads origin refs/heads/build-metrics > "$RUNNER_TEMP/build-metrics-ref"; then
+            git -C history fetch --depth=1 origin refs/heads/build-metrics
+            git -C history checkout -b build-metrics FETCH_HEAD
+          else
+            status=$?
+            if test "$status" -ne 2; then exit "$status"; fi
+            git -C history checkout --orphan build-metrics
+          fi
+      - name: Collect public job and step timings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          args=()
+          if test "$BACKFILL" = true; then args+=(--backfill); fi
+          python3 -B tools/ci/build_dashboard/collect.py \
+            --repo "$REPOSITORY" --history history/data.json \
+            --output site/data.json "${args[@]}"
+          cp tools/ci/build_dashboard/web/index.html tools/ci/build_dashboard/web/app.js \
+            tools/ci/build_dashboard/web/styles.css site/
+          cp LICENSE site/
+          touch site/.nojekyll
+      - name: Preserve history independently of artifact retention
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp site/data.json history/data.json
+          git -C history config user.name 'Guohan Lu'
+          git -C history config user.email securely1g@gmail.com
+          git -C history add data.json
+          if ! git -C history diff --cached --quiet; then
+            git -C history commit -m 'Update build timing history'
+            git -C history -c credential.helper= \
+              -c 'credential.helper=!gh auth git-credential' \
+              push origin HEAD:refs/heads/build-metrics
+          fi
+      - name: Package the static dashboard
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: site
+
+  deploy:
+    name: Publish build dashboard
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="SONiC image build history, pull request coverage, and CI stage timings.">
+  <title>SONiC · Build time dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="SONiC build dashboard home">
+      <span class="brand-mark" aria-hidden="true">S</span>
+      <span>SONiC <span class="brand-divider">/</span> Build times</span>
+    </a>
+    <a id="repository-link" href="https://github.com/securely1g/sonic-buildimage">View repository <span aria-hidden="true">↗</span></a>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow">SONIC BUILDIMAGE</p>
+        <h1 id="page-title">Image build performance</h1>
+        <p class="lede">Track image builds across pull requests. Follow the build stages, spot changes, and open the CI evidence.</p>
+      </div>
+      <div class="refresh-block">
+        <button id="refresh" class="secondary" type="button">Refresh data <span aria-hidden="true">↻</span></button>
+        <p id="snapshot-time">Loading published snapshot…</p>
+      </div>
+    </section>
+    <div id="load-status" role="status" aria-live="polite"></div>
+    <noscript>
+      <p class="notice">Enable JavaScript to view the dashboard. The underlying snapshot is available as <a href="data.json">data.json</a>.</p>
+    </noscript>
+    <section id="dashboard" hidden>
+      <div class="notice">
+        <span class="notice-symbol" aria-hidden="true">i</span>
+        <p><strong>Build history, with context.</strong> These are observed CI timings. Cache state and runner configuration are not yet controlled, so differences are not attributed to PR changes. A skipped or missing image build is never counted as a faster build.</p>
+      </div>
+      <section id="metrics" class="metrics" aria-label="Build summary"></section>
+      <section class="panel history-panel" aria-labelledby="history-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">SUCCESSFUL IMAGE BUILDS</p>
+            <h2 id="history-title">Build time over time</h2>
+            <p>Image build step only; setup, checks, and uploads are separate.</p>
+          </div>
+          <div id="history-legend" class="legend">
+            <span><i class="make-dot"></i>Make VS</span>
+            <span><i class="bazel-dot"></i>Bazel VS installer</span>
+          </div>
+        </div>
+        <div class="filters">
+          <label>Build path
+            <select id="path-filter">
+              <option value="all">All image paths</option>
+              <option value="make-vs">Make VS</option>
+              <option value="bazel-vs">Bazel VS installer</option>
+            </select>
+          </label>
+          <label>Architecture
+            <select id="arch-filter">
+              <option value="all">All architectures</option>
+              <option value="amd64">AMD64</option>
+              <option value="arm64">ARM64</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </label>
+          <label>Pull request
+            <select id="pr-filter">
+              <option value="all">All pull requests &amp; branches</option>
+            </select>
+          </label>
+        </div>
+        <div id="trend" class="trend"></div>
+        <p id="trend-note" class="panel-footnote"></p>
+      </section>
+      <div class="workspace">
+        <section class="panel coverage-panel" aria-labelledby="coverage-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">PULL REQUESTS</p>
+              <h2 id="coverage-title">PR coverage</h2>
+              <p>Latest associated image result, with its source revision.</p>
+            </div>
+            <span id="coverage-count" class="count-pill"></span>
+          </div>
+          <div class="table-scroll">
+            <table class="coverage-table">
+              <thead>
+                <tr>
+                  <th scope="col">Pull request</th>
+                  <th scope="col">Image result</th>
+                  <th scope="col">Build step</th>
+                </tr>
+              </thead>
+              <tbody id="coverage-body"></tbody>
+            </table>
+          </div>
+          <p class="panel-footnote">“Unmeasured” means the retained CI history has no image job for that PR. Branch association is a best-effort match. Select a PR to inspect the evidence.</p>
+        </section>
+        <section class="panel detail-panel" aria-labelledby="detail-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">CI EVIDENCE</p>
+              <h2 id="detail-title">Run details</h2>
+            </div>
+          </div>
+          <div id="details"></div>
+        </section>
+      </div>
+      <section class="panel runs-panel" aria-labelledby="runs-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">RECORDED WORKFLOWS</p>
+            <h2 id="runs-title">Run history</h2>
+            <p>Includes failed, skipped, and pending runs. Filters above also apply here.</p>
+          </div>
+          <span id="run-count" class="count-pill"></span>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Workflow / revision</th>
+                <th scope="col">PR</th>
+                <th scope="col">Result</th>
+                <th scope="col">Started</th>
+                <th scope="col">Attempt</th>
+              </tr>
+            </thead>
+            <tbody id="runs-body"></tbody>
+          </table>
+        </div>
+      </section>
+      <footer>
+        <p>Public GitHub Actions metadata · Refreshes every 5 minutes while this page is visible</p>
+        <a href="data.json">Download timing data <span aria-hidden="true">↗</span></a>
+      </footer>
+    </section>
+  </main>
+</body>
+</html>
