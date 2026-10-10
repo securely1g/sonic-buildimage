@@ -7,15 +7,15 @@ import io
 import json
 from pathlib import Path, PurePosixPath
 import posixpath
-import re
 import sys
 import tarfile
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
 sys.path.insert(0, str(Path(__file__).absolute().parent))
-from tools.bazel.ci.artifact_validation import require, sha
-import validate_image
-import validate_payloads
+from tools.bazel.ci.artifact_validation import path_name, require, sha
+from tools.bazel.oci.oci_inventory import apply_layer
+from tools.bazel.oci.oci_layout import validate_layout
+from package_policy import FEATURES, reject_source_packages
 
 SCRIPTS = {"preinst", "postinst", "prerm", "postrm", "triggers"}
 
@@ -65,7 +65,7 @@ def file_bytes(layer, names):
     result = {}
     with tarfile.open(layer, "r:*") as archive:
         for member in archive:
-            name = validate_image.member_name(member.name)
+            name = path_name(member.name)
             if name in names:
                 require(member.isfile(), "provider alias source is not a regular file: " + name)
                 result[name] = archive.extractfile(member).read()
@@ -73,16 +73,11 @@ def file_bytes(layer, names):
     return result
 
 
-def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_layer, make_manifest_path, dockerfile, output):
+def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_layer, make_manifest_path, output):
     contract = json.loads(contract_path.read_bytes())
     require(contract.get("schema") == 1, "unsupported syncd package state contract")
-    reference = contract.get("reference", {})
-    require(re.fullmatch(r"[0-9a-f]{40}", reference.get("buildimage_revision", "")) is not None and
-            all(re.fullmatch(r"[0-9a-f]{64}", reference.get(name, "")) for name in
-                ("base_archive_sha256", "runtime_archive_sha256", "legacy_dockerfile_sha256")),
-            "package state contract lacks reference identity")
-    require(sha(dockerfile) == reference["legacy_dockerfile_sha256"], "legacy Dockerfile changed; review package state")
-    require(contract.get("apt_lock_sha256") == sha(lock_path), "APT content lock changed; review package state")
+    # Historical Dockerfile/whole-lock drift belongs in the contract CI test.
+    # Assembly checks the actual selected owners, scripts and files below.
     lock = json.loads(lock_path.read_bytes())
     require(lock.get("version") == 2, "unsupported Distroless package lock")
     selection = json.loads(selection_path.read_bytes())
@@ -112,8 +107,8 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
                     "package state owner changed: " + name)
     make = json.loads(make_manifest_path.read_bytes())
     require(make.get("schema") == 1 and make.get("image") == "docker-syncd-vs" and make.get("variant") == "runtime" and
-            make.get("features") == validate_payloads.FEATURES, "invalid Make package state input")
-    validate_payloads.reject_source_packages(make.get("packages", []))
+            make.get("features") == FEATURES, "invalid Make package state input")
+    reject_source_packages(make.get("packages", []))
     make_packages = {item["package"]: item for item in make.get("packages", [])}
     expected_make = contract.get("make_package_state_inputs", {})
     require(expected_make and len(make_packages) == len(make.get("packages", [])) and set(make_packages) == set(expected_make),
@@ -128,17 +123,17 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
             if field in expected_make[name]:
                 actual[field] = item.get(field)
         require(actual == expected_make[name], "Make package relationships or scripts changed; review package state: " + name)
-    descriptor, _, _, base_layers = validate_image.image(base)
+    descriptor, _, _, base_layers = validate_layout(base, "linux/amd64")
     require(selection.get("base_manifest_digest") == descriptor["digest"], "package state uses a different OCI base")
     base_files = {}
     for layer in base_layers:
-        validate_image.apply_layer(layer, base_files)
+        apply_layer(layer, base_files)
     files = dict(base_files)
-    validate_image.apply_layer(apt_layer, files, checked_overlay=True)
+    apply_layer(apt_layer, files, checked_overlay=True)
     for name, item in base_files.items():
         if "elf_machine" in item:
             require(files.get(name) == item, "APT layer changes a base ELF before package state: " + name)
-    validate_image.apply_layer(runtime_layer, files, checked_overlay=True)
+    apply_layer(runtime_layer, files, checked_overlay=True)
     expected_files = contract.get("make_package_files", {})
     require(isinstance(expected_files, dict) and expected_files, "package state contract lacks Make data inputs")
     for path, identity in expected_files.items():
@@ -224,11 +219,10 @@ def main():
     parser.add_argument("--apt-layer", required=True, type=Path)
     parser.add_argument("--runtime-layer", required=True, type=Path)
     parser.add_argument("--make-manifest", required=True, type=Path)
-    parser.add_argument("--dockerfile", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     try:
-        print(json.dumps(build(args.contract, args.apt_lock, args.selection, args.base, args.apt_layer, args.runtime_layer, args.make_manifest, args.dockerfile, args.out), sort_keys=True))
+        print(json.dumps(build(args.contract, args.apt_lock, args.selection, args.base, args.apt_layer, args.runtime_layer, args.make_manifest, args.out), sort_keys=True))
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError) as error:
         parser.exit(1, "syncd package state validation failed: " + str(error) + "\n")
 
