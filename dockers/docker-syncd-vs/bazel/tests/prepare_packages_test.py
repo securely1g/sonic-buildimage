@@ -169,7 +169,7 @@ class PreparePackagesTest(unittest.TestCase):
                     args = self.arguments([retained, renamed], variant=variant,
                                           runtime_manifest=self.manifest() if variant == "debug" else None)
                     with self.subTest(package=package, variant=variant), self.assertRaisesRegex(
-                            ValueError, "contains source-built packages: " + package + "|inherited base-symbol original package changed"):
+                            ValueError, "contains packages now built from source: " + package + "|inherited base-symbol original package changed"):
                         subject.prepare(args)
                     self.assertEqual(self.manifest(variant).parent.readlink(), previous[variant])
 
@@ -187,7 +187,7 @@ class PreparePackagesTest(unittest.TestCase):
             document["packages"].append({"package": name})
             stale.write_text(json.dumps(document))
             args = self.arguments([symbols], variant="debug", runtime_manifest=stale)
-            with self.subTest(package=name), self.assertRaisesRegex(ValueError, "contains source-built packages: " + name):
+            with self.subTest(package=name), self.assertRaisesRegex(ValueError, "contains packages now built from source: " + name):
                 subject.prepare(args)
             self.assertEqual(self.manifest("debug").parent.readlink(), previous)
 
