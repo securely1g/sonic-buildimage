@@ -22,9 +22,11 @@ from tools.bazel.gzip.source_archive import check_versions
 execute = partial(command_log.execute, cwd=ROOT)
 
 TARGET_NAMES = [
+    "base_debug_symbols_test",
     "manifest_labels_test",
     "package_state_layer_test",
     "select_apt_payloads_test",
+    "source_packages_test",
     "validate_image_test",
     "validate_payloads_test",
 ]
@@ -39,7 +41,10 @@ def source_hashes():
         ROOT / "tools/bazel/oci/BUILD.bazel", ROOT / "tools/bazel/oci/apt_selection.py",
         ROOT / "tools/bazel/oci/apt_layer.bzl",
         OWNER / "apt.lock.json", OWNER / "apt_inputs.MODULE.bazel", OWNER / "prepare_packages.py",
-        OWNER / "runtime_package_state.json")}
+        OWNER / "runtime_package_state.json", OWNER / "source_packages.json",
+        OWNER / "base_debug_symbols.py", OWNER / "base_debug_symbols.json",
+        OWNER / "source_packages.py", OWNER / "validate_image.py", OWNER / "validate_native_packages.py",
+        ROOT / "tools/bazel/oci/source_modules.bzl")}
 
 
 def collect_test_outputs(events, artifacts):

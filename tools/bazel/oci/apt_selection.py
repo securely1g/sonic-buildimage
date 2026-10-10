@@ -32,7 +32,7 @@ def read_policy(path):
 
 
 def retained_packages(path, *, policy, variant):
-    """Bind Make package controls to the image, variant, architecture and features."""
+    """Bind imported and source-built package controls to their declared inputs."""
     document_bytes = path.read_bytes()
     make = json.loads(document_bytes)
     require(make.get("schema") == 1 and make.get("image") == policy["image"] and
@@ -49,7 +49,38 @@ def retained_packages(path, *, policy, variant):
                 "Make package handoff lacks full original control metadata: " + name)
         item["control"] = dependencies.control_fields(
             dependencies.package_from_fields(fields, origin="Make " + name))
-    return retained, make, hashlib.sha256(document_bytes).hexdigest()
+    manifest_digest = hashlib.sha256(document_bytes).hexdigest()
+    if "source_packages" in make:
+        sources = make["source_packages"]
+        require(isinstance(sources, list) and sources, "empty source package inventory")
+        for field in ("make_manifest_sha256", "source_receipt_sha256"):
+            require(isinstance(make.get(field), str) and re.fullmatch(r"[0-9a-f]{64}", make[field]),
+                    "mixed package manifest lacks " + field)
+        for item in sources:
+            require(isinstance(item, dict), "invalid source package record")
+            name = item.get("package")
+            require(isinstance(name, str) and name and name not in retained,
+                    "duplicate imported/source package identity: " + str(name))
+            fields, source = item.get("control_fields"), item.get("source")
+            require(isinstance(fields, dict) and all(fields.get(field) == item.get(key) for field, key in
+                    (("Package", "package"), ("Version", "version"), ("Architecture", "architecture"))),
+                    "source package lacks dependency controls: " + name)
+            require(isinstance(source, dict) and all(isinstance(source.get(key), str) and source[key]
+                    for key in ("module", "version", "commit", "target")) and
+                    re.fullmatch(r"[0-9a-f]{40}", source["commit"]) and
+                    isinstance(item.get("input_tar_sha256"), str) and
+                    re.fullmatch(r"[0-9a-f]{64}", item["input_tar_sha256"]),
+                    "source package lacks build provenance: " + name)
+            retained[name] = {
+                "control": dependencies.control_fields(
+                    dependencies.package_from_fields(fields, origin="Bazel source " + name)),
+                # Infrastructure calls this source_sha256 for every retained
+                # input. For a source target it identifies its actual TAR,
+                # never a Debian archive that did not produce these bytes.
+                "source_sha256": item["input_tar_sha256"],
+            }
+        manifest_digest = make["make_manifest_sha256"]
+    return retained, make, manifest_digest
 
 
 def check_runtime_manifest(metadata_path, *, variant, make):
@@ -63,6 +94,8 @@ def check_runtime_manifest(metadata_path, *, variant, make):
             make.get("runtime_manifest_sha256") == document.get("make_manifest_sha256") and
             re.fullmatch(r"[0-9a-f]{64}", make.get("runtime_manifest_sha256", "")),
             "debug manifest does not match the runtime Make package selection")
+    require(document.get("source_receipt_sha256") == make.get("source_receipt_sha256"),
+            "debug manifest does not match the runtime source packages")
 
 
 def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
@@ -102,6 +135,15 @@ def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
         receipt["variant"] = receipt.pop("group")
         receipt["skipped_make"] = receipt.pop("skipped_retained")
         receipt["make_manifest_sha256"] = manifest_digest
+        if "source_packages" in make:
+            names = {item["package"] for item in make["source_packages"]}
+            receipt["skipped_source"] = [item for item in receipt["skipped_make"] if item["package"] in names]
+            receipt["skipped_make"] = [item for item in receipt["skipped_make"] if item["package"] not in names]
+            receipt["source_receipt_sha256"] = make["source_receipt_sha256"]
+            receipt["retained_manifest_sha256"] = hashlib.sha256(retained_manifest.read_bytes()).hexdigest()
+            receipt["source_packages"] = [{key: item[key] for key in
+                ("package", "version", "architecture", "source", "input_tar_sha256")}
+                for item in make["source_packages"]]
     else:
         receipt.update(image=policy["image"], policy_sha256=hashlib.sha256(policy_path.read_bytes()).hexdigest())
     return selected, receipt

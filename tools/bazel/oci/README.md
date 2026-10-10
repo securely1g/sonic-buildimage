@@ -50,6 +50,18 @@ container handoff validator rejects missing or ordinary runtime OpenSSH and a
 separate OpenSSH package in debug. FIPS applies to both variants. The shared
 selector rejects conflicting inherited package controls for every container.
 
+An image can also supply source-built libraries alongside Make imports. Its
+declared preparation action combines the original Make manifest with a separate
+`source_packages` inventory. Each source record includes reviewed dependency
+controls, its owner module/version/commit/target, and the actual input TAR hash;
+the document records the original Make manifest and source receipt hashes.
+Selection checks dependencies across both inventories and rejects duplicate
+ownership. Receipts keep `skipped_source` separate from `skipped_make`, and
+debug must match runtime's source receipt. Syncd uses this for the Common,
+sairedis and metadata targets already consumed by Orchagent. The image's source
+adapter and final-image checks validate the payload and symbol hashes; APT
+selection does not claim that these TARs were installed as Debian packages.
+
 The shared tool preserves the existing receipt formats: source-built containers
 receive `group`, `skipped_retained`, `image` and `policy_sha256`; Make consumers
 receive `variant`, `skipped_make`, `make_manifest_sha256` and

@@ -196,3 +196,14 @@ apt.sources_list(
 
 include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
 apt_inputs(name = "syncd_apt_inputs", lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json")
+
+# Bind the shared library payload receipts to the modules actually resolved by
+# Bazel, even when the owners do not export MODULE.bazel as a public target.
+source_modules = use_repo_rule("//tools/bazel/oci:source_modules.bzl", "source_modules")
+source_modules(
+    name = "syncd_source_modules",
+    modules = {
+        "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
+        "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
+    },
+)

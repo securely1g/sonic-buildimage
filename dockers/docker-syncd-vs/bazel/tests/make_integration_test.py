@@ -27,6 +27,9 @@ SYNCD_VS_DBG = syncd-vs-dbgsym.deb
 LIBNL3_DEV = libnl-3-dev.deb
 LIBNL_ROUTE3_DEV = libnl-route-3-dev.deb
 LIBNL3 = libnl-3-200.deb
+LIBSWSSCOMMON = libswsscommon.deb
+LIBSAIMETADATA = libsaimetadata.deb
+LIBSAIREDIS = libsairedis.deb
 LIBSWSSCOMMON_DBG = libswsscommon-dbgsym.deb
 LIBSAIMETADATA_DBG = libsaimetadata-dbgsym.deb
 LIBSAIREDIS_DBG = libsairedis-dbgsym.deb
@@ -34,6 +37,10 @@ LIBSAIVS_DBG = libsaivs-dbgsym.deb
 FIPS_OPENSSH_CLIENT = openssh-client_10.0p1-7+fips_amd64.deb
 syncd-vs.deb_RDEPENDS = libsairedis.deb libsaimetadata.deb libsaivs.deb libsai.deb
 libsairedis.deb_RDEPENDS = libswsscommon.deb
+libswsscommon.deb_RDEPENDS = libyang3.deb
+libswsscommon-dbgsym.deb_RDEPENDS = libswsscommon.deb
+libsairedis-dbgsym.deb_RDEPENDS = libsairedis.deb
+libsaimetadata-dbgsym.deb_RDEPENDS = libsaimetadata.deb
 libsai.deb_RDEPENDS = p4lang-pi.deb p4lang-bmv2.deb p4lang-p4c.deb
 syncd-vs-dbgsym.deb_RDEPENDS = syncd-vs.deb
 SONIC_DOCKER_IMAGES = docker-other.gz
@@ -144,12 +151,12 @@ target/debs/trixie/%.deb:
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("must be y or n", result.stderr)
 
-    def test_package_prerequisites_follow_the_legacy_runtime_expansion(self):
+    def test_package_prerequisites_preserve_make_dependencies_except_shared_source_libraries(self):
+        """Reusing three source libraries must keep DASH, VS SAI, FIPS and their Make dependencies."""
         values = self.values(self.run_make(BUILD_WITH_BAZEL_WHEN_AVAILABLE="y"))
         packages = values["runtime_debs"].split()
         self.assertEqual(packages[:2], ["libnl-3-dev.deb", "libnl-route-3-dev.deb"])
-        for package in ("syncd-vs", "libsairedis", "libsaimetadata", "libsaivs", "libswsscommon",
-                        "libsai", "p4lang-pi", "p4lang-bmv2", "p4lang-p4c"):
+        for package in ("syncd-vs", "libsaivs", "libsai", "libyang3", "p4lang-pi", "p4lang-bmv2", "p4lang-p4c"):
             self.assertIn(package + ".deb", packages)
         self.assertLess(packages.index("p4lang-pi.deb"), packages.index("libsai.deb"))
         self.assertLess(packages.index("libsai.deb"), packages.index("syncd-vs.deb"))
@@ -170,6 +177,30 @@ target/debs/trixie/%.deb:
         self.assertEqual(result.stdout.count("--package target/debs/trixie/" + fips), 1)
         self.assertIn('test -s "target/bazel-inputs/docker-syncd-vs/debug/payload.tar"', result.stdout)
         self.assertNotIn("bazel build", result.stdout)
+
+    def test_shared_source_packages_cannot_reenter_through_debug_dependencies(self):
+        """Filter both expanded handoffs so Make symbols cannot restore the replaced runtime libraries."""
+        values = self.values(self.run_make(BUILD_WITH_BAZEL_WHEN_AVAILABLE="y"))
+        moved = {"libswsscommon", "libsairedis", "libsaimetadata"}
+        moved |= {name + "-dbgsym" for name in moved}
+        for variant in ("runtime", "debug"):
+            removed = moved - ({"libswsscommon-dbgsym"} if variant == "debug" else set())
+            self.assertTrue(removed.isdisjoint(values[variant + "_required"].split()))
+            self.assertTrue({name + ".deb" for name in removed}.isdisjoint(values[variant + "_debs"].split()))
+        self.assertIn("libswsscommon-dbgsym.deb", values["debug_debs"].split())
+        self.assertIn("libswsscommon-dbgsym", values["debug_required"].split())
+        # Expand first, then filter: a moved library's retained libyang dependency
+        # must survive, including when reached through a debug-symbol package.
+        self.assertIn("libyang3.deb", values["runtime_debs"].split())
+        self.assertIn("libyang3.deb", values["debug_debs"].split())
+        self.assertIn("libsaivs-dbgsym.deb", values["debug_debs"].split())
+        self.assertIn("syncd-vs-dbgsym.deb", values["debug_debs"].split())
+        result = self.run_make("target/bazel-inputs/docker-syncd-vs/debug/payload.tar", dry_run=True,
+                               BUILD_WITH_BAZEL_WHEN_AVAILABLE="y")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in moved - {"libswsscommon-dbgsym"}:
+            self.assertNotIn("--package target/debs/trixie/" + name + ".deb", result.stdout)
+        self.assertEqual(result.stdout.count("--package target/debs/trixie/libswsscommon-dbgsym.deb"), 1)
 
     def test_dockerfile_direct_apt_packages_remain_declared(self):
         dockerfile = (ROOT / "platform/vs/docker-syncd-vs/Dockerfile.j2").read_text()

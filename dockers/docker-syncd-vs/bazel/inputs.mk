@@ -10,10 +10,17 @@ SYNCD_VS_BAZEL_DEBS_PATH = $(if $($(DOCKER_SYNCD_BASE)_DEBS_PATH),$($(DOCKER_SYN
 # P4C's transitive MPI dependency installs an SSH client in runtime. Select the
 # Make FIPS package there so debug inherits the same OpenSSH files and identity.
 SYNCD_VS_BAZEL_FIPS_DEBS = $(if $(filter y,$(INCLUDE_FIPS)),$(FIPS_OPENSSH_CLIENT))
-SYNCD_VS_BAZEL_RUNTIME_DEBS = $(LIBNL3_DEV) $(LIBNL_ROUTE3_DEV) $(call expand,$($(DOCKER_SYNCD_BASE)_DEPENDS),RDEPENDS) $(SYNCD_VS_BAZEL_FIPS_DEBS)
-SYNCD_VS_BAZEL_DEBUG_DEBS = $(filter-out $(SYNCD_VS_BAZEL_FIPS_DEBS),$(call expand,$($(DOCKER_SYNCD_BASE)_DBG_DEPENDS),RDEPENDS))
-SYNCD_VS_BAZEL_RUNTIME_REQUIRED = syncd-vs libsairedis libsaimetadata libsaivs libswsscommon libsai p4lang-pi p4lang-bmv2 p4lang-p4c libnl-3-dev libnl-route-3-dev libnl-3-200 libnl-genl-3-200 libnl-route-3-200 libnl-nf-3-200 libnl-cli-3-200 libyang3 openssh-client
-SYNCD_VS_BAZEL_DEBUG_REQUIRED = syncd-vs-dbgsym libsairedis-dbgsym libsaimetadata-dbgsym libsaivs-dbgsym libswsscommon-dbgsym libyang3-dbgsym python3-swsscommon-dbgsym sonic-db-cli-dbgsym sonic-eventd-dbgsym
+# Reuse the same source packages and matching symbols as SWSS. Filter after
+# expanding dependencies: debug symbols can pull their runtime DEBs back in,
+# while dependencies of the three moved libraries still belong in the handoff.
+SYNCD_VS_BAZEL_SOURCE_DEBS = $(LIBSWSSCOMMON) $(LIBSAIREDIS) $(LIBSAIMETADATA) $(LIBSWSSCOMMON_DBG) $(LIBSAIREDIS_DBG) $(LIBSAIMETADATA_DBG)
+# Common's old debug DEB also owns the companion and DWZ supplement of the
+# unchanged base libsonicdbcli. Preparation keeps only those two pinned files.
+SYNCD_VS_BAZEL_DEBUG_SOURCE_DEBS = $(filter-out $(LIBSWSSCOMMON_DBG),$(SYNCD_VS_BAZEL_SOURCE_DEBS))
+SYNCD_VS_BAZEL_RUNTIME_DEBS = $(filter-out $(SYNCD_VS_BAZEL_SOURCE_DEBS),$(LIBNL3_DEV) $(LIBNL_ROUTE3_DEV) $(call expand,$($(DOCKER_SYNCD_BASE)_DEPENDS),RDEPENDS) $(SYNCD_VS_BAZEL_FIPS_DEBS))
+SYNCD_VS_BAZEL_DEBUG_DEBS = $(filter-out $(SYNCD_VS_BAZEL_DEBUG_SOURCE_DEBS) $(SYNCD_VS_BAZEL_FIPS_DEBS),$(call expand,$($(DOCKER_SYNCD_BASE)_DBG_DEPENDS),RDEPENDS))
+SYNCD_VS_BAZEL_RUNTIME_REQUIRED = syncd-vs libsaivs libsai p4lang-pi p4lang-bmv2 p4lang-p4c libnl-3-dev libnl-route-3-dev libnl-3-200 libnl-genl-3-200 libnl-route-3-200 libnl-nf-3-200 libnl-cli-3-200 libyang3 openssh-client
+SYNCD_VS_BAZEL_DEBUG_REQUIRED = syncd-vs-dbgsym libsaivs-dbgsym libswsscommon-dbgsym libyang3-dbgsym python3-swsscommon-dbgsym sonic-db-cli-dbgsym sonic-eventd-dbgsym
 
 .SECONDEXPANSION:
 .PHONY: syncd-vs-bazel-inputs-force
@@ -32,6 +39,8 @@ $(SYNCD_VS_BAZEL_INPUT_ROOT)/runtime/manifest.json: syncd-vs-bazel-inputs-force 
 
 $(SYNCD_VS_BAZEL_INPUT_ROOT)/debug/manifest.json: syncd-vs-bazel-inputs-force \
         dockers/docker-syncd-vs/bazel/prepare_packages.py \
+        dockers/docker-syncd-vs/bazel/base_debug_symbols.py \
+        dockers/docker-syncd-vs/bazel/base_debug_symbols.json \
         $(SYNCD_VS_BAZEL_INPUT_ROOT)/runtime/manifest.json \
         $$(addprefix $$(SYNCD_VS_BAZEL_DEBS_PATH)/,$$(SYNCD_VS_BAZEL_DEBUG_DEBS))
 	python3 dockers/docker-syncd-vs/bazel/prepare_packages.py \
