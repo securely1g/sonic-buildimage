@@ -12,7 +12,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tools.bazel.ci import artifact_validation, build, command_log, resolution
+from tools.bazel.ci import artifact_validation, bazel_commands, build, command_log, resolution
 import package_contract
 
 
@@ -31,6 +31,8 @@ OPTIONS = [
     "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no",
 ]
 TESTS = [
+    "//tools/bazel/tests:apt_selection_test",
+    "//tools/bazel/tests:select_apt_payloads_test",
     "//tools/bazel/tests:sonic_py_common_test",
     "//tools/bazel/tests:sonic_py_common_full_test",
     "//tools/bazel/tests:sonic_config_engine_full_test",
@@ -105,6 +107,9 @@ def main():
             "DOCKERS_PATH=dockers",
         ], directory, receipt, "make-manifests")
         options = OPTIONS
+        receipt["action_audit"] = bazel_commands.audit_targets(
+            args.bazel, options, [*TESTS, *TARGETS.values()],
+            workspace=ROOT, output=directory / "action-audit.json")
         execute([args.bazel, "test", *options, "--nocache_test_results",
                  "--build_event_json_file=" + str(directory / "test-events.jsonl"),
                  *TESTS], directory, receipt, "bazel-tests")

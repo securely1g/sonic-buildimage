@@ -5,7 +5,7 @@ With `y`, containers that register Bazel targets for the selected build
 configuration use Bazel. Other containers keep their existing Make build.
 With `n`, all containers use Make.
 
-SWSS is currently the only container registered for Bazel. On native AMD64
+For SWSS on native AMD64
 Debian Trixie with `PLATFORM=vs` and ASAN disabled, the switch makes Bazel compile
 SWSS and assemble its runtime and debug OCI images. Other SWSS configurations
 continue to use Make, even with the switch set to `y`.
@@ -22,6 +22,130 @@ create Debian packages in this path.
 Make selects the builder before starting the build. Missing or invalid metadata
 for a selected Bazel target, a missing Bazel executable, or a Bazel build failure
 fails the build; it does not trigger a retry with Make.
+
+## Automatically retain base packages in APT layers
+
+Runtime and debug package files use the shared `apt_layer` rule from
+`sonic-build-infra`. Pass the full checked dependency set; the selector removes
+packages already supplied by the actual base image. No separate list of missing
+transitive dependencies needs to be maintained in the image BUILD file.
+
+For example, the snapshot's tcpdump 4.99.5-2 pulls in Debian `libssl3t64`
+3.5.6-1~deb13u2, while the config-engine base already has
+`libssl3t64` 3.5.7-1~deb13u2+fips. The selector finds that installed package name
+in the base's `/var/lib/dpkg/status` and skips the Debian OpenSSL payload. It
+adds tcpdump and libpcap when missing, preserving the base's `libssl.so.3` and
+`libcrypto.so.3`. The retained OpenSSL satisfies tcpdump's >= 3.0.0 requirement
+in this tested image.
+
+After selection, the shared helper checks every known package's `Depends` and
+`Pre-Depends` against the final package inventory. It uses Debian version order,
+alternative dependencies and virtual providers. A compatible base version is
+retained even when it differs from the lock; an unsatisfied requirement fails
+the build without replacing the base package. The check does not install or
+configure packages, establish `Pre-Depends` installation ordering, or evaluate
+`Conflicts`/`Breaks`. Loader and installed-image tests remain necessary for runtime
+compatibility. Hash, path and library-collision errors still fail the build.
+
+The reviewed runtime roots remain in `orchagent_debian`; four unused Kerberos
+administration packages remain omitted. Debug roots are `gdb`, `gdbserver` and
+`strace` in `orchagent_debug_debian`, using the same dated Debian repositories.
+
+`apt.lock.json` remains the canonical reviewed package record, including exact
+source identities and data/control hashes. The shared export script generates
+`apt_inputs.MODULE.bazel` from that lock. This MODULE fragment uses ordinary
+`apt.install` with exact versions for all candidates.
+
+Bazel generates the matching BUILD input labels automatically. The `apt_inputs`
+repository rule reads the same lock and writes `apt_inputs.bzl` in the generated
+`@orchagent_apt_inputs` repository. The image loads `APT_INPUTS` from there to
+reference each candidate's public `:data` and `:control` targets. This step reads
+local metadata; Distroless still resolves and imports the packages. Bazel tracks
+the lock as an input, regenerating the mapping when it changes. No manual
+preparation or checked-in copy of `apt_inputs.bzl` is required.
+
+These declarations describe all candidates, not a manually maintained list of
+missing packages. The owner test checks both the committed MODULE fragment and
+the generated mapping against the reviewed lock. The suite lives in
+`tools/bazel/tests/integration/select_apt_payloads_test.py` and runs with
+`bazel test //tools/bazel/tests:select_apt_payloads_test`.
+
+The shared `//tools/bazel/oci:apt_layer.bzl` macro passes these inputs to the
+existing name-based selector.
+After checking hashes and file overlaps, the selector copies the selected
+archives intact into a declared directory. Standard Distroless `flatten` merges
+that directory into a layer. It needs no new lock importer, package provider or
+selected-manifest patch. Distroless `0.9.4.sonic.1` retains the existing Protobuf
+header fix and sorts above plain 0.9.4 without a root override.
+
+The shared `//tools/bazel/oci:apt_selection` library validates the declared
+policy, inspects OCI base and candidate files, calls `sonic_apt.selection`, and
+stages the selected archives and receipt. Other containers, including syncd-vs,
+use that same implementation. Orchagent declares its AMD64/Trixie policy in
+`dockers/docker-orchagent/BUILD.bazel`; the macro generates the policy JSON and
+selects the shared command-line program. The owner suite checks the actual
+`:runtime_layer_policy` output used by the runtime layer.
+
+Orchagent has no Make-produced native DEB handoff: its component payloads come
+from source-owned Bazel targets. Its `retained_source = "none"` policy records
+that profile, with no retained-package manifest, feature requirements or debug
+replacements. Runtime selection reads the checked config-engine
+base; debug selection reads the completed Orchagent runtime and receives its
+`runtime_apt_selection` receipt as the declared `base_package_metadata` input.
+This carries the runtime APT packages and their requirements because archive
+assembly leaves the inherited dpkg database unchanged. The child checks that
+metadata against the actual dpkg baseline and validates the combined set again.
+Source-built payloads still rely on their owner contracts and runtime checks;
+this does not synthesize Debian metadata for them.
+
+The `runtime_apt_selection` and `debug_apt_selection` targets expose receipts with
+the base digest, lock/policy hashes, selected and skipped packages, the validated
+dependency inventory, duplicates and non-binary path changes. Source payloads, symbols and archive outputs use
+the existing owner rules.
+
+Dependency checking was introduced by infrastructure PR #27 and registry PR #45.
+[Infrastructure #29](https://github.com/securely1g/sonic-build-infra/pull/29)
+and [registry #51](https://github.com/securely1g/sonic-bazel-registry/pull/51) supply
+the declarative `apt_layer` policy input API and registration; it provides
+the generated policy argument used here. This draft consumer temporarily selects
+that source with an exact `git_override`; registry URLs remain on `main`.
+Remove the source override after its registered version lands.
+
+Native AMD64/ARM64 archive checks and AMD64 source-layer checks are configured
+for PR updates. Manual `Bazel SWSS OCI` dispatch defaults to `skip_vs=true`. A
+full VS/P4RT build requires a manual dispatch with `skip_vs=false` and appropriate
+package-build authorization. Every selected Bazel scope is audited for DEB
+production before execution.
+
+Generated Bazel files carry an `AUTO-GENERATED. DO NOT EDIT MANUALLY.` header
+that names their generator. The package lock and generated JSON inputs/receipts
+use `_generated` metadata for the same notice. Keep this notice when refreshing
+the lock; its package resolution and extracted-content hashes must be reviewed.
+The package request recipe and policy remain handwritten inputs.
+
+To update packages in a separate clean checkout:
+
+1. Use `apt-resolve.MODULE.bazel` to resolve the intended runtime/debug roots
+   against the pinned Debian snapshot sources. Review the complete resulting
+   package identities, versions, dependencies and hashes in `apt.lock.json`.
+2. Keep reviewed extracted-content hashes only for unchanged source packages;
+   validate and record data/control hashes for changed package inputs.
+3. Generate ordinary declarations from that canonical lock:
+
+   ```sh
+   python3 PATH_TO_INFRA/apt/export_inputs.py \
+     --lock dockers/docker-orchagent/bazel/apt.lock.json \
+     --module dockers/docker-orchagent/bazel/apt_inputs.MODULE.bazel
+   ```
+
+4. Commit the lock and MODULE export together. Bazel generates the BUILD mapping
+   automatically. Run the owner tests and rebuild
+   both images; check the automatic selection receipts and installed consumers.
+
+The selector does not evaluate dependency-version requirements or run package
+installation scripts. It does not update the inherited dpkg database or
+regenerate loader/Python caches. Full image support remains AMD64; native ARM64
+helper tests do not establish a complete ARM64 image.
 
 ## Startup configuration
 

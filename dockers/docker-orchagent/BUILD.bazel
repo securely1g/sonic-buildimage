@@ -1,8 +1,11 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
+
 
 package(default_visibility = ["//visibility:public"])
 
@@ -22,6 +25,16 @@ _COMPATIBLE_WITH = [
     "//conditions:default": [],
 })
 
+# Native SWSS payloads follow the APT layer; no Make package handoff is retained.
+_APT_POLICY = {
+    "schema": 1,
+    "image": "docker-orchagent",
+    "architecture": "amd64",
+    "distribution": "trixie",
+    "retained_source": "none",
+    "features": {},
+}
+
 # Make publishes the config-engine image as OCI files before invoking Bazel.
 # Its Python/config-engine utilities and libnl/libyang runtime are retained.
 oci_base_layout(
@@ -35,34 +48,27 @@ oci_base_layout(
     root = "target/docker-config-engine-trixie.oci",
 )
 
+# Select checked Debian contents before filtering the final layer. Packages
+# already supplied by the config-engine base retain their existing versions.
+apt_layer(
+    name = "runtime_layer",
+    base = ":config_engine_base_layout",
+    packages = APT_INPUTS["orchagent_debian"]["amd64"],
+    dependency_set = "orchagent_debian",
+    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
+    policy = _APT_POLICY,
+    variant = "runtime",
+)
+
+filegroup(
+    name = "runtime_apt_selection",
+    srcs = [":runtime_layer"],
+    output_group = "selection",
+)
+
 sonic_layer(
     name = "apt_deps",
-    tars = [
-        "@orchagent_debian//arping",
-        "@orchagent_debian//bridge-utils",
-        "@orchagent_debian//conntrack",
-        "@orchagent_debian//ifupdown",
-        "@orchagent_debian//iproute2",
-        "@orchagent_debian//iputils-ping",
-        "@orchagent_debian//libgssrpc4t64",
-        "@orchagent_debian//libjansson4",
-        "@orchagent_debian//libjemalloc2",
-        "@orchagent_debian//libkadm5clnt-mit12",
-        "@orchagent_debian//libkadm5srv-mit12",
-        "@orchagent_debian//libkdb5-10t64",
-        "@orchagent_debian//libprotobuf-lite32t64",
-        "@orchagent_debian//libteam5",
-        "@orchagent_debian//libteamdctl0",
-        "@orchagent_debian//libxml2",
-        "@orchagent_debian//libyaml-cpp0.8",
-        "@orchagent_debian//ndisc6",
-        "@orchagent_debian//ndppd",
-        "@orchagent_debian//pciutils",
-        "@orchagent_debian//python3-click",
-        "@orchagent_debian//python3-netifaces",
-        "@orchagent_debian//python3-protobuf",
-        "@orchagent_debian//tcpdump",
-    ],
+    tars = [":runtime_layer"],
 )
 
 sonic_layer(
@@ -111,13 +117,28 @@ debug_symbols_layer(
     image = ":docker-orchagent",
 )
 
+# Inspect the completed runtime image when adding debugger tools, including
+# its source-built SWSS libraries. Debug additions cannot replace runtime ELF.
+apt_layer(
+    name = "debug_layer",
+    base = ":docker-orchagent",
+    base_package_metadata = ":runtime_apt_selection",
+    packages = APT_INPUTS["orchagent_debug_debian"]["amd64"],
+    dependency_set = "orchagent_debug_debian",
+    lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
+    policy = _APT_POLICY,
+    variant = "debug",
+)
+
+filegroup(
+    name = "debug_apt_selection",
+    srcs = [":debug_layer"],
+    output_group = "selection",
+)
+
 sonic_layer(
     name = "debug_tools",
-    tars = [
-        "@trixie//gdb",
-        "@trixie//gdbserver",
-        "@trixie//strace",
-    ],
+    tars = [":debug_layer"],
 )
 
 oci_image(

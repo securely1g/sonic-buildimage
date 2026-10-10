@@ -2,6 +2,30 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
+py_library(
+    name = "apt_selection",
+    srcs = ["apt_selection.py"],
+    deps = [
+        ":oci_inventory",
+        ":oci_layout",
+        "//tools/bazel/ci:artifact_validation",
+        "@sonic_build_infra//apt:lib",
+    ],
+)
+
+py_binary(
+    name = "select_apt_payloads",
+    srcs = ["apt_selection.py"],
+    main = "apt_selection.py",
+    deps = [":apt_selection"],
+)
+
+py_library(
+    name = "oci_inventory",
+    srcs = ["oci_inventory.py"],
+    deps = ["//tools/bazel/ci:artifact_validation"],
+)
+
 exports_files(["prepare_oci_base.py"])
 
 py_library(

@@ -18,6 +18,8 @@ from tools.bazel.ci import public_artifacts as artifacts
 REVISION = "1" * 40
 DIGEST = "2" * 64
 SENTINEL = "fixture_private_value_never_publish"
+SYNTHETIC_JOB_TOKEN = "ghs_" + "x" * 36
+SYNTHETIC_INSTALLATION_TOKEN = "ghs_12345_eyJ" + "a" * 12 + ".eyJ" + "b" * 12 + "." + "c" * 12
 
 
 def write(root, name, value):
@@ -52,7 +54,11 @@ def events(count):
                "workingDirectory": "/home/runner/" + SENTINEL}},
               {"id": {"structuredCommandLine": {"commandLineLabel": "original"}},
                "structuredCommandLine": {"sections": [{"optionList": {"option": [
-                   {"optionName": "client_env", "optionValue": "BAZELISK_GITHUB_TOKEN=" + SENTINEL}]}}]}}]
+                   {"optionName": "client_env", "optionValue": "BAZELISK_GITHUB_TOKEN=" + SENTINEL}]}}]}},
+              {"id": {"unstructuredCommandLine": {}},
+               "unstructuredCommandLine": {"args": [
+                   "--client_env=BAZELISK_GITHUB_TOKEN=" + SYNTHETIC_JOB_TOKEN,
+                   "--client_env=PRIVATE_PATH=/home/runner/" + SENTINEL]}}]
     for number in range(count):
         name = "//tests:contract_" + str(number)
         values.extend([
@@ -76,7 +82,7 @@ def receipt(kind, architecture="amd64"):
                     for number in range(5)}}
     if kind == "source":
         return {"status": "passed", "revision": REVISION, **unsafe,
-                "tests": {"//tests:source_" + str(number): "passed" for number in range(10)},
+                "tests": {"//tests:source_" + str(number): "passed" for number in range(12)},
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST}}}
     if kind == "syncd":
@@ -142,9 +148,65 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertEqual(summary["finished"], {"success": True, "exit_code": 0})
         encoded = json.dumps(summary)
         self.assertNotIn(SENTINEL, encoded)
+        self.assertNotIn(SYNTHETIC_JOB_TOKEN, encoded)
         self.assertNotIn("client_env", encoded)
         self.assertNotIn("BAZELISK_GITHUB_TOKEN", encoded)
         self.assertNotIn("file://", encoded)
+
+    def test_cli_success_never_selects_secret_bearing_raw_inputs(self):
+        for kind in ("archive", "source"):
+            with self.subTest(kind=kind):
+                root = self.root / kind
+                root.mkdir()
+                seed(root, kind)
+                for name in ("artifacts/archive/agent-cache/cold/events.jsonl",
+                             "artifacts/archive/agent-cache/warm/events.jsonl",
+                             "artifacts/archive/agent-cache/changed/events.jsonl",
+                             "artifacts/swss/build-events.jsonl",
+                             "artifacts/config-engine/build-events.jsonl"):
+                    write(root, name, events(1))
+                write(root, "artifacts/unexpected.log", SYNTHETIC_JOB_TOKEN)
+                output = root / "github-output"
+                result = subprocess.run(
+                    [sys.executable, "-B", artifacts.__file__, kind,
+                     "--workspace", str(root), "--upload-root", str(root),
+                     "--job-status", "success", "--revision", REVISION,
+                     "--architecture", "amd64", "--github-output", str(output)],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                selected = output.read_text().splitlines()[1:-1]
+                self.assertFalse(any(name.endswith((".jsonl", ".log", ".xml", "receipt.json"))
+                                     for name in selected))
+                self.assertIn(artifacts.SUMMARY[kind], selected)
+                public_bytes = (result.stdout + result.stderr + output.read_text()).encode()
+                public_bytes += b"".join((root / name).read_bytes() for name in selected)
+                for private_value in (SYNTHETIC_JOB_TOKEN, SENTINEL, "BAZELISK_GITHUB_TOKEN"):
+                    self.assertNotIn(private_value.encode(), public_bytes)
+
+    def test_cli_failed_or_cancelled_jobs_publish_only_safe_partial_status(self):
+        for status in ("failure", "cancelled"):
+            for kind in ("archive", "source"):
+                with self.subTest(status=status, kind=kind):
+                    root = self.root / (status + "-" + kind)
+                    root.mkdir()
+                    seed(root, kind)
+                    for _logical, name, _count in artifacts.BEP[kind]:
+                        write(root, name, events(1) + '{"id":')
+                    output = root / "github-output"
+                    result = subprocess.run(
+                        [sys.executable, "-B", artifacts.__file__, kind,
+                         "--workspace", str(root), "--upload-root", str(root),
+                         "--job-status", status, "--revision", REVISION,
+                         "--architecture", "amd64", "--github-output", str(output)],
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    selected = output.read_text().splitlines()[1:-1]
+                    self.assertEqual(selected, [artifacts.SUMMARY[kind]])
+                    summary_bytes = (root / selected[0]).read_bytes()
+                    self.assertFalse(json.loads(summary_bytes)["complete"])
+                    public_bytes = (result.stdout + result.stderr + output.read_text()).encode() + summary_bytes
+                    for private_value in (SYNTHETIC_JOB_TOKEN, SENTINEL, "BAZELISK_GITHUB_TOKEN"):
+                        self.assertNotIn(private_value.encode(), public_bytes)
 
     def test_success_selects_only_declared_outputs_and_summary(self):
         for kind in artifacts.FILES:
@@ -228,6 +290,23 @@ class PublicArtifactsTest(unittest.TestCase):
         with self.assertRaises(artifacts.PublicArtifactError):
             artifacts.dependency_json(value, "lock")
 
+    def test_installation_job_token_in_dependency_data_blocks_upload(self):
+        unsafe_lock = lock()
+        unsafe_lock["facts"] = {"fixture": SYNTHETIC_INSTALLATION_TOKEN}
+        unsafe_graph = {"key": "<root>", "name": SYNTHETIC_INSTALLATION_TOKEN,
+                        "version": "", "dependencies": []}
+        for logical, path, value in (
+                ("module-lock", "MODULE.bazel.lock", unsafe_lock),
+                ("module-graph", "module-graph.json", unsafe_graph)):
+            with self.subTest(logical=logical):
+                seed(self.root, "source")
+                write_json(self.root, "artifacts/swss/" + path, value)
+                summary, paths, ready = self.prepare("source")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertIn({"input": logical, "reason": "unsafe-public-file"}, summary["blocked"])
+                self.assertNotIn(SYNTHETIC_INSTALLATION_TOKEN, json.dumps(summary))
+
     def test_duplicate_json_keys_and_sensitive_urls_are_rejected(self):
         with self.assertRaises(artifacts.PublicArtifactError):
             artifacts.load_json('{"facts": {"one": 1}, "facts": {"two": 2}}')
@@ -238,7 +317,7 @@ class PublicArtifactsTest(unittest.TestCase):
         artifacts.safe_text("./home/admin/.profile")
 
     def test_secret_formats_are_rejected_using_synthetic_values(self):
-        for value in ("ghp_" + "x" * 24, "sk-" + "x" * 24, "AKIA" + "A" * 16,
+        for value in ("ghp_" + "x" * 24, SYNTHETIC_INSTALLATION_TOKEN, "sk-" + "x" * 24, "AKIA" + "A" * 16,
                       "eyJ" + "a" * 12 + ".eyJ" + "b" * 12 + "." + "c" * 12):
             with self.subTest(prefix=value[:4]), self.assertRaises(artifacts.PublicArtifactError):
                 artifacts.safe_text(value)

@@ -1,5 +1,65 @@
 # Shared container manifest labels and OCI tools
 
+## Select APT additions for a container
+
+Load `//tools/bazel/oci:apt_layer.bzl` and declare the container policy in its
+`BUILD.bazel`. There is no container-specific selector executable or Python
+callback:
+
+```starlark
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+
+apt_layer(
+    name = "runtime_layer",
+    packages = APT_INPUTS["example_debian"]["amd64"],
+    lock = ":apt.lock.json",
+    dependency_set = "example_debian",
+    base = ":base_layout",
+    variant = "runtime",
+    policy = {
+        "schema": 1,
+        "image": "docker-example",
+        "architecture": "amd64",
+        "distribution": "trixie",
+        "retained_source": "none",
+        "features": {},
+    },
+)
+```
+
+The macro writes `runtime_layer_policy.json` and passes it as a declared
+input to `//tools/bazel/oci:select_apt_payloads`. That shared Python tool runs
+when OCI layouts and package archives exist: it checks the platform, inventories
+the inherited files/packages, applies the policy, invokes dependency/collision
+validation in `sonic-build-infra`, and stages selected TARs plus a receipt.
+Starlark declares those actions; it cannot inspect their generated OCI/TAR
+contents during analysis. Container tests can consume the generated
+`:runtime_layer_policy` target to verify the real BUILD policy.
+
+Orchagent uses `retained_source = "none"` because its native payloads are
+source-built. For imported Make packages, use `retained_source = "make"`,
+provide exact `features`, and pass the generated package JSON as
+`retained_manifest`. The selector verifies image, variant, architecture,
+distribution, features and complete original package controls before retention.
+Debug selection also requires `base_package_metadata` from the exact runtime
+selection receipt and matching runtime Make-manifest hash.
+
+Syncd-vs supplies its Make-built FIPS OpenSSH in the runtime manifest. Debug
+inherits that package unchanged; the policy has no replacement option. The
+container handoff validator rejects missing or ordinary runtime OpenSSH and a
+separate OpenSSH package in debug. FIPS applies to both variants. The shared
+selector rejects conflicting inherited package controls for every container.
+
+The shared tool preserves the existing receipt formats: source-built containers
+receive `group`, `skipped_retained`, `image` and `policy_sha256`; Make consumers
+receive `variant`, `skipped_make`, `make_manifest_sha256` and
+an empty `provided_package_replacements` list for compatibility. Both include
+the base manifest digest and complete dependency-check evidence. Shared tests run as
+`//tools/bazel/tests:apt_selection_test`; container suites check their declared
+policies, package contracts and replacement restrictions.
+
+## Render container manifests
+
 Make renders container manifests with the existing `generate_manifest` in
 `rules/functions`. Bazel consumes the resulting JSON as an explicit input and
 serializes it into the `com.azure.sonic.manifest` image label. Make remains

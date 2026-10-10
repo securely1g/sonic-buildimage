@@ -18,7 +18,7 @@ VERSION = re.compile(r"(?:bazel )?[0-9]+(?:\.[0-9]+){1,3}(?:[-.][A-Za-z0-9]+)*")
 RELATIVE = re.compile(r"[A-Za-z0-9_./+-]+")
 TOKEN = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
-    r"\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|"
+    r"\bgh[pousr]_[A-Za-z0-9_.-]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|"
     r"\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|"
     r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
     r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
@@ -69,10 +69,10 @@ FILES = {
 }
 BEP = {
     "archive": [
-        ("archive-tests", "artifacts/archive/test-events.jsonl", 4),
-        ("python-tests", "artifacts/config-engine/test-events.jsonl", 9),
+        ("archive-tests", "artifacts/archive/test-events.jsonl", 5),
+        ("python-tests", "artifacts/config-engine/test-events.jsonl", 10),
     ],
-    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 10)],
+    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 12)],
     "syncd": [],
     "vs": [],
 }
@@ -414,7 +414,7 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
         receipts["outputs"] = outputs
 
     if job_status == "success":
-        expected = {"archive": ("python", 5), "source": ("source", 10), "syncd": ("syncd", 7)}
+        expected = {"archive": ("python", 5), "source": ("source", 12), "syncd": ("syncd", 7)}
         if kind in expected:
             receipt_name, count = expected[kind]
             value = receipts.get(receipt_name, {})

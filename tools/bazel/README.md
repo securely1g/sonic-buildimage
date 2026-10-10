@@ -279,17 +279,30 @@ On native ARM64 Trixie, append
 
 ## Registry selection
 
-CI and local commands use the maintained SONiC registry `main` endpoint from
+Local commands default to the maintained SONiC registry `main` endpoint from
 `.bazelrc`, alongside Bazel Central Registry. Module versions, source commits,
 checksums and package snapshots remain pinned.
 
-[Registry #44](https://github.com/securely1g/sonic-bazel-registry/pull/44)
-landed `sonic-build-infra` version
-`0.0.15-199a3d5aa97a6c5260cb7ca4bb5eb36cafb1a57a` on registry `main`
-at `5c85252b0ebc888e53bfcbd95f07278e54450f98`. It registers the landed fix
-from [build-infra #26](https://github.com/securely1g/sonic-build-infra/pull/26).
-The root module override selects this version because commit suffixes do not
-sort by source history; older transitive requests would otherwise win.
+`rules_distroless` 0.9.4.sonic.1 is available on the maintained registry after
+[registry #49](https://github.com/securely1g/sonic-bazel-registry/pull/49) landed.
+CI and local validation use the same `main` endpoint. The dotted version sorts
+above plain 0.9.4, so Distroless needs no root version override.
+
+```sh
+bazel test //tools/bazel/tests:select_apt_payloads_test
+```
+
+The shared APT baseline was published by
+[registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45) from
+[build-infra #27](https://github.com/securely1g/sonic-build-infra/pull/27).
+Declarative policy inputs use
+[build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29), proposed
+in [registry #51](https://github.com/securely1g/sonic-bazel-registry/pull/51).
+The Draft consumer pins source `29af37b179d9160cd2a6db0a295492db64017945`
+with a temporary `git_override`, while registry URLs remain on `main`.
+After source and registration land, remove that override and select the landed
+registered version. Commit suffixes do not sort by source history; verify
+resolution against transitive version requests when removing the override.
 
 Use `bazel help --announce_rc` to inspect the effective rc selection. Keep one
 SONiC registry endpoint; do not add another endpoint in a home or user rc.
