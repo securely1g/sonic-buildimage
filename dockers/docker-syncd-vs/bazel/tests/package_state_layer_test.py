@@ -190,10 +190,54 @@ class PackageStateLayerTest(unittest.TestCase):
             self.build()
 
     def test_make_relationship_changes_require_review(self):
-        self.mutate(self.make_manifest, lambda value: value["packages"][0]["control_fields"].update(Depends="libc6, new-library"))
+        """Ignoring Installed-Size must retain every relationship and unfamiliar future control field."""
+        original = self.make_manifest.read_bytes()
+        for field in ("Depends", "Pre-Depends", "Provides", "Conflicts", "Breaks", "Replaces",
+                      "Recommends", "Suggests", "Enhances", "Multi-Arch", "Essential", "Protected",
+                      "X-Future-Relationship"):
+            self.make_manifest.write_bytes(original)
+            self.mutate(self.make_manifest, lambda value: value["packages"][0]["control_fields"].update(
+                {field: "new-value-not-for-the-error-message"}))
+            self.update_make_selection()
+            with self.subTest(field=field), self.assertRaises(ValueError) as failure:
+                self.build()
+            self.assertIn("control_fields." + field, str(failure.exception))
+            self.assertNotIn("new-value-not-for-the-error-message", str(failure.exception))
+
+    def test_changed_make_identity_or_script_is_rejected(self):
+        """Rebuild metadata never permits different package identities or installation scripts."""
+        original = self.make_manifest.read_bytes()
+        changes = [(None, "version", "2.0"), (None, "architecture", "arm64")]
+        changes += [("control_fields", key, "changed") for key in ("Package", "Version", "Architecture", "Source")]
+        changes += [("control_files", key, "f" * 64) for key in sorted(subject.SCRIPTS)]
+        for section, field, replacement in changes:
+            self.make_manifest.write_bytes(original)
+            self.mutate(self.make_manifest, lambda value: (
+                value["packages"][0] if section is None else value["packages"][0][section]).update({field: replacement}))
+            self.update_make_selection()
+            diagnostic = ("maintainer_scripts" if section == "control_files" else section)
+            diagnostic = diagnostic + "." + field if diagnostic else field
+            with self.subTest(field=diagnostic), self.assertRaises(ValueError) as failure:
+                self.build()
+            self.assertIn(diagnostic, str(failure.exception))
+
+    def test_rebuilt_installed_size_keeps_state_bytes(self):
+        """P330's P4C size change, 508420 to 509656 KiB, does not alter generated links or alternatives."""
+        self.mutate(self.contract, lambda value: value["make_package_state_inputs"]["make-package"]["control_fields"].update(
+            {"Installed-Size": "508420"}))
+        self.mutate(self.make_manifest, lambda value: value["packages"][0]["control_fields"].update(
+            {"Installed-Size": "508420"}))
         self.update_make_selection()
-        with self.assertRaisesRegex(ValueError, "relationships or scripts changed"):
-            self.build()
+        self.build()
+        before = self.output.read_bytes()
+        self.mutate(self.make_manifest, lambda value: value["packages"][0]["control_fields"].update(
+            {"Installed-Size": "509656"}))
+        self.mutate(self.make_manifest, lambda value: value["packages"][0]["control_files"].update(
+            control="cf51e7756f343d470fe66faeec1eb4e9b65e6d326a23926907872b2d60955f4f",
+            md5sums="b49cecacbe9965c8ad2c6423755b35b1d9050bfd2c6b59484f9accd7b12f03d0"))
+        self.update_make_selection()
+        self.build()
+        self.assertEqual(self.output.read_bytes(), before)
 
     def test_missing_or_extra_make_owners_require_review(self):
         """Keep the remaining imported package set exact when source-owned packages leave the handoff."""
@@ -239,7 +283,7 @@ class PackageStateLayerTest(unittest.TestCase):
                 self.mutate(self.make_manifest, lambda value: value["packages"][0].update(identity))
                 self.mutate(self.make_manifest, lambda value: value["packages"][0].update({field: "f" * 64}))
                 self.update_make_selection()
-                with self.assertRaisesRegex(ValueError, "relationships or scripts changed"):
+                with self.assertRaisesRegex(ValueError, "relationships or scripts changed.*" + field):
                     self.build()
                 self.assertEqual(self.output.read_bytes(), original)
 
