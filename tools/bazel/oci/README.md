@@ -50,6 +50,18 @@ container handoff validator rejects missing or ordinary runtime OpenSSH and a
 separate OpenSSH package in debug. FIPS applies to both variants. The shared
 selector rejects conflicting inherited package controls for every container.
 
+An image can also supply source-built libraries alongside Make imports. Its
+declared preparation action combines the original Make manifest with a separate
+`source_packages` inventory. Each source record includes reviewed dependency
+controls, its owner module/version/commit/target, and the actual input TAR hash;
+the document records the original Make manifest and source receipt hashes.
+Selection checks dependencies across both inventories and rejects duplicate
+ownership. Receipts keep `skipped_source` separate from `skipped_make`, and
+debug must match runtime's source receipt. Syncd uses this for the Common,
+sairedis and metadata targets already consumed by Orchagent. The image's source
+adapter and final-image checks validate the payload and symbol hashes; APT
+selection does not claim that these TARs were installed as Debian packages.
+
 The shared tool preserves the existing receipt formats: source-built containers
 receive `group`, `skipped_retained`, `image` and `policy_sha256`; Make consumers
 receive `variant`, `skipped_make`, `make_manifest_sha256` and
@@ -163,9 +175,11 @@ registered outputs can also be requested as direct Make targets.
 Add the resulting `$(TARGET_PATH)/docker-example-base.oci` to the consuming
 container's `_BAZEL_DEPENDS` as in the [bridge example](../README.md#example-another-runtime-and-debug-archive).
 
-SWSS uses this interface to publish `target/docker-config-engine-trixie.oci`
+SWSS and syncd VS use this interface to publish `target/docker-config-engine-trixie.oci`
 from `target/docker-config-engine-trixie.gz`, with image platform `linux/amd64`.
-It remains the only production opt-in, supporting native AMD64 Trixie VS builds.
+Each owner keeps its own configuration guards. The syncd VS
+[owner guide](../../../dockers/docker-syncd-vs/bazel/README.md) records its
+image validation requirements and remaining runtime checks.
 The pinned Docker 28.5.2 saves both
 Docker metadata and an OCI layout in the same archive. Make extracts the existing
 OCI files without changing the index, config or layer bytes. Both outputs
@@ -239,3 +253,14 @@ On native ARM64 Trixie, also select
 `--platforms=@sonic_build_infra//platforms:aarch64_trixie` and
 `--host_platform=@sonic_build_infra//platforms:aarch64_trixie`. This test validates
 compression and archive structure; it does not build a production ARM64 image.
+
+## Inspect image layers
+
+`oci_inventory.py` applies layer metadata and OCI whiteouts to a filesystem
+inventory and checks that added package layers preserve inherited directory
+symlinks and links to ELF files. Link resolution uses the image inventory, never
+the build host filesystem. Image owners supply any reviewed legacy-path normalization as a
+callback. Syncd keeps its merged-usr path normalization in its payload and image
+validators. APT package policy is declared in BUILD and applied by the shared
+selector; shared inventory helpers contain no image-specific package names or
+feature settings.

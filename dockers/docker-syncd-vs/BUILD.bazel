@@ -1,0 +1,461 @@
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+load("@sonic_build_infra//deb:deb_import.bzl", "deb_import")
+load("@sonic_build_infra//oci:normalize_layer.bzl", "normalize_layer")
+load("@sonic_build_infra//oci:imported_debug_symbols_layer.bzl", "imported_debug_symbols_layer")
+load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+load("//tools/bazel/dpkg:defs.bzl", "dpkg_filter", "sonic_layer")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
+load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+load("@syncd_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "legacy/Dockerfile.j2",
+    "legacy/critical_processes",
+    "legacy/start.sh",
+    "legacy/supervisord.conf",
+], visibility = ["//dockers/docker-syncd-vs:__subpackages__", "//tools/bazel/tests:__pkg__"])
+
+# Supported configuration: native AMD64 Trixie VS, DASH/FIPS, no ASAN/RPC.
+# The Make selector and checked package manifests enforce the feature boundary.
+_COMPATIBLE_WITH = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+] + select({
+    ":supported_source_configuration": [],
+    "//conditions:default": ["@platforms//:incompatible"],
+})
+
+# FIPS is selected in the runtime handoff; debug inherits those package records.
+_APT_POLICY = {
+    "schema": 1,
+    "image": "docker-syncd-vs",
+    "architecture": "amd64",
+    "distribution": "trixie",
+    "retained_source": "make",
+    "features": {
+        "include_vs_dash_sai": "y",
+        "include_fips": "y",
+        "enable_asan": "n",
+        "enable_syncd_rpc": "n",
+    },
+}
+
+# Base and Make metadata. The same shared rules are used by docker-orchagent.
+oci_base_layout(
+    name = "config_engine_base_layout",
+    srcs = [
+        "//:config_engine_oci_files",
+        "//:target/docker-config-engine-trixie.oci/oci-layout",
+    ],
+    expected_platform = "linux/amd64",
+    marker = "$(execpath //:target/docker-config-engine-trixie.oci/oci-layout)",
+    root = "target/docker-config-engine-trixie.oci",
+)
+
+py_library(
+    name = "package_contract_lib",
+    srcs = ["//dockers/docker-syncd-vs/bazel:package_contract.py"],
+    imports = ["bazel"],
+    deps = [
+        "@sonic_build_infra//oci:lib",
+        "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:oci_inventory",
+        "//tools/bazel/oci:oci_layout",
+    ],
+)
+
+config_setting(
+    name = "supported_source_configuration",
+    flag_values = {
+        "@sonic_swss_common//tools/bazel:yang_modules": "true",
+        "@sonic_sairedis//:sai_backend": "vs",
+        "@sonic_sairedis//:asic_platform": "generic",
+        "@sonic_sairedis//:enable_debug": "false",
+        "@sonic_sairedis//:enable_coverage": "false",
+        "@sonic_sairedis//:enable_asan": "false",
+        "@sonic_sairedis//:enable_vpp": "false",
+        "@sonic_sairedis//:enable_rpcserver": "false",
+        "@sonic_sairedis//:enable_dashsai": "false",
+    },
+)
+
+# These are the exact owner targets also consumed by Orchagent. The source
+# libraries and their symbols share Bazel's normal dependency and cache graph.
+_SOURCE_PACKAGES = {
+    "libswsscommon": "@sonic_swss_common//:libswsscommon_pkg",
+    "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
+    "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
+}
+
+py_binary(
+    name = "package_contract",
+    srcs = ["//dockers/docker-syncd-vs/bazel:package_contract.py"],
+    main = "//dockers/docker-syncd-vs/bazel:package_contract.py",
+    python_version = "3.11",
+    deps = [":package_contract_lib"],
+)
+
+run_binary(
+    name = "checked_source_runtime",
+    srcs = [
+        "//dockers/docker-syncd-vs/config:source_packages.json",
+        "//dockers/docker-syncd-vs:config_engine_base_layout",
+        "@syncd_source_modules//:sonic-swss-common.MODULE.bazel",
+        "@syncd_source_modules//:sonic-sairedis.MODULE.bazel",
+    ] + _SOURCE_PACKAGES.values(),
+    outs = [
+        "source_runtime.tar",
+        "source_packages.receipt.json",
+    ],
+    args = [
+        "--contract=$(execpath //dockers/docker-syncd-vs/config:source_packages.json)",
+        "--base=$(execpath //dockers/docker-syncd-vs:config_engine_base_layout)",
+        "--module=sonic-swss-common=$(execpath @syncd_source_modules//:sonic-swss-common.MODULE.bazel)",
+        "--module=sonic-sairedis=$(execpath @syncd_source_modules//:sonic-sairedis.MODULE.bazel)",
+        "--out-tar=$(execpath source_runtime.tar)",
+        "--receipt=$(execpath source_packages.receipt.json)",
+    ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()],
+    mnemonic = "ValidateSyncdSourceRuntime",
+    tool = ":package_contract",
+    target_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"] + select({
+        ":supported_source_configuration": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+# Keep runtime independent of Make's debug handoff. Each selection input binds
+# its own original manifest to the same checked source outputs.
+[
+    run_binary(
+        name = variant + "_retained_packages",
+        srcs = [
+            "source_packages.receipt.json",
+            ":" + variant + "_import_manifest",
+        ],
+        outs = [variant + "_retained_packages.json"],
+        args = [
+            "--merge-manifest=$(execpath :" + variant + "_import_manifest)",
+            "--source-receipt=$(execpath source_packages.receipt.json)",
+            "--out-manifest=$@",
+        ],
+        mnemonic = "SyncdRetainedPackages",
+        tool = ":package_contract",
+    )
+    for variant in ["runtime", "debug"]
+]
+
+[
+    filegroup(
+        name = name,
+        srcs = [output],
+    )
+    for name, output in {
+        "source_runtime_payloads": "source_runtime.tar",
+        "source_package_receipt": "source_packages.receipt.json",
+    }.items()
+]
+
+# Keep the public symbol label while collecting once from the shared owner graph.
+alias(
+    name = "source_debug_payloads",
+    actual = "//dockers/docker-syncd-vs:rdeps_debug_symbols",
+)
+
+# Imported package bytes are declared inputs to Bazel. Make only builds these
+# prerequisite files; extraction, hashing and assembly are ordinary cached actions.
+deb_import(
+    name = "runtime_debs",
+    srcs = [
+        "//:target/debs/trixie/libnl-3-dev_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-route-3-dev_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-route-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-genl-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-nf-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-cli-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libyang3_3.12.2-1_amd64.deb",
+        "//:target/debs/trixie/p4lang-pi_0.1.3-2_amd64.deb",
+        "//:target/debs/trixie/p4lang-bmv2_1.15.0-9_amd64.deb",
+        "//:target/debs/trixie/p4lang-p4c_1.2.4.2-3_amd64.deb",
+        "//:target/debs/trixie/libsaivs_1.0.0_amd64.deb",
+        "//:target/debs/trixie/libsai_1.0.0_amd64.deb",
+        "//:target/debs/trixie/syncd-vs_1.0.0_amd64.deb",
+        "//:target/debs/trixie/openssh-client_10.0p1-7+fips_amd64.deb",
+    ],
+    architecture = "amd64",
+    metadata = {
+        "image": "docker-syncd-vs",
+        "variant": "runtime",
+        "distribution": "trixie",
+        "features": {
+            "enable_asan": "n",
+            "enable_syncd_rpc": "n",
+            "include_fips": "y",
+            "include_vs_dash_sai": "y"
+        },
+        "required_packages": [
+            "libnl-3-200",
+            "libnl-3-dev",
+            "libnl-cli-3-200",
+            "libnl-genl-3-200",
+            "libnl-nf-3-200",
+            "libnl-route-3-200",
+            "libnl-route-3-dev",
+            "libsai",
+            "libsaivs",
+            "libyang3",
+            "openssh-client",
+            "p4lang-bmv2",
+            "p4lang-p4c",
+            "p4lang-pi",
+            "syncd-vs"
+        ],
+        "debug_apt_packages": []
+    },
+)
+
+filegroup(
+    name = "runtime_import_manifest",
+    srcs = [":runtime_debs"],
+    output_group = "manifest",
+)
+
+normalize_layer(
+    name = "checked_runtime_payloads",
+    src = ":runtime_debs",
+    base = ":config_engine_base_layout",
+    expected_platform = "linux/amd64",
+)
+
+# Runtime inputs. Common, sairedis and metadata reuse SWSS's source targets.
+# Make still supplies PI/BMv2/p4c, DASH SAI, VS SAI and DASH-enabled syncd.
+# Both input adapters preserve the base's merged-usr directory aliases.
+apt_layer(
+    name = "runtime_layer",
+    base = ":config_engine_base_layout",
+    packages = APT_INPUTS["syncd_vs_debian"]["amd64"],
+    dependency_set = "syncd_vs_debian",
+    lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
+    policy = _APT_POLICY,
+    retained_manifest = ":runtime_retained_packages",
+    variant = "runtime",
+)
+
+filegroup(
+    name = "runtime_apt_selection",
+    srcs = [":runtime_layer"],
+    output_group = "selection",
+)
+
+sonic_layer(
+    name = "apt_deps",
+    tars = [":runtime_layer"],
+)
+
+# The runtime adapter has already combined and normalized these owner TARs.
+# Keep their original tars edges, as sonic_layer does, so the shared collector
+# can find symbols through each owner's flatten/sonic_deploy_tar graph.
+dpkg_filter(
+    name = "rdeps",
+    src = ":source_runtime_payloads",
+    tars = [
+        "@sonic_swss_common//:libswsscommon_pkg",
+        "@sonic_sairedis//lib:libsairedis_pkg",
+        "@sonic_sairedis//meta:libsaimetadata_pkg",
+    ],
+)
+
+debug_symbols_layer(
+    name = "rdeps_debug_symbols",
+    image = ":rdeps",
+)
+
+sonic_layer(
+    name = "runtime_packages",
+    tars = [
+        ":checked_runtime_payloads",
+        ":rdeps",
+    ],
+)
+
+alias(
+    name = "runtime_package_state",
+    actual = "//dockers/docker-syncd-vs/config:runtime_package_state",
+)
+
+# Runtime image and Make-compatible archive; keep the layer order explicit.
+oci_image(
+    name = "docker-syncd-vs",
+    base = ":config_engine_base_layout",
+    entrypoint = ["/usr/local/bin/supervisord"],
+    env = {"DEBIAN_FRONTEND": "noninteractive"},
+    labels = "//dockers/docker-syncd-vs/config:labels",
+    target_compatible_with = _COMPATIBLE_WITH,
+    tars = [
+        ":apt_deps",
+        ":runtime_packages",
+        ":runtime_package_state",
+        "//dockers/docker-syncd-vs/config:files",
+    ],
+)
+
+sonic_docker_archive(
+    name = "docker-syncd-vs.gz",
+    image = ":docker-syncd-vs",
+)
+
+deb_import(
+    name = "debug_debs",
+    srcs = [
+        "//:target/debs/trixie/libnl-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-route-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-genl-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-nf-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libnl-cli-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+        "//:target/debs/trixie/libyang3_3.12.2-1_amd64.deb",
+        "//:target/debs/trixie/python3-swsscommon_1.0.0_amd64.deb",
+        "//:target/debs/trixie/sonic-db-cli_1.0.0_amd64.deb",
+        "//:target/debs/trixie/p4lang-pi_0.1.3-2_amd64.deb",
+        "//:target/debs/trixie/p4lang-bmv2_1.15.0-9_amd64.deb",
+        "//:target/debs/trixie/p4lang-p4c_1.2.4.2-3_amd64.deb",
+        "//:target/debs/trixie/libsaivs_1.0.0_amd64.deb",
+        "//:target/debs/trixie/libsai_1.0.0_amd64.deb",
+        "//:target/debs/trixie/syncd-vs_1.0.0_amd64.deb",
+        "//:target/debs/trixie/libyang3-dbgsym_3.12.2-1_amd64.deb",
+        "//:target/debs/trixie/python3-swsscommon-dbgsym_1.0.0_amd64.deb",
+        "//:target/debs/trixie/sonic-db-cli-dbgsym_1.0.0_amd64.deb",
+        "//:target/debs/trixie/sonic-eventd-dbgsym_1.0.0-0_amd64.deb",
+        "//:target/debs/trixie/syncd-vs-dbgsym_1.0.0_amd64.deb",
+        "//:target/debs/trixie/libsaivs-dbgsym_1.0.0_amd64.deb",
+    ],
+    architecture = "amd64",
+    metadata = {
+        "image": "docker-syncd-vs",
+        "variant": "debug",
+        "distribution": "trixie",
+        "features": {
+            "enable_asan": "n",
+            "enable_syncd_rpc": "n",
+            "include_fips": "y",
+            "include_vs_dash_sai": "y"
+        },
+        "required_packages": [
+            "libsaivs-dbgsym",
+            "libyang3-dbgsym",
+            "python3-swsscommon-dbgsym",
+            "sonic-db-cli-dbgsym",
+            "sonic-eventd-dbgsym",
+            "syncd-vs-dbgsym"
+        ],
+        "debug_apt_packages": [
+            "gdb",
+            "gdbserver",
+            "sshpass",
+            "strace",
+            "vim"
+        ]
+    },
+    runtime_manifest = ":runtime_import_manifest",
+)
+
+filegroup(
+    name = "debug_import_manifest",
+    srcs = [":debug_debs"],
+    output_group = "manifest",
+)
+
+normalize_layer(
+    name = "checked_debug_payloads",
+    src = ":debug_debs",
+    base = ":docker-syncd-vs",
+    expected_platform = "linux/amd64",
+)
+
+# Keep only symbols that match the actual final runtime, including the inherited
+# libsonicdbcli DSO. Source replacements automatically exclude obsolete symbols.
+deb_import(
+    name = "base_debug_package",
+    srcs = ["//:target/debs/trixie/libswsscommon-dbgsym_1.0.0_amd64.deb"],
+    architecture = "amd64",
+)
+
+filegroup(
+    name = "base_debug_package_manifest",
+    srcs = [":base_debug_package"],
+    output_group = "manifest",
+)
+
+imported_debug_symbols_layer(
+    name = "base_debug_symbols",
+    runtime = ":docker-syncd-vs",
+    tars = [":base_debug_package"],
+    expected_platform = "linux/amd64",
+    required_paths = ["usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0"],
+)
+
+filegroup(
+    name = "base_debug_symbols_receipt",
+    srcs = [":base_debug_symbols"],
+    output_group = "receipt",
+)
+
+sonic_layer(
+    name = "debug_packages",
+    tars = [
+        ":checked_debug_payloads",
+        ":rdeps_debug_symbols",
+        ":base_debug_symbols",
+    ],
+)
+
+apt_layer(
+    name = "debug_layer",
+    base = ":docker-syncd-vs",
+    packages = APT_INPUTS["syncd_vs_debug_debian"]["amd64"],
+    dependency_set = "syncd_vs_debug_debian",
+    lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json",
+    base_package_metadata = ":runtime_apt_selection",
+    policy = _APT_POLICY,
+    retained_manifest = ":debug_retained_packages",
+    variant = "debug",
+)
+
+filegroup(
+    name = "debug_apt_selection",
+    srcs = [":debug_layer"],
+    output_group = "selection",
+)
+
+# Debug adds tools and native symbols while retaining the runtime FIPS packages
+# and ELF files. Reuse the existing Vim alternatives implementation.
+sonic_layer(
+    name = "debug_tools",
+    tars = [
+        ":debug_layer",
+        "@sonic_build_infra//deps/vim:vim_pkg",
+        "@sonic_build_infra//deps/vim:vim_runtime_pkg",
+        "@sonic_build_infra//deps/vim:vim_alternatives_pkg",
+    ],
+)
+
+# Debug extends the runtime layers; imported symbols retain their documented gaps.
+oci_image(
+    name = "docker-syncd-vs-dbg",
+    base = ":docker-syncd-vs",
+    labels = "//dockers/docker-syncd-vs/config:debug_labels",
+    target_compatible_with = _COMPATIBLE_WITH,
+    tars = [
+        ":debug_tools",
+        ":debug_packages",
+    ],
+)
+
+sonic_docker_archive(
+    name = "docker-syncd-vs-dbg.gz",
+    image = ":docker-syncd-vs-dbg",
+)

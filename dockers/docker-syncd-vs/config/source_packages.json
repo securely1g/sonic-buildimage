@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "image": "docker-syncd-vs",
+  "architecture": "amd64",
+  "distribution": "trixie",
+  "description": "Reviewed dependency and install contract for the three source-built packages shared with Orchagent. These are dependency declarations for owner tar outputs, not installed-DEB records. Common and sairedis non-VPP sources and SAI headers match the original Make source revisions; loader compatibility is checked in the assembled image. Updating owner versions requires reviewing this contract.",
+  "packages": [
+    {
+      "package": "libswsscommon",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libswsscommon",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "libboost-serialization1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libnl-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (>= 3.7.0-0.2+b1sonic1), libstdc++6 (>= 13.1), libuuid1 (>= 2.16), libyang3 (>= 3.12.2), libzmq5 (>= 4.0.1+dfsg)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-swss-common",
+        "version": "0.0.1-6e0204634f2f78605abdd94ea2b013a46e0660ac",
+        "commit": "6e0204634f2f78605abdd94ea2b013a46e0660ac",
+        "target": "@sonic_swss_common//:libswsscommon_pkg"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libswsscommon.so.0": "symlink",
+        "usr/bin/swssloglevel": "elf",
+        "run/redis/sonic-db/database_config.json": "file"
+      },
+      "path_modes": {
+        "run/redis/sonic-db/database_config.json": 420,
+        "usr/share/swss/consumer_state_table_pops.lua": 420,
+        "usr/share/swss/consumer_table_pops.lua": 420,
+        "usr/share/swss/fdb_flush.lua": 420,
+        "usr/share/swss/fdb_flush.v2.lua": 420,
+        "usr/share/swss/portcounter.lua": 420,
+        "usr/share/swss/producer_state_table_apply_view.lua": 420,
+        "usr/share/swss/table_dump.lua": 420
+      },
+      "required_inherited_files": {
+        "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0": {
+          "kind": "symlink",
+          "mode": 511,
+          "uid": 0,
+          "gid": 0,
+          "linkname": "libsonicdbcli.so.0.0.0"
+        },
+        "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0": {
+          "kind": "file",
+          "mode": 420,
+          "uid": 0,
+          "gid": 0,
+          "elf_type": 3,
+          "elf_machine": 62
+        }
+      }
+    },
+    {
+      "package": "libsairedis",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libsairedis",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-sairedis",
+        "version": "0.0.0-e9402b77ba43aee6323665921598ef67e66293f9",
+        "commit": "e9402b77ba43aee6323665921598ef67e66293f9",
+        "target": "@sonic_sairedis//lib:libsairedis_pkg"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsairedis.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsairedis.so.0": "symlink"
+      }
+    },
+    {
+      "package": "libsaimetadata",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libsaimetadata",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-sairedis",
+        "version": "0.0.0-e9402b77ba43aee6323665921598ef67e66293f9",
+        "commit": "e9402b77ba43aee6323665921598ef67e66293f9",
+        "target": "@sonic_sairedis//meta:libsaimetadata_pkg"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsaimeta.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaimeta.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libsaimetadata.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaimetadata.so.0": "symlink"
+      }
+    }
+  ]
+}

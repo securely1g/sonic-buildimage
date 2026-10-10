@@ -29,7 +29,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-8043a299756436464a8b58662921dfd50172a3ff",
+    version = "0.0.16-88ad779c5a47cf3b1e23350dbf3930400e41bc05",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -184,3 +184,26 @@ apt_inputs(
 
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
 use_repo(apt, "trixie")
+
+# Syncd's ABI-locked development additions use the reviewed October snapshot.
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = ["stable"],
+    types = ["deb"],
+    uris = ["https://snapshot.debian.org/archive/debian/20261008T000000Z"],
+)
+
+include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
+apt_inputs(name = "syncd_apt_inputs", lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json")
+
+# Bind the shared library payload receipts to the modules actually resolved by
+# Bazel, even when the owners do not export MODULE.bazel as a public target.
+source_modules = use_repo_rule("//tools/bazel/oci:source_modules.bzl", "source_modules")
+source_modules(
+    name = "syncd_source_modules",
+    modules = {
+        "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
+        "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
+    },
+)

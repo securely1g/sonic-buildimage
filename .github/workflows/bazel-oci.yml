@@ -1,4 +1,4 @@
-name: Bazel SWSS OCI
+name: Bazel OCI
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-swss-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:
@@ -307,7 +307,10 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
 
       - name: Build and inspect SWSS runtime and debug layers
-        run: python3 -B dockers/docker-orchagent/bazel/ci.py --bazel "$BAZEL" --artifacts artifacts/swss
+        run: |
+          python3 -B tools/bazel/ci/container.py \
+            --config dockers/docker-orchagent/bazel/ci_config.py \
+            --bazel "$BAZEL" --artifacts artifacts/swss
 
       - name: Retain the verified GitLab source downloads
         run: |
@@ -360,17 +363,101 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  syncd-contracts:
+    name: Syncd OCI contracts (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            binutils build-essential ca-certificates git j2cli jq make python3 python3-jinja2 tar unzip zstd
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check source and dependency state
+        run: |
+          test "$(uname -m)" = x86_64
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+          mkdir -p artifacts/syncd-vs
+          git rev-parse HEAD > artifacts/syncd-vs/revision.txt
+          sha256sum dockers/docker-syncd-vs/bazel/apt.lock.json \
+            dockers/docker-syncd-vs/config/runtime_package_state.json \
+            dockers/docker-syncd-vs/config/source_packages.json > artifacts/syncd-vs/input-locks.sha256
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: buildimage-syncd-vs-contracts-amd64
+          cache-version: "8.5.1"
+
+      - name: Check Make prerequisites
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s tools/bazel/tests -p 'syncd_make_integration_test.py' -v \
+            2>&1 | tee artifacts/syncd-vs/direct-tests.log
+
+      - name: Prepare manifests and run audited Bazel contract tests
+        run: |
+          python3 -B tools/bazel/ci/container.py \
+            --config dockers/docker-syncd-vs/bazel/ci_config.py \
+            --bazel "$BAZEL" --artifacts artifacts/syncd-vs/bazel
+          git diff --exit-code
+
+      - name: Prepare public artifact list
+        id: public_artifacts
+        if: always()
+        env:
+          CI_JOB_STATUS: ${{ job.status }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py syncd \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture "amd64" \
+            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload public contract evidence
+        if: always() && steps.public_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: syncd-vs-oci-contracts-amd64
+          path: ${{ steps.public_artifacts.outputs.paths }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: source
-    # Keep native PR checks automatic; package-producing VS builds require opt-in.
-    if: github.event_name == 'workflow_dispatch' && !inputs.skip_vs
-    # Keep a one-job runner from accepting an older, unrelated PR's queued job.
+    # Build full VS images for PR branches in this repository after source checks.
+    # Manual runs retain their skip option; external-fork PRs use hosted checks.
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
+    # Share the existing P330 pool; checkout still uses this event's ref and SHA.
     runs-on:
       - self-hosted
       - linux
       - x64
-      - ${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}
+      - sonic-vs-source-master
     timeout-minutes: 720
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs

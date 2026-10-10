@@ -1,8 +1,8 @@
 # Expose Make-generated inputs to Bazel.
 #
-# Make prepares the config-engine OCI base, Scapy wheel and service manifests
-# under target/ before Bazel assembles the SWSS image. This file declares those
-# existing files as Bazel inputs; it does not generate them or invoke Make.
+# Make prepares the config-engine OCI base, Scapy wheel, Debian packages and
+# service manifests under target/ before Bazel assembles the images. This file
+# declares existing files as Bazel inputs; it does not generate them or invoke Make.
 #
 # target/ has no BUILD.bazel of its own, so its files belong to this root Bazel
 # package. Keep this input boundary here for now. Source exports, configuration
@@ -33,3 +33,33 @@ filegroup(
     ),
     visibility = ["//visibility:public"],
 )
+
+# Syncd imports these existing Make packages through the shared deb_import rule.
+# Keep filenames explicit: adding another file under target/debs must not change
+# the image. Installation order belongs in dockers/docker-syncd-vs/BUILD.bazel.
+exports_files([
+    "target/debs/trixie/libnl-3-dev_3.7.0-0.2+b1sonic1_amd64.deb",
+    "target/debs/trixie/libnl-route-3-dev_3.7.0-0.2+b1sonic1_amd64.deb",
+    "target/debs/trixie/libnl-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+    "target/debs/trixie/libnl-route-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+    "target/debs/trixie/libnl-genl-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+    "target/debs/trixie/libnl-nf-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+    "target/debs/trixie/libnl-cli-3-200_3.7.0-0.2+b1sonic1_amd64.deb",
+    "target/debs/trixie/libyang3_3.12.2-1_amd64.deb",
+    "target/debs/trixie/p4lang-pi_0.1.3-2_amd64.deb",
+    "target/debs/trixie/p4lang-bmv2_1.15.0-9_amd64.deb",
+    "target/debs/trixie/p4lang-p4c_1.2.4.2-3_amd64.deb",
+    "target/debs/trixie/libsaivs_1.0.0_amd64.deb",
+    "target/debs/trixie/libsai_1.0.0_amd64.deb",
+    "target/debs/trixie/syncd-vs_1.0.0_amd64.deb",
+    "target/debs/trixie/openssh-client_10.0p1-7+fips_amd64.deb",
+    "target/debs/trixie/python3-swsscommon_1.0.0_amd64.deb",
+    "target/debs/trixie/sonic-db-cli_1.0.0_amd64.deb",
+    "target/debs/trixie/libswsscommon-dbgsym_1.0.0_amd64.deb",
+    "target/debs/trixie/libyang3-dbgsym_3.12.2-1_amd64.deb",
+    "target/debs/trixie/python3-swsscommon-dbgsym_1.0.0_amd64.deb",
+    "target/debs/trixie/sonic-db-cli-dbgsym_1.0.0_amd64.deb",
+    "target/debs/trixie/sonic-eventd-dbgsym_1.0.0-0_amd64.deb",
+    "target/debs/trixie/syncd-vs-dbgsym_1.0.0_amd64.deb",
+    "target/debs/trixie/libsaivs-dbgsym_1.0.0_amd64.deb",
+])

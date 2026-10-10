@@ -107,6 +107,79 @@ class AptSelectionTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
+    def source_manifest(self, fixture):
+        """Move the dependency to a Bazel target while retaining one Make import."""
+        manifest = json.loads(fixture.manifest.read_bytes())
+        source = manifest["packages"].pop()
+        source.pop("source_sha256")
+        source.update(input_tar_sha256="b" * 64, source={
+            "module": "driver", "version": "1.0-" + "d" * 40,
+            "commit": "d" * 40, "target": "@driver//:runtime_pkg"})
+        manifest["packages"] = [{"package": "make-import", "version": "1", "architecture": fixture.architecture,
+            "source_sha256": "a" * 64, "control_fields": {
+                "Package": "make-import", "Version": "1", "Architecture": fixture.architecture,
+                "Depends": "local-driver (>= 2.0)"}}]
+        manifest["make_manifest_sha256"] = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
+        manifest.update(source_packages=[source], source_receipt_sha256="c" * 64)
+        fixture.manifest.write_text(json.dumps(manifest))
+        return manifest
+
+    def test_source_controls_satisfy_imports_without_claiming_make_payloads(self):
+        """A source target satisfies a Make dependency and keeps its own TAR provenance."""
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        paths, receipt = fixture.select()
+        self.assertEqual(paths, [fixture.paths[fixture.addition]])
+        self.assertEqual(receipt["skipped_make"], [])
+        self.assertEqual(receipt["skipped_source"][0]["package"], "local-driver")
+        self.assertEqual(receipt["skipped_source"][0]["source_sha256"], "b" * 64)
+        self.assertEqual(receipt["make_manifest_sha256"], manifest["make_manifest_sha256"])
+        self.assertEqual(receipt["source_receipt_sha256"], "c" * 64)
+        self.assertEqual(receipt["retained_manifest_sha256"], hashlib.sha256(fixture.manifest.read_bytes()).hexdigest())
+        self.assertEqual(receipt["dependency_check"]["packages"]["local-driver"]["Version"], "2.0")
+
+    def test_source_inventory_rejects_missing_provenance_and_duplicate_owners(self):
+        """A package cannot be supplied by both Make and source or lack a built TAR identity."""
+        fixture = Fixture(self.root)
+        original = self.source_manifest(fixture)
+        for mutation in ("hash", "duplicate", "commit", "receipt"):
+            manifest = json.loads(json.dumps(original))
+            source = manifest["source_packages"][0]
+            if mutation == "hash":
+                source.pop("input_tar_sha256")
+            elif mutation == "duplicate":
+                manifest["packages"].append(dict(source, source_sha256="a" * 64))
+            elif mutation == "commit":
+                source["source"]["commit"] = "unreviewed"
+            else:
+                manifest.pop("source_receipt_sha256")
+            fixture.manifest.write_text(json.dumps(manifest))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                fixture.select()
+
+    def test_source_packages_still_must_satisfy_versioned_dependencies(self):
+        """Source ownership cannot waive a Make consumer's minimum dependency version."""
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        source = manifest["source_packages"][0]
+        source["version"] = source["control_fields"]["Version"] = "1.0"
+        fixture.manifest.write_text(json.dumps(manifest))
+        with self.assertRaises(ValueError):
+            fixture.select()
+
+    def test_debug_source_inputs_must_match_the_runtime_receipt(self):
+        """Debug cannot silently reuse package metadata from a different source build."""
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        _, runtime = fixture.select()
+        metadata = fixture.root / "runtime-receipt.json"
+        metadata.write_text(json.dumps(runtime))
+        manifest.update(variant="debug", runtime_manifest_sha256=runtime["make_manifest_sha256"],
+                        source_receipt_sha256="e" * 64)
+        fixture.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "runtime source packages"):
+            fixture.select(variant="debug", base_package_metadata=metadata)
+
     def test_owner_state_and_layer_order_are_used_for_both_architectures(self):
         """Use actual retained versions and final OCI contents without an image or AMD64 default."""
         for image, architecture in (("telemetry", "amd64"), ("time-service", "arm64")):

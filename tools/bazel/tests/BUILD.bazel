@@ -206,7 +206,10 @@ py_test(
         "prepare_oci_base_test.py",
         "//tools/bazel/oci:prepare_oci_base.py",
     ],
-    deps = ["//tools/bazel/oci:oci_layout"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:oci_layout",
+    ],
 )
 
 # Shared OCI selection and CLI coverage has no container-owned inputs.
@@ -482,4 +485,114 @@ diff_test(
     size = "small",
     file1 = "declared_includes.txt",
     file2 = "//tools/bazel/dpkg:dpkg_includes.txt",
+)
+
+# Syncd follows SWSS's test placement. The package imports and inherited-symbol
+# matcher have their own tests in sonic-build-infra; these check image policy.
+_SYNCD_TEST_DEPS = [
+    "//dockers/docker-syncd-vs:package_contract_lib",
+    "//dockers/docker-syncd-vs/config:package_state_lib",
+    "//tools/bazel/ci:syncd_validation",
+    "//tools/bazel/tests:oci_base_fixture_lib",
+    "@sonic_build_infra//apt:lib",
+    "@sonic_build_infra//oci:lib",
+]
+
+# These receipt and image tests use TAR/OCI fixtures and create no Debian packages.
+py_test(
+    name = "syncd_validate_payloads_test",
+    srcs = [
+        "integration/syncd_validate_payloads_test.py",
+    ],
+    main = "integration/syncd_validate_payloads_test.py",
+    python_version = "3.11",
+    deps = _SYNCD_TEST_DEPS,
+)
+
+py_test(
+    name = "syncd_validate_image_test",
+    srcs = [
+        "integration/syncd_validate_image_test.py",
+    ],
+    data = [
+        "//dockers/docker-syncd-vs/config:source_packages.json",
+        "//dockers/docker-syncd-vs:legacy/critical_processes",
+        "//dockers/docker-syncd-vs:legacy/start.sh",
+        "//dockers/docker-syncd-vs:legacy/supervisord.conf",
+        "//dockers/docker-base-trixie:dpkg_01_drop",
+    ],
+    main = "integration/syncd_validate_image_test.py",
+    python_version = "3.11",
+    deps = _SYNCD_TEST_DEPS,
+)
+
+py_test(
+    name = "syncd_select_apt_payloads_test",
+    srcs = [
+        "integration/syncd_select_apt_payloads_test.py",
+    ],
+    args = ["--policy=$(rootpath //dockers/docker-syncd-vs:runtime_layer_policy)"],
+    data = [
+        "//dockers/docker-syncd-vs/bazel:apt.lock.json",
+        "//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel",
+        "//dockers/docker-syncd-vs:runtime_layer_policy",
+    ],
+    main = "integration/syncd_select_apt_payloads_test.py",
+    python_version = "3.11",
+    deps = _SYNCD_TEST_DEPS + ["//tools/bazel/oci:apt_selection"],
+)
+
+py_test(
+    name = "syncd_package_state_layer_test",
+    srcs = [
+        "integration/syncd_package_state_layer_test.py",
+    ],
+    main = "integration/syncd_package_state_layer_test.py",
+    data = [
+        "//dockers/docker-syncd-vs/bazel:apt.lock.json",
+        "//dockers/docker-syncd-vs/config:runtime_package_state.json",
+        "//dockers/docker-syncd-vs:legacy/Dockerfile.j2",
+    ],
+    python_version = "3.11",
+    deps = _SYNCD_TEST_DEPS,
+)
+
+py_test(
+    name = "syncd_manifest_labels_test",
+    size = "small",
+    srcs = ["integration/syncd_manifest_labels_test.py"],
+    args = [
+        "--runtime-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs/manifest.json)",
+        "--debug-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json)",
+        "--runtime-labels=$(rootpath //dockers/docker-syncd-vs/config:labels)",
+        "--debug-labels=$(rootpath //dockers/docker-syncd-vs/config:debug_labels)",
+    ],
+    data = [
+        "//dockers/docker-syncd-vs/config:debug_labels",
+        "//dockers/docker-syncd-vs/config:labels",
+        "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
+        "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
+    ],
+    main = "integration/syncd_manifest_labels_test.py",
+)
+
+py_test(
+    name = "syncd_package_contract_test",
+    srcs = ["integration/syncd_package_contract_test.py"],
+    main = "integration/syncd_package_contract_test.py",
+    data = ["//dockers/docker-syncd-vs/config:source_packages.json"],
+    python_version = "3.11",
+    deps = _SYNCD_TEST_DEPS,
+)
+
+# This fixture compiles a small ELF using the native CI toolchain and checks
+# actual readelf/objcopy correspondence. It creates no Debian package.
+py_test(
+    name = "syncd_validate_native_packages_test",
+    srcs = ["integration/syncd_validate_native_packages_test.py"],
+    main = "integration/syncd_validate_native_packages_test.py",
+    data = ["//dockers/docker-syncd-vs/config:source_packages.json"],
+    tags = ["local"],
+    python_version = "3.11",
+    deps = _SYNCD_TEST_DEPS,
 )
