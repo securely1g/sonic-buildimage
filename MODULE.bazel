@@ -184,3 +184,15 @@ apt_inputs(
 
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
 use_repo(apt, "trixie")
+
+# Syncd's ABI-locked development additions use the reviewed October snapshot.
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = ["stable"],
+    types = ["deb"],
+    uris = ["https://snapshot.debian.org/archive/debian/20261008T000000Z"],
+)
+
+include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
+apt_inputs(name = "syncd_apt_inputs", lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json")

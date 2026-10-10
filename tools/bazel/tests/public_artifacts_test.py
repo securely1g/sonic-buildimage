@@ -86,7 +86,7 @@ def receipt(kind, architecture="amd64"):
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST}}}
     if kind == "syncd":
-        return {"targets": ["//tests:syncd_" + str(number) for number in range(7)],
+        return {"targets": ["//tests:syncd_" + str(number) for number in range(6)],
                 "source_hashes": {"bazel/apt.lock.json": DIGEST}, "module_lock_sha256": DIGEST,
                 "test_outputs": [SENTINEL], **unsafe}
     return {"status": "passed", "runtime_sha256": DIGEST, "dwp_sha256": DIGEST,
@@ -228,6 +228,24 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
+
+    def test_archive_requires_all_five_native_workflow_tests(self):
+        for architecture in ("amd64", "arm64"):
+            with self.subTest(architecture=architecture):
+                seed(self.root, "archive", architecture)
+                event_path = "artifacts/archive/test-events.jsonl"
+                write(self.root, event_path, events(5))
+                summary, paths, ready = self.prepare("archive", architecture=architecture)
+                self.assertTrue(ready)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 5)
+                self.assertTrue(paths)
+
+                write(self.root, event_path, events(4))
+                summary, paths, ready = self.prepare("archive", architecture=architecture)
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
+                              summary["blocked"])
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")
