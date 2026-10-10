@@ -13,14 +13,14 @@ import tarfile
 import tempfile
 import unittest
 
-OWNER = Path(__file__).absolute().parents[2]
+OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
 ROOT = OWNER.parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as layer, write_layout
-import validate_image as subject
-import validate_payloads
-import source_packages
+from tools.bazel.ci import syncd_image as subject
+from tools.bazel.ci import syncd_payloads as validate_payloads
+import package_contract as source_packages
 
 
 def write_image(path, layers, manifest, *, entrypoint=None):
@@ -140,9 +140,43 @@ class ValidateImageTest(unittest.TestCase):
                                        self.runtime_handoff, self.debug_handoff,
                                        self.runtime_manifest, self.debug_manifest, ROOT, fixture=True, **kwargs)
 
+    def inherited_symbols(self, *, install=True):
+        """Add an independently recorded imported pair to the image fixtures."""
+        path = "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0"
+        runtime = b"inherited runtime fixture"
+        debug_path = "usr/lib/debug/.build-id/aa/fixture.debug"
+        debug = b"inherited symbols fixture"
+        self.runtime_layers.append(layer([(path, runtime, 0o644)]))
+        self.debug_layers = self.runtime_layers + [self.debug_payload.read_bytes()]
+        payload = self.root / "base-symbols.tar"
+        payload.write_bytes(layer([(debug_path, debug, 0o644)]))
+        if install:
+            self.debug_layers.append(payload.read_bytes())
+        self.write_images()
+        descriptor, _, _, _ = subject.image(self.root / "runtime.oci")
+        receipt = self.root / "base-symbols.json"
+        receipt.write_text(json.dumps({"schema": 1, "expected_platform": "linux/amd64",
+            "runtime_manifest": descriptor["digest"], "selected_paths": [debug_path],
+            "output": {"sha256": subject.sha(payload), "size": payload.stat().st_size},
+            "pairs": [{"runtime_path": path, "runtime_sha256": hashlib.sha256(runtime).hexdigest(),
+                       "debug_path": debug_path, "debug_sha256": hashlib.sha256(debug).hexdigest()}]}))
+        return payload, receipt
+
+    def test_dynamic_imported_symbols_are_included_in_the_debug_image(self):
+        """The final-image check consumes the shared matcher receipt instead of pinned symbol IDs."""
+        payload, receipt = self.inherited_symbols()
+        result = self.validate(base_debug_symbols=payload, base_debug_receipt=receipt)
+        self.assertEqual(len(result["inherited_base_symbols"]["pairs"]), 1)
+
+    def test_dynamic_imported_symbols_cannot_be_omitted_from_the_image(self):
+        """Producing a matching TAR is insufficient if image assembly forgets that layer."""
+        payload, receipt = self.inherited_symbols(install=False)
+        with self.assertRaisesRegex(ValueError, "debug imported base symbols"):
+            self.validate(base_debug_symbols=payload, base_debug_receipt=receipt)
+
     def source_archives(self):
         """Model owner tar payloads independently of Make's remaining package handoff."""
-        records = copy.deepcopy(json.loads((OWNER / "bazel/source_packages.json").read_bytes())["packages"])
+        records = copy.deepcopy(json.loads((OWNER / "config/source_packages.json").read_bytes())["packages"])
         directory = self.root / "source"
         directory.mkdir()
         runtime_entries, debug_entries = [], []
@@ -169,7 +203,7 @@ class ValidateImageTest(unittest.TestCase):
         debug_tar.write_bytes(layer(debug_entries))
         receipt = {**source_packages.IDENTITY, "schema": source_packages.RECEIPT_SCHEMA,
                    "kind": "bazel_source", "packages": records,
-                   "contract_sha256": subject.sha(OWNER / "bazel/source_packages.json"),
+                   "contract_sha256": subject.sha(OWNER / "config/source_packages.json"),
                    "base_manifest_digest": "sha256:" + "b" * 64,
                    "module_file_sha256": {name: "a" * 64 for name in ("sonic-swss-common", "sonic-sairedis")}}
         receipt["payload"] = {"sha256": subject.sha(runtime_tar), "size": runtime_tar.stat().st_size,

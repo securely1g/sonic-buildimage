@@ -10,12 +10,13 @@ import tarfile
 import tempfile
 import unittest
 
-OWNER = Path(__file__).absolute().parents[2]
+OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as tar_bytes, write_layout
 from tools.bazel.oci.oci_inventory import apply_layer
-from package_policy import FEATURES
+from package_contract import FEATURES
+sys.path.insert(0, str(OWNER / "config"))
 import package_state_layer as subject
 
 
@@ -31,7 +32,7 @@ def write_oci(path, entries):
 class CommittedPackageStateTest(unittest.TestCase):
     def test_make_state_excludes_source_libraries_and_keeps_syncd_init_owner(self):
         """Shared source libraries carry no imported Make scripts; DASH syncd still supplies the init script."""
-        contract = json.loads((OWNER / "bazel/runtime_package_state.json").read_bytes())
+        contract = json.loads((OWNER / "config/runtime_package_state.json").read_bytes())
         make = contract["make_package_state_inputs"]
         self.assertEqual(set(make), {
             "libnl-3-200", "libnl-3-dev", "libnl-cli-3-200", "libnl-genl-3-200", "libnl-nf-3-200",
@@ -43,7 +44,7 @@ class CommittedPackageStateTest(unittest.TestCase):
 
     def test_historical_reference_matches_legacy_dockerfile(self):
         """CI detects changes to the legacy installation recipe without making it a build input."""
-        contract = json.loads((OWNER / "bazel/runtime_package_state.json").read_bytes())
+        contract = json.loads((OWNER / "config/runtime_package_state.json").read_bytes())
         reference = contract["reference"]
         self.assertRegex(reference["buildimage_revision"], r"^[0-9a-f]{40}$")
         for field in ("base_archive_sha256", "runtime_archive_sha256", "legacy_dockerfile_sha256"):
@@ -55,7 +56,7 @@ class CommittedPackageStateTest(unittest.TestCase):
         """CI requests a state-contract review when the canonical lock or its package owners change."""
         lock_path = OWNER / "bazel/apt.lock.json"
         lock = json.loads(lock_path.read_bytes())
-        contract = json.loads((OWNER / "bazel/runtime_package_state.json").read_bytes())
+        contract = json.loads((OWNER / "config/runtime_package_state.json").read_bytes())
         self.assertEqual(contract["apt_lock_sha256"], hashlib.sha256(lock_path.read_bytes()).hexdigest())
         self.assertEqual(lock["version"], 2)
         for group, field in (("package_controls", "control_sha256"), ("package_payloads", "payload_sha256")):

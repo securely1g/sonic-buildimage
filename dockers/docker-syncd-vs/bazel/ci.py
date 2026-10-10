@@ -22,33 +22,36 @@ from tools.bazel.gzip.source_archive import check_versions
 execute = partial(command_log.execute, cwd=ROOT)
 
 TARGET_NAMES = [
-    "base_debug_symbols_test",
-    "manifest_labels_test",
-    "package_state_layer_test",
-    "select_apt_payloads_test",
-    "source_packages_test",
-    "validate_image_test",
-    "validate_payloads_test",
+    "syncd_manifest_labels_test",
+    "syncd_package_state_layer_test",
+    "syncd_select_apt_payloads_test",
+    "syncd_package_contract_test",
+    "syncd_validate_image_test",
+    "syncd_validate_native_packages_test",
+    "syncd_validate_payloads_test",
+    "apt_selection_test",
 ]
-TARGETS = ["//dockers/docker-syncd-vs/bazel:" + name for name in TARGET_NAMES] + [
-    "//tools/bazel/tests:apt_selection_test",
-]
-
+TARGETS = ["//tools/bazel/tests:" + name for name in TARGET_NAMES]
 
 SOURCE_FILES = (
     "MODULE.bazel",
+    "BUILD.bazel",
+    "platform/vs/docker-syncd-vs.mk",
     "dockers/docker-syncd-vs/BUILD.bazel",
     "dockers/docker-syncd-vs/config/BUILD.bazel",
+    "dockers/docker-syncd-vs/config/package_state_layer.py",
+    "dockers/docker-syncd-vs/config/runtime_package_state.json",
+    "dockers/docker-syncd-vs/config/source_packages.json",
     "tools/bazel/oci/BUILD.bazel",
     "tools/bazel/oci/apt_selection.py",
     "tools/bazel/oci/apt_layer.bzl",
     "tools/bazel/oci/source_modules.bzl",
+    "tools/bazel/ci/syncd_image.py",
+    "tools/bazel/ci/syncd_native_packages.py",
+    "tools/bazel/ci/syncd_payloads.py",
+    "tools/bazel/tests/BUILD.bazel",
 ) + tuple("dockers/docker-syncd-vs/bazel/" + name for name in (
-    "BUILD.bazel", "apt.lock.json", "apt_inputs.MODULE.bazel", "prepare_packages.py",
-    "package_policy.py", "package_state_layer.py", "runtime_package_state.json",
-    "source_packages.json", "source_packages.py", "base_debug_symbols.py",
-    "base_debug_symbols.json", "validate_image.py", "validate_native_packages.py",
-    "validate_payloads.py",
+    "BUILD.bazel", "apt.lock.json", "apt_inputs.MODULE.bazel", "package_contract.py",
 ))
 
 

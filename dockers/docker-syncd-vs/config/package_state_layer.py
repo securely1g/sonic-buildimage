@@ -11,11 +11,11 @@ import sys
 import tarfile
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
-sys.path.insert(0, str(Path(__file__).absolute().parent))
+sys.path.insert(0, str(Path(__file__).absolute().parents[1] / "bazel"))
 from tools.bazel.ci.artifact_validation import path_name, require, sha
 from tools.bazel.oci.oci_inventory import apply_layer
 from tools.bazel.oci.oci_layout import validate_layout
-from package_policy import FEATURES, reject_source_packages
+from package_contract import FEATURES, reject_source_packages
 
 SCRIPTS = {"preinst", "postinst", "prerm", "postrm", "triggers"}
 

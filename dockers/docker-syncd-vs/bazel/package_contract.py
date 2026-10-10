@@ -22,7 +22,35 @@ sys.path.insert(0, str(Path(__file__).absolute().parent))
 from tools.bazel.ci.artifact_validation import file_metadata, metadata, path_name, require, sha
 from tools.bazel.oci.oci_inventory import apply_layer, assert_overlay_paths, resolve_path
 from tools.bazel.oci.oci_layout import validate_layout
-import validate_payloads
+from sonic_oci import normalize_layer as normalization
+
+
+FEATURES = {"include_vs_dash_sai": "y", "include_fips": "y", "enable_asan": "n", "enable_syncd_rpc": "n"}
+DEBUG_APT_PACKAGES = frozenset({"gdb", "gdbserver", "sshpass", "strace", "vim"})
+SOURCE_PACKAGES = frozenset({"libswsscommon", "libsairedis", "libsaimetadata"})
+SOURCE_PACKAGE_NAMES = SOURCE_PACKAGES | {name + "-dbgsym" for name in SOURCE_PACKAGES}
+
+
+def require_runtime_fips(records):
+    """Runtime owns the FIPS OpenSSH package; debug must inherit that identity."""
+    matches = [record for record in records if record.get("package") == "openssh-client"]
+    if len(matches) != 1 or "+fips" not in matches[0].get("version", ""):
+        raise ValueError("runtime package handoff requires the Make FIPS openssh-client")
+    record = matches[0]
+    fields = record.get("control_fields", {})
+    if (fields.get("Package"), fields.get("Version"), fields.get("Architecture")) != (
+            record["package"], record["version"], record.get("architecture")) or record.get("architecture") != "amd64":
+        raise ValueError("runtime FIPS openssh-client identity differs from its Debian control")
+
+
+def reject_source_packages(records, **unused):
+    """Never reinstall source libraries through an imported package layer."""
+    unexpected = SOURCE_PACKAGE_NAMES.intersection(record.get("package") for record in records)
+    if unexpected:
+        raise ValueError("import contains packages now built from source: " + ", ".join(sorted(unexpected)))
+
+
+
 
 
 PACKAGES = ("libswsscommon", "libsairedis", "libsaimetadata")
@@ -111,22 +139,8 @@ def verify_modules(contract, module_files):
 
 
 def normalized_source_member(member, *, path_modes=None):
-    """Use the imported adapter's checked directory mapping and SWSS root ownership."""
-    owned = copy.copy(member)
-    owned.uid = owned.gid = 0
-    owned.uname = owned.gname = "root"
-    owned.pax_headers = {key: value for key, value in member.pax_headers.items()
-                         if key not in {"uid", "gid", "uname", "gname"}}
-    # Linux symlink permissions are always 0777. Owner mtree entries may omit
-    # that mode and produce 0000 tar headers despite identical link behavior.
-    if owned.issym():
-        owned.mode = 0o777
-    normalized = validate_payloads.normalized_member(owned)
-    if normalized is not None and normalized.isfile():
-        mode = (path_modes or {}).get(path_name(normalized.name))
-        if mode is not None:
-            normalized.mode = mode
-    return normalized
+    """Use the shared adapter's directory, ownership and explicit mode policy."""
+    return normalization.normalized_member(member, root_owned=True, modes=path_modes)
 
 
 def inventory(path):
@@ -206,16 +220,17 @@ def assemble(contract_path, packages, module_files, base, runtime_tar):
     """
     contract = read_contract(contract_path)
     modules = verify_modules(contract, module_files)
-    base_digest = validate_payloads.base_aliases(base)
+    base_digest = normalization.base_aliases(base, expected_platform="linux/amd64")
     base_files = {}
     for layer in validate_layout(base, "linux/amd64").layers:
         apply_layer(layer, base_files)
     inherited = {}
     for record in contract["packages"]:
         for path, expected in record.get("required_inherited_files", {}).items():
-            require(base_files.get(path) == expected,
+            actual = base_files.get(path, {})
+            require(all(actual.get(key) == value for key, value in expected.items()),
                     "source package requires unchanged inherited content: " + path)
-            inherited[path] = expected
+            inherited[path] = actual
     runtime_tar.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".source-packages-", dir=runtime_tar.parent) as temporary:
         runtime_output = Path(temporary) / "runtime.tar"
@@ -274,7 +289,10 @@ def validate_receipt(receipt_path, runtime_tar, debug_tar=None, *, contract_path
         expected_records = {record["package"]: record for record in contract["packages"]}
         expected_inherited = {path: item for record in contract["packages"]
                               for path, item in record.get("required_inherited_files", {}).items()}
-        require(value.get("inherited_files", {}) == expected_inherited,
+        inherited = value.get("inherited_files", {})
+        require(set(inherited) == set(expected_inherited) and all(
+                    all(inherited[path].get(key) == val for key, val in expected.items())
+                    for path, expected in expected_inherited.items()),
                 "source receipt differs from required inherited content")
         for record in records:
             expected = expected_records[record["package"]]
@@ -329,11 +347,21 @@ def retained_manifest(manifest_path, receipt, receipt_sha256, *, variant):
     raw = manifest_path.read_bytes()
     value = json.loads(raw)
     require(isinstance(value, dict) and all(value.get(key) == expected for key, expected in IDENTITY.items()) and
-            value.get("variant") == variant and value.get("features") == validate_payloads.FEATURES,
+            value.get("variant") == variant and value.get("features") == FEATURES,
             "invalid Make manifest for source package selection")
     require(not any(key in value for key in ("source_packages", "source_receipt_sha256", "make_manifest_sha256")),
             "Make manifest already contains source package extensions")
-    validate_payloads.reject_source_packages(value.get("packages", []), allow_base_symbols=(variant == "debug"))
+    records = value.get("packages", [])
+    reject_source_packages(records)
+    names = {record["package"] for record in records}
+    require(set(value.get("required_packages", [])).issubset(names), "missing required imported package")
+    if variant == "runtime":
+        require_runtime_fips(records)
+        require(not value.get("debug_apt_packages"), "runtime import contains debug tools")
+    else:
+        require("openssh-client" not in names, "debug must inherit runtime FIPS openssh-client")
+        require(set(value.get("debug_apt_packages", [])) == DEBUG_APT_PACKAGES,
+                "debug import has an unsupported tool set")
     value.update(source_packages=copy.deepcopy(receipt["packages"]),
                  source_receipt_sha256=receipt_sha256,
                  make_manifest_sha256=hashlib.sha256(raw).hexdigest())
