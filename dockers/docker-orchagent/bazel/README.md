@@ -115,7 +115,7 @@ Remove the source override after its registered version lands.
 Native AMD64/ARM64 archive checks and AMD64 source-layer checks are configured
 for PR updates. Full VS/P4RT builds also run automatically for PR branches in
 this repository after the source checks pass. External-fork PRs keep hosted
-checks only. Manual `Bazel SWSS OCI` dispatch defaults to `skip_vs=true`; select
+checks only. Manual `Bazel OCI` dispatch defaults to `skip_vs=true`; select
 `skip_vs=false` to include the full image job. A push to `master` keeps its
 hosted checks without an automatic full VS build.
 
@@ -384,7 +384,7 @@ the existing Make path. Listing SWSS in `SONIC_PACKAGES_LOCAL` is rejected when
 its Bazel path is selected.
 
 To reproduce the source-layer check in native AMD64 Trixie, install the execution
-tools listed in `.github/workflows/bazel-swss-oci.yml`, make the pinned Bazel
+tools listed in `.github/workflows/bazel-oci.yml`, make the pinned Bazel
 version available, and run from a clean checkout:
 
 ```sh

@@ -301,7 +301,7 @@ the original source, control and payload hashes and verify actual payload bytes.
 Distroless patch is needed.
 
 Shared archive CI runs on native AMD64 and ARM64. Syncd's contract CI and
-complete image profile use native AMD64. Dispatch `Bazel SWSS OCI` with `skip_vs=true`
+complete image profile use native AMD64. Dispatch `Bazel OCI` with `skip_vs=true`
 to validate source layers and contracts without starting a full VS image build.
 Each selected Bazel scope is checked for DEB-producing actions before execution.
 
@@ -397,8 +397,11 @@ selector to retain validated dependency records, input/source hashes, the target
 list and execution-audit counts. Raw logs and test XML stay in the workspace;
 failed jobs may retain only a partial status summary. The checked APT content lock
 remains in Git, and the generated Bazel resolution lock remains ignored.
-`.github/workflows/bazel-syncd-vs-oci.yml` runs this contract suite on native
-AMD64 Trixie. It does not run a production OCI or installer build.
+The Syncd job in [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml)
+runs this contract suite on native AMD64 Trixie. The same workflow owns the
+shared archive checks, SWSS source checks and the separately gated full VS
+build. Add future container checks as jobs in this shared OCI workflow; the
+Syncd contract job itself does not build a production image or installer.
 
 For the complete image, prepare the normal supported Make context and request:
 
