@@ -20,12 +20,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-OWNER = Path(__file__).resolve().parents[2]
+OWNER = Path(__file__).resolve().parents[4] / "dockers/docker-syncd-vs"
 sys.path.insert(0, str(OWNER / "bazel"))
-import validate_native_packages as subject
-import validate_payloads
-import source_packages
-import base_debug_symbols
+from tools.bazel.ci import syncd_native_packages as subject
+from tools.bazel.ci import syncd_payloads as validate_payloads
+import package_contract as source_packages
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 
 
@@ -123,7 +122,7 @@ class ValidateNativePackagesTest(unittest.TestCase):
 
     def source_archives(self, *, symbols_mutation=None, overlap=False):
         """Build the three owner tars and a real receipt around compiled sample ELFs."""
-        records = copy.deepcopy(json.loads((OWNER / "bazel/source_packages.json").read_bytes())["packages"])
+        records = copy.deepcopy(json.loads((OWNER / "config/source_packages.json").read_bytes())["packages"])
         runtime_entries, debug_entries = [], []
         source_dir = self.root / "source"
         source_dir.mkdir()
@@ -166,7 +165,7 @@ class ValidateNativePackagesTest(unittest.TestCase):
         write_tar(debug_tar, debug_entries)
         receipt = {**source_packages.IDENTITY, "schema": source_packages.RECEIPT_SCHEMA,
                    "kind": "bazel_source", "packages": records,
-                   "contract_sha256": subject.sha(OWNER / "bazel/source_packages.json"),
+                   "contract_sha256": subject.sha(OWNER / "config/source_packages.json"),
                    "base_manifest_digest": "sha256:" + "b" * 64,
                    "module_file_sha256": {name: "a" * 64 for name in ("sonic-swss-common", "sonic-sairedis")}}
         receipt["payload"] = {"sha256": subject.sha(runtime_tar), "size": runtime_tar.stat().st_size,
@@ -238,44 +237,79 @@ class ValidateNativePackagesTest(unittest.TestCase):
         base = self.root / "base.oci"
         config = {"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": [digest(data)]}}
         write_layout(base, oci_files(json.dumps(config).encode(), [data]))
-        receipt = {"base_manifest_digest": json.loads((base / "index.json").read_bytes())["manifests"][0]["digest"],
-                   "inherited_files": source_packages.inventory(base_tar)}
-        record = dict(json.loads(self.debug_manifest.read_bytes())["packages"][0], package="libswsscommon-dbgsym")
-        contract = {"schema": 1, "package": {key: value for key, value in record.items() if not key.startswith("payload_")},
-                    "original_payload": {key: record["payload_" + key] for key in ("sha256", "size", "members")},
-                    "runtime": {"path": self.library_path, "sha256": subject.sha(self.runtime), "build_id": self.identifier},
-                    "files": {}}
-        for name, file, identifier in ((self.debug_path, self.symbols, self.identifier), (dwz_name, dwz, dwz_id)):
-            contract["files"][name] = {"sha256": subject.sha(file), "size": file.stat().st_size,
-                                        "mode": 0o644, "uid": 0, "gid": 0, "build_id": identifier}
-        contract_path = self.root / "base-symbol-contract.json"
-        contract_path.write_text(json.dumps(contract))
-        record.update({"original_payload_" + key: value for key, value in contract["original_payload"].items()})
-        record.update(payload_members=2, base_debug_symbols=base_debug_symbols.descriptor(contract_path))
-        manifest = self.root / "base-symbol-manifest.json"
-        manifest.write_text(json.dumps({"packages": [record]}))
-        debug = {name: {"kind": "file", "file": file, "package": base_debug_symbols.PACKAGE}
-                 for name, file in ((self.debug_path, self.symbols), (dwz_name, dwz))}
-        return base, receipt, debug, manifest, contract_path
+        selected = self.root / "base-symbols.tar"
+        selected.write_bytes(tar_entries([(self.debug_path, self.symbols.read_bytes(), 0o644),
+                                          (dwz_name, dwz.read_bytes(), 0o644)]))
+        receipt = {"schema": 1, "expected_platform": "linux/amd64",
+                   "runtime_manifest": json.loads((base / "index.json").read_bytes())["manifests"][0]["digest"],
+                   "output": {"sha256": subject.sha(selected), "size": selected.stat().st_size},
+                   "selected_paths": [self.debug_path, dwz_name], "sources": [],
+                   "pairs": [{"runtime_path": self.library_path, "runtime_sha256": subject.sha(self.runtime),
+                              "build_id": self.identifier, "debug_path": self.debug_path,
+                              "debug_sha256": subject.sha(self.symbols), "source": 0,
+                              "supplements": [{"path": dwz_name, "build_id": dwz_id, "sha256": subject.sha(dwz)}]}]}
+        receipt_path = self.root / "base-symbols.json"
+        receipt_path.write_text(json.dumps(receipt))
+        return base, selected, receipt_path
 
     def test_inherited_base_symbol_pair_keeps_its_dwz_companion(self):
-        """The retained base helper keeps complete symbols without retaining old source-library companions."""
-        base, receipt, debug, manifest, contract = self.inherited_base_fixture()
-        with mock.patch.object(base_debug_symbols, "CONTRACT", contract):
-            pairs = subject.validate_inherited_base(base, receipt, debug, manifest, self.root,
-                                                    readelf="readelf", objcopy="objcopy")
+        """The dynamic receipt retains a complete inherited pair with no pinned package snapshot."""
+        base, selected, receipt = self.inherited_base_fixture()
+        pairs = subject.validate_inherited_base(base, selected, receipt, self.root,
+                                                readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0]["build_id"], self.identifier)
         self.assertEqual(pairs[0]["origin"], "inherited_base")
-        self.assertTrue(pairs[0]["dwz_build_id"])
+        self.assertTrue(pairs[0]["supplements"][0]["build_id"])
 
     def test_inherited_base_symbols_reject_a_wrong_dwz_link(self):
-        """Even valid archive hashes and debuglink CRC must not admit an unrelated DWZ identifier."""
-        base, receipt, debug, manifest, contract = self.inherited_base_fixture(wrong_alternate_id=True)
-        with mock.patch.object(base_debug_symbols, "CONTRACT", contract):
-            with self.assertRaisesRegex(ValueError, "alternate link differs"):
-                subject.validate_inherited_base(base, receipt, debug, manifest, self.root,
-                                                 readelf="readelf", objcopy="objcopy")
+        """Even valid archive hashes and debuglink CRC cannot admit an unrelated DWZ identifier."""
+        base, selected, receipt = self.inherited_base_fixture(wrong_alternate_id=True)
+        with self.assertRaisesRegex(ValueError, "alternate link differs"):
+            subject.validate_inherited_base(base, selected, receipt, self.root,
+                                             readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
+
+    def test_inherited_symbol_receipt_is_bound_to_runtime_and_selected_bytes(self):
+        """Reject an old-runtime receipt or a modified archive before trusting its selected paths."""
+        base, selected, receipt_path = self.inherited_base_fixture()
+        receipt = json.loads(receipt_path.read_bytes())
+        with self.assertRaisesRegex(ValueError, "different runtime"):
+            subject.imported_symbol_receipt(selected, receipt_path, "sha256:" + "0" * 64)
+        selected.write_bytes(selected.read_bytes() + b"changed")
+        with self.assertRaisesRegex(ValueError, "archive differs"):
+            subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"])
+
+    def test_inherited_symbols_cannot_hide_a_required_dwz_supplement(self):
+        """A self-consistent receipt and TAR still fail when ELF references missing DWZ data."""
+        base, selected, receipt_path = self.inherited_base_fixture()
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt["pairs"][0]["supplements"] = []
+        receipt["selected_paths"] = [self.debug_path]
+        selected.write_bytes(tar_entries([(self.debug_path, self.symbols.read_bytes(), 0o644)]))
+        receipt["output"] = {"sha256": subject.sha(selected), "size": selected.stat().st_size}
+        receipt_path.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, "unrecorded DWZ"):
+            subject.validate_inherited_base(base, selected, receipt_path, self.root,
+                                             readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
+
+    def test_imported_symbols_keep_original_deb_provenance(self):
+        """Bind selected symbols to the importer's exact candidate TAR and original DEB record."""
+        _, selected, receipt_path = self.inherited_base_fixture()
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt["sources"] = [{"index": 0, "sha256": "a" * 64, "size": 12345}]
+        receipt_path.write_text(json.dumps(receipt))
+        package_manifest = self.root / "original-import.json"
+        imported = {"schema": 1, "architecture": "amd64", "payload": {"sha256": "a" * 64, "size": 12345},
+                    "packages": [{"package": "libswsscommon-dbgsym", "architecture": "amd64",
+                                  "control_fields": {"Package": "libswsscommon-dbgsym"}, "source_sha256": "b" * 64}]}
+        package_manifest.write_text(json.dumps(imported))
+        verified, _ = subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"], package_manifest)
+        self.assertEqual(verified["imported_packages"][0]["source_sha256"], "b" * 64)
+        self.assertEqual(verified["package_manifest_sha256"], subject.sha(package_manifest))
+        imported["payload"]["sha256"] = "c" * 64
+        package_manifest.write_text(json.dumps(imported))
+        with self.assertRaisesRegex(ValueError, "original Debian import"):
+            subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"], package_manifest)
 
     def test_real_runtime_and_symbols_match(self):
         result = self.validate()

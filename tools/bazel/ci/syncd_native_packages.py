@@ -13,9 +13,9 @@ import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
-sys.path.insert(0, str(Path(__file__).absolute().parent))
+sys.path.insert(0, str(Path(__file__).absolute().parents[3] / "dockers/docker-syncd-vs/bazel"))
 from tools.bazel.ci.artifact_validation import elf_header, elf_info, path_name, require, sha, verify_debuglink
-import validate_payloads
+from tools.bazel.ci import syncd_payloads as validate_payloads
 
 REQUIRED_PACKAGES = {"syncd-vs", "libsairedis", "libsaimetadata", "libsaivs", "libswsscommon", "libyang3"}
 REQUIRED_SONAMES = {"libsairedis": "libsairedis.so.0", "libsaimetadata": "libsaimetadata.so.0",
@@ -135,101 +135,153 @@ def resolve(files, name):
     raise ValueError("library or debug symlink cycle")
 
 
-def validate_inherited_base(base_path, receipt, debug, debug_manifest, temporary, *, readelf, objcopy):
-    """Pair the unchanged base library with its filtered Make symbols and DWZ data."""
-    inherited = receipt.get("inherited_files", {}) if receipt else {}
-    if not inherited:
-        return []
-    require(base_path is not None, "inherited native symbol validation requires the managed OCI base")
-    import base_debug_symbols
+def imported_symbol_receipt(archive_path, receipt_path, runtime_digest, package_manifest=None):
+    """Bind the shared rule's selected files to this exact runtime and archive."""
+    from tools.bazel.oci.oci_inventory import apply_layer
+    receipt = json.loads(receipt_path.read_bytes())
+    require(receipt.get("schema") == 1 and receipt.get("runtime_manifest") == runtime_digest and
+            receipt.get("expected_platform") == "linux/amd64", "imported symbol receipt uses a different runtime")
+    require(receipt.get("output") == {"sha256": sha(archive_path), "size": archive_path.stat().st_size},
+            "imported symbol archive differs from its receipt")
+    if package_manifest is not None:
+        imported = json.loads(package_manifest.read_bytes())
+        require(imported.get("schema") == 1 and imported.get("architecture") == "amd64" and
+                len(imported.get("packages", [])) == 1, "invalid imported base debug package manifest")
+        package = imported["packages"][0]
+        require(package.get("package") == "libswsscommon-dbgsym" and
+                package.get("control_fields", {}).get("Package") == package["package"] and
+                package.get("architecture") == "amd64" and
+                re.fullmatch(r"[0-9a-f]{64}", package.get("source_sha256", "")),
+                "imported base symbols have an unexpected Debian package identity")
+        require(receipt.get("sources") == [{"index": 0, "sha256": imported["payload"]["sha256"],
+                                            "size": imported["payload"]["size"]}],
+                "symbol candidates differ from the original Debian import")
+        receipt["imported_packages"] = imported["packages"]
+        receipt["package_manifest_sha256"] = sha(package_manifest)
+    files = {}
+    apply_layer(archive_path, files)
+    expected = {}
+    for pair in receipt["pairs"]:
+        expected[pair["debug_path"]] = pair["debug_sha256"]
+        for supplement in pair.get("supplements", []):
+            expected[supplement["path"]] = supplement["sha256"]
+    require(set(files) == set(receipt["selected_paths"]) == set(expected),
+            "imported symbol receipt inventory differs")
+    for name, digest in expected.items():
+        require(files[name].get("kind") == "file" and files[name].get("sha256") == digest,
+                "imported symbol file differs from its receipt: " + name)
+    return receipt, files
+
+
+def validate_inherited_base(runtime_path, symbols_tar, receipt_path, temporary, *, readelf, objcopy, package_manifest=None,
+                            required_paths=("usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0",)):
+    """Independently check dynamic matches with binutils against deployed ELFs."""
     from tools.bazel.oci.oci_inventory import apply_layer
     from tools.bazel.oci.oci_layout import validate_layout
-    contract = base_debug_symbols.read_contract()
-    base = validate_layout(base_path, "linux/amd64")
-    require(base.descriptor["digest"] == receipt["base_manifest_digest"], "inherited symbols use a different OCI base")
+    runtime = validate_layout(runtime_path, "linux/amd64")
+    receipt, _ = imported_symbol_receipt(symbols_tar, receipt_path, runtime.descriptor["digest"], package_manifest)
+    pairs = receipt["pairs"]
+    require(set(required_paths).issubset({pair["runtime_path"] for pair in pairs}),
+            "required inherited runtime has no imported symbol pair")
     files = {}
-    for layer in base.layers:
+    for layer in runtime.layers:
         apply_layer(layer, files)
-    require(all(files.get(name) == expected for name, expected in inherited.items()),
-            "inherited native base files differ from the source receipt")
-    name = contract["runtime"]["path"]
-    require(inherited.get(name, {}).get("sha256") == contract["runtime"]["sha256"],
-            "inherited native runtime identity differs from the symbol contract")
-    binary = temporary / "inherited-base-library"
-    for layer in reversed(base.layers):
-        with tarfile.open(layer, "r:*") as archive:
-            members = [member for member in archive if path_name(member.name) == name]
-            if not members:
-                continue
-            member = members[-1]
-            require(member.isfile(), "inherited native runtime is not an ELF file")
-            with archive.extractfile(member) as stream, binary.open("wb") as output:
+    symbols = {}
+    with tarfile.open(symbols_tar, "r:") as archive:
+        for index, member in enumerate(archive):
+            name = path_name(member.name)
+            require(member.isfile(), "imported symbol is not a regular file")
+            path = temporary / ("inherited-symbol-" + str(index))
+            with archive.extractfile(member) as stream, path.open("wb") as output:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     output.write(chunk)
-            break
-    require(binary.is_file() and sha(binary) == contract["runtime"]["sha256"],
-            "inherited runtime ELF bytes differ from the symbol contract")
-    info = elf_info(binary, readelf=readelf, timeout=120)
-    identifier = contract["runtime"]["build_id"]
-    require(info["build_id"] == identifier and info["has_debuglink"] and not info["has_dwarf"],
-            "inherited runtime ELF lacks the expected build ID and split symbols")
-    debug_name = "usr/lib/debug/.build-id/" + identifier[:2] + "/" + identifier[2:] + ".debug"
-    symbols = resolve(debug, debug_name)
-    require(symbols["package"] == base_debug_symbols.PACKAGE and symbols.get("file") is not None,
-            "inherited runtime symbols have an unexpected package owner")
-    symbol_info = elf_info(symbols["file"], readelf=readelf, timeout=120)
-    require(symbol_info["build_id"] == identifier and symbol_info["has_dwarf"],
-            "inherited debug ELF does not match runtime build ID or lacks DWARF")
-    verify_debuglink(binary, symbols["file"], name, expected_name=PurePosixPath(debug_name).name,
-                     objcopy=objcopy, timeout=120)
-    dwz_names = set(contract["files"]) - {debug_name}
-    require(len(dwz_names) == 1, "inherited symbol contract must select one DWZ supplement")
-    dwz_name = next(iter(dwz_names))
-    dwz = resolve(debug, dwz_name)
-    require(dwz["package"] == base_debug_symbols.PACKAGE and dwz.get("file") is not None,
-            "inherited DWZ data has an unexpected package owner")
-    for path, item in ((debug_name, symbols), (dwz_name, dwz)):
-        require(sha(item["file"]) == contract["files"][path]["sha256"],
-                "inherited symbol bytes differ from the reviewed contract: " + path)
-    dwz_info = elf_info(dwz["file"], readelf=readelf, timeout=120)
-    require(dwz_info["build_id"] == contract["files"][dwz_name]["build_id"] and dwz_info["has_dwarf"],
-            "inherited DWZ build ID or DWARF differs")
-    alternate = temporary / "inherited-debugaltlink"
-    completed = subprocess.run([objcopy, "--dump-section", ".gnu_debugaltlink=" + str(alternate), str(symbols["file"])],
-                               capture_output=True, text=True, timeout=120)
-    require(completed.returncode == 0 and alternate.is_file(), "inherited debug ELF lacks its DWZ link")
-    link, identifier_bytes = alternate.read_bytes().split(b"\0", 1)
-    target = posixpath.normpath(posixpath.join(posixpath.dirname(debug_name), link.decode())).lstrip("/")
-    require(target == dwz_name and identifier_bytes.hex() == dwz_info["build_id"],
-            "inherited debug alternate link differs from its DWZ path or build ID")
-    records = [item for item in json.loads(debug_manifest.read_bytes())["packages"]
-               if item["package"] == base_debug_symbols.PACKAGE]
-    require(len(records) == 1, "inherited symbols require one checked Make package record")
-    record = records[0]
-    descriptor = base_debug_symbols.check_record(record)
-    return [{"path": name, "origin": "inherited_base", "base_manifest_digest": base.descriptor["digest"],
-             "build_id": info["build_id"], "debug_path": debug_name, "dwz_path": dwz_name,
-             "dwz_build_id": dwz_info["build_id"], "source_deb_sha256": record["source_sha256"],
-             "original_payload_sha256": record["original_payload_sha256"],
-             "filtered_payload_sha256": record["payload_sha256"], "filter_contract_sha256": descriptor["contract_sha256"]}]
+            symbols[name] = path
+    result = []
+    for index, pair in enumerate(pairs):
+        name = pair["runtime_path"]
+        require(files.get(name, {}).get("sha256") == pair["runtime_sha256"],
+                "inherited runtime differs from the dynamic symbol receipt")
+        binary = temporary / ("inherited-runtime-" + str(index))
+        for layer in reversed(runtime.layers):
+            with tarfile.open(layer, "r:*") as archive:
+                matches = [member for member in archive if path_name(member.name) == name]
+                if not matches:
+                    continue
+                member = matches[-1]
+                require(member.isfile(), "inherited native runtime is not an ELF file")
+                with archive.extractfile(member) as stream, binary.open("wb") as output:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        output.write(chunk)
+                break
+        require(binary.is_file() and sha(binary) == pair["runtime_sha256"], "inherited runtime bytes differ")
+        info = elf_info(binary, readelf=readelf, timeout=120)
+        debug_name = pair["debug_path"]
+        symbol = symbols[debug_name]
+        debug_info = elf_info(symbol, readelf=readelf, timeout=120)
+        require(info["build_id"] == debug_info["build_id"] == pair["build_id"] and
+                info["has_debuglink"] and not info["has_dwarf"] and debug_info["has_dwarf"],
+                "inherited runtime and symbols have different build IDs or invalid DWARF")
+        verify_debuglink(binary, symbol, name, expected_name=PurePosixPath(debug_name).name,
+                         objcopy=objcopy, timeout=120)
+        previous = debug_name
+        for number, supplement in enumerate(pair.get("supplements", [])):
+            alternate = temporary / ("inherited-debugaltlink-" + str(index) + "-" + str(number))
+            completed = subprocess.run([objcopy, "--dump-section", ".gnu_debugaltlink=" + str(alternate), str(symbols[previous])],
+                                       capture_output=True, text=True, timeout=120)
+            require(completed.returncode == 0 and alternate.is_file(), "inherited debug ELF lacks its DWZ link")
+            link, identifier_bytes = alternate.read_bytes().split(b"\0", 1)
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(previous), link.decode())).lstrip("/")
+            dwz_info = elf_info(symbols[supplement["path"]], readelf=readelf, timeout=120)
+            require(target == supplement["path"] and identifier_bytes.hex() == dwz_info["build_id"] == supplement["build_id"] and
+                    dwz_info["has_dwarf"], "inherited debug alternate link differs from its DWZ path or build ID")
+            previous = target
+        sections = subprocess.run([readelf, "-SW", str(symbols[previous])], capture_output=True, text=True, timeout=120)
+        require(sections.returncode == 0 and ".gnu_debugaltlink" not in sections.stdout,
+                "inherited symbols have an unrecorded DWZ supplement")
+        result.append({"path": name, "origin": "inherited_base", **pair,
+                       "runtime_manifest_digest": runtime.descriptor["digest"],
+                       "filtered_payload_sha256": receipt["output"]["sha256"],
+                       "input_archives": receipt["sources"],
+                       "imported_packages": receipt.get("imported_packages", []),
+                       "package_manifest_sha256": receipt.get("package_manifest_sha256")})
+    return result
 
 
 def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objcopy="objcopy",
                     required_packages=REQUIRED_PACKAGES, required_sonames=REQUIRED_SONAMES,
                     gap_packages=GAP_PACKAGES, source_runtime_tar=None,
-                    source_debug_tar=None, source_receipt=None, base_path=None, fixture=False):
+                    source_debug_tar=None, source_receipt=None, base_path=None, runtime_path=None,
+                    base_debug_symbols=None, base_debug_receipt=None, base_debug_package_manifest=None, fixture=False):
     source_inputs = (source_runtime_tar, source_debug_tar, source_receipt)
     has_source = all(value is not None for value in source_inputs)
     require(has_source or not any(value is not None for value in source_inputs),
             "source runtime tar, debug tar, and receipt must be supplied together")
     require(fixture or has_source, "native validation requires source runtime tar, debug tar, and receipt")
+    inherited_inputs = (runtime_path, base_debug_symbols, base_debug_receipt)
+    has_inherited = all(value is not None for value in inherited_inputs)
+    require(has_inherited or not any(value is not None for value in inherited_inputs),
+            "runtime OCI, imported base symbols, and receipt must be supplied together")
+    require(fixture or (has_inherited and base_debug_package_manifest is not None),
+            "native validation requires imported base symbols, package manifest, and runtime OCI")
     receipt = None
     source_debug_sha256 = sha(source_debug_tar) if has_source else None
     if has_source:
-        import source_packages
+        import package_contract as source_packages
         receipt = source_packages.validate_receipt(
             source_receipt, source_runtime_tar, source_debug_tar,
-            contract_path=None if fixture else Path(__file__).with_name("source_packages.json"))
+            contract_path=None if fixture else Path(__file__).absolute().parents[3] / "dockers/docker-syncd-vs/config/source_packages.json")
+        if receipt.get("inherited_files"):
+            from tools.bazel.oci.oci_layout import validate_layout
+            from tools.bazel.oci.oci_inventory import apply_layer
+            require(base_path is not None, "inherited source files require the managed OCI base")
+            base = validate_layout(base_path, "linux/amd64")
+            require(base.descriptor["digest"] == receipt["base_manifest_digest"],
+                    "inherited source files use a different OCI base")
+            base_files = {}
+            for layer in base.layers:
+                apply_layer(layer, base_files)
+            require(all(base_files.get(name) == expected for name, expected in receipt["inherited_files"].items()),
+                    "inherited native base files differ from the source receipt")
     validate_payloads.validate(runtime_manifest, runtime_manifest.parent / "payload.tar", variant="runtime")
     validate_payloads.validate(debug_manifest, debug_manifest.parent / "payload.tar",
                                variant="debug", runtime_manifest=runtime_manifest)
@@ -303,8 +355,9 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
             checked.append(record)
         for package, soname in required_sonames.items():
             require(soname in observed_sonames.get(package, set()), "required SONAME is absent: " + package + ":" + soname)
-        inherited_pairs = validate_inherited_base(base_path, receipt, debug, debug_manifest, temporary,
-                                                  readelf=readelf, objcopy=objcopy)
+        inherited_pairs = validate_inherited_base(runtime_path, base_debug_symbols, base_debug_receipt, temporary,
+                                                  readelf=readelf, objcopy=objcopy,
+                                                  package_manifest=base_debug_package_manifest) if has_inherited else []
         runtime_ids.update(record["build_id"] for record in inherited_pairs)
         unmatched = []
         for name in debug:
@@ -331,6 +384,10 @@ def main():
     parser.add_argument("--source-debug-tar", required=True, type=Path)
     parser.add_argument("--source-receipt", required=True, type=Path)
     parser.add_argument("--base", type=Path)
+    parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--base-debug-symbols", type=Path, required=True)
+    parser.add_argument("--base-debug-receipt", type=Path, required=True)
+    parser.add_argument("--base-debug-package-manifest", type=Path, required=True)
     parser.add_argument("--readelf", default="readelf")
     parser.add_argument("--objcopy", default="objcopy")
     parser.add_argument("--out", required=True, type=Path)
@@ -338,7 +395,9 @@ def main():
     try:
         result = validate_native(args.runtime_manifest, args.debug_manifest, readelf=args.readelf, objcopy=args.objcopy,
                                  source_runtime_tar=args.source_runtime_tar, source_debug_tar=args.source_debug_tar,
-                                 source_receipt=args.source_receipt, base_path=args.base)
+                                 source_receipt=args.source_receipt, base_path=args.base, runtime_path=args.runtime,
+                                 base_debug_symbols=args.base_debug_symbols, base_debug_receipt=args.base_debug_receipt,
+                                 base_debug_package_manifest=args.base_debug_package_manifest)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError, subprocess.TimeoutExpired) as error:

@@ -10,13 +10,13 @@ import sys
 import tempfile
 import unittest
 
-OWNER = Path(__file__).absolute().parents[2]
+OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
 sys.path.insert(0, str(OWNER.parents[1]))
 sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 from tools.bazel.oci import apt_selection as subject
 from sonic_apt import dependencies
-import validate_payloads
+from tools.bazel.ci import syncd_payloads as validate_payloads
 from sonic_apt.inputs import declarations
 
 
