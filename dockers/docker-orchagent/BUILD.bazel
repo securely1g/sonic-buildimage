@@ -52,7 +52,7 @@ oci_base_layout(
 # Select checked Debian contents before filtering the final layer. Packages
 # already supplied by the config-engine base retain their existing versions.
 apt_layer(
-    name = "selected_runtime_apt",
+    name = "runtime_layer",
     base = ":config_engine_base_layout",
     packages = APT_INPUTS["orchagent_debian"]["amd64"],
     dependency_set = "orchagent_debian",
@@ -63,13 +63,13 @@ apt_layer(
 
 filegroup(
     name = "runtime_apt_selection",
-    srcs = [":selected_runtime_apt"],
+    srcs = [":runtime_layer"],
     output_group = "selection",
 )
 
 sonic_layer(
     name = "apt_deps",
-    tars = [":selected_runtime_apt"],
+    tars = [":runtime_layer"],
 )
 
 sonic_layer(
@@ -121,7 +121,7 @@ debug_symbols_layer(
 # Inspect the completed runtime image when adding debugger tools, including
 # its source-built SWSS libraries. Debug additions cannot replace runtime ELF.
 apt_layer(
-    name = "selected_debug_apt",
+    name = "debug_layer",
     base = ":docker-orchagent",
     base_package_metadata = ":runtime_apt_selection",
     packages = APT_INPUTS["orchagent_debug_debian"]["amd64"],
@@ -133,13 +133,13 @@ apt_layer(
 
 filegroup(
     name = "debug_apt_selection",
-    srcs = [":selected_debug_apt"],
+    srcs = [":debug_layer"],
     output_group = "selection",
 )
 
 sonic_layer(
     name = "debug_tools",
-    tars = [":selected_debug_apt"],
+    tars = [":debug_layer"],
 )
 
 oci_image(

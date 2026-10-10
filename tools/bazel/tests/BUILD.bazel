@@ -230,13 +230,13 @@ py_test(
     main = "integration/select_apt_payloads_test.py",
     args = [
         "$(rootpath @orchagent_apt_inputs//:apt_inputs.bzl)",
-        "$(rootpath //dockers/docker-orchagent:selected_runtime_apt_policy)",
+        "$(rootpath //dockers/docker-orchagent:runtime_layer_policy)",
         "$(rootpath //dockers/docker-orchagent/bazel:apt.lock.json)",
         "$(rootpath //dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel)",
     ],
     data = [
         "@orchagent_apt_inputs//:apt_inputs.bzl",
-        "//dockers/docker-orchagent:selected_runtime_apt_policy",
+        "//dockers/docker-orchagent:runtime_layer_policy",
         "//dockers/docker-orchagent/bazel:apt.lock.json",
         "//dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel",
     ],

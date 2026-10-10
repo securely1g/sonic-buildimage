@@ -84,7 +84,7 @@ stages the selected archives and receipt. Other containers, including syncd-vs,
 use that same implementation. Orchagent declares its AMD64/Trixie policy in
 `dockers/docker-orchagent/BUILD.bazel`; the macro generates the policy JSON and
 selects the shared command-line program. The owner suite checks the actual
-`:selected_runtime_apt_policy` output used by the runtime layer.
+`:runtime_layer_policy` output used by the runtime layer.
 
 Orchagent has no Make-produced native DEB handoff: its component payloads come
 from source-owned Bazel targets. Its `retained_source = "none"` policy records
