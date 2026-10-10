@@ -119,8 +119,8 @@ parent-symlink and inherited ELF-link checks; syncd supplies its reviewed
 merged-usr path adapter.
 `tools/bazel/oci/apt_layer.bzl` binds the shared `apt_selection.py` executable to
 the policy declared in this container's `BUILD.bazel`. The policy identifies its
-Make package manifest, supported features, and checked debug FIPS OpenSSH
-replacement. Both images use the same OCI inspection, APT selection, payload
+Make package manifest and supported features. It permits no debug package
+replacements. Both images use the same OCI inspection, APT selection, payload
 staging, receipt writing, and command-line implementation. The package rules
 remain in `sonic_apt.selection`; there is no container-owned Python selector.
 The shared `tools/bazel/ci/artifact_validation.py` supplies streamed file hashes,
@@ -142,7 +142,14 @@ those package contracts.
 
 `inputs.mk` uses the existing dependency-first `expand(...,RDEPENDS)` lists. It
 also includes the two libnl development packages that the Dockerfile installs
-explicitly. `prepare_packages.py` reads existing DEBs, checks package identity
+explicitly. For the supported `INCLUDE_FIPS=y` profile, the OCI runtime also
+includes Make's `FIPS_OPENSSH_CLIENT`; the debug handoff omits that package and
+inherits it from runtime. This corrects the legacy selection gap where P4C's
+transitive MPI dependency installed public Debian OpenSSH in runtime and only
+the debug image received FIPS OpenSSH. The legacy Dockerfile and Make package
+lists remain unchanged.
+
+`prepare_packages.py` reads existing DEBs, checks package identity
 and architecture, records source and control hashes, and extracts their data
 with `dpkg-deb`. GNU tar concatenates the uncompressed data tars in the same
 package order.
@@ -156,7 +163,10 @@ Each variant publishes an immutable generation containing only:
 A managed symlink selects the complete generation. A failed preparation keeps
 the previous generation. Identical inputs retain the symlink and file timestamps.
 The debug manifest records the runtime manifest hash and rejects different bytes
-for any package shared with runtime.
+for any package shared with runtime. Preparation and payload validation require
+runtime OpenSSH's `+fips` version to match its Debian control identity. They reject
+stale runtime handoffs without FIPS OpenSSH and any debug OpenSSH package, even
+if a supplied manifest omits OpenSSH from its required-package list.
 
 The Bazel validation action checks the two declared files, configuration,
 aggregate hash, and package segment counts. It accepts the managed producer
@@ -189,7 +199,9 @@ registered by [#51](https://github.com/securely1g/sonic-bazel-registry/pull/51),
 explicit inherited-package replacement and adds a separately declared policy
 input. While that source and its registry entry are under review, the Draft
 consumer uses an exact `git_override` source commit for `sonic-build-infra`.
-This includes both changes without depending on another registry branch.
+The selected source still contains both changes without depending on another
+registry branch. This image no longer requests inherited-package replacements;
+the FIPS runtime fix removes its need for that API.
 
 Local builds and CI use the maintained SONiC registry `main` endpoint plus BCR.
 The source commit in `MODULE.bazel` fixes the temporary infrastructure override.
@@ -240,13 +252,12 @@ debug handoff. Make preparation preserves all original Debian control fields,
 including identity and `Multi-Arch`; old incomplete handoffs must be regenerated
 from the original source DEBs.
 
-The debug Make handoff intentionally replaces the runtime OpenSSH package with
-its FIPS build. The inventory adapter records this one declared replacement,
-checks unchanged dependency and Multi-Arch relationships and binds its source, payload and
-control hashes. Existing handoff and image checks still verify actual payload
-bytes and the allowed ELF owner; other conflicting package records fail.
+The runtime Make handoff supplies FIPS OpenSSH, so the ordinary public Debian
+candidate stays unselected. Debug inherits the same package identity and bytes;
+the owner policy allows no replacements. Existing handoff and image checks bind
+the original source, control and payload hashes and verify actual payload bytes.
 
-The checker uses infrastructure `d78ffc8253bef78c9993f8ff664a9f152e748c58` through
+The checker uses infrastructure `26a75d4b0378796b7b33acedf30677b6def609ac` through
 the temporary source override. `.bazelrc` continues to use the registry's `main`
 URL. No local copy of a Distroless patch is needed.
 
@@ -288,14 +299,15 @@ Make remains responsible for the `com.azure.sonic.manifest` JSON, including the
 
 The debug OCI image extends the runtime image and adds the checked debug tools
 and Make symbol payload. `validate_image.py` requires the Make runtime payload to
-remain byte-identical. It permits the explicit FIPS OpenSSH package to replace
-its own runtime OpenSSH ELF files, matching the existing FIPS debug dependency.
-Other deployed ELF changes fail validation.
+remain byte-identical, including FIPS OpenSSH. Debug must inherit the runtime
+package; deployed ELF changes fail validation.
 
 `validate_native_packages.py` checks SONAME paths, native dependency names,
 build IDs, DWARF presence, and debug-link checksums. It records the existing
-symbol gaps for imported PI/BMv2/p4c, DASH SAI, and libnl content that has no
-matching package in the Make debug list. It also reports symbol files belonging
+symbol gaps for imported PI/BMv2/p4c, DASH SAI, libnl, and FIPS OpenSSH content
+that has no matching package in the Make debug list. The retained FIPS OpenSSH
+ELFs are stripped and have build IDs/debuglinks; moving them into runtime does
+not add matching symbols. It also reports symbol files belonging
 to the imported base for separate validation against the complete image.
 
 Source/line lookup with the actual debug image and source bundle remains a

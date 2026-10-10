@@ -41,6 +41,10 @@ class ValidateImageTest(unittest.TestCase):
         self.debug_manifest = self.root / "debug-manifest.json"
         self.runtime_manifest.write_text('{"container_name":"syncd","version":"1.0.0"}\n')
         self.debug_manifest.write_text('{"container_name":"syncd","version":"1.0.0-dbg"}\n')
+        header = bytearray(64)
+        header[:6] = b"\x7fELF\x02\x01"
+        struct.pack_into("<HH", header, 16, 3, 62)
+        self.ssh_elf = bytes(header) + b"FIPS OpenSSH runtime"
         self.runtime_handoff, self.runtime_payload = self.handoff("runtime")
         self.debug_handoff, self.debug_payload = self.handoff("debug", runtime=self.runtime_handoff)
         self.base = layer([("usr/bin/base", b"base\n", 0o755)])
@@ -61,17 +65,26 @@ class ValidateImageTest(unittest.TestCase):
         directory.mkdir(parents=True)
         package = "syncd-vs" if variant == "runtime" else "syncd-vs-dbgsym"
         payload = directory / "payload.tar"
-        payload.write_bytes(layer([("usr/share/" + package + "/data", package.encode(), 0o644)]))
+        packages = [(package, "1.0", [("usr/share/" + package + "/data", package.encode(), 0o644)])]
+        if variant == "runtime":
+            packages.append(("openssh-client", "1.0+fips", [("usr/bin/ssh", self.ssh_elf, 0o755)]))
+        records, entries = [], []
+        for name, version, members in packages:
+            data = layer(members)
+            records.append({"package": name, "version": version, "architecture": "amd64",
+                "source_deb": name + "_" + version + "_amd64.deb", "source_size": 1,
+                "source_sha256": hashlib.sha256(name.encode()).hexdigest(),
+                "control_sha256": hashlib.sha256((name + " control").encode()).hexdigest(),
+                "control_fields": {"Package": name, "Version": version, "Architecture": "amd64"},
+                "payload_sha256": hashlib.sha256(data).hexdigest(), "payload_size": len(data),
+                "payload_members": len(members)})
+            entries.extend(members)
+        payload.write_bytes(layer(entries))
         digest = hashlib.sha256(payload.read_bytes()).hexdigest()
-        record = {"package": package, "version": "1.0", "architecture": "amd64",
-                  "source_deb": package + "_1.0_amd64.deb", "source_size": 1,
-                  "source_sha256": hashlib.sha256(package.encode()).hexdigest(),
-                  "control_sha256": hashlib.sha256((package + " control").encode()).hexdigest(),
-                  "payload_sha256": digest, "payload_size": payload.stat().st_size, "payload_members": 1}
         value = {"schema": 1, "image": "docker-syncd-vs", "variant": variant,
                  "architecture": "amd64", "distribution": "trixie", "features": dict(validate_payloads.FEATURES),
-                 "required_packages": [package], "debug_apt_packages": [], "packages": [record],
-                 "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": 1}}
+                 "required_packages": [record["package"] for record in records], "debug_apt_packages": [], "packages": records,
+                 "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": len(entries)}}
         if runtime:
             value["runtime_manifest_sha256"] = hashlib.sha256(runtime.read_bytes()).hexdigest()
             value["debug_apt_packages"] = ["gdb", "gdbserver", "sshpass", "strace", "vim"]
@@ -130,7 +143,8 @@ class ValidateImageTest(unittest.TestCase):
         self.assertEqual(result["validation_mode"], "fixture")
         self.assertEqual(result["runtime_layers"], 3)
         self.assertEqual(result["debug_layers"], 4)
-        self.assertEqual(result["runtime_package_count"], 1)
+        self.assertEqual(result["runtime_package_count"], 2)
+        self.assertEqual(result["allowed_debug_package_replacements"], [])
         self.assertEqual(result["changed_non_elf_runtime_paths_in_debug"], [])
 
     def test_entrypoint_and_runtime_ancestry_are_required(self):
@@ -161,21 +175,28 @@ class ValidateImageTest(unittest.TestCase):
             self.validate()
 
 
-    def test_only_declared_fips_openssh_can_replace_a_runtime_elf(self):
-        header = bytearray(64)
-        header[:6] = b"\x7fELF\x02\x01"
-        struct.pack_into("<HH", header, 16, 3, 62)
-        self.runtime_layers.append(layer([("usr/bin/ssh", bytes(header) + b"runtime", 0o755)]))
-        self.append_debug_package("openssh-client", "1.0+fips", [("usr/bin/ssh", bytes(header) + b"FIPS", 0o755)])
+    def test_debug_cannot_supply_a_separate_openssh_package(self):
+        """Even identical FIPS bytes must come from the runtime handoff, not a debug override."""
+        self.append_debug_package("openssh-client", "1.0+fips", [("usr/bin/ssh", self.ssh_elf, 0o755)])
         self.debug_layers = self.runtime_layers + [self.debug_payload.read_bytes()]
         self.write_images()
-        result = self.validate()
-        self.assertEqual(len(result["allowed_debug_package_replacements"]), 1)
-        self.assertEqual(result["allowed_debug_package_replacements"][0]["package"], "openssh-client")
-        manifest = json.loads(self.debug_handoff.read_bytes())
+        with self.assertRaisesRegex(ValueError, "must inherit runtime FIPS openssh-client"):
+            self.validate()
+
+    def test_debug_cannot_mutate_the_runtime_openssh_elf(self):
+        """Reject an unlisted overlay that changes the runtime FIPS client's deployed bytes."""
+        self.debug_layers.append(layer([("usr/bin/ssh", self.ssh_elf + b"changed", 0o755)]))
+        self.write_images()
+        with self.assertRaisesRegex(ValueError, "debug image changes the runtime package payload"):
+            self.validate()
+
+    def test_runtime_cannot_use_the_ordinary_openssh_package(self):
+        """An ordinary Debian client cannot satisfy the FIPS runtime handoff contract."""
+        manifest = json.loads(self.runtime_handoff.read_bytes())
         manifest["packages"][-1]["version"] = "1.0"
-        self.debug_handoff.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-        with self.assertRaisesRegex(ValueError, "changes a deployed ELF"):
+        manifest["packages"][-1]["control_fields"]["Version"] = "1.0"
+        self.runtime_handoff.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        with self.assertRaisesRegex(ValueError, "requires the Make FIPS openssh-client"):
             self.validate()
 
     def test_docker_archive_tag_config_and_gzip_header_are_checked(self):

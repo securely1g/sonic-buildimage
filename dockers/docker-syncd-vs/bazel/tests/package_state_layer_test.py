@@ -180,6 +180,23 @@ class PackageStateLayerTest(unittest.TestCase):
         self.build()
         self.assertEqual(self.output.read_bytes(), first)
 
+    def test_reviewed_make_archive_identity_cannot_be_substituted(self):
+        """Bind explicitly pinned state inputs to their reviewed source and control archives."""
+        identity = {"source_sha256": "a" * 64, "control_sha256": "b" * 64}
+        self.mutate(self.contract, lambda value: value["make_package_state_inputs"]["make-package"].update(identity))
+        self.mutate(self.make_manifest, lambda value: value["packages"][0].update(identity))
+        self.update_make_selection()
+        self.build()
+        original = self.output.read_bytes()
+        for field in identity:
+            with self.subTest(field=field):
+                self.mutate(self.make_manifest, lambda value: value["packages"][0].update(identity))
+                self.mutate(self.make_manifest, lambda value: value["packages"][0].update({field: "f" * 64}))
+                self.update_make_selection()
+                with self.assertRaisesRegex(ValueError, "relationships or scripts changed"):
+                    self.build()
+                self.assertEqual(self.output.read_bytes(), original)
+
     def test_make_state_file_changes_require_review(self):
         self.runtime_layer.write_bytes(tar_bytes([("etc/init.d/tool", b"changed init script\n", 0o755)]))
         with self.assertRaisesRegex(ValueError, "Make package state file changed"):

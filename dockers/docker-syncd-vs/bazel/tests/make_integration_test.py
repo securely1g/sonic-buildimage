@@ -20,7 +20,7 @@ PLATFORM_PATH = platform/vs
 TARGET_PATH = target
 DEBS_PATH = target/debs/trixie
 DOCKER_CONFIG_ENGINE_TRIXIE = docker-config-engine-trixie.gz
-docker-config-engine-trixie.gz_DBG_DEPENDS = base-dbgsym.deb
+docker-config-engine-trixie.gz_DBG_DEPENDS = base-dbgsym.deb $(FIPS_OPENSSH_CLIENT)
 docker-config-engine-trixie.gz_DBG_IMAGE_PACKAGES = gdb gdbserver vim sshpass strace
 SYNCD_VS = syncd-vs.deb
 SYNCD_VS_DBG = syncd-vs-dbgsym.deb
@@ -31,6 +31,7 @@ LIBSWSSCOMMON_DBG = libswsscommon-dbgsym.deb
 LIBSAIMETADATA_DBG = libsaimetadata-dbgsym.deb
 LIBSAIREDIS_DBG = libsairedis-dbgsym.deb
 LIBSAIVS_DBG = libsaivs-dbgsym.deb
+FIPS_OPENSSH_CLIENT = openssh-client_10.0p1-7+fips_amd64.deb
 syncd-vs.deb_RDEPENDS = libsairedis.deb libsaimetadata.deb libsaivs.deb libsai.deb
 libsairedis.deb_RDEPENDS = libswsscommon.deb
 libsai.deb_RDEPENDS = p4lang-pi.deb p4lang-bmv2.deb p4lang-p4c.deb
@@ -58,6 +59,8 @@ selected:
 \t@echo debug_inputs=$($(DOCKER_SYNCD_BASE_DBG)_BAZEL_DEPENDS)
 \t@echo runtime_debs=$(SYNCD_VS_BAZEL_RUNTIME_DEBS)
 \t@echo debug_debs=$(SYNCD_VS_BAZEL_DEBUG_DEBS)
+\t@echo runtime_required=$(SYNCD_VS_BAZEL_RUNTIME_REQUIRED)
+\t@echo debug_required=$(SYNCD_VS_BAZEL_DEBUG_REQUIRED)
 \t@echo runtime_packages=$($(DOCKER_SYNCD_BASE)_DEPENDS)
 \t@echo runtime_path=$($(DOCKER_SYNCD_BASE)_PATH)
 \t@echo debug_path=$($(DOCKER_SYNCD_BASE_DBG)_PATH)
@@ -151,12 +154,20 @@ target/debs/trixie/%.deb:
         self.assertLess(packages.index("p4lang-pi.deb"), packages.index("libsai.deb"))
         self.assertLess(packages.index("libsai.deb"), packages.index("syncd-vs.deb"))
         self.assertIn("base-dbgsym.deb", values["debug_debs"].split())
+        fips = "openssh-client_10.0p1-7+fips_amd64.deb"
+        self.assertEqual(packages.count(fips), 1)
+        self.assertNotIn(fips, values["debug_debs"].split())
+        self.assertIn("openssh-client", values["runtime_required"].split())
+        self.assertNotIn("openssh-client", values["debug_required"].split())
+        # The OCI handoff fixes runtime selection without rewriting legacy rules.
+        self.assertNotIn(fips, values["runtime_packages"].split())
         result = self.run_make("target/bazel-inputs/docker-syncd-vs/debug/payload.tar", dry_run=True,
                                BUILD_WITH_BAZEL_WHEN_AVAILABLE="y")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.count("python3 dockers/docker-syncd-vs/bazel/prepare_packages.py"), 2)
         self.assertIn("--runtime-manifest target/bazel-inputs/docker-syncd-vs/runtime/manifest.json", result.stdout)
         self.assertIn("--package target/debs/trixie/libnl-route-3-dev.deb", result.stdout)
+        self.assertEqual(result.stdout.count("--package target/debs/trixie/" + fips), 1)
         self.assertIn('test -s "target/bazel-inputs/docker-syncd-vs/debug/payload.tar"', result.stdout)
         self.assertNotIn("bazel build", result.stdout)
 

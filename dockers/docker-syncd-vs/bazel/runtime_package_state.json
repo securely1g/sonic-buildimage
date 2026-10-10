@@ -747,6 +747,38 @@
       },
       "version": "3.12.2-1"
     },
+    "openssh-client": {
+      "architecture": "amd64",
+      "control_fields": {
+        "Architecture": "amd64",
+        "Breaks": "openssh-sk-helper",
+        "Conflicts": "sftp",
+        "Depends": "adduser, init-system-helpers (>= 1.66~), passwd, libc6 (>= 2.38), libedit2 (>= 2.11-20080614-0), libfido2-1 (>= 1.8.0), libgssapi-krb5-2 (>= 1.17), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.0), zlib1g (>= 1:1.1.4)",
+        "Description": "secure shell (SSH) client, for secure access to remote machines\n This is the portable version of OpenSSH, a free implementation of\n the Secure Shell protocol as specified by the IETF secsh working\n group.\n .\n Ssh (Secure Shell) is a program for logging into a remote machine\n and for executing commands on a remote machine.\n It provides secure encrypted communications between two untrusted\n hosts over an insecure network. X11 connections and arbitrary TCP/IP\n ports can also be forwarded over the secure channel.\n It can be used to provide applications with a secure communication\n channel.\n .\n This package provides the ssh, scp and sftp clients, the ssh-agent\n and ssh-add programs to make public key authentication more convenient,\n and the ssh-keygen, ssh-keyscan, ssh-copy-id and ssh-argv0 utilities.\n .\n In some countries it may be illegal to use any encryption at all\n without a special permit.\n .\n ssh replaces the insecure rsh, rcp and rlogin programs, which are\n obsolete for most purposes.",
+        "Homepage": "https://www.openssh.com/",
+        "Installed-Size": "4997",
+        "Maintainer": "Debian OpenSSH Maintainers <debian-ssh@lists.debian.org>",
+        "Multi-Arch": "foreign",
+        "Package": "openssh-client",
+        "Priority": "standard",
+        "Provides": "ssh-client",
+        "Recommends": "xauth",
+        "Replaces": "openssh-sk-helper, ssh, ssh-krb5",
+        "Section": "net",
+        "Source": "openssh",
+        "Suggests": "keychain, libpam-ssh, monkeysphere, ssh-askpass",
+        "Version": "1:10.0p1-7+fips"
+      },
+      "control_sha256": "f7d8338964565a1bcb2ac8dcfa4fefa45b8046be2ffe1793b750d5db91669b05",
+      "maintainer_scripts": {
+        "postinst": "062c275d9c918c542989693a7a0e8def89cb776e0243e8e0d04b737e0637533b",
+        "postrm": "1d1d2705f782fce2b4ca556d626dc4ce31d4b73a086c024c94505050b8053c03",
+        "preinst": "a666d1621650a0bec528879ef9d3546610611f32d621c9c195aab569f675c489",
+        "prerm": "a666d1621650a0bec528879ef9d3546610611f32d621c9c195aab569f675c489"
+      },
+      "source_sha256": "1a79291e3dba4bae3bf2204787a114f6a86d457964fc469b2a04513c5094434a",
+      "version": "1:10.0p1-7+fips"
+    },
     "p4lang-bmv2": {
       "architecture": "amd64",
       "control_fields": {

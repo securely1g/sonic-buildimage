@@ -128,6 +128,17 @@ def check_generation(path, manifest_bytes, payload):
             "existing package generation has a damaged payload: " + str(archive))
 
 
+def require_runtime_fips(records):
+    matches = [record for record in records if record.get("package") == "openssh-client"]
+    require(len(matches) == 1 and "+fips" in matches[0].get("version", ""),
+            "runtime package handoff requires the Make FIPS openssh-client")
+    record = matches[0]
+    fields = record.get("control_fields", {})
+    require(fields.get("Package") == record["package"] and fields.get("Version") == record["version"] and
+            fields.get("Architecture") == record.get("architecture") == "amd64",
+            "runtime FIPS openssh-client identity differs from its Debian control")
+
+
 def prepare(args):
     require(args.architecture == "amd64" and args.distribution == "trixie",
             "syncd-vs OCI package preparation supports native AMD64 Trixie only")
@@ -177,6 +188,11 @@ def prepare(args):
             require(len(package_names) == len(set(package_names)), "different DEBs provide the same package name")
             require(set(args.required_package).issubset(package_names),
                     "missing required syncd-vs packages: " + ", ".join(sorted(set(args.required_package) - set(package_names))))
+            if args.variant == "runtime":
+                require_runtime_fips(records)
+            else:
+                require("openssh-client" not in package_names,
+                        "debug package handoff must inherit runtime FIPS openssh-client")
             aggregate = temporary / "payload.tar"
             shutil.copyfile(temporary / records[0]["_payload"], aggregate)
             for record in records[1:]:
@@ -208,6 +224,7 @@ def prepare(args):
                 require(runtime.get("schema") == SCHEMA and runtime.get("image") == IMAGE and
                         runtime.get("variant") == "runtime" and runtime.get("features") == features,
                         "invalid or incompatible runtime package manifest")
+                require_runtime_fips(runtime["packages"])
                 runtime_packages = {record["package"]: record for record in runtime["packages"]}
                 for record in records:
                     previous = runtime_packages.get(record["package"])

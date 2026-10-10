@@ -21,7 +21,10 @@ REQUIRED_PACKAGES = {"syncd-vs", "libsairedis", "libsaimetadata", "libsaivs", "l
 REQUIRED_SONAMES = {"libsairedis": "libsairedis.so.0", "libsaimetadata": "libsaimetadata.so.0",
                     "libsaivs": "libsaivs.so.0", "libswsscommon": "libswsscommon.so.0", "libyang3": "libyang.so.3"}
 GAP_PACKAGES = {"libsai", "p4lang-pi", "p4lang-bmv2", "p4lang-p4c", "libnl-3-200",
-                "libnl-genl-3-200", "libnl-route-3-200", "libnl-nf-3-200", "libnl-cli-3-200"}
+                "libnl-genl-3-200", "libnl-route-3-200", "libnl-nf-3-200", "libnl-cli-3-200",
+                # The retained FIPS client has stripped ELF files with build
+                # IDs/debuglinks, but Make supplies no matching symbol package.
+                "openssh-client"}
 
 
 def collect(manifest_path, temporary, prefix):

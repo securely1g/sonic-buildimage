@@ -29,7 +29,10 @@ class ValidatePayloadsTest(unittest.TestCase):
         package = "syncd-vs" if variant == "runtime" else "syncd-vs-dbgsym"
         payload = directory / "payload.tar"
         data = b"sample installed data\n"
-        payload.write_bytes(tar_entries([("usr/share/" + package + "/data", data, 0o644)]))
+        entries = [("usr/share/" + package + "/data", data, 0o644)]
+        if variant == "runtime":
+            entries.append(("usr/bin/ssh", b"sample FIPS OpenSSH\n", 0o755))
+        payload.write_bytes(tar_entries(entries))
         digest = hashlib.sha256(payload.read_bytes()).hexdigest()
         record = {
             "package": package, "version": "1.0", "architecture": "amd64",
@@ -38,11 +41,17 @@ class ValidatePayloadsTest(unittest.TestCase):
             "control_sha256": hashlib.sha256((package + " control").encode()).hexdigest(),
             "payload_sha256": digest, "payload_size": payload.stat().st_size, "payload_members": 1,
         }
+        records = [record]
+        if variant == "runtime":
+            fips = dict(record, package="openssh-client", version="1:10.0p1-7+fips",
+                        source_deb="openssh-client_10.0p1-7+fips_amd64.deb",
+                        control_fields={"Package": "openssh-client", "Version": "1:10.0p1-7+fips", "Architecture": "amd64"})
+            records.append(fips)
         manifest = {
             "schema": 1, "image": "docker-syncd-vs", "variant": variant,
             "architecture": "amd64", "distribution": "trixie", "features": dict(subject.FEATURES),
-            "required_packages": [package], "debug_apt_packages": [], "packages": [record],
-            "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": 1},
+            "required_packages": [r["package"] for r in records], "debug_apt_packages": [], "packages": records,
+            "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": len(entries)},
         }
         if variant == "debug":
             manifest["runtime_manifest_sha256"] = hashlib.sha256(runtime.read_bytes()).hexdigest()
@@ -79,7 +88,67 @@ class ValidatePayloadsTest(unittest.TestCase):
         result = subject.validate(manifest, payload, variant="runtime")
         self.assertEqual(result["manifest_sha256"], hashlib.sha256(manifest.read_bytes()).hexdigest())
         self.assertEqual(result["payload_sha256"], hashlib.sha256(payload.read_bytes()).hexdigest())
-        self.assertEqual(result["package_count"], 1)
+        self.assertEqual(result["package_count"], 2)
+        self.assertEqual(result["packages"][1]["version"], "1:10.0p1-7+fips")
+
+    def test_runtime_requires_fips_even_if_manifest_omits_the_requirement(self):
+        """Stale runtime inputs cannot silently restore the public Debian SSH package."""
+        for change in ("missing", "ordinary"):
+            with self.subTest(change=change):
+                manifest, payload = self.fixture()
+                value = json.loads(manifest.read_bytes())
+                fips = value["packages"][1]
+                value["required_packages"] = ["syncd-vs"]
+                if change == "missing":
+                    value["packages"].remove(fips)
+                else:
+                    fips["version"] = "1:10.0p1-7+deb13u4"
+                    fips["control_fields"]["Version"] = fips["version"]
+                manifest.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, "requires the Make FIPS"):
+                    subject.validate(manifest, payload, variant="runtime")
+
+    def test_fips_identity_and_integrity_remain_checked(self):
+        """A FIPS version label must agree with the package controls and integrity fields."""
+        for field in ("Package", "Version", "Architecture"):
+            with self.subTest(field=field):
+                manifest, payload = self.fixture()
+                self.mutate(manifest, lambda value: value["packages"][1]["control_fields"].update({field: "wrong"}))
+                with self.assertRaisesRegex(ValueError, "identity differs from its Debian control"):
+                    subject.validate(manifest, payload, variant="runtime")
+        for kind in ("source", "payload", "control"):
+            with self.subTest(kind=kind):
+                manifest, payload = self.fixture()
+                self.mutate(manifest, lambda value: value["packages"][1].update({kind + "_sha256": "wrong"}))
+                with self.assertRaisesRegex(ValueError, "invalid package " + kind + " integrity"):
+                    subject.validate(manifest, payload, variant="runtime")
+
+    def test_debug_must_inherit_the_fips_runtime_package(self):
+        """Debug inputs cannot carry OpenSSH or reference an old non-FIPS runtime manifest."""
+        for version in ("1:10.0p1-7+fips", "1:10.0p1-7+deb13u4"):
+            with self.subTest(version=version):
+                runtime, _ = self.fixture()
+                debug, payload = self.fixture("debug", runtime=runtime)
+                self.mutate(debug, lambda value: value["packages"][0].update(package="openssh-client", version=version))
+                self.mutate(debug, lambda value: value.update(required_packages=[]))
+                with self.assertRaisesRegex(ValueError, "must inherit runtime FIPS"):
+                    subject.validate(debug, payload, variant="debug", runtime_manifest=runtime)
+        for change in ("missing", "ordinary", "control"):
+            with self.subTest(change=change):
+                runtime, _ = self.fixture()
+                value = json.loads(runtime.read_bytes())
+                fips = value["packages"][1]
+                if change == "missing":
+                    value["packages"].remove(fips)
+                elif change == "ordinary":
+                    fips["version"] = "1:10.0p1-7+deb13u4"
+                    fips["control_fields"]["Version"] = fips["version"]
+                else:
+                    fips["control_fields"]["Version"] = "1:10.0p1-7+deb13u4"
+                runtime.write_text(json.dumps(value))
+                debug, payload = self.fixture("debug", runtime=runtime)
+                with self.assertRaisesRegex(ValueError, "FIPS openssh-client"):
+                    subject.validate(debug, payload, variant="debug", runtime_manifest=runtime)
 
     def test_changed_missing_and_wrong_payload_files_are_rejected(self):
         manifest, payload = self.fixture()

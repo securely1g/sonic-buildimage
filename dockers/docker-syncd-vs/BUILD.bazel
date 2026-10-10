@@ -23,7 +23,7 @@ _COMPATIBLE_WITH = [
     "@platforms//os:linux",
 ]
 
-# Keep Make package ownership and the reviewed debug replacement with the image.
+# FIPS is selected in the runtime handoff; debug inherits those package records.
 _APT_POLICY = {
     "schema": 1,
     "image": "docker-syncd-vs",
@@ -36,9 +36,7 @@ _APT_POLICY = {
         "enable_asan": "n",
         "enable_syncd_rpc": "n",
     },
-    "debug_replacements": [
-        {"package": "openssh-client", "version_contains": "+fips"},
-    ],
+    "debug_replacements": [],
 }
 
 # Base and Make metadata. The same shared rules are used by docker-orchagent.
@@ -178,9 +176,8 @@ filegroup(
     output_group = "selection",
 )
 
-# Match the standard FIPS Make debug package set. The selector retains runtime
-# packages and ELF files. Matching FIPS OpenSSH and native symbols come from
-# debug_packages. Reuse the existing Vim alternatives implementation.
+# Debug adds tools and native symbols while retaining the runtime FIPS packages
+# and ELF files. Reuse the existing Vim alternatives implementation.
 sonic_layer(
     name = "debug_tools",
     tars = [

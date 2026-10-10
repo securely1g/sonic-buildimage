@@ -7,10 +7,13 @@ SYNCD_VS_BAZEL_DEBS_PATH = $(if $($(DOCKER_SYNCD_BASE)_DEBS_PATH),$($(DOCKER_SYN
 # Dockerfile.j2 installs the two libnl development packages first, then the
 # dependency-first runtime expansion used by slave.mk. The preparation helper
 # keeps the first occurrence of a repeated package, matching the legacy recipe.
-SYNCD_VS_BAZEL_RUNTIME_DEBS = $(LIBNL3_DEV) $(LIBNL_ROUTE3_DEV) $(call expand,$($(DOCKER_SYNCD_BASE)_DEPENDS),RDEPENDS)
-SYNCD_VS_BAZEL_DEBUG_DEBS = $(call expand,$($(DOCKER_SYNCD_BASE)_DBG_DEPENDS),RDEPENDS)
-SYNCD_VS_BAZEL_RUNTIME_REQUIRED = syncd-vs libsairedis libsaimetadata libsaivs libswsscommon libsai p4lang-pi p4lang-bmv2 p4lang-p4c libnl-3-dev libnl-route-3-dev libnl-3-200 libnl-genl-3-200 libnl-route-3-200 libnl-nf-3-200 libnl-cli-3-200 libyang3
-SYNCD_VS_BAZEL_DEBUG_REQUIRED = syncd-vs-dbgsym libsairedis-dbgsym libsaimetadata-dbgsym libsaivs-dbgsym libswsscommon-dbgsym libyang3-dbgsym python3-swsscommon-dbgsym sonic-db-cli-dbgsym sonic-eventd-dbgsym openssh-client
+# P4C's transitive MPI dependency installs an SSH client in runtime. Select the
+# Make FIPS package there so debug inherits the same OpenSSH files and identity.
+SYNCD_VS_BAZEL_FIPS_DEBS = $(if $(filter y,$(INCLUDE_FIPS)),$(FIPS_OPENSSH_CLIENT))
+SYNCD_VS_BAZEL_RUNTIME_DEBS = $(LIBNL3_DEV) $(LIBNL_ROUTE3_DEV) $(call expand,$($(DOCKER_SYNCD_BASE)_DEPENDS),RDEPENDS) $(SYNCD_VS_BAZEL_FIPS_DEBS)
+SYNCD_VS_BAZEL_DEBUG_DEBS = $(filter-out $(SYNCD_VS_BAZEL_FIPS_DEBS),$(call expand,$($(DOCKER_SYNCD_BASE)_DBG_DEPENDS),RDEPENDS))
+SYNCD_VS_BAZEL_RUNTIME_REQUIRED = syncd-vs libsairedis libsaimetadata libsaivs libswsscommon libsai p4lang-pi p4lang-bmv2 p4lang-p4c libnl-3-dev libnl-route-3-dev libnl-3-200 libnl-genl-3-200 libnl-route-3-200 libnl-nf-3-200 libnl-cli-3-200 libyang3 openssh-client
+SYNCD_VS_BAZEL_DEBUG_REQUIRED = syncd-vs-dbgsym libsairedis-dbgsym libsaimetadata-dbgsym libsaivs-dbgsym libswsscommon-dbgsym libyang3-dbgsym python3-swsscommon-dbgsym sonic-db-cli-dbgsym sonic-eventd-dbgsym
 
 .SECONDEXPANSION:
 .PHONY: syncd-vs-bazel-inputs-force

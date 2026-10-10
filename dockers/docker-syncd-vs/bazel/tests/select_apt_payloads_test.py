@@ -57,11 +57,22 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.mapping.write_text(json.dumps({"architecture": "amd64", "locked": [], "dependency_set": "runtime"}))
         self.add_package("new-runtime", depends="libssl3t64 (>= 3.0.0)")
         self.runtime = self.root / "runtime.json"
+        self.fips_version = "1:10.0p1-7+fips"
+        fips_control = {"Package": "openssh-client", "Version": self.fips_version,
+                        "Architecture": "amd64", "Depends": "libssl3t64 (>= 3.0.0)",
+                        "Provides": "ssh-client"}
+        self.fips_package = {"package": "openssh-client", "version": self.fips_version,
+                             "architecture": "amd64", "source_sha256": "b" * 64,
+                             "payload_sha256": "c" * 64, "control_sha256": "d" * 64,
+                             "control_fields": fips_control}
+        self.provided["openssh-client"] = dependencies.control_fields(
+            dependencies.package_from_fields(fips_control, origin="Make runtime"))
         self.runtime.write_text(json.dumps({"schema": 1, "image": "docker-syncd-vs", "variant": "runtime",
             "architecture": "amd64", "distribution": "trixie", "features": dict(validate_payloads.FEATURES),
             "packages": [{"package": "libnl-3-200", "version": "3.7.0-2sonic1", "architecture": "amd64",
                           "control_fields": {"Package": "libnl-3-200", "Version": "3.7.0-2sonic1",
-                                             "Architecture": "amd64"}, "source_sha256": "a" * 64}]}))
+                                             "Architecture": "amd64"}, "source_sha256": "a" * 64},
+                         self.fips_package]}))
 
     def write_base(self, *, status=True):
         entries = [("usr/lib/libssl.so.3", self.base_elf), ("etc/base", b"base config")]
@@ -130,25 +141,19 @@ class SelectAptPayloadsTest(unittest.TestCase):
     def test_runtime_overlay_can_satisfy_debug_dependency(self):
         self.add_package("runtime-lib", version="2.0", provided=True)
         self.add_package("debug-tool", depends="runtime-lib (>= 2.0)")
-        value = json.loads(self.runtime.read_bytes())
-        value["variant"] = "debug"
-        self.runtime.write_text(json.dumps(value))
+        self.prepare_debug()
         receipt = self.select_debug()
         self.assertEqual({item["package"] for item in receipt["selected"]}, {"new-runtime", "debug-tool"})
 
-    def debug_replacement(self, *, name="openssh-client", version="1:10.0p1-7+fips",
-                          depends="libssl3t64 (>= 3.0.0)"):
-        self.add_package(name, version="1:10.0p1-7+deb13u4", provided=True,
-                         depends="libssl3t64 (>= 3.0.0)")
+    def prepare_debug(self, replacement=None):
+        """The normal debug handoff inherits OpenSSH without shipping another copy."""
         value = json.loads(self.runtime.read_bytes())
         value["variant"] = "debug"
-        replacement = {"package": name, "version": version, "architecture": "amd64",
-                       "source_sha256": "b" * 64, "payload_sha256": "c" * 64,
-                       "control_sha256": "d" * 64, "control_fields": {"Depends": depends,
-                           "Package": name, "Version": version, "Architecture": "amd64"}}
-        value["packages"].append(replacement)
+        value["packages"] = [record for record in value["packages"]
+                             if record["package"] != "openssh-client"]
+        if replacement is not None:
+            value["packages"].append(replacement)
         self.runtime.write_text(json.dumps(value))
-        return replacement
 
     def select_debug(self):
         installed = dependencies.installed_packages(self.status, origin="test")
@@ -165,29 +170,37 @@ class SelectAptPayloadsTest(unittest.TestCase):
                               retained_manifest=self.runtime, variant="debug",
                               base_package_metadata=metadata)[1]
 
-    def test_debug_fips_openssh_replaces_only_its_runtime_overlay_record(self):
-        replacement = self.debug_replacement()
-        self.add_package("debug-tool", depends="openssh-client (= 1:10.0p1-7+fips)")
+    def test_declared_policy_has_no_debug_replacement_exception(self):
+        """The actual BUILD policy cannot authorize an ordinary-to-FIPS debug swap."""
+        policy = json.loads(self.policy.read_bytes())
+        self.assertEqual(policy["features"]["include_fips"], "y")
+        self.assertEqual(policy["debug_replacements"], [])
+
+    def test_runtime_retains_fips_instead_of_locked_debian_openssh(self):
+        """FIPS selection happens in runtime even when Debian supplies an SSH candidate."""
+        self.add_package("openssh-client", version="1:10.0p1-7+deb13u4",
+                         depends="libssl3t64 (>= 3.0.0)")
+        self.add_package("ssh-user", depends="openssh-client (= " + self.fips_version + ")")
+        receipt = self.select()
+        self.assertEqual({r["package"] for r in receipt["selected"]}, {"new-runtime", "ssh-user"})
+        self.assertEqual(receipt["dependency_check"]["packages"]["openssh-client"]["Version"], self.fips_version)
+        ssh = next(r for r in receipt["skipped_make"] if r["package"] == "openssh-client")
+        self.assertEqual(ssh["source_sha256"], self.fips_package["source_sha256"])
+        self.assertEqual(receipt["provided_package_replacements"], [])
+
+    def test_debug_inherits_runtime_fips_without_a_replacement(self):
+        """Debug tools satisfy their SSH dependencies from the inherited FIPS record."""
+        self.add_package("openssh-client", version="1:10.0p1-7+deb13u4")
+        self.add_package("debug-tool", depends="openssh-client (= " + self.fips_version + ")")
+        self.prepare_debug()
         receipt = self.select_debug()
-        self.assertEqual(receipt["provided_package_replacements"], [{
-            "package": "openssh-client", "runtime_version": "1:10.0p1-7+deb13u4",
-            "debug_version": replacement["version"], "source_sha256": "b" * 64,
-            "payload_sha256": "c" * 64, "control_sha256": "d" * 64}])
         self.assertEqual({r["package"] for r in receipt["selected"]}, {"new-runtime", "debug-tool"})
+        self.assertEqual(receipt["dependency_check"]["packages"]["openssh-client"]["Version"], self.fips_version)
+        self.assertEqual(receipt["provided_package_replacements"], [])
+        self.assertEqual(receipt["replaced_inherited"], [])
 
-        with self.subTest(debug_replacements="not declared"):
-            policy = json.loads(self.policy.read_bytes())
-            policy["debug_replacements"] = []
-            self.policy = self.root / "without-debug-replacements.json"
-            self.policy.write_text(json.dumps(policy))
-            with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
-                self.select_debug()
-
-    def test_runtime_cannot_override_its_openssh_record(self):
-        self.debug_replacement()
-        value = json.loads(self.runtime.read_bytes())
-        value["variant"] = "runtime"
-        self.runtime.write_text(json.dumps(value))
+    def test_runtime_cannot_consume_inherited_package_metadata(self):
+        """Runtime must establish its own package inventory before debug inherits it."""
         metadata = self.root / "base-metadata.json"
         metadata.write_text("{}")
         with self.assertRaisesRegex(ValueError, "runtime cannot consume"):
@@ -195,44 +208,41 @@ class SelectAptPayloadsTest(unittest.TestCase):
                            retained_manifest=self.runtime, variant="runtime",
                            base_package_metadata=metadata)
 
-    def test_debug_cannot_override_another_runtime_package(self):
-        self.debug_replacement(name="another-client")
-        with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
+    def test_debug_cannot_change_runtime_openssh_version(self):
+        """Neither an ordinary SSH package nor another FIPS version may replace runtime."""
+        for version in ("1:10.0p1-7+deb13u4", "1:10.0p1-8+fips"):
+            with self.subTest(version=version):
+                replacement = {**self.fips_package, "version": version,
+                    "control_fields": {**self.fips_package["control_fields"], "Version": version}}
+                self.prepare_debug(replacement)
+                with self.assertRaisesRegex(ValueError, "conflicts with inherited package"):
+                    self.select_debug()
+
+    def test_debug_cannot_change_runtime_openssh_relationships(self):
+        """The inherited FIPS controls remain immutable, including Multi-Arch and providers."""
+        for field, value in (("Depends", "libssl3t64 (>= 9.0)"), ("Multi-Arch", "foreign"),
+                             ("Provides", "another-client")):
+            with self.subTest(field=field):
+                replacement = {**self.fips_package,
+                    "control_fields": {**self.fips_package["control_fields"], field: value}}
+                self.prepare_debug(replacement)
+                with self.assertRaisesRegex(ValueError, "conflicts with inherited package"):
+                    self.select_debug()
+
+    def test_old_ordinary_runtime_to_fips_debug_transition_is_rejected(self):
+        """The former debug-only FIPS workaround must fail after removing its exception."""
+        self.provided["openssh-client"]["Version"] = "1:10.0p1-7+deb13u4"
+        self.prepare_debug(self.fips_package)
+        with self.assertRaisesRegex(ValueError, "conflicts with inherited package"):
             self.select_debug()
 
-    def test_debug_non_fips_openssh_conflict_is_rejected(self):
-        self.debug_replacement(version="1:10.0p1-8")
-        with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
-            self.select_debug()
-
-    def test_debug_fips_replacement_cannot_change_dependency_requirements(self):
-        self.debug_replacement(depends="libssl3t64 (>= 9.0)")
-        with self.assertRaisesRegex(ValueError, "changes runtime package relationships"):
-            self.select_debug()
-
-    def test_debug_fips_replacement_needs_make_content_identity(self):
-        self.debug_replacement()
-        value = json.loads(self.runtime.read_bytes())
-        value["packages"][-1].pop("payload_sha256")
-        self.runtime.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "lacks Make package identity"):
-            self.select_debug()
-
-    def test_debug_fips_replacement_does_not_remove_installed_base_record(self):
-        self.debug_replacement()
+    def test_runtime_cannot_overwrite_installed_ordinary_openssh(self):
+        """A mismatched managed base must be fixed instead of silently changing its package record."""
         self.status += ("Package: openssh-client\nVersion: 1:10.0p1-7+deb13u4\n"
                         "Architecture: amd64\nStatus: install ok installed\n\n").encode()
         self.write_base()
-        with self.assertRaisesRegex(ValueError, "conflicts with inherited|installed package"):
-            self.select_debug()
-
-    def test_debug_fips_replacement_cannot_change_multi_arch(self):
-        self.debug_replacement()
-        value = json.loads(self.runtime.read_bytes())
-        value["packages"][-1]["control_fields"]["Multi-Arch"] = "foreign"
-        self.runtime.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "changes runtime package relationships"):
-            self.select_debug()
+        with self.assertRaisesRegex(ValueError, "conflicts with inherited package"):
+            self.select()
 
     def test_retained_package_requires_full_original_identity(self):
         value = json.loads(self.runtime.read_bytes())
@@ -242,13 +252,13 @@ class SelectAptPayloadsTest(unittest.TestCase):
             self.select()
 
     def test_debug_requires_the_runtime_selection_receipt(self):
-        self.debug_replacement()
+        self.prepare_debug()
         with self.assertRaisesRegex(ValueError, "debug requires the runtime"):
             subject.select(self.base, self.lock, self.policy, self.mapping,
                            retained_manifest=self.runtime, variant="debug")
 
     def test_debug_rejects_a_receipt_for_a_different_make_handoff(self):
-        self.debug_replacement()
+        self.prepare_debug()
         self.select_debug()
         value = json.loads(self.runtime.read_bytes())
         value["runtime_manifest_sha256"] = "f" * 64

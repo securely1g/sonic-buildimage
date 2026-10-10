@@ -196,12 +196,15 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     debug_files = dict(runtime_files)
     for layer in debug_layers[len(runtime_layers):]:
         apply_layer(layer, debug_files)
-    runtime_receipt, expected_runtime, _, _ = payloads(runtime_handoff, "runtime")
-    debug_receipt, expected_debug, debug_owners, debug_package_manifest = payloads(debug_handoff, "debug", runtime_handoff)
+    runtime_receipt, expected_runtime, runtime_owners, _ = payloads(runtime_handoff, "runtime")
+    debug_receipt, expected_debug, _, _ = payloads(debug_handoff, "debug", runtime_handoff)
     expected_runtime = dpkg_filtered(expected_runtime, source_root)
     expected_debug = dpkg_filtered(expected_debug, source_root)
     assert_payload(expected_runtime, runtime_files, "runtime package payload")
     assert_payload(expected_debug, debug_files, "debug package payload")
+    require(runtime_owners.get("usr/bin/ssh") == "openssh-client" and
+            expected_runtime.get("usr/bin/ssh", {}).get("elf_machine") == 62,
+            "runtime image lacks the Make FIPS OpenSSH ELF")
     assert_payload({name: item for name, item in expected_runtime.items() if item["kind"] != "directory"},
                    debug_files, "debug image changes the runtime package payload")
     copied_files = {
@@ -218,20 +221,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         require(runtime_files.get(installed) == expected, "syncd-vs startup file differs: " + installed)
         require(debug_files.get(installed) == expected, "debug image changes startup file: " + installed)
     runtime_elfs = {name: item for name, item in runtime_files.items() if "elf_machine" in item}
-    debug_packages = {item["package"]: item for item in debug_package_manifest["packages"]}
-    replacements = []
-    for name, item in runtime_elfs.items():
-        actual = debug_files.get(name)
-        if actual == item:
-            continue
-        owner = debug_owners.get(name)
-        package = debug_packages.get(owner, {})
-        require(owner == "openssh-client" and "+fips" in package.get("version", "") and
-                name not in expected_runtime and expected_debug.get(name) == actual,
-                "debug image changes a deployed ELF: " + name)
-        replacements.append({"path": name, "package": owner, "version": package["version"],
-                             "source_sha256": package["source_sha256"], "runtime_sha256": item["sha256"],
-                             "debug_sha256": actual.get("sha256"), "debug_kind": actual["kind"]})
+    assert_payload(runtime_elfs, debug_files, "debug image changes a deployed ELF")
     if not fixture:
         require(runtime_files.get("usr/bin/syncd", {}).get("elf_machine") == 62,
                 "complete syncd-vs image lacks the AMD64 syncd ELF")
@@ -327,7 +317,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         "runtime_layers": len(runtime_layers), "debug_layers": len(debug_layers),
         "runtime_package_count": runtime_receipt["package_count"], "debug_package_count": debug_receipt["package_count"],
         "runtime_payload_entries": len(expected_runtime), "debug_payload_entries": len(expected_debug),
-        "runtime_elf_count": len(runtime_elfs), "allowed_debug_package_replacements": replacements,
+        "runtime_elf_count": len(runtime_elfs), "allowed_debug_package_replacements": [],
         "changed_non_elf_runtime_paths_in_debug": changed_non_elf, "overlay_checks": overlay_report,
         "archives": archive_report, "remaining_checks": remaining,
     }

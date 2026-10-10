@@ -32,16 +32,19 @@ class ValidateNativePackagesTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.original, self.runtime, self.symbols, self.identifier = self.compile(42, "first")
+        _, self.ssh_runtime, _, _ = self.compile(0, "ssh", executable=True)
         self.library_path = "usr/lib/x86_64-linux-gnu/libsample.so.0.0.0"
         self.soname_path = "usr/lib/x86_64-linux-gnu/libsample.so.0"
         self.debug_path = "usr/lib/debug/.build-id/" + self.identifier[:2] + "/" + self.identifier[2:] + ".debug"
         self.runtime_manifest, self.debug_manifest = self.handoffs()
 
-    def compile(self, value, stem):
+    def compile(self, value, stem, *, executable=False):
         source = self.root / (stem + ".c")
-        source.write_text(f"int sample(void) {{ return {value}; }}\n")
+        function = "main" if executable else "sample"
+        source.write_text(f"int {function}(void) {{ return {value}; }}\n")
         original = self.root / (stem + ".unstripped")
-        subprocess.run(["cc", "-shared", "-fPIC", "-g", "-O0", "-Wl,--build-id=sha1", "-Wl,-soname,libsample.so.0",
+        flags = [] if executable else ["-shared", "-fPIC", "-Wl,-soname,libsample.so.0"]
+        subprocess.run(["cc", *flags, "-g", "-O0", "-Wl,--build-id=sha1",
                         str(source), "-o", str(original)], capture_output=True, check=True)
         notes = subprocess.check_output(["readelf", "-n", str(original)], text=True)
         identifier = re.search(r"Build ID: ([0-9a-f]+)", notes)[1]
@@ -57,28 +60,40 @@ class ValidateNativePackagesTest(unittest.TestCase):
         directory = self.root / (variant + "-handoff")
         directory.mkdir(parents=True, exist_ok=True)
         payload = directory / "payload.tar"
-        with tarfile.open(payload, "w", format=tarfile.GNU_FORMAT) as archive:
-            for name, data, link in entries:
-                entry = tarfile.TarInfo(name)
-                if link is not None:
-                    entry.type = tarfile.SYMTYPE
-                    entry.linkname = link
-                    entry.mode = 0o777
-                    archive.addfile(entry)
-                else:
-                    entry.size = len(data)
-                    entry.mode = 0o644
-                    archive.addfile(entry, io.BytesIO(data))
+        def tar_bytes(members):
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w", format=tarfile.GNU_FORMAT) as archive:
+                for name, data, link in members:
+                    entry = tarfile.TarInfo(name)
+                    if link is not None:
+                        entry.type = tarfile.SYMTYPE
+                        entry.linkname = link
+                        entry.mode = 0o777
+                        archive.addfile(entry)
+                    else:
+                        entry.size = len(data)
+                        entry.mode = 0o755 if name.startswith("usr/bin/") else 0o644
+                        archive.addfile(entry, io.BytesIO(data))
+            return stream.getvalue()
+        packages = [(package, "1.0", entries)]
+        if variant == "runtime":
+            packages.append(("openssh-client", "1.0+fips", [("usr/bin/ssh", self.ssh_runtime.read_bytes(), None)]))
+        records, combined = [], []
+        for name, version, members in packages:
+            data = tar_bytes(members)
+            records.append({"package": name, "version": version, "architecture": "amd64",
+                "source_deb": name + "_" + version + "_amd64.deb", "source_size": 1,
+                "source_sha256": hashlib.sha256(name.encode()).hexdigest(),
+                "control_sha256": hashlib.sha256((name + " control").encode()).hexdigest(),
+                "control_fields": {"Package": name, "Version": version, "Architecture": "amd64"},
+                "payload_sha256": hashlib.sha256(data).hexdigest(), "payload_size": len(data), "payload_members": len(members)})
+            combined.extend(members)
+        payload.write_bytes(tar_bytes(combined))
         digest = hashlib.sha256(payload.read_bytes()).hexdigest()
-        record = {"package": package, "version": "1.0", "architecture": "amd64",
-                  "source_deb": package + "_1.0_amd64.deb", "source_size": 1,
-                  "source_sha256": hashlib.sha256(package.encode()).hexdigest(),
-                  "control_sha256": hashlib.sha256((package + " control").encode()).hexdigest(),
-                  "payload_sha256": digest, "payload_size": payload.stat().st_size, "payload_members": len(entries)}
         value = {"schema": 1, "image": "docker-syncd-vs", "variant": variant, "architecture": "amd64",
                  "distribution": "trixie", "features": dict(validate_payloads.FEATURES),
-                 "required_packages": [package], "debug_apt_packages": [], "packages": [record],
-                 "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": len(entries)}}
+                 "required_packages": [record["package"] for record in records], "debug_apt_packages": [], "packages": records,
+                 "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": len(combined)}}
         if runtime:
             value["runtime_manifest_sha256"] = hashlib.sha256(runtime.read_bytes()).hexdigest()
             value["debug_apt_packages"] = ["gdb", "gdbserver", "sshpass", "strace", "vim"]
@@ -98,15 +113,21 @@ class ValidateNativePackagesTest(unittest.TestCase):
 
     def validate(self, *, required={"libsairedis"}, sonames={"libsairedis": "libsample.so.0"}, gaps=set()):
         return subject.validate_native(self.runtime_manifest, self.debug_manifest,
-                                       required_packages=required, required_sonames=sonames, gap_packages=gaps)
+                                       required_packages=required, required_sonames=sonames,
+                                       gap_packages=gaps | {"openssh-client"})
 
     def test_real_runtime_and_symbols_match(self):
         result = self.validate()
-        self.assertEqual(result["elf_count"], 1)
+        self.assertEqual(result["elf_count"], 2)
         self.assertEqual(len(result["paired_symbols"]), 1)
         self.assertEqual(result["paired_symbols"][0]["build_id"], self.identifier)
         self.assertEqual(result["paired_symbols"][0]["soname"], "libsample.so.0")
-        self.assertEqual(result["preserved_make_debug_gaps"], [])
+        self.assertIn("openssh-client", subject.GAP_PACKAGES)
+        self.assertEqual([item["package"] for item in result["preserved_make_debug_gaps"]], ["openssh-client"])
+        ssh = result["preserved_make_debug_gaps"][0]
+        self.assertFalse(ssh["has_dwarf"])
+        self.assertTrue(ssh["has_debuglink"])
+        self.assertIn("no matching symbol package", ssh["reason"])
 
     def test_missing_soname_link_is_rejected(self):
         self.runtime_manifest, self.debug_manifest = self.handoffs(symlink=False)
@@ -135,10 +156,10 @@ class ValidateNativePackagesTest(unittest.TestCase):
         self.runtime_manifest, self.debug_manifest = self.handoffs(library=self.original, symbols=False, package="p4lang-pi")
         result = self.validate(required=set(), sonames={}, gaps={"p4lang-pi"})
         self.assertEqual(len(result["embedded_symbols"]), 1)
-        self.assertEqual(result["preserved_make_debug_gaps"], [])
+        self.assertEqual([item["package"] for item in result["preserved_make_debug_gaps"]], ["openssh-client"])
         self.runtime_manifest, self.debug_manifest = self.handoffs(symbols=False, package="p4lang-pi")
         result = self.validate(required=set(), sonames={}, gaps={"p4lang-pi"})
-        self.assertEqual(len(result["preserved_make_debug_gaps"]), 1)
+        self.assertEqual({item["package"] for item in result["preserved_make_debug_gaps"]}, {"p4lang-pi", "openssh-client"})
         self.assertEqual(result["embedded_symbols"], [])
 
 

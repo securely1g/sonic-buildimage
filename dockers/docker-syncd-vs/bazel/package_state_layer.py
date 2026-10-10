@@ -121,6 +121,11 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
         actual = {"version": item["version"], "architecture": item["architecture"],
                   "control_fields": item.get("control_fields", {}),
                   "maintainer_scripts": {key: value for key, value in item.get("control_files", {}).items() if key in SCRIPTS}}
+        # Some state inputs also pin the reviewed archive, such as the FIPS
+        # OpenSSH package moved from the debug handoff into runtime.
+        for field in ("source_sha256", "control_sha256"):
+            if field in expected_make[name]:
+                actual[field] = item.get(field)
         require(actual == expected_make[name], "Make package relationships or scripts changed; review package state: " + name)
     descriptor, _, _, base_layers = validate_image.image(base)
     require(selection.get("base_manifest_digest") == descriptor["digest"], "package state uses a different OCI base")

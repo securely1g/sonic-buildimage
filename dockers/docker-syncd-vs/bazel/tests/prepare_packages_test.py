@@ -30,6 +30,7 @@ class PreparePackagesTest(unittest.TestCase):
         self.root = Path(temporary.name)
         (self.root / "debs").mkdir()
         self.counter = 0
+        self.fips = self.deb("openssh-client", version="1:10.0p1-7+fips")
 
     def deb(self, name, value=b"installed payload\n", *, architecture="amd64", version="1.0"):
         self.counter += 1
@@ -53,7 +54,9 @@ class PreparePackagesTest(unittest.TestCase):
                        capture_output=True, check=True)
         return output
 
-    def arguments(self, packages, *, variant="runtime", required=None, runtime_manifest=None):
+    def arguments(self, packages, *, variant="runtime", required=None, runtime_manifest=None, runtime_fips=True):
+        if variant == "runtime" and runtime_fips:
+            packages = [*packages, self.fips]
         return argparse.Namespace(
             output=str(self.root / "handoff" / variant), variant=variant,
             architecture="amd64", distribution="trixie", include_vs_dash_sai="y",
@@ -73,10 +76,10 @@ class PreparePackagesTest(unittest.TestCase):
         record = manifest["packages"][0]
         expected = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(deb)])
         self.assertTrue(self.manifest().parent.is_symlink())
-        self.assertEqual((self.manifest().parent / "payload.tar").read_bytes(), expected)
         self.assertEqual(record["source_sha256"], hashlib.sha256(deb.read_bytes()).hexdigest())
         self.assertEqual(record["payload_sha256"], hashlib.sha256(expected).hexdigest())
-        self.assertEqual(manifest["payload"]["sha256"], hashlib.sha256(expected).hexdigest())
+        aggregate = (self.manifest().parent / "payload.tar").read_bytes()
+        self.assertEqual(manifest["payload"]["sha256"], hashlib.sha256(aggregate).hexdigest())
         self.assertEqual((record["package"], record["version"], record["architecture"]),
                          ("syncd-vs", "1.0", "amd64"))
         self.assertIn("control", record["control_files"])
@@ -85,7 +88,21 @@ class PreparePackagesTest(unittest.TestCase):
         self.assertEqual(record["control_fields"]["Package"], "syncd-vs")
         self.assertEqual(record["control_fields"]["Version"], "1.0")
         self.assertEqual(record["control_fields"]["Architecture"], "amd64")
-        self.assertEqual(result["package_count"], 1)
+        fips = manifest["packages"][1]
+        self.assertEqual((fips["package"], fips["version"]), ("openssh-client", "1:10.0p1-7+fips"))
+        self.assertEqual(fips["source_sha256"], hashlib.sha256(self.fips.read_bytes()).hexdigest())
+        fips_payload = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(self.fips)])
+        fips_control = subprocess.check_output(["dpkg-deb", "--ctrl-tarfile", str(self.fips)])
+        self.assertEqual(fips["payload_sha256"], hashlib.sha256(fips_payload).hexdigest())
+        self.assertEqual(fips["control_sha256"], hashlib.sha256(fips_control).hexdigest())
+        self.assertEqual(fips["control_fields"]["Version"], fips["version"])
+        def contents(data):
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+                return [(member.name, member.type, member.mode, member.linkname,
+                         archive.extractfile(member).read() if member.isfile() else None)
+                        for member in archive]
+        self.assertEqual(contents(aggregate), contents(expected) + contents(fips_payload))
+        self.assertEqual(result["package_count"], 2)
 
     def test_repeat_preserves_publication_and_changed_bytes_make_a_new_generation(self):
         deb = self.deb("syncd-vs")
@@ -108,14 +125,56 @@ class PreparePackagesTest(unittest.TestCase):
         second = self.deb("second-package")
         subject.prepare(self.arguments([first, second, first], required=["first-package", "second-package"]))
         records = json.loads(self.manifest().read_bytes())["packages"]
-        self.assertEqual([record["package"] for record in records], ["first-package", "second-package"])
+        self.assertEqual([record["package"] for record in records], ["first-package", "second-package", "openssh-client"])
         expected = []
-        for package in (first, second):
+        for package in (first, second, self.fips):
             data = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
                 expected.extend(member.name for member in archive)
         with tarfile.open(self.manifest().parent / "payload.tar", "r:") as archive:
             self.assertEqual([member.name for member in archive], expected)
+
+    def test_runtime_requires_fips_openssh_before_publishing(self):
+        """A supported FIPS runtime must not fall back to Debian's transitive SSH dependency."""
+        runtime = self.deb("syncd-vs")
+        subject.prepare(self.arguments([runtime]))
+        old_target = self.manifest().parent.readlink()
+        ordinary = self.deb("openssh-client", version="1:10.0p1-7+deb13u4")
+        for packages in ([runtime], [runtime, ordinary]):
+            with self.subTest(packages=packages), self.assertRaisesRegex(ValueError, "requires the Make FIPS"):
+                subject.prepare(self.arguments(packages, runtime_fips=False))
+            self.assertEqual(self.manifest().parent.readlink(), old_target)
+
+    def test_debug_inherits_fips_and_rejects_stale_runtime_manifests(self):
+        """Debug adds symbols/tools without introducing or replacing runtime OpenSSH."""
+        runtime = self.deb("syncd-vs")
+        symbols = self.deb("syncd-vs-dbgsym")
+        subject.prepare(self.arguments([runtime]))
+        args = self.arguments([symbols], variant="debug", runtime_manifest=self.manifest())
+        subject.prepare(args)
+        old_target = self.manifest("debug").parent.readlink()
+        self.assertNotIn("openssh-client", [r["package"] for r in json.loads(self.manifest("debug").read_bytes())["packages"]])
+        for version in ("1:10.0p1-7+fips", "1:10.0p1-7+deb13u4"):
+            ssh = self.deb("openssh-client", version=version)
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "must inherit runtime FIPS"):
+                subject.prepare(self.arguments([symbols, ssh], variant="debug", runtime_manifest=self.manifest()))
+        original = json.loads(self.manifest().read_bytes())
+        stale = self.root / "stale-runtime.json"
+        for change in ("missing", "ordinary", "control"):
+            manifest = json.loads(json.dumps(original))
+            ssh = next(r for r in manifest["packages"] if r["package"] == "openssh-client")
+            if change == "missing":
+                manifest["packages"].remove(ssh)
+            elif change == "ordinary":
+                ssh["version"] = "1:10.0p1-7+deb13u4"
+                ssh["control_fields"]["Version"] = ssh["version"]
+            else:
+                ssh["control_fields"]["Version"] = "1:10.0p1-7+deb13u4"
+            stale.write_text(json.dumps(manifest))
+            args.runtime_manifest = str(stale)
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "FIPS openssh-client"):
+                subject.prepare(args)
+            self.assertEqual(self.manifest("debug").parent.readlink(), old_target)
 
     def test_debug_rejects_a_different_runtime_package_and_preserves_previous_output(self):
         runtime = self.deb("syncd-vs")

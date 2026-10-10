@@ -45,12 +45,11 @@ distribution, features and complete original package controls before retention.
 Debug selection also requires `base_package_metadata` from the exact runtime
 selection receipt and matching runtime Make-manifest hash.
 
-Syncd-vs declares `debug_replacements = [{"package": "openssh-client",
-"version_contains": "+fips"}]`. The shared tool checks all source/payload/control
-hashes, architecture, and unchanged Depends/Pre-Depends/Provides/Multi-Arch before
-authorizing that replacement. Unlisted packages receive no exception, and the
-infrastructure selector still forbids changing dpkg-installed packages. Existing
-container payload/image checks bind the inventory to the actual FIPS files.
+Syncd-vs supplies its Make-built FIPS OpenSSH in the runtime manifest. Its debug
+image inherits the same package and binaries, with `debug_replacements = []`.
+The container handoff validator rejects missing or ordinary runtime OpenSSH and
+rejects a separate OpenSSH package in debug. FIPS is a build option that applies
+to both variants; enabling debug does not select a different crypto package.
 
 The shared tool preserves the existing receipt formats: source-built containers
 receive `group`, `skipped_retained`, `image` and `policy_sha256`; Make consumers

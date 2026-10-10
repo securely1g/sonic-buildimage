@@ -103,6 +103,17 @@ def normalize(payload_path, base, output_path):
     return {"base_manifest_digest": base_digest, "directory_aliases": DIRECTORY_ALIASES, **counts}
 
 
+def require_runtime_fips(records):
+    matches = [record for record in records if record.get("package") == "openssh-client"]
+    require(len(matches) == 1 and "+fips" in matches[0].get("version", ""),
+            "runtime package handoff requires the Make FIPS openssh-client")
+    record = matches[0]
+    fields = record.get("control_fields", {})
+    require(fields.get("Package") == record["package"] and fields.get("Version") == record["version"] and
+            fields.get("Architecture") == record.get("architecture") == "amd64",
+            "runtime FIPS openssh-client identity differs from its Debian control")
+
+
 def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
@@ -134,6 +145,10 @@ def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
         members_expected += record["payload_members"]
         checked.append({name: record[name] for name in
                         ("package", "version", "architecture", "source_sha256", "payload_sha256")})
+    if variant == "runtime":
+        require_runtime_fips(records)
+    else:
+        require("openssh-client" not in names, "debug package handoff must inherit runtime FIPS openssh-client")
     payload = manifest.get("payload", {})
     require(payload.get("path") == "payload.tar" and payload_path.resolve() == (manifest_path.parent / "payload.tar").resolve(),
             "declared syncd-vs payload file differs from the manifest")
@@ -156,6 +171,7 @@ def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
         require(runtime.get("schema") == 1 and runtime.get("image") == "docker-syncd-vs" and
                 runtime.get("variant") == "runtime" and runtime.get("features") == FEATURES,
                 "invalid runtime package manifest")
+        require_runtime_fips(runtime["packages"])
         runtime_packages = {record["package"]: record for record in runtime["packages"]}
         for record in records:
             previous = runtime_packages.get(record["package"])
