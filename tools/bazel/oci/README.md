@@ -23,7 +23,6 @@ apt_layer(
         "distribution": "trixie",
         "retained_source": "none",
         "features": {},
-        "debug_replacements": [],
     },
 )
 ```
@@ -45,17 +44,17 @@ distribution, features and complete original package controls before retention.
 Debug selection also requires `base_package_metadata` from the exact runtime
 selection receipt and matching runtime Make-manifest hash.
 
-Syncd-vs supplies its Make-built FIPS OpenSSH in the runtime manifest. Its debug
-image inherits the same package and binaries, with `debug_replacements = []`.
-The container handoff validator rejects missing or ordinary runtime OpenSSH and
-rejects a separate OpenSSH package in debug. FIPS is a build option that applies
-to both variants; enabling debug does not select a different crypto package.
+Syncd-vs supplies its Make-built FIPS OpenSSH in the runtime manifest. Debug
+inherits that package unchanged; the policy has no replacement option. The
+container handoff validator rejects missing or ordinary runtime OpenSSH and a
+separate OpenSSH package in debug. FIPS applies to both variants. The shared
+selector rejects conflicting inherited package controls for every container.
 
 The shared tool preserves the existing receipt formats: source-built containers
 receive `group`, `skipped_retained`, `image` and `policy_sha256`; Make consumers
 receive `variant`, `skipped_make`, `make_manifest_sha256` and
-`provided_package_replacements`. Both include the base manifest digest and
-complete dependency-check evidence. Shared tests run as
+an empty `provided_package_replacements` list for compatibility. Both include
+the base manifest digest and complete dependency-check evidence. Shared tests run as
 `//tools/bazel/tests:apt_selection_test`; container suites check their declared
 policies, package contracts and replacement restrictions.
 

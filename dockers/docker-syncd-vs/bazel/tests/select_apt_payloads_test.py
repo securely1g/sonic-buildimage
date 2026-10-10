@@ -174,7 +174,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         """The actual BUILD policy cannot authorize an ordinary-to-FIPS debug swap."""
         policy = json.loads(self.policy.read_bytes())
         self.assertEqual(policy["features"]["include_fips"], "y")
-        self.assertEqual(policy["debug_replacements"], [])
+        self.assertNotIn("debug_replacements", policy)
 
     def test_runtime_retains_fips_instead_of_locked_debian_openssh(self):
         """FIPS selection happens in runtime even when Debian supplies an SSH candidate."""
@@ -197,7 +197,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.assertEqual({r["package"] for r in receipt["selected"]}, {"new-runtime", "debug-tool"})
         self.assertEqual(receipt["dependency_check"]["packages"]["openssh-client"]["Version"], self.fips_version)
         self.assertEqual(receipt["provided_package_replacements"], [])
-        self.assertEqual(receipt["replaced_inherited"], [])
+        self.assertNotIn("replaced_inherited", receipt)
 
     def test_runtime_cannot_consume_inherited_package_metadata(self):
         """Runtime must establish its own package inventory before debug inherits it."""

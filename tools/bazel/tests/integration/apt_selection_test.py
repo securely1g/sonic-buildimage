@@ -71,7 +71,7 @@ class Fixture:
         self.policy = self.root / "policy.json"
         self.policy.write_text(json.dumps({"schema": 1, "image": image,
             "architecture": architecture, "distribution": "trixie", "retained_source": "make",
-            "features": {}, "debug_replacements": []}))
+            "features": {}}))
         self.manifest = self.root / "manifest.json"
         self.manifest.write_text(json.dumps({"schema": 1, "image": image,
             "architecture": architecture, "distribution": "trixie", "variant": "runtime",
@@ -146,12 +146,13 @@ class AptSelectionTest(unittest.TestCase):
             fixture.select()
 
     def test_policy_rejects_incomplete_or_ambiguous_authorization(self):
-        """An omitted selector mode or empty replacement marker cannot relax validation."""
+        """An omitted selector mode or obsolete replacement option cannot relax validation."""
         fixture = Fixture(self.root)
         original = json.loads(fixture.policy.read_bytes())
         invalid = [dict(original, schema=2), dict(original, retained_source="automatic"),
                    dict(original, unknown_option=True),
-                   dict(original, debug_replacements=[{"package": "driver", "version_contains": ""}]),
+                   dict(original, debug_replacements=[]),
+                   dict(original, debug_replacements=[{"package": "driver", "version_contains": "fips"}]),
                    dict(original, retained_source="none", features={"fips": "y"}),
                    {key: value for key, value in original.items() if key != "retained_source"}]
         for policy in invalid:

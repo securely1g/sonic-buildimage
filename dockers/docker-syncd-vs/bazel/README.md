@@ -194,14 +194,11 @@ The shared `apt_layer` implementation comes from
 [infrastructure #27](https://github.com/securely1g/sonic-build-infra/pull/27),
 published by [registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45).
 [Infrastructure #29](https://github.com/securely1g/sonic-build-infra/pull/29),
-registered by [#51](https://github.com/securely1g/sonic-bazel-registry/pull/51), builds on
-[infrastructure #28](https://github.com/securely1g/sonic-build-infra/pull/28)'s
-explicit inherited-package replacement and adds a separately declared policy
-input. While that source and its registry entry are under review, the Draft
+registered by [#51](https://github.com/securely1g/sonic-bazel-registry/pull/51), adds a
+separately declared policy input on maintained infrastructure master. The
+selector and this image no longer use the retired inherited-package replacement
+API. While the policy source and registration are under review, the Draft
 consumer uses an exact `git_override` source commit for `sonic-build-infra`.
-The selected source still contains both changes without depending on another
-registry branch. This image no longer requests inherited-package replacements;
-the FIPS runtime fix removes its need for that API.
 
 Local builds and CI use the maintained SONiC registry `main` endpoint plus BCR.
 The source commit in `MODULE.bazel` fixes the temporary infrastructure override.
@@ -257,7 +254,7 @@ candidate stays unselected. Debug inherits the same package identity and bytes;
 the owner policy allows no replacements. Existing handoff and image checks bind
 the original source, control and payload hashes and verify actual payload bytes.
 
-The checker uses infrastructure `26a75d4b0378796b7b33acedf30677b6def609ac` through
+The checker uses infrastructure `29af37b179d9160cd2a6db0a295492db64017945` through
 the temporary source override. `.bazelrc` continues to use the registry's `main`
 URL. No local copy of a Distroless patch is needed.
 
