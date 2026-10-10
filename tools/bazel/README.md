@@ -18,7 +18,7 @@ declares the Make-generated manifests, config-engine OCI files and Scapy wheel.
 | [tests/](tests/README.md) | Unit tests and fixture-based integration checks for the Bazel helpers and container build integration |
 | [ci/](ci/README.md) | Dependency evidence, command logs, archive/ELF inspection and cache verification |
 | [SWSS container](../../dockers/docker-orchagent/bazel/README.md) | SWSS archive selection, Make integration and expected SWSS package contents |
-| [syncd VS container](../../dockers/docker-syncd-vs/bazel/README.md) | Complete syncd VS runtime/debug OCI packaging and the checked Make package handoff |
+| [syncd VS container](../../dockers/docker-syncd-vs/bazel/README.md) | Complete syncd VS runtime/debug OCI packaging and the declared Make package inputs |
 
 The [VS runner and Make cache tests](../ci/README.md) belong to buildimage CI and
 do not depend on SWSS helper modules. Shared Python libraries use repository
