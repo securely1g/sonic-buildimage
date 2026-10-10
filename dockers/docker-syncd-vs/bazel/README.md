@@ -16,7 +16,7 @@ Both containers have these seven files under `bazel/`:
 | `apt-resolve.MODULE.bazel` | Declare the intended direct APT roots for a deliberate lock refresh. |
 | `apt.lock.json` | Pin the reviewed dependency closure and archive contents. |
 | `apt_inputs.MODULE.bazel` | Export the locked candidate packages to Bazel. |
-| `ci.py` | Run the explicit image contract tests and retain their evidence. |
+| `ci_config.py` | Declare the shared CI runner's tests, Make manifest arguments and image-specific checks. |
 | `package_contract.py` | Check the image's component install and dependency contract. |
 
 Image assembly lives in `../BUILD.bazel`; startup files, labels and installation
@@ -132,6 +132,21 @@ installation state, metadata, imported/native symbols and complete OCI fixtures.
 Shared import, normalization and symbol-matching tests live with their rules in
 `sonic-build-infra`. The selected action graph is inspected before execution to
 ensure the image-only tests do not create DEBs.
+
+Both containers use `tools/bazel/ci/container.py`; `ci_config.py` only selects
+the work. SWSS declares source archives and their package/debug validation;
+Syncd declares contract tests that do not require native Make package inputs.
+From a clean native AMD64 Trixie checkout without `MODULE.bazel.lock`, run:
+
+```sh
+python3 -B tools/bazel/ci/container.py \
+  --config dockers/docker-syncd-vs/bazel/ci_config.py \
+  --bazel bazel --artifacts artifacts/syncd-vs/bazel
+```
+
+The shared runner prepares the declared manifests, audits the exact target
+set, retains each configured test's logs/XML, checks unchanged source hashes
+and records dependency resolution. The artifact directory must be empty.
 
 A complete image validation must additionally inspect both actual OCI images and
 archives, verify runtime ancestry and labels, compare installed bytes/modes/owners/
