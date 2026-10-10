@@ -24,6 +24,13 @@ import prepare_packages as subject
 
 @unittest.skipUnless(shutil.which("dpkg-deb"), "native dpkg-deb is required")
 class PreparePackagesTest(unittest.TestCase):
+    def test_direct_cli_finds_its_helper_with_safe_python_imports(self):
+        """Make can invoke the preparation script when Python omits the script directory from sys.path."""
+        result = subprocess.run([sys.executable, "-P", str(OWNER / "bazel/prepare_packages.py"), "--help"],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--variant", result.stdout)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="syncd-package-test-")
         self.addCleanup(temporary.cleanup)
@@ -144,6 +151,45 @@ class PreparePackagesTest(unittest.TestCase):
             with self.subTest(packages=packages), self.assertRaisesRegex(ValueError, "requires the Make FIPS"):
                 subject.prepare(self.arguments(packages, runtime_fips=False))
             self.assertEqual(self.manifest().parent.readlink(), old_target)
+
+    def test_make_cannot_publish_source_libraries_or_their_old_symbols(self):
+        """Reject moved packages by their Debian identity in either variant, preserving a valid generation."""
+        runtime = self.deb("syncd-vs")
+        symbols = self.deb("syncd-vs-dbgsym")
+        subject.prepare(self.arguments([runtime]))
+        subject.prepare(self.arguments([symbols], variant="debug", runtime_manifest=self.manifest()))
+        previous = {variant: self.manifest(variant).parent.readlink() for variant in ("runtime", "debug")}
+        for name in ("libswsscommon", "libsairedis", "libsaimetadata"):
+            for package in (name, name + "-dbgsym"):
+                moved = self.deb(package)
+                # Filenames are not the ownership contract; control metadata is.
+                renamed = moved.with_name("unrelated-name.deb")
+                shutil.copyfile(moved, renamed)
+                for variant, retained in (("runtime", runtime), ("debug", symbols)):
+                    args = self.arguments([retained, renamed], variant=variant,
+                                          runtime_manifest=self.manifest() if variant == "debug" else None)
+                    with self.subTest(package=package, variant=variant), self.assertRaisesRegex(
+                            ValueError, "contains source-built packages: " + package + "|inherited base-symbol original package changed"):
+                        subject.prepare(args)
+                    self.assertEqual(self.manifest(variant).parent.readlink(), previous[variant])
+
+    def test_debug_rejects_a_stale_runtime_with_make_owned_source_libraries(self):
+        """A fresh debug handoff cannot be paired with an older runtime that imported shared libraries."""
+        runtime = self.deb("syncd-vs")
+        symbols = self.deb("syncd-vs-dbgsym")
+        subject.prepare(self.arguments([runtime]))
+        subject.prepare(self.arguments([symbols], variant="debug", runtime_manifest=self.manifest()))
+        previous = self.manifest("debug").parent.readlink()
+        original = json.loads(self.manifest().read_bytes())
+        stale = self.root / "stale-runtime.json"
+        for name in ("libswsscommon", "libsairedis", "libsaimetadata"):
+            document = json.loads(json.dumps(original))
+            document["packages"].append({"package": name})
+            stale.write_text(json.dumps(document))
+            args = self.arguments([symbols], variant="debug", runtime_manifest=stale)
+            with self.subTest(package=name), self.assertRaisesRegex(ValueError, "contains source-built packages: " + name):
+                subject.prepare(args)
+            self.assertEqual(self.manifest("debug").parent.readlink(), previous)
 
     def test_debug_inherits_fips_and_rejects_stale_runtime_manifests(self):
         """Debug adds symbols/tools without introducing or replacing runtime OpenSSH."""
