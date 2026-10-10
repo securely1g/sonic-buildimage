@@ -32,7 +32,11 @@ class ContractRunnerTest(unittest.TestCase):
                      self.root / "tools/bazel/oci/apt_layer.bzl",
                      self.owner / "BUILD.bazel", self.owner / "apt.lock.json",
                      self.owner / "apt_inputs.MODULE.bazel", self.owner / "prepare_packages.py",
-                     self.owner / "runtime_package_state.json"):
+                     self.owner / "runtime_package_state.json", self.owner / "source_packages.json",
+                     self.owner / "base_debug_symbols.py", self.owner / "base_debug_symbols.json",
+                     self.owner / "source_packages.py", self.owner / "validate_image.py",
+                     self.owner / "validate_native_packages.py",
+                     self.root / "tools/bazel/oci/source_modules.bzl"):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("checked input\n")
         (self.root / ".bazelversion").write_text("8.5.1\n")
