@@ -7,6 +7,7 @@ this profile deliberately selects only tests that need no built package inputs.
 from tools.bazel.ci.container import Config
 
 TARGET_NAMES = [
+    "syncd_package_receipts_test",
     "syncd_manifest_labels_test",
     "syncd_package_state_layer_test",
     "syncd_select_apt_payloads_test",
@@ -25,6 +26,7 @@ SOURCE_FILES = (
     "dockers/docker-syncd-vs/BUILD.bazel",
     "dockers/docker-syncd-vs/config/BUILD.bazel",
     "dockers/docker-syncd-vs/config/package_state_layer.py",
+    "dockers/docker-syncd-vs/config/package_receipts.py",
     "dockers/docker-syncd-vs/config/runtime_package_state.json",
     "dockers/docker-syncd-vs/config/source_packages.json",
     "tools/bazel/oci/BUILD.bazel",
