@@ -128,7 +128,8 @@ def seed(root, kind, architecture="amd64"):
         write_json(root, "artifacts/syncd-vs/bazel/execution-gate-audit.json",
                    {"action_count": 12, "output_count": 24, "deb_outputs": [], "packaging_wrappers": [], "raw": SENTINEL})
     if kind == "vs":
-        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz"):
+        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                     "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
             write(root, "target/" + name, b"validated image output\n")
     write(root, "artifacts/unexpected.log", SENTINEL)
 
@@ -237,6 +238,35 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(any(path.endswith((".log", ".jsonl", ".xml", "receipt.json")) for path in paths))
                 self.assertNotIn(SENTINEL, json.dumps(summary))
                 self.assertEqual(summary["architecture"], "amd64")
+
+    def test_vs_success_reports_both_container_variants_and_the_installer(self):
+        """A passing VS publication must account for runtime/debug archives from both OCI owners."""
+        seed(self.root, "vs")
+        summary, paths, ready = self.prepare("vs")
+        self.assertTrue(ready)
+        self.assertTrue(summary["complete"])
+        self.assertEqual(summary["receipts"]["outputs"], {
+            name: {"bytes": len(b"validated image output\n")}
+            for name in (
+                "sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz",
+            )
+        })
+        self.assertEqual(paths, [artifacts.SUMMARY["vs"]])
+        self.assertNotIn(SENTINEL, json.dumps(summary))
+
+    def test_vs_missing_syncd_debug_archive_blocks_successful_publication(self):
+        """A successful installer/P4RT result cannot hide an unbuilt Syncd debug image."""
+        seed(self.root, "vs")
+        (self.root / "target/docker-syncd-vs-dbg.gz").unlink()
+        summary, paths, ready = self.prepare("vs")
+        self.assertFalse(ready)
+        self.assertFalse(summary["complete"])
+        self.assertEqual(paths, [])
+        self.assertEqual(summary["missing"], ["output-docker-syncd-vs-dbg.gz"])
+        self.assertEqual(len(summary["receipts"]["outputs"]), 4)
+        self.assertNotIn("docker-syncd-vs-dbg.gz", summary["receipts"]["outputs"])
+        self.assertNotIn(SENTINEL, json.dumps(summary))
 
     def test_archive_supports_native_arm64_metadata(self):
         seed(self.root, "archive", "arm64")
