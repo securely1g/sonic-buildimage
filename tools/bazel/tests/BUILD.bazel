@@ -51,12 +51,12 @@ py_test(
         "$(rootpath @sonic_swss//swssconfig:sample/netbouncer.json)",
     ],
     data = [
-        "//dockers/docker-orchagent:package_policy",
-        "//dockers/docker-orchagent:ci_swss",
-        "//dockers/docker-orchagent:ci_protobuf",
-        "//dockers/docker-orchagent:ci_rdeps",
         "//dockers/docker-orchagent:ci_config",
         "//dockers/docker-orchagent:ci_debug_symbols",
+        "//dockers/docker-orchagent:ci_protobuf",
+        "//dockers/docker-orchagent:ci_rdeps",
+        "//dockers/docker-orchagent:ci_swss",
+        "//dockers/docker-orchagent:package_policy",
         "@sonic_build_infra//toolchains/binutils:objcopy",
         "@sonic_build_infra//toolchains/binutils:readelf",
         "@sonic_swss//cfgmgr:lua_files",
@@ -75,8 +75,8 @@ py_test(
         "@platforms//os:linux",
     ],
     deps = [
-        "//tools/bazel/oci:package_contract_lib",
         "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:package_contract_lib",
     ],
 )
 
@@ -540,10 +540,10 @@ py_test(
         "--manifest-version=1.0.0",
     ],
     data = [
+        "//dockers/docker-orchagent/config:debug_labels",
+        "//dockers/docker-orchagent/config:labels",
         "//dockers/docker-orchagent/config:manifest.json",
         "//dockers/docker-orchagent/config:manifest-dbg.json",
-        "//dockers/docker-orchagent/config:labels",
-        "//dockers/docker-orchagent/config:debug_labels",
         "//tools/bazel/oci:manifest_labels",
     ],
     main = "integration/manifest_labels_action_test.py",
@@ -613,6 +613,15 @@ py_test(
 )
 
 # Shared OCI selection and CLI coverage has no container-owned inputs.
+py_test(
+    name = "source_base_validation_test",
+    srcs = ["source_base_validation_test.py"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:source_base_validation",
+    ],
+)
+
 py_test(
     name = "apt_selection_test",
     size = "small",
@@ -924,14 +933,15 @@ py_test(
     srcs = [
         "integration/oci_image_test.py",
     ],
+    args = _OCI_POLICY_ARGS,
     data = [
         "//dockers/docker-base-trixie:dpkg_01_drop",
         "//platform/vs/docker-syncd-vs:critical_processes",
         "//platform/vs/docker-syncd-vs:start.sh",
         "//platform/vs/docker-syncd-vs:supervisord.conf",
+        "//platform/vs/docker-syncd-vs/config:openssh-client.conf",
         "//platform/vs/docker-syncd-vs/config:source_packages.json",
     ] + _OCI_OWNER_POLICIES,
-    args = _OCI_POLICY_ARGS,
     main = "integration/oci_image_test.py",
     python_version = "3.11",
     deps = _OCI_TEST_DEPS,
@@ -960,12 +970,14 @@ py_test(
     srcs = [
         "integration/oci_package_state_layer_test.py",
     ],
+    args = _OCI_POLICY_ARGS,
     data = [
         "//platform/vs/docker-syncd-vs:Dockerfile.j2",
         "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
+        "//platform/vs/docker-syncd-vs/config:openssh-client.conf",
         "//platform/vs/docker-syncd-vs/config:runtime_package_state.json",
+        "//platform/vs/docker-syncd-vs/config:source_packages.json",
     ] + _OCI_OWNER_POLICIES,
-    args = _OCI_POLICY_ARGS,
     main = "integration/oci_package_state_layer_test.py",
     python_version = "3.11",
     deps = _OCI_TEST_DEPS,
@@ -1001,8 +1013,8 @@ py_test(
 py_test(
     name = "oci_package_contract_test",
     srcs = ["integration/oci_package_contract_test.py"],
-    data = ["//platform/vs/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
     args = _OCI_POLICY_ARGS,
+    data = ["//platform/vs/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
     main = "integration/oci_package_contract_test.py",
     python_version = "3.11",
     deps = _OCI_TEST_DEPS,
@@ -1013,8 +1025,8 @@ py_test(
 py_test(
     name = "oci_native_packages_test",
     srcs = ["integration/oci_native_packages_test.py"],
-    data = ["//platform/vs/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
     args = _OCI_POLICY_ARGS,
+    data = ["//platform/vs/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
     main = "integration/oci_native_packages_test.py",
     python_version = "3.11",
     tags = ["local"],
@@ -1024,6 +1036,7 @@ py_test(
 # Production validation is explicit: hosted fixture suites must not request
 # Make-produced packages or the complete Syncd images.
 _SYNCD_OWNER = "//platform/vs/docker-syncd-vs"
+
 _SYNCD_P4_IMAGE_INPUTS = {
     "runtime_path": _SYNCD_OWNER + ":docker-syncd-vs",
     "debug_path": _SYNCD_OWNER + ":docker-syncd-vs-dbg",
@@ -1055,25 +1068,40 @@ _SYNCD_P4_IMAGE_INPUTS = {
     "readelf": "@sonic_build_infra//toolchains/binutils:readelf",
     "objcopy": "@sonic_build_infra//toolchains/binutils:objcopy",
 }
+
 _SYNCD_P4_DEBS = [
     "//:target/debs/trixie/" + name
     for name in [
-        "p4lang-pi_0.1.3-2_amd64.deb", "p4lang-bmv2_1.15.0-9_amd64.deb",
-        "p4lang-p4c_1.2.4.2-3_amd64.deb", "libsai_1.0.0_amd64.deb",
+        "p4lang-pi_0.1.3-2_amd64.deb",
+        "p4lang-bmv2_1.15.0-9_amd64.deb",
+        "p4lang-p4c_1.2.4.2-3_amd64.deb",
+        "libsai_1.0.0_amd64.deb",
     ]
 ]
+
 py_test(
     name = "syncd_p4_images_test",
     size = "large",
     srcs = ["integration/syncd_p4_images_test.py"],
-    main = "integration/syncd_p4_images_test.py",
     args = ["--" + name.replace("_", "-") + "=$(rootpath " + label + ")" for name, label in _SYNCD_P4_IMAGE_INPUTS.items()] +
            ["--p4-deb=$(rootpath " + label + ")" for label in _SYNCD_P4_DEBS],
     data = _SYNCD_P4_IMAGE_INPUTS.values() + _SYNCD_P4_DEBS + [
-        _SYNCD_OWNER + ":runtime_debs", _SYNCD_OWNER + ":debug_debs", _SYNCD_OWNER + ":base_debug_package",
-        _SYNCD_OWNER + ":start.sh", _SYNCD_OWNER + ":supervisord.conf", _SYNCD_OWNER + ":critical_processes",
+        _SYNCD_OWNER + ":runtime_debs",
+        _SYNCD_OWNER + ":debug_debs",
+        _SYNCD_OWNER + ":base_debug_package",
+        _SYNCD_OWNER + ":start.sh",
+        _SYNCD_OWNER + ":supervisord.conf",
+        _SYNCD_OWNER + ":critical_processes",
+        _SYNCD_OWNER + "/config:openssh-client.conf",
     ],
+    main = "integration/syncd_p4_images_test.py",
     tags = ["manual"],
-    target_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"],
-    deps = ["//tools/bazel/oci:container_validation", "//tools/bazel/ci:artifact_validation"],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:container_validation",
+    ],
 )

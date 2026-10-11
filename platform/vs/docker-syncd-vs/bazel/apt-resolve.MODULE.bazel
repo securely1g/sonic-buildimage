@@ -47,9 +47,12 @@ apt.install(
         "tcpdump",
         "thrift-compiler",
     ],
-    suites = ["stable", "trixie", "trixie-updates", "trixie-security"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
-
 apt.install(
     dependency_set = "syncd_vs_debug_debian",
     packages = [
@@ -58,6 +61,11 @@ apt.install(
         "libgpm2",
         "sshpass",
         "strace",
+        "vim",
     ],
-    suites = ["stable", "trixie", "trixie-updates", "trixie-security"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
