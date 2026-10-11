@@ -615,7 +615,7 @@ jobs:
               2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
           done
 
-      - name: Build the VS image with Bazel SWSS archives
+      - name: Build the VS image and both OCI container variants
         env:
           BAZEL_CONTAINER_ARGS: >-
             --distdir=/bazel_cache/distdir/ape-1.0.1
@@ -624,7 +624,11 @@ jobs:
             --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
             --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
         run: |
-          make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+          make target/sonic-vs.img.gz \
+            target/docker-orchagent.gz target/docker-orchagent-dbg.gz \
+            target/docker-syncd-vs.gz target/docker-syncd-vs-dbg.gz \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
+            ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
             2>&1 | tee artifacts/vs/build.log
 
@@ -687,7 +691,7 @@ jobs:
           retention-days: 14
           compression-level: 1
 
-      - name: Upload VS image and SWSS archives
+      - name: Upload VS image and OCI container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-make-bazel-swss-amd64
@@ -695,6 +699,8 @@ jobs:
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.img.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
