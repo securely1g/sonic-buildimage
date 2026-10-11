@@ -13,6 +13,10 @@ def _installed_packages_impl(ctx):
     args.add("--status", status)
     args.add("--receipt", receipt)
     args.add_all(ctx.files.controls, before_each = "--control")
+    retained = []
+    if ctx.file.retained_manifest:
+        retained = [ctx.file.retained_manifest]
+        args.add("--retained-manifest", ctx.file.retained_manifest)
     payloads = []
     for name, target in ctx.attr.sources.items():
         files = target[DefaultInfo].files.to_list()
@@ -23,7 +27,7 @@ def _installed_packages_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._tool,
         arguments = [args],
-        inputs = [ctx.file.base, ctx.file.apt_receipt, ctx.file.source_spec] + ctx.files.controls + payloads + ctx.files.normalization_receipt,
+        inputs = [ctx.file.base, ctx.file.apt_receipt, ctx.file.source_spec] + ctx.files.controls + payloads + retained + ctx.files.normalization_receipt,
         outputs = [status, receipt],
         mnemonic = "InstalledPackageMetadata",
         progress_message = "Validate installed source and Debian package identities for %{label}",
@@ -41,6 +45,7 @@ installed_packages = rule(
         "base": attr.label(allow_single_file = True, mandatory = True),
         "controls": attr.label_list(allow_files = True),
         "source_spec": attr.label(allow_single_file = [".json"], mandatory = True),
+        "retained_manifest": attr.label(allow_single_file = True),
         "normalization_receipt": attr.label(
             allow_single_file = [".json"],
             doc = "Receipt from this source layer's normalize_layer action; bound to the same base.",
