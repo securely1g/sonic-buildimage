@@ -277,7 +277,7 @@ else:
         commands = self.bazel_commands()
         self.assertEqual(commands[-1][-len(config.tests):], list(config.tests))
         report = json.loads((self.artifacts / "report.json").read_text())
-        self.assertEqual(len(report["test_outputs"]), 16)
+        self.assertEqual(len(report["test_outputs"]), 18)
         self.assertEqual(set(report["source_hashes"]), set(config.source_files))
         self.assertFalse((self.artifacts / "test-events.jsonl").exists())
 
