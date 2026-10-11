@@ -1,7 +1,9 @@
 """Syncd startup files and Make-owned image labels."""
 
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@rules_distroless//distroless:defs.bzl", "group")
 load("@tar.bzl", "tar")
+load("//dockers/docker-base-trixie/bazel:accounts.bzl", "GROUP")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 
 package(default_visibility = [
@@ -19,9 +21,23 @@ manifest_labels(
     manifest = "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
 )
 
+# openssh-client postinst creates _ssh and installs ssh-agent setgid to it.
+# Retain every reviewed base group and the native Syncd reference's GID 104
+# (OCI sha256:7508faf7a33bc1203a89031c0b5005a8e1c43034b70bc71c6536aacbdcd74a99).
+# The matching ELF metadata override is explicit in source_packages.json.
+group(
+    name = "groups",
+    entries = GROUP + [{
+        "name": "_ssh",
+        "password": "x",
+        "gid": 104,
+    }],
+)
+
 tar(
     name = "files",
     srcs = [
+        "openssh-client.conf",
         "//platform/vs/docker-syncd-vs:critical_processes",
         "//platform/vs/docker-syncd-vs:start.sh",
         "//platform/vs/docker-syncd-vs:supervisord.conf",
@@ -33,6 +49,9 @@ tar(
         "./etc/supervisor/conf.d uid=0 gid=0 mode=0755 time=0 type=dir",
         "./usr uid=0 gid=0 mode=0755 time=0 type=dir",
         "./usr/bin uid=0 gid=0 mode=0755 time=0 type=dir",
+        "./usr/lib uid=0 gid=0 mode=0755 time=0 type=dir",
+        "./usr/lib/tmpfiles.d uid=0 gid=0 mode=0755 time=0 type=dir",
+        "./usr/lib/tmpfiles.d/openssh-client.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location openssh-client.conf)",
         "./usr/bin/start.sh uid=0 gid=0 mode=0755 time=0 type=file content=$(location //platform/vs/docker-syncd-vs:start.sh)",
         "./etc/supervisor/conf.d/supervisord.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location //platform/vs/docker-syncd-vs:supervisord.conf)",
         "./etc/supervisor/critical_processes uid=0 gid=0 mode=0644 time=0 type=file content=$(location //platform/vs/docker-syncd-vs:critical_processes)",
@@ -41,6 +60,9 @@ tar(
 
 exports_files(
     [
+        # Reviewed Debian tmpfiles exclusion, copied unchanged from the Make
+        # openssh-client_10.0p1-7+fips package and native reference above.
+        "openssh-client.conf",
         "runtime_package_state.json",
         "source_packages.json",
     ],
@@ -52,9 +74,9 @@ run_binary(
     srcs = [
         "runtime_package_state.json",
         "source_packages.json",
-        "//platform/vs/docker-syncd-vs:package_policy",
         "//platform/vs/docker-syncd-vs:apt_deps",
         "//platform/vs/docker-syncd-vs:config_engine_base_layout",
+        "//platform/vs/docker-syncd-vs:package_policy",
         "//platform/vs/docker-syncd-vs:runtime_apt_selection",
         "//platform/vs/docker-syncd-vs:runtime_import_manifest",
         "//platform/vs/docker-syncd-vs:runtime_packages",

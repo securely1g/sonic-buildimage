@@ -6,6 +6,24 @@ check of the exact exported runtime/debug archives from
 [the Syncd image work](https://github.com/securely1g/sonic-buildimage/pull/13).
 It does not build an image or package.
 
+## Build and validate the source-based Syncd images
+
+After preparing the source dependencies, Make manifests and cached P4 inputs
+described in the [Syncd build instructions](../../../platform/vs/docker-syncd-vs/bazel/README.md),
+run this command in the native AMD64 build environment with Docker available:
+
+```sh
+python3 tools/bazel/ci/validate_syncd_image.py \
+  --output artifacts/syncd-installed \
+  --redis-server /usr/bin/redis-server
+```
+
+It audits the selected Bazel actions, builds both image archives, and validates
+their installed packages and source symbols, including the inherited base.
+The action audit rejects Debian package production. It then runs the isolated
+container checks below. Reports in the output directory bind each check to the
+image, archive and package inputs it examined.
+
 ## Run against prepared archives
 
 First run the image's static validation to obtain `validation.json`, including
