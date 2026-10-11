@@ -12,12 +12,10 @@ import unittest
 
 OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
 sys.path.insert(0, str(OWNER.parents[1]))
-sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as tar_bytes, write_layout
 from tools.bazel.oci.oci_inventory import apply_layer
-from package_contract import FEATURES
-sys.path.insert(0, str(OWNER / "config"))
-import package_state_layer as subject
+from tools.bazel.tests.oci_contract_fixture import owner_policies, package_policy, source_contract
+from tools.bazel.oci import package_state as subject
 
 
 def write_oci(path, entries):
@@ -50,7 +48,7 @@ class CommittedPackageStateTest(unittest.TestCase):
         for field in ("base_archive_sha256", "runtime_archive_sha256", "legacy_dockerfile_sha256"):
             self.assertRegex(reference[field], r"^[0-9a-f]{64}$")
         self.assertEqual(reference["legacy_dockerfile_sha256"],
-                         hashlib.sha256((OWNER / "legacy/Dockerfile.j2").read_bytes()).hexdigest())
+                         hashlib.sha256((OWNER.parents[1] / "platform/vs/docker-syncd-vs/Dockerfile.j2").read_bytes()).hexdigest())
 
     def test_reviewed_state_owners_match_committed_canonical_lock(self):
         """CI requests a state-contract review when the canonical lock or its package owners change."""
@@ -69,9 +67,11 @@ class CommittedPackageStateTest(unittest.TestCase):
 
 class PackageStateLayerTest(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="syncd-state-test-")
+        temporary = tempfile.TemporaryDirectory(prefix="oci-state-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.policy = package_policy()
+        self.source_contract = source_contract()
         self.base = self.root / "base.oci"
         base_digest = write_oci(self.base, [("etc/base", b"base", 0o644)])
         self.dockerfile = self.root / "Dockerfile.j2"
@@ -93,8 +93,9 @@ class PackageStateLayerTest(unittest.TestCase):
             "packages": {key: package}}))
         script_sha = hashlib.sha256(b"postinst").hexdigest()
         self.make_manifest = self.root / "make.json"
-        self.make_manifest.write_text(json.dumps({"schema": 1, "image": "docker-syncd-vs", "variant": "runtime",
-            "features": dict(FEATURES), "packages": [{"package": "make-package", "version": "1.0",
+        self.make_manifest.write_text(json.dumps({"schema": 1, "image": self.policy["image"], "variant": "runtime",
+            "architecture": self.policy["architecture"], "distribution": self.policy["distribution"],
+            "features": dict(self.policy["features"]), "packages": [{"package": "make-package", "version": "1.0",
             "architecture": "amd64", "control_fields": {"Depends": "libc6"},
             "control_files": {"postinst": script_sha, "md5sums": "d" * 64}}]}))
         self.selection = self.root / "selection.json"
@@ -142,9 +143,11 @@ class PackageStateLayerTest(unittest.TestCase):
 
     def build(self):
         return subject.build(self.contract, self.lock, self.selection, self.base, self.apt,
-                             self.runtime_layer, self.make_manifest, self.output)
+                             self.runtime_layer, self.make_manifest, self.output,
+                             policy=self.policy, source_contract=self.source_contract)
 
     def test_checked_links_state_and_alias_are_published(self):
+        """Generate reviewed service links, alternative state and license aliases from declared owners."""
         result = self.build()
         files = {}
         apply_layer(self.output, files)
@@ -157,31 +160,37 @@ class PackageStateLayerTest(unittest.TestCase):
             self.assertTrue(all(member.mtime == 0 for member in archive))
 
     def test_changed_owner_control_is_rejected(self):
+        """Require review when a package supplying generated state changes its control metadata."""
         self.mutate(self.contract, lambda value: value["package_controls"]["tool-package"].update(control_sha256="e" * 64))
         with self.assertRaisesRegex(ValueError, "package state owner changed"):
             self.build()
 
     def test_selected_owner_must_match_canonical_lock_key(self):
+        """Bind a selected state owner to its exact package identity in the canonical lock."""
         self.mutate(self.selection, lambda value: value["selected"][0].update(key="/trixie/other:amd64=1.0"))
         with self.assertRaisesRegex(ValueError, "selected package is absent from the checked lock"):
             self.build()
 
     def test_unselected_owner_is_rejected(self):
+        """Do not generate files on behalf of a package absent from the selected image inputs."""
         self.mutate(self.selection, lambda value: value.update(selected=[]))
         with self.assertRaisesRegex(ValueError, "requires a selected APT package"):
             self.build()
 
     def test_missing_link_target_is_rejected(self):
+        """Reject generated links whose destination is missing from the assembled filesystem."""
         self.mutate(self.contract, lambda value: value["entries"][0].update(linkname="/usr/bin/missing"))
         with self.assertRaisesRegex(ValueError, "link target is absent"):
             self.build()
 
     def test_changed_alias_bytes_are_rejected(self):
+        """An alias must retain the reviewed content of the package that supplies it."""
         self.write_apt(b"different license\n")
         with self.assertRaisesRegex(ValueError, "copyright bytes differ"):
             self.build()
 
     def test_package_state_cannot_replace_a_base_elf(self):
+        """Generated package state must never overwrite an inherited native executable."""
         header = bytearray(64)
         header[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<HH", header, 16, 3, 62)
@@ -255,7 +264,7 @@ class PackageStateLayerTest(unittest.TestCase):
 
     def test_source_library_cannot_be_reintroduced_as_a_make_state_owner(self):
         """Even matching edited state and manifest records cannot assign source packages back to Make."""
-        for package in ("libswsscommon", "libsairedis", "libsaimetadata"):
+        for package in [record["package"] for record in self.source_contract["packages"]]:
             self.mutate(self.make_manifest, lambda value: value["packages"][0].update(package=package))
             self.mutate(self.contract, lambda value: value.update(make_package_state_inputs={
                 package: next(iter(value["make_package_state_inputs"].values()))}))
@@ -264,6 +273,7 @@ class PackageStateLayerTest(unittest.TestCase):
                 self.build()
 
     def test_unrelated_package_md5_changes_keep_state_bytes(self):
+        """Ignore unrelated package file-list changes when all state-relevant inputs are unchanged."""
         self.build()
         first = self.output.read_bytes()
         self.mutate(self.make_manifest, lambda value: value["packages"][0]["control_files"].update(md5sums="e" * 64))
@@ -289,6 +299,7 @@ class PackageStateLayerTest(unittest.TestCase):
                 self.assertEqual(self.output.read_bytes(), original)
 
     def test_make_state_file_changes_require_review(self):
+        """Reject imported service-file changes that differ from the reviewed state contract."""
         self.runtime_layer.write_bytes(tar_bytes([("etc/init.d/tool", b"changed init script\n", 0o755)]))
         with self.assertRaisesRegex(ValueError, "Make package state file changed"):
             self.build()
@@ -316,4 +327,5 @@ class PackageStateLayerTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    OWNER_POLICIES, remaining = owner_policies()
+    unittest.main(argv=[__file__, *remaining])

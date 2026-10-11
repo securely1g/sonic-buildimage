@@ -252,6 +252,17 @@ def relative_name(value):
     return value
 
 
+def artifact_hashes(value):
+    """Accept only public archive basenames and full SHA256 validation bindings."""
+    require(isinstance(value, dict), "invalid-artifact-bindings")
+    hashes = {}
+    for name, item in value.items():
+        name = relative_name(name)
+        require(PurePosixPath(name).name == name and name not in (".", ".."), "invalid-artifact-basename")
+        hashes[name] = digest(item)
+    return hashes
+
+
 def receipt_summary(value, kind):
     require(isinstance(value, dict), "invalid-receipt")
     if kind == "python":
@@ -281,7 +292,8 @@ def receipt_summary(value, kind):
         contract = {relative_name(name): digest(item) for name, item in validation.get("source_contract", {}).items()}
         return {"status": value["status"], "revision": revision, "tests": tests,
                 "program_count": len(validation.get("programs", [])),
-                "debug_pair_count": len(validation.get("debug_pairs", [])), "source_contract": contract}
+                "debug_pair_count": len(validation.get("debug_pairs", [])), "source_contract": contract,
+                "artifact_sha256": artifact_hashes(validation.get("artifact_sha256", {}))}
     if kind == "syncd":
         require(isinstance(value.get("targets", []), list) and isinstance(value.get("source_hashes", {}), dict), "invalid-syncd-receipt")
         targets = [label(item) for item in value.get("targets", [])]
@@ -437,6 +449,11 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             value = receipts.get("source", {})
             if not value.get("program_count") or not value.get("debug_pair_count") or not value.get("source_contract"):
                 blocked.append({"input": "source-receipt", "reason": "missing-package-validation"})
+            published = {PurePosixPath(relative).name: selected[logical]["sha256"]
+                         for logical, relative, file_kind in FILES[kind]
+                         if file_kind == "binary" and logical in selected}
+            if not value.get("artifact_sha256") or value["artifact_sha256"] != published:
+                blocked.append({"input": "source-receipt", "reason": "validated-artifact-mismatch"})
         if kind == "archive" and receipts.get("python", {}).get("architecture") != architecture:
             blocked.append({"input": "python-receipt", "reason": "architecture-mismatch"})
         if kind == "source" and receipts.get("source", {}).get("revision") != revision:
