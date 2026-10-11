@@ -254,8 +254,8 @@ apt.sources_list(
     uris = ["https://snapshot.debian.org/archive/debian/20261008T000000Z"],
 )
 
-include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
-apt_inputs(name = "syncd_apt_inputs", lock = "//dockers/docker-syncd-vs/bazel:apt.lock.json")
+include("//platform/vs/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
+apt_inputs(name = "syncd_apt_inputs", lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json")
 
 # Bind the shared library payload receipts to the modules actually resolved by
 # Bazel, even when the owners do not export MODULE.bazel as a public target.
