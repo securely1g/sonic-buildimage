@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that syncd APT assembly preserves locked content and base ELF files."""
+"""Check retained-package OCI overlays and both owners’ canonical APT declarations."""
 
 import argparse
 import hashlib
@@ -12,11 +12,10 @@ import unittest
 
 OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
 sys.path.insert(0, str(OWNER.parents[1]))
-sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 from tools.bazel.oci import apt_selection as subject
 from sonic_apt import dependencies
-from tools.bazel.ci import syncd_payloads as validate_payloads
+from tools.bazel.tests.oci_contract_fixture import owner_policies
 from sonic_apt.inputs import declarations
 
 
@@ -39,6 +38,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.policy = self.policy_path
+        self.policy_value = json.loads(self.policy.read_text())
         header = bytearray(64)
         header[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<HH", header, 16, 3, 62)
@@ -67,8 +67,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
                              "control_fields": fips_control}
         self.provided["openssh-client"] = dependencies.control_fields(
             dependencies.package_from_fields(fips_control, origin="Make runtime"))
-        self.runtime.write_text(json.dumps({"schema": 1, "image": "docker-syncd-vs", "variant": "runtime",
-            "architecture": "amd64", "distribution": "trixie", "features": dict(validate_payloads.FEATURES),
+        self.runtime.write_text(json.dumps({"schema": 1, "image": self.policy_value["image"], "variant": "runtime",
+            "architecture": "amd64", "distribution": "trixie", "features": dict(self.policy_value["features"]),
             "packages": [{"package": "libnl-3-200", "version": "3.7.0-2sonic1", "architecture": "amd64",
                           "control_fields": {"Package": "libnl-3-200", "Version": "3.7.0-2sonic1",
                                              "Architecture": "amd64"}, "source_sha256": "a" * 64},
@@ -118,27 +118,35 @@ class SelectAptPayloadsTest(unittest.TestCase):
         return subject.select(self.base, self.lock, self.policy, self.mapping,
                               retained_manifest=self.runtime, variant="runtime")[1]
 
-    def test_apt_declarations_match_reviewed_lock(self):
-        module, _ = declarations(json.loads((OWNER / "bazel/apt.lock.json").read_bytes()))
-        self.assertEqual((OWNER / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
+    def test_apt_declarations_match_reviewed_locks_for_both_containers(self):
+        """Each container's declarations must still match its canonical lock after sharing the engine."""
+        for image in ("docker-orchagent", "docker-syncd-vs"):
+            with self.subTest(image=image):
+                owner = OWNER.parent / image
+                module, _ = declarations(json.loads((owner / "bazel/apt.lock.json").read_bytes()))
+                self.assertEqual((owner / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
 
     def test_base_openssl_satisfies_new_package_without_being_added(self):
+        """Use an installed base dependency when it satisfies the new package without adding duplicate bytes."""
         receipt = self.select()
         self.assertEqual([item["package"] for item in receipt["selected"]], ["new-runtime"])
         self.assertEqual(receipt["base_elf_count"], 1)
 
     def test_base_package_is_retained_instead_of_old_candidate(self):
+        """Keep the installed base version when an older locked candidate is unnecessary."""
         self.add_package("libssl3t64", version="3.5.6")
         receipt = self.select()
         self.assertEqual(receipt["skipped_base"][0]["base_version"], "3.5.7+fips")
 
     def test_base_openssl_too_old_is_rejected(self):
+        """Fail dependency validation when the actual base version cannot satisfy the selected package."""
         self.status = self.status.replace(b"3.5.7+fips", b"2.9.0")
         self.write_base()
         with self.assertRaisesRegex(ValueError, "libssl3t64"):
             self.select()
 
     def test_runtime_overlay_can_satisfy_debug_dependency(self):
+        """Allow debug additions to depend on packages supplied by the validated runtime overlay."""
         self.add_package("runtime-lib", version="2.0", provided=True)
         self.add_package("debug-tool", depends="runtime-lib (>= 2.0)")
         self.prepare_debug()
@@ -245,6 +253,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
             self.select()
 
     def test_retained_package_requires_full_original_identity(self):
+        """Reject retained metadata that omits the original package control identity."""
         value = json.loads(self.runtime.read_bytes())
         value["packages"][0]["control_fields"].pop("Package")
         self.runtime.write_text(json.dumps(value))
@@ -252,12 +261,14 @@ class SelectAptPayloadsTest(unittest.TestCase):
             self.select()
 
     def test_debug_requires_the_runtime_selection_receipt(self):
+        """Require runtime dependency evidence before selecting packages for the debug image."""
         self.prepare_debug()
         with self.assertRaisesRegex(ValueError, "debug requires the runtime"):
             subject.select(self.base, self.lock, self.policy, self.mapping,
                            retained_manifest=self.runtime, variant="debug")
 
     def test_debug_rejects_a_receipt_for_a_different_make_handoff(self):
+        """Bind debug dependency checks to the exact runtime handoff that produced their receipt."""
         self.prepare_debug()
         self.select_debug()
         value = json.loads(self.runtime.read_bytes())
@@ -269,21 +280,25 @@ class SelectAptPayloadsTest(unittest.TestCase):
                            base_package_metadata=self.root / "base-metadata.json")
 
     def test_another_package_cannot_replace_a_base_elf(self):
+        """Prevent a selected package from replacing an inherited executable with different bytes."""
         self.update_payload("new-runtime", [("usr/lib/libssl.so.3", self.base_elf + b"changed")])
         with self.assertRaisesRegex(ValueError, "would replace a base ELF"):
             self.select()
 
     def test_identical_base_elf_bytes_are_allowed(self):
+        """Accept an overlapping ELF only when its installed bytes match the base exactly."""
         self.update_payload("new-runtime", [("usr/lib/libssl.so.3", self.base_elf)])
         receipt = self.select()
         self.assertEqual(receipt["changed_non_elf_base_paths"], [])
 
     def test_non_elf_base_changes_are_reported_for_review(self):
+        """Record configuration changes separately from prohibited native binary replacements."""
         self.update_payload("new-runtime", [("etc/base", b"changed config")])
         receipt = self.select()
         self.assertEqual(receipt["changed_non_elf_base_paths"], [{"package": "new-runtime", "path": "etc/base"}])
 
     def test_changed_data_and_control_bytes_are_rejected(self):
+        """Validate both archive content and dependency controls against their locked hashes."""
         payload = self.paths["new-runtime"]
         original = payload.read_bytes()
         payload.write_bytes(original + b"changed")
@@ -295,6 +310,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
             self.select()
 
     def test_missing_base_status_and_wrong_feature_configuration_are_rejected(self):
+        """Require installed-package metadata and the exact image feature configuration."""
         self.write_base(status=False)
         with self.assertRaisesRegex(ValueError, "lacks dpkg status"):
             self.select()
@@ -310,5 +326,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy", required=True, type=Path)
     args, remaining = parser.parse_known_args()
+    OWNER_POLICIES, remaining = owner_policies(remaining)
     SelectAptPayloadsTest.policy_path = args.policy
     unittest.main(argv=[sys.argv[0], *remaining])
