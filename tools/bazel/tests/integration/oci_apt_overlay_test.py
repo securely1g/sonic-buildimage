@@ -10,8 +10,12 @@ import sys
 import tempfile
 import unittest
 
-OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
-sys.path.insert(0, str(OWNER.parents[1]))
+ROOT = Path(__file__).absolute().parents[4]
+OWNER_LOCATIONS = {
+    "docker-orchagent": ROOT / "dockers/docker-orchagent",
+    "docker-syncd-vs": ROOT / "platform/vs/docker-syncd-vs",
+}
+sys.path.insert(0, str(ROOT))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 from tools.bazel.oci import apt_selection as subject
 from sonic_apt import dependencies
@@ -120,9 +124,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
 
     def test_apt_declarations_match_reviewed_locks_for_both_containers(self):
         """Each container's declarations must still match its canonical lock after sharing the engine."""
-        for image in ("docker-orchagent", "docker-syncd-vs"):
+        for image, owner in OWNER_LOCATIONS.items():
             with self.subTest(image=image):
-                owner = OWNER.parent / image
                 module, _ = declarations(json.loads((owner / "bazel/apt.lock.json").read_bytes()))
                 self.assertEqual((owner / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
 
