@@ -16,12 +16,13 @@ class ContractProfileTest(unittest.TestCase):
     """Check the common entrypoint preserves Syncd's targets and input provenance."""
 
     def test_cli_runs_the_owner_profile_and_hashes_shared_inputs(self):
-        """The common CLI must retain all eight contracts without enabling image production."""
+        """The common CLI retains the contracts and direct package/OCI fixture."""
         with mock.patch.object(container, "run") as run:
             container.main(["--config", str(CONFIG_PATH), "--bazel", "selected-bazel",
                             "--bazel-arg=--jobs=2", "--artifacts", "artifacts/example"])
         config = run.call_args.args[0]
         self.assertEqual(set(config.tests), {
+            "//tools/bazel/tests:syncd_package_receipts_test",
             "//tools/bazel/tests:syncd_manifest_labels_test",
             "//tools/bazel/tests:syncd_package_state_layer_test",
             "//tools/bazel/tests:syncd_select_apt_payloads_test",
@@ -38,6 +39,7 @@ class ContractProfileTest(unittest.TestCase):
         self.assertIn("tools/bazel/ci/container.py", config.source_files)
         self.assertIn("dockers/docker-syncd-vs/bazel/apt.lock.json", config.source_files)
         self.assertIn("dockers/docker-syncd-vs/config/runtime_package_state.json", config.source_files)
+        self.assertIn("dockers/docker-syncd-vs/config/package_receipts.py", config.source_files)
         self.assertEqual(len(config.source_files), len(set(config.source_files)))
         self.assertEqual(run.call_args.kwargs["bazel"], "selected-bazel")
         self.assertEqual(run.call_args.kwargs["options"], [*container.OPTIONS, "--jobs=2"])
