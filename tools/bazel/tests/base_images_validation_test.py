@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.bazel.ci.base_images import verify_source_files
+from tools.bazel.ci.base_images import verify_directory_aliases, verify_source_files
 
 
 class SourceImageValidationTest(unittest.TestCase):
@@ -31,6 +31,19 @@ class SourceImageValidationTest(unittest.TestCase):
     def test_distinct_owners_cannot_silently_overwrite_each_other(self):
         with self.assertRaisesRegex(ValueError, "two source owners"):
             verify_source_files(self.files, [self.report, self.report], 62)
+
+    def test_data_paths_must_not_cross_a_preserved_directory_link(self):
+        files = {name: {"kind": "symlink", "linkname": target} for name, target in {
+            "bin": "usr/bin", "sbin": "usr/sbin", "lib": "usr/lib", "var/run": "/run",
+        }.items()}
+        verify_directory_aliases(files)  # ARM64 need not have a lib64 alias.
+        files["var/run/redis/sonic-db/database_config.json"] = {"kind": "file"}
+        with self.assertRaisesRegex(ValueError, "through a directory alias"):
+            verify_directory_aliases(files)
+        del files["var/run/redis/sonic-db/database_config.json"]
+        files["var/run"] = {"kind": "directory"}
+        with self.assertRaisesRegex(ValueError, "changed a Debian directory alias"):
+            verify_directory_aliases(files)
 
 
 if __name__ == "__main__":

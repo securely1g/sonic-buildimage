@@ -18,10 +18,12 @@
         "Version": "3.7.0-0.2+b1sonic1"
       },
       "required_paths": [
-        "usr/lib/{multiarch}/libnl-3.so.200"
+        "usr/lib/{multiarch}/libnl-3.so.200",
+        "etc/libnl-3/classid",
+        "etc/libnl-3/pktloc"
       ],
       "source_revision": "3.7.0.sonic.3",
-      "target": "@libnl3//:libnl-3_pkg"
+      "target": "@libnl3//:libnl-3-runtime_files"
     },
     "libnl-cli-3-200": {
       "control_fields": {
@@ -43,7 +45,7 @@
         "usr/lib/{multiarch}/libnl-cli-3.so.200"
       ],
       "source_revision": "3.7.0.sonic.3",
-      "target": "@libnl3//:libnl-cli-3_pkg"
+      "target": "@libnl3//:libnl-cli-3-runtime_files"
     },
     "libnl-genl-3-200": {
       "control_fields": {
@@ -65,7 +67,7 @@
         "usr/lib/{multiarch}/libnl-genl-3.so.200"
       ],
       "source_revision": "3.7.0.sonic.3",
-      "target": "@libnl3//:libnl-genl-3_pkg"
+      "target": "@libnl3//:libnl-genl-3-runtime_files"
     },
     "libnl-nf-3-200": {
       "control_fields": {
@@ -87,7 +89,7 @@
         "usr/lib/{multiarch}/libnl-nf-3.so.200"
       ],
       "source_revision": "3.7.0.sonic.3",
-      "target": "@libnl3//:libnl-nf-3_pkg"
+      "target": "@libnl3//:libnl-nf-3-runtime_files"
     },
     "libnl-route-3-200": {
       "control_fields": {
@@ -109,7 +111,7 @@
         "usr/lib/{multiarch}/libnl-route-3.so.200"
       ],
       "source_revision": "3.7.0.sonic.3",
-      "target": "@libnl3//:libnl-route-3_pkg"
+      "target": "@libnl3//:libnl-route-3-runtime_files"
     },
     "libswsscommon": {
       "control_fields": {
@@ -128,7 +130,8 @@
       },
       "required_paths": [
         "usr/lib/{multiarch}/libswsscommon.so.0",
-        "usr/lib/{multiarch}/libsonicdbcli.so.0"
+        "usr/lib/{multiarch}/libsonicdbcli.so.0",
+        "var/run/redis/sonic-db/database_config.json"
       ],
       "source_revision": "475c85aeacd9ac829e00e29edd0a655027bc2c32",
       "target": "@sonic_swss_common//dist:libswsscommon_pkg"

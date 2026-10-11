@@ -31,6 +31,15 @@ binding; libnl; libyang and its Python binding; eventd; the Rust supervisor
 listener; the config-engine, py-common, YANG management, containercfgd and Python
 supervisor wheels; and the source-owned YANG models. Eventd's separate rsyslog
 plugin package is not an input to this image in Make and is not added here.
+Libnl uses its precise runtime TARs, preserving `/etc/libnl-3` configuration and
+CLI plugins while leaving development linker symlinks to the development TARs.
+
+The shared image path normalizer places Common's database configuration under
+`/run/redis/sonic-db`, preserving Debian's `/var/run -> /run` link. The original
+component TARs remain graph inputs so this adaptation keeps their debug symbols.
+CI rejects payload paths that traverse the preserved directory aliases.
+Source-owned paths receive root ownership, and the database configuration uses
+mode `0644`, so a developer checkout's uid or umask cannot leak into the image.
 
 Each native producer keeps its own runtime/debug split. The image's debug target
 collects those providers through the base chain. SymCrypt's integrity-sealed core

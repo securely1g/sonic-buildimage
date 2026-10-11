@@ -27,6 +27,18 @@ def installed_inventory(layout):
     return files
 
 
+def verify_directory_aliases(files):
+    aliases = {"bin": "usr/bin", "sbin": "usr/sbin", "lib": "usr/lib", "var/run": "/run"}
+    if "lib64" in files:
+        aliases["lib64"] = "usr/lib64"
+    for name, target in aliases.items():
+        item = files.get(name, {})
+        validation.require(item.get("kind") == "symlink" and item.get("linkname") == target,
+                           "image changed a Debian directory alias: " + name)
+        validation.require(not any(path.startswith(name + "/") for path in files),
+                           "image installs files through a directory alias: " + name)
+
+
 def verify_source_files(files, metadata, machine):
     native = {}
     for report in metadata:
@@ -119,6 +131,7 @@ def main():
                             image + ".debug.tar": owner + image + ".debug_symbols",
                             image + ".source.tar": owner + "source_runtime",
                             image + ".packages.json": owner + "runtime_package_metadata"})
+        targets["config-engine.path-normalization.json"] = "//dockers/docker-config-engine-trixie:runtime_path_normalization"
         tests = ["//dockers/docker-base-trixie/bazel:installed_packages_test",
                  "//src/sonic-config-engine:sonic_cfggen_cli_test"]
         receipt["action_audit"] = bazel_commands.audit_targets(
@@ -136,6 +149,15 @@ def main():
             reports.append(json.loads(paths[image + ".packages.json"].read_text()))
             runtimes.append(paths[image + ".source.tar"])
             files = installed_inventory(layout)
+            verify_directory_aliases(files)
+            if image == "docker-config-engine-trixie":
+                data = files.get("run/redis/sonic-db/database_config.json", {})
+                validation.require(all(data.get(key) == value for key, value in {
+                    "kind": "file", "uid": 0, "gid": 0, "mode": 0o644}.items()),
+                    "Common's database configuration has the wrong installed path or ownership")
+                for name in ("classid", "pktloc"):
+                    validation.require(files.get("etc/libnl-3/" + name, {}).get("kind") == "file",
+                                       "libnl runtime configuration is absent: " + name)
             native = verify_source_files(files, reports, elf_machine)
             pairs = verify_symbols(native, runtimes, paths[image + ".debug.tar"], directory)
             config = layout.config

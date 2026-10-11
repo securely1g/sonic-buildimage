@@ -8,6 +8,7 @@ load("//dockers/docker-base-trixie/bazel:installed_packages.bzl", "installed_pac
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
+load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
@@ -20,18 +21,40 @@ _SOURCE_TARS = {
     "python3-swsscommon": "@sonic_swss_common//pyext:swsscommon_pkg",
     "libyang3": "@libyang//:libyang_pkg",
     "python3-libyang": "@libyang_python//:libyang_pkg",
-    "libnl-3-200": "@libnl3//:libnl-3_pkg",
-    "libnl-cli-3-200": "@libnl3//:libnl-cli-3_pkg",
-    "libnl-genl-3-200": "@libnl3//:libnl-genl-3_pkg",
-    "libnl-nf-3-200": "@libnl3//:libnl-nf-3_pkg",
-    "libnl-route-3-200": "@libnl3//:libnl-route-3_pkg",
+    "libnl-3-200": "@libnl3//:libnl-3-runtime_files",
+    "libnl-cli-3-200": "@libnl3//:libnl-cli-3-runtime_files",
+    "libnl-genl-3-200": "@libnl3//:libnl-genl-3-runtime_files",
+    "libnl-nf-3-200": "@libnl3//:libnl-nf-3-runtime_files",
+    "libnl-route-3-200": "@libnl3//:libnl-route-3-runtime_files",
     "sonic-eventd": "//src/sonic-eventd:eventd_runtime",
     "sonic-supervisord-utilities-rs": "//src/sonic-supervisord-utilities-rs:runtime",
 }
 
 sonic_layer(
-    name = "source_runtime",
+    name = "source_runtime_original_paths",
     tars = _SOURCE_TARS.values(),
+)
+
+# Common's package installs its default database configuration under /var/run.
+# Preserve Debian's /var/run -> /run link and store files at its real destination.
+normalize_layer(
+    name = "source_runtime",
+    src = ":source_runtime_original_paths",
+    base = "//dockers/docker-base-trixie:docker-base-trixie",
+    directory_aliases = {"var/run": "/run"},
+    expected_platform = select({
+        "@platforms//cpu:x86_64": "linux/amd64",
+        "@platforms//cpu:arm64": "linux/arm64",
+    }),
+    modes = {"run/redis/sonic-db/database_config.json": "0644"},
+    root_owned = True,
+    tars = _SOURCE_TARS.values(),
+)
+
+filegroup(
+    name = "runtime_path_normalization",
+    srcs = [":source_runtime"],
+    output_group = "normalization",
 )
 
 debug_symbols_layer(
@@ -41,7 +64,7 @@ debug_symbols_layer(
 
 # Keep the owner wheels and their runtime dependencies. Test-only wheels and
 # enum34 are intentionally absent, matching the Make Dockerfile's removal.
-# CFFI, Redis and YAML come from the reviewed Debian APT set as in Make.
+# CFFI and Redis come from Debian; the base already supplies the pinned YAML wheel.
 wheel_layer(
     name = "python_runtime",
     headers = "/usr/local/include/python3.13",

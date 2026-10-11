@@ -28,6 +28,14 @@ def main():
         "x86_64": ("x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"),
         "aarch64": ("aarch64-linux-gnu", "/lib/ld-linux-aarch64.so.1"),
     }[machine]
+    for alias, target in {"/bin": "usr/bin", "/sbin": "usr/sbin", "/lib": "usr/lib", "/var/run": "/run"}.items():
+        assert os.path.islink(alias) and os.readlink(alias) == target, alias
+    assert Path("/var/run/redis/sonic-db/database_config.json").resolve() == Path("/run/redis/sonic-db/database_config.json")
+    assert "DATABASES" in json.loads(Path("/var/run/redis/sonic-db/database_config.json").read_text())
+    database_config = os.stat("/run/redis/sonic-db/database_config.json")
+    assert (database_config.st_uid, database_config.st_gid, database_config.st_mode & 0o7777) == (0, 0, 0o644)
+    for name in ("classid", "pktloc"):
+        assert (Path("/etc/libnl-3") / name).is_file(), name
     for name, item in report["native"].items():
         binary = Path("/") / name
         assert hashlib.sha256(binary.read_bytes()).hexdigest() == item["sha256"], name
