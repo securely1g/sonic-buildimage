@@ -1,0 +1,14 @@
+# Export the original Make inputs directly to the OCI image and its tests.
+# Keeping the declarations beside the files avoids a second path via symlinks.
+exports_files(
+    [
+        "Dockerfile.j2",
+        "critical_processes",
+        "start.sh",
+        "supervisord.conf",
+    ],
+    visibility = [
+        "//dockers/docker-syncd-vs:__subpackages__",
+        "//tools/bazel/tests:__pkg__",
+    ],
+)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record Syncd package policy after BUILD-declared BSD tar actions.
+"""Record retained Debian package policy after BUILD-declared BSD tar actions.
 
 Archive extraction and PAX assembly belong to the owning BUILD file. This
 validator only reads their outputs, checks filesystem metadata and records the
@@ -82,7 +82,7 @@ def control_fields(contents):
     return fields
 
 
-def receipt(packages, context, payload, runtime_manifest=None):
+def receipt(packages, context, payload, runtime_manifest=None, *, architecture):
     """Validate extracted package facts and return the image's retained-package receipt."""
     reserved = {"schema", "architecture", "packages", "payload", "runtime_manifest_sha256"}
     require(isinstance(context, dict) and not reserved.intersection(context), "context overrides package facts")
@@ -100,7 +100,7 @@ def receipt(packages, context, payload, runtime_manifest=None):
         _, controls, control_sha, _ = inspect_archive(Path(paths["control"]), payload=False)
         require("control" in controls, "package lacks control file")
         fields = control_fields(controls["control"])
-        require(fields["Architecture"] in ("amd64", "all"), "foreign Debian architecture")
+        require(fields["Architecture"] in (architecture, "all"), "foreign Debian architecture")
         name = fields["Package"]
         require(name not in names, "duplicate Debian package: " + name)
         names.add(name)
@@ -122,12 +122,12 @@ def receipt(packages, context, payload, runtime_manifest=None):
                 "aggregate changes package content, order or metadata: " + before["path"])
         require(all(after["extended"].get(key) == value for key, value in before["extended"].items()),
                 "aggregate loses extended metadata: " + before["path"])
-    result = context | {"schema": 1, "architecture": "amd64", "packages": records,
+    result = context | {"schema": 1, "architecture": architecture, "packages": records,
                         "payload": {"path": payload.name, "sha256": sha(payload),
                                     "size": payload.stat().st_size, "members": len(actual)}}
     if runtime_manifest is not None:
         previous = json.loads(runtime_manifest.read_bytes())
-        require(previous.get("schema") == 1 and previous.get("architecture") == "amd64",
+        require(previous.get("schema") == 1 and previous.get("architecture") == architecture,
                 "incompatible runtime package manifest")
         runtime = {record["package"]: record for record in previous["packages"]}
         require(all(record["package"] not in runtime or
@@ -139,13 +139,14 @@ def receipt(packages, context, payload, runtime_manifest=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--architecture", required=True)
     parser.add_argument("--package", type=json.loads, action="append", required=True)
     parser.add_argument("--context", type=json.loads, default={})
     parser.add_argument("--payload", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--runtime-manifest", type=Path)
     args = parser.parse_args()
-    result = receipt(args.package, args.context, args.payload, args.runtime_manifest)
+    result = receipt(args.package, args.context, args.payload, args.runtime_manifest, architecture=args.architecture)
     args.out.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n")
 
 

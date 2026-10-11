@@ -403,14 +403,17 @@ python3 -B tools/bazel/ci/container.py \
 
 The container's `BUILD.bazel` declares `ci_tests` and `ci_artifacts`. The shared
 `tools/bazel/ci/container.py` runner discovers those targets, audits and runs the
-suite, and exports the declared files. `package_contract.py` implements the
-source install checks; the actual package-validation test declares its runtime,
+suite, and exports the declared files. The shared
+`tools/bazel/oci/package_contract.py` implements source install checks from the
+owner's generated `:package_policy`; the actual package-validation test declares its runtime,
 configuration and symbol archives, original owner install files and binutils
 executables. It writes the validation summary as a Bazel test output. There is
 no Python CI profile or callback, and the test does not inspect an ambient
 external checkout. Make still prepares manifests from its existing declarations.
 Test implementations live under `tools/bazel/tests`; manifest conversion and
-OCI inventory checks are shared with Syncd.
+OCI inventory and package/image regression tests are shared with Syncd.
+The policy describes how to read the source install files, required Protobuf
+paths, symbol coverage and config modes; it does not copy the source program list.
 SWSS owns its opt-in guards, archive
 labels and Make prerequisites. It registers both runtime and debug archives in
 `SONIC_BAZEL_SWITCHABLE_IMAGES` even when the selector is off; the shared Make

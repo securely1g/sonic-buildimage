@@ -7,21 +7,24 @@ There is no container-specific Make preparation script or payload handoff.
 
 ## File mapping to SWSS
 
-Both containers have these six files under `bazel/`:
+Both containers have these five files under `bazel/`:
 
 | File | Purpose |
 | --- | --- |
-| `BUILD.bazel` | Export the checked APT inputs and image contract to the owner BUILD file. |
+| `BUILD.bazel` | Export the checked APT inputs to the owner BUILD file. |
 | `README.md` | Explain the supported configuration, inputs and validation. |
 | `apt-resolve.MODULE.bazel` | Declare the intended direct APT roots for a deliberate lock refresh. |
 | `apt.lock.json` | Pin the reviewed dependency closure and archive contents. |
 | `apt_inputs.MODULE.bazel` | Export the locked candidate packages to Bazel. |
-| `package_contract.py` | Check the image's component install and dependency contract. |
 
 Image assembly lives in `../BUILD.bazel`; startup files, labels and installation
-state live in `../config/`. Tests live in `tools/bazel/tests` and its `integration`
+state live in `../config/`. The original startup files stay in
+`platform/vs/docker-syncd-vs/`, exported directly by its nearby BUILD file for
+both image assembly and tests. There is no `legacy/` symlink bridge. Tests live in `tools/bazel/tests` and its `integration`
 subdirectory, alongside the SWSS tests. Full-image validators live in
-`tools/bazel/ci/syncd_image.py` and `syncd_native_packages.py`.
+`tools/bazel/oci/image_validation.py` and `native_packages.py`, shared with
+other containers. The owner BUILD generates `:package_policy` from its existing
+APT policy and explicit validation expectations; no owner Python validator is needed.
 
 ## Build flow
 
@@ -41,7 +44,7 @@ utilities. Source-owned runtime/debug packaging remains in `sonic-build-infra`.
    filenames, just as it exports SWSS's Make-built Scapy wheel.
 2. The declared BSD tar actions expose each package's original control/data
    archives and compose the ordered data archives as PAX. The separate read-only
-   `config/package_receipts.py` validates package identities, source/control
+   `tools/bazel/oci/package_receipts.py` validates package identities, source/control
    hashes, architecture, member order, ownership, links and extended metadata,
    then writes the retained-package manifest. Extraction creates no DEBs and
    executes no maintainer scripts. A failed validation fails the whole action.
@@ -65,10 +68,9 @@ Every difference needs a container-specific reason:
 | Difference | Reason |
 | --- | --- |
 | Existing Make `.deb` inputs | PI, BMv2, p4c, DASH SAI, VS SAI and DASH-enabled Syncd do not yet have equivalent source targets in this image graph. Importing these packages is distinct from migrating their producers. |
-| Source dependency receipt | Imported packages depend on Common/sairedis package identities. `package_contract.py` binds those dependency declarations to the selected owner modules and actual TARs before APT selection. It does not pretend the source TARs are installed DEBs. |
-| `config/package_receipts.py` | Checks facts from the directly declared upstream extraction/composition actions. It only reads archives and writes JSON; it does not implement an extractor or archive writer. Original decompressed control hashes remain unchanged for FIPS identity checks. |
+| Source dependency receipt | Imported packages depend on Common/sairedis package identities. The shared `tools/bazel/oci/package_contract.py` binds those dependency declarations to the selected owner modules and actual TARs before APT selection. It does not pretend the source TARs are installed DEBs. |
 | `config/source_packages.json` | Records the three reused owner targets, their dependency controls, required install paths and explicit data-file modes. It retains the actual base's `libsonicdbcli` identity rather than pinning one base build. |
-| `config/runtime_package_state.json` and `package_state_layer.py` | These imported packages need alternatives, Syncd service links and provider copyright aliases that extraction alone cannot install. The layer checks the selected package controls/scripts and link targets before emitting the reviewed state. SWSS does not install this package set. |
+| `config/runtime_package_state.json` | These imported packages need alternatives, Syncd service links and provider copyright aliases that extraction alone cannot install. The shared `package_state.py` checks the selected package controls/scripts and link targets before emitting the reviewed state. SWSS does not install this package set. |
 | Imported base symbols | The base retains a Make-built `libsonicdbcli` DSO. The shared matcher selects its companion and DWZ supplement against the final runtime, while excluding old Common/swssloglevel symbols replaced by source builds. |
 | Narrower feature selector | This implementation preserves the reviewed DASH/FIPS profile. Other profiles continue to use the legacy Dockerfile. |
 
@@ -145,7 +147,7 @@ The Syncd tests check FIPS inheritance, package dependencies, source ownership,
 installation state, metadata, imported/native symbols and complete OCI fixtures.
 Normalization and symbol-matching tests live with the image helpers in
 `tools/bazel/oci/tests` and run on native AMD64 and ARM64. The consumer's
-`syncd_package_receipts_test` uses checked-in
+`oci_package_receipts_test` uses checked-in
 existing DEBs to exercise direct BSD tar extraction, repeated PAX composition,
 real `rules_oci` consumption, original control hashes and policy rejection.
 The selected action graph is inspected before execution to ensure these tests
