@@ -2,6 +2,47 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# SONiC image helpers share this repository's authoritative OCI layout reader.
+# ELF matching is separate from the lightweight inventory used by APT selection.
+py_library(
+    name = "elf_metadata",
+    srcs = ["elf.py"],
+    deps = ["//tools/bazel/ci:artifact_validation"],
+)
+
+py_library(
+    name = "imported_symbols_lib",
+    srcs = ["imported_symbols.py"],
+    deps = [
+        ":elf_metadata",
+        ":oci_layout",
+        "//tools/bazel/ci:artifact_validation",
+    ],
+)
+
+py_binary(
+    name = "imported_symbols",
+    srcs = ["imported_symbols.py"],
+    main = "imported_symbols.py",
+    deps = [":imported_symbols_lib"],
+)
+
+py_library(
+    name = "normalize_layer_lib",
+    srcs = ["normalize_layer.py"],
+    deps = [
+        ":oci_layout",
+        "//tools/bazel/ci:artifact_validation",
+    ],
+)
+
+py_binary(
+    name = "normalize_layer_tool",
+    srcs = ["normalize_layer.py"],
+    main = "normalize_layer.py",
+    deps = [":normalize_layer_lib"],
+)
+
 py_library(
     name = "normalize_layer_lib",
     srcs = ["normalize_layer.py"],

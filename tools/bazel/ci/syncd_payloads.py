@@ -17,7 +17,7 @@ from tools.bazel.oci.oci_layout import validate_layout
 from package_contract import DEBUG_APT_PACKAGES, FEATURES, SOURCE_PACKAGE_NAMES, reject_source_packages, require_runtime_fips
 
 
-from sonic_oci.normalize_layer import DIRECTORY_ALIASES, normalized_path, normalized_member, base_aliases, normalize
+from tools.bazel.oci.normalize_layer import DIRECTORY_ALIASES, normalized_path, normalized_member, base_aliases, normalize
 
 
 def validate(manifest_path, payload_path, *, variant, runtime_manifest=None):
