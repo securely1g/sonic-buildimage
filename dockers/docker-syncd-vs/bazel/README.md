@@ -28,15 +28,19 @@ subdirectory, alongside the SWSS tests. Full-image validators live in
 
 The shared rules are the same as SWSS: `oci_base_layout`, `apt_layer`,
 `sonic_layer`, `oci_image`, `debug_symbols_layer` and `sonic_docker_archive`.
-The extra imported-package adapter is the shared `deb_import` rule from
-`sonic-build-infra`, followed by its shared `normalize_layer` rule.
+The owner BUILD directly declares native `genrule` actions using `tar.bzl`'s
+public `@bsd_tar_toolchains//:resolved_toolchain` and `$(BSDTAR_BIN)`, followed
+by the shared `normalize_layer` rule. There is no custom package-import rule.
 
 1. Make builds the config-engine base, service manifests and the explicitly
    declared `.deb` prerequisites. Root `BUILD.bazel` exports those exact input
    filenames, just as it exports SWSS's Make-built Scapy wheel.
-2. `deb_import` extracts and hashes the existing files as normal Bazel actions.
-   It preserves the original package order, ownership, permissions and control
-   metadata. It creates no DEBs and executes no maintainer scripts.
+2. The declared BSD tar actions expose each package's original control/data
+   archives and compose the ordered data archives as PAX. The separate read-only
+   `config/package_receipts.py` validates package identities, source/control
+   hashes, architecture, member order, ownership, links and extended metadata,
+   then writes the retained-package manifest. Extraction creates no DEBs and
+   executes no maintainer scripts. A failed validation fails the whole action.
 3. Locked APT selection checks dependencies against the actual base, imported
    package controls and source-package metadata. Runtime FIPS OpenSSH is retained.
 4. The runtime image adds selected APT, native packages, installation state and
@@ -45,7 +49,10 @@ The extra imported-package adapter is the shared `deb_import` rule from
    Both archives retain the names and tags expected by Make and the VS installer.
 
 There is no `inputs.mk`, `prepare_packages.py`, or pre-Bazel aggregate TAR and
-manifest generation step. A changed `.deb` invalidates its Bazel import action.
+manifest generation step. A changed `.deb` invalidates its Bazel extraction
+action. Runtime and debug share extraction of identical declared package files.
+Distroless remains the APT repository adapter. Its `flatten` rule emits GNU TAR,
+so these local packages use BSD tar's PAX composition to retain extended metadata.
 
 ## Required differences from SWSS
 
@@ -55,6 +62,7 @@ Every difference needs a container-specific reason:
 | --- | --- |
 | Existing Make `.deb` inputs | PI, BMv2, p4c, DASH SAI, VS SAI and DASH-enabled Syncd do not yet have equivalent source targets in this image graph. Importing these packages is distinct from migrating their producers. |
 | Source dependency receipt | Imported packages depend on Common/sairedis package identities. `package_contract.py` binds those dependency declarations to the selected owner modules and actual TARs before APT selection. It does not pretend the source TARs are installed DEBs. |
+| `config/package_receipts.py` | Checks facts from the directly declared upstream extraction/composition actions. It only reads archives and writes JSON; it does not implement an extractor or archive writer. Original decompressed control hashes remain unchanged for FIPS identity checks. |
 | `config/source_packages.json` | Records the three reused owner targets, their dependency controls, required install paths and explicit data-file modes. It retains the actual base's `libsonicdbcli` identity rather than pinning one base build. |
 | `config/runtime_package_state.json` and `package_state_layer.py` | These imported packages need alternatives, Syncd service links and provider copyright aliases that extraction alone cannot install. The layer checks the selected package controls/scripts and link targets before emitting the reviewed state. SWSS does not install this package set. |
 | Imported base symbols | The base retains a Make-built `libsonicdbcli` DSO. The shared matcher selects its companion and DWZ supplement against the final runtime, while excluding old Common/swssloglevel symbols replaced by source builds. |
@@ -113,8 +121,10 @@ bazel cquery --output=files //dockers/docker-syncd-vs:source_package_receipt
 bazel cquery --output=files //dockers/docker-syncd-vs:base_debug_symbols_receipt
 ```
 
-The import receipts record the source labels, DEB hashes, original control
-archives, all control fields, ordered payload hashes and debug/runtime binding.
+The import receipts record the source labels, DEB hashes, original decompressed
+control/data archive hashes, all control fields and debug/runtime binding.
+The aggregate payload hash identifies the actual PAX output; its headers may
+be normalized by the upstream tool while filesystem metadata stays unchanged.
 The source receipt records module versions and actual source TAR inventories.
 The base-symbol receipt records the actual runtime digest and selected pairs.
 These are generated outputs, not checked-in captures of one machine's build.
@@ -129,9 +139,12 @@ The common `.github/workflows/bazel-oci.yml` runs SWSS source checks, Syncd
 contract tests, native AMD64/ARM64 archive checks and the approved full VS build.
 The Syncd tests check FIPS inheritance, package dependencies, source ownership,
 installation state, metadata, imported/native symbols and complete OCI fixtures.
-Shared import, normalization and symbol-matching tests live with their rules in
-`sonic-build-infra`. The selected action graph is inspected before execution to
-ensure the image-only tests do not create DEBs.
+Normalization and symbol-matching tests live with their shared rules in
+`sonic-build-infra`. The consumer's `syncd_package_receipts_test` uses checked-in
+existing DEBs to exercise direct BSD tar extraction, repeated PAX composition,
+real `rules_oci` consumption, original control hashes and policy rejection.
+The selected action graph is inspected before execution to ensure these tests
+do not create DEBs.
 
 Both containers use `tools/bazel/ci/container.py`; `ci_config.py` only selects
 the work. SWSS declares source archives and their package/debug validation;
