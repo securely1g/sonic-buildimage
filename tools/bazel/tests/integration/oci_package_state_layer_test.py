@@ -2,6 +2,7 @@
 """Check generated package files against their locked owners and link targets."""
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
@@ -19,8 +20,16 @@ from tools.bazel.tests.oci_contract_fixture import owner_policies, package_polic
 from tools.bazel.oci import package_state as subject
 
 
-def write_oci(path, entries):
+def write_oci(path, entries, *, symlinks=()):
     layer = tar_bytes(entries)
+    if symlinks:
+        stream = io.BytesIO(layer)
+        with tarfile.open(fileobj=stream, mode="a") as archive:
+            for name, target in symlinks:
+                member = tarfile.TarInfo(name)
+                member.type, member.linkname, member.mode = tarfile.SYMTYPE, target, 0o777
+                archive.addfile(member)
+        layer = stream.getvalue()
     config = {"architecture": "amd64", "os": "linux",
               "rootfs": {"type": "layers", "diff_ids": [digest(layer)]}}
     files = oci_files(json.dumps(config).encode(), [layer])
@@ -29,17 +38,36 @@ def write_oci(path, entries):
 
 
 class CommittedPackageStateTest(unittest.TestCase):
-    def test_make_state_excludes_source_libraries_and_keeps_syncd_init_owner(self):
-        """Shared source libraries carry no imported Make scripts; DASH syncd still supplies the init script."""
+    def test_openssh_installation_state_is_bound_to_its_source_owner(self):
+        """Keep the Make group, mode, socket enablement and tmpfiles exclusion together."""
+        source = json.loads((OWNER / "config/source_packages.json").read_bytes())
+        ssh = next(record for record in source["packages"] if record["package"] == "openssh-client")
+        self.assertEqual(ssh["version"], "1:10.0p1-7+fips")
+        self.assertEqual(ssh["source"]["target"], "@sonic_fips//openssh:openssh_client_pkg")
+        self.assertEqual(ssh["path_owners"]["usr/bin/ssh-agent"], {"uid": 0, "gid": 104})
+        self.assertEqual(ssh["path_modes"]["usr/bin/ssh-agent"], 0o2755)
+        state = json.loads((OWNER / "config/runtime_package_state.json").read_bytes())
+        socket = "usr/lib/systemd/user/ssh-agent.socket"
+        self.assertEqual(ssh["required_paths"][socket], "file")
+        self.assertEqual(state["source_package_files"][socket], {
+            "package": "openssh-client", "sha256": "d832c5044298c90a3245565708e516fa35e5e5c77cf680ad39829ccbdcf5a94b",
+            "size": 355, "mode": 0o644, "uid": 0, "gid": 0,
+        })
+        links = [entry for entry in state["entries"]
+                 if entry["path"] == "etc/systemd/user/sockets.target.wants/ssh-agent.socket"]
+        self.assertEqual(links, [{"path": "etc/systemd/user/sockets.target.wants/ssh-agent.socket",
+                                "kind": "symlink", "linkname": "/lib/systemd/user/ssh-agent.socket",
+                                "mode": 0o777, "uid": 0, "gid": 0}])
+        self.assertEqual((OWNER / "config/openssh-client.conf").read_bytes(), b"x /tmp/ssh-*\n")
+
+    def test_only_cached_p4_packages_are_imported_and_source_syncd_owns_its_init_file(self):
+        """The service links stay bound to the same init bytes after its producer changes."""
         contract = json.loads((OWNER / "config/runtime_package_state.json").read_bytes())
         make = contract["make_package_state_inputs"]
         self.assertEqual(set(make), {
-            "libnl-3-200", "libnl-3-dev", "libnl-cli-3-200", "libnl-genl-3-200", "libnl-nf-3-200",
-            "libnl-route-3-200", "libnl-route-3-dev", "libsai", "libsaivs", "libyang3",
-            "openssh-client", "p4lang-bmv2", "p4lang-p4c", "p4lang-pi", "syncd-vs",
+            "libsai", "p4lang-bmv2", "p4lang-p4c", "p4lang-pi",
         })
-        self.assertEqual(contract["make_package_files"]["etc/init.d/syncd"]["package"], "syncd-vs")
-        self.assertIn("+fips", make["openssh-client"]["version"])
+        self.assertEqual(contract["source_package_files"]["etc/init.d/syncd"]["package"], "syncd-vs")
 
     def test_historical_reference_matches_legacy_dockerfile(self):
         """CI detects changes to the legacy installation recipe without making it a build input."""
@@ -184,6 +212,31 @@ class PackageStateLayerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "link target is absent"):
             self.build()
 
+    def test_source_owned_socket_link_follows_merged_usr_and_checks_exact_unit_bytes(self):
+        socket = "usr/lib/systemd/user/example.socket"
+        unit = b"[Socket]\nListenStream=%t/example\n"
+        self.runtime_layer.write_bytes(tar_bytes([("etc/init.d/tool", self.init_bytes, 0o755),
+                                                 (socket, unit, 0o644)]))
+        base_digest = write_oci(self.base, [], symlinks=[("lib", "usr/lib")])
+        self.mutate(self.selection, lambda value: value.update(base_manifest_digest=base_digest))
+        state = json.loads(self.contract.read_bytes())
+        state["source_package_files"] = {socket: {
+            "package": "libexample", "sha256": hashlib.sha256(unit).hexdigest(),
+            "size": len(unit), "mode": 0o644, "uid": 0, "gid": 0,
+        }}
+        link = "etc/systemd/user/sockets.target.wants/example.socket"
+        state["entries"].append({"path": link, "kind": "symlink", "mode": 0o777,
+                                 "uid": 0, "gid": 0, "linkname": "/lib/systemd/user/example.socket"})
+        self.contract.write_text(json.dumps(state))
+        self.build()
+        files = {}
+        apply_layer(self.output, files)
+        self.assertEqual(files[link]["linkname"], "/lib/systemd/user/example.socket")
+        self.runtime_layer.write_bytes(tar_bytes([("etc/init.d/tool", self.init_bytes, 0o755),
+                                                 (socket, b"unreviewed unit", 0o644)]))
+        with self.assertRaisesRegex(ValueError, "package state file changed"):
+            self.build()
+
     def test_changed_alias_bytes_are_rejected(self):
         """An alias must retain the reviewed content of the package that supplies it."""
         self.write_apt(b"different license\n")
@@ -302,7 +355,7 @@ class PackageStateLayerTest(unittest.TestCase):
     def test_make_state_file_changes_require_review(self):
         """Reject imported service-file changes that differ from the reviewed state contract."""
         self.runtime_layer.write_bytes(tar_bytes([("etc/init.d/tool", b"changed init script\n", 0o755)]))
-        with self.assertRaisesRegex(ValueError, "Make package state file changed"):
+        with self.assertRaisesRegex(ValueError, "package state file changed"):
             self.build()
 
     def test_historical_reference_is_not_an_assembly_input(self):
