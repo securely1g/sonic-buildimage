@@ -3,6 +3,8 @@
 This directory holds tests for the Bazel helpers, Make container integration,
 OCI publication and source-built Python dependency checks. Existing component
 behavior tests remain with `src/sonic-config-engine` and `src/sonic-py-common`.
+The containercfgd suite remains with `src/sonic-containercfgd` and uses the
+same central runner for its complete source suite.
 
 Run the self-contained unit tests from the repository root:
 
@@ -53,6 +55,8 @@ bazel test \
   //tools/bazel/tests:sonic_py_common_full_test \
   //tools/bazel/tests:sonic_config_engine_full_test \
   //tools/bazel/tests:sonic_python_wheels_test \
+  //tools/bazel/tests:containercfgd_full_test \
+  //tools/bazel/tests:containercfgd_wheel_test \
   //src/sonic-config-engine:sonic_cfggen_cli_test \
   //tools/bazel/tests:manifest_labels_test \
   //tools/bazel/tests:prepare_oci_base_test \
@@ -70,8 +74,8 @@ bazel test \
 needs. CI selects the same tests explicitly and retains raw logs and cache
 records in the job workspace. The [workflow](../../../.github/workflows/bazel-swss-oci.yml)
 supplies the supported native AMD64/ARM64 platform flags and execution dependencies.
-The Python checks run both complete component test directories and install both
-source-built wheels. Public archive artifacts retain the wheels, hashes and
+The Python checks run the complete config-engine, py-common and containercfgd
+test directories and install their source-built wheels. Public archive artifacts retain the wheels, hashes and
 extracted test counts/status. Collection still requires test logs/XML, collected
 test inventories and the installed-wheel receipt locally. Missing evidence or
 mismatched installed wheel hashes fail collection.
