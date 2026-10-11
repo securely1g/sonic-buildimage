@@ -5,7 +5,27 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@tar.bzl", "tar")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 
-package(default_visibility = ["//dockers/docker-syncd-vs:__subpackages__", "//tools/bazel/tests:__pkg__"])
+package(default_visibility = [
+    "//dockers/docker-syncd-vs:__subpackages__",
+    "//tools/bazel/tests:__pkg__",
+])
+
+# Read-only SONiC package policy. The owning image BUILD declares upstream
+# extraction and archive assembly directly.
+py_library(
+    name = "package_receipts_lib",
+    srcs = ["package_receipts.py"],
+    imports = ["."],
+    deps = ["//tools/bazel/ci:artifact_validation"],
+)
+
+py_binary(
+    name = "package_receipts",
+    srcs = ["package_receipts.py"],
+    main = "package_receipts.py",
+    python_version = "3.11",
+    deps = [":package_receipts_lib"],
+)
 
 manifest_labels(
     name = "labels",
@@ -37,7 +57,13 @@ tar(
     ],
 )
 
-exports_files(["runtime_package_state.json", "source_packages.json"], visibility = ["//visibility:public"])
+exports_files(
+    [
+        "runtime_package_state.json",
+        "source_packages.json",
+    ],
+    visibility = ["//visibility:public"],
+)
 
 py_library(
     name = "package_state_lib",
@@ -62,13 +88,13 @@ py_binary(
 run_binary(
     name = "runtime_package_state",
     srcs = [
-        "//dockers/docker-syncd-vs/bazel:apt.lock.json",
         "runtime_package_state.json",
         "//dockers/docker-syncd-vs:apt_deps",
         "//dockers/docker-syncd-vs:config_engine_base_layout",
         "//dockers/docker-syncd-vs:runtime_apt_selection",
-        "//dockers/docker-syncd-vs:runtime_packages",
         "//dockers/docker-syncd-vs:runtime_import_manifest",
+        "//dockers/docker-syncd-vs:runtime_packages",
+        "//dockers/docker-syncd-vs/bazel:apt.lock.json",
     ],
     outs = ["runtime_package_state.tar"],
     args = [
