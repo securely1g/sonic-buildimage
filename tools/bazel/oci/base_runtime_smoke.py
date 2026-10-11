@@ -96,6 +96,11 @@ def main():
     assert "[ available ]" in output and "SCOSSL" in output
     assert digest in command("openssl", "dgst", "-engine", engine, "-sha256", input="abc")
     assert os.stat("/usr/bin/vim").st_ino == os.stat("/usr/bin/vim.tiny").st_ino
+    for name in ("editor", "ex", "rview", "vi", "view"):
+        assert os.readlink("/usr/bin/" + name) == "/etc/alternatives/" + name
+        assert os.readlink("/etc/alternatives/" + name) == "/usr/bin/vim.tiny"
+        assert Path("/usr/bin/" + name).resolve() == Path("/usr/bin/vim.tiny")
+    assert "VIM - Vi IMproved" in command("vi", "--version")
     assert "--nodaemon" in command("supervisord", "--help")
     assert "--container-name" in command("/usr/bin/supervisor-proc-exit-listener-rs", "--help")
     print(json.dumps({"status": "passed", "machine": machine, "source_elf_count": len(report["native"]),

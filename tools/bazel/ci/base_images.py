@@ -58,6 +58,15 @@ def verify_source_files(files, metadata, machine):
     return native
 
 
+def verify_editor_commands(files):
+    for name in ("editor", "ex", "rview", "vi", "view"):
+        for path, target in (("usr/bin/" + name, "/etc/alternatives/" + name),
+                             ("etc/alternatives/" + name, "/usr/bin/vim.tiny")):
+            item = files.get(path, {})
+            validation.require(item.get("kind") == "symlink" and item.get("linkname") == target,
+                               "base image changed the vim-tiny command alternative: " + path)
+
+
 def verify_symbols(native, runtimes, debug_tar, directory):
     """Use the shared verifier, with the source owner's sealed-core exception."""
     symbols = validation.payload(debug_tar)
@@ -151,6 +160,7 @@ def main():
             runtimes.append(paths[image + ".source.tar"])
             files = installed_inventory(layout)
             verify_directory_aliases(files)
+            verify_editor_commands(files)
             if image == "docker-config-engine-trixie":
                 data = files.get("run/redis/sonic-db/database_config.json", {})
                 validation.require(all(data.get(key) == value for key, value in {

@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.bazel.ci.base_images import verify_directory_aliases, verify_source_files
+from tools.bazel.ci.base_images import verify_directory_aliases, verify_editor_commands, verify_source_files
 
 
 class SourceImageValidationTest(unittest.TestCase):
@@ -44,6 +44,19 @@ class SourceImageValidationTest(unittest.TestCase):
         files["var/run"] = {"kind": "directory"}
         with self.assertRaisesRegex(ValueError, "changed a Debian directory alias"):
             verify_directory_aliases(files)
+
+    def test_base_editor_alternatives_select_the_installed_tiny_binary(self):
+        files = {}
+        for name in ("editor", "ex", "rview", "vi", "view"):
+            files["usr/bin/" + name] = {"kind": "symlink", "linkname": "/etc/alternatives/" + name}
+            files["etc/alternatives/" + name] = {"kind": "symlink", "linkname": "/usr/bin/vim.tiny"}
+        verify_editor_commands(files)
+        files["etc/alternatives/editor"]["linkname"] = "/usr/bin/vim.basic"
+        with self.assertRaisesRegex(ValueError, "vim-tiny command"):
+            verify_editor_commands(files)
+        del files["etc/alternatives/editor"]
+        with self.assertRaisesRegex(ValueError, "vim-tiny command"):
+            verify_editor_commands(files)
 
 
 if __name__ == "__main__":

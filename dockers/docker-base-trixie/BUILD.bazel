@@ -170,6 +170,7 @@ genrule(
             "./" + path + " uid=0 gid=0 mode=0755 time=0 type=dir"
             for path in [
                 "etc",
+                "etc/alternatives",
                 "etc/apt",
                 "etc/apt/apt.conf.d",
                 "etc/dpkg",
@@ -192,6 +193,14 @@ genrule(
             for name in _APT_CONFIGS
         ] + [
             "./etc/apt/sources.list uid=0 gid=0 mode=0644 time=0 type=file content=$(location :apt_sources_" + arch + ")",
+        ] + [
+            # vim-tiny's reviewed postinst selects these commands at priority15.
+            # Manual-page alternatives are omitted by the base dpkg file policy.
+            "./usr/bin/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/" + name
+            for name in ["editor", "ex", "rview", "vi", "view"]
+        ] + [
+            "./etc/alternatives/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/vim.tiny"
+            for name in ["editor", "ex", "rview", "vi", "view"]
         ],
     )
     for arch in [

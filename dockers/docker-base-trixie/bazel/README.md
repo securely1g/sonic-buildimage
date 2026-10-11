@@ -41,6 +41,11 @@ CI rejects payload paths that traverse the preserved directory aliases.
 Source-owned paths receive root ownership, and the database configuration uses
 mode `0644`, so a developer checkout's uid or umask cannot leak into the image.
 
+The base keeps Make's `vim-tiny` selection and hard link at `/usr/bin/vim`.
+It declares the `editor`, `ex`, `rview`, `vi`, and `view` alternatives from the
+pinned package's installation script, with each command resolving to
+`/usr/bin/vim.tiny`. Debug images may replace these alternatives with full Vim.
+
 Each native producer keeps its own runtime/debug split. The image's debug target
 collects those providers through the base chain. SymCrypt's integrity-sealed core
 uses build-ID lookup only: adding a debug-link section after sealing would change
