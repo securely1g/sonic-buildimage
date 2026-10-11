@@ -155,6 +155,96 @@ class InstalledPackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs from selected"):
             self.build()
 
+    def retained(self):
+        imported = {"Package": "cached-runtime", "Version": "1.0", "Architecture": "amd64",
+                    "Depends": "libexample (>= 2.0)"}
+        source = json.loads(self.spec.read_text())["packages"]["libexample"]
+        document = {
+            "variant": "runtime", "architecture": "amd64",
+            "packages": [{"package": "cached-runtime", "version": "1.0", "architecture": "amd64",
+                          "control_fields": imported, "source_sha256": "b" * 64}],
+            "source_packages": [{"package": "libexample", "control_fields": source["control_fields"],
+                                 "source": {"commit": source["source_revision"], "target": source["target"]},
+                                 "files": {"usr/lib/libexample.so": {"kind": "file"}},
+                                 "input_tar_sha256": hashlib.sha256(self.payload.read_bytes()).hexdigest()}],
+        }
+        path = self.root / "retained.json"
+        path.write_text(json.dumps(document))
+        apt = json.loads(self.receipt.read_text())
+        apt.update(retained_manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                   variant="runtime", source_receipt_sha256="c" * 64, make_manifest_sha256="d" * 64)
+        apt["dependency_check"]["packages"].update(
+            libexample=source["control_fields"], **{"cached-runtime": imported})
+        self.receipt.write_text(json.dumps(apt))
+        return path
+
+    def test_mixed_image_records_source_and_cached_package_identities(self):
+        path = self.retained()
+        status, receipt = build(self.base, self.receipt, [self.control], self.spec,
+                                {"libexample": self.payload}, "amd64", retained_manifest=path)
+        self.assertIn("X-Sonic-Imported-Deb-Sha256: " + "b" * 64, status)
+        self.assertEqual(receipt["dependency_check"]["packages"]["libexample"]["Version"], "2.0")
+        self.assertEqual(receipt["variant"], "runtime")
+        self.assertEqual(receipt["source_receipt_sha256"], "c" * 64)
+
+    def test_foreign_contract_keeps_the_sonic_patch_version_in_installed_metadata(self):
+        self.spec.write_text(json.dumps({"schema": 1, "packages": [{
+            "package": "libexample", "control_fields": dict(self.original, Version="3.7.0"),
+            "source": {"module": "libexample", "version": "3.7.0.sonic.3",
+                       "release": "3.7.0", "target": "@example//:runtime"},
+            "required_paths": {"usr/lib/libexample.so": "file"},
+        }]}))
+        status, receipt = self.build()
+        self.assertIn("X-Sonic-Source-Revision: 3.7.0.sonic.3", status)
+        self.assertEqual(receipt["source_packages"][0]["source_revision"], "3.7.0.sonic.3")
+
+    def test_mixed_image_cannot_reuse_a_source_receipt_for_changed_bytes(self):
+        path = self.retained()
+        self.payload = self.tar("changed-source.tar", {"usr/lib/libexample.so": b"changed source bytes"})
+        with self.assertRaisesRegex(ValueError, "source TAR differs"):
+            build(self.base, self.receipt, [self.control], self.spec,
+                  {"libexample": self.payload}, "amd64", retained_manifest=path)
+
+    def test_mixed_image_uses_canonical_paths_and_normalized_owners(self):
+        contents = b"\x7fELF" + bytes(60)
+        with tarfile.open(self.payload, "w") as archive:
+            for name, data in {"usr/lib/libexample.so": contents, "var/run/example/config": b"config"}.items():
+                member = tarfile.TarInfo(name)
+                member.size, member.uid, member.gid, member.mode = len(data), 1000, 1000, 0o644
+                archive.addfile(member, io.BytesIO(data))
+        spec = json.loads(self.spec.read_text())
+        spec["packages"]["libexample"]["required_paths"].append("run/example/config")
+        self.spec.write_text(json.dumps(spec))
+        path = self.retained()
+        document = json.loads(path.read_text())
+        document["source_packages"][0]["files"] = {
+            "run/example/config": {"kind": "file"},
+            "usr/lib/libexample.so": {"kind": "file", "elf_machine": 62,
+                                      "sha256": hashlib.sha256(contents).hexdigest(),
+                                      "mode": 0o644, "uid": 0, "gid": 0},
+        }
+        for gid, mode in ((0, 0o644), (104, 0o2755)):
+            with self.subTest(gid=gid, mode=mode):
+                document["source_packages"][0]["files"]["usr/lib/libexample.so"].update(gid=gid, mode=mode)
+                path.write_text(json.dumps(document))
+                apt = json.loads(self.receipt.read_text())
+                apt["retained_manifest_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                self.receipt.write_text(json.dumps(apt))
+                _, receipt = build(self.base, self.receipt, [self.control], self.spec,
+                                   {"libexample": self.payload}, "amd64", retained_manifest=path)
+                native = receipt["source_packages"][0]["native_files"][0]
+                self.assertEqual((native["uid"], native["gid"], native["mode"]), (0, gid, mode))
+                self.assertEqual(native["sha256"], hashlib.sha256(contents).hexdigest())
+
+    def test_mixed_image_cannot_change_cached_package_control_after_selection(self):
+        path = self.retained()
+        document = json.loads(path.read_text())
+        document["packages"][0]["control_fields"]["Depends"] = "missing-library"
+        path.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, "retained manifest differs"):
+            build(self.base, self.receipt, [self.control], self.spec,
+                  {"libexample": self.payload}, "amd64", retained_manifest=path)
+
 
 if __name__ == "__main__":
     unittest.main()

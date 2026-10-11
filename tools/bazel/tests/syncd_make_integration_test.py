@@ -43,6 +43,10 @@ DEBS_PATH = target/debs/trixie
 DOCKER_CONFIG_ENGINE_TRIXIE = docker-config-engine-trixie.gz
 docker-config-engine-trixie.gz_DBG_DEPENDS = base-dbgsym.deb $(FIPS_OPENSSH_CLIENT)
 docker-config-engine-trixie.gz_DBG_IMAGE_PACKAGES = gdb gdbserver vim sshpass strace
+P4LANG_PI = p4lang-pi.deb
+P4LANG_BMV2 = p4lang-bmv2.deb
+P4LANG_P4C = p4lang-p4c.deb
+DASH_SAI = libsai.deb
 SYNCD_VS = syncd-vs.deb
 SYNCD_VS_DBG = syncd-vs-dbgsym.deb
 LIBNL3_DEV = libnl-3-dev.deb
@@ -127,17 +131,17 @@ target/bazel-manifests/%/manifest.json:
         self.assertEqual(values["runtime_label"], "//platform/vs/docker-syncd-vs:docker-syncd-vs.gz")
         self.assertEqual(values["debug_label"], "//platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz")
         self.assertEqual(values["runtime_inputs"].split(), [
-            "target/docker-config-engine-trixie.oci",
             *["target/debs/trixie/" + name for name in values["runtime_debs"].split()],
+            "target/bazel-manifests/docker-base-trixie/manifest.json",
+            "target/bazel-manifests/docker-config-engine-trixie/manifest.json",
             "target/bazel-manifests/docker-syncd-vs/manifest.json"])
         self.assertEqual(values["debug_inputs"].split(), values["runtime_inputs"].split() + [
             *["target/debs/trixie/" + name for name in values["debug_debs"].split()],
-            "target/debs/trixie/libswsscommon-dbgsym.deb",
             "target/bazel-manifests/docker-syncd-vs-dbg/manifest.json"])
         self.assertEqual(values["manifests"].split(), ["docker-syncd-vs", "docker-syncd-vs-dbg"])
-        self.assertEqual(values["oci_bases"], "docker-config-engine-trixie.oci")
-        self.assertEqual(values["oci_archive"], "target/docker-config-engine-trixie.gz")
-        self.assertEqual(values["oci_platform"], "linux/amd64")
+        self.assertEqual(values["oci_bases"], "")
+        self.assertEqual(values["oci_archive"], "")
+        self.assertEqual(values["oci_platform"], "")
         self.assertEqual(values["legacy"], "docker-other.gz")
         self.assertEqual(values["debug"], "")
         self.assertEqual(values["install"], "docker-syncd-vs.gz")
@@ -177,48 +181,25 @@ target/bazel-manifests/%/manifest.json:
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("must be y or n", result.stderr)
 
-    def test_package_prerequisites_preserve_make_dependencies_except_shared_source_libraries(self):
-        """Reusing three source libraries must keep DASH, VS SAI, FIPS and their Make dependencies."""
+    def test_only_the_four_cached_p4_packages_are_make_prerequisites(self):
+        """Source-built base, daemon and symbols must not pull their old Make DEBs back in."""
         values = self.values(self.run_make(BUILD_WITH_BAZEL_WHEN_AVAILABLE="y"))
-        packages = values["runtime_debs"].split()
-        self.assertEqual(packages[:2], ["libnl-3-dev.deb", "libnl-route-3-dev.deb"])
-        for package in ("syncd-vs", "libsaivs", "libsai", "libyang3", "p4lang-pi", "p4lang-bmv2", "p4lang-p4c"):
-            self.assertIn(package + ".deb", packages)
-        self.assertLess(packages.index("p4lang-pi.deb"), packages.index("libsai.deb"))
-        self.assertLess(packages.index("libsai.deb"), packages.index("syncd-vs.deb"))
-        self.assertIn("base-dbgsym.deb", values["debug_debs"].split())
-        fips = "openssh-client_10.0p1-7+fips_amd64.deb"
-        self.assertEqual(packages.count(fips), 1)
-        self.assertNotIn(fips, values["debug_debs"].split())
-        # The OCI handoff fixes runtime selection without rewriting legacy rules.
-        self.assertNotIn(fips, values["runtime_packages"].split())
+        self.assertEqual(values["runtime_debs"].split(),
+                         ["p4lang-pi.deb", "p4lang-bmv2.deb", "p4lang-p4c.deb", "libsai.deb"])
+        self.assertEqual(values["debug_debs"], "")
+        self.assertEqual(values["base_debug_debs"], "")
+        for variant in ("runtime", "debug"):
+            inputs = values[variant + "_inputs"].split()
+            self.assertEqual([path for path in inputs if path.endswith(".deb")],
+                             ["target/debs/trixie/" + name for name in values["runtime_debs"].split()])
+            self.assertFalse(any(path.endswith(".oci") for path in inputs))
         result = self.run_make("debug_dependencies", dry_run=True, BUILD_WITH_BAZEL_WHEN_AVAILABLE="y")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for package in set(values["runtime_debs"].split() + values["debug_debs"].split() +
-                           values["base_debug_debs"].split()):
+        for package in values["runtime_debs"].split():
             self.assertEqual(result.stdout.count("fixture-deb target/debs/trixie/" + package + "\n"), 1)
-        self.assertIn("fixture-manifest target/bazel-manifests/docker-syncd-vs/manifest.json", result.stdout)
-        self.assertIn("fixture-manifest target/bazel-manifests/docker-syncd-vs-dbg/manifest.json", result.stdout)
-        self.assertNotIn("prepare_packages.py", result.stdout)
-        self.assertNotIn("bazel-inputs/docker-syncd-vs", result.stdout)
-        self.assertNotIn("bazel build", result.stdout)
-
-    def test_shared_source_packages_cannot_reenter_through_debug_dependencies(self):
-        """Filter both expanded handoffs so Make symbols cannot restore the replaced runtime libraries."""
-        values = self.values(self.run_make(BUILD_WITH_BAZEL_WHEN_AVAILABLE="y"))
-        moved = {"libswsscommon", "libsairedis", "libsaimetadata"}
-        moved |= {name + "-dbgsym" for name in moved}
-        for variant in ("runtime", "debug"):
-            self.assertTrue({name + ".deb" for name in moved}.isdisjoint(values[variant + "_debs"].split()))
-        self.assertEqual(values["base_debug_debs"].split(), ["libswsscommon-dbgsym.deb"])
-        self.assertNotIn("target/debs/trixie/libswsscommon-dbgsym.deb", values["runtime_inputs"].split())
-        self.assertEqual(values["debug_inputs"].split().count("target/debs/trixie/libswsscommon-dbgsym.deb"), 1)
-        # Expand first, then filter: a moved library's retained libyang dependency
-        # must survive, including when reached through a debug-symbol package.
-        self.assertIn("libyang3.deb", values["runtime_debs"].split())
-        self.assertIn("libyang3.deb", values["debug_debs"].split())
-        self.assertIn("libsaivs-dbgsym.deb", values["debug_debs"].split())
-        self.assertIn("syncd-vs-dbgsym.deb", values["debug_debs"].split())
+        self.assertIn("fixture-manifest target/bazel-manifests/docker-base-trixie/manifest.json", result.stdout)
+        self.assertIn("fixture-manifest target/bazel-manifests/docker-config-engine-trixie/manifest.json", result.stdout)
+        self.assertNotIn("fixture-base", result.stdout)
 
     def test_custom_package_directories_keep_the_legacy_producer(self):
         """Bazel cannot select stale default-path DEBs when Make uses a different package directory."""
@@ -285,7 +266,9 @@ image_handoff: $($(DOCKER_SYNCD_BASE)_BAZEL_DEPENDS)
         self.assertEqual(set(values["imported"].split()), set(packages.values()))
         self.assertEqual(values["native"], "")
         self.assertEqual(values["derived"], "")
-        self.assertEqual(values["bazel"], "docker-syncd-vs.gz")
+        self.assertCountEqual(values["bazel"].split(), [
+            "docker-base-trixie.gz", "docker-config-engine-trixie.gz", "docker-syncd-vs.gz",
+        ])
         self.assertEqual(values["development"], packages["libsai-dev"])
         self.assertEqual(set(values["development_requires"].split()), {packages["libsai"]})
         for variant in ("runtime", "debug"):
@@ -293,8 +276,7 @@ image_handoff: $($(DOCKER_SYNCD_BASE)_BAZEL_DEPENDS)
             for name in ("p4lang-pi", "p4lang-bmv2", "p4lang-p4c", "libsai"):
                 self.assertIn("target/debs/trixie/" + packages[name], inputs)
             self.assertNotIn("target/debs/trixie/" + packages["libsai-dev"], inputs)
-            # P4 routing must not put the three source-owned libraries back into
-            # the native image handoff. The separate base-symbol input survives.
+            # P4 routing must not restore replaced source package inputs.
             for package in values["native_source_inputs"].split():
                 if package != "libswsscommon-dbgsym_1.0.0_amd64.deb":
                     self.assertNotIn("target/debs/trixie/" + package, inputs)
