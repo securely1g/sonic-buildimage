@@ -144,11 +144,17 @@ def main():
         targets["config-engine.path-normalization.json"] = "//dockers/docker-config-engine-trixie:runtime_path_normalization"
         tests = ["//dockers/docker-base-trixie/bazel:installed_packages_test",
                  "//src/sonic-config-engine:sonic_cfggen_cli_test"]
+        layouts = ["//dockers/" + image + ":" + image for image in IMAGES]
         receipt["action_audit"] = bazel_commands.audit_targets(
-            args.bazel, options, [*targets.values(), *tests], workspace=ROOT,
+            args.bazel, options, [*targets.values(), *tests, *layouts], workspace=ROOT,
             output=directory / "action-audit.json")
         execute([args.bazel, "test", *options, "--test_output=errors", *tests], directory, receipt, "tests")
         paths = build.collect_archives(ROOT, directory, receipt, targets, bazel=args.bazel, options=options)
+        # Cached archives need not materialize their intermediate OCI layouts.
+        # Request the directories we inspect; cquery only locates their outputs.
+        execute([args.bazel, "build", *options,
+                 "--build_event_json_file=" + str(directory / "layout-build-events.jsonl"),
+                 *layouts], directory, receipt, "layouts")
         reports, runtimes = [], []
         receipt["images"] = {}
         for image in IMAGES:

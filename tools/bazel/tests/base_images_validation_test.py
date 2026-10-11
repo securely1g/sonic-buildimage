@@ -1,11 +1,91 @@
 """Reject assembled images that differ from their source package receipts."""
 
+from contextlib import ExitStack
+import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci.base_images import verify_directory_aliases, verify_editor_commands, verify_source_files
+from tools.bazel.ci import base_images
+from tools.bazel.tests.oci_base_fixture import image_fixture, oci_files, write_layout
+
+
+class CachedImageLayoutTest(unittest.TestCase):
+    """An archive cache hit does not promise its intermediate layout exists."""
+
+    def run_cached_build(self, architecture, fail_layout_build=False):
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary)
+            artifacts = root / "artifacts"
+            queries = []
+
+            def execute(command, directory, receipt, name, **kwargs):
+                if command[0] == "git":
+                    return "a" * 40
+                if command[0] == "make" or command[1] == "test":
+                    return ""
+                if command[1] == "build":
+                    if fail_layout_build:
+                        raise subprocess.CalledProcessError(1, command)
+                    for image in base_images.IMAGES:
+                        if "//dockers/" + image + ":" + image in command:
+                            config, layers = image_fixture(architecture)
+                            write_layout(root / "bazel-bin" / image, oci_files(config, layers))
+                    return ""
+                if command[1] == "cquery":
+                    image = command[-1].split(":")[-1]
+                    queries.append(image)
+                    return "bazel-bin/" + image + "\n"
+                self.fail("unexpected command: " + repr(command))
+
+            def cached_archives(workspace, directory, receipt, targets, **kwargs):
+                paths = {}
+                for name in targets:
+                    paths[name] = directory / name
+                    paths[name].write_text(json.dumps({"source_packages": []}))
+                return paths
+
+            patches = [
+                mock.patch.object(base_images, "ROOT", root),
+                mock.patch.object(sys, "argv", ["base_images.py", "--artifacts", str(artifacts),
+                                               "--architecture", architecture]),
+                mock.patch.object(base_images.platform, "machine", return_value={"amd64": "x86_64", "arm64": "aarch64"}[architecture]),
+                mock.patch.object(base_images.platform, "freedesktop_os_release", return_value={"VERSION_CODENAME": "trixie"}),
+                mock.patch.object(base_images.command_log, "execute", side_effect=execute),
+                mock.patch.object(base_images.build, "collect_archives", side_effect=cached_archives),
+                mock.patch.object(base_images.resolution, "collect", return_value={}),
+                mock.patch.object(base_images, "IMAGES", ("docker-base-trixie",)),
+                mock.patch.object(base_images, "verify_directory_aliases"),
+                mock.patch.object(base_images, "verify_editor_commands"),
+                mock.patch.object(base_images, "verify_source_files", return_value={}),
+                mock.patch.object(base_images, "verify_symbols", return_value=[]),
+            ]
+            for patch in patches:
+                stack.enter_context(patch)
+            audit = stack.enter_context(mock.patch.object(base_images.bazel_commands, "audit_targets", return_value={}))
+            if fail_layout_build:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    base_images.main()
+                self.assertEqual(queries, [])
+                self.assertEqual(json.loads((artifacts / "receipt.json").read_text())["status"], "failed")
+            else:
+                base_images.main()
+                self.assertEqual(queries, ["docker-base-trixie"])
+                self.assertEqual(json.loads((artifacts / "receipt.json").read_text())["status"], "passed")
+                self.assertIn("//dockers/docker-base-trixie:docker-base-trixie", audit.call_args.args[2])
+
+    def test_cached_archives_materialize_layout_for_each_native_architecture(self):
+        for architecture in ("amd64", "arm64"):
+            with self.subTest(architecture=architecture):
+                self.run_cached_build(architecture)
+
+    def test_failed_layout_build_stops_before_inspection(self):
+        self.run_cached_build("amd64", fail_layout_build=True)
 
 
 class SourceImageValidationTest(unittest.TestCase):
