@@ -214,10 +214,10 @@ oci.pull(
     image = "docker.io/library/debian",
     platforms = [
         "linux/amd64",
-        "linux/arm64",
+        "linux/arm64/v8",
     ],
 )
-use_repo(oci, "debian_trixie", "debian_trixie_linux_amd64", "debian_trixie_linux_arm64")
+use_repo(oci, "debian_trixie", "debian_trixie_linux_amd64", "debian_trixie_linux_arm64_v8")
 
 include("//dockers/docker-base-trixie/bazel:apt_inputs.MODULE.bazel")
 
