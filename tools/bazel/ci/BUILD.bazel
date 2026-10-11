@@ -8,13 +8,17 @@ py_library(
 
 py_library(
     name = "syncd_validation",
-    srcs = ["syncd_image.py", "syncd_native_packages.py", "syncd_payloads.py"],
+    srcs = [
+        "syncd_image.py",
+        "syncd_native_packages.py",
+        "syncd_payloads.py",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":artifact_validation",
         "//dockers/docker-syncd-vs:package_contract_lib",
+        "//tools/bazel/oci:normalize_layer_lib",
         "//tools/bazel/oci:oci_inventory",
         "//tools/bazel/oci:oci_layout",
-        "@sonic_build_infra//oci:lib",
     ],
 )
