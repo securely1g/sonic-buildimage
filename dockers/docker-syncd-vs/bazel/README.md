@@ -7,7 +7,7 @@ There is no container-specific Make preparation script or payload handoff.
 
 ## File mapping to SWSS
 
-Both containers have these seven files under `bazel/`:
+Both containers have these six files under `bazel/`:
 
 | File | Purpose |
 | --- | --- |
@@ -16,7 +16,6 @@ Both containers have these seven files under `bazel/`:
 | `apt-resolve.MODULE.bazel` | Declare the intended direct APT roots for a deliberate lock refresh. |
 | `apt.lock.json` | Pin the reviewed dependency closure and archive contents. |
 | `apt_inputs.MODULE.bazel` | Export the locked candidate packages to Bazel. |
-| `ci_config.py` | Declare the shared CI runner's tests, Make manifest arguments and image-specific checks. |
 | `package_contract.py` | Check the image's component install and dependency contract. |
 
 Image assembly lives in `../BUILD.bazel`; startup files, labels and installation
@@ -152,20 +151,29 @@ real `rules_oci` consumption, original control hashes and policy rejection.
 The selected action graph is inspected before execution to ensure these tests
 do not create DEBs.
 
-Both containers use `tools/bazel/ci/container.py`; `ci_config.py` only selects
-the work. SWSS declares source archives and their package/debug validation;
-Syncd declares contract tests that do not require native Make package inputs.
-From a clean native AMD64 Trixie checkout without `MODULE.bazel.lock`, run:
+Both containers declare `ci_tests` and `ci_artifacts` in their owning BUILD
+files. The shared runner discovers those declarations; no `ci_config.py` is
+needed. Both suites use the same parameterized manifest test and shared OCI
+inventory checks. Syncd retains checks for its package adapter, SAI/service
+installation state and FIPS inputs. Its CI artifact group is empty because this
+hosted job validates contracts without building production package prerequisites.
+
+From a clean native AMD64 Trixie checkout without `MODULE.bazel.lock`, prepare
+inputs through the existing Make metadata and run the common entry point:
 
 ```sh
+make -f tools/bazel/prepare_manifests.mk \
+  MANIFEST_METADATA=platform/vs/docker-syncd-vs.mk DEBS_PATH=target/debs/trixie \
+  BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
+  INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n DBG_IMAGE_MARK=dbg \
+  PLATFORM_PATH=platform/vs DOCKERS_PATH=dockers
 python3 -B tools/bazel/ci/container.py \
-  --config dockers/docker-syncd-vs/bazel/ci_config.py \
-  --bazel bazel --artifacts artifacts/syncd-vs/bazel
+  --container //dockers/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk --bazel bazel --artifacts artifacts/syncd-vs/bazel
 ```
 
-The shared runner prepares the declared manifests, audits the exact target
-set, retains each configured test's logs/XML, checks unchanged source hashes
-and records dependency resolution. The artifact directory must be empty.
+The shared runner audits the expanded test suite and artifact group, retains
+each configured test's logs/XML, checks unchanged declared source hashes and
+records dependency resolution. The artifact directory must be empty.
 
 A complete image validation must additionally inspect both actual OCI images and
 archives, verify runtime ancestry and labels, compare installed bytes/modes/owners/
