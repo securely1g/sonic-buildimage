@@ -60,8 +60,6 @@ selected:
 \t@echo manifests=$(SONIC_BAZEL_MANIFESTS)
 \t@echo runtime_label=$($(DOCKER_SYNCD_BASE)_BAZEL_TARGET)
 \t@echo debug_label=$($(DOCKER_SYNCD_BASE_DBG)_BAZEL_TARGET)
-\t@echo runtime_oci=$($(DOCKER_SYNCD_BASE)_BAZEL_OCI_TARGET)
-\t@echo debug_oci=$($(DOCKER_SYNCD_BASE_DBG)_BAZEL_OCI_TARGET)
 \t@echo runtime_inputs=$($(DOCKER_SYNCD_BASE)_BAZEL_DEPENDS)
 \t@echo debug_inputs=$($(DOCKER_SYNCD_BASE_DBG)_BAZEL_DEPENDS)
 \t@echo runtime_debs=$(SYNCD_VS_BAZEL_RUNTIME_DEBS)
@@ -105,10 +103,8 @@ target/bazel-manifests/%/manifest.json:
         values = self.values(self.run_make(BUILD_WITH_BAZEL_WHEN_AVAILABLE="y"))
         self.assertEqual(values["bazel"], "docker-syncd-vs.gz")
         self.assertEqual(values["bazel_debug"], "docker-syncd-vs-dbg.gz")
-        self.assertEqual(values["runtime_label"], "//dockers/docker-syncd-vs:docker-syncd-vs.gz")
-        self.assertEqual(values["debug_label"], "//dockers/docker-syncd-vs:docker-syncd-vs-dbg.gz")
-        self.assertEqual(values["runtime_oci"], "//dockers/docker-syncd-vs:docker-syncd-vs")
-        self.assertEqual(values["debug_oci"], "//dockers/docker-syncd-vs:docker-syncd-vs-dbg")
+        self.assertEqual(values["runtime_label"], "//platform/vs/docker-syncd-vs:docker-syncd-vs.gz")
+        self.assertEqual(values["debug_label"], "//platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz")
         self.assertEqual(values["runtime_inputs"].split(), [
             "target/docker-config-engine-trixie.oci",
             *["target/debs/trixie/" + name for name in values["runtime_debs"].split()],
@@ -261,15 +257,15 @@ selected:
                     "libprotobuf32": "libprotobuf32t64", "libpcap0.8": "libpcap0.8t64"}
         packages = {concrete.get(name, name) for name in packages}
         module = (ROOT / "MODULE.bazel").read_text()
-        self.assertIn('include("//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")', module)
-        declarations = (ROOT / "dockers/docker-syncd-vs/bazel/apt_inputs.MODULE.bazel").read_text()
+        self.assertIn('include("//platform/vs/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")', module)
+        declarations = (ROOT / "platform/vs/docker-syncd-vs/bazel/apt_inputs.MODULE.bazel").read_text()
         block = declarations.split('dependency_set = "syncd_vs_debian"', 1)[1].split("suites =", 1)[0]
         declared = set(re.findall(r'"([^" ]+) \(= [^\)]+\) \[amd64\]"', block))
         providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
         packages = {providers.get(name, name) for name in packages}
         self.assertTrue(packages.issubset(declared), "Dockerfile APT packages missing from OCI inputs: " +
                         repr(sorted(packages - declared)))
-        lock = json.loads((ROOT / "dockers/docker-syncd-vs/bazel/apt.lock.json").read_text())
+        lock = json.loads((ROOT / "platform/vs/docker-syncd-vs/bazel/apt.lock.json").read_text())
         roots = lock["dependency_sets"]["syncd_vs_debian"]["sets"]["amd64"]
         locked = {key.rsplit("/", 1)[1].split(":", 1)[0] for key in roots}
         providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
