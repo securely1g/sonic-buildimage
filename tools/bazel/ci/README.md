@@ -1,8 +1,8 @@
 # Shared Bazel CI helpers
 
 These helpers validate buildimage artifacts and preserve build evidence. The
-shared container runner loads the selected owner's configuration and package
-checks; the lower-level helpers remain independent of container policy.
+shared container runner discovers the selected owner's Bazel CI targets;
+package expectations remain in the owner declarations and tests.
 
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
@@ -12,29 +12,35 @@ workflow, keeping their target lists and package contracts with each container.
 Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
 job after the SWSS source checks pass.
 
-- `container.py` is the shared executable for SWSS and Syncd. Each container's
-  `bazel/ci_config.py` declares its tests, optional archive targets, Make manifest
-  arguments and package checks. The runner checks the native AMD64 Trixie
-  environment and pinned Bazel version, prepares manifests, rejects DEB-producing
-  actions, runs uncached tests, collects configured test logs/XML, builds any
-  declared archives and retains dependency resolution and success/failure receipts.
-  It checks source hashes before and after execution. For example, both jobs use:
+- `container.py` runs an owner's `:ci_tests` test suite and builds its
+  `:ci_artifacts` filegroup. Tests and exported files are declared in the
+  container's `BUILD.bazel`; no Python CI configuration or callback is loaded.
+  For example, after the workflow's existing Make manifest preparation:
 
   ```sh
   python3 -B tools/bazel/ci/container.py \
-    --config dockers/docker-orchagent/bazel/ci_config.py \
-    --bazel bazel --artifacts artifacts/swss
+    --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk --bazel bazel --artifacts artifacts/swss
   python3 -B tools/bazel/ci/container.py \
-    --config dockers/docker-syncd-vs/bazel/ci_config.py \
-    --bazel bazel --artifacts artifacts/syncd-vs/bazel
+    --container //dockers/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk --bazel bazel --artifacts artifacts/syncd-vs/bazel
   ```
 
-  Start from a clean checkout without `MODULE.bazel.lock` and use an empty
-  artifact directory. Both profiles share the resource and lockfile defaults;
-  `--bazel-arg=...` appends an explicit override. SWSS selects source layers plus
-  their package/debug checks; Syncd selects contract tests without native package
-  prerequisites. The runner has no container-name branches. To add another
-  container, declare its configuration and invoke this runner in `bazel-oci.yml`.
+  Start from native AMD64 Trixie without `MODULE.bazel.lock` and use an empty
+  artifact directory. The runner expands nested test suites, audits their actual
+  targets and the artifact group before execution, runs uncached tests, collects
+  configured logs/XML and package-check summaries, and exports the group's files
+  under their declared basenames. Duplicate output filenames fail; an empty
+  artifact group is valid for contract-only CI. Dependency resolution and source
+  hashes are retained with success/failure receipts. `--bazel-arg=...` appends an
+  explicit build option override. `--source-file PATH` adds a workspace-relative
+  preparation input to the source evidence; the workflow supplies the same
+  owning Make include that prepares the manifests.
+
+  SWSS's actual source-layer validation is a Bazel test with declared archives,
+  owner install files and binutils tools. Syncd's suite validates its existing
+  Make/source package adapter. Both suites use the same manifest-test program
+  and shared OCI inventory tests. Adding a test or artifact requires changing
+  the owning BUILD declaration, with no second list in the runner or public
+  artifact test-count checks.
 - `artifact_validation.py` streams tar contents to record ownership, modes, file
   hashes and little-endian ELF64 metadata, and checks matching split debug symbols.
   SWSS and syncd share its ELF inspection and debug-link checks; each consumer
@@ -45,15 +51,18 @@ job after the SWSS source checks pass.
   safely extracts the pair and verifies matching build IDs, DWARF and debug links.
 - `build.py` builds a caller's filename-to-label mapping and collects one nonempty
   archive per label, with atomic publication, command logs, sizes and hashes.
-  `source_directory` resolves a target's owning source checkout for install-contract
-  checks. Callers retain their target lists, platform options and package policy.
+  `collect_artifacts` exports all files from a declared CI filegroup. It checks
+  every output before publication and records each file's size, hash and Bazel
+  output path. Owner package checks run as Bazel tests with declared source inputs.
 - `command_log.py` captures command output and timings while keeping diagnostic
   messages separate from queried artifact paths. Callers supply the working
   directory and evidence directory. The shared runner sends raw action-graph
   stdout to a temporary private file, retains only stderr in the log and removes
   the raw graph after its execution audit, including on failure.
 - `public_artifacts.py` prepares explicit public upload lists for the archive,
-  SWSS source, VS and syncd contract jobs. Successful jobs retain their expected
+  SWSS source, VS and syncd contract jobs. Container jobs compare the expanded
+  suite identities with successful build-event results instead of maintaining
+  a second fixed test count. Successful jobs retain their expected
   build outputs and validated dependency JSON, plus summaries containing only
   declared status, count, revision and hash fields. Failed jobs may retain only a
   partial summary. The helper excludes raw command, Bazel event/execution and
