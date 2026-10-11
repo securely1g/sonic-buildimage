@@ -426,7 +426,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                 blocked.append({"input": "execution-audit", "reason": "invalid-execution-audit"})
     if kind == "vs" and job_status == "success":
         outputs = {}
-        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz"):
+        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                     "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
             path = input_path("output-" + name, "target/" + name)
             if path is not None:
                 outputs[name] = {"bytes": path.stat().st_size}
