@@ -2,11 +2,11 @@ load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
-load("@sonic_build_infra//oci:imported_debug_symbols_layer.bzl", "imported_debug_symbols_layer")
-load("@sonic_build_infra//oci:normalize_layer.bzl", "normalize_layer")
 load("@syncd_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("//tools/bazel/dpkg:defs.bzl", "dpkg_filter", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:imported_debug_symbols_layer.bzl", "imported_debug_symbols_layer")
+load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
@@ -68,9 +68,9 @@ py_library(
     imports = ["bazel"],
     deps = [
         "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:normalize_layer_lib",
         "//tools/bazel/oci:oci_inventory",
         "//tools/bazel/oci:oci_layout",
-        "@sonic_build_infra//oci:lib",
     ],
 )
 
