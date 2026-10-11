@@ -226,8 +226,14 @@ registered outputs can also be requested as direct Make targets.
 Add the resulting `$(TARGET_PATH)/docker-example-base.oci` to the consuming
 container's `_BAZEL_DEPENDS` as in the [bridge example](../README.md#example-another-runtime-and-debug-archive).
 
-SWSS and syncd VS use this interface to publish `target/docker-config-engine-trixie.oci`
-from `target/docker-config-engine-trixie.gz`, with image platform `linux/amd64`.
+Non-FIPS SWSS builds use this interface to publish `target/docker-config-engine-trixie.oci`
+from the Make-built `target/docker-config-engine-trixie.gz`, with image platform
+`linux/amd64`. FIPS SWSS builds and source-built syncd VS consume
+`//dockers/docker-config-engine-trixie:docker-config-engine-trixie` directly.
+Make passes `--//dockers/docker-orchagent:source_config_engine=true` to both
+SWSS archive variants when `INCLUDE_FIPS=y`, and prepares the base and
+config-engine manifests instead of extracting the Docker archive. Direct Bazel
+reproductions of that configuration must use the same flag and manifests.
 Each owner keeps its own configuration guards. The syncd VS
 [owner guide](../../../platform/vs/docker-syncd-vs/bazel/README.md) records its
 image validation requirements and remaining runtime checks.
