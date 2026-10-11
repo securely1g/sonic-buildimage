@@ -13,6 +13,59 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
+# Compare the actual source-built layers with SWSS's own install declarations,
+# and require matching debug symbols for all 30 programs, DASH and Protobuf.
+# These inputs produce TARs and source files; no Debian package is generated.
+py_test(
+    name = "swss_package_contract_test",
+    size = "large",
+    srcs = ["integration/swss_package_contract_test.py"],
+    args = [
+        "--swss=$(rootpath //dockers/docker-orchagent:ci_swss)",
+        "--protobuf=$(rootpath //dockers/docker-orchagent:ci_protobuf)",
+        "--rdeps=$(rootpath //dockers/docker-orchagent:ci_rdeps)",
+        "--config=$(rootpath //dockers/docker-orchagent:ci_config)",
+        "--debug-symbols=$(rootpath //dockers/docker-orchagent:ci_debug_symbols)",
+        "--install-build=$(rootpath @swss_install_contract//:dist-BUILD.bazel.txt)",
+        "--debian-install=$(rootpath @swss_install_contract//:swss.install.txt)",
+        "--source-anchor=$(rootpath @sonic_swss//fpmsyncd:bgp_eoiu_marker.py)",
+        "--readelf=$(rootpath @sonic_build_infra//toolchains/binutils:readelf)",
+        "--objcopy=$(rootpath @sonic_build_infra//toolchains/binutils:objcopy)",
+        "--source-data",
+        "$(rootpaths @sonic_swss//cfgmgr:lua_files)",
+        "$(rootpaths @sonic_swss//orchagent:lua_files)",
+        "$(rootpath @sonic_swss//fpmsyncd:bgp_eoiu_marker.py)",
+        "$(rootpath @sonic_swss//neighsyncd:restore_neighbors.py)",
+        "$(rootpath @sonic_swss//swssconfig:sample/netbouncer.json)",
+    ],
+    data = [
+        "//dockers/docker-orchagent:ci_swss",
+        "//dockers/docker-orchagent:ci_protobuf",
+        "//dockers/docker-orchagent:ci_rdeps",
+        "//dockers/docker-orchagent:ci_config",
+        "//dockers/docker-orchagent:ci_debug_symbols",
+        "@sonic_build_infra//toolchains/binutils:objcopy",
+        "@sonic_build_infra//toolchains/binutils:readelf",
+        "@sonic_swss//cfgmgr:lua_files",
+        "@sonic_swss//fpmsyncd:bgp_eoiu_marker.py",
+        "@sonic_swss//neighsyncd:restore_neighbors.py",
+        "@sonic_swss//orchagent:lua_files",
+        "@sonic_swss//swssconfig:sample/netbouncer.json",
+        "@swss_install_contract//:dist-BUILD.bazel.txt",
+        "@swss_install_contract//:swss.install.txt",
+    ],
+    main = "integration/swss_package_contract_test.py",
+    python_version = "3.11",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "//dockers/docker-orchagent/bazel:package_contract",
+        "//tools/bazel/ci:artifact_validation",
+    ],
+)
+
 # Exercise upstream package extraction with existing checked-in DEBs. These
 # native genrules deliberately show the same tools the Syncd owner BUILD uses;
 # no package-generating rule or shared import facade participates in the test.
@@ -433,6 +486,11 @@ py_test(
         "--debug-manifest=$(rootpath :manifest_fixture-dbg.json)",
         "--runtime-labels=$(rootpath :runtime_manifest_fixture)",
         "--debug-labels=$(rootpath :debug_manifest_fixture)",
+        "--package-name=telemetry",
+        "--package-version=2.3.0",
+        "--service-name=telemetry",
+        "--asic-service=false",
+        "--host-service=true",
     ],
     data = [
         "manifest_fixture.json",
@@ -442,6 +500,47 @@ py_test(
         "//tools/bazel/oci:manifest_labels",
     ],
     main = "integration/manifest_labels_action_test.py",
+)
+
+# Check each owner's real outputs with the same implementation. The unrelated
+# fixture above additionally preserves custom fields, quotes and newlines.
+py_test(
+    name = "swss_manifest_labels_test",
+    size = "small",
+    srcs = ["integration/manifest_labels_action_test.py"],
+    args = [
+        "--tool=$(rootpath //tools/bazel/oci:manifest_labels)",
+        "--runtime-manifest=$(rootpath //dockers/docker-orchagent/config:manifest.json)",
+        "--debug-manifest=$(rootpath //dockers/docker-orchagent/config:manifest-dbg.json)",
+        "--runtime-labels=$(rootpath //dockers/docker-orchagent/config:labels)",
+        "--debug-labels=$(rootpath //dockers/docker-orchagent/config:debug_labels)",
+        "--package-name=swss",
+        "--package-version=1.0.0",
+        "--service-name=swss",
+        "--asic-service=true",
+        "--host-service=false",
+        "--manifest-version=1.0.0",
+    ],
+    data = [
+        "//dockers/docker-orchagent/config:manifest.json",
+        "//dockers/docker-orchagent/config:manifest-dbg.json",
+        "//dockers/docker-orchagent/config:labels",
+        "//dockers/docker-orchagent/config:debug_labels",
+        "//tools/bazel/oci:manifest_labels",
+    ],
+    main = "integration/manifest_labels_action_test.py",
+)
+
+# Layer checks are shared by APT selection and both containers' CI suites.
+py_test(
+    name = "oci_inventory_test",
+    size = "small",
+    srcs = ["integration/oci_inventory_test.py"],
+    main = "integration/oci_inventory_test.py",
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:oci_inventory",
+    ],
 )
 
 sonic_cfggen_template(
@@ -843,20 +942,28 @@ py_test(
 py_test(
     name = "syncd_manifest_labels_test",
     size = "small",
-    srcs = ["integration/syncd_manifest_labels_test.py"],
+    srcs = ["integration/manifest_labels_action_test.py"],
     args = [
+        "--tool=$(rootpath //tools/bazel/oci:manifest_labels)",
         "--runtime-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs/manifest.json)",
         "--debug-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json)",
         "--runtime-labels=$(rootpath //dockers/docker-syncd-vs/config:labels)",
         "--debug-labels=$(rootpath //dockers/docker-syncd-vs/config:debug_labels)",
+        "--package-name=syncd",
+        "--package-version=1.0.0",
+        "--service-name=syncd",
+        "--asic-service=true",
+        "--host-service=false",
+        "--manifest-version=1.0.0",
     ],
     data = [
         "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
         "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
         "//dockers/docker-syncd-vs/config:debug_labels",
         "//dockers/docker-syncd-vs/config:labels",
+        "//tools/bazel/oci:manifest_labels",
     ],
-    main = "integration/syncd_manifest_labels_test.py",
+    main = "integration/manifest_labels_action_test.py",
 )
 
 py_test(
