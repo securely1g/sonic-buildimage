@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
-"""Verify syncd-vs package SONAME links and matching native debug artifacts."""
+"""Verify OCI package SONAME links and debug symbols against owner expectations."""
 
 import argparse
-import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import subprocess
-import sys
 import tarfile
 import tempfile
 
-sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
-sys.path.insert(0, str(Path(__file__).absolute().parents[3] / "dockers/docker-syncd-vs/bazel"))
 from tools.bazel.ci.artifact_validation import elf_header, elf_info, path_name, require, sha, verify_debuglink
-from tools.bazel.ci import syncd_payloads as validate_payloads
+from tools.bazel.oci import package_payloads as validate_payloads
+from tools.bazel.oci import package_contract
+from tools.bazel.oci.package_contract import identity, read_contract, read_policy, validate_policy
 
-REQUIRED_PACKAGES = {"syncd-vs", "libsairedis", "libsaimetadata", "libsaivs", "libswsscommon", "libyang3"}
-REQUIRED_SONAMES = {"libsairedis": "libsairedis.so.0", "libsaimetadata": "libsaimetadata.so.0",
-                    "libsaivs": "libsaivs.so.0", "libswsscommon": "libswsscommon.so.0", "libyang3": "libyang.so.3"}
-GAP_PACKAGES = {"libsai", "p4lang-pi", "p4lang-bmv2", "p4lang-p4c", "libnl-3-200",
-                "libnl-genl-3-200", "libnl-route-3-200", "libnl-nf-3-200", "libnl-cli-3-200",
-                # The retained FIPS client has stripped ELF files with build
-                # IDs/debuglinks, but Make supplies no matching symbol package.
-                "openssh-client"}
-
+ELF_MACHINES = {"amd64": 62, "arm64": 183, "armhf": 40}
 
 def collect(manifest_path, temporary, prefix):
     manifest = json.loads(manifest_path.read_bytes())
@@ -135,24 +125,25 @@ def resolve(files, name):
     raise ValueError("library or debug symlink cycle")
 
 
-def imported_symbol_receipt(archive_path, receipt_path, runtime_digest, package_manifest=None):
+def imported_symbol_receipt(archive_path, receipt_path, runtime_digest, package_manifest=None, *, policy):
     """Bind the shared rule's selected files to this exact runtime and archive."""
     from tools.bazel.oci.oci_inventory import apply_layer
     receipt = json.loads(receipt_path.read_bytes())
     require(receipt.get("schema") == 1 and receipt.get("runtime_manifest") == runtime_digest and
-            receipt.get("expected_platform") == "linux/amd64", "imported symbol receipt uses a different runtime")
+            receipt.get("expected_platform") == "linux/" + policy["architecture"], "imported symbol receipt uses a different runtime")
     require(receipt.get("output") == {"sha256": sha(archive_path), "size": archive_path.stat().st_size},
             "imported symbol archive differs from its receipt")
     if package_manifest is not None:
         imported = json.loads(package_manifest.read_bytes())
-        require(imported.get("schema") == 1 and imported.get("architecture") == "amd64" and
-                len(imported.get("packages", [])) == 1, "invalid imported base debug package manifest")
-        package = imported["packages"][0]
-        require(package.get("package") == "libswsscommon-dbgsym" and
-                package.get("control_fields", {}).get("Package") == package["package"] and
-                package.get("architecture") == "amd64" and
-                re.fullmatch(r"[0-9a-f]{64}", package.get("source_sha256", "")),
-                "imported base symbols have an unexpected Debian package identity")
+        require(imported.get("schema") == 1 and imported.get("architecture") == policy["architecture"] and
+                {item.get("package") for item in imported.get("packages", [])} ==
+                set(policy.get("native", {}).get("imported_symbol_packages", [])) and
+                len(imported.get("packages", [])) == len(policy.get("native", {}).get("imported_symbol_packages", [])), "invalid imported base debug package manifest")
+        for package in imported["packages"]:
+            require(package.get("control_fields", {}).get("Package") == package["package"] and
+                    package.get("architecture") in (policy["architecture"], "all") and
+                    re.fullmatch(r"[0-9a-f]{64}", package.get("source_sha256", "")),
+                    "imported base symbols have an unexpected Debian package identity")
         require(receipt.get("sources") == [{"index": 0, "sha256": imported["payload"]["sha256"],
                                             "size": imported["payload"]["size"]}],
                 "symbol candidates differ from the original Debian import")
@@ -173,13 +164,15 @@ def imported_symbol_receipt(archive_path, receipt_path, runtime_digest, package_
     return receipt, files
 
 
-def validate_inherited_base(runtime_path, symbols_tar, receipt_path, temporary, *, readelf, objcopy, package_manifest=None,
-                            required_paths=("usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0",)):
+def validate_inherited_base(runtime_path, symbols_tar, receipt_path, temporary, *, policy, readelf, objcopy,
+                            package_manifest=None, required_paths=None):
+    if required_paths is None:
+        required_paths = policy.get("native", {}).get("required_imported_symbol_paths", [])
     """Independently check dynamic matches with binutils against deployed ELFs."""
     from tools.bazel.oci.oci_inventory import apply_layer
     from tools.bazel.oci.oci_layout import validate_layout
-    runtime = validate_layout(runtime_path, "linux/amd64")
-    receipt, _ = imported_symbol_receipt(symbols_tar, receipt_path, runtime.descriptor["digest"], package_manifest)
+    runtime = validate_layout(runtime_path, "linux/" + policy["architecture"])
+    receipt, _ = imported_symbol_receipt(symbols_tar, receipt_path, runtime.descriptor["digest"], package_manifest, policy=policy)
     pairs = receipt["pairs"]
     require(set(required_paths).issubset({pair["runtime_path"] for pair in pairs}),
             "required inherited runtime has no imported symbol pair")
@@ -247,34 +240,50 @@ def validate_inherited_base(runtime_path, symbols_tar, receipt_path, temporary, 
     return result
 
 
-def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objcopy="objcopy",
-                    required_packages=REQUIRED_PACKAGES, required_sonames=REQUIRED_SONAMES,
-                    gap_packages=GAP_PACKAGES, source_runtime_tar=None,
+def validate_native(runtime_manifest, debug_manifest, *, policy, source_contract_path=None,
+                    readelf="readelf", objcopy="objcopy", required_packages=None, required_sonames=None,
+                    gap_packages=None, source_runtime_tar=None,
                     source_debug_tar=None, source_receipt=None, base_path=None, runtime_path=None,
                     base_debug_symbols=None, base_debug_receipt=None, base_debug_package_manifest=None, fixture=False):
+    validate_policy(policy)
+    expectations = policy.get("native", {})
+    required_packages = set(expectations.get("required_packages", []) if required_packages is None else required_packages)
+    required_sonames = expectations.get("required_sonames", {}) if required_sonames is None else required_sonames
+    gap_packages = set(expectations.get("gap_packages", []) if gap_packages is None else gap_packages)
+    architecture = policy["architecture"]
+    require(architecture in ELF_MACHINES, "unsupported native ELF architecture: " + architecture)
+    source_contract = read_contract(source_contract_path) if source_contract_path is not None else None
+    if source_contract is not None:
+        require(identity(source_contract) == identity(policy), "source contract and package policy identify different images")
+    elif fixture:
+        # Synthetic tests can exercise receipts without a checked owner contract.
+        source_contract = {"schema": 1, **identity(policy), "packages": []}
     source_inputs = (source_runtime_tar, source_debug_tar, source_receipt)
     has_source = all(value is not None for value in source_inputs)
+    require(fixture or source_contract_path is not None or
+            not (has_source or expectations.get("require_source", False)),
+            "native validation requires its source contract")
     require(has_source or not any(value is not None for value in source_inputs),
             "source runtime tar, debug tar, and receipt must be supplied together")
-    require(fixture or has_source, "native validation requires source runtime tar, debug tar, and receipt")
+    require(fixture or not expectations.get("require_source", False) or has_source,
+            "native validation requires source runtime tar, debug tar, and receipt")
     inherited_inputs = (runtime_path, base_debug_symbols, base_debug_receipt)
     has_inherited = all(value is not None for value in inherited_inputs)
     require(has_inherited or not any(value is not None for value in inherited_inputs),
             "runtime OCI, imported base symbols, and receipt must be supplied together")
-    require(fixture or (has_inherited and base_debug_package_manifest is not None),
+    require(fixture or not expectations.get("require_imported_symbols", False) or (has_inherited and base_debug_package_manifest is not None),
             "native validation requires imported base symbols, package manifest, and runtime OCI")
     receipt = None
     source_debug_sha256 = sha(source_debug_tar) if has_source else None
     if has_source:
-        import package_contract as source_packages
-        receipt = source_packages.validate_receipt(
+        receipt = package_contract.validate_receipt(
             source_receipt, source_runtime_tar, source_debug_tar,
-            contract_path=None if fixture else Path(__file__).absolute().parents[3] / "dockers/docker-syncd-vs/config/source_packages.json")
+            contract_path=source_contract_path, fixture=fixture)
         if receipt.get("inherited_files"):
             from tools.bazel.oci.oci_layout import validate_layout
             from tools.bazel.oci.oci_inventory import apply_layer
             require(base_path is not None, "inherited source files require the managed OCI base")
-            base = validate_layout(base_path, "linux/amd64")
+            base = validate_layout(base_path, "linux/" + architecture)
             require(base.descriptor["digest"] == receipt["base_manifest_digest"],
                     "inherited source files use a different OCI base")
             base_files = {}
@@ -282,13 +291,20 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
                 apply_layer(layer, base_files)
             require(all(base_files.get(name) == expected for name, expected in receipt["inherited_files"].items()),
                     "inherited native base files differ from the source receipt")
-    validate_payloads.validate(runtime_manifest, runtime_manifest.parent / "payload.tar", variant="runtime")
-    validate_payloads.validate(debug_manifest, debug_manifest.parent / "payload.tar",
-                               variant="debug", runtime_manifest=runtime_manifest)
-    with tempfile.TemporaryDirectory(prefix="syncd-native-validation-") as temporary_name:
+    retained = policy["retained_source"] == "make"
+    require((runtime_manifest is not None and debug_manifest is not None) == retained and
+            (retained or runtime_manifest is debug_manifest is None),
+            "retained handoff inputs differ from the image policy")
+    require(retained or has_source, "native validation requires a retained or source runtime inventory")
+    if retained:
+        validate_payloads.validate(runtime_manifest, runtime_manifest.parent / "payload.tar", variant="runtime",
+                                   policy=policy, source_contract=source_contract)
+        validate_payloads.validate(debug_manifest, debug_manifest.parent / "payload.tar", variant="debug",
+                                   runtime_manifest=runtime_manifest, policy=policy, source_contract=source_contract)
+    with tempfile.TemporaryDirectory(prefix="oci-native-validation-") as temporary_name:
         temporary = Path(temporary_name)
-        runtime = collect(runtime_manifest, temporary, "runtime")
-        debug = collect(debug_manifest, temporary, "debug")
+        runtime = collect(runtime_manifest, temporary, "runtime") if retained else {}
+        debug = collect(debug_manifest, temporary, "debug") if retained else {}
         if has_source:
             source_runtime = collect_source(source_runtime_tar, receipt, temporary, "runtime")
             source_debug = collect_source(source_debug_tar, receipt, temporary, "debug")
@@ -296,6 +312,7 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
             merge_source(dict(debug), source_runtime)
             merge_source(runtime, source_runtime)
             merge_source(debug, source_debug)
+        require(runtime, "native validation received an empty runtime inventory")
         elfs = {name: item for name, item in runtime.items() if "file" in item}
         require(required_packages.issubset({item["package"] for item in elfs.values()}),
                 "a required native runtime package has no ELF")
@@ -307,8 +324,8 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
         for name, item in sorted(elfs.items()):
             require(item["package"] in required_packages or item["package"] in gap_packages,
                     "unclassified native package ELF: " + item["package"] + ":" + name)
-            require(item["elf_machine"] == 62 or item["elf_type"] == 1,
-                    "non-AMD64 executable or shared library: " + name)
+            require(item["elf_machine"] == ELF_MACHINES[architecture] or item["elf_type"] == 1,
+                    "unexpected executable or shared library architecture: " + name)
             info = elf_info(item["file"], readelf=readelf, dynamic=True, timeout=120)
             record = {"path": name, "package": item["package"], **info}
             if item.get("origin") == "bazel_source":
@@ -324,7 +341,7 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
                         "SONAME path does not resolve to its packaged ELF: " + name)
                 observed_sonames.setdefault(item["package"], set()).add(info["soname"])
             for needed in info["needed"]:
-                if re.match(r"lib(?:sai|swsscommon|MdioIpcClient|pi)", needed):
+                if expectations.get("local_dependency_pattern") and re.match(expectations["local_dependency_pattern"], needed):
                     require(needed in basenames, "missing native runtime dependency " + needed + " for " + name)
                 else:
                     external_needed.add(needed)
@@ -356,7 +373,7 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
         for package, soname in required_sonames.items():
             require(soname in observed_sonames.get(package, set()), "required SONAME is absent: " + package + ":" + soname)
         inherited_pairs = validate_inherited_base(runtime_path, base_debug_symbols, base_debug_receipt, temporary,
-                                                  readelf=readelf, objcopy=objcopy,
+                                                  readelf=readelf, objcopy=objcopy, policy=policy,
                                                   package_manifest=base_debug_package_manifest) if has_inherited else []
         runtime_ids.update(record["build_id"] for record in inherited_pairs)
         unmatched = []
@@ -365,8 +382,8 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
             if match and match[1] + match[2] not in runtime_ids:
                 require(debug[name].get("origin") != "bazel_source", "source debug symbols have no runtime ELF: " + name)
                 unmatched.append(name)
-        return {"schema": 1, "runtime_manifest_sha256": hashlib.sha256(runtime_manifest.read_bytes()).hexdigest(),
-                "debug_manifest_sha256": hashlib.sha256(debug_manifest.read_bytes()).hexdigest(),
+        return {"schema": 1, "runtime_manifest_sha256": sha(runtime_manifest) if retained else None,
+                "debug_manifest_sha256": sha(debug_manifest) if retained else None,
                 "source_receipt_sha256": sha(source_receipt) if has_source else None,
                 "source_packages": receipt,
                 "inherited_base_symbol_pairs": inherited_pairs,
@@ -378,22 +395,25 @@ def validate_native(runtime_manifest, debug_manifest, *, readelf="readelf", objc
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime-manifest", required=True, type=Path)
-    parser.add_argument("--debug-manifest", required=True, type=Path)
-    parser.add_argument("--source-runtime-tar", required=True, type=Path)
-    parser.add_argument("--source-debug-tar", required=True, type=Path)
-    parser.add_argument("--source-receipt", required=True, type=Path)
+    parser.add_argument("--policy", required=True, type=Path)
+    parser.add_argument("--source-contract", type=Path)
+    parser.add_argument("--runtime-manifest", type=Path)
+    parser.add_argument("--debug-manifest", type=Path)
+    parser.add_argument("--source-runtime-tar", type=Path)
+    parser.add_argument("--source-debug-tar", type=Path)
+    parser.add_argument("--source-receipt", type=Path)
     parser.add_argument("--base", type=Path)
-    parser.add_argument("--runtime", type=Path, required=True)
-    parser.add_argument("--base-debug-symbols", type=Path, required=True)
-    parser.add_argument("--base-debug-receipt", type=Path, required=True)
-    parser.add_argument("--base-debug-package-manifest", type=Path, required=True)
+    parser.add_argument("--runtime", type=Path)
+    parser.add_argument("--base-debug-symbols", type=Path)
+    parser.add_argument("--base-debug-receipt", type=Path)
+    parser.add_argument("--base-debug-package-manifest", type=Path)
     parser.add_argument("--readelf", default="readelf")
     parser.add_argument("--objcopy", default="objcopy")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     try:
-        result = validate_native(args.runtime_manifest, args.debug_manifest, readelf=args.readelf, objcopy=args.objcopy,
+        result = validate_native(args.runtime_manifest, args.debug_manifest, policy=read_policy(args.policy),
+                                 source_contract_path=args.source_contract, readelf=args.readelf, objcopy=args.objcopy,
                                  source_runtime_tar=args.source_runtime_tar, source_debug_tar=args.source_debug_tar,
                                  source_receipt=args.source_receipt, base_path=args.base, runtime_path=args.runtime,
                                  base_debug_symbols=args.base_debug_symbols, base_debug_receipt=args.base_debug_receipt,
@@ -401,7 +421,7 @@ def main():
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError, subprocess.TimeoutExpired) as error:
-        parser.exit(1, "syncd-vs native package validation failed: " + str(error) + "\n")
+        parser.exit(1, "OCI native package validation failed: " + str(error) + "\n")
 
 
 if __name__ == "__main__":

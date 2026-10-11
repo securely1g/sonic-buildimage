@@ -38,14 +38,15 @@ job after the SWSS source checks pass.
   SWSS's actual source-layer validation is a Bazel test with declared archives,
   owner install files and binutils tools. Syncd's suite validates its existing
   Make/source package adapter. Both suites use the same manifest-test program
-  and shared OCI inventory tests. Adding a test or artifact requires changing
+  and the shared OCI package/image regression tests. Adding a test or artifact requires changing
   the owning BUILD declaration, with no second list in the runner or public
   artifact test-count checks.
 - `artifact_validation.py` streams tar contents to record ownership, modes, file
   hashes and little-endian ELF64 metadata, and checks matching split debug symbols.
   SWSS and syncd share its ELF inspection and debug-link checks; each consumer
   supplies its package inventory and platform policy. SWSS's inventory and
-  protobuf expectations stay in `dockers/docker-orchagent/bazel/package_contract.py`.
+  Protobuf expectations are declared in its BUILD-generated `:package_policy`
+  and interpreted by `tools/bazel/oci/package_contract.py`.
   `debug_archives` combines a runtime tar and its symbols tar, rejects payload
   collisions and foreign debug paths, checks the caller's ELF architecture,
   safely extracts the pair and verifies matching build IDs, DWARF and debug links.
@@ -54,6 +55,10 @@ job after the SWSS source checks pass.
   `collect_artifacts` exports all files from a declared CI filegroup. It checks
   every output before publication and records each file's size, hash and Bazel
   output path. Owner package checks run as Bazel tests with declared source inputs.
+  A package test records every validated archive's basename and SHA256 in
+  `validation.artifact_sha256`. The runner and public upload collector require
+  the exported names and bytes to match. The real source-layer test uses the
+  default configuration so its inputs match the artifact filegroup.
 - `command_log.py` captures command output and timings while keeping diagnostic
   messages separate from queried artifact paths. Callers supply the working
   directory and evidence directory. The shared runner sends raw action-graph
