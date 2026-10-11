@@ -123,6 +123,19 @@ class PrepareDraftSourcesTest(unittest.TestCase):
             prepare.write_bazelrc(path, result)
         self.assertEqual(path.read_text(), "build --jobs=2\n")
 
+    def test_preparation_workspace_pins_the_consumers_bazel_version(self):
+        self.manifest.write_text(json.dumps({"schema": 1, "modules": {}}))
+
+        def fetch(command, *, cwd, check):
+            self.assertEqual((cwd / ".bazelversion").read_bytes(),
+                             (Path(__file__).resolve().parents[3] / ".bazelversion").read_bytes())
+
+        with patch.object(prepare.subprocess, "run", side_effect=fetch), \
+                patch.object(prepare.subprocess, "check_output",
+                             side_effect=[str(self.root / "output-base"), "{}"]):
+            result = prepare.prepare(self.manifest, self.root / "prepared")
+        self.assertEqual(result["overrides"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

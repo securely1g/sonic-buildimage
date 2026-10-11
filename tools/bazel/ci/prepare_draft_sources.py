@@ -129,6 +129,10 @@ def prepare(manifest_path, output, *, bazel="bazel", startup_args=(), bazel_args
                                              for key, value in item.items()) + ")\n"
     (generation / "MODULE.bazel").write_text(module)
     (generation / "BUILD.bazel").write_text("")
+    # Bazelisk resolves its version from the subprocess working directory. The
+    # preparation workspace must use the same release as the consuming checkout.
+    bazel_version = Path(__file__).resolve().parents[3] / ".bazelversion"
+    (generation / ".bazelversion").write_bytes(bazel_version.read_bytes())
     command = [bazel, "--ignore_all_rc_files", *startup_args,
                "--output_user_root=" + str(generation / "bazel")]
     flags = ["--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main",

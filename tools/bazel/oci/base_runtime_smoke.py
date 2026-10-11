@@ -42,10 +42,15 @@ def main():
         output = command(loader, "--list", str(binary))
         assert "not found" not in output, (name, output)
     for name in ("swsscommon.swsscommon", "libyang", "sonic_yang", "sonic_yang_ext", "sonic_yang_path",
-                 "sonic_py_common", "containercfgd.containercfgd", "openconfig_acl", "minigraph",
+                 "sonic_py_common", "openconfig_acl", "minigraph",
                  "sonic_yang_cfg_generator", "supervisor", "supervisord_dependent_startup"):
         module = importlib.import_module(name)
         assert str(Path(module.__file__).resolve()).startswith(("/usr/lib/", "/usr/local/lib/")), name
+    # Importing the daemon starts its boot wait against SONiC's external Redis.
+    # A standalone base image has no Redis service; verify the installed entry
+    # point here and leave that connection to the complete service-image check.
+    daemon = importlib.util.find_spec("containercfgd.containercfgd")
+    assert daemon and str(Path(daemon.origin).resolve()).startswith("/usr/local/lib/")
     assert importlib.metadata.version("sonic-yang-mgmt") == "1.0"
     os.environ["PLATFORM"] = "sonic-bazel-build"
     with tempfile.TemporaryDirectory() as temporary:
@@ -55,7 +60,7 @@ def main():
             "localhost": {"hostname": "source-base"}}}), "-t", str(template))
         assert rendered.strip() == "192.0.2.0/24 source-base", rendered
         template.write_text("{{ name }}")
-        assert command("j2", str(template), input='{"name":"source-base"}').strip() == "source-base"
+        assert command("j2", "--quiet", "-f", "json", str(template), "-", input='{"name":"source-base"}').strip() == "source-base"
     import sonic_yang
     import sonic_yang_ext
     manager = sonic_yang.SonicYang("/usr/local/yang-models", print_log_enabled=False)
