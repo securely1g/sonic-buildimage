@@ -1,0 +1,19 @@
+# ==============================================================================
+# THIS FILE IS AUTO-GENERATED. Do not hand-edit it. To re-generate, run:
+#
+#     bazel run //tools/bazel/registry:root_config_test -- --fix
+#
+# ==============================================================================
+#
+# Optional development configuration; the root .bazelrc does not import it.
+# Import this file and select --config=local-modules to build all these src/
+# modules from the checked-out tree instead of their selected registry versions.
+#
+# This bypasses registry lookup and version-string resolution entirely,
+# regardless of what any of the submodule's MODULE.bazel declare.
+#
+# Assumes that the module name (declared in MODULE.bazel) is the same as the subdirectory name.
+common:local-modules --override_module=sonic-build-infra=%workspace%/src/sonic-build-infra
+common:local-modules --override_module=sonic-fips=%workspace%/src/sonic-fips
+common:local-modules --override_module=sonic-swss-common=%workspace%/src/sonic-swss-common
+common:local-modules --override_module=sonic-sysmgr=%workspace%/src/sonic-sysmgr
