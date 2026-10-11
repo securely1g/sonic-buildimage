@@ -72,6 +72,7 @@ class PrepareDraftSourcesTest(unittest.TestCase):
                          integrity(self.files["BUILD.bazel"]))
         self.assertEqual(attributes["integrity"], integrity(self.archive))
         self.assertEqual(receipt["registry_commit"], "a" * 40)
+        self.assertEqual(receipt["_generated"], prepare.GENERATED_NOTICE)
 
     def test_changed_source_recipe_fails_integrity(self):
         self.files["source.json"] += b"unreviewed"
@@ -129,12 +130,15 @@ class PrepareDraftSourcesTest(unittest.TestCase):
         def fetch(command, *, cwd, check):
             self.assertEqual((cwd / ".bazelversion").read_bytes(),
                              (Path(__file__).resolve().parents[3] / ".bazelversion").read_bytes())
+            for name in ("MODULE.bazel", "BUILD.bazel"):
+                self.assertTrue((cwd / name).read_text().startswith("# " + prepare.GENERATED_NOTICE + "\n"))
 
         with patch.object(prepare.subprocess, "run", side_effect=fetch), \
                 patch.object(prepare.subprocess, "check_output",
                              side_effect=[str(self.root / "output-base"), "{}"]):
             result = prepare.prepare(self.manifest, self.root / "prepared")
         self.assertEqual(result["overrides"], [])
+        self.assertEqual(result["_generated"], prepare.GENERATED_NOTICE)
 
 
 if __name__ == "__main__":
