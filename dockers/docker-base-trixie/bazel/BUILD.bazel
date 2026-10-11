@@ -1,0 +1,29 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+
+exports_files([
+    "apt.lock.json",
+    "apt_inputs.MODULE.bazel",
+    "source_packages.json",
+])
+
+py_binary(
+    name = "installed_packages",
+    srcs = ["installed_packages.py"],
+    deps = [":installed_packages_lib"],
+)
+
+py_library(
+    name = "installed_packages_lib",
+    srcs = ["installed_packages.py"],
+    imports = ["."],
+    deps = [
+        "//tools/bazel/oci:oci_layout",
+        "@sonic_build_infra//apt:lib",
+    ],
+)
+
+py_test(
+    name = "installed_packages_test",
+    srcs = ["installed_packages_test.py"],
+    deps = [":installed_packages_lib"],
+)

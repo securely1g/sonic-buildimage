@@ -74,6 +74,22 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Prepare the reviewed dependency sources
+        run: |
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$RUNNER_TEMP/base-source-dependencies" \
+            --receipt artifacts/dependencies/draft-sources.json \
+            --bazelrc-output .bazelrc.user
+
+      - name: Retain reviewed source provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.job }}-draft-sources-${{ strategy.job-index }}
+          path: artifacts/dependencies/draft-sources.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -231,8 +247,10 @@ jobs:
 
       - name: Check local cache reuse across fresh checkouts
         run: |
+          readarray -t draft_options < <(python3 -c 'import json; print("\n".join("--bazel-arg=" + value for value in json.load(open("artifacts/dependencies/draft-sources.json"))["overrides"]))')
           python3 -B tools/bazel/ci/verify_agent_cache.py \
             --artifacts artifacts/archive/agent-cache \
+            "${draft_options[@]}" \
             --bazel "$BAZEL" \
             --repository-cache "$("$BAZEL" info repository_cache)" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
@@ -314,6 +332,22 @@ jobs:
           repository-cache: true
           disk-cache: buildimage-swss-oci-amd64
           cache-version: "8.5.1"
+
+      - name: Prepare the reviewed dependency sources
+        run: |
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$RUNNER_TEMP/base-source-dependencies" \
+            --receipt artifacts/dependencies/draft-sources.json \
+            --bazelrc-output .bazelrc.user
+
+      - name: Retain reviewed source provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.job }}-draft-sources-${{ strategy.job-index }}
+          path: artifacts/dependencies/draft-sources.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Check Make handoff and archive validation
         run: |

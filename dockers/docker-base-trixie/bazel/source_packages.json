@@ -1,0 +1,246 @@
+{
+  "packages": {
+    "iproute2": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Breaks": "iproute2-doc",
+        "Conflicts": "arpd",
+        "Depends": "debconf (>= 0.5) | debconf-2.0, libbpf1 (>= 1:0.6.0), libc6 (>= 2.38), libcap2 (>= 1:2.10), libdb5.3t64, libelf1t64 (>= 0.131), libmnl0 (>= 1.0.3-4~), libselinux1 (>= 3.1~), libtirpc3t64 (>= 1.0.2), libxtables12 (>= 1.6.0+snapshot20161117), libcap2-bin",
+        "Description": "networking and traffic control tools\n The iproute2 suite is a collection of utilities for networking and\n traffic control.\n .\n These tools communicate with the Linux kernel via the (rt)netlink\n interface, providing advanced features not available through the\n legacy net-tools commands 'ifconfig' and 'route'.",
+        "Homepage": "https://wiki.linuxfoundation.org/networking/iproute2",
+        "Installed-Size": "3774",
+        "Maintainer": "Debian Kernel Team <debian-kernel@lists.debian.org>",
+        "Multi-Arch": "foreign",
+        "Package": "iproute2",
+        "Priority": "important",
+        "Provides": "arpd",
+        "Replaces": "iproute2-doc",
+        "Section": "net",
+        "Status": "install ok installed",
+        "Suggests": "python3:any",
+        "Version": "6.15.0-1+sonic.0"
+      },
+      "required_paths": [
+        "usr/bin/ip",
+        "usr/sbin/bridge",
+        "usr/sbin/tc"
+      ],
+      "source_revision": "6.15.0.sonic.1",
+      "target": "@iproute2//:iproute2_pkg"
+    },
+    "libgssapi-krb5-2": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libkrb5-3 (= 1.21.3-5+fips), libc6 (>= 2.38), libcom-err2 (>= 1.43.9), libk5crypto3 (>= 1.20), libkrb5support0 (= 1.21.3-5+fips)",
+        "Description": "MIT Kerberos runtime libraries - krb5 GSS-API Mechanism\n Kerberos is a system for authenticating users and services on a network.\n Kerberos is a trusted third-party service.  That means that there is a\n third party (the Kerberos server) that is trusted by all the entities on\n the network (users and services, usually called \"principals\").\n .\n This is the MIT reference implementation of Kerberos V5.\n .\n This package contains the runtime library for the MIT Kerberos\n implementation of GSS-API used by applications and Kerberos clients.",
+        "Homepage": "https://web.mit.edu/kerberos/",
+        "Installed-Size": "434",
+        "Maintainer": "Sam Hartman <hartmans@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libgssapi-krb5-2",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "krb5",
+        "Status": "install ok installed",
+        "Suggests": "krb5-doc, krb5-user",
+        "Version": "1.21.3-5+fips"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libgssapi_krb5.so.2"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//krb5:libgssapi_krb5_2_pkg"
+    },
+    "libk5crypto3": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Breaks": "libgssapi-krb5-2 (<= 1.18~), libkrb5-3 (<= 1.18~)",
+        "Depends": "libc6 (>= 2.38), libkrb5support0 (= 1.21.3-5+fips), libssl3t64 (>= 3.0.0)",
+        "Description": "MIT Kerberos runtime libraries - Crypto Library\n Kerberos is a system for authenticating users and services on a network.\n Kerberos is a trusted third-party service.  That means that there is a\n third party (the Kerberos server) that is trusted by all the entities on\n the network (users and services, usually called \"principals\").\n .\n This is the MIT reference implementation of Kerberos V5.\n .\n This package contains the runtime cryptography libraries used by\n applications and Kerberos clients.",
+        "Homepage": "https://web.mit.edu/kerberos/",
+        "Installed-Size": "175",
+        "Maintainer": "Sam Hartman <hartmans@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libk5crypto3",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "krb5",
+        "Status": "install ok installed",
+        "Suggests": "krb5-doc, krb5-user",
+        "Version": "1.21.3-5+fips"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libk5crypto.so.3"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//krb5:libk5crypto3_pkg"
+    },
+    "libkrb5-3": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Breaks": "libapache2-mod-auth-kerb (<= 5.4-2.4)",
+        "Depends": "libkrb5support0 (= 1.21.3-5+fips), libc6 (>= 2.38), libcom-err2 (>= 1.43.9), libk5crypto3 (>= 1.20), libkeyutils1 (>= 1.5.9), libssl3t64 (>= 3.0.0)",
+        "Description": "MIT Kerberos runtime libraries\n Kerberos is a system for authenticating users and services on a network.\n Kerberos is a trusted third-party service.  That means that there is a\n third party (the Kerberos server) that is trusted by all the entities on\n the network (users and services, usually called \"principals\").\n .\n This is the MIT reference implementation of Kerberos V5.\n .\n This package contains the runtime library for the main Kerberos v5 API\n used by applications and Kerberos clients.",
+        "Homepage": "https://web.mit.edu/kerberos/",
+        "Installed-Size": "1074",
+        "Maintainer": "Sam Hartman <hartmans@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libkrb5-3",
+        "Priority": "optional",
+        "Recommends": "krb5-locales",
+        "Section": "libs",
+        "Source": "krb5",
+        "Status": "install ok installed",
+        "Suggests": "krb5-doc, krb5-user",
+        "Version": "1.21.3-5+fips"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libkrb5.so.3",
+        "usr/lib/{multiarch}/krb5/plugins/preauth/spake.so"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//krb5:libkrb5_3_pkg"
+    },
+    "libkrb5support0": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Breaks": "krb5-admin-server (<< 1.20.1-4~), krb5-kdc (<< 1.20.1-4~), krb5-pkinit (<< 1.20.1-4~), krb5-user (<< 1.20.1-4~), libgssapi-krb5-2 (<< 1.20), libk5crypto3 (<< 1.20.1-4~), libkadm5clnt-mit9 (<< 1.13~alpha1-1), libkadm5srv-mit12 (<< 1.20.1-4~), libkadm5srv-mit9 (<< 1.13~alpha1-1), libkdb5-10t64 (<< 1.20.1-4~), libkdb5-8 (<< 1.16), libkrb5-3 (<< 1.20.1-4~)",
+        "Depends": "libc6 (>= 2.38)",
+        "Description": "MIT Kerberos runtime libraries - Support library\n Kerberos is a system for authenticating users and services on a network.\n Kerberos is a trusted third-party service.  That means that there is a\n third party (the Kerberos server) that is trusted by all the entities on\n the network (users and services, usually called \"principals\").\n .\n This is the MIT reference implementation of Kerberos V5.\n .\n This package contains an internal runtime support library used by other\n Kerberos libraries.",
+        "Homepage": "https://web.mit.edu/kerberos/",
+        "Installed-Size": "137",
+        "Maintainer": "Sam Hartman <hartmans@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libkrb5support0",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "krb5",
+        "Status": "install ok installed",
+        "Version": "1.21.3-5+fips"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libkrb5support.so.0"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//krb5:libkrb5support0_pkg"
+    },
+    "libssl-dev": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libssl3t64 (= 3.5.7-1~deb13u2+fips)",
+        "Description": "Secure Sockets Layer toolkit - development files\n This package is part of the OpenSSL project's implementation of the SSL\n and TLS cryptographic protocols for secure communication over the\n Internet.\n .\n It contains development libraries, header files, and manpages for libssl\n and libcrypto.",
+        "Homepage": "https://openssl-library.org",
+        "Installed-Size": "16004",
+        "Maintainer": "Debian OpenSSL Team <pkg-openssl-devel@alioth-lists.debian.net>",
+        "Multi-Arch": "same",
+        "Package": "libssl-dev",
+        "Priority": "optional",
+        "Section": "libdevel",
+        "Source": "openssl",
+        "Status": "install ok installed",
+        "Suggests": "libssl-doc",
+        "Version": "3.5.7-1~deb13u2+fips"
+      },
+      "required_paths": [
+        "usr/include/openssl/ssl.h",
+        "usr/lib/{multiarch}/libssl.a"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//openssl:libssl_dev_pkg"
+    },
+    "libssl3t64": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Breaks": "freeradius (<< 3.2.7+dfsg-1+deb13u1), libssl3 (<< 3.5.7-1~deb13u2+fips), openssh-client (<< 1:9.4p1), openssh-server (<< 1:9.4p1), python3-m2crypto (<< 0.38.0-4)",
+        "Depends": "libc6 (>= 2.38), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4), openssl-provider-legacy",
+        "Description": "Secure Sockets Layer toolkit - shared libraries\n This package is part of the OpenSSL project's implementation of the SSL\n and TLS cryptographic protocols for secure communication over the\n Internet.\n .\n It provides the libssl and libcrypto shared libraries.",
+        "Homepage": "https://openssl-library.org",
+        "Installed-Size": "8107",
+        "Maintainer": "Debian OpenSSL Team <pkg-openssl-devel@alioth-lists.debian.net>",
+        "Multi-Arch": "same",
+        "Package": "libssl3t64",
+        "Priority": "optional",
+        "Provides": "libssl3 (= 3.5.7-1~deb13u2+fips)",
+        "Replaces": "libssl3",
+        "Section": "libs",
+        "Source": "openssl",
+        "Status": "install ok installed",
+        "Version": "3.5.7-1~deb13u2+fips"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libssl.so.3",
+        "usr/lib/{multiarch}/libcrypto.so.3"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//openssl:libssl3t64_pkg"
+    },
+    "openssl": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Conffiles": "\n /etc/ssl/openssl.cnf bfdc30bd205b6ca2c15a46b17721c6f2",
+        "Depends": "libc6 (>= 2.34), libssl3t64 (>= 3.5.0)",
+        "Description": "Secure Sockets Layer toolkit - cryptographic utility\n This package is part of the OpenSSL project's implementation of the SSL\n and TLS cryptographic protocols for secure communication over the\n Internet.\n .\n It contains the general-purpose command line binary /usr/bin/openssl,\n useful for cryptographic operations such as:\n  * creating RSA, DH, and DSA key parameters;\n  * creating X.509 certificates, CSRs, and CRLs;\n  * calculating message digests;\n  * encrypting and decrypting with ciphers;\n  * testing SSL/TLS clients and servers;\n  * handling S/MIME signed or encrypted mail.",
+        "Homepage": "https://openssl-library.org",
+        "Installed-Size": "2510",
+        "Maintainer": "Debian OpenSSL Team <pkg-openssl-devel@alioth-lists.debian.net>",
+        "Multi-Arch": "foreign",
+        "Package": "openssl",
+        "Priority": "optional",
+        "Section": "utils",
+        "Status": "install ok installed",
+        "Suggests": "ca-certificates",
+        "Version": "3.5.7-1~deb13u2+fips"
+      },
+      "required_paths": [
+        "usr/bin/openssl",
+        "etc/ssl/openssl.cnf"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//openssl:openssl_pkg"
+    },
+    "socat": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libreadline8t64 (>= 6.0), libssl3t64 (>= 3.0.0), libwrap0 (>= 7.6-4~)",
+        "Description": "multipurpose relay for bidirectional data transfer\n Socat (for SOcket CAT) establishes two bidirectional byte streams\n and transfers data between them. Data channels may be files, pipes,\n devices (terminal or modem, etc.), or sockets (Unix, IPv4, IPv6, raw,\n UDP, TCP, SSL). It provides forking, logging and tracing, different\n modes for interprocess communication and many more options.\n .\n It can be used, for example, as a TCP relay (one-shot or daemon),\n as an external socksifier, as a shell interface to Unix sockets,\n as an IPv6 relay, as a netcat and rinetd replacement, to redirect\n TCP-oriented programs to a serial line, or to establish a relatively\n secure environment (su and chroot) for running client or server shell\n scripts inside network connections. Socat supports sctp as of 1.7.0.",
+        "Homepage": "https://www.dest-unreach.org/socat/",
+        "Installed-Size": "1807",
+        "Maintainer": "Laszlo Boszormenyi (GCS) <gcs@debian.org>",
+        "Package": "socat",
+        "Priority": "optional",
+        "Section": "net",
+        "Status": "install ok installed",
+        "Version": "1.8.0.2-1"
+      },
+      "required_paths": [
+        "usr/bin/socat"
+      ],
+      "source_revision": "1.8.0.2.sonic.1",
+      "target": "@socat//:socat_pkg"
+    },
+    "symcrypt-openssl": {
+      "control_fields": {
+        "Architecture": "all",
+        "Depends": "openssl (>= 3.0)",
+        "Description": "symcrypt openssl\n Symcrypt Openssl Provider and engine.",
+        "Maintainer": "SONiC <sonic@microsoft.com>",
+        "Package": "symcrypt-openssl",
+        "Priority": "optional",
+        "Section": "devel",
+        "Status": "install ok installed",
+        "Version": "1.11.0"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libsymcrypt.so.103",
+        "usr/lib/{multiarch}/ossl-modules/symcryptprovider.so"
+      ],
+      "source_revision": "ba10be54d168dbd6566e0b7e79a8ca6894457a8b",
+      "target": "@sonic_fips//symcrypt:runtime"
+    }
+  },
+  "reference": {
+    "oci_manifest": "sha256:2afbbccd9008c7670fd1adbc5349f4a65c76b7b7d224f1a3867c1fd3aa79978d",
+    "status_sha256": "3d5315c48d56d51528403cea7380fbda8440395ab2c1e56189db311477dd21f6"
+  },
+  "schema": 1
+}
