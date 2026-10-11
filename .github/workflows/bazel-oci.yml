@@ -627,7 +627,7 @@ jobs:
           make target/sonic-vs.img.gz \
             target/docker-orchagent.gz target/docker-orchagent-dbg.gz \
             target/docker-syncd-vs.gz target/docker-syncd-vs-dbg.gz \
-            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y VS_VALIDATE_SERVICES=y \
             ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
             2>&1 | tee artifacts/vs/build.log
@@ -653,6 +653,12 @@ jobs:
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
             SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-p4-images.sh" \
             2>&1 | tee artifacts/vs/syncd-p4-images.log
+
+      - name: Require guest service evidence for this VS image
+        run: |
+          python3 -B -m tools.ci.guest_validation \
+            --report target/sonic-vs.guest-validation.json \
+            --image target/sonic-vs.img.gz
 
       - name: Verify P4RT packaged split debug symbols
         run: |
@@ -712,6 +718,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
+
+      - name: Retain strict VS guest validation receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-guest-validation-amd64
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.guest-validation.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload VS image and OCI container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
