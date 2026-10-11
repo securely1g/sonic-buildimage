@@ -1,4 +1,5 @@
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
@@ -35,6 +36,67 @@ _APT_POLICY = {
     "retained_source": "none",
     "features": {},
 }
+
+# Expectations for the common OCI validators. Program and Lua inventories stay
+# in the source owner's BUILD/install files; this describes how to read them.
+_PACKAGE_POLICY = dict(
+    _APT_POLICY,
+    debug_tools = ["gdb", "gdbserver", "sshpass", "strace", "vim"],
+    retained_requirements = [],
+    install_inventory = {
+        "architecture": _APT_POLICY["architecture"],
+        "declaration_file": "dist/BUILD.bazel",
+        "groups": [
+            {"variable": "CPP_BINARIES", "destination": "usr/bin", "kind": "elf", "mode": 0o755},
+            {"variable": "LUA_FILES", "aliases_variable": "LUA_INSTALL_ALIASES", "destination": "usr/share/swss", "kind": "file", "mode": 0o644},
+        ],
+        "install_file": "debian/swss.install",
+        "generated_programs": ["target/release/countersyncd"],
+        "executable_directories": ["usr/bin"],
+        "expected_program_count": 30,
+    },
+    libraries = {
+        "protobuf.tar": {
+            "architecture": _APT_POLICY["architecture"],
+            "runtime_path": "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12",
+            "soname_links": {"usr/lib/x86_64-linux-gnu/libprotobuf.so.32": "libprotobuf.so.32.0.12"},
+            "exclusive_pattern": "*/libprotobuf.so*",
+        },
+    },
+    required_debug_paths = [
+        "usr/lib/libdashapi.so",
+        "usr/lib/python3/dist-packages/dash_api/_utils.so",
+        "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12",
+    ],
+    config_paths = {"usr/bin/docker-init.sh": {"kind": "file", "mode": 0o755}},
+    native = {
+        "required_packages": [],
+        "required_sonames": {},
+        "gap_packages": [],
+        "local_dependency_pattern": "lib(?:sai|swsscommon|MdioIpcClient|pi)",
+        "imported_symbol_packages": [],
+        "required_imported_symbol_paths": [],
+        "require_source": False,
+        "require_imported_symbols": False,
+    },
+    image_validation = {
+        "entrypoint": ["/usr/bin/docker-init.sh"],
+        "command": None,
+        "environment": {"DEBIAN_FRONTEND": "noninteractive"},
+        "startup_files": {},
+        "required_elf_paths": ["usr/bin/orchagent"],
+        "debug_alternatives": [],
+        "runtime_tag": "docker-orchagent:latest",
+        "debug_tag": "docker-orchagent-dbg:latest",
+        "package_state": False,
+    },
+)
+
+write_file(
+    name = "package_policy",
+    out = "package_policy.json",
+    content = [json.encode(_PACKAGE_POLICY)],
+)
 
 # Make publishes the config-engine image as OCI files before invoking Bazel.
 # Its Python/config-engine utilities and libnl/libyang runtime are retained.
@@ -164,6 +226,13 @@ sonic_docker_archive(
 test_suite(
     name = "ci_tests",
     tests = [
+        "//tools/bazel/tests:oci_package_contract_test",
+        "//tools/bazel/tests:oci_package_receipts_test",
+        "//tools/bazel/tests:oci_package_state_layer_test",
+        "//tools/bazel/tests:oci_apt_overlay_test",
+        "//tools/bazel/tests:oci_image_test",
+        "//tools/bazel/tests:oci_native_packages_test",
+        "//tools/bazel/tests:oci_package_payloads_test",
         "//tools/bazel/tests:apt_selection_test",
         "//tools/bazel/tests:select_apt_payloads_test",
         "//tools/bazel/tests:sonic_py_common_test",
