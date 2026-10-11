@@ -5,6 +5,13 @@ ordinary prerequisites and the rest of the VS installer; Bazel assembles the
 runtime and debug OCI images and exports the Docker-save archives Make consumes.
 There is no container-specific Make preparation script or payload handoff.
 
+The image owner is `platform/vs/docker-syncd-vs/`, beside the original
+[`Dockerfile.j2`](../Dockerfile.j2), [`start.sh`](../start.sh),
+[`supervisord.conf`](../supervisord.conf) and
+[`critical_processes`](../critical_processes). Its Bazel targets, APT inputs and
+configuration declarations live here too. The Make selection remains in
+[`platform/vs/docker-syncd-vs.mk`](../../docker-syncd-vs.mk).
+
 ## File mapping to SWSS
 
 Both containers have these five files under `bazel/`:
@@ -17,14 +24,18 @@ Both containers have these five files under `bazel/`:
 | `apt.lock.json` | Pin the reviewed dependency closure and archive contents. |
 | `apt_inputs.MODULE.bazel` | Export the locked candidate packages to Bazel. |
 
-Image assembly lives in `../BUILD.bazel`; startup files, labels and installation
-state live in `../config/`. The original startup files stay in
-`platform/vs/docker-syncd-vs/`, exported directly by its nearby BUILD file for
-both image assembly and tests. There is no `legacy/` symlink bridge. Tests live in `tools/bazel/tests` and its `integration`
-subdirectory, alongside the SWSS tests. Full-image validators live in
-`tools/bazel/oci/image_validation.py` and `native_packages.py`, shared with
-other containers. The owner BUILD generates `:package_policy` from its existing
-APT policy and explicit validation expectations; no owner Python validator is needed.
+Image assembly lives in [`../BUILD.bazel`](../BUILD.bazel), which exports the
+original startup inputs directly for assembly and tests.
+[`../config/BUILD.bazel`](../config/BUILD.bazel) packages those inputs and the
+generated labels and declares the reviewed installation state. There is no
+second Syncd owner under `dockers/` and no `legacy/` symlink bridge.
+
+Tests remain in [`tools/bazel/tests`](../../../../tools/bazel/tests/README.md)
+and its `integration` subdirectory. Full-image validators and package-contract
+logic remain in [`tools/bazel/oci`](../../../../tools/bazel/oci/README.md), shared
+with other containers. The owner BUILD generates `:package_policy` from its
+existing APT policy and explicit validation expectations; no owner Python
+validator is needed.
 
 ## Build flow
 
@@ -34,7 +45,7 @@ The owner BUILD directly declares native `genrule` actions using `tar.bzl`'s
 public `@bsd_tar_toolchains//:resolved_toolchain` and `$(BSDTAR_BIN)`, followed
 by the shared `normalize_layer` rule. There is no custom package-import rule.
 
-Image-specific normalization and imported-symbol matching live in
+Shared path normalization and imported-symbol matching live in
 `tools/bazel/oci`, alongside the existing OCI layout reader, inventory and APT
 selection. They share that layout reader and the existing archive-validation
 utilities. Source-owned runtime/debug packaging remains in `sonic-build-infra`.
@@ -69,9 +80,10 @@ Every difference needs a container-specific reason:
 | --- | --- |
 | Existing Make `.deb` inputs | PI, BMv2, p4c, DASH SAI, VS SAI and DASH-enabled Syncd do not yet have equivalent source targets in this image graph. Importing these packages is distinct from migrating their producers. |
 | Source dependency receipt | Imported packages depend on Common/sairedis package identities. The shared `tools/bazel/oci/package_contract.py` binds those dependency declarations to the selected owner modules and actual TARs before APT selection. It does not pretend the source TARs are installed DEBs. |
-| `config/source_packages.json` | Records the three reused owner targets, their dependency controls, required install paths and explicit data-file modes. It retains the actual base's `libsonicdbcli` identity rather than pinning one base build. |
-| `config/runtime_package_state.json` | These imported packages need alternatives, Syncd service links and provider copyright aliases that extraction alone cannot install. The shared `package_state.py` checks the selected package controls/scripts and link targets before emitting the reviewed state. SWSS does not install this package set. |
+| [`config/source_packages.json`](../config/source_packages.json) | Records the three reused owner targets, their dependency controls, required install paths and explicit data-file modes. It retains the actual base's `libsonicdbcli` identity rather than pinning one base build. |
+| [`config/runtime_package_state.json`](../config/runtime_package_state.json) | These imported packages need alternatives, Syncd service links and provider copyright aliases that extraction alone cannot install. The shared `package_state.py` checks the selected package controls/scripts and link targets before emitting the reviewed state. SWSS does not install this package set. |
 | Imported base symbols | The base retains a Make-built `libsonicdbcli` DSO. The shared matcher selects its companion and DWZ supplement against the final runtime, while excluding old Common/swssloglevel symbols replaced by source builds. |
+| Additional APT snapshot | P4/compiler dependencies need six development packages from the pinned October snapshot to match inherited runtime versions. For example, `libc6-dev=2.41-12+deb13u4` requires exactly that `libc6` version from the base. SWSS does not select these development packages. |
 | Narrower feature selector | This implementation preserves the reviewed DASH/FIPS profile. Other profiles continue to use the legacy Dockerfile. |
 
 The source-owned libraries are exactly the targets used by SWSS:
@@ -79,6 +91,14 @@ The source-owned libraries are exactly the targets used by SWSS:
 - `@sonic_swss_common//:libswsscommon_pkg`
 - `@sonic_sairedis//lib:libsairedis_pkg`
 - `@sonic_sairedis//meta:libsaimetadata_pkg`
+
+`SYNCD_VS_BAZEL_SOURCE_DEBS` removes these libraries' Make packages and their
+debug packages from the image's direct prerequisites. The owner BUILD separately
+declares which Make packages enter the image. Dependencies are expanded before
+filtering so required libraries such as libyang and libnl remain available;
+Make's remaining package producers can still need the excluded packages
+transitively. SWSS has no equivalent filter because its native payloads already
+come from source targets and it declares its image prerequisites directly.
 
 Their original target edges remain in the layer graph so the shared symbol
 collector can traverse their `flatten` and deployment rules. The source runtime
@@ -119,12 +139,12 @@ make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/sonic-vs.img.gz
 After Make has built the declared base, manifests and DEBs, the direct targets are:
 
 ```sh
-bazel build //dockers/docker-syncd-vs:docker-syncd-vs.gz \
-            //dockers/docker-syncd-vs:docker-syncd-vs-dbg.gz
-bazel cquery --output=files //dockers/docker-syncd-vs:runtime_import_manifest
-bazel cquery --output=files //dockers/docker-syncd-vs:debug_import_manifest
-bazel cquery --output=files //dockers/docker-syncd-vs:source_package_receipt
-bazel cquery --output=files //dockers/docker-syncd-vs:base_debug_symbols_receipt
+bazel build //platform/vs/docker-syncd-vs:docker-syncd-vs.gz \
+            //platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz
+bazel cquery --output=files //platform/vs/docker-syncd-vs:runtime_import_manifest
+bazel cquery --output=files //platform/vs/docker-syncd-vs:debug_import_manifest
+bazel cquery --output=files //platform/vs/docker-syncd-vs:source_package_receipt
+bazel cquery --output=files //platform/vs/docker-syncd-vs:base_debug_symbols_receipt
 ```
 
 The import receipts record the source labels, DEB hashes, original decompressed
@@ -170,7 +190,7 @@ make -f tools/bazel/prepare_manifests.mk \
   INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n DBG_IMAGE_MARK=dbg \
   PLATFORM_PATH=platform/vs DOCKERS_PATH=dockers
 python3 -B tools/bazel/ci/container.py \
-  --container //dockers/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk --bazel bazel --artifacts artifacts/syncd-vs/bazel
+  --container //platform/vs/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk --bazel bazel --artifacts artifacts/syncd-vs/bazel
 ```
 
 The shared runner audits the expanded test suite and artifact group, retains

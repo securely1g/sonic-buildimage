@@ -7,6 +7,10 @@ The containercfgd suite remains with `src/sonic-containercfgd` and uses the
 same central runner for its complete source suite.
 The Python supervisor suite remains with `src/sonic-supervisord-utilities`;
 its central target stages the sibling config-engine Redis fixtures it imports.
+The tests stay here when a container's Bazel declarations live beside its
+original Dockerfile: SWSS uses `dockers/docker-orchagent/`, while Syncd VS uses
+[`platform/vs/docker-syncd-vs/`](../../../platform/vs/docker-syncd-vs/bazel/README.md).
+Tests consume each owner's declared files and policies through Bazel labels.
 
 Run the self-contained unit tests from the repository root:
 
@@ -160,7 +164,7 @@ generators, not additional test suites.
 
 
 Container CI membership is declared by `//dockers/docker-orchagent:ci_tests`
-and `//dockers/docker-syncd-vs:ci_tests`. Both reuse `oci_inventory_test` for
+and `//platform/vs/docker-syncd-vs:ci_tests`. Both reuse `oci_inventory_test` for
 whiteouts, overlay links and inherited ELF preservation, and instantiate
 `manifest_labels_action_test.py` against their actual Make manifests and Bazel
 labels. Both suites select the same seven package/image regression targets. Their
