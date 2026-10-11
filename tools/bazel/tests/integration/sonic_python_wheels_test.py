@@ -29,7 +29,7 @@ import setuptools
 
 
 parser = argparse.ArgumentParser()
-for option in ("common-wheel", "config-wheel", "common-setup", "config-setup"):
+for option in ("common-wheel", "config-wheel", "yang-wheel", "common-setup", "config-setup"):
     parser.add_argument("--" + option, type=Path, required=True)
 INPUTS, TEST_ARGS = parser.parse_known_args()
 RECEIPT = {"architecture": platform.machine(), "python": platform.python_version()}
@@ -129,6 +129,10 @@ class InstalledWheelsTest(unittest.TestCase):
             scheme_dict={key: scheme[key] for key in ("purelib", "platlib", "headers", "scripts", "data") if key in scheme} | {"headers": scheme["include"]},
             interpreter=str(cls.python), script_kind="posix", bytecode_optimization_levels=(),
         )
+        # Config-engine now consumes the local YANG producer. Install its wheel
+        # too: dependency_paths deliberately excludes every local source tree.
+        with WheelFile.open(INPUTS.yang_wheel.absolute()) as source:
+            install(source, destination, additional_metadata={"INSTALLER": b"SONiC Bazel wheel test\n"})
         cls.packages = []
         for kind in ("common", "config"):
             wheel = getattr(INPUTS, kind + "_wheel").absolute()
@@ -200,10 +204,12 @@ class InstalledWheelsTest(unittest.TestCase):
         probe = """import hashlib,importlib,importlib.metadata,json,pathlib,sys
 site=pathlib.Path(sys.argv[1]).resolve()
 result={}
-for distribution in ("sonic-py-common", "sonic-config-engine"):
+for distribution in ("sonic-py-common", "sonic-config-engine", "sonic-yang-mgmt"):
     metadata=importlib.metadata.distribution(distribution)
     assert metadata.version=="1.0", (distribution,metadata.version)
     assert pathlib.Path(metadata.locate_file("")).resolve()==site, distribution
+import sonic_yang
+assert pathlib.Path(sonic_yang.__file__).resolve().is_relative_to(site)
 for name in json.loads(sys.argv[2]):
     module=importlib.import_module(name)
     path=pathlib.Path(module.__file__).resolve()
