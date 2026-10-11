@@ -46,7 +46,7 @@ SDK checks. The scoped workflow prepares and pins these inputs:
   `5d43f4f44f0f0fb614194a07a6dcf7b29338cfc8ab7f6129ad1e4403c1ad1c73`,
   with the published Protobuf header fix and
   [infra #33](https://github.com/securely1g/sonic-build-infra/pull/33)'s parser
-  patch from source `7755cb7ee3efd0eb97d16721bb64c070141f6e96`.
+  patch from source `0b76749e7297476c5bfde0f0b3572ddf96052d01`.
 
 See `.github/workflows/bazel-p4-sdk.yml` for reproducible source preparation.
 After [registry #54](https://github.com/securely1g/sonic-bazel-registry/pull/54)
