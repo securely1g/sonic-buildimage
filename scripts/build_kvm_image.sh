@@ -22,6 +22,10 @@ KVM_PORT=9000
 
 on_exit()
 {
+    if [[ -n "${kvm_pid:-}" ]]; then
+        kill "$kvm_pid" 2>/dev/null || true
+        wait "$kvm_pid" 2>/dev/null || true
+    fi
     rm -f $kvm_log
 }
 
@@ -123,7 +127,9 @@ echo "to kill kvm:  sudo kill $kvm_pid"
 
 ./install_sonic.py
 
-kill $kvm_pid
+kill "$kvm_pid"
+wait "$kvm_pid" 2>/dev/null || true
+kvm_pid=
 
 echo "Booting up SONiC"
 
@@ -151,10 +157,16 @@ wait_kvm_ready
 echo "to kill kvm:  sudo kill $kvm_pid"
 
 set +x
-SONIC_PASSWORD="$login_password" ./check_install.py -u "$SONIC_USERNAME" -p "$KVM_PORT"
+guest_validation_args=()
+if [[ "${vs_validate_services:-n}" == y ]]; then
+    guest_validation_args=(--guest-image "$DISK" --guest-report "${DISK%.img}.guest-validation.json")
+fi
+SONIC_PASSWORD="$login_password" ./check_install.py -u "$SONIC_USERNAME" -p "$KVM_PORT" "${guest_validation_args[@]}"
 unset login_password
 set -x
 
-kill $kvm_pid
+kill "$kvm_pid"
+wait "$kvm_pid" 2>/dev/null || true
+kvm_pid=
 
 exit 0
