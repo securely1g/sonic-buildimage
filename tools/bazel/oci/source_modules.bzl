@@ -20,3 +20,18 @@ source_modules = repository_rule(
     implementation = _source_modules_impl,
     attrs = {"modules": attr.label_keyed_string_dict(mandatory = True)},
 )
+
+def _source_files_impl(repository_ctx):
+    names = []
+    for source, name in repository_ctx.attr.files.items():
+        if not name.endswith(".txt") or "/" in name or "\\" in name or name in names:
+            fail("expected unique flat .txt names for source metadata")
+        names.append(name)
+        repository_ctx.file(name, repository_ctx.read(source), executable = False)
+    repository_ctx.file("BUILD.bazel", "exports_files(%s)\n" % json.encode(names))
+
+source_files = repository_rule(
+    implementation = _source_files_impl,
+    doc = "Expose exact owner text declarations that are not exported as targets.",
+    attrs = {"files": attr.label_keyed_string_dict(mandatory = True)},
+)
