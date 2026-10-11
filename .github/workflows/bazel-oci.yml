@@ -308,6 +308,8 @@ jobs:
     name: SWSS source layers (AMD64)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      SONIC_CI_MANIFEST_METADATA: rules/docker-orchagent.mk
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:
@@ -363,10 +365,17 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
 
-      - name: Build and inspect SWSS runtime and debug layers
+      - name: Prepare the registered SWSS manifests
+        run: |
+          make -f tools/bazel/prepare_manifests.mk \
+            MANIFEST_METADATA="$SONIC_CI_MANIFEST_METADATA" \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
+            ENABLE_ASAN=n DBG_IMAGE_MARK=dbg DOCKERS_PATH=dockers
+
+      - name: Test and collect declared SWSS CI artifacts
         run: |
           python3 -B tools/bazel/ci/container.py \
-            --config dockers/docker-orchagent/bazel/ci_config.py \
+            --container //dockers/docker-orchagent --source-file "$SONIC_CI_MANIFEST_METADATA" \
             --bazel "$BAZEL" --artifacts artifacts/swss
 
       - name: Retain the verified GitLab source downloads
@@ -424,6 +433,8 @@ jobs:
     name: Syncd OCI contracts (AMD64)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      SONIC_CI_MANIFEST_METADATA: platform/vs/docker-syncd-vs.mk
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:
@@ -468,10 +479,18 @@ jobs:
           python3 -B -m unittest discover -s tools/bazel/tests -p 'syncd_make_integration_test.py' -v \
             2>&1 | tee artifacts/syncd-vs/direct-tests.log
 
-      - name: Prepare manifests and run audited Bazel contract tests
+      - name: Prepare the registered Syncd manifests
+        run: |
+          make -f tools/bazel/prepare_manifests.mk \
+            MANIFEST_METADATA="$SONIC_CI_MANIFEST_METADATA" DEBS_PATH=target/debs/trixie \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
+            INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n DBG_IMAGE_MARK=dbg \
+            PLATFORM_PATH=platform/vs DOCKERS_PATH=dockers
+
+      - name: Test and collect declared Syncd CI artifacts
         run: |
           python3 -B tools/bazel/ci/container.py \
-            --config dockers/docker-syncd-vs/bazel/ci_config.py \
+            --container //dockers/docker-syncd-vs --source-file "$SONIC_CI_MANIFEST_METADATA" \
             --bazel "$BAZEL" --artifacts artifacts/syncd-vs/bazel
           git diff --exit-code
 

@@ -122,13 +122,13 @@ def verify_debuglink(binary, symbols, name, *, expected_name=None, objcopy="objc
             "debuglink CRC differs: " + name)
 
 
-def elf_debug(extracted, expected, prebuilt):
+def elf_debug(extracted, expected, prebuilt, *, readelf="readelf", objcopy="objcopy"):
     pairs, gaps = [], []
     for name, item in expected.items():
         if "elf_machine" not in item or name.startswith("usr/lib/debug/"):
             continue
         binary = extracted / name
-        info = elf_info(binary)
+        info = elf_info(binary, readelf=readelf)
         identifier = info["build_id"]
         require(identifier is not None, "missing runtime ELF build ID: " + name)
         debug_name = "usr/lib/debug/.build-id/" + identifier[:2] + "/" + identifier[2:] + ".debug"
@@ -139,16 +139,17 @@ def elf_debug(extracted, expected, prebuilt):
             continue
         require(debug_name in expected, "missing embedded debug file: " + name)
         symbols = extracted / debug_name
-        symbol_info = elf_info(symbols)
+        symbol_info = elf_info(symbols, readelf=readelf)
         require(symbol_info["build_id"] == identifier, "debug build ID differs: " + name)
         require(symbol_info["has_dwarf"], "debug file lacks DWARF: " + name)
-        verify_debuglink(binary, symbols, name)
+        verify_debuglink(binary, symbols, name, objcopy=objcopy)
         pairs.append({"path": name, "build_id": identifier, "debug_path": debug_name})
     require(set(prebuilt) == {item["path"] for item in gaps}, "unmatched prebuilt gap declaration")
     return pairs, gaps
 
 
-def debug_archives(runtime_archive, symbols_archive, *, expected_machine, prebuilt=()):
+def debug_archives(runtime_archive, symbols_archive, *, expected_machine, prebuilt=(),
+                   readelf="readelf", objcopy="objcopy"):
     """Validate split-symbol archives; callers retain their package inventory policy."""
     runtime = payload(runtime_archive)
     symbols = payload(symbols_archive)
@@ -169,5 +170,5 @@ def debug_archives(runtime_archive, symbols_archive, *, expected_machine, prebui
         for path in (runtime_archive, symbols_archive):
             with tarfile.open(path) as archive:
                 archive.extractall(extracted, filter="data")
-        pairs, gaps = elf_debug(extracted, combined, set(prebuilt))
+        pairs, gaps = elf_debug(extracted, combined, set(prebuilt), readelf=readelf, objcopy=objcopy)
     return {"elf_count": len(elfs), "debug_pairs": pairs, "prebuilt_debug_gaps": gaps}
