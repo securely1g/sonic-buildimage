@@ -32,6 +32,11 @@ The owner BUILD directly declares native `genrule` actions using `tar.bzl`'s
 public `@bsd_tar_toolchains//:resolved_toolchain` and `$(BSDTAR_BIN)`, followed
 by the shared `normalize_layer` rule. There is no custom package-import rule.
 
+Image-specific normalization and imported-symbol matching live in
+`tools/bazel/oci`, alongside the existing OCI layout reader, inventory and APT
+selection. They share that layout reader and the existing archive-validation
+utilities. Source-owned runtime/debug packaging remains in `sonic-build-infra`.
+
 1. Make builds the config-engine base, service manifests and the explicitly
    declared `.deb` prerequisites. Root `BUILD.bazel` exports those exact input
    filenames, just as it exports SWSS's Make-built Scapy wheel.
@@ -139,8 +144,9 @@ The common `.github/workflows/bazel-oci.yml` runs SWSS source checks, Syncd
 contract tests, native AMD64/ARM64 archive checks and the approved full VS build.
 The Syncd tests check FIPS inheritance, package dependencies, source ownership,
 installation state, metadata, imported/native symbols and complete OCI fixtures.
-Normalization and symbol-matching tests live with their shared rules in
-`sonic-build-infra`. The consumer's `syncd_package_receipts_test` uses checked-in
+Normalization and symbol-matching tests live with the image helpers in
+`tools/bazel/oci/tests` and run on native AMD64 and ARM64. The consumer's
+`syncd_package_receipts_test` uses checked-in
 existing DEBs to exercise direct BSD tar extraction, repeated PAX composition,
 real `rules_oci` consumption, original control hashes and policy rejection.
 The selected action graph is inspected before execution to ensure these tests
