@@ -15,12 +15,12 @@ package(default_visibility = ["//visibility:public"])
 
 _OCI_OWNER_POLICIES = [
     "//dockers/docker-orchagent:package_policy",
-    "//dockers/docker-syncd-vs:package_policy",
+    "//platform/vs/docker-syncd-vs:package_policy",
 ]
 
 _OCI_POLICY_ARGS = [
     "--swss-policy=$(rootpath //dockers/docker-orchagent:package_policy)",
-    "--syncd-policy=$(rootpath //dockers/docker-syncd-vs:package_policy)",
+    "--syncd-policy=$(rootpath //platform/vs/docker-syncd-vs:package_policy)",
 ]
 
 # Compare the actual source-built layers with SWSS's own install declarations,
@@ -929,7 +929,7 @@ py_test(
         "//platform/vs/docker-syncd-vs:critical_processes",
         "//platform/vs/docker-syncd-vs:start.sh",
         "//platform/vs/docker-syncd-vs:supervisord.conf",
-        "//dockers/docker-syncd-vs/config:source_packages.json",
+        "//platform/vs/docker-syncd-vs/config:source_packages.json",
     ] + _OCI_OWNER_POLICIES,
     args = _OCI_POLICY_ARGS,
     main = "integration/oci_image_test.py",
@@ -942,13 +942,13 @@ py_test(
     srcs = [
         "integration/oci_apt_overlay_test.py",
     ],
-    args = ["--policy=$(rootpath //dockers/docker-syncd-vs:runtime_layer_policy)"] + _OCI_POLICY_ARGS,
+    args = ["--policy=$(rootpath //platform/vs/docker-syncd-vs:runtime_layer_policy)"] + _OCI_POLICY_ARGS,
     data = [
         "//dockers/docker-orchagent/bazel:apt.lock.json",
         "//dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel",
-        "//dockers/docker-syncd-vs:runtime_layer_policy",
-        "//dockers/docker-syncd-vs/bazel:apt.lock.json",
-        "//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel",
+        "//platform/vs/docker-syncd-vs:runtime_layer_policy",
+        "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
+        "//platform/vs/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel",
     ] + _OCI_OWNER_POLICIES,
     main = "integration/oci_apt_overlay_test.py",
     python_version = "3.11",
@@ -962,8 +962,8 @@ py_test(
     ],
     data = [
         "//platform/vs/docker-syncd-vs:Dockerfile.j2",
-        "//dockers/docker-syncd-vs/bazel:apt.lock.json",
-        "//dockers/docker-syncd-vs/config:runtime_package_state.json",
+        "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
+        "//platform/vs/docker-syncd-vs/config:runtime_package_state.json",
     ] + _OCI_OWNER_POLICIES,
     args = _OCI_POLICY_ARGS,
     main = "integration/oci_package_state_layer_test.py",
@@ -979,8 +979,8 @@ py_test(
         "--tool=$(rootpath //tools/bazel/oci:manifest_labels)",
         "--runtime-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs/manifest.json)",
         "--debug-manifest=$(rootpath //:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json)",
-        "--runtime-labels=$(rootpath //dockers/docker-syncd-vs/config:labels)",
-        "--debug-labels=$(rootpath //dockers/docker-syncd-vs/config:debug_labels)",
+        "--runtime-labels=$(rootpath //platform/vs/docker-syncd-vs/config:labels)",
+        "--debug-labels=$(rootpath //platform/vs/docker-syncd-vs/config:debug_labels)",
         "--package-name=syncd",
         "--package-version=1.0.0",
         "--service-name=syncd",
@@ -991,8 +991,8 @@ py_test(
     data = [
         "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
         "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
-        "//dockers/docker-syncd-vs/config:debug_labels",
-        "//dockers/docker-syncd-vs/config:labels",
+        "//platform/vs/docker-syncd-vs/config:debug_labels",
+        "//platform/vs/docker-syncd-vs/config:labels",
         "//tools/bazel/oci:manifest_labels",
     ],
     main = "integration/manifest_labels_action_test.py",
@@ -1001,7 +1001,7 @@ py_test(
 py_test(
     name = "oci_package_contract_test",
     srcs = ["integration/oci_package_contract_test.py"],
-    data = ["//dockers/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
+    data = ["//platform/vs/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
     args = _OCI_POLICY_ARGS,
     main = "integration/oci_package_contract_test.py",
     python_version = "3.11",
@@ -1013,7 +1013,7 @@ py_test(
 py_test(
     name = "oci_native_packages_test",
     srcs = ["integration/oci_native_packages_test.py"],
-    data = ["//dockers/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
+    data = ["//platform/vs/docker-syncd-vs/config:source_packages.json"] + _OCI_OWNER_POLICIES,
     args = _OCI_POLICY_ARGS,
     main = "integration/oci_native_packages_test.py",
     python_version = "3.11",
