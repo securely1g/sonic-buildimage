@@ -9,6 +9,11 @@ the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
 archive checks, SWSS source checks, Syncd contract checks and the existing full
 VS integration job. Add checks for future OCI containers as jobs in this
 workflow, keeping their target lists and package contracts with each container.
+The owning BUILD files sit beside the original container inputs:
+[`dockers/docker-orchagent/BUILD.bazel`](../../../dockers/docker-orchagent/BUILD.bazel)
+and [`platform/vs/docker-syncd-vs/BUILD.bazel`](../../../platform/vs/docker-syncd-vs/BUILD.bazel).
+The shared runner accepts either package path; it does not require owners to
+live under `dockers/`.
 Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
 job after the SWSS source checks pass.
 
@@ -21,7 +26,7 @@ job after the SWSS source checks pass.
   python3 -B tools/bazel/ci/container.py \
     --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk --bazel bazel --artifacts artifacts/swss
   python3 -B tools/bazel/ci/container.py \
-    --container //dockers/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk --bazel bazel --artifacts artifacts/syncd-vs/bazel
+    --container //platform/vs/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk --bazel bazel --artifacts artifacts/syncd-vs/bazel
   ```
 
   Start from native AMD64 Trixie without `MODULE.bazel.lock` and use an empty
@@ -38,9 +43,9 @@ job after the SWSS source checks pass.
   SWSS's actual source-layer validation is a Bazel test with declared archives,
   owner install files and binutils tools. Syncd's suite validates its existing
   Make/source package adapter. Both suites use the same manifest-test program
-  and the shared OCI package/image regression tests. Adding a test or artifact requires changing
-  the owning BUILD declaration, with no second list in the runner or public
-  artifact test-count checks.
+  and the shared OCI package/image regression tests. Adding a test or artifact
+  requires changing the owning BUILD declaration, with no second list in the
+  runner or public artifact test-count checks.
 - `artifact_validation.py` streams tar contents to record ownership, modes, file
   hashes and little-endian ELF64 metadata, and checks matching split debug symbols.
   SWSS and syncd share its ELF inspection and debug-link checks; each consumer
