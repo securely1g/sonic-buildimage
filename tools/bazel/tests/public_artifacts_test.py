@@ -80,10 +80,10 @@ def receipt(kind, architecture="amd64"):
                 "tests": {"//tests:python_" + str(number): {
                     "result": {"tests": 3, "failures": 0, "errors": 0, "skipped": 0},
                     "test.log": {"path": SENTINEL}}
-                    for number in range(9)}}
+                    for number in range(11)}}
     if kind == "source":
         return {"status": "passed", "revision": REVISION, **unsafe,
-                "tests": {"//tests:source_" + str(number): "passed" for number in range(16)},
+                "tests": {"//tests:source_" + str(number): "passed" for number in range(18)},
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST}}}
     if kind == "syncd":

@@ -33,6 +33,10 @@ class PythonPackageEvidenceTest(unittest.TestCase):
             {"filename": name, "sha256": hashlib.sha256(name.encode()).hexdigest()}
             for name in python_packages.WHEELS if name.startswith("sonic_supervisord_utilities-")])
 
+        self.yang_receipt = dict(self.wheel_receipt, wheels=[
+            {"filename": name, "sha256": hashlib.sha256(name.encode()).hexdigest()}
+            for name in python_packages.WHEELS if name.startswith("sonic_yang_mgmt-")])
+
     def fixture(self, *, zipped=False):
         for target in python_packages.TESTS:
             package, name = target.removeprefix("//").split(":")
@@ -53,6 +57,8 @@ class PythonPackageEvidenceTest(unittest.TestCase):
                 contents["wheels.json"] = json.dumps(self.container_receipt)
             if name == "supervisor_python_wheel_test":
                 contents["wheels.json"] = json.dumps(self.supervisor_receipt)
+            if name == "sonic_yang_mgmt_wheel_test":
+                contents["wheels.json"] = json.dumps(self.yang_receipt)
             if contents:
                 outputs = source / "test.outputs"
                 outputs.mkdir()
@@ -84,6 +90,7 @@ class PythonPackageEvidenceTest(unittest.TestCase):
         self.assertEqual(receipt["revision"], self.revision)
         self.assertEqual(set(receipt["tests"]), set(python_packages.TESTS))
         self.assertEqual(json.loads((self.directory / "wheels.json").read_text()), self.wheel_receipt)
+        self.assertEqual(json.loads((self.directory / "yang-mgmt-wheels.json").read_text()), self.yang_receipt)
         for target, evidence in receipt["tests"].items():
             if target.endswith("_full_test"):
                 self.assertEqual(json.loads((self.directory / evidence["inventory"]["path"]).read_text())["collected"], 1)
