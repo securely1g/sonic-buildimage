@@ -48,6 +48,7 @@ FILES = {
         ("startup-hash", "artifacts/config-engine/sha256.txt", "hashes"),
         ("common-wheel", "artifacts/config-engine/sonic_py_common-1.0-py3-none-any.whl", "binary"),
         ("config-wheel", "artifacts/config-engine/sonic_config_engine-1.0-py3-none-any.whl", "binary"),
+        ("yang-mgmt-wheel", "artifacts/config-engine/sonic_yang_mgmt-1.0-py3-none-any.whl", "binary"),
         ("wheel-hashes", "artifacts/config-engine/wheels-sha256.txt", "hashes"),
     ],
     "source": [
@@ -70,12 +71,13 @@ FILES = {
 BEP = {
     "archive": [
         ("archive-tests", "artifacts/archive/test-events.jsonl", 5),
-        ("python-tests", "artifacts/config-engine/test-events.jsonl", 10),
+        ("python-tests", "artifacts/config-engine/test-events.jsonl", 12),
     ],
     "source": [("source-tests", "artifacts/swss/test-events.jsonl", 12)],
     "syncd": [],
     "vs": [],
 }
+RECEIPT_TEST_COUNTS = {"archive": ("python", 7), "source": ("source", 12), "syncd": ("syncd", 7)}
 SUMMARY = {
     "archive": "artifacts/archive/public-summary.json",
     "source": "artifacts/swss/public-summary.json",
@@ -414,7 +416,7 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
         receipts["outputs"] = outputs
 
     if job_status == "success":
-        expected = {"archive": ("python", 5), "source": ("source", 12), "syncd": ("syncd", 7)}
+        expected = RECEIPT_TEST_COUNTS
         if kind in expected:
             receipt_name, count = expected[kind]
             value = receipts.get(receipt_name, {})

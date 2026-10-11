@@ -79,7 +79,7 @@ def receipt(kind, architecture="amd64"):
                 "tests": {"//tests:python_" + str(number): {
                     "result": {"tests": 3, "failures": 0, "errors": 0, "skipped": 0},
                     "test.log": {"path": SENTINEL}}
-                    for number in range(5)}}
+                    for number in range(artifacts.RECEIPT_TEST_COUNTS["archive"][1])}}
     if kind == "source":
         return {"status": "passed", "revision": REVISION, **unsafe,
                 "tests": {"//tests:source_" + str(number): "passed" for number in range(12)},
@@ -228,6 +228,17 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
+
+    def test_previous_python_receipt_cannot_cover_new_yang_checks(self):
+        """The old five-result receipt must not certify the expanded package job."""
+        seed(self.root, "archive")
+        value = receipt("python")
+        value["tests"] = dict(list(value["tests"].items())[:5])
+        write_json(self.root, "artifacts/config-engine/receipt.json", value)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "python-receipt", "reason": "incomplete-receipt"}, summary["blocked"])
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")
