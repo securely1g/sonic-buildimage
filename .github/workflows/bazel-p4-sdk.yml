@@ -57,7 +57,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-build-infra
-          ref: 7755cb7ee3efd0eb97d16721bb64c070141f6e96
+          ref: 0b76749e7297476c5bfde0f0b3572ddf96052d01
           path: _sdk_dependencies/infra
           persist-credentials: false
 
@@ -73,7 +73,7 @@ jobs:
             https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/19f060dda00ce7140eae3af4e9a637f9cfeb5034/modules/rules_distroless/0.9.4.sonic.1/patches/0002-include-fragments.patch
           echo "88da687bfa7ecef1de6c0a309dc1abb8712d10f48caec22e9c74df30d64e639a  $RUNNER_TEMP/protobuf-headers.patch" | sha256sum --check --strict
           patch -d "$RUNNER_TEMP/distroless-sdk" -p1 < "$RUNNER_TEMP/protobuf-headers.patch"
-          patch -d "$RUNNER_TEMP/distroless-sdk" -p1 < _sdk_dependencies/infra/third_party/rules_distroless/0001-pkgconfig-whitespace.patch
+          patch -d "$RUNNER_TEMP/distroless-sdk" -p1 < _sdk_dependencies/infra/third_party/rules_distroless/0002-pkgconfig-whitespace.patch
 
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
