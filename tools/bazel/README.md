@@ -308,3 +308,10 @@ Use `bazel help --announce_rc` to inspect the effective rc selection. Keep one
 SONiC registry endpoint; do not add another endpoint in a home or user rc.
 Generated resolution receipts list registry lookup URLs from the lock; a reused
 lock can also contain historical lookups.
+
+## Kernel packages in the Make VS flow
+
+The opt-in kernel bundle producer and `SONIC_COPY_DEBS` handoff are documented
+in [kernel/README.md](kernel/README.md). The separate kernel workspace keeps
+the source/cache graph independent of the container graph and binds the bundle
+to the current buildimage source and kernel gitlink.
