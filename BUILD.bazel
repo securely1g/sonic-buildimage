@@ -34,7 +34,7 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# Syncd imports these existing Make packages through the shared deb_import rule.
+# Syncd extracts these existing Make packages with the upstream BSD tar toolchain.
 # Keep filenames explicit: adding another file under target/debs must not change
 # the image. Installation order belongs in dockers/docker-syncd-vs/BUILD.bazel.
 exports_files([
