@@ -1,3 +1,4 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
@@ -117,10 +118,29 @@ write_file(
     content = [json.encode(_PACKAGE_POLICY)],
 )
 
-# Make publishes the config-engine image as OCI files before invoking Bazel.
-# Its Python/config-engine utilities and libnl/libyang runtime are retained.
-oci_base_layout(
+# FIPS builds already select the source-built config-engine image. Consume its
+# native OCI graph directly; its Docker export is only an installer artifact.
+bool_flag(
+    name = "source_config_engine",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "source_config_engine_enabled",
+    flag_values = {":source_config_engine": "true"},
+)
+
+alias(
     name = "config_engine_base_layout",
+    actual = select({
+        ":source_config_engine_enabled": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
+        "//conditions:default": ":make_config_engine_base_layout",
+    }),
+)
+
+# Other builds retain the native OCI layout prepared from the Make archive.
+oci_base_layout(
+    name = "make_config_engine_base_layout",
     srcs = [
         "//:config_engine_oci_files",
         "//:target/docker-config-engine-trixie.oci/oci-layout",
