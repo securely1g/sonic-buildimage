@@ -13,6 +13,136 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
+# Exercise upstream package extraction with existing checked-in DEBs. These
+# native genrules deliberately show the same tools the Syncd owner BUILD uses;
+# no package-generating rule or shared import facade participates in the test.
+_SYNCD_DEB_FIXTURES = {
+    "gz": "fixtures/syncd-debs/example-gz_1.0-1_all.deb",
+    "xz": "fixtures/syncd-debs/example-xz_1.0-1_all.deb",
+    "foreign": "fixtures/syncd-debs/example-foreign_1.0-1_arm64.deb",
+}
+
+[
+    genrule(
+        name = "syncd_extract_fixture_" + kind,
+        testonly = True,
+        srcs = [source],
+        outs = ["syncd_deb_fixture/" + kind + "/" + filename for filename in [
+            "members.txt",
+            "debian-binary",
+            "control.archive",
+            "data.archive",
+        ]],
+        cmd = """set -euo pipefail
+export LC_ALL=C.UTF-8
+"$(BSDTAR_BIN)" -tf "$(execpath {source})" > "$(RULEDIR)/syncd_deb_fixture/{kind}/members.txt"
+mapfile -t members < "$(RULEDIR)/syncd_deb_fixture/{kind}/members.txt"
+[[ "$${{#members[@]}}" == 3 && "$${{members[0]}}" == debian-binary ]]
+case "$${{members[1]}}" in control.tar|control.tar.gz|control.tar.xz|control.tar.bz2) ;; *) exit 1 ;; esac
+case "$${{members[2]}}" in data.tar|data.tar.gz|data.tar.xz|data.tar.bz2) ;; *) exit 1 ;; esac
+"$(BSDTAR_BIN)" -xOf "$(execpath {source})" debian-binary > "$(RULEDIR)/syncd_deb_fixture/{kind}/debian-binary"
+"$(BSDTAR_BIN)" -xOf "$(execpath {source})" "$${{members[1]}}" > "$(RULEDIR)/syncd_deb_fixture/{kind}/control.archive"
+"$(BSDTAR_BIN)" -xOf "$(execpath {source})" "$${{members[2]}}" > "$(RULEDIR)/syncd_deb_fixture/{kind}/data.archive"
+""".format(
+            kind = kind,
+            source = source,
+        ),
+        toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+        tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    )
+    for kind, source in _SYNCD_DEB_FIXTURES.items()
+]
+
+_SYNCD_FIXTURE_INPUTS = [
+    "syncd_deb_fixture/" + kind + "/" + filename
+    for kind in [
+        "gz",
+        "xz",
+        "foreign",
+    ]
+    for filename in [
+        "members.txt",
+        "debian-binary",
+        "control.archive",
+        "data.archive",
+    ]
+]
+
+[
+    genrule(
+        name = "syncd_deb_fixture_" + suffix,
+        testonly = True,
+        srcs = _SYNCD_FIXTURE_INPUTS + _SYNCD_DEB_FIXTURES.values(),
+        outs = [
+            "syncd_deb_fixture/" + suffix + "/payload.tar",
+            "syncd_deb_fixture/" + suffix + "/manifest.json",
+        ],
+        cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
+              "\"$(BSDTAR_BIN)\" --format=pax -cf '$(RULEDIR)/syncd_deb_fixture/" + suffix + "/payload.tar' " +
+              "'@$(execpath syncd_deb_fixture/gz/data.archive)' '@$(execpath syncd_deb_fixture/xz/data.archive)'\n" +
+              "\"$(execpath //dockers/docker-syncd-vs/config:package_receipts)\"" +
+              " --payload='$(RULEDIR)/syncd_deb_fixture/" + suffix + "/payload.tar'" +
+              " --out='$(RULEDIR)/syncd_deb_fixture/" + suffix + "/manifest.json'" +
+              " ".join([" --package='" + json.encode({
+                  "source_label": "//tools/bazel/tests:" + _SYNCD_DEB_FIXTURES[kind],
+                  "source": "$(execpath " + _SYNCD_DEB_FIXTURES[kind] + ")",
+                  "members": "$(execpath syncd_deb_fixture/" + kind + "/members.txt)",
+                  "version": "$(execpath syncd_deb_fixture/" + kind + "/debian-binary)",
+                  "control": "$(execpath syncd_deb_fixture/" + kind + "/control.archive)",
+                  "data": "$(execpath syncd_deb_fixture/" + kind + "/data.archive)",
+              }) + "'" for kind in [
+                  "gz",
+                  "xz",
+              ]]),
+        toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+        tools = [
+            "//dockers/docker-syncd-vs/config:package_receipts",
+            "@bsd_tar_toolchains//:resolved_toolchain",
+        ],
+    )
+    for suffix in [
+        "first",
+        "repeat",
+    ]
+]
+
+oci_image(
+    name = "syncd_direct_deb_fixture_image",
+    testonly = True,
+    architecture = "amd64",
+    os = "linux",
+    tars = ["syncd_deb_fixture/first/payload.tar"],
+)
+
+py_test(
+    name = "syncd_package_receipts_test",
+    srcs = ["integration/syncd_package_receipts_test.py"],
+    args = [
+        "--payload=$(rootpath syncd_deb_fixture/first/payload.tar)",
+        "--manifest=$(rootpath syncd_deb_fixture/first/manifest.json)",
+        "--repeat-payload=$(rootpath syncd_deb_fixture/repeat/payload.tar)",
+        "--repeat-manifest=$(rootpath syncd_deb_fixture/repeat/manifest.json)",
+        "--image=$(rootpath :syncd_direct_deb_fixture_image)",
+    ] + ["--package='" + json.encode({
+        "source_label": "//tools/bazel/tests:" + source,
+        "source": "$(rootpath " + source + ")",
+        "members": "$(rootpath syncd_deb_fixture/" + kind + "/members.txt)",
+        "version": "$(rootpath syncd_deb_fixture/" + kind + "/debian-binary)",
+        "control": "$(rootpath syncd_deb_fixture/" + kind + "/control.archive)",
+        "data": "$(rootpath syncd_deb_fixture/" + kind + "/data.archive)",
+    }) + "'" for kind, source in _SYNCD_DEB_FIXTURES.items()],
+    data = _SYNCD_FIXTURE_INPUTS + _SYNCD_DEB_FIXTURES.values() + [
+        "syncd_deb_fixture/first/manifest.json",
+        "syncd_deb_fixture/first/payload.tar",
+        "syncd_deb_fixture/repeat/manifest.json",
+        "syncd_deb_fixture/repeat/payload.tar",
+        ":syncd_direct_deb_fixture_image",
+    ],
+    main = "integration/syncd_package_receipts_test.py",
+    python_version = "3.11",
+    deps = ["//dockers/docker-syncd-vs/config:package_receipts_lib"],
+)
+
 py_test(
     name = "sonic_yang_mgmt_full_test",
     size = "large",
@@ -383,7 +513,6 @@ py_test(
     name = "select_apt_payloads_test",
     size = "small",
     srcs = ["integration/select_apt_payloads_test.py"],
-    main = "integration/select_apt_payloads_test.py",
     args = [
         "$(rootpath @orchagent_apt_inputs//:apt_inputs.bzl)",
         "$(rootpath //dockers/docker-orchagent:runtime_layer_policy)",
@@ -391,11 +520,12 @@ py_test(
         "$(rootpath //dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel)",
     ],
     data = [
-        "@orchagent_apt_inputs//:apt_inputs.bzl",
         "//dockers/docker-orchagent:runtime_layer_policy",
         "//dockers/docker-orchagent/bazel:apt.lock.json",
         "//dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel",
+        "@orchagent_apt_inputs//:apt_inputs.bzl",
     ],
+    main = "integration/select_apt_payloads_test.py",
     deps = [
         ":oci_base_fixture_lib",
         "//tools/bazel/oci:apt_selection",
@@ -668,11 +798,11 @@ py_test(
         "integration/syncd_validate_image_test.py",
     ],
     data = [
-        "//dockers/docker-syncd-vs/config:source_packages.json",
+        "//dockers/docker-base-trixie:dpkg_01_drop",
         "//dockers/docker-syncd-vs:legacy/critical_processes",
         "//dockers/docker-syncd-vs:legacy/start.sh",
         "//dockers/docker-syncd-vs:legacy/supervisord.conf",
-        "//dockers/docker-base-trixie:dpkg_01_drop",
+        "//dockers/docker-syncd-vs/config:source_packages.json",
     ],
     main = "integration/syncd_validate_image_test.py",
     python_version = "3.11",
@@ -686,9 +816,9 @@ py_test(
     ],
     args = ["--policy=$(rootpath //dockers/docker-syncd-vs:runtime_layer_policy)"],
     data = [
+        "//dockers/docker-syncd-vs:runtime_layer_policy",
         "//dockers/docker-syncd-vs/bazel:apt.lock.json",
         "//dockers/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel",
-        "//dockers/docker-syncd-vs:runtime_layer_policy",
     ],
     main = "integration/syncd_select_apt_payloads_test.py",
     python_version = "3.11",
@@ -700,12 +830,12 @@ py_test(
     srcs = [
         "integration/syncd_package_state_layer_test.py",
     ],
-    main = "integration/syncd_package_state_layer_test.py",
     data = [
+        "//dockers/docker-syncd-vs:legacy/Dockerfile.j2",
         "//dockers/docker-syncd-vs/bazel:apt.lock.json",
         "//dockers/docker-syncd-vs/config:runtime_package_state.json",
-        "//dockers/docker-syncd-vs:legacy/Dockerfile.j2",
     ],
+    main = "integration/syncd_package_state_layer_test.py",
     python_version = "3.11",
     deps = _SYNCD_TEST_DEPS,
 )
@@ -721,10 +851,10 @@ py_test(
         "--debug-labels=$(rootpath //dockers/docker-syncd-vs/config:debug_labels)",
     ],
     data = [
-        "//dockers/docker-syncd-vs/config:debug_labels",
-        "//dockers/docker-syncd-vs/config:labels",
         "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
         "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
+        "//dockers/docker-syncd-vs/config:debug_labels",
+        "//dockers/docker-syncd-vs/config:labels",
     ],
     main = "integration/syncd_manifest_labels_test.py",
 )
@@ -732,8 +862,8 @@ py_test(
 py_test(
     name = "syncd_package_contract_test",
     srcs = ["integration/syncd_package_contract_test.py"],
-    main = "integration/syncd_package_contract_test.py",
     data = ["//dockers/docker-syncd-vs/config:source_packages.json"],
+    main = "integration/syncd_package_contract_test.py",
     python_version = "3.11",
     deps = _SYNCD_TEST_DEPS,
 )
@@ -743,9 +873,9 @@ py_test(
 py_test(
     name = "syncd_validate_native_packages_test",
     srcs = ["integration/syncd_validate_native_packages_test.py"],
-    main = "integration/syncd_validate_native_packages_test.py",
     data = ["//dockers/docker-syncd-vs/config:source_packages.json"],
-    tags = ["local"],
+    main = "integration/syncd_validate_native_packages_test.py",
     python_version = "3.11",
+    tags = ["local"],
     deps = _SYNCD_TEST_DEPS,
 )
