@@ -1,9 +1,17 @@
 # Syncd VS OCI image
 
-Syncd uses SWSS (`docker-orchagent`) as its image-build template. Make builds
-ordinary prerequisites and the rest of the VS installer; Bazel assembles the
-runtime and debug OCI images and exports the Docker-save archives Make consumes.
-There is no container-specific Make preparation script or payload handoff.
+Syncd uses SWSS (`docker-orchagent`) as its image-build template. Make prepares
+the prerequisites and builds the rest of the VS installer. For the supported
+release profile, five existing P4/DASH packages come from Bazel's repository
+cache; other native package inputs keep their Make producers. Bazel assembles
+the runtime and debug OCI images and exports the Docker-save archives Make
+consumes. There is no container-specific Make preparation script or payload
+handoff.
+
+[PR #13](https://github.com/securely1g/sonic-buildimage/pull/13) integrates the
+cache handoff from [PR #14](https://github.com/securely1g/sonic-buildimage/pull/14)
+through the existing package paths. Reusing native packages does not complete
+the source migration of their producers.
 
 The image owner is `platform/vs/docker-syncd-vs/`, beside the original
 [`Dockerfile.j2`](../Dockerfile.j2), [`start.sh`](../start.sh),
@@ -50,9 +58,12 @@ Shared path normalization and imported-symbol matching live in
 selection. They share that layout reader and the existing archive-validation
 utilities. Source-owned runtime/debug packaging remains in `sonic-build-infra`.
 
-1. Make builds the config-engine base, service manifests and the explicitly
-   declared `.deb` prerequisites. Root `BUILD.bazel` exports those exact input
-   filenames, just as it exports SWSS's Make-built Scapy wheel.
+1. Make prepares the config-engine base, service manifests and the explicitly
+   declared `.deb` prerequisites. The shared [P4 import](../../../../tools/bazel/p4/README.md)
+   restores five pinned native DEBs to their existing `target/debs/trixie`
+   filenames. Other prerequisites use their existing Make producers. Root
+   `BUILD.bazel` exports those same input filenames, just as it exports SWSS's
+   Make-built Scapy wheel.
 2. The declared BSD tar actions expose each package's original control/data
    archives and compose the ordered data archives as PAX. The separate read-only
    `tools/bazel/oci/package_receipts.py` validates package identities, source/control
@@ -66,11 +77,30 @@ utilities. Source-owned runtime/debug packaging remains in `sonic-build-infra`.
 5. The debug image extends that exact runtime with tools and matching symbols.
    Both archives retain the names and tags expected by Make and the VS installer.
 
-There is no `inputs.mk`, `prepare_packages.py`, or pre-Bazel aggregate TAR and
+There is no container-specific `inputs.mk`, `prepare_packages.py`, or pre-Bazel aggregate TAR and
 manifest generation step. A changed `.deb` invalidates its Bazel extraction
 action. Runtime and debug share extraction of identical declared package files.
 Distroless remains the APT repository adapter. Its `flatten` rule emits GNU TAR,
 so these local packages use BSD tar's PAX composition to retain extended metadata.
+
+## Cached P4 inputs
+
+The supported native AMD64 Trixie VS release profile restores all five packages
+from `tools/bazel/p4/packages.lock.json`. Their hashes and Debian controls are
+checked before unchanged bytes reach `target/debs/trixie`.
+
+| Cached package | Consumer |
+| --- | --- |
+| `p4lang-pi`, `p4lang-bmv2`, `p4lang-p4c`, DASH `libsai` | The four P4/DASH DEBs listed in this image's `_RUNTIME_DEBS`; debug inherits the runtime image. |
+| DASH `libsai-dev` | Headers and development files needed by remaining native build consumers; not an additional Syncd runtime import. |
+
+The cache path replaces the five native producer recipes and their Make cache
+hooks only in that profile. It does not replace the config-engine base, VS SAI,
+DASH-enabled Syncd, other package producers, or final installer assembly.
+Building `docker-syncd-vs-dbg.gz` in a release profile still uses the same cached
+runtime packages. Producer debug/profiling/ASAN modes are different: those
+unsupported import profiles retain native rules. Missing P4/DASH debug packages
+remain a coverage gap.
 
 ## Required differences from SWSS
 
@@ -78,7 +108,7 @@ Every difference needs a container-specific reason:
 
 | Difference | Reason |
 | --- | --- |
-| Existing Make `.deb` inputs | PI, BMv2, p4c, DASH SAI, VS SAI and DASH-enabled Syncd do not yet have equivalent source targets in this image graph. Importing these packages is distinct from migrating their producers. |
+| Existing native `.deb` inputs | PI, BMv2, p4c and DASH SAI come from the pinned cache in the supported release profile. VS SAI, DASH-enabled Syncd and other inputs retain native Make producers. None of these imported packages has been replaced by equivalent source targets in this image graph. |
 | Source dependency receipt | Imported packages depend on Common/sairedis package identities. The shared `tools/bazel/oci/package_contract.py` binds those dependency declarations to the selected owner modules and actual TARs before APT selection. It does not pretend the source TARs are installed DEBs. |
 | [`config/source_packages.json`](../config/source_packages.json) | Records the three reused owner targets, their dependency controls, required install paths and explicit data-file modes. It retains the actual base's `libsonicdbcli` identity rather than pinning one base build. |
 | [`config/runtime_package_state.json`](../config/runtime_package_state.json) | These imported packages need alternatives, Syncd service links and provider copyright aliases that extraction alone cannot install. The shared `package_state.py` checks the selected package controls/scripts and link targets before emitting the reviewed state. SWSS does not install this package set. |
@@ -136,7 +166,8 @@ make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/docker-syncd-vs-dbg.gz
 make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/sonic-vs.img.gz
 ```
 
-After Make has built the declared base, manifests and DEBs, the direct targets are:
+After Make has prepared the declared base and manifests and restored or built
+the required DEBs, the direct targets are:
 
 ```sh
 bazel build //platform/vs/docker-syncd-vs:docker-syncd-vs.gz \
@@ -200,10 +231,48 @@ The shared runner audits the expanded test suite and artifact group, retains
 each configured test's logs/XML, checks unchanged declared source hashes and
 records dependency resolution. The artifact directory must be empty.
 
-A complete image validation must additionally inspect both actual OCI images and
-archives, verify runtime ancestry and labels, compare installed bytes/modes/owners/
-links with the reviewed baseline, and exercise native loader/consumer behavior.
+For the actual combined image check, first prepare both images and their declared
+inputs through Make, then run:
+
+```sh
+bazel test --test_output=errors //tools/bazel/tests:syncd_p4_images_test
+```
+
+This manual native AMD64/Linux target is outside hosted `ci_tests`. It applies
+the shared image/native validators to actual runtime/debug layouts, ancestry,
+installed payload metadata, source/import receipts, available matching symbols
+and Make-export archive equality. It also checks the four installed P4/DASH
+packages against the hashes, sizes and control identities in
+`tools/bazel/p4/packages.lock.json`. `libsai-dev` is checked by the five-package
+cache test, not asserted to be installed in Syncd runtime. The result is
+`validation.json` in Bazel's undeclared test outputs.
+
+A complete image validation must additionally exercise native loader/consumer
+behavior and review the validators' remaining checks. The presence of this
+target is not a successful run or complete runtime/debug coverage.
 Retain the receipts and dependency resolution with that evidence. Existing
 PI/BMv2/p4c, DASH SAI and libnl binaries without matching upstream debug packages
 remain explicit coverage gaps; building a VS installer does not prove boot or
 packet forwarding.
+
+## Remaining migration work
+
+This integration changes how existing packages reach the image. Its source-built
+outputs are still limited to Common (including `swssloglevel`), `libsairedis`
+and `libsaimetadata`; the cached P4/DASH packages are native binaries.
+
+Work after the cache handoff, in priority order:
+
+| Priority | Owner and dependency | Required result |
+| --- | --- | --- |
+| 1 | `sonic-buildimage`: combined P4 import and Syncd image | Verify all five restored hashes, then check the four runtime packages in actual runtime/debug images, including loader/service behavior, image ancestry and symbol matching. Keep these results separate from hosted fixture/contract tests. |
+| 2 | `sonic-sairedis`, with a compatible DASH SAI SDK | Reuse the existing `vslib:libsaivs_pkg` source output. Add DASH-capable Syncd runtime/debug packaging: current `syncd:syncd_pkg` requires DASH disabled, while `syncd:syncd_dash` needs a DASH C++ library provider. Validate that combination before replacing the native packages. |
+| 3 | PI, BMv2, p4c and DASH SAI source owners; shared registry | Build and package each producer from its declared source, retaining the required ABI and features. Check existing central/shared modules first. The current five-package import is not that migration. |
+| 4 | Common, libnl/libyang, config-engine and other base-package owners | Reuse compatible source targets for remaining libraries, Common bindings/CLI and configuration tools; fill missing runtime/debug outputs. Migrate the remaining base services and Python packages separately, retaining required YANG and FIPS behavior. |
+| 5 | Native package owners and shared debug rules | Supply matching PI/BMv2/p4c, DASH SAI, libnl and FIPS OpenSSH symbols. Derive runtime and debug outputs from the same linked binaries; preserve inherited `libsonicdbcli` coverage. |
+| 6 | `sonic-buildimage` and VS test owners | Add actual native ARM64 image coverage and explicit validation for any new feature profiles. Independently verify installer boot, service startup and forwarding; an image build or ARM64 helper test does not establish these results. |
+
+Until those steps pass, the supported image remains native AMD64 Trixie VS with
+DASH/FIPS and without ASAN or Syncd RPC. Other configurations keep their existing
+Make path. Preserve the imported packages' recorded producer provenance when
+assessing source-build completion.
