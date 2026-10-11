@@ -16,8 +16,9 @@ import tarfile
 import tempfile
 import unittest
 
-OWNER = Path(__file__).resolve().parents[4] / "dockers/docker-syncd-vs"
-sys.path.insert(0, str(OWNER.parents[1]))
+ROOT = Path(__file__).resolve().parents[4]
+OWNER = ROOT / "platform/vs/docker-syncd-vs"
+sys.path.insert(0, str(ROOT))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, write_layout
 from tools.bazel.oci import package_contract as subject
 from tools.bazel.tests.oci_contract_fixture import identity, owner_policies, package_policy, source_contract

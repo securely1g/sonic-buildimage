@@ -18,7 +18,8 @@ ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE):$(CONFIGURED_PLATFORM):$(CONFIGURED_ARC
 ifeq ($(filter y,$(CROSS_BUILD_ENVIRON) $(MULTIARCH_QEMU_ENVIRON) $(ENABLE_ASAN) $(ENABLE_SYNCD_RPC)),)
 ifeq ($(findstring docker-sonic-vs,$(SONIC_BUILD_TARGET) $(EXTRA_DOCKER_TARGETS)),)
 # Bazel declares this reviewed Make input directory explicitly in the root package.
-ifeq ($(if $($(DOCKER_SYNCD_BASE)_DEBS_PATH),$($(DOCKER_SYNCD_BASE)_DEBS_PATH),$(DEBS_PATH)),target/debs/trixie)
+SYNCD_VS_BAZEL_DEBS_PATH = $(if $($(DOCKER_SYNCD_BASE)_DEBS_PATH),$($(DOCKER_SYNCD_BASE)_DEBS_PATH),$(DEBS_PATH))
+ifeq ($(SYNCD_VS_BAZEL_DEBS_PATH),target/debs/trixie)
 SONIC_BAZEL_DOCKER_IMAGES += $(DOCKER_SYNCD_BASE)
 SONIC_BAZEL_DBG_DOCKER_IMAGES += $(DOCKER_SYNCD_BASE_DBG)
 SONIC_BAZEL_OCI_BASES += docker-config-engine-trixie.oci
@@ -30,24 +31,22 @@ $(DOCKER_SYNCD_BASE_STEM)_MANIFEST_IMAGE = $(DOCKER_SYNCD_BASE)
 $(DOCKER_SYNCD_BASE_STEM)-$(DBG_IMAGE_MARK)_MANIFEST_IMAGE = $(DOCKER_SYNCD_BASE)
 $(DOCKER_SYNCD_BASE_STEM)-$(DBG_IMAGE_MARK)_MANIFEST_SUFFIX = $(DBG_IMAGE_MARK)
 
-# Pass existing Make DEBs directly to the shared Bazel importer. Preserve the
+# Pass existing Make DEBs directly to the declared Bazel inputs. Preserve the
 # Dockerfile's two initial libnl development packages and dependency-first order.
 # Expand before filtering so dependencies of source-built libraries are retained.
-SYNCD_VS_BAZEL_DEBS_PATH = $(if $($(DOCKER_SYNCD_BASE)_DEBS_PATH),$($(DOCKER_SYNCD_BASE)_DEBS_PATH),$(DEBS_PATH))
+# This filters Make's image prerequisites; BUILD.bazel separately declares the
+# packages actually imported into the OCI layers.
 SYNCD_VS_BAZEL_SOURCE_DEBS = $(LIBSWSSCOMMON) $(LIBSAIREDIS) $(LIBSAIMETADATA) $(LIBSWSSCOMMON_DBG) $(LIBSAIREDIS_DBG) $(LIBSAIMETADATA_DBG)
 # P4C brings an SSH client into runtime. Keep the Make FIPS package there so the
-# debug image inherits the same identity and never replaces it with Debian SSH.
-SYNCD_VS_BAZEL_FIPS_DEBS = $(if $(filter y,$(INCLUDE_FIPS)),$(FIPS_OPENSSH_CLIENT))
-SYNCD_VS_BAZEL_RUNTIME_DEBS = $(filter-out $(SYNCD_VS_BAZEL_SOURCE_DEBS),$(LIBNL3_DEV) $(LIBNL_ROUTE3_DEV) $(call expand,$($(DOCKER_SYNCD_BASE)_DEPENDS),RDEPENDS) $(SYNCD_VS_BAZEL_FIPS_DEBS))
-SYNCD_VS_BAZEL_DEBUG_DEBS = $(filter-out $(SYNCD_VS_BAZEL_SOURCE_DEBS) $(SYNCD_VS_BAZEL_FIPS_DEBS),$(call expand,$($(DOCKER_SYNCD_BASE)_DBG_DEPENDS),RDEPENDS))
+# debug image inherits the same identity. This profile already requires FIPS=y.
+SYNCD_VS_BAZEL_RUNTIME_DEBS = $(filter-out $(SYNCD_VS_BAZEL_SOURCE_DEBS),$(LIBNL3_DEV) $(LIBNL_ROUTE3_DEV) $(call expand,$($(DOCKER_SYNCD_BASE)_DEPENDS),RDEPENDS) $(FIPS_OPENSSH_CLIENT))
+SYNCD_VS_BAZEL_DEBUG_DEBS = $(filter-out $(SYNCD_VS_BAZEL_SOURCE_DEBS) $(FIPS_OPENSSH_CLIENT),$(call expand,$($(DOCKER_SYNCD_BASE)_DBG_DEPENDS),RDEPENDS))
 # This separate candidate supplies only symbols matched against the final image.
 # Its old libswsscommon symbols must not enter the ordinary debug package layer.
 SYNCD_VS_BAZEL_BASE_DEBUG_DEBS = $(LIBSWSSCOMMON_DBG)
 
-$(DOCKER_SYNCD_BASE)_BAZEL_TARGET = //dockers/docker-syncd-vs:docker-syncd-vs.gz
-$(DOCKER_SYNCD_BASE_DBG)_BAZEL_TARGET = //dockers/docker-syncd-vs:docker-syncd-vs-dbg.gz
-$(DOCKER_SYNCD_BASE)_BAZEL_OCI_TARGET = //dockers/docker-syncd-vs:docker-syncd-vs
-$(DOCKER_SYNCD_BASE_DBG)_BAZEL_OCI_TARGET = //dockers/docker-syncd-vs:docker-syncd-vs-dbg
+$(DOCKER_SYNCD_BASE)_BAZEL_TARGET = //platform/vs/docker-syncd-vs:docker-syncd-vs.gz
+$(DOCKER_SYNCD_BASE_DBG)_BAZEL_TARGET = //platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz
 $(DOCKER_SYNCD_BASE)_BAZEL_DEPENDS = $(TARGET_PATH)/docker-config-engine-trixie.oci \
     $(addprefix $(SYNCD_VS_BAZEL_DEBS_PATH)/,$(SYNCD_VS_BAZEL_RUNTIME_DEBS)) \
     $(TARGET_PATH)/bazel-manifests/docker-syncd-vs/manifest.json

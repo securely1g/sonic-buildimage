@@ -5,7 +5,7 @@ With `y`, containers that register Bazel targets for the selected build
 configuration use Bazel. Other containers keep their existing Make build.
 With `n`, all containers use Make.
 
-SWSS and [syncd-vs](../../docker-syncd-vs/bazel/README.md) register their supported
+SWSS and [syncd-vs](../../../platform/vs/docker-syncd-vs/bazel/README.md) register their supported
 configurations independently. For SWSS, on native AMD64 Debian Trixie with
 `PLATFORM=vs` and ASAN disabled, the switch makes Bazel compile
 SWSS and assemble its runtime and debug OCI images. Other SWSS configurations
