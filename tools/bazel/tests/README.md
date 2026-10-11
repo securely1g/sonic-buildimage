@@ -103,10 +103,10 @@ replacements; they do not build or boot a VS image.
 | --- | --- |
 | [artifact_validation_test.py](artifact_validation_test.py) | Check archive paths, ownership, modes, content hashes and links, then validate real ELF architecture and matching split-debug files. Reject unsafe extraction and undeclared symbol gaps. |
 | [build_helpers_test.py](build_helpers_test.py) | Protect an existing published archive when copying fails, preserve timestamps for identical bytes, and keep shared caching optional. |
-| [build_test.py](build_test.py) | Exercise the shared CI build/query/export helper with unrelated target declarations. Check artifact receipts, source lookup and failure diagnostics without replacing a valid publication on failure. |
+| [build_test.py](build_test.py) | Exercise the shared CI build/query/export helper with unrelated target declarations. Check declared filegroup exports, unique output names, empty groups, receipts and failure diagnostics without replacing a valid publication on failure. |
 | [cache_mount_test.py](cache_mount_test.py) | Check the shared host cache default, explicit overrides and empty-value opt-out, quoted paths, and writable Docker mounts. The mounted system rc supplies repository and disk caches without sharing Bazel output directories. Invalid cache paths must fail before Docker starts. |
 | [command_log_test.py](command_log_test.py) | Keep stderr diagnostics separate from stdout artifact paths while retaining command output and exit status as evidence. |
-| [container_ci_test.py](container_ci_test.py) | Exercise the shared container CI runner with a controlled Bazel process and both owner configurations. Block package-producing actions, retain configured test evidence and failure receipts, reject changed inputs, preserve SWSS archive validation, and prevent cross-container Python import collisions. |
+| [container_ci_test.py](container_ci_test.py) | Discover each container’s ci_tests suite and ci_artifacts filegroup through a controlled Bazel process. Block package-producing actions before execution, retain canonical test identities and validation outputs, and reject empty suites, missing evidence or changed declared sources. |
 | [docker_switch_test.py](docker_switch_test.py) | Switch unrelated runtime/debug container families independently between Make and Bazel, including real Make cache restores. A corrupt cache must preserve the prior archive and permit a retry. |
 | [docker_test.py](docker_test.py) | Exercise the shared Make-to-Bazel bridge: deferred prerequisites, target registration, runtime/debug exports, options and failure handling for unrelated containers. |
 | [make_forwarding_test.py](make_forwarding_test.py) | Run the real outer Makefile with a controlled inner build. Existing SWSS archives and VS images must reach the builder on repeated requests and Make/Bazel switches; preserve output timestamps, failure status, distribution phases, the default goal and unrelated targets. |
@@ -116,10 +116,9 @@ replacements; they do not build or boot a VS image.
 | [oci_base_make_test.py](oci_base_make_test.py) | Ensure Make prepares and revalidates each declared OCI base before its consumers, including parallel runtime/debug requests and changed archives with misleading timestamps. |
 | [p4rt_debug_test.py](p4rt_debug_test.py) | Require a populated AMD64 DWP that independently supplies matching function types and source lines in GDB. Reject empty, unrelated or malformed symbols and loose-DWO fallback. Fixtures compile ELF files without generating packages. |
 | [prepare_oci_base_test.py](prepare_oci_base_test.py) | Publish native OCI entries from Docker-save fixtures without changing source archives. Protect stable timestamps, prior readers, corruption recovery and concurrent publication. |
+| [public_artifacts_test.py](public_artifacts_test.py) | Publish only reviewed files and sanitized status. Require exact agreement between declared container tests and successful Bazel test identities, retain required package validation, and reject missing outputs or sensitive content. |
 | [python_packages_test.py](python_packages_test.py) | Retain direct or zipped Python test receipts and reject missing XML/inventories, wheel hashes that differ from the installation test, or results from another architecture. |
 | [resolution_test.py](resolution_test.py) | Require complete module-graph evidence and recognize only the explicitly supported extension diagnostics. Unknown, incomplete or mismatched failures remain fatal. |
-| [swss_ci_test.py](swss_ci_test.py) | Keep SWSS source selection and package validation in its owner configuration, and require the resolved source to provide its install declarations before the shared runner accepts its archives. |
-| [syncd_ci_test.py](syncd_ci_test.py) | Preserve Syncd's eight contract tests through the shared CLI, keep production image targets out of that profile, and include the common runner and owner inputs in recorded source hashes. |
 | [swss_make_integration_test.py](swss_make_integration_test.py) | Check the SWSS opt-in, supported configurations, installer archive contract and Make base/manifest prerequisites. A debug-only request must prepare both manifests before Bazel; other Make phases retain their expected selection. |
 | [swss_package_contract_test.py](swss_package_contract_test.py) | Match the SWSS payload to source-declared programs and Lua aliases. Detect missing or extra programs and aliases containing the wrong implementation. |
 | [verify_agent_cache_test.py](verify_agent_cache_test.py) | Validate cache evidence: shared disk hits must be distinguished from local action reuse, and changed source must invalidate the cached action. Also check safe probe cleanup. |
@@ -150,3 +149,13 @@ container boot, live service health or forwarding behavior.
 and Make export checks. [oci_base_fixture.py](oci_base_fixture.py) supplies native
 OCI/Docker-save inputs for base preparation and consumer checks. These are fixture
 generators, not additional test suites.
+
+
+Container CI membership is declared by `//dockers/docker-orchagent:ci_tests`
+and `//dockers/docker-syncd-vs:ci_tests`. Both reuse `oci_inventory_test` for
+whiteouts, overlay links and inherited ELF preservation, and instantiate
+`manifest_labels_action_test.py` against their actual Make manifests and Bazel
+labels. Container-specific package/installation requirements remain explicit.
+`swss_package_contract_test` now validates actual source archives inside Bazel,
+using declared source install metadata/data and binutils; its JSON report is a
+test output consumed by the shared CI collector.
