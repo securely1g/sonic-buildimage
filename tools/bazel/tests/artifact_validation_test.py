@@ -82,6 +82,27 @@ class PayloadTest(unittest.TestCase):
         item = validation.payload(self.archive, require_root=False)["usr/file"]
         self.assertEqual((item["uid"], item["gid"]), (1000, 2000))
 
+    def test_accepts_identical_directories_from_flattened_archives(self):
+        entries = []
+        for name in ("./usr/lib/debug/.build-id", "usr/lib/debug/.build-id"):
+            member = tarfile.TarInfo(name)
+            member.type, member.mode = tarfile.DIRTYPE, 0o755
+            entries.append((member, b""))
+        self.write_archive(entries)
+        self.assertEqual(validation.payload(self.archive), {
+            "usr/lib/debug/.build-id": {"kind": "directory", "mode": 0o755, "uid": 0, "gid": 0},
+        })
+
+    def test_rejects_conflicting_directory_metadata_or_kind(self):
+        for attribute, value in (("mode", 0o700), ("uid", 12), ("gid", 34), ("type", tarfile.REGTYPE)):
+            with self.subTest(attribute=attribute):
+                first, second = tarfile.TarInfo("usr/lib"), tarfile.TarInfo("./usr/lib")
+                first.type = second.type = tarfile.DIRTYPE
+                setattr(second, attribute, value)
+                self.write_archive([(first, b""), (second, b"")])
+                with self.assertRaisesRegex(ValueError, "duplicate package member"):
+                    validation.payload(self.archive, require_root=False)
+
     def test_rejects_special_files(self):
         """Reject device nodes instead of treating them as ordinary package files."""
         member = tarfile.TarInfo("dev/device")
