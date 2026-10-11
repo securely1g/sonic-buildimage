@@ -163,6 +163,9 @@ with `sonic-build-infra/apt/export_inputs.py`. Normal builds use the checked loc
 
 The common `.github/workflows/bazel-oci.yml` runs SWSS source checks, Syncd
 contract tests, native AMD64/ARM64 archive checks and the approved full VS build.
+The full VS job explicitly builds and uploads both containers' runtime and debug
+archives. Installer construction alone does not request every debug image;
+successful publication requires all four container archives and the VS image.
 The Syncd tests check FIPS inheritance, package dependencies, source ownership,
 installation state, metadata, imported/native symbols and complete OCI fixtures.
 Normalization and symbol-matching tests live with the image helpers in
