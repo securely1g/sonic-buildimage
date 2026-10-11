@@ -2,6 +2,73 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# Container owners pass policy and source-package declarations as inputs. These
+# helpers never discover a container directory or select expectations by name.
+py_library(
+    name = "package_contract_lib",
+    srcs = ["package_contract.py"],
+    deps = [
+        ":normalize_layer_lib",
+        ":oci_inventory",
+        ":oci_layout",
+        "//tools/bazel/ci:artifact_validation",
+    ],
+)
+
+py_binary(
+    name = "package_contract",
+    srcs = ["package_contract.py"],
+    main = "package_contract.py",
+    deps = [":package_contract_lib"],
+)
+
+py_library(
+    name = "container_validation",
+    srcs = [
+        "image_validation.py",
+        "native_packages.py",
+        "package_payloads.py",
+    ],
+    deps = [
+        ":package_contract_lib",
+        ":normalize_layer_lib",
+        ":oci_inventory",
+        ":oci_layout",
+        "//tools/bazel/ci:artifact_validation",
+    ],
+)
+
+py_library(
+    name = "package_receipts_lib",
+    srcs = ["package_receipts.py"],
+    deps = ["//tools/bazel/ci:artifact_validation"],
+)
+
+py_binary(
+    name = "package_receipts",
+    srcs = ["package_receipts.py"],
+    main = "package_receipts.py",
+    deps = [":package_receipts_lib"],
+)
+
+py_library(
+    name = "package_state_lib",
+    srcs = ["package_state.py"],
+    deps = [
+        ":package_contract_lib",
+        ":oci_inventory",
+        ":oci_layout",
+        "//tools/bazel/ci:artifact_validation",
+    ],
+)
+
+py_binary(
+    name = "package_state",
+    srcs = ["package_state.py"],
+    main = "package_state.py",
+    deps = [":package_state_lib"],
+)
+
 # SONiC image helpers share this repository's authoritative OCI layout reader.
 # ELF matching is separate from the lightweight inventory used by APT selection.
 py_library(
