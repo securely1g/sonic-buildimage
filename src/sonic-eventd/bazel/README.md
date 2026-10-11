@@ -41,9 +41,10 @@ Use `--architecture arm64` on a native ARM64 Debian Trixie host. The helper sele
 matching execution and target platforms. CI runs these two native configurations.
 
 During review, the default registry remains on maintained `main`. ARM64 Lua
-headers require [the shared importer fix](https://github.com/securely1g/sonic-build-infra/pull/34).
+headers require [the landed shared importer fix](https://github.com/securely1g/sonic-build-infra/pull/33).
 The workflow prepares upstream Distroless 0.9.4 plus the existing include-fragment
-and whitespace fixes and the exact owned multiarch patch. Reproduce those pinned
+and whitespace fixes and the exact owned multiarch patch from maintained source
+`0b76749e7297476c5bfde0f0b3572ddf96052d01`. Reproduce those pinned
 preparation steps in `.github/workflows/bazel-eventd.yml`, then add
 `--bazel-arg=--override_module=rules_distroless=/absolute/path/distroless-eventd`
 to the helper (or `--override_module=...` to direct Bazel commands). The eventual
