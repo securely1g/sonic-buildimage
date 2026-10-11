@@ -6,6 +6,10 @@
 owners supply expectations; the implementation has no table of container names,
 package names, module versions or public targets. SWSS and Syncd use this same
 module and select the same package/image regression tests in their `:ci_tests`.
+The owner declarations stay beside each container's original Dockerfile and
+startup inputs: `dockers/docker-orchagent/` for SWSS and
+[`platform/vs/docker-syncd-vs/`](../../../platform/vs/docker-syncd-vs/bazel/README.md)
+for Syncd VS. Shared implementations remain in this directory.
 
 Each owner BUILD generates `:package_policy` with `write_file` and `json.encode`.
 It reuses the existing APT policy's identity and features, then adds the checks
@@ -21,8 +25,10 @@ and test input, not another checked-in copy of those values.
 | `native` | Required native package/SONAME coverage, explicitly accepted existing symbol gaps, and source/imported symbol requirements. |
 | `image_validation` | Expected startup/configuration, archive tags, and explicitly permitted installed-state changes. |
 
-Syncd's existing `config/source_packages.json` remains the declaration of source
-package identities, dependency controls, module revisions and required paths.
+Syncd's
+[`config/source_packages.json`](../../../platform/vs/docker-syncd-vs/config/source_packages.json)
+remains the declaration of source package identities, dependency controls,
+module revisions and required paths.
 The shared source adapter compares it with the actual public target bindings,
 resolved module files and archive contents. Receipts record the measured hashes;
 they cannot supply their own expected policy. SWSS's source install lists remain
@@ -223,7 +229,7 @@ container's `_BAZEL_DEPENDS` as in the [bridge example](../README.md#example-ano
 SWSS and syncd VS use this interface to publish `target/docker-config-engine-trixie.oci`
 from `target/docker-config-engine-trixie.gz`, with image platform `linux/amd64`.
 Each owner keeps its own configuration guards. The syncd VS
-[owner guide](../../../dockers/docker-syncd-vs/bazel/README.md) records its
+[owner guide](../../../platform/vs/docker-syncd-vs/bazel/README.md) records its
 image validation requirements and remaining runtime checks.
 The pinned Docker 28.5.2 saves both
 Docker metadata and an OCI layout in the same archive. Make extracts the existing
@@ -304,8 +310,7 @@ compression and archive structure; it does not build a production ARM64 image.
 `oci_inventory.py` applies layer metadata and OCI whiteouts to a filesystem
 inventory and checks that added package layers preserve inherited directory
 symlinks and links to ELF files. Link resolution uses the image inventory, never
-the build host filesystem. Image owners supply any reviewed legacy-path normalization as a
-callback. Syncd keeps its merged-usr path normalization in its payload and image
-validators. APT package policy is declared in BUILD and applied by the shared
-selector; shared inventory helpers contain no image-specific package names or
-feature settings.
+the build host filesystem. Shared payload and image validators use
+`normalize_layer.py` for reviewed merged-usr paths. Owners declare their input
+layers and package expectations in BUILD; the shared selector and inventory
+helpers apply them without image-specific package names or feature settings.
