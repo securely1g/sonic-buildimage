@@ -69,9 +69,9 @@ class InstalledPackagesTest(unittest.TestCase):
         (self.blobs / digest).write_bytes(contents)
         return {"digest": "sha256:" + digest, "size": len(contents)}
 
-    def build(self):
+    def build(self, **kwargs):
         return build(self.base, self.receipt, [self.control], self.spec,
-                     {"libexample": self.payload}, "amd64")
+                     {"libexample": self.payload}, "amd64", **kwargs)
 
     def test_source_replaces_debian_version_with_bound_provenance(self):
         status, receipt = self.build()
@@ -101,6 +101,42 @@ class InstalledPackagesTest(unittest.TestCase):
         self.assertEqual(rows["usr/lib/example/plugin.so"]["sha256"],
                          hashlib.sha256(contents + b"plugin").hexdigest())
         self.assertEqual((rows["usr/lib/libexample.so"]["uid"], rows["usr/lib/libexample.so"]["gid"]), (0, 0))
+
+    def test_normalized_source_ownership_paths_and_modes_match_the_declared_layer(self):
+        contents = b"\x7fELF" + bytes(60)
+        normalization = self.root / "normalization.json"
+        normalization.write_text(json.dumps({
+            "base_manifest_digest": json.loads(self.receipt.read_text())["base_manifest_digest"],
+            "directory_aliases": {"var/run": {"linkname": "/run", "target": "run"}},
+            "root_owned": True, "modes": {"run/redis/plugin.so": "0644"},
+        }))
+        spec = json.loads(self.spec.read_text())
+        spec["packages"]["libexample"]["required_paths"] = ["var/run/redis/plugin.so"]
+        self.spec.write_text(json.dumps(spec))
+        # Both raw and already-canonical producer paths satisfy the same
+        # normalized contract; bytes remain tied to the original source TAR.
+        for path in ("var/run/redis/plugin.so", "run/redis/plugin.so"):
+            with self.subTest(path=path):
+                self.payload = self.root / "normalized-source.tar"
+                with tarfile.open(self.payload, "w") as archive:
+                    member = tarfile.TarInfo(path)
+                    member.size, member.uid, member.gid, member.mode = len(contents), 1000, 2000, 0o664
+                    archive.addfile(member, io.BytesIO(contents))
+                _, receipt = self.build(normalization_receipt=normalization)
+                package = receipt["source_packages"][0]
+                self.assertEqual(package["native_files"], [{
+                    "path": "run/redis/plugin.so", "uid": 0, "gid": 0, "mode": 0o644,
+                    "sha256": hashlib.sha256(contents).hexdigest(),
+                }])
+                self.assertEqual(package["payload_sha256"], hashlib.sha256(self.payload.read_bytes()).hexdigest())
+                self.assertEqual(receipt["source_normalization_sha256"],
+                                 hashlib.sha256(normalization.read_bytes()).hexdigest())
+
+    def test_source_normalization_receipt_is_bound_to_the_same_base(self):
+        normalization = self.root / "wrong-normalization.json"
+        normalization.write_text(json.dumps({"base_manifest_digest": "sha256:" + "0" * 64}))
+        with self.assertRaisesRegex(ValueError, "normalization receipt belongs to another"):
+            self.build(normalization_receipt=normalization)
 
     def test_missing_source_installed_file_is_rejected(self):
         self.payload = self.tar("empty-source.tar", {"unrelated": b"not the library"})

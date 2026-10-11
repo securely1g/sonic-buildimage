@@ -17,6 +17,7 @@ py_library(
     srcs = ["installed_packages.py"],
     imports = ["."],
     deps = [
+        "//tools/bazel/oci:normalize_layer_lib",
         "//tools/bazel/oci:oci_layout",
         "@sonic_build_infra//apt:lib",
     ],

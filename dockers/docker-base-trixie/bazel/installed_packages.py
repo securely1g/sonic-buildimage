@@ -14,6 +14,7 @@ import tarfile
 from debian.deb822 import Deb822
 from sonic_apt import dependencies, selection
 from tools.bazel.oci.oci_layout import validate_layout
+from tools.bazel.oci.normalize_layer import normalized_member, normalized_path
 
 
 def require(value, message):
@@ -38,7 +39,7 @@ def inventory_digest(records):
     return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def build(base, apt_receipt, controls, source_spec, sources, architecture):
+def build(base, apt_receipt, controls, source_spec, sources, architecture, normalization_receipt=None):
     layout = validate_layout(base, "linux/" + architecture)
     baseline = selection.base_packages(layout.layers, architecture=architecture)
     original = None
@@ -85,6 +86,12 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture):
     spec = json.loads(source_spec.read_text())
     require(spec.get("schema") == 1 and set(spec["packages"]) == set(sources),
             "source package contract and declared payloads differ")
+    normalization = None
+    if normalization_receipt is not None:
+        declared = json.loads(normalization_receipt.read_text())
+        require(declared.get("base_manifest_digest") == layout.descriptor["digest"],
+                "source normalization receipt belongs to another OCI base")
+        normalization = {key: declared[key] for key in ("directory_aliases", "root_owned", "modes")}
     provenance = []
     for name, item in sorted(spec["packages"].items()):
         fields = dict(item["control_fields"])
@@ -96,7 +103,10 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture):
         with tarfile.open(payload) as archive:
             paths = set()
             for member in archive:
-                path = member.name.removeprefix("./")
+                installed = normalized_member(member, **normalization) if normalization is not None else member
+                if installed is None:
+                    continue
+                path = installed.name.removeprefix("./")
                 paths.add(path)
                 if member.isfile():
                     stream = archive.extractfile(member)
@@ -106,9 +116,12 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture):
                         while contents := stream.read(1024 * 1024):
                             digest.update(contents)
                         native_files.append({"path": path, "sha256": digest.hexdigest(),
-                                             "mode": member.mode, "uid": member.uid, "gid": member.gid})
+                                             "mode": installed.mode, "uid": installed.uid, "gid": installed.gid})
         multiarch = {"amd64": "x86_64-linux-gnu", "arm64": "aarch64-linux-gnu"}[architecture]
         expected_paths = {path.format(multiarch=multiarch) for path in item["required_paths"]}
+        if normalization is not None:
+            expected_paths = {normalized_path(path, directory_aliases=normalization["directory_aliases"])
+                              for path in expected_paths}
         require(expected_paths and expected_paths <= paths,
                 "source package lacks reviewed installed paths: " + name)
         digest = sha(payload)
@@ -141,6 +154,9 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture):
         "apt_selection_sha256": sha(apt_receipt), "source_contract_sha256": sha(source_spec),
         "base_manifest_digest": layout.descriptor["digest"], "dependency_check": check,
     }
+    if normalization_receipt is not None:
+        receipt["source_normalization_sha256"] = sha(normalization_receipt)
+        receipt["source_normalization"] = normalization
     return status, receipt
 
 
@@ -149,6 +165,7 @@ def main():
     parser.add_argument("--base", required=True, type=Path)
     parser.add_argument("--apt-receipt", required=True, type=Path)
     parser.add_argument("--source-spec", required=True, type=Path)
+    parser.add_argument("--normalization-receipt", type=Path)
     parser.add_argument("--architecture", required=True, choices=("amd64", "arm64"))
     parser.add_argument("--control", action="append", type=Path, default=[])
     parser.add_argument("--source", action="append", default=[])
@@ -158,7 +175,8 @@ def main():
     sources = dict(value.split("=", 1) for value in args.source)
     require(len(sources) == len(args.source), "duplicate source package")
     status, receipt = build(args.base, args.apt_receipt, args.control, args.source_spec,
-                            {name: Path(path) for name, path in sources.items()}, args.architecture)
+                            {name: Path(path) for name, path in sources.items()}, args.architecture,
+                            normalization_receipt=args.normalization_receipt)
     args.status.write_text(status)
     args.receipt.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
 

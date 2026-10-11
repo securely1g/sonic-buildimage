@@ -7,6 +7,8 @@ def _installed_packages_impl(ctx):
     args.add("--base", ctx.file.base.path)
     args.add("--apt-receipt", ctx.file.apt_receipt)
     args.add("--source-spec", ctx.file.source_spec)
+    if ctx.file.normalization_receipt:
+        args.add("--normalization-receipt", ctx.file.normalization_receipt)
     args.add("--architecture", ctx.attr.architecture)
     args.add("--status", status)
     args.add("--receipt", receipt)
@@ -21,7 +23,7 @@ def _installed_packages_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._tool,
         arguments = [args],
-        inputs = [ctx.file.base, ctx.file.apt_receipt, ctx.file.source_spec] + ctx.files.controls + payloads,
+        inputs = [ctx.file.base, ctx.file.apt_receipt, ctx.file.source_spec] + ctx.files.controls + payloads + ctx.files.normalization_receipt,
         outputs = [status, receipt],
         mnemonic = "InstalledPackageMetadata",
         progress_message = "Validate installed source and Debian package identities for %{label}",
@@ -39,6 +41,10 @@ installed_packages = rule(
         "base": attr.label(allow_single_file = True, mandatory = True),
         "controls": attr.label_list(allow_files = True),
         "source_spec": attr.label(allow_single_file = [".json"], mandatory = True),
+        "normalization_receipt": attr.label(
+            allow_single_file = [".json"],
+            doc = "Receipt from this source layer's normalize_layer action; bound to the same base.",
+        ),
         "sources": attr.string_keyed_label_dict(allow_files = True),
         "_tool": attr.label(default = Label(":installed_packages"), executable = True, cfg = "exec"),
     },
