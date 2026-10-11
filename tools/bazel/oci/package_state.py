@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the checked alternatives and provider-file layer for syncd-vs."""
+"""Build the checked alternatives and provider-file layer for an OCI image."""
 
 import argparse
 import hashlib
@@ -7,15 +7,13 @@ import io
 import json
 from pathlib import Path, PurePosixPath
 import posixpath
-import sys
 import tarfile
 
-sys.path.insert(0, str(Path(__file__).absolute().parents[3]))
-sys.path.insert(0, str(Path(__file__).absolute().parents[1] / "bazel"))
 from tools.bazel.ci.artifact_validation import path_name, require, sha
 from tools.bazel.oci.oci_inventory import apply_layer
 from tools.bazel.oci.oci_layout import validate_layout
-from package_contract import FEATURES, reject_source_packages
+from tools.bazel.oci.package_contract import (identity as policy_identity, read_contract, read_policy,
+                                             reject_source_packages, validate_policy)
 
 SCRIPTS = {"preinst", "postinst", "prerm", "postrm", "triggers"}
 
@@ -87,9 +85,16 @@ def file_bytes(layer, names):
     return result
 
 
-def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_layer, make_manifest_path, output):
+def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_layer, make_manifest_path, output,
+          *, policy, source_contract=None):
+    validate_policy(policy)
+    require(source_contract is not None or not policy.get("native", {}).get("require_source", False),
+            "package policy requires its source contract")
+    if source_contract is not None:
+        require(policy_identity(source_contract) == policy_identity(policy),
+                "source contract and package policy identify different images")
     contract = json.loads(contract_path.read_bytes())
-    require(contract.get("schema") == 1, "unsupported syncd package state contract")
+    require(contract.get("schema") == 1, "unsupported package state contract")
     # Historical Dockerfile/whole-lock drift belongs in the contract CI test.
     # Assembly checks the actual selected owners, scripts and files below.
     lock = json.loads(lock_path.read_bytes())
@@ -106,7 +111,7 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
     for name, item in selected.items():
         package = lock["packages"].get(item["key"])
         require(package is not None and package["name"] == name and
-                package["architecture"] in ("amd64", "all"),
+                package["architecture"] in (policy["architecture"], "all"),
                 "selected package is absent from the checked lock: " + name)
         by_name[name] = package
     for group, field in (("package_controls", "control_sha256"), ("package_payloads", "payload_sha256")):
@@ -120,9 +125,10 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
                     current.get("version") == identity["version"] and current.get(field) == identity[field],
                     "package state owner changed: " + name)
     make = json.loads(make_manifest_path.read_bytes())
-    require(make.get("schema") == 1 and make.get("image") == "docker-syncd-vs" and make.get("variant") == "runtime" and
-            make.get("features") == FEATURES, "invalid Make package state input")
-    reject_source_packages(make.get("packages", []))
+    require(make.get("schema") == 1 and all(make.get(key) == value for key, value in policy_identity(policy).items()) and
+            make.get("variant") == "runtime" and make.get("features") == policy["features"], "invalid Make package state input")
+    if source_contract is not None:
+        reject_source_packages(make.get("packages", []), source_contract)
     make_packages = {item["package"]: item for item in make.get("packages", [])}
     expected_make = contract.get("make_package_state_inputs", {})
     require(expected_make and len(make_packages) == len(make.get("packages", [])) and set(make_packages) == set(expected_make),
@@ -144,7 +150,7 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
                                         if key != "Installed-Size"}
         require(actual == expected, "Make package relationships or scripts changed; review package state: " + name +
                 " (" + ", ".join(differing_fields(expected, actual)) + ")")
-    descriptor, _, _, base_layers = validate_layout(base, "linux/amd64")
+    descriptor, _, _, base_layers = validate_layout(base, "linux/" + policy["architecture"])
     require(selection.get("base_manifest_digest") == descriptor["digest"], "package state uses a different OCI base")
     base_files = {}
     for layer in base_layers:
@@ -233,6 +239,8 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--policy", required=True, type=Path)
+    parser.add_argument("--source-contract", type=Path)
     parser.add_argument("--contract", required=True, type=Path)
     parser.add_argument("--apt-lock", required=True, type=Path)
     parser.add_argument("--selection", required=True, type=Path)
@@ -243,9 +251,10 @@ def main():
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     try:
-        print(json.dumps(build(args.contract, args.apt_lock, args.selection, args.base, args.apt_layer, args.runtime_layer, args.make_manifest, args.out), sort_keys=True))
+        print(json.dumps(build(args.contract, args.apt_lock, args.selection, args.base, args.apt_layer, args.runtime_layer, args.make_manifest, args.out,
+                               policy=read_policy(args.policy), source_contract=read_contract(args.source_contract) if args.source_contract else None), sort_keys=True))
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, tarfile.TarError) as error:
-        parser.exit(1, "syncd package state validation failed: " + str(error) + "\n")
+        parser.exit(1, "OCI package state validation failed: " + str(error) + "\n")
 
 
 if __name__ == "__main__":

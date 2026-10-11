@@ -1,7 +1,6 @@
 """Syncd startup files and Make-owned image labels."""
 
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
-load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@tar.bzl", "tar")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 
@@ -9,23 +8,6 @@ package(default_visibility = [
     "//dockers/docker-syncd-vs:__subpackages__",
     "//tools/bazel/tests:__pkg__",
 ])
-
-# Read-only SONiC package policy. The owning image BUILD declares upstream
-# extraction and archive assembly directly.
-py_library(
-    name = "package_receipts_lib",
-    srcs = ["package_receipts.py"],
-    imports = ["."],
-    deps = ["//tools/bazel/ci:artifact_validation"],
-)
-
-py_binary(
-    name = "package_receipts",
-    srcs = ["package_receipts.py"],
-    main = "package_receipts.py",
-    python_version = "3.11",
-    deps = [":package_receipts_lib"],
-)
 
 manifest_labels(
     name = "labels",
@@ -40,9 +22,9 @@ manifest_labels(
 tar(
     name = "files",
     srcs = [
-        "//dockers/docker-syncd-vs:legacy/critical_processes",
-        "//dockers/docker-syncd-vs:legacy/start.sh",
-        "//dockers/docker-syncd-vs:legacy/supervisord.conf",
+        "//platform/vs/docker-syncd-vs:critical_processes",
+        "//platform/vs/docker-syncd-vs:start.sh",
+        "//platform/vs/docker-syncd-vs:supervisord.conf",
     ],
     mtree = [
         "./ uid=0 gid=0 mode=0755 time=0 type=dir",
@@ -51,9 +33,9 @@ tar(
         "./etc/supervisor/conf.d uid=0 gid=0 mode=0755 time=0 type=dir",
         "./usr uid=0 gid=0 mode=0755 time=0 type=dir",
         "./usr/bin uid=0 gid=0 mode=0755 time=0 type=dir",
-        "./usr/bin/start.sh uid=0 gid=0 mode=0755 time=0 type=file content=$(location //dockers/docker-syncd-vs:legacy/start.sh)",
-        "./etc/supervisor/conf.d/supervisord.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location //dockers/docker-syncd-vs:legacy/supervisord.conf)",
-        "./etc/supervisor/critical_processes uid=0 gid=0 mode=0644 time=0 type=file content=$(location //dockers/docker-syncd-vs:legacy/critical_processes)",
+        "./usr/bin/start.sh uid=0 gid=0 mode=0755 time=0 type=file content=$(location //platform/vs/docker-syncd-vs:start.sh)",
+        "./etc/supervisor/conf.d/supervisord.conf uid=0 gid=0 mode=0644 time=0 type=file content=$(location //platform/vs/docker-syncd-vs:supervisord.conf)",
+        "./etc/supervisor/critical_processes uid=0 gid=0 mode=0644 time=0 type=file content=$(location //platform/vs/docker-syncd-vs:critical_processes)",
     ],
 )
 
@@ -65,30 +47,12 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-py_library(
-    name = "package_state_lib",
-    srcs = ["package_state_layer.py"],
-    imports = ["."],
-    visibility = ["//visibility:public"],
-    deps = [
-        "//dockers/docker-syncd-vs:package_contract_lib",
-        "//tools/bazel/ci:artifact_validation",
-        "//tools/bazel/oci:oci_inventory",
-        "//tools/bazel/oci:oci_layout",
-    ],
-)
-
-py_binary(
-    name = "package_state_layer",
-    srcs = ["package_state_layer.py"],
-    main = "package_state_layer.py",
-    deps = [":package_state_lib"],
-)
-
 run_binary(
     name = "runtime_package_state",
     srcs = [
         "runtime_package_state.json",
+        "source_packages.json",
+        "//dockers/docker-syncd-vs:package_policy",
         "//dockers/docker-syncd-vs:apt_deps",
         "//dockers/docker-syncd-vs:config_engine_base_layout",
         "//dockers/docker-syncd-vs:runtime_apt_selection",
@@ -98,6 +62,10 @@ run_binary(
     ],
     outs = ["runtime_package_state.tar"],
     args = [
+        "--policy",
+        "$(execpath //dockers/docker-syncd-vs:package_policy)",
+        "--source-contract",
+        "$(execpath source_packages.json)",
         "--contract",
         "$(execpath runtime_package_state.json)",
         "--apt-lock",
@@ -116,5 +84,5 @@ run_binary(
         "$@",
     ],
     mnemonic = "BuildSyncdPackageState",
-    tool = ":package_state_layer",
+    tool = "//tools/bazel/oci:package_state",
 )

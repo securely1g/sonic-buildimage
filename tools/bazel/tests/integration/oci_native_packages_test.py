@@ -20,11 +20,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-OWNER = Path(__file__).resolve().parents[4] / "dockers/docker-syncd-vs"
-sys.path.insert(0, str(OWNER / "bazel"))
-from tools.bazel.ci import syncd_native_packages as subject
-from tools.bazel.ci import syncd_payloads as validate_payloads
-import package_contract as source_packages
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT))
+from tools.bazel.oci import native_packages as subject
+from tools.bazel.oci import package_payloads as validate_payloads
+from tools.bazel.oci import package_contract as source_packages
+from tools.bazel.tests.oci_contract_fixture import identity, owner_policies, package_policy, source_contract
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, write_layout
 
 
@@ -32,9 +33,11 @@ from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries, w
                      "native AMD64 C compiler and binutils are required")
 class ValidateNativePackagesTest(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="syncd-native-test-")
+        temporary = tempfile.TemporaryDirectory(prefix="oci-native-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.policy = package_policy()
+        self.source_contract = source_contract()
         self.original, self.runtime, self.symbols, self.identifier = self.compile(42, "first")
         _, self.ssh_runtime, _, _ = self.compile(0, "ssh", executable=True)
         self.library_path = "usr/lib/x86_64-linux-gnu/libsample.so.0.0.0"
@@ -94,8 +97,8 @@ class ValidateNativePackagesTest(unittest.TestCase):
             combined.extend(members)
         payload.write_bytes(tar_bytes(combined))
         digest = hashlib.sha256(payload.read_bytes()).hexdigest()
-        value = {"schema": 1, "image": "docker-syncd-vs", "variant": variant, "architecture": "amd64",
-                 "distribution": "trixie", "features": dict(validate_payloads.FEATURES),
+        value = {"schema": 1, "image": self.policy["image"], "variant": variant, "architecture": "amd64",
+                 "distribution": "trixie", "features": dict(self.policy["features"]),
                  "required_packages": [record["package"] for record in records], "debug_apt_packages": [], "packages": records,
                  "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": len(combined)}}
         if runtime:
@@ -105,7 +108,7 @@ class ValidateNativePackagesTest(unittest.TestCase):
         manifest.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
         return manifest
 
-    def handoffs(self, *, library=None, symbols=None, symlink=True, package="libyang3"):
+    def handoffs(self, *, library=None, symbols=None, symlink=True, package="libsample"):
         runtime_entries = [(self.library_path, (library or self.runtime).read_bytes(), None)]
         if symlink:
             runtime_entries.append((self.soname_path, None, "libsample.so.0.0.0"))
@@ -115,14 +118,14 @@ class ValidateNativePackagesTest(unittest.TestCase):
         debug = self.handoff("debug", package + "-dbgsym", debug_entries, runtime)
         return runtime, debug
 
-    def validate(self, *, required={"libyang3"}, sonames={"libyang3": "libsample.so.0"}, gaps=set(), **kwargs):
+    def validate(self, *, required={"libsample"}, sonames={"libsample": "libsample.so.0"}, gaps=set(), **kwargs):
         return subject.validate_native(self.runtime_manifest, self.debug_manifest,
-                                       required_packages=required, required_sonames=sonames,
+                                       policy=self.policy, required_packages=required, required_sonames=sonames,
                                        gap_packages=gaps | {"openssh-client"}, fixture=True, **kwargs)
 
     def source_archives(self, *, symbols_mutation=None, overlap=False):
-        """Build the three owner tars and a real receipt around compiled sample ELFs."""
-        records = copy.deepcopy(json.loads((OWNER / "config/source_packages.json").read_bytes())["packages"])
+        """Build the declared owner tar and receipt around a real compiled sample ELF."""
+        records = copy.deepcopy(self.source_contract["packages"])
         runtime_entries, debug_entries = [], []
         source_dir = self.root / "source"
         source_dir.mkdir()
@@ -163,11 +166,11 @@ class ValidateNativePackagesTest(unittest.TestCase):
         runtime_tar, debug_tar = source_dir / "runtime.tar", source_dir / "debug.tar"
         write_tar(runtime_tar, runtime_entries)
         write_tar(debug_tar, debug_entries)
-        receipt = {**source_packages.IDENTITY, "schema": source_packages.RECEIPT_SCHEMA,
+        receipt = {**identity(self.policy), "schema": source_packages.RECEIPT_SCHEMA,
                    "kind": "bazel_source", "packages": records,
-                   "contract_sha256": subject.sha(OWNER / "config/source_packages.json"),
+                   "contract_sha256": hashlib.sha256(json.dumps(self.source_contract).encode()).hexdigest(),
                    "base_manifest_digest": "sha256:" + "b" * 64,
-                   "module_file_sha256": {name: "a" * 64 for name in ("sonic-swss-common", "sonic-sairedis")}}
+                   "module_file_sha256": {name: "a" * 64 for name in {record["source"]["module"] for record in records}}}
         receipt["payload"] = {"sha256": subject.sha(runtime_tar), "size": runtime_tar.stat().st_size,
                               "members": len(source_packages.inventory(runtime_tar))}
         receipt_path = source_dir / "receipt.json"
@@ -175,16 +178,16 @@ class ValidateNativePackagesTest(unittest.TestCase):
         return {"source_runtime_tar": runtime_tar, "source_debug_tar": debug_tar, "source_receipt": receipt_path}
 
     def source_validate(self, inputs):
-        required = {"libyang3", *source_packages.PACKAGES}
-        sonames = {name: name + ".so.0" for name in source_packages.PACKAGES}
-        return self.validate(required=required, sonames={"libyang3": "libsample.so.0", **sonames}, **inputs)
+        required = {"libsample", *source_packages.package_names(self.source_contract)}
+        sonames = {name: name + ".so.0" for name in source_packages.package_names(self.source_contract)}
+        return self.validate(required=required, sonames={"libsample": "libsample.so.0", **sonames}, **inputs)
 
     def test_source_libraries_keep_owner_provenance_and_matching_symbols(self):
         """The reused owner outputs join Make ELFs without losing source or symbol identity."""
         inputs = self.source_archives()
         result = self.source_validate(inputs)
         source_pairs = [item for item in result["paired_symbols"] if item.get("origin") == "bazel_source"]
-        self.assertEqual({item["package"] for item in source_pairs}, set(source_packages.PACKAGES))
+        self.assertEqual({item["package"] for item in source_pairs}, set(source_packages.package_names(self.source_contract)))
         self.assertEqual(result["source_receipt_sha256"], subject.sha(inputs["source_receipt"]))
         for pair in source_pairs:
             self.assertEqual(pair["source"]["commit"], next(item["source"]["commit"] for item in
@@ -211,19 +214,37 @@ class ValidateNativePackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source receipt archive hash differs"):
             self.source_validate(inputs)
 
+    def test_production_make_only_validation_needs_no_source_contract(self):
+        """Validate real imported ELF/debug pairs without inventing source metadata for a Make-only image."""
+        self.policy["native"].update(require_source=False, require_imported_symbols=False)
+        result = subject.validate_native(self.runtime_manifest, self.debug_manifest,
+            policy=self.policy, required_packages={"libsample"},
+            required_sonames={"libsample": "libsample.so.0"}, gap_packages={"openssh-client"})
+        self.assertEqual(result["elf_count"], 2)
+        self.assertEqual(result["paired_symbols"][0]["build_id"], self.identifier)
+        self.assertIsNone(result["source_packages"])
+        self.assertIsNone(result["source_receipt_sha256"])
+
+    def test_source_receipt_in_production_still_requires_its_contract(self):
+        """An optional source feature cannot bypass contract binding once source archives are supplied."""
+        self.policy["native"].update(require_source=False, require_imported_symbols=False)
+        inputs = self.source_archives()
+        with self.assertRaisesRegex(ValueError, "requires.*source contract"):
+            subject.validate_native(self.runtime_manifest, self.debug_manifest, policy=self.policy, **inputs)
+
     def test_production_native_validation_requires_all_source_inputs(self):
         """Complete validation cannot accidentally report only the remaining Make packages."""
-        with self.assertRaisesRegex(ValueError, "native validation requires source"):
-            subject.validate_native(self.runtime_manifest, self.debug_manifest)
+        with self.assertRaisesRegex(ValueError, "native validation requires.*source"):
+            subject.validate_native(self.runtime_manifest, self.debug_manifest, policy=self.policy)
         with self.assertRaisesRegex(ValueError, "must be supplied together"):
             self.validate(source_runtime_tar=self.runtime)
 
     def inherited_base_fixture(self, *, wrong_alternate_id=False):
         """Construct an OCI base ELF and its real debuglink/DWZ companion relationship."""
         _, _, dwz, dwz_id = self.compile(91, "dwz")
-        dwz_name = "usr/lib/debug/.dwz/x86_64-linux-gnu/libswsscommon.debug"
+        dwz_name = "usr/lib/debug/.dwz/x86_64-linux-gnu/libexample.debug"
         alternate = self.root / "alternate-link"
-        alternate.write_bytes(b"../../.dwz/x86_64-linux-gnu/libswsscommon.debug\0" +
+        alternate.write_bytes(b"../../.dwz/x86_64-linux-gnu/libexample.debug\0" +
                               bytes.fromhex("0" * 40 if wrong_alternate_id else dwz_id))
         linked = self.symbols.with_suffix(".linked")
         subprocess.run(["objcopy", "--add-section", ".gnu_debugaltlink=" + str(alternate), str(self.symbols), str(linked)],
@@ -256,7 +277,7 @@ class ValidateNativePackagesTest(unittest.TestCase):
         """The dynamic receipt retains a complete inherited pair with no pinned package snapshot."""
         base, selected, receipt = self.inherited_base_fixture()
         pairs = subject.validate_inherited_base(base, selected, receipt, self.root,
-                                                readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
+                                                policy=self.policy, readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0]["build_id"], self.identifier)
         self.assertEqual(pairs[0]["origin"], "inherited_base")
@@ -267,17 +288,17 @@ class ValidateNativePackagesTest(unittest.TestCase):
         base, selected, receipt = self.inherited_base_fixture(wrong_alternate_id=True)
         with self.assertRaisesRegex(ValueError, "alternate link differs"):
             subject.validate_inherited_base(base, selected, receipt, self.root,
-                                             readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
+                                             policy=self.policy, readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
 
     def test_inherited_symbol_receipt_is_bound_to_runtime_and_selected_bytes(self):
         """Reject an old-runtime receipt or a modified archive before trusting its selected paths."""
         base, selected, receipt_path = self.inherited_base_fixture()
         receipt = json.loads(receipt_path.read_bytes())
         with self.assertRaisesRegex(ValueError, "different runtime"):
-            subject.imported_symbol_receipt(selected, receipt_path, "sha256:" + "0" * 64)
+            subject.imported_symbol_receipt(selected, receipt_path, "sha256:" + "0" * 64, policy=self.policy)
         selected.write_bytes(selected.read_bytes() + b"changed")
         with self.assertRaisesRegex(ValueError, "archive differs"):
-            subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"])
+            subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"], policy=self.policy)
 
     def test_inherited_symbols_cannot_hide_a_required_dwz_supplement(self):
         """A self-consistent receipt and TAR still fail when ELF references missing DWZ data."""
@@ -290,7 +311,7 @@ class ValidateNativePackagesTest(unittest.TestCase):
         receipt_path.write_text(json.dumps(receipt))
         with self.assertRaisesRegex(ValueError, "unrecorded DWZ"):
             subject.validate_inherited_base(base, selected, receipt_path, self.root,
-                                             readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
+                                             policy=self.policy, readelf="readelf", objcopy="objcopy", required_paths=[self.library_path])
 
     def test_imported_symbols_keep_original_deb_provenance(self):
         """Bind selected symbols to the importer's exact candidate TAR and original DEB record."""
@@ -300,24 +321,25 @@ class ValidateNativePackagesTest(unittest.TestCase):
         receipt_path.write_text(json.dumps(receipt))
         package_manifest = self.root / "original-import.json"
         imported = {"schema": 1, "architecture": "amd64", "payload": {"sha256": "a" * 64, "size": 12345},
-                    "packages": [{"package": "libswsscommon-dbgsym", "architecture": "amd64",
-                                  "control_fields": {"Package": "libswsscommon-dbgsym"}, "source_sha256": "b" * 64}]}
+                    "packages": [{"package": "libexample-dbgsym", "architecture": "amd64",
+                                  "control_fields": {"Package": "libexample-dbgsym"}, "source_sha256": "b" * 64}]}
         package_manifest.write_text(json.dumps(imported))
-        verified, _ = subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"], package_manifest)
+        verified, _ = subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"], package_manifest, policy=self.policy)
         self.assertEqual(verified["imported_packages"][0]["source_sha256"], "b" * 64)
         self.assertEqual(verified["package_manifest_sha256"], subject.sha(package_manifest))
         imported["payload"]["sha256"] = "c" * 64
         package_manifest.write_text(json.dumps(imported))
         with self.assertRaisesRegex(ValueError, "original Debian import"):
-            subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"], package_manifest)
+            subject.imported_symbol_receipt(selected, receipt_path, receipt["runtime_manifest"], package_manifest, policy=self.policy)
 
     def test_real_runtime_and_symbols_match(self):
+        """Verify a real native ELF against its matching build ID, SONAME and detached debug file."""
         result = self.validate()
         self.assertEqual(result["elf_count"], 2)
         self.assertEqual(len(result["paired_symbols"]), 1)
         self.assertEqual(result["paired_symbols"][0]["build_id"], self.identifier)
         self.assertEqual(result["paired_symbols"][0]["soname"], "libsample.so.0")
-        self.assertIn("openssh-client", subject.GAP_PACKAGES)
+        self.assertIn("openssh-client", self.policy["native"]["gap_packages"])
         self.assertEqual([item["package"] for item in result["preserved_make_debug_gaps"]], ["openssh-client"])
         ssh = result["preserved_make_debug_gaps"][0]
         self.assertFalse(ssh["has_dwarf"])
@@ -325,17 +347,20 @@ class ValidateNativePackagesTest(unittest.TestCase):
         self.assertIn("no matching symbol package", ssh["reason"])
 
     def test_missing_soname_link_is_rejected(self):
+        """Require the runtime library link promised by the declared package ABI."""
         self.runtime_manifest, self.debug_manifest = self.handoffs(symlink=False)
         with self.assertRaisesRegex(ValueError, "missing library or debug link target"):
             self.validate()
 
     def test_different_debug_build_id_is_rejected(self):
+        """Reject symbols produced for a different binary even if the archive has the expected path."""
         _, _, other, _ = self.compile(43, "second")
         self.runtime_manifest, self.debug_manifest = self.handoffs(symbols=other)
         with self.assertRaisesRegex(ValueError, "does not match runtime build ID"):
             self.validate()
 
     def test_debuglink_checksum_is_required(self):
+        """A matching build-ID path cannot excuse a mismatched debuglink CRC."""
         altered = self.root / "altered.debug"
         altered.write_bytes(self.symbols.read_bytes() + b"changed debug bytes")
         self.runtime_manifest, self.debug_manifest = self.handoffs(symbols=altered)
@@ -343,11 +368,13 @@ class ValidateNativePackagesTest(unittest.TestCase):
             self.validate()
 
     def test_required_symbols_cannot_be_omitted(self):
+        """Require matching detached symbols for every package selected for full debug coverage."""
         self.runtime_manifest, self.debug_manifest = self.handoffs(symbols=False)
         with self.assertRaisesRegex(ValueError, "missing matching debug symbols"):
             self.validate()
 
     def test_embedded_and_existing_make_gap_coverage_are_distinguished(self):
+        """Report embedded DWARF separately from explicitly retained gaps in imported packages."""
         self.runtime_manifest, self.debug_manifest = self.handoffs(library=self.original, symbols=False, package="p4lang-pi")
         result = self.validate(required=set(), sonames={}, gaps={"p4lang-pi"})
         self.assertEqual(len(result["embedded_symbols"]), 1)
@@ -359,4 +386,5 @@ class ValidateNativePackagesTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    OWNER_POLICIES, remaining = owner_policies()
+    unittest.main(argv=[__file__, *remaining])
