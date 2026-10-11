@@ -243,18 +243,18 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
 
-    def test_archive_requires_all_five_native_workflow_tests(self):
+    def test_archive_requires_all_nine_native_workflow_tests(self):
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture):
                 seed(self.root, "archive", architecture)
                 event_path = "artifacts/archive/test-events.jsonl"
-                write(self.root, event_path, events(5))
+                write(self.root, event_path, events(9))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertTrue(ready)
-                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 5)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 9)
                 self.assertTrue(paths)
 
-                write(self.root, event_path, events(4))
+                write(self.root, event_path, events(8))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])

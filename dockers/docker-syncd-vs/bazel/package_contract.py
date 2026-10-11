@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).absolute().parent))
 from tools.bazel.ci.artifact_validation import file_metadata, metadata, path_name, require, sha
 from tools.bazel.oci.oci_inventory import apply_layer, assert_overlay_paths, resolve_path
 from tools.bazel.oci.oci_layout import validate_layout
-from sonic_oci import normalize_layer as normalization
+from tools.bazel.oci import normalize_layer as normalization
 
 
 FEATURES = {"include_vs_dash_sai": "y", "include_fips": "y", "enable_asan": "n", "enable_syncd_rpc": "n"}
