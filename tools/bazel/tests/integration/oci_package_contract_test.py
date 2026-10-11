@@ -125,6 +125,24 @@ class SourcePackageFixture:
 class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
     """Preserve the actual shared-library migration policy as explicit input data."""
 
+    def test_foreign_release_is_bound_to_the_resolved_module_patch_version(self):
+        record = copy.deepcopy(self.value["packages"][0])
+        record["source"] = {
+            "module": "libnl3", "version": "3.7.0.sonic.3", "release": "3.7.0",
+            "target": "@libnl3//:libnl-3-dev_pkg",
+        }
+        subject.package_identity(record, architecture="amd64")
+        module = self.root / "foreign.MODULE.bazel"
+        module.write_text('module(name = "libnl3", version = "3.7.0.sonic.2")\n')
+        with self.assertRaisesRegex(ValueError, "resolved source module differs"):
+            subject.verify_modules({"packages": [record]}, {"libnl3": module})
+        record["source"]["release"] = "3.8.0"
+        with self.assertRaisesRegex(ValueError, "public owner target"):
+            subject.package_identity(record, architecture="amd64")
+        record["source"].update(release="3.7.0", commit="a" * 40)
+        with self.assertRaisesRegex(ValueError, "invalid source package provenance"):
+            subject.package_identity(record, architecture="amd64")
+
     def test_reuses_owner_payload_bytes_and_records_new_source_provenance(self):
         """A source receipt identifies owner modules/tars, never the retired Make DEBs."""
         result = self.build()
@@ -135,7 +153,10 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
             self.assertNotIn("source_deb", record)
             self.assertNotIn("source_sha256", record)
             self.assertNotIn("control_sha256", record)
-            self.assertTrue(all(item["uid"] == item["gid"] == 0 for item in record["files"].values()))
+            declaration = next(item for item in self.value["packages"] if item["package"] == record["package"])
+            for path, item in record["files"].items():
+                owner = declaration.get("path_owners", {}).get(path, {"uid": 0, "gid": 0})
+                self.assertEqual({key: item[key] for key in owner}, owner)
         common = result["packages"][0]["files"]
         self.assertIn("run/redis/sonic-db/database_config.json", common)
         self.assertNotIn("var/run/redis/sonic-db/database_config.json", common)
@@ -156,20 +177,16 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changes a base ELF link"):
             self.build()
 
-    def test_unmigrated_common_library_remains_bound_to_the_actual_base(self):
-        """Reusing Common's tar cannot lose or replace libsonicdbcli, which remains a Make/base output."""
+    def test_common_tar_supplies_its_own_rust_binding(self):
+        """The CLI library and its source symbols no longer depend on an imported base DEB."""
         result = self.build()
-        self.assertEqual(result["inherited_files"], self.value["packages"][0]["required_inherited_files"])
-        value = copy.deepcopy(self.value)
         path = "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0"
-        value["packages"][0]["required_inherited_files"][path]["sha256"] = "0" * 64
-        self.contract.write_bytes(subject.json_bytes(value))
-        with self.assertRaisesRegex(ValueError, "requires unchanged inherited content"):
-            self.build()
-        self.contract.write_bytes(subject.json_bytes(self.value))
-        entries = self.entries["libswsscommon"] + [(path, elf() + b"changed", 0o644, "file", 0)]
+        common = next(item for item in result["packages"] if item["package"] == "libswsscommon")
+        self.assertIn(path, common["files"])
+        self.assertEqual(result["inherited_files"], {})
+        entries = [entry for entry in self.entries["libswsscommon"] if entry[0] != path]
         archive(self.packages["libswsscommon"], entries)
-        with self.assertRaisesRegex(ValueError, "changes required inherited content"):
+        with self.assertRaisesRegex(ValueError, "required installed path"):
             self.build()
 
     def test_resolved_module_drift_fails_before_publishing_archives(self):
@@ -298,8 +315,8 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
         """APT sees source dependencies while the original Make input and debug binding remain exact."""
         result = self.build()
         value = {**identity(self.value), "schema": 1, "variant": "debug", "features": dict(self.policy["features"]),
-                 "packages": [{"package": "syncd-vs", "source_deb": "syncd-vs_1.0.0_amd64.deb"}],
-                 "runtime_manifest_sha256": "1" * 64, "required_packages": ["syncd-vs"],
+                 "packages": [{"package": "libsai", "source_deb": "libsai_1.0.0_amd64.deb"}],
+                 "runtime_manifest_sha256": "1" * 64, "required_packages": ["libsai"],
                  "debug_apt_packages": sorted(self.policy["debug_tools"])}
         path = self.root / "make.json"
         path.write_bytes(subject.json_bytes(value))
@@ -316,7 +333,7 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
                 subject.retained_manifest(path, result, subject.sha(self.receipt), variant="debug", contract=self.contract, policy=self.policy)
 
     def test_imports_cannot_bypass_symbol_matching_with_common_debug_packages(self):
-        """Common's old DEB belongs only to the matcher; ordinary imports cannot carry stale symbols."""
+        """A source-owned package cannot import stale symbols from its retired DEB."""
         result = self.build()
         path = self.root / "make-base-symbols.json"
         for variant in ("runtime", "debug"):
@@ -331,6 +348,59 @@ class UnrelatedSourceContractTest(SourcePackageFixture, unittest.TestCase):
     """Prove source handling is independent of Syncd and the three SONiC libraries."""
 
     contract_document = source_contract()
+
+    def test_installation_owner_and_setgid_change_metadata_only(self):
+        """Image-local group assignment preserves the owner's exact executable bytes."""
+        name = "usr/lib/libexample.so.2.4.0"
+        record = self.value["packages"][0]
+        record.update(path_modes={name: 0o2755}, path_owners={name: {"uid": 0, "gid": 104}})
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        result = self.build()
+        subject.validate_receipt(self.receipt, self.runtime_tar, contract_path=self.contract)
+        entry = result["packages"][0]["files"][name]
+        self.assertEqual((entry["uid"], entry["gid"], entry["mode"]), (0, 104, 0o2755))
+        with tarfile.open(self.packages["libexample"]) as original, tarfile.open(self.runtime_tar) as installed:
+            self.assertEqual(original.extractfile(name).read(), installed.extractfile("./" + name).read())
+        result["packages"][0]["files"][name]["gid"] = 105
+        self.receipt.write_bytes(subject.json_bytes(result))
+        with self.assertRaisesRegex(ValueError, "reviewed file owner"):
+            subject.validate_receipt(self.receipt, self.runtime_tar, contract_path=self.contract)
+
+    def test_owner_override_cannot_target_a_link_directory_or_missing_file(self):
+        for path in ("usr/lib/libexample.so.2", ".", "usr/bin/missing"):
+            with self.subTest(path=path):
+                self.value["packages"][0]["path_owners"] = {path: {"uid": 0, "gid": 104}}
+                self.contract.write_bytes(subject.json_bytes(self.value))
+                with self.assertRaisesRegex(ValueError, "regular file|reviewed file owner"):
+                    self.build()
+
+    def test_undeclared_archive_owner_is_rejected_even_with_matching_receipt_hash(self):
+        result = self.build()
+        name = "usr/lib/libexample.so.2.4.0"
+        entries = [(path, data, mode, kind, 104 if path == name else 0)
+                   for path, data, mode, kind, _ in self.entries["libexample"]]
+        archive(self.runtime_tar, entries)
+        result["payload"].update(sha256=subject.sha(self.runtime_tar), size=self.runtime_tar.stat().st_size)
+        result["packages"][0]["files"][name].update(uid=104, gid=104)
+        self.receipt.write_bytes(subject.json_bytes(result))
+        with self.assertRaisesRegex(ValueError, "reviewed ownership"):
+            subject.validate_receipt(self.receipt, self.runtime_tar, contract_path=self.contract)
+
+    def test_invalid_ownership_and_permission_declarations_are_rejected(self):
+        name = "usr/lib/libexample.so.2.4.0"
+        for owners in ({name: {"uid": True, "gid": 1}}, {name: {"uid": 0, "gid": -1}},
+                       {name: {"uid": 0, "gid": 2**32 - 1}}, {name: {"gid": 104}},
+                       {"../escape": {"uid": 0, "gid": 104}}):
+            with self.subTest(owners=owners):
+                self.value["packages"][0]["path_owners"] = owners
+                self.contract.write_bytes(subject.json_bytes(self.value))
+                with self.assertRaises(ValueError):
+                    self.build()
+        self.value["packages"][0].pop("path_owners")
+        self.value["packages"][0]["path_modes"] = {name: 0o10000}
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        with self.assertRaisesRegex(ValueError, "file modes"):
+            self.build()
 
     def test_one_package_with_an_unrelated_owner_is_sufficient(self):
         """Accept the complete one-package declaration and bind its own target, module and version."""
