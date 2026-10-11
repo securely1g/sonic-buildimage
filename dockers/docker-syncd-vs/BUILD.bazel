@@ -567,3 +567,27 @@ sonic_docker_archive(
     name = "docker-syncd-vs-dbg.gz",
     image = ":docker-syncd-vs-dbg",
 )
+
+# These contract tests need no production Make package inputs. The full VS job
+# separately validates the real imported packages and complete OCI images.
+test_suite(
+    name = "ci_tests",
+    tests = [
+        "//tools/bazel/tests:syncd_package_receipts_test",
+        "//tools/bazel/tests:syncd_manifest_labels_test",
+        "//tools/bazel/tests:oci_inventory_test",
+        "//tools/bazel/tests:syncd_package_state_layer_test",
+        "//tools/bazel/tests:syncd_select_apt_payloads_test",
+        "//tools/bazel/tests:syncd_package_contract_test",
+        "//tools/bazel/tests:syncd_validate_image_test",
+        "//tools/bazel/tests:syncd_validate_native_packages_test",
+        "//tools/bazel/tests:syncd_validate_payloads_test",
+        "//tools/bazel/tests:apt_selection_test",
+    ],
+)
+
+# This contract-only CI selection publishes test results, but no image layers.
+filegroup(
+    name = "ci_artifacts",
+    srcs = [],
+)

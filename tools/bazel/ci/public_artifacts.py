@@ -75,11 +75,11 @@ BEP = {
         ("archive-tests", "artifacts/archive/test-events.jsonl", 9),
         ("python-tests", "artifacts/config-engine/test-events.jsonl", 16),
     ],
-    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 18)],
-    "syncd": [],
+    "source": [("source-tests", "artifacts/swss/test-events.jsonl", None)],
+    "syncd": [("syncd-tests", "artifacts/syncd-vs/bazel/test-events.jsonl", None)],
     "vs": [],
 }
-RECEIPT_TEST_COUNTS = {"archive": ("python", 11), "source": ("source", 18), "syncd": ("syncd", 9)}
+RECEIPT_TEST_COUNTS = {"archive": ("python", 11)}
 SUMMARY = {
     "archive": "artifacts/archive/public-summary.json",
     "source": "artifacts/swss/public-summary.json",
@@ -286,7 +286,9 @@ def receipt_summary(value, kind):
         require(isinstance(value.get("targets", []), list) and isinstance(value.get("source_hashes", {}), dict), "invalid-syncd-receipt")
         targets = [label(item) for item in value.get("targets", [])]
         hashes = {relative_name(name): digest(item) for name, item in value.get("source_hashes", {}).items()}
-        return {"targets": targets, "source_hashes": hashes,
+        require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
+        require(len(set(targets)) == len(targets), "duplicate-test-target")
+        return {"status": value["status"], "targets": targets, "source_hashes": hashes,
                 "module_lock_sha256": digest(value.get("module_lock_sha256"))}
     if kind == "p4rt":
         require(value.get("status") == "passed", "invalid-p4rt-status")
@@ -377,7 +379,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                 summary = bep_summary(stream, partial=job_status != "success")
             if job_status == "success":
                 require(summary["finished"] and summary["finished"]["success"], "incomplete-bep")
-                require(len(summary["tests"]) == count and all(item["status"] in {"PASSED", "FLAKY"} for item in summary["tests"].values()), "incomplete-tests")
+                require(bool(summary["tests"]) and (count is None or len(summary["tests"]) == count) and
+                        all(item["status"] in {"PASSED", "FLAKY"} for item in summary["tests"].values()), "incomplete-tests")
             builds[logical] = summary
         except (OSError, ValueError, TypeError, RecursionError):
             blocked.append({"input": logical, "reason": "invalid-bep-summary"})
@@ -418,13 +421,22 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
         receipts["outputs"] = outputs
 
     if job_status == "success":
-        expected = RECEIPT_TEST_COUNTS
-        if kind in expected:
-            receipt_name, count = expected[kind]
-            value = receipts.get(receipt_name, {})
-            tests = value.get("targets", value.get("tests", {}))
-            if len(tests) != count or value.get("status", "passed") != "passed":
-                blocked.append({"input": receipt_name + "-receipt", "reason": "incomplete-receipt"})
+        if kind == "archive":
+            value = receipts.get("python", {})
+            if len(value.get("tests", {})) != RECEIPT_TEST_COUNTS["archive"][1] or value.get("status") != "passed":
+                blocked.append({"input": "python-receipt", "reason": "incomplete-receipt"})
+        if kind in {"source", "syncd"}:
+            value = receipts.get(kind, {})
+            expected_tests = value.get("targets", value.get("tests", {}))
+            observed = builds.get(kind + "-tests", {}).get("tests", {})
+            if (not expected_tests or set(expected_tests) != set(observed) or
+                    value.get("status") != "passed" or
+                    any(status != "passed" for status in value.get("tests", {}).values())):
+                blocked.append({"input": kind + "-receipt", "reason": "incomplete-receipt"})
+        if kind == "source":
+            value = receipts.get("source", {})
+            if not value.get("program_count") or not value.get("debug_pair_count") or not value.get("source_contract"):
+                blocked.append({"input": "source-receipt", "reason": "missing-package-validation"})
         if kind == "archive" and receipts.get("python", {}).get("architecture") != architecture:
             blocked.append({"input": "python-receipt", "reason": "architecture-mismatch"})
         if kind == "source" and receipts.get("source", {}).get("revision") != revision:
