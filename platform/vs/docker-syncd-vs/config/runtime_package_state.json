@@ -21,7 +21,7 @@
       "uid": 0
     }
   ],
-  "apt_lock_sha256": "5d4e7673b73207e4d5bab1bf34481727caa3b8bea8fb3bac2bb5ac5c4302571a",
+  "apt_lock_sha256": "0356cf580ce56c01d48a08acb906853aa92ba294ed7f03273b44fb5a94536784",
   "entries": [
     {
       "gid": 0,
@@ -213,6 +213,14 @@
       "linkname": "../init.d/syncd",
       "mode": 511,
       "path": "etc/rcS.d/S01syncd",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "kind": "symlink",
+      "linkname": "/lib/systemd/user/ssh-agent.socket",
+      "mode": 511,
+      "path": "etc/systemd/user/sockets.target.wants/ssh-agent.socket",
       "uid": 0
     },
     {
@@ -474,163 +482,7 @@
       "uid": 0
     }
   ],
-  "make_package_files": {
-    "etc/init.d/syncd": {
-      "gid": 0,
-      "mode": 493,
-      "package": "syncd-vs",
-      "sha256": "f2fa46671da7140cb6bb5ea9c939bcfa9b6376085755d395ad6327d964395319",
-      "size": 749,
-      "uid": 0
-    }
-  },
   "make_package_state_inputs": {
-    "libnl-3-200": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Depends": "libc6 (>= 2.38)",
-        "Description": "library for dealing with netlink sockets\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.",
-        "Homepage": "http://www.infradead.org/~tgr/libnl/",
-        "Installed-Size": "185",
-        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libnl-3-200",
-        "Priority": "optional",
-        "Section": "libs",
-        "Source": "libnl3",
-        "Version": "3.7.0-0.2+b1sonic1"
-      },
-      "maintainer_scripts": {
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "3.7.0-0.2+b1sonic1"
-    },
-    "libnl-3-dev": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Breaks": "libnl3-dev",
-        "Conflicts": "libnl-dev, libnl2-dev",
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1)",
-        "Description": "development library and headers for libnl-3\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n This package contains the headers needed by all libraries and the  files\n that are needed to build applications using libnl3.",
-        "Homepage": "http://www.infradead.org/~tgr/libnl/",
-        "Installed-Size": "618",
-        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libnl-3-dev",
-        "Priority": "optional",
-        "Replaces": "libnl3-dev",
-        "Section": "libdevel",
-        "Source": "libnl3",
-        "Version": "3.7.0-0.2+b1sonic1"
-      },
-      "maintainer_scripts": {},
-      "version": "3.7.0-0.2+b1sonic1"
-    },
-    "libnl-cli-3-200": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-genl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.38)",
-        "Description": "library for dealing with netlink sockets - cli helpers\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n Library for cli helpers in libnl-utils.",
-        "Homepage": "http://www.infradead.org/~tgr/libnl/",
-        "Installed-Size": "230",
-        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libnl-cli-3-200",
-        "Priority": "optional",
-        "Section": "libs",
-        "Source": "libnl3",
-        "Version": "3.7.0-0.2+b1sonic1"
-      },
-      "maintainer_scripts": {
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "3.7.0-0.2+b1sonic1"
-    },
-    "libnl-genl-3-200": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.4)",
-        "Description": "library for dealing with netlink sockets - generic netlink\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n API to the generic netlink protocol, an extended version of the netlink\n protocol.",
-        "Homepage": "http://www.infradead.org/~tgr/libnl/",
-        "Installed-Size": "53",
-        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libnl-genl-3-200",
-        "Priority": "optional",
-        "Section": "libs",
-        "Source": "libnl3",
-        "Version": "3.7.0-0.2+b1sonic1"
-      },
-      "maintainer_scripts": {
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "3.7.0-0.2+b1sonic1"
-    },
-    "libnl-nf-3-200": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.14)",
-        "Description": "library for dealing with netlink sockets - netfilter interface\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n API to netlink based netfilter configuration and monitoring interfaces.",
-        "Homepage": "http://www.infradead.org/~tgr/libnl/",
-        "Installed-Size": "150",
-        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libnl-nf-3-200",
-        "Priority": "optional",
-        "Section": "libs",
-        "Source": "libnl3",
-        "Version": "3.7.0-0.2+b1sonic1"
-      },
-      "maintainer_scripts": {
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "3.7.0-0.2+b1sonic1"
-    },
-    "libnl-route-3-200": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1), libc6 (>= 2.38)",
-        "Description": "library for dealing with netlink sockets - route interface\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n API to the configuration interfaces of the NETLINK_ROUTE family.",
-        "Homepage": "http://www.infradead.org/~tgr/libnl/",
-        "Installed-Size": "660",
-        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libnl-route-3-200",
-        "Priority": "optional",
-        "Section": "libs",
-        "Source": "libnl3",
-        "Version": "3.7.0-0.2+b1sonic1"
-      },
-      "maintainer_scripts": {
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "3.7.0-0.2+b1sonic1"
-    },
-    "libnl-route-3-dev": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Depends": "libnl-3-dev (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1)",
-        "Description": "development library and headers for libnl-route-3\n This is a library for applications dealing with netlink sockets.\n The library provides an interface for raw netlink messaging and various\n netlink family specific interfaces.\n .\n This package contains the files that are needed to build applications using\n libnl-route-3.",
-        "Homepage": "http://www.infradead.org/~tgr/libnl/",
-        "Installed-Size": "1222",
-        "Maintainer": "Heiko Stuebner <mmind@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libnl-route-3-dev",
-        "Priority": "optional",
-        "Section": "libdevel",
-        "Source": "libnl3",
-        "Version": "3.7.0-0.2+b1sonic1"
-      },
-      "maintainer_scripts": {},
-      "version": "3.7.0-0.2+b1sonic1"
-    },
     "libsai": {
       "architecture": "amd64",
       "control_fields": {
@@ -647,80 +499,6 @@
         "triggers": "957f8a87f6641013d828285b82905ec7cc0ba8a376994de8f1ddb18c974f8923"
       },
       "version": "1.0.0"
-    },
-    "libsaivs": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libsaimetadata (>= 1.0.0), libstdc++6 (>= 13.1)",
-        "Description": "This package contains SAI-VirtualSwitch implementation for SONiC project.",
-        "Installed-Size": "1927",
-        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
-        "Package": "libsaivs",
-        "Priority": "optional",
-        "Section": "libs",
-        "Source": "sonic",
-        "Version": "1.0.0"
-      },
-      "maintainer_scripts": {
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "1.0.0"
-    },
-    "libyang3": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Breaks": "libyang2, libyang2t64",
-        "Depends": "libc6 (>= 2.38), libpcre2-8-0 (>= 10.22), libxxhash0 (>= 0.7.0)",
-        "Description": "parser toolkit for IETF YANG data modeling language (library)\n YANG is a data modeling language for the definition of data sent over network\n management protocols (RFC 6020/7950). It can be used to model both configuration\n data as well as state data of network elements and is primarily used by larger\n network equipment like routers and switches.\n .\n This package contains the shared library.",
-        "Homepage": "https://github.com/CESNET/libyang",
-        "Installed-Size": "1479",
-        "Maintainer": "Daniel Baumann <daniel@debian.org>",
-        "Multi-Arch": "same",
-        "Package": "libyang3",
-        "Priority": "optional",
-        "Replaces": "libyang2, libyang2t64",
-        "Section": "libs",
-        "Source": "libyang",
-        "Version": "3.12.2-1"
-      },
-      "maintainer_scripts": {
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "3.12.2-1"
-    },
-    "openssh-client": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Breaks": "openssh-sk-helper",
-        "Conflicts": "sftp",
-        "Depends": "adduser, init-system-helpers (>= 1.66~), passwd, libc6 (>= 2.38), libedit2 (>= 2.11-20080614-0), libfido2-1 (>= 1.8.0), libgssapi-krb5-2 (>= 1.17), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.0), zlib1g (>= 1:1.1.4)",
-        "Description": "secure shell (SSH) client, for secure access to remote machines\n This is the portable version of OpenSSH, a free implementation of\n the Secure Shell protocol as specified by the IETF secsh working\n group.\n .\n Ssh (Secure Shell) is a program for logging into a remote machine\n and for executing commands on a remote machine.\n It provides secure encrypted communications between two untrusted\n hosts over an insecure network. X11 connections and arbitrary TCP/IP\n ports can also be forwarded over the secure channel.\n It can be used to provide applications with a secure communication\n channel.\n .\n This package provides the ssh, scp and sftp clients, the ssh-agent\n and ssh-add programs to make public key authentication more convenient,\n and the ssh-keygen, ssh-keyscan, ssh-copy-id and ssh-argv0 utilities.\n .\n In some countries it may be illegal to use any encryption at all\n without a special permit.\n .\n ssh replaces the insecure rsh, rcp and rlogin programs, which are\n obsolete for most purposes.",
-        "Homepage": "https://www.openssh.com/",
-        "Installed-Size": "4997",
-        "Maintainer": "Debian OpenSSH Maintainers <debian-ssh@lists.debian.org>",
-        "Multi-Arch": "foreign",
-        "Package": "openssh-client",
-        "Priority": "standard",
-        "Provides": "ssh-client",
-        "Recommends": "xauth",
-        "Replaces": "openssh-sk-helper, ssh, ssh-krb5",
-        "Section": "net",
-        "Source": "openssh",
-        "Suggests": "keychain, libpam-ssh, monkeysphere, ssh-askpass",
-        "Version": "1:10.0p1-7+fips"
-      },
-      "control_sha256": "f7d8338964565a1bcb2ac8dcfa4fefa45b8046be2ffe1793b750d5db91669b05",
-      "maintainer_scripts": {
-        "postinst": "062c275d9c918c542989693a7a0e8def89cb776e0243e8e0d04b737e0637533b",
-        "postrm": "1d1d2705f782fce2b4ca556d626dc4ce31d4b73a086c024c94505050b8053c03",
-        "preinst": "a666d1621650a0bec528879ef9d3546610611f32d621c9c195aab569f675c489",
-        "prerm": "a666d1621650a0bec528879ef9d3546610611f32d621c9c195aab569f675c489"
-      },
-      "source_sha256": "1a79291e3dba4bae3bf2204787a114f6a86d457964fc469b2a04513c5094434a",
-      "version": "1:10.0p1-7+fips"
     },
     "p4lang-bmv2": {
       "architecture": "amd64",
@@ -780,31 +558,6 @@
         "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
       },
       "version": "0.1.3-2"
-    },
-    "syncd-vs": {
-      "architecture": "amd64",
-      "control_fields": {
-        "Architecture": "amd64",
-        "Conflicts": "syncd, syncd-rpc",
-        "Depends": "init-system-helpers (>= 1.54~)",
-        "Description": "This package contains sync daemon for SONiC project linked with virtual switch.\n  This sync daemon syncs the ASIC_DB in Redis database and the real ASIC via SAI.",
-        "Installed-Size": "13392",
-        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
-        "Package": "syncd-vs",
-        "Priority": "optional",
-        "Recommends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libprotobuf32t64 (>= 3.21.12), libsaimetadata (>= 1.0.0), libsairedis (>= 1.0.0), libsaivs (>= 1.0.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0), libzmq5 (>= 3.2.3+dfsg), p4lang-pi (>= 0.1.3), zlib1g (>= 1:1.1.4)",
-        "Section": "net",
-        "Source": "sonic",
-        "Version": "1.0.0"
-      },
-      "maintainer_scripts": {
-        "postinst": "8b8c215904908d5b3ef6133c9d3bf0ac6621c05b62b7d38a018b71ee7111a1d1",
-        "postrm": "626b4b233c6ba0aaf480f6afdd5c8df8a312357ce0872e52dfb6281973a13839",
-        "preinst": "10252d0680b11df5a1700e4bb866b746121cedb477fcb7e5e8b22df30fb8522d",
-        "prerm": "3bdcb6cde90edf624ade3492ee43ad805788fcfe0c5e56ad7b78d5ab0afc0372",
-        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
-      },
-      "version": "1.0.0"
     }
   },
   "package_controls": {
@@ -847,8 +600,27 @@
     "base_archive_sha256": "5cd124bc7b35509bcda61bb3ca14c941fcc4854f9d4ea7b311869ed0cd0db581",
     "buildimage_revision": "6e1eb6baae67a34b9a7d031d7bca7d436c86fc83",
     "legacy_dockerfile_sha256": "c58a1d83283aac77755b085ed0cd7fd3eb386425577fac540529ea293990d622",
+    "openssh_client_installation_state": "Make openssh-client 1:10.0p1-7+fips postinst: _ssh gid104, ssh-agent2755, user socket enablement; unchanged tmpfiles exclusion. Native OCI sha256:7508faf7a33bc1203a89031c0b5005a8e1c43034b70bc71c6536aacbdcd74a99. This models these concrete entries, not every maintainer-script effect.",
     "runtime_archive_sha256": "dc470c9e1b2f00b94f59dc0e0a05d5b0dbcac4c7f286dad285611b7d439db60a",
     "scope": "Retained native AMD64 Trixie VS reference; current full native comparison remains required."
   },
-  "schema": 1
+  "schema": 1,
+  "source_package_files": {
+    "etc/init.d/syncd": {
+      "gid": 0,
+      "mode": 493,
+      "package": "syncd-vs",
+      "sha256": "f2fa46671da7140cb6bb5ea9c939bcfa9b6376085755d395ad6327d964395319",
+      "size": 749,
+      "uid": 0
+    },
+    "usr/lib/systemd/user/ssh-agent.socket": {
+      "gid": 0,
+      "mode": 420,
+      "package": "openssh-client",
+      "sha256": "d832c5044298c90a3245565708e516fa35e5e5c77cf680ad39829ccbdcf5a94b",
+      "size": 355,
+      "uid": 0
+    }
+  }
 }

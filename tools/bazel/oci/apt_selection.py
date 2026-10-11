@@ -11,6 +11,7 @@ from sonic_apt import dependencies, selection
 from tools.bazel.ci.artifact_validation import require
 from tools.bazel.oci.oci_inventory import apply_layer, assert_overlay_paths
 from tools.bazel.oci.oci_layout import validate_layout
+from tools.bazel.oci.package_contract import source_identity
 
 
 def read_policy(path):
@@ -65,10 +66,8 @@ def retained_packages(path, *, policy, variant):
             require(isinstance(fields, dict) and all(fields.get(field) == item.get(key) for field, key in
                     (("Package", "package"), ("Version", "version"), ("Architecture", "architecture"))),
                     "source package lacks dependency controls: " + name)
-            require(isinstance(source, dict) and all(isinstance(source.get(key), str) and source[key]
-                    for key in ("module", "version", "commit", "target")) and
-                    re.fullmatch(r"[0-9a-f]{40}", source["commit"]) and
-                    isinstance(item.get("input_tar_sha256"), str) and
+            source_identity(source, name=name)
+            require(isinstance(item.get("input_tar_sha256"), str) and
                     re.fullmatch(r"[0-9a-f]{64}", item["input_tar_sha256"]),
                     "source package lacks build provenance: " + name)
             retained[name] = {

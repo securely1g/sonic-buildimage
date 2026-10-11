@@ -24,7 +24,7 @@ from tools.bazel.oci import normalize_layer as normalization
 
 
 CONTROL_FIELDS = {"Package", "Version", "Architecture", "Depends", "Pre-Depends", "Provides", "Multi-Arch"}
-SOURCE_FIELDS = {"module", "version", "commit", "target"}
+SOURCE_FIELDS = {"module", "version", "target"}
 RECEIPT_SCHEMA = 2
 
 
@@ -143,12 +143,25 @@ def package_identity(record, *, architecture):
             (name, record["version"], record["architecture"]),
             "invalid source package dependency controls: " + name)
     source = record.get("source")
-    require(isinstance(source, dict) and set(source) == SOURCE_FIELDS and
+    source_identity(source, name=name)
+
+
+def source_identity(source, *, name):
+    """Check SONiC commit and foreign release identities through one contract."""
+    require(isinstance(source, dict) and set(source) in
+            (SOURCE_FIELDS | {"commit"}, SOURCE_FIELDS | {"release"}) and
             all(isinstance(value, str) and value for value in source.values()),
             "invalid source package provenance: " + name)
-    require(re.fullmatch(r"@{1,2}[A-Za-z0-9_.+~-]+//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+", source["target"]) and
-            re.fullmatch(r"[0-9a-f]{40}", source["commit"]) and
-            source["version"].endswith("-" + source["commit"]),
+    if "commit" in source:
+        pinned = (re.fullmatch(r"[0-9a-f]{40}", source["commit"]) and
+                  source["version"].endswith("-" + source["commit"]))
+    else:
+        # Foreign packages retain their upstream release and SONiC patch number.
+        # Bazel verifies the registry archive/patch integrity; verify_modules
+        # below binds this contract to the module actually selected by Bazel.
+        pinned = (re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", source["release"]) and
+                  re.fullmatch(re.escape(source["release"]) + r"\.sonic\.[1-9][0-9]*", source["version"]))
+    require(re.fullmatch(r"@{1,2}[A-Za-z0-9_.+~-]+//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+", source["target"]) and pinned,
             "source package does not identify its public owner target: " + name)
 
 
@@ -172,9 +185,16 @@ def read_contract(path):
             require(path_name(name) == name, "noncanonical required source path: " + name)
         modes = record.get("path_modes", {})
         require(isinstance(modes, dict) and all(isinstance(name, str) and type(mode) is int and
-                0 <= mode <= 0o777 for name, mode in modes.items()), "invalid source package file modes")
+                0 <= mode <= 0o7777 for name, mode in modes.items()), "invalid source package file modes")
         for name in modes:
             require(path_name(name) == name, "noncanonical source mode path: " + name)
+        owners = record.get("path_owners", {})
+        require(isinstance(owners, dict), "invalid source package file owners")
+        for name, owner in owners.items():
+            require(isinstance(name, str) and path_name(name) == name and
+                    isinstance(owner, dict) and set(owner) == {"uid", "gid"} and
+                    all(type(value) is int and 0 <= value < 2**32 - 1 for value in owner.values()),
+                    "invalid source package file owner: " + str(name))
         inherited = record.get("required_inherited_files", {})
         require(isinstance(inherited, dict), "invalid inherited source package files")
         for name, item in inherited.items():
@@ -202,12 +222,17 @@ def verify_modules(contract, module_files):
     return digests
 
 
-def normalized_source_member(member, *, path_modes=None):
+def normalized_source_member(member, *, path_modes=None, path_owners=None):
     """Use the shared adapter's directory, ownership and explicit mode policy."""
-    return normalization.normalized_member(member, root_owned=True, modes=path_modes)
+    output = normalization.normalized_member(member, root_owned=True, modes=path_modes)
+    if output is not None and path_owners and path_name(output.name) in path_owners:
+        require(output.isfile(), "source ownership override is not a regular file: " + output.name)
+        owner = path_owners[path_name(output.name)]
+        output.uid, output.gid = owner["uid"], owner["gid"]
+    return output
 
 
-def inventory(path):
+def inventory(path, *, path_owners=None):
     """Inventory normalized tar bytes without following host filesystem links."""
     files = {}
     with tarfile.open(path, "r:*") as archive:
@@ -218,7 +243,10 @@ def inventory(path):
                     "unsupported source package archive member: " + name)
             require(not PurePosixPath(name).name.startswith(".wh."), "source package archive contains a whiteout")
             item = metadata(member)
-            require(item["uid"] == item["gid"] == 0, "source package archive is not root-owned: " + name)
+            owner = (path_owners or {}).get(name, {"uid": 0, "gid": 0})
+            require(all(item[key] == owner[key] for key in ("uid", "gid")) and
+                    (name not in (path_owners or {}) or member.isfile()),
+                    "source package archive differs from reviewed ownership: " + name)
             if member.isfile():
                 item.update(file_metadata(archive.extractfile(member), name))
             files[name] = item
@@ -237,7 +265,8 @@ def combine_tars(contract, paths, output_path, base_files):
             package_files = {}
             with tarfile.open(paths[name], "r:*") as source:
                 for member in source:
-                    normalized = normalized_source_member(member, path_modes=record.get("path_modes"))
+                    normalized = normalized_source_member(member, path_modes=record.get("path_modes"),
+                                                          path_owners=record.get("path_owners"))
                     if normalized is None:
                         continue
                     path = path_name(normalized.name)
@@ -266,6 +295,10 @@ def combine_tars(contract, paths, output_path, base_files):
                 require(package_files.get(path, {}).get("kind") == "file" and
                         package_files[path]["mode"] == mode,
                         "source package lacks a reviewed file mode: " + name + ":" + path)
+            for path, owner in record.get("path_owners", {}).items():
+                require(package_files.get(path, {}).get("kind") == "file" and
+                        all(package_files[path][key] == owner[key] for key in ("uid", "gid")),
+                        "source package lacks a reviewed file owner: " + name + ":" + path)
             records[name] = {"input_tar_sha256": before, "files": package_files}
     assert_overlay_paths(files, base_files)
     installed = base_files | files
@@ -387,6 +420,11 @@ def validate_receipt(receipt_path, runtime_tar, debug_tar=None, *, contract_path
                 item = record["files"].get(path, {})
                 require(item.get("kind") == "file" and item.get("mode") == mode,
                         "source receipt differs from a reviewed file mode: " + path)
+            for path, owner in expected.get("path_owners", {}).items():
+                item = record["files"].get(path, {})
+                require(item.get("kind") == "file" and
+                        all(item.get(key) == owner[key] for key in ("uid", "gid")),
+                        "source receipt differs from a reviewed file owner: " + path)
     descriptor = value.get("payload", {})
     require(runtime_tar.is_file() and sha(runtime_tar) == descriptor.get("sha256") and
             runtime_tar.stat().st_size == descriptor.get("size"), "source receipt archive hash differs: payload")
@@ -396,7 +434,9 @@ def validate_receipt(receipt_path, runtime_tar, debug_tar=None, *, contract_path
             require(name not in expected or (item.get("kind") == "directory" and expected[name] == item),
                     "source receipt packages overlap: " + name)
             expected[name] = item
-    require(inventory(runtime_tar) == expected and len(expected) == descriptor.get("members"),
+    owners = {path: owner for record in (contract or {}).get("packages", [])
+              for path, owner in record.get("path_owners", {}).items()}
+    require(inventory(runtime_tar, path_owners=owners) == expected and len(expected) == descriptor.get("members"),
             "source receipt archive inventory differs: payload")
     require(all(item.get("elf_machine", elf_machine(value["architecture"])) == elf_machine(value["architecture"])
                 for item in expected.values()), "source receipt archive has a foreign ELF architecture")
