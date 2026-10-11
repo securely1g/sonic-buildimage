@@ -13,7 +13,7 @@ C bindings and native library. All application Rust dependencies use the single
 already use that graph. No local Common source checkout is needed by Bazel.
 
 ```sh
-bazel build --config=release //src/sonic-supervisord-utilities-rs:runtime \
+bazel build //src/sonic-supervisord-utilities-rs:runtime \
   //src/sonic-supervisord-utilities-rs:runtime.debug_symbols
 bazel test //src/sonic-supervisord-utilities-rs:unit_tests \
   //src/sonic-supervisord-utilities-rs:integration_tests \
@@ -29,12 +29,21 @@ DWARF/debuglink CRC and GDB source-line lookup. It needs native binutils and GDB
 The shared dependency tests additionally exercise pipe readiness, signal-zero
 probing, the pinned test injector and syslog initialization on both CPUs.
 
-The standard `--config=release` selects Bazel's optimized Rust/C++ compilation
-mode; debug information is retained before the shared packaging rules split
-it. The standard C++ linker integration currently supplies Rust's unwinding
-panic runtime. Cargo's release abort-on-panic/LTO profile is therefore not
-replicated, and this migration does not claim byte-for-byte release identity. Final container service and watchdog behavior are image-level
-checks beyond the installed CLI and original test suites.
+The public runtime targets automatically select the native Cargo release
+profile: optimized code, full LTO and one code-generation unit. A component-owned
+Bazel transition applies these settings to the listener and its complete Rust
+dependency graph. It reuses the same shared sources and lock without changing
+other image targets or requiring image-wide Rust flags. The executable uses
+ordinary rustc linking with `-Cpanic=abort`; original test targets keep unwinding.
+Source targets retain DWARF and disable rustc's early stripping, then the shared
+packaging rules split the runtime binary and matching detached symbols.
+CI tests the installed release package under ordinary image build flags. The
+shared linking regression also verifies abort versus unwind behavior with real
+C++ shared libraries and a Rust library dependency.
+
+Different compatible dependency versions in the shared lock mean this is not
+byte-for-byte Cargo artifact identity. Final container service and watchdog
+behavior remain image-level checks beyond the installed CLI and original tests.
 
 ## Cargo and Bazel locks
 
@@ -61,7 +70,8 @@ The shared graph's established release logging cap remains in effect.
 ## Draft dependency
 
 The committed registry URLs stay on SONiC registry `main` and BCR. Until the
-new shared aliases are registered from merged source, validation explicitly
+new shared aliases and native linking fix are registered from merged source,
+validation explicitly
 supplies `--override_module=sonic-rust-deps=/path/to/sonic-build-infra/rust/deps`
 from the reviewed shared-dependency source candidate. The workflow pins that
 source commit. Remove the temporary override and select the registered module

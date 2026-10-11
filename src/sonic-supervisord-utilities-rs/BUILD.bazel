@@ -3,6 +3,7 @@ load("@rules_rs//rs:rust_library.bzl", "rust_library")
 load("@rules_rs//rs:rust_test.bzl", "rust_test")
 load("@rules_python//python:defs.bzl", "py_test")
 load("@sonic_build_infra//tar:sonic_deploy_tar.bzl", "sonic_deploy_tar")
+load(":bazel/release.bzl", "release_binary")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -36,7 +37,7 @@ rust_library(
     crate_name = "sonic_supervisord_utilities_rs",
     crate_root = "src/lib.rs",
     edition = "2021",
-    rustc_flags = ["-Cdebuginfo=2"],
+    rustc_flags = ["-Cdebuginfo=2", "-Cstrip=none"],
     version = "1.0.0",
     deps = _DEPS,
 )
@@ -47,8 +48,8 @@ rust_binary(
     crate_name = "supervisor_proc_exit_listener_rs",
     crate_root = "src/bin/supervisor_proc_exit_listener.rs",
     edition = "2021",
-    experimental_use_cc_common_link = 1,
-    rustc_flags = ["-Cdebuginfo=2"],
+    experimental_use_cc_common_link = 0,
+    rustc_flags = ["-Cdebuginfo=2", "-Cstrip=none", "-Cpanic=abort"],
     deps = [":supervisor_library"],
 )
 
@@ -78,10 +79,15 @@ rust_test(
     }.items()
 ]
 
+release_binary(
+    name = "release_binary",
+    binary = ":supervisor-proc-exit-listener-rs",
+)
+
 sonic_deploy_tar(
     name = "runtime",
     binaries = {
-        "usr/bin/supervisor-proc-exit-listener-rs uid=0 gid=0 mode=0755 type=file": ":supervisor-proc-exit-listener-rs",
+        "usr/bin/supervisor-proc-exit-listener-rs uid=0 gid=0 mode=0755 type=file": ":release_binary",
     },
 )
 
@@ -96,7 +102,7 @@ py_test(
     data = [
         ":runtime",
         ":runtime.debug_symbols",
-        ":supervisor-proc-exit-listener-rs",
+        ":release_binary",
     ],
     deps = ["//tools/bazel/ci:artifact_validation"],
 )
