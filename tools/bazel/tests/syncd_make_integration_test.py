@@ -5,9 +5,30 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
+
+REAL_PACKAGE_RULES = """
+DBG_IMAGE_MARK = dbg
+PLATFORM_PATH = platform/vs
+TARGET_PATH = target
+DEBS_PATH = target/debs/trixie
+include rules/functions
+include rules/libnl3.mk
+include rules/libyang3.mk
+include rules/swss-common.mk
+include rules/p4lang.mk
+include rules/dash-sai.mk
+include rules/sairedis.mk
+include rules/eventd.mk
+include rules/sonic-fips.mk
+include rules/docker-base-trixie.mk
+include rules/docker-config-engine-trixie.mk
+include platform/vs/syncd-vs.mk
+include platform/vs/docker-syncd-vs.mk
+"""
 
 
 class MakeIntegrationTest(unittest.TestCase):
@@ -80,7 +101,7 @@ target/bazel-manifests/%/manifest.json:
 \t@echo fixture-manifest $@
 """
 
-    def run_make(self, target="selected", *, dry_run=False, make_source=None, **overrides):
+    def run_make(self, target="selected", *, dry_run=False, make_source=None, directory=ROOT, **overrides):
         settings = {
             "BUILD_WITH_BAZEL_WHEN_AVAILABLE": "n", "BLDENV": "trixie",
             "CONFIGURED_PLATFORM": "vs", "CONFIGURED_ARCH": "amd64", "DBG_IMAGE_MARK": "dbg",
@@ -92,7 +113,7 @@ target/bazel-manifests/%/manifest.json:
             arguments.extend(["--dry-run", "--always-make"])
         return subprocess.run(arguments + [target] + [f"{key}={value}" for key, value in settings.items()],
                               input=make_source if make_source is not None else self.makefile(),
-                              text=True, cwd=ROOT, capture_output=True, check=False)
+                              text=True, cwd=directory, capture_output=True, check=False)
 
     def values(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -215,24 +236,7 @@ target/bazel-manifests/%/manifest.json:
 
     def test_exact_bazel_exports_follow_real_make_package_versions_and_closure(self):
         """A version or dependency change must update the explicit Bazel input boundary."""
-        source = """
-DBG_IMAGE_MARK = dbg
-PLATFORM_PATH = platform/vs
-TARGET_PATH = target
-DEBS_PATH = target/debs/trixie
-include rules/functions
-include rules/libnl3.mk
-include rules/libyang3.mk
-include rules/swss-common.mk
-include rules/p4lang.mk
-include rules/dash-sai.mk
-include rules/sairedis.mk
-include rules/eventd.mk
-include rules/sonic-fips.mk
-include rules/docker-base-trixie.mk
-include rules/docker-config-engine-trixie.mk
-include platform/vs/syncd-vs.mk
-include platform/vs/docker-syncd-vs.mk
+        source = REAL_PACKAGE_RULES + """
 .PHONY: selected
 selected:
 \t@echo runtime_debs=$(SYNCD_VS_BAZEL_RUNTIME_DEBS)
@@ -245,6 +249,103 @@ selected:
         exports = set(re.findall(r'"(target/debs/trixie/[^"*]+\.deb)"', (ROOT / "BUILD.bazel").read_text()))
         self.assertEqual(exports, packages)
         self.assertNotIn("libswsscommon-dbgsym_1.0.0_amd64.deb", values["debug_debs"].split())
+
+    def p4_makefile(self):
+        # slave.mk selects P4 after all owner rules, then defines package recipes.
+        # Use both real selectors and producers; no parallel package-name table.
+        return REAL_PACKAGE_RULES + f"""
+SHELL := /bin/bash
+.ONESHELL:
+.SHELLFLAGS := -ec
+include {ROOT}/tools/bazel/p4/inputs.mk
+sbom_emit_fragment = :
+include {ROOT}/tools/bazel/p4/debs.mk
+.PHONY: selected
+selected:
+\t@echo bazel=$(SONIC_BAZEL_DOCKER_IMAGES)
+\t@echo imported=$(SONIC_BAZEL_IMPORTED_DEBS)
+\t@echo candidates=$(SONIC_BAZEL_P4_CANDIDATES)
+\t@echo native=$(filter $(SONIC_BAZEL_P4_CANDIDATES),$(SONIC_MAKE_DEBS))
+\t@echo derived=$(filter $(SONIC_BAZEL_P4_CANDIDATES),$(SONIC_DERIVED_DEBS))
+\t@echo runtime_inputs=$($(DOCKER_SYNCD_BASE)_BAZEL_DEPENDS)
+\t@echo debug_inputs=$($(DOCKER_SYNCD_BASE_DBG)_BAZEL_DEPENDS)
+\t@echo development=$(DASH_SAI_DEV)
+\t@echo development_requires=$($(DASH_SAI_DEV)_DEPENDS)
+\t@echo native_source_inputs=$(SYNCD_VS_BAZEL_SOURCE_DEBS)
+.PHONY: image_handoff
+image_handoff: $($(DOCKER_SYNCD_BASE)_BAZEL_DEPENDS)
+\t@touch image-handoff-executed
+"""
+
+    def test_p4_imports_supply_syncd_runtime_without_installing_the_development_package(self):
+        """The shared selector routes four imported packages into both image variants."""
+        values = self.values(self.run_make(make_source=self.p4_makefile(), BUILD_WITH_BAZEL_WHEN_AVAILABLE="y"))
+        lock = json.loads((ROOT / "tools/bazel/p4/packages.lock.json").read_text())
+        packages = {package["name"]: package["filename"] for package in lock["packages"]}
+        self.assertEqual(set(values["imported"].split()), set(packages.values()))
+        self.assertEqual(values["native"], "")
+        self.assertEqual(values["derived"], "")
+        self.assertEqual(values["bazel"], "docker-syncd-vs.gz")
+        self.assertEqual(values["development"], packages["libsai-dev"])
+        self.assertEqual(set(values["development_requires"].split()), {packages["libsai"]})
+        for variant in ("runtime", "debug"):
+            inputs = values[variant + "_inputs"].split()
+            for name in ("p4lang-pi", "p4lang-bmv2", "p4lang-p4c", "libsai"):
+                self.assertIn("target/debs/trixie/" + packages[name], inputs)
+            self.assertNotIn("target/debs/trixie/" + packages["libsai-dev"], inputs)
+            # P4 routing must not put the three source-owned libraries back into
+            # the native image handoff. The separate base-symbol input survives.
+            for package in values["native_source_inputs"].split():
+                if package != "libswsscommon-dbgsym_1.0.0_amd64.deb":
+                    self.assertNotIn("target/debs/trixie/" + package, inputs)
+
+    def test_p4_and_image_profiles_fall_back_independently(self):
+        """A native P4 debug build can still feed OCI; ASAN disables both paths."""
+        for settings, image_selected in (({"SONIC_DEBUGGING_ON": "y"}, True),
+                                         ({"ENABLE_ASAN": "y"}, False),
+                                         ({"BUILD_WITH_BAZEL_WHEN_AVAILABLE": "n"}, False)):
+            with self.subTest(settings=settings):
+                values = self.values(self.run_make(make_source=self.p4_makefile(),
+                    **{"BUILD_WITH_BAZEL_WHEN_AVAILABLE": "y", **settings}))
+                self.assertEqual(values["imported"], "")
+                self.assertEqual(bool(values["bazel"]), image_selected)
+                self.assertEqual(set(values["native"].split() + values["derived"].split()),
+                                 set(values["candidates"].split()))
+                self.assertEqual(values["derived"], values["development"])
+
+    def test_failed_import_or_native_transition_stops_the_existing_syncd_handoff(self):
+        """Existing package files cannot hide an import failure or bypass its profile guard."""
+        source = self.p4_makefile()
+        values = self.values(self.run_make(make_source=source, BUILD_WITH_BAZEL_WHEN_AVAILABLE="y"))
+        with tempfile.TemporaryDirectory(prefix="syncd-p4-handoff-") as temporary:
+            directory = Path(temporary)
+            for name in ("rules", "platform"):
+                (directory / name).symlink_to(ROOT / name, target_is_directory=True)
+            (directory / ".platform").write_text("vs\n")
+            stage = directory / "tools/bazel/p4/stage.py"
+            stage.parent.mkdir(parents=True)
+            # A rejecting stand-in exercises the production Make dependency
+            # chain. These files are text sentinels, never generated DEBs.
+            stage.write_text("raise SystemExit('fixture P4 import rejected')\n")
+            for relative in values["runtime_inputs"].split():
+                path = directory / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"previous package or metadata input\n")
+            runtime = {path: (directory / path).read_bytes() for path in values["runtime_inputs"].split()}
+            result = self.run_make("image_handoff", directory=directory,
+                make_source=source, BUILD_WITH_BAZEL_WHEN_AVAILABLE="y")
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("fixture P4 import rejected", result.stderr)
+            self.assertFalse((directory / "image-handoff-executed").exists())
+            imported = values["imported"].split()[0]
+            (directory / "target/debs/trixie" / (imported + ".bazel-imported")).write_text("imported\n")
+            result = self.run_make("image_handoff", directory=directory,
+                make_source=source, BUILD_WITH_BAZEL_WHEN_AVAILABLE="y", SONIC_DEBUGGING_ON="y")
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("was imported by Bazel; clean it", result.stderr)
+            self.assertNotIn("fixture P4 import rejected", result.stderr)
+            self.assertFalse((directory / "image-handoff-executed").exists())
+            self.assertEqual({path: (directory / path).read_bytes() for path in runtime}, runtime)
 
     def test_dockerfile_direct_apt_packages_remain_declared(self):
         """The reviewed OCI APT declarations and lock must cover the legacy Dockerfile requests."""

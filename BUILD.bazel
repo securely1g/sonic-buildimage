@@ -1,6 +1,6 @@
 # Expose Make-generated inputs to Bazel.
 #
-# Make prepares the config-engine OCI base, Scapy wheel, Debian packages and
+# Make prepares the config-engine OCI base, Scapy wheel, Debian package inputs and
 # service manifests under target/ before Bazel assembles the images. This file
 # declares existing files as Bazel inputs; it does not generate them or invoke Make.
 #
@@ -34,7 +34,15 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# Syncd extracts these existing Make packages with the upstream BSD tar toolchain.
+# Compare the Make-published archives with the exact OCI outputs in the manual
+# full-image check, after Make has completed both image targets.
+exports_files([
+    "target/docker-syncd-vs.gz",
+    "target/docker-syncd-vs-dbg.gz",
+])
+
+# Syncd extracts existing packages with the upstream BSD tar toolchain. P4/DASH
+# packages come from the reviewed release cache; other packages come from Make.
 # Keep filenames explicit: adding another file under target/debs must not change
 # the image. Installation order belongs in platform/vs/docker-syncd-vs/BUILD.bazel.
 exports_files([

@@ -9,9 +9,16 @@ needed.
 ## Build and reuse
 
 For native AMD64 Trixie VS with DASH enabled, normal release builds select this
-path when `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`. Existing consumers, including the
-syncd OCI handoff in [PR #13](https://github.com/securely1g/sonic-buildimage/pull/13),
-keep using the same files in `target/debs/trixie`.
+path when `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`. [PR #14](https://github.com/securely1g/sonic-buildimage/pull/14)
+supplies this import; [PR #13](https://github.com/securely1g/sonic-buildimage/pull/13)
+integrates it into the shared Syncd OCI flow.
+Consumers keep using the same files in `target/debs/trixie`.
+
+Syncd imports four of the five packages into runtime: `p4lang-pi`,
+`p4lang-bmv2`, `p4lang-p4c` and DASH `libsai`. The fifth, `libsai-dev`, supplies
+headers and development files to remaining native build consumers; it is not
+an additional runtime package in the Syncd image. The image graph, including
+its other native inputs, is documented in the [Syncd README](../../../platform/vs/docker-syncd-vs/bazel/README.md).
 
 To restore only these packages from a clean checkout:
 
@@ -34,8 +41,11 @@ When SBOM generation is enabled, each imported package records its pinned
 download URL and SHA256, without attributing it to the current native source
 checkout.
 
-Debug, profiling, ASAN, cross/QEMU, source-archive and other unsupported profiles
-keep their native rules. Switching back after an import fails with a specific
+Producer debug mode (`SONIC_DEBUGGING_ON=y`), profiling, ASAN, cross/QEMU,
+source-archive and other unsupported profiles keep their native rules. A `-dbg`
+container built in the ordinary release profile instead extends the runtime
+image with tools and available matching symbols; its name alone does not
+disable the cached P4 inputs. Switching back after an import fails with a specific
 per-package clean command, preserving the imported files until that command is
 run. This prevents an existing release package from silently satisfying a
 different build profile.
@@ -53,7 +63,10 @@ contains the unchanged DEBs, provenance, source-recovery patch and license
 notices. It preserves packages from the earlier local build. Its producer
 checkout was not a landed master revision and used recorded local download
 fixes; this is a historical binary import, not a clean source build of current
-master. The selected tuple differs from PR #13's earlier reference tuple.
+master. The selected package set differs from PR #13's earlier reference set,
+even where the package versions match. The combined revision therefore needs
+its own Syncd runtime/debug checks against these exact hashes; the earlier
+image results cannot establish compatibility for the cached set.
 
 When sources, dependencies or the supported build configuration change:
 
@@ -82,4 +95,11 @@ generation. It also runs the production Make SBOM recipe on a restored package,
 checking its download URL, hash and source attribution without invoking a package
 producer. Missing cached bytes, corrupt bytes and incorrect pins must fail.
 It only modifies its own temporary cache. These tests validate importing and
-restoring existing packages; they do not recompile the native P4 chain.
+restoring existing packages; they do not recompile the native P4 chain. The
+combined Syncd checks must also verify that Make passes the restored files to
+its current OCI targets. After preparing the real images, the manual
+`//tools/bazel/tests:syncd_p4_images_test` target checks the four runtime package
+identities against this lock and applies the shared image validators; see the
+[Syncd validation instructions](../../../platform/vs/docker-syncd-vs/bazel/README.md#validation). A passing cache test alone proves neither full VS installer assembly
+nor guest boot or packet forwarding. ARM64 packages and native P4/DASH debug
+side outputs remain outside this import.
