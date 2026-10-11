@@ -85,7 +85,9 @@ def receipt(kind, architecture="amd64"):
         return {"status": "passed", "revision": REVISION, **unsafe,
                 "tests": {"//tests:contract_" + str(number): "passed" for number in range(2)},
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
-                               "source_contract": {"dist/BUILD.bazel": DIGEST}}}
+                               "source_contract": {"dist/BUILD.bazel": DIGEST},
+                               "artifact_sha256": {Path(name).name: hashlib.sha256(b"public build output\n").hexdigest()
+                                                   for _, name, kind in artifacts.FILES["source"] if kind == "binary"}}}
     if kind == "syncd":
         return {"status": "passed", "targets": ["//tests:contract_" + str(number) for number in range(2)],
                 "source_hashes": {"bazel/apt.lock.json": DIGEST}, "module_lock_sha256": DIGEST,
@@ -290,6 +292,40 @@ class PublicArtifactsTest(unittest.TestCase):
                 summary, paths, ready = self.prepare(kind)
                 self.assertFalse(ready, summary)
                 self.assertEqual(paths, [])
+
+    def test_source_publication_requires_exact_validated_archive_hashes(self):
+        """Do not upload untested, missing or changed archives under a passing source receipt."""
+        for change in ("missing-bindings", "missing-archive", "extra-archive", "changed-bytes"):
+            with self.subTest(change=change):
+                seed(self.root, "source")
+                name = "artifacts/swss/receipt.json"
+                value = json.loads((self.root / name).read_text())
+                validated = value["validation"]["artifact_sha256"]
+                if change == "missing-bindings": del value["validation"]["artifact_sha256"]
+                elif change == "missing-archive": del validated["swss.tar"]
+                elif change == "extra-archive": validated["unpublished.tar"] = DIGEST
+                else: write(self.root, "artifacts/swss/swss.tar", b"different configured output")
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare("source")
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
+                self.assertIn({"input": "source-receipt", "reason": "validated-artifact-mismatch"}, summary["blocked"])
+
+    def test_source_summary_keeps_safe_tested_archive_bindings(self):
+        """Preserve the exact filename-to-digest proof in the public source summary."""
+        seed(self.root, "source")
+        summary, _, ready = self.prepare("source")
+        self.assertTrue(ready)
+        self.assertEqual(summary["receipts"]["source"]["artifact_sha256"],
+                         receipt("source")["validation"]["artifact_sha256"])
+
+    def test_archive_binding_names_and_digests_are_validated_before_publication(self):
+        """Archive bindings cannot leak paths or disguise malformed digests as validation evidence."""
+        for value in ({"../secret.tar": DIGEST}, {"subdir/output.tar": DIGEST}, {"output.tar": SENTINEL}, []):
+            with self.subTest(value=value), self.assertRaises(artifacts.PublicArtifactError):
+                document = receipt("source")
+                document["validation"]["artifact_sha256"] = value
+                artifacts.receipt_summary(document, "source")
 
     def test_source_requires_package_validation_evidence(self):
         """A discovered test suite cannot replace required archive/program/debug/source checks."""

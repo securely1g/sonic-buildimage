@@ -8,7 +8,8 @@ import tarfile
 import tempfile
 import unittest
 
-import package_receipts
+from tools.bazel.oci import package_receipts
+from tools.bazel.tests.oci_contract_fixture import owner_policies
 
 
 parser = argparse.ArgumentParser()
@@ -16,10 +17,12 @@ for name in ("payload", "manifest", "repeat-payload", "repeat-manifest", "image"
     parser.add_argument("--" + name, required=True, type=Path)
 parser.add_argument("--package", action="append", type=json.loads, required=True)
 args, remaining = parser.parse_known_args()
+OWNER_POLICIES, remaining = owner_policies(remaining)
 
 
 class DirectPackageInputsTest(unittest.TestCase):
     def test_direct_tools_preserve_original_package_identities(self):
+        """Keep original DEB and control hashes when the shared importer creates an OCI payload."""
         receipt = json.loads(args.manifest.read_text())
         self.assertEqual([p["package"] for p in receipt["packages"]], ["example-gz", "example-xz"])
         expected = {
@@ -38,6 +41,7 @@ class DirectPackageInputsTest(unittest.TestCase):
         self.assertEqual(receipt["payload"]["sha256"], hashlib.sha256(args.payload.read_bytes()).hexdigest())
 
     def test_order_ownership_links_and_extended_metadata_survive(self):
+        """Preserve declared package order, hardlinks, owners, modes and extended TAR metadata."""
         with tarfile.open(args.payload) as archive:
             members = archive.getmembers()
             values = [archive.extractfile(member).read() for member in members if member.isfile()]
@@ -54,6 +58,7 @@ class DirectPackageInputsTest(unittest.TestCase):
                     self.assertEqual(member.mode, 0o640)
 
     def test_oci_consumes_the_exact_declared_payload(self):
+        """Require the OCI layer descriptor and bytes to match the imported payload exactly."""
         index = json.loads((args.image / "index.json").read_text())
         descriptor = index["manifests"][0]
         manifest_bytes = (args.image / "blobs" / descriptor["digest"].replace(":", "/")).read_bytes()
@@ -65,29 +70,33 @@ class DirectPackageInputsTest(unittest.TestCase):
         self.assertEqual((args.image / "blobs" / layer["digest"].replace(":", "/")).read_bytes(), args.payload.read_bytes())
 
     def test_repeat_actions_are_byte_identical(self):
+        """Repeated extraction of identical declared packages must produce identical payloads and receipts."""
         self.assertEqual(args.payload.read_bytes(), args.repeat_payload.read_bytes())
         self.assertEqual(args.manifest.read_bytes(), args.repeat_manifest.read_bytes())
 
     def test_rejects_foreign_and_duplicate_packages(self):
+        """Reject a foreign package architecture or repeated package identity before publication."""
         with self.assertRaisesRegex(ValueError, "foreign Debian architecture"):
-            package_receipts.receipt([args.package[2]], {}, args.payload)
+            package_receipts.receipt([args.package[2]], {}, args.payload, architecture="amd64")
         with self.assertRaisesRegex(ValueError, "duplicate Debian package"):
-            package_receipts.receipt([args.package[0], args.package[0]], {}, args.payload)
+            package_receipts.receipt([args.package[0], args.package[0]], {}, args.payload, architecture="amd64")
 
     def test_debug_receipt_cannot_replace_a_runtime_package(self):
+        """Debug provenance must not silently change a package already recorded in runtime."""
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "runtime.json"
             runtime = json.loads(args.manifest.read_text())
             runtime["packages"][0]["source_sha256"] = "0" * 64
             parent.write_text(json.dumps(runtime))
             with self.assertRaisesRegex(ValueError, "changes a runtime package"):
-                package_receipts.receipt(args.package[:2], {}, args.payload, parent)
+                package_receipts.receipt(args.package[:2], {}, args.payload, parent, architecture="amd64")
 
     def test_required_packages_and_verified_fields_fail_closed(self):
+        """Missing required packages and overrides of verified facts cannot produce a valid receipt."""
         with self.assertRaisesRegex(ValueError, "missing required package"):
-            package_receipts.receipt(args.package[:2], {"required_packages": ["absent"]}, args.payload)
+            package_receipts.receipt(args.package[:2], {"required_packages": ["absent"]}, args.payload, architecture="amd64")
         with self.assertRaisesRegex(ValueError, "overrides package facts"):
-            package_receipts.receipt(args.package[:2], {"packages": []}, args.payload)
+            package_receipts.receipt(args.package[:2], {"packages": []}, args.payload, architecture="amd64")
 
 
 if __name__ == "__main__":

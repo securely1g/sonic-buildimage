@@ -24,7 +24,7 @@ OPTIONS = (
     "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no",
 )
 SOURCE_FILES = (
-    ".bazelversion", ".bazelrc", "MODULE.bazel",
+    ".bazelversion", ".bazelrc", ".bazelignore", "MODULE.bazel",
     "tools/bazel/ci/container.py", "tools/bazel/ci/build.py",
     "tools/bazel/ci/command_log.py", "tools/bazel/ci/bazel_commands.py",
     "tools/bazel/ci/artifact_validation.py", "tools/bazel/ci/resolution.py",
@@ -189,7 +189,14 @@ def run(container, *, workspace, artifacts, bazel, options, source_files=()):
         require(len(validations) <= 1, "CI suite produced ambiguous package validation summaries")
         if validations:
             receipt["validation"] = next(iter(validations.values()))
-        build.collect_artifacts(workspace, artifacts, receipt, artifact_target, bazel=bazel, options=options)
+        exported = build.collect_artifacts(workspace, artifacts, receipt, artifact_target, bazel=bazel, options=options)
+        if validations:
+            validation = receipt["validation"]
+            require(isinstance(validation, dict), "package validation must be an object")
+            validated = public_artifacts.artifact_hashes(validation.get("artifact_sha256", {}))
+            published = {name: receipt["artifacts"][name]["sha256"] for name in exported}
+            require(validated and validated == published,
+                    "published artifacts differ from validated archive names or bytes")
         receipt["resolution"] = resolution.collect(workspace, artifacts, bazel=[bazel])
         check_versions(artifacts / "module-graph.json")
         require({name: sha(workspace / name) for name in sources} == before,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise syncd-vs OCI checks with complete synthetic OCI layouts and tars."""
+"""Exercise shared OCI configuration and payload checks with an unrelated image policy."""
 
 import copy
 import gzip
@@ -13,22 +13,25 @@ import tarfile
 import tempfile
 import unittest
 
-OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
-ROOT = OWNER.parents[1]
+ROOT = Path(__file__).absolute().parents[4]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(OWNER / "bazel"))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as layer, write_layout
-from tools.bazel.ci import syncd_image as subject
-from tools.bazel.ci import syncd_payloads as validate_payloads
-import package_contract as source_packages
+from tools.bazel.oci import image_validation as subject
+from tools.bazel.oci import package_payloads as validate_payloads
+from tools.bazel.oci import package_contract as source_packages
+from tools.bazel.tests.oci_contract_fixture import identity, owner_policies, package_policy, source_contract
+
+OWNER_POLICIES = {}
+ALTERNATIVE_PATHS = tuple("etc/alternatives/" + name for name in ("editor", "ex", "rview", "vi", "view"))
+DEBUG_ALTERNATIVES = [{"paths": list(ALTERNATIVE_PATHS), "before": "/usr/bin/vim.tiny", "after": "/usr/bin/vim.basic"}]
 
 
-def write_image(path, layers, manifest, *, entrypoint=None):
+def write_image(path, layers, manifest, *, entrypoint=None, settings=None):
     config = {
         "architecture": "amd64", "os": "linux",
         "rootfs": {"type": "layers", "diff_ids": [digest(data) for data in layers]},
         "config": {"Entrypoint": entrypoint or ["/usr/local/bin/supervisord"],
-                   "Env": ["DEBIAN_FRONTEND=noninteractive"],
+                   "Env": ["DEBIAN_FRONTEND=noninteractive"], **(settings or {}),
                    "Labels": {"com.azure.sonic.manifest": json.dumps(manifest, separators=(",", ":"))}},
     }
     write_layout(path, oci_files(json.dumps(config, separators=(",", ":")).encode(), layers))
@@ -36,9 +39,27 @@ def write_image(path, layers, manifest, *, entrypoint=None):
 
 class ValidateImageTest(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="syncd-image-test-")
+        temporary = tempfile.TemporaryDirectory(prefix="oci-image-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.policy = package_policy()
+        self.source_contract = source_contract()
+        self.source_contract_path = self.root / "source-contract.json"
+        self.source_contract_path.write_text(json.dumps(self.source_contract))
+        self.policy["image_validation"] = {
+            "entrypoint": ["/usr/local/bin/supervisord"], "command": None,
+            "environment": {"DEBIAN_FRONTEND": "noninteractive"},
+            "startup_files": {
+                "usr/bin/start.sh": {"source": "start.sh", "mode": 0o755},
+                "etc/supervisor/conf.d/supervisord.conf": {"source": "supervisord.conf", "mode": 0o644},
+                "etc/supervisor/critical_processes": {"source": "critical_processes", "mode": 0o644},
+            },
+            "debug_alternatives": DEBUG_ALTERNATIVES,
+            "runtime_tag": "docker-example:latest", "debug_tag": "docker-example-dbg:latest",
+        }
+        for name in ("start.sh", "supervisord.conf", "critical_processes"):
+            (self.root / name).write_text("fixture " + name + "\n")
+        self.filter_path = ROOT / "dockers/docker-base-trixie/dpkg_01_drop"
         self.runtime_manifest = self.root / "runtime-manifest.json"
         self.debug_manifest = self.root / "debug-manifest.json"
         self.runtime_manifest.write_text('{"container_name":"syncd","version":"1.0.0"}\n')
@@ -56,7 +77,7 @@ class ValidateImageTest(unittest.TestCase):
             ("supervisord.conf", "etc/supervisor/conf.d/supervisord.conf", 0o644),
             ("critical_processes", "etc/supervisor/critical_processes", 0o644),
         ):
-            copied.append((destination, (ROOT / "dockers/docker-syncd-vs/legacy" / source).read_bytes(), mode))
+            copied.append((destination, (self.root / source).read_bytes(), mode))
         self.config_layer = layer(copied)
         self.runtime_layers = [self.base, self.runtime_payload.read_bytes(), self.config_layer]
         self.debug_layers = self.runtime_layers + [self.debug_payload.read_bytes()]
@@ -65,7 +86,7 @@ class ValidateImageTest(unittest.TestCase):
     def handoff(self, variant, runtime=None):
         directory = self.root / (variant + "-handoff")
         directory.mkdir(parents=True)
-        package = "syncd-vs" if variant == "runtime" else "syncd-vs-dbgsym"
+        package = "example-runtime" if variant == "runtime" else "example-runtime-dbgsym"
         payload = directory / "payload.tar"
         packages = [(package, "1.0", [("usr/share/" + package + "/data", package.encode(), 0o644)])]
         if variant == "runtime":
@@ -83,8 +104,8 @@ class ValidateImageTest(unittest.TestCase):
             entries.extend(members)
         payload.write_bytes(layer(entries))
         digest = hashlib.sha256(payload.read_bytes()).hexdigest()
-        value = {"schema": 1, "image": "docker-syncd-vs", "variant": variant,
-                 "architecture": "amd64", "distribution": "trixie", "features": dict(validate_payloads.FEATURES),
+        value = {"schema": 1, "image": self.policy["image"], "variant": variant,
+                 "architecture": "amd64", "distribution": "trixie", "features": dict(self.policy["features"]),
                  "required_packages": [record["package"] for record in records], "debug_apt_packages": [], "packages": records,
                  "payload": {"path": "payload.tar", "sha256": digest, "size": payload.stat().st_size, "members": len(entries)}}
         if runtime:
@@ -115,7 +136,7 @@ class ValidateImageTest(unittest.TestCase):
                                "size": len(combined.getvalue()), "members": sum(item["payload_members"] for item in manifest["packages"])}
         self.debug_handoff.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-    def write_archive(self, path, *, tag="docker-syncd-vs:latest", config_bytes=None, corrupt_layer=False):
+    def write_archive(self, path, *, tag="docker-example:latest", config_bytes=None, corrupt_layer=False):
         _, manifest, _, _ = subject.image(self.root / "runtime.oci")
         digest = manifest["config"]["digest"]
         if config_bytes is None:
@@ -138,7 +159,8 @@ class ValidateImageTest(unittest.TestCase):
     def validate(self, **kwargs):
         return subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
                                        self.runtime_handoff, self.debug_handoff,
-                                       self.runtime_manifest, self.debug_manifest, ROOT, fixture=True, **kwargs)
+                                       self.runtime_manifest, self.debug_manifest, self.root, fixture=True,
+                                       policy=self.policy, dpkg_filter_path=self.filter_path, **kwargs)
 
     def inherited_symbols(self, *, install=True):
         """Add an independently recorded imported pair to the image fixtures."""
@@ -176,7 +198,7 @@ class ValidateImageTest(unittest.TestCase):
 
     def source_archives(self):
         """Model owner tar payloads independently of Make's remaining package handoff."""
-        records = copy.deepcopy(json.loads((OWNER / "config/source_packages.json").read_bytes())["packages"])
+        records = copy.deepcopy(self.source_contract["packages"])
         directory = self.root / "source"
         directory.mkdir()
         runtime_entries, debug_entries = [], []
@@ -201,11 +223,11 @@ class ValidateImageTest(unittest.TestCase):
         runtime_tar, debug_tar = directory / "runtime.tar", directory / "debug.tar"
         runtime_tar.write_bytes(layer(runtime_entries))
         debug_tar.write_bytes(layer(debug_entries))
-        receipt = {**source_packages.IDENTITY, "schema": source_packages.RECEIPT_SCHEMA,
+        receipt = {**identity(self.policy), "schema": source_packages.RECEIPT_SCHEMA,
                    "kind": "bazel_source", "packages": records,
-                   "contract_sha256": subject.sha(OWNER / "config/source_packages.json"),
+                   "contract_sha256": subject.sha(self.source_contract_path),
                    "base_manifest_digest": "sha256:" + "b" * 64,
-                   "module_file_sha256": {name: "a" * 64 for name in ("sonic-swss-common", "sonic-sairedis")}}
+                   "module_file_sha256": {name: "a" * 64 for name in {record["source"]["module"] for record in records}}}
         receipt["payload"] = {"sha256": subject.sha(runtime_tar), "size": runtime_tar.stat().st_size,
                               "members": len(source_packages.inventory(runtime_tar))}
         receipt_path = directory / "receipt.json"
@@ -215,14 +237,48 @@ class ValidateImageTest(unittest.TestCase):
         self.write_images()
         return {"source_runtime_tar": runtime_tar, "source_debug_tar": debug_tar, "source_receipt": receipt_path}
 
+    def test_both_owner_policies_use_their_declared_input_adapters(self):
+        """SWSS validates source-only layers; Syncd validates retained inputs with the same engine."""
+        if not OWNER_POLICIES:
+            self.skipTest("BUILD-generated owner policies are supplied by the Bazel target")
+        for name, policy in OWNER_POLICIES.items():
+            with self.subTest(owner=name):
+                retained = policy["retained_source"] == "make"
+                runtime_handoff = self.runtime_handoff if retained else None
+                debug_handoff = self.debug_handoff if retained else None
+                if retained:
+                    value = json.loads(runtime_handoff.read_text())
+                    value.update(identity(policy), features=policy["features"])
+                    runtime_handoff.write_text(json.dumps(value))
+                    value = json.loads(debug_handoff.read_text())
+                    value.update(identity(policy), features=policy["features"],
+                                 debug_apt_packages=policy["debug_tools"],
+                                 runtime_manifest_sha256=subject.sha(runtime_handoff))
+                    debug_handoff.write_text(json.dumps(value))
+                expectations = policy["image_validation"]
+                startup = [(path, (ROOT / item["source"]).read_bytes(), item["mode"])
+                           for path, item in expectations["startup_files"].items()]
+                runtime_layers = [self.base] + ([self.runtime_payload.read_bytes()] if retained else []) + [layer(startup)]
+                debug_layers = runtime_layers + ([self.debug_payload.read_bytes()] if retained else [])
+                settings = {"Entrypoint": expectations["entrypoint"], "Cmd": expectations["command"],
+                            "Env": [key + "=" + value for key, value in expectations["environment"].items()]}
+                for variant, layers in (("runtime", runtime_layers), ("debug", debug_layers)):
+                    write_image(self.root / (variant + ".oci"), layers,
+                                json.loads(getattr(self, variant + "_manifest").read_text()), settings=settings)
+                result = subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
+                    runtime_handoff, debug_handoff, self.runtime_manifest, self.debug_manifest, ROOT,
+                    policy=policy, fixture=True, dpkg_filter_path=self.filter_path if retained else None)
+                self.assertEqual(result["runtime_package_count"], 2 if retained else 0)
+                self.assertEqual(result["debug_package_count"], 1 if retained else 0)
+
     def test_source_payloads_and_receipt_are_bound_to_the_images(self):
         """Final validation proves the reused source bytes and their recorded owners are present."""
         inputs = self.source_archives()
         result = self.validate(**inputs)
         self.assertEqual(result["source_receipt_sha256"], subject.sha(inputs["source_receipt"]))
-        self.assertEqual({item["package"] for item in result["source_packages"]["packages"]}, set(source_packages.PACKAGES))
-        self.assertGreater(result["source_runtime_payload_entries"], 3)
-        self.assertEqual(result["source_debug_payload_entries"], 3)
+        self.assertEqual({item["package"] for item in result["source_packages"]["packages"]}, set(source_packages.package_names(self.source_contract)))
+        self.assertEqual(result["source_runtime_payload_entries"], 1)
+        self.assertEqual(result["source_debug_payload_entries"], len(self.source_contract["packages"]))
         inputs["source_runtime_tar"].write_bytes(inputs["source_runtime_tar"].read_bytes() + b"changed")
         with self.assertRaisesRegex(ValueError, "source receipt archive hash differs"):
             self.validate(**inputs)
@@ -230,7 +286,7 @@ class ValidateImageTest(unittest.TestCase):
     def test_debug_cannot_replace_a_source_library(self):
         """Debug adds matching symbols while preserving every source-built runtime ELF."""
         inputs = self.source_archives()
-        self.debug_layers.append(layer([("usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0",
+        self.debug_layers.append(layer([("usr/lib/libexample.so.2.4.0",
                                          self.ssh_elf + b"different library", 0o755)]))
         self.write_images()
         with self.assertRaisesRegex(ValueError, "debug image changes the source runtime payload"):
@@ -251,12 +307,87 @@ class ValidateImageTest(unittest.TestCase):
             self.validate(source_runtime_tar=self.runtime_payload)
         complete = {name: self.runtime_payload for name in
                     ("base_path", "apt_layer", "debug_tools_layer", "runtime_apt_selection", "debug_apt_selection",
-                     "package_state_contract", "runtime_archive", "debug_archive")}
+                     "runtime_archive", "debug_archive", "apt_lock_path")}
         with self.assertRaisesRegex(ValueError, "complete validation requires source"):
             subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci", self.runtime_handoff,
-                                    self.debug_handoff, self.runtime_manifest, self.debug_manifest, ROOT, **complete)
+                                    self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root, policy=self.policy,
+                                    source_contract_path=self.source_contract_path, dpkg_filter_path=self.filter_path, **complete)
+
+    def complete_make_only_inputs(self):
+        """Supply real OCI descriptors, overlay receipts and save archives for the production path."""
+        self.policy["native"].update(require_source=False, require_imported_symbols=False)
+        self.policy["image_validation"].update(startup_files={}, debug_alternatives=[],
+                                               required_elf_paths=["usr/bin/ssh"], package_state=False)
+        base_stream = io.BytesIO()
+        with tarfile.open(fileobj=base_stream, mode="w") as archive:
+            directories = {".", "usr", "var", *[item["target"] for item in validate_payloads.DIRECTORY_ALIASES.values()]}
+            for name in sorted(directories):
+                member = tarfile.TarInfo(name)
+                member.type, member.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(member)
+            for name, item in validate_payloads.DIRECTORY_ALIASES.items():
+                member = tarfile.TarInfo(name)
+                member.type, member.mode, member.linkname = tarfile.SYMTYPE, 0o777, item["linkname"]
+                archive.addfile(member)
+        base = self.root / "managed-base.oci"
+        write_image(base, [base_stream.getvalue()], {"base": True})
+        apt = self.root / "apt.tar"
+        apt.write_bytes(layer([]))
+        tools = self.root / "tools.tar"
+        tools.write_bytes(layer([("usr/share/example/debug-tool", b"debug addition", 0o644)]))
+        self.runtime_layers = [base_stream.getvalue(), self.runtime_payload.read_bytes(), apt.read_bytes()]
+        self.debug_layers = self.runtime_layers + [tools.read_bytes(), self.debug_payload.read_bytes()]
+        self.write_images()
+        lock = self.root / "apt-lock.json"
+        lock.write_text('{"version": 2}\n')
+        selections = {}
+        for variant, selected_base, manifest in (
+                ("runtime", base, self.runtime_handoff),
+                ("debug", self.root / "runtime.oci", self.debug_handoff)):
+            selection = self.root / (variant + "-selection.json")
+            selection.write_text(json.dumps({"schema": 1, "variant": variant,
+                "base_manifest_digest": subject.image(selected_base)[0]["digest"],
+                "apt_lock_sha256": subject.sha(lock), "make_manifest_sha256": subject.sha(manifest),
+                "selected": [], "skipped_base": [], "skipped_make": [], "changed_non_elf_base_paths": []}))
+            selections[variant + "_apt_selection"] = selection
+        archives = {}
+        for variant, layers in (("runtime", self.runtime_layers), ("debug", self.debug_layers)):
+            layout = self.root / (variant + ".oci")
+            manifest = subject.image(layout)[1]
+            config = (layout / "blobs/sha256" / manifest["config"]["digest"].split(":", 1)[1]).read_bytes()
+            names = ["layer" + str(index) + ".tar" for index in range(len(layers))]
+            saved_manifest = [{"Config": "config.json", "RepoTags": [self.policy["image_validation"][variant + "_tag"]],
+                               "Layers": names}]
+            entries = [("config.json", config, 0o644), ("manifest.json", json.dumps(saved_manifest).encode(), 0o644)]
+            entries.extend((name, contents, 0o644) for name, contents in zip(names, layers))
+            archive = self.root / (variant + "-save.tar.gz")
+            archive.write_bytes(gzip.compress(layer(entries), mtime=0))
+            archives[variant + "_archive"] = archive
+        return {"base_path": base, "apt_layer": apt, "debug_tools_layer": tools,
+                "apt_lock_path": lock, **selections, **archives}
+
+    def test_complete_make_only_image_needs_no_source_contract(self):
+        """The production image validator accepts complete Make-only evidence without source receipts."""
+        inputs = self.complete_make_only_inputs()
+        result = subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
+            self.runtime_handoff, self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root,
+            policy=self.policy, dpkg_filter_path=self.filter_path, **inputs)
+        self.assertEqual(result["validation_mode"], "complete")
+        self.assertIsNone(result["source_packages"])
+        self.assertEqual(result["archives"]["runtime"]["tag"], "docker-example:latest")
+        self.assertEqual(result["runtime_package_count"], 2)
+
+    def test_complete_image_requires_source_contract_when_policy_requires_sources(self):
+        """Full overlay evidence cannot substitute for the source contract selected by image policy."""
+        inputs = self.complete_make_only_inputs()
+        self.policy["native"]["require_source"] = True
+        with self.assertRaisesRegex(ValueError, "requires.*source contract"):
+            subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
+                self.runtime_handoff, self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root,
+                policy=self.policy, dpkg_filter_path=self.filter_path, **inputs)
 
     def test_complete_fixture_preserves_configuration_and_payloads(self):
+        """Validate runtime ancestry, configuration and imported files in complete synthetic layouts."""
         result = self.validate()
         self.assertEqual(result["validation_mode"], "fixture")
         self.assertEqual(result["runtime_layers"], 3)
@@ -266,6 +397,7 @@ class ValidateImageTest(unittest.TestCase):
         self.assertEqual(result["changed_non_elf_runtime_paths_in_debug"], [])
 
     def test_entrypoint_and_runtime_ancestry_are_required(self):
+        """Require the configured entrypoint and exact runtime layer prefix in the debug image."""
         self.write_images(runtime_entrypoint=["/bin/false"])
         with self.assertRaisesRegex(ValueError, "entrypoint differs"):
             self.validate()
@@ -275,6 +407,7 @@ class ValidateImageTest(unittest.TestCase):
             self.validate()
 
     def test_missing_package_payload_is_rejected(self):
+        """A valid receipt cannot replace the package bytes missing from the final image."""
         self.runtime_layers = [self.base, self.config_layer]
         self.debug_layers = self.runtime_layers + [self.debug_payload.read_bytes()]
         self.write_images()
@@ -282,6 +415,7 @@ class ValidateImageTest(unittest.TestCase):
             self.validate()
 
     def test_debug_cannot_replace_a_deployed_elf(self):
+        """Debug additions must preserve every native executable already installed in runtime."""
         header = bytearray(64)
         header[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<HH", header, 16, 3, 62)
@@ -297,7 +431,7 @@ class ValidateImageTest(unittest.TestCase):
         self.append_debug_package("openssh-client", "1.0+fips", [("usr/bin/ssh", self.ssh_elf, 0o755)])
         self.debug_layers = self.runtime_layers + [self.debug_payload.read_bytes()]
         self.write_images()
-        with self.assertRaisesRegex(ValueError, "must inherit runtime FIPS openssh-client"):
+        with self.assertRaisesRegex(ValueError, "must inherit runtime package: openssh-client"):
             self.validate()
 
     def test_debug_cannot_mutate_the_runtime_openssh_elf(self):
@@ -313,39 +447,43 @@ class ValidateImageTest(unittest.TestCase):
         manifest["packages"][-1]["version"] = "1.0"
         manifest["packages"][-1]["control_fields"]["Version"] = "1.0"
         self.runtime_handoff.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-        with self.assertRaisesRegex(ValueError, "requires the Make FIPS openssh-client"):
+        with self.assertRaisesRegex(ValueError, "requires retained package openssh-client"):
             self.validate()
 
     def test_docker_archive_tag_config_and_gzip_header_are_checked(self):
-        path = self.root / "docker-syncd-vs.gz"
+        """Verify installer-facing archive tags, OCI configuration, layer bytes and reproducible gzip metadata."""
+        path = self.root / "docker-example.gz"
         digest = self.write_archive(path)
         descriptors = subject.image(self.root / "runtime.oci")[1]["layers"]
-        result = subject.docker_archive(path, "docker-syncd-vs:latest", digest, descriptors)
-        self.assertEqual(result["tag"], "docker-syncd-vs:latest")
+        result = subject.docker_archive(path, "docker-example:latest", digest, descriptors)
+        self.assertEqual(result["tag"], "docker-example:latest")
         with self.assertRaisesRegex(ValueError, "tag differs"):
             subject.docker_archive(path, "wrong:latest", digest, descriptors)
         raw = bytearray(path.read_bytes())
         raw[4:8] = (1).to_bytes(4, "little")
         path.write_bytes(raw)
         with self.assertRaisesRegex(ValueError, "gzip header"):
-            subject.docker_archive(path, "docker-syncd-vs:latest", digest, descriptors)
+            subject.docker_archive(path, "docker-example:latest", digest, descriptors)
         self.write_archive(path, config_bytes=b"{}")
         with self.assertRaisesRegex(ValueError, "config differs"):
-            subject.docker_archive(path, "docker-syncd-vs:latest", digest, descriptors)
+            subject.docker_archive(path, "docker-example:latest", digest, descriptors)
         self.write_archive(path, corrupt_layer=True)
         with self.assertRaisesRegex(ValueError, "layer differs"):
-            subject.docker_archive(path, "docker-syncd-vs:latest", digest, descriptors)
+            subject.docker_archive(path, "docker-example:latest", digest, descriptors)
 
     def test_complete_mode_requires_all_overlay_inputs(self):
+        """Reject a production validation request without the full declared overlay and archive evidence."""
         with self.assertRaisesRegex(ValueError, "complete validation requires"):
             subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci", self.runtime_handoff,
-                                    self.debug_handoff, self.runtime_manifest, self.debug_manifest, ROOT)
+                                    self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root, policy=self.policy,
+                                    source_contract_path=self.source_contract_path, dpkg_filter_path=self.filter_path)
 
     def test_dpkg_filter_uses_the_repository_space_separated_rules(self):
+        """Apply the real dpkg inclusion and exclusion rules when comparing imported payloads."""
         item = {"kind": "file"}
         files = {name: item for name in ("usr/share/doc/example/README", "usr/share/doc/example/copyright",
                                          "usr/share/man/man1/example.1", "usr/lib/libexample.so")}
-        self.assertEqual(set(subject.dpkg_filtered(files, ROOT)),
+        self.assertEqual(set(subject.dpkg_filtered(files, self.filter_path)),
                          {"usr/share/doc/example/copyright", "usr/lib/libexample.so"})
 
     def vim_tools(self, *, target="/usr/bin/vim.basic", uid=0, replace_binary=False, whiteout=False):
@@ -359,10 +497,10 @@ class ValidateImageTest(unittest.TestCase):
         files["usr/bin/vim.tiny"] = {"kind": "hardlink", "mode": 0o755, "uid": 0, "gid": 0,
                                     "linkname": "usr/bin/vim"}
         files.update({name: {"kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0,
-                             "linkname": "/usr/bin/vim.tiny"} for name in subject.VIM_ALTERNATIVES})
+                             "linkname": "/usr/bin/vim.tiny"} for name in ALTERNATIVE_PATHS})
         path = self.root / "vim-tools.tar"
         with tarfile.open(path, "w") as archive:
-            for name in subject.VIM_ALTERNATIVES:
+            for name in ALTERNATIVE_PATHS:
                 member = tarfile.TarInfo(name)
                 member.type, member.mode, member.uid, member.linkname = tarfile.SYMTYPE, 0o777, uid, target
                 archive.addfile(member)
@@ -378,36 +516,40 @@ class ValidateImageTest(unittest.TestCase):
         return path, files
 
     def test_debug_vim_alternatives_allow_only_the_declared_link_change(self):
+        """Allow the declared editor alternative update while preserving the inherited executable."""
         path, files = self.vim_tools()
         old_binary = dict(files["usr/bin/vim.tiny"])
         with self.assertRaisesRegex(ValueError, "changes a base ELF link"):
             subject.apply_layer(path, dict(files), checked_overlay=True)
-        subject.apply_debug_tools_layer(path, files)
+        subject.apply_debug_tools_layer(path, files, alternatives=DEBUG_ALTERNATIVES)
         self.assertEqual(files["usr/bin/vim.tiny"], old_binary)
-        for name in subject.VIM_ALTERNATIVES:
+        for name in ALTERNATIVE_PATHS:
             self.assertEqual(files[name]["linkname"], "/usr/bin/vim.basic")
 
     def test_debug_vim_alternatives_reject_other_targets_or_owners(self):
+        """Reject an alternative update that changes an undeclared target or file owner."""
         for kwargs in ({"target": "/usr/bin/other"}, {"uid": 1}):
             with self.subTest(kwargs=kwargs):
                 path, files = self.vim_tools(**kwargs)
-                with self.assertRaisesRegex(ValueError, "unexpected debug Vim alternative"):
-                    subject.apply_debug_tools_layer(path, files)
+                with self.assertRaisesRegex(ValueError, "unexpected debug alternative"):
+                    subject.apply_debug_tools_layer(path, files, alternatives=DEBUG_ALTERNATIVES)
         path, files = self.vim_tools()
         files["etc/alternatives/editor"]["linkname"] = "/usr/bin/other"
-        with self.assertRaisesRegex(ValueError, "unexpected debug Vim alternative"):
-            subject.apply_debug_tools_layer(path, files)
+        with self.assertRaisesRegex(ValueError, "unexpected debug alternative"):
+            subject.apply_debug_tools_layer(path, files, alternatives=DEBUG_ALTERNATIVES)
 
     def test_debug_vim_policy_preserves_binary_and_whiteout_checks(self):
+        """An allowed alternative update cannot bypass ELF replacement or whiteout protections."""
         for kwargs, message in (({"replace_binary": True}, "change an inherited ELF"),
                                 ({"whiteout": True}, "contains a whiteout")):
             with self.subTest(kwargs=kwargs):
                 path, files = self.vim_tools(**kwargs)
                 before = dict(files)
                 with self.assertRaisesRegex(ValueError, message):
-                    subject.apply_debug_tools_layer(path, files)
+                    subject.apply_debug_tools_layer(path, files, alternatives=DEBUG_ALTERNATIVES)
                 self.assertEqual(files, before)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    OWNER_POLICIES, remaining = owner_policies()
+    unittest.main(argv=[__file__, *remaining])
