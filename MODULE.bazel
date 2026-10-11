@@ -267,3 +267,14 @@ source_modules(
         "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
     },
 )
+
+# The source owner keeps its install declarations in BUILD/Debian metadata.
+# Expose those exact resolved files to the sandboxed package-contract test.
+source_files = use_repo_rule("//tools/bazel/oci:source_modules.bzl", "source_files")
+source_files(
+    name = "swss_install_contract",
+    files = {
+        "@sonic_swss//dist:BUILD.bazel": "dist-BUILD.bazel.txt",
+        "@sonic_swss//:debian/swss.install": "swss.install.txt",
+    },
+)

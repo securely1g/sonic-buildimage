@@ -391,18 +391,26 @@ version available, and run from a clean checkout:
 for tests in tools/bazel/tests tools/ci/tests tools/ci/runner; do
   python3 -B -m unittest discover -s "$tests" -p '*_test.py' || exit 1
 done
+make -f tools/bazel/prepare_manifests.mk \
+  MANIFEST_METADATA=rules/docker-orchagent.mk \
+  BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
+  ENABLE_ASAN=n DBG_IMAGE_MARK=dbg DOCKERS_PATH=dockers
 python3 -B tools/bazel/ci/container.py \
-  --config dockers/docker-orchagent/bazel/ci_config.py \
-  --bazel bazel --artifacts artifacts/swss
+  --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk --bazel bazel --artifacts artifacts/swss
 ```
 
 ## Change the build
 
-This directory keeps SWSS's CI target selection and archive-validation callback
-(`ci_config.py`) and package expectations (`package_contract.py`); their tests
-live under `tools/bazel/tests`. The shared `tools/bazel/ci/container.py` runner
-owns manifest preparation, execution audits, tests, archive collection and
-receipts for both SWSS and Syncd. Container settings do not duplicate that lifecycle.
+The container's `BUILD.bazel` declares `ci_tests` and `ci_artifacts`. The shared
+`tools/bazel/ci/container.py` runner discovers those targets, audits and runs the
+suite, and exports the declared files. `package_contract.py` implements the
+source install checks; the actual package-validation test declares its runtime,
+configuration and symbol archives, original owner install files and binutils
+executables. It writes the validation summary as a Bazel test output. There is
+no Python CI profile or callback, and the test does not inspect an ambient
+external checkout. Make still prepares manifests from its existing declarations.
+Test implementations live under `tools/bazel/tests`; manifest conversion and
+OCI inventory checks are shared with Syncd.
 SWSS owns its opt-in guards, archive
 labels and Make prerequisites. It registers both runtime and debug archives in
 `SONIC_BAZEL_SWITCHABLE_IMAGES` even when the selector is off; the shared Make

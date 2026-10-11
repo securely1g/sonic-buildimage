@@ -49,7 +49,7 @@ def cache():
                for phase in ("cold", "warm", "changed")}}
 
 
-def events(count):
+def events(count=2, *, targets=None):
     values = [{"id": {"started": {}}, "started": {"command": "test", "buildToolVersion": "8.5.1",
                "host": SENTINEL, "user": SENTINEL, "optionsDescription": SENTINEL,
                "workingDirectory": "/home/runner/" + SENTINEL}},
@@ -60,8 +60,8 @@ def events(count):
                "unstructuredCommandLine": {"args": [
                    "--client_env=BAZELISK_GITHUB_TOKEN=" + SYNTHETIC_JOB_TOKEN,
                    "--client_env=PRIVATE_PATH=/home/runner/" + SENTINEL]}}]
-    for number in range(count):
-        name = "//tests:contract_" + str(number)
+    targets = targets if targets is not None else ["//tests:contract_" + str(number) for number in range(count)]
+    for name in targets:
         values.extend([
             {"id": {"targetCompleted": {"label": name}},
              "completed": {"success": True, "outputGroup": [{"files": [{"uri": "file:///home/runner/" + SENTINEL}]}]}},
@@ -83,11 +83,11 @@ def receipt(kind, architecture="amd64"):
                     for number in range(11)}}
     if kind == "source":
         return {"status": "passed", "revision": REVISION, **unsafe,
-                "tests": {"//tests:source_" + str(number): "passed" for number in range(18)},
+                "tests": {"//tests:contract_" + str(number): "passed" for number in range(2)},
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST}}}
     if kind == "syncd":
-        return {"targets": ["//tests:syncd_" + str(number) for number in range(9)],
+        return {"status": "passed", "targets": ["//tests:contract_" + str(number) for number in range(2)],
                 "source_hashes": {"bazel/apt.lock.json": DIGEST}, "module_lock_sha256": DIGEST,
                 "test_outputs": [SENTINEL], **unsafe}
     return {"status": "passed", "runtime_sha256": DIGEST, "dwp_sha256": DIGEST,
@@ -112,7 +112,7 @@ def seed(root, kind, architecture="amd64"):
             values = {"lock": lock(), "graph": {"key": "<root>", "name": "sonic-buildimage", "version": "", "dependencies": []}, "cache": cache()}
             write_json(root, name, values[file_kind])
     for _logical, name, count in artifacts.BEP[kind]:
-        write(root, name, events(count))
+        write(root, name, events(2 if count is None else count))
     receipts = {"archive": ("artifacts/config-engine/receipt.json", "python"),
                 "source": ("artifacts/swss/receipt.json", "source"),
                 "syncd": ("artifacts/syncd-vs/bazel/report.json", "syncd"),
@@ -147,7 +147,6 @@ class PublicArtifactsTest(unittest.TestCase):
         """Adding a package suite must not make successful CI unpublishable."""
         for kind, filename in (
             ("archive", "tools/bazel/ci/python_packages.py"),
-            ("source", "dockers/docker-orchagent/bazel/ci_config.py"),
         ):
             tree = ast.parse((ROOT / filename).read_text())
             suites = next(ast.literal_eval(node.value) for node in tree.body
@@ -242,6 +241,82 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
+
+    def test_container_jobs_accept_any_nonempty_declared_test_inventory(self):
+        """Container CI may add tests in BUILD without changing a hard-coded Python count."""
+        targets = ["//sample:first", "//sample:second", "@@component+//native:third"]
+        for kind in ("source", "syncd"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                bep = artifacts.BEP[kind][0][1]
+                write(self.root, bep, events(targets=targets))
+                name = "artifacts/swss/receipt.json" if kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+                value = json.loads((self.root / name).read_text())
+                if kind == "source": value["tests"] = dict.fromkeys(targets, "passed")
+                else: value["targets"] = targets
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare(kind)
+                self.assertTrue(ready, summary)
+                self.assertTrue(paths)
+                self.assertEqual(set(summary["builds"][kind + "-tests"]["tests"]), set(targets))
+
+    def test_container_test_evidence_must_match_exact_declared_identities(self):
+        """Equal counts, extra tests or missing tests cannot disguise the wrong validation graph."""
+        mutations = {
+            "different-same-count": ["//foreign:one", "//foreign:two"],
+            "missing": ["//tests:contract_0"],
+            "extra": ["//tests:contract_0", "//tests:contract_1", "//foreign:extra"],
+        }
+        for kind in ("source", "syncd"):
+            for mode, targets in mutations.items():
+                with self.subTest(kind=kind, mode=mode):
+                    seed(self.root, kind)
+                    write(self.root, artifacts.BEP[kind][0][1], events(targets=targets))
+                    summary, paths, ready = self.prepare(kind)
+                    self.assertFalse(ready, summary)
+                    self.assertEqual(paths, [])
+
+    def test_empty_container_suite_cannot_publish_success(self):
+        """Matching empty BEP and declared inventories still provide no successful validation."""
+        for kind in ("source", "syncd"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                write(self.root, artifacts.BEP[kind][0][1], events(targets=[]))
+                name = "artifacts/swss/receipt.json" if kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+                value = json.loads((self.root / name).read_text())
+                if kind == "source": value["tests"] = {}
+                else: value["targets"] = []
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare(kind)
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
+
+    def test_source_requires_package_validation_evidence(self):
+        """A discovered test suite cannot replace required archive/program/debug/source checks."""
+        for missing in ("validation", "programs", "debug_pairs", "source_contract"):
+            with self.subTest(missing=missing):
+                seed(self.root, "source")
+                name = "artifacts/swss/receipt.json"
+                value = json.loads((self.root / name).read_text())
+                if missing == "validation": del value["validation"]
+                else: del value["validation"][missing]
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare("source")
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
+
+    def test_container_failed_status_cannot_publish_success(self):
+        """Complete test identities cannot override a failed runner receipt or report."""
+        for kind in ("source", "syncd"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                name = "artifacts/swss/receipt.json" if kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+                value = json.loads((self.root / name).read_text())
+                value["status"] = "failed"
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare(kind)
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
 
     def test_archive_requires_all_nine_native_workflow_tests(self):
         for architecture in ("amd64", "arm64"):
