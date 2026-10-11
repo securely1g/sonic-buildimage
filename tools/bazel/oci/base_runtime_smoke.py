@@ -52,6 +52,11 @@ def main():
     daemon = importlib.util.find_spec("containercfgd.containercfgd")
     assert daemon and str(Path(daemon.origin).resolve()).startswith("/usr/local/lib/")
     assert importlib.metadata.version("sonic-yang-mgmt") == "1.0"
+    # Make-built child containers resolve the config-engine wheel's dependency
+    # on this distribution. Model files alone do not satisfy pip's resolver.
+    assert importlib.metadata.version("sonic-yang-models") == "1.0"
+    for directory in ("yang-models", "cvlyang-models"):
+        assert list((Path("/usr/local") / directory).glob("*.yang")), directory
     os.environ["PLATFORM"] = "sonic-bazel-build"
     with tempfile.TemporaryDirectory() as temporary:
         template = Path(temporary) / "config.j2"

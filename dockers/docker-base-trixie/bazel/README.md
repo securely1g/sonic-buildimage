@@ -29,7 +29,10 @@ OpenSSL provider remains an imported APT dependency.
 `docker-config-engine-trixie` adds Common's C++ library, database CLI and Python
 binding; libnl; libyang and its Python binding; eventd; the Rust supervisor
 listener; the config-engine, py-common, YANG management, containercfgd and Python
-supervisor wheels; and the source-owned YANG models. Eventd's separate rsyslog
+supervisor wheels; and the source-owned YANG models. The models package retains
+its Python distribution metadata and both Python and CVL model directories, so
+pip in Make-built child containers can satisfy config-engine's model dependency.
+Eventd's separate rsyslog
 plugin package is not an input to this image in Make and is not added here.
 Libnl uses its precise runtime TARs, preserving `/etc/libnl-3` configuration and
 CLI plugins while leaving development linker symlinks to the development TARs.
