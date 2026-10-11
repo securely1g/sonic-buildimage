@@ -161,14 +161,20 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
         if "elf_machine" in item:
             require(files.get(name) == item, "APT layer changes a base ELF before package state: " + name)
     apply_layer(runtime_layer, files, checked_overlay=True)
-    expected_files = contract.get("make_package_files", {})
-    require(isinstance(expected_files, dict) and expected_files, "package state contract lacks Make data inputs")
+    make_files = contract.get("make_package_files", {})
+    source_files = contract.get("source_package_files", {})
+    require(isinstance(make_files, dict) and isinstance(source_files, dict) and
+            (make_files or source_files) and not set(make_files).intersection(source_files),
+            "package state contract lacks unambiguous package data inputs")
+    source_names = {item["package"] for item in source_contract["packages"]} if source_contract else set()
+    expected_files = make_files | source_files
     for path, identity in expected_files.items():
         safe_path(path)
         require(set(identity) == {"package", "sha256", "size", "mode", "uid", "gid"} and
-                identity["package"] in make_packages, "invalid Make package state file contract: " + path)
+                identity["package"] in (source_names if path in source_files else make_packages),
+                "invalid package state file contract: " + path)
         expected = {"kind": "file", **{name: identity[name] for name in ("sha256", "size", "mode", "uid", "gid")}}
-        require(files.get(path) == expected, "Make package state file changed; review generated links: " + path)
+        require(files.get(path) == expected, "package state file changed; review generated links: " + path)
     entries = contract.get("entries")
     aliases = contract.get("aliases")
     require(isinstance(entries, list) and entries and isinstance(aliases, list), "invalid package state entries")
