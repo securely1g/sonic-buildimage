@@ -10,8 +10,9 @@ import tarfile
 import tempfile
 import unittest
 
-OWNER = Path(__file__).absolute().parents[4] / "dockers/docker-syncd-vs"
-sys.path.insert(0, str(OWNER.parents[1]))
+ROOT = Path(__file__).absolute().parents[4]
+OWNER = ROOT / "platform/vs/docker-syncd-vs"
+sys.path.insert(0, str(ROOT))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as tar_bytes, write_layout
 from tools.bazel.oci.oci_inventory import apply_layer
 from tools.bazel.tests.oci_contract_fixture import owner_policies, package_policy, source_contract
@@ -48,7 +49,7 @@ class CommittedPackageStateTest(unittest.TestCase):
         for field in ("base_archive_sha256", "runtime_archive_sha256", "legacy_dockerfile_sha256"):
             self.assertRegex(reference[field], r"^[0-9a-f]{64}$")
         self.assertEqual(reference["legacy_dockerfile_sha256"],
-                         hashlib.sha256((OWNER.parents[1] / "platform/vs/docker-syncd-vs/Dockerfile.j2").read_bytes()).hexdigest())
+                         hashlib.sha256((OWNER / "Dockerfile.j2").read_bytes()).hexdigest())
 
     def test_reviewed_state_owners_match_committed_canonical_lock(self):
         """CI requests a state-contract review when the canonical lock or its package owners change."""
