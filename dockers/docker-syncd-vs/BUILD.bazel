@@ -1,6 +1,6 @@
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_oci//oci:defs.bzl", "oci_image")
-load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("@syncd_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("//tools/bazel/dpkg:defs.bzl", "dpkg_filter", "sonic_layer")
@@ -12,18 +12,6 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(
-    [
-        "legacy/Dockerfile.j2",
-        "legacy/critical_processes",
-        "legacy/start.sh",
-        "legacy/supervisord.conf",
-    ],
-    visibility = [
-        "//dockers/docker-syncd-vs:__subpackages__",
-        "//tools/bazel/tests:__pkg__",
-    ],
-)
 
 # Supported configuration: native AMD64 Trixie VS, DASH/FIPS, no ASAN/RPC.
 # The Make selector and checked package manifests enforce the feature boundary.
@@ -50,6 +38,67 @@ _APT_POLICY = {
     },
 }
 
+_DEBUG_APT_PACKAGES = ["gdb", "gdbserver", "sshpass", "strace", "vim"]
+
+# The shared validators consume these expectations as data. Source identities,
+# dependency controls and installed paths remain in config/source_packages.json.
+_PACKAGE_POLICY = dict(
+    _APT_POLICY,
+    debug_tools = _DEBUG_APT_PACKAGES,
+    retained_requirements = [{
+        "package": "openssh-client",
+        "version_contains": "+fips",
+        "debug": "inherit",
+        "runtime_elf_paths": ["usr/bin/ssh"],
+    }] if _APT_POLICY["features"]["include_fips"] == "y" else [],
+    native = {
+        "required_packages": ["syncd-vs", "libsairedis", "libsaimetadata", "libsaivs", "libswsscommon", "libyang3"],
+        "required_sonames": {
+            "libsairedis": "libsairedis.so.0",
+            "libsaimetadata": "libsaimetadata.so.0",
+            "libsaivs": "libsaivs.so.0",
+            "libswsscommon": "libswsscommon.so.0",
+            "libyang3": "libyang.so.3",
+        },
+        # Existing Make packages without a supplied matching symbol package.
+        "gap_packages": [
+            "libsai", "p4lang-pi", "p4lang-bmv2", "p4lang-p4c",
+            "libnl-3-200", "libnl-genl-3-200", "libnl-route-3-200",
+            "libnl-nf-3-200", "libnl-cli-3-200", "openssh-client",
+        ],
+        "local_dependency_pattern": "lib(?:sai|swsscommon|MdioIpcClient|pi)",
+        "imported_symbol_packages": ["libswsscommon-dbgsym"],
+        "required_imported_symbol_paths": ["usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0"],
+        "require_source": True,
+        "require_imported_symbols": True,
+    },
+    image_validation = {
+        "entrypoint": ["/usr/local/bin/supervisord"],
+        "command": None,
+        "environment": {"DEBIAN_FRONTEND": "noninteractive"},
+        "startup_files": {
+            "usr/bin/start.sh": {"source": "platform/vs/docker-syncd-vs/start.sh", "mode": 0o755},
+            "etc/supervisor/conf.d/supervisord.conf": {"source": "platform/vs/docker-syncd-vs/supervisord.conf", "mode": 0o644},
+            "etc/supervisor/critical_processes": {"source": "platform/vs/docker-syncd-vs/critical_processes", "mode": 0o644},
+        },
+        "required_elf_paths": ["usr/bin/syncd"],
+        "debug_alternatives": [{
+            "paths": ["etc/alternatives/" + name for name in ["editor", "ex", "rview", "vi", "view"]],
+            "before": "/usr/bin/vim.tiny",
+            "after": "/usr/bin/vim.basic",
+        }],
+        "runtime_tag": "docker-syncd-vs:latest",
+        "debug_tag": "docker-syncd-vs-dbg:latest",
+        "package_state": True,
+    },
+)
+
+write_file(
+    name = "package_policy",
+    out = "package_policy.json",
+    content = [json.encode(_PACKAGE_POLICY)],
+)
+
 # Base and Make metadata. The same shared rules are used by docker-orchagent.
 oci_base_layout(
     name = "config_engine_base_layout",
@@ -60,18 +109,6 @@ oci_base_layout(
     expected_platform = "linux/amd64",
     marker = "$(execpath //:target/docker-config-engine-trixie.oci/oci-layout)",
     root = "target/docker-config-engine-trixie.oci",
-)
-
-py_library(
-    name = "package_contract_lib",
-    srcs = ["//dockers/docker-syncd-vs/bazel:package_contract.py"],
-    imports = ["bazel"],
-    deps = [
-        "//tools/bazel/ci:artifact_validation",
-        "//tools/bazel/oci:normalize_layer_lib",
-        "//tools/bazel/oci:oci_inventory",
-        "//tools/bazel/oci:oci_layout",
-    ],
 )
 
 config_setting(
@@ -97,14 +134,6 @@ _SOURCE_PACKAGES = {
     "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
 }
 
-py_binary(
-    name = "package_contract",
-    srcs = ["//dockers/docker-syncd-vs/bazel:package_contract.py"],
-    main = "//dockers/docker-syncd-vs/bazel:package_contract.py",
-    python_version = "3.11",
-    deps = [":package_contract_lib"],
-)
-
 run_binary(
     name = "checked_source_runtime",
     srcs = [
@@ -124,7 +153,8 @@ run_binary(
         "--module=sonic-sairedis=$(execpath @syncd_source_modules//:sonic-sairedis.MODULE.bazel)",
         "--out-tar=$(execpath source_runtime.tar)",
         "--receipt=$(execpath source_packages.receipt.json)",
-    ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()],
+    ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()] +
+           ["--package-target=" + name + "=" + target for name, target in _SOURCE_PACKAGES.items()],
     mnemonic = "ValidateSyncdSourceRuntime",
     target_compatible_with = [
         "@platforms//cpu:x86_64",
@@ -133,7 +163,7 @@ run_binary(
         ":supported_source_configuration": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    tool = ":package_contract",
+    tool = "//tools/bazel/oci:package_contract",
 )
 
 # Keep runtime independent of Make's debug handoff. Each selection input binds
@@ -144,15 +174,19 @@ run_binary(
         srcs = [
             "source_packages.receipt.json",
             ":" + variant + "_import_manifest",
+            ":package_policy",
+            "//dockers/docker-syncd-vs/config:source_packages.json",
         ],
         outs = [variant + "_retained_packages.json"],
         args = [
+            "--contract=$(execpath //dockers/docker-syncd-vs/config:source_packages.json)",
+            "--policy=$(execpath :package_policy)",
             "--merge-manifest=$(execpath :" + variant + "_import_manifest)",
             "--source-receipt=$(execpath source_packages.receipt.json)",
             "--out-manifest=$@",
         ],
         mnemonic = "SyncdRetainedPackages",
-        tool = ":package_contract",
+        tool = "//tools/bazel/oci:package_contract",
     )
     for variant in [
         "runtime",
@@ -272,15 +306,10 @@ _PACKAGE_SETS = {
     "runtime_debs": {
         "srcs": _RUNTIME_DEBS,
         "context": {
-            "image": "docker-syncd-vs",
+            "image": _APT_POLICY["image"],
             "variant": "runtime",
-            "distribution": "trixie",
-            "features": {
-                "enable_asan": "n",
-                "enable_syncd_rpc": "n",
-                "include_fips": "y",
-                "include_vs_dash_sai": "y",
-            },
+            "distribution": _APT_POLICY["distribution"],
+            "features": _APT_POLICY["features"],
             "required_packages": [
                 "libnl-3-200",
                 "libnl-3-dev",
@@ -305,15 +334,10 @@ _PACKAGE_SETS = {
     "debug_debs": {
         "srcs": _DEBUG_DEBS,
         "context": {
-            "image": "docker-syncd-vs",
+            "image": _APT_POLICY["image"],
             "variant": "debug",
-            "distribution": "trixie",
-            "features": {
-                "enable_asan": "n",
-                "enable_syncd_rpc": "n",
-                "include_fips": "y",
-                "include_vs_dash_sai": "y",
-            },
+            "distribution": _APT_POLICY["distribution"],
+            "features": _APT_POLICY["features"],
             "required_packages": [
                 "libsaivs-dbgsym",
                 "libyang3-dbgsym",
@@ -322,13 +346,7 @@ _PACKAGE_SETS = {
                 "sonic-eventd-dbgsym",
                 "syncd-vs-dbgsym",
             ],
-            "debug_apt_packages": [
-                "gdb",
-                "gdbserver",
-                "sshpass",
-                "strace",
-                "vim",
-            ],
+            "debug_apt_packages": _DEBUG_APT_PACKAGES,
         },
         "parent": ":runtime_import_manifest",
     },
@@ -359,9 +377,10 @@ _PACKAGE_SETS = {
         cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
               "\"$(BSDTAR_BIN)\" --format=pax -cf \"$(RULEDIR)/" + name + "/payload.tar\" " +
               " ".join(["\"@$(execpath " + _DEB_ARCHIVES[source] + "/data.archive)\"" for source in inputs["srcs"]]) + "\n" +
-              "\"$(execpath //dockers/docker-syncd-vs/config:package_receipts)\"" +
+              "\"$(execpath //tools/bazel/oci:package_receipts)\"" +
               " --payload='$(RULEDIR)/" + name + "/payload.tar'" +
               " --out='$(RULEDIR)/" + name + "/manifest.json'" +
+              " --architecture=" + _APT_POLICY["architecture"] +
               " --context='" + json.encode(inputs["context"]) + "'" +
               (" --runtime-manifest='$(execpath " + inputs["parent"] + ")'" if inputs["parent"] else "") +
               " ".join([" --package='" + json.encode({
@@ -374,7 +393,7 @@ _PACKAGE_SETS = {
               }) + "'" for source in inputs["srcs"]]),
         toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
         tools = [
-            "//dockers/docker-syncd-vs/config:package_receipts",
+            "//tools/bazel/oci:package_receipts",
             "@bsd_tar_toolchains//:resolved_toolchain",
         ],
         visibility = ["//visibility:private"],
@@ -573,15 +592,15 @@ sonic_docker_archive(
 test_suite(
     name = "ci_tests",
     tests = [
-        "//tools/bazel/tests:syncd_package_receipts_test",
+        "//tools/bazel/tests:oci_package_receipts_test",
         "//tools/bazel/tests:syncd_manifest_labels_test",
         "//tools/bazel/tests:oci_inventory_test",
-        "//tools/bazel/tests:syncd_package_state_layer_test",
-        "//tools/bazel/tests:syncd_select_apt_payloads_test",
-        "//tools/bazel/tests:syncd_package_contract_test",
-        "//tools/bazel/tests:syncd_validate_image_test",
-        "//tools/bazel/tests:syncd_validate_native_packages_test",
-        "//tools/bazel/tests:syncd_validate_payloads_test",
+        "//tools/bazel/tests:oci_package_state_layer_test",
+        "//tools/bazel/tests:oci_apt_overlay_test",
+        "//tools/bazel/tests:oci_package_contract_test",
+        "//tools/bazel/tests:oci_image_test",
+        "//tools/bazel/tests:oci_native_packages_test",
+        "//tools/bazel/tests:oci_package_payloads_test",
         "//tools/bazel/tests:apt_selection_test",
     ],
 )

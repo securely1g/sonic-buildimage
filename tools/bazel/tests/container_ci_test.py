@@ -1,6 +1,7 @@
 """Exercise declared container CI targets with a controlled Bazel process."""
 
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import command_log, container
+from tools.bazel.tests.integration import oci_source_layers_test
 
 
 class ContainerRunnerTest(unittest.TestCase):
@@ -36,6 +38,7 @@ class ContainerRunnerTest(unittest.TestCase):
         self.canonical = "@@unrelated-component+//native:external_test"
         self.bazel = self.root / "bazel"
         self.bazel.write_text("#!" + sys.executable + "\n" + r'''
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -64,13 +67,15 @@ elif command == "aquery":
     if mode == "query-failure": sys.exit(7)
 elif command == "cquery":
     if "--output=files" in sys.argv:
-        if mode != "empty-artifacts": print("bazel-bin/package.tar")
+        if mode not in ("empty-artifacts", "validation-missing-archive"): print("bazel-bin/package.tar")
+        if mode == "validation-extra-archive": print("bazel-bin/unvalidated.tar")
     else:
         print("@@unrelated-component+//native:external_test")
 elif command == "build":
     output = root / "bazel-bin/package.tar"
     output.parent.mkdir(exist_ok=True)
-    output.write_bytes(b"archive fixture")
+    output.write_bytes(b"different configuration" if mode == "validation-changed-archive" else b"archive fixture")
+    if mode == "validation-extra-archive": (root / "bazel-bin/unvalidated.tar").write_bytes(b"not validated")
 elif command == "test":
     if mode == "test-failure": sys.exit(9)
     events = []
@@ -81,7 +86,7 @@ elif command == "test":
         directory.mkdir(parents=True)
         outputs = []
         filenames = ["test.log", "test.xml"]
-        if mode in ("validation", "multiple-validations", "invalid-validation") and (name == "first_test" or mode == "multiple-validations"):
+        if (mode.startswith("validation") or mode in ("multiple-validations", "invalid-validation")) and (name == "first_test" or mode == "multiple-validations"):
             filenames.append("test.outputs/validation.json")
         for filename in filenames:
             if mode == "missing-evidence" and name == "second_test" and filename == "test.xml": continue
@@ -89,7 +94,10 @@ elif command == "test":
             output.parent.mkdir(exist_ok=True)
             value = "passed\n"
             if filename.endswith("validation.json"):
-                value = "not json\n" if mode == "invalid-validation" else json.dumps({"programs": ["usr/bin/example"]})
+                validation = {"programs": ["usr/bin/example"],
+                              "artifact_sha256": {"package.tar": hashlib.sha256(b"archive fixture").hexdigest()}}
+                if mode == "validation-missing-bindings": del validation["artifact_sha256"]
+                value = "not json\n" if mode == "invalid-validation" else json.dumps(validation)
             output.write_text(value)
             outputs.append({"name": filename, "uri": output.as_uri()})
         event_label = target.replace("@unrelated_component//", "@@unrelated-component+//")
@@ -261,8 +269,37 @@ else:
     def test_validation_receipt_comes_from_bazel_test_output(self):
         """Package validation produced by a declared test is retained without an owner callback."""
         receipt = self.run_ci("validation")
-        self.assertEqual(receipt["validation"], {"programs": ["usr/bin/example"]})
+        self.assertEqual(receipt["validation"]["programs"], ["usr/bin/example"])
+        self.assertEqual(receipt["validation"]["artifact_sha256"],
+                         {"package.tar": hashlib.sha256(b"archive fixture").hexdigest()})
         self.assertTrue((self.artifacts / "tests/first_test/validation.json").is_file())
+
+    def test_published_archive_bytes_must_match_the_tested_configuration(self):
+        """A passing test cannot validate the same archive name built with different bytes later."""
+        receipt = self.run_ci("validation-changed-archive", error=ValueError)
+        self.assert_failed_without_report(receipt)
+        self.assertIn("published artifacts differ", receipt["error"])
+        self.assertNotEqual(receipt["artifacts"]["package.tar"]["sha256"],
+                            receipt["validation"]["artifact_sha256"]["package.tar"])
+
+    def test_missing_or_extra_published_archives_cannot_satisfy_validation(self):
+        """The complete archive inventory must match the test receipt in both directions."""
+        for mode in ("validation-missing-archive", "validation-extra-archive"):
+            with self.subTest(mode=mode):
+                self.artifacts = self.root / mode
+                (self.root / "MODULE.bazel.lock").unlink(missing_ok=True)
+                # Each run must produce fresh configured-test output locations.
+                import shutil
+                shutil.rmtree(self.root / "configured testlogs", ignore_errors=True)
+                receipt = self.run_ci(mode, error=ValueError)
+                self.assert_failed_without_report(receipt)
+                self.assertIn("published artifacts differ", receipt["error"])
+
+    def test_validation_summary_must_bind_its_archive_bytes(self):
+        """Program/debug checks without archive hashes cannot establish which files were tested."""
+        receipt = self.run_ci("validation-missing-bindings", error=ValueError)
+        self.assert_failed_without_report(receipt)
+        self.assertIn("published artifacts differ", receipt["error"])
 
     def test_multiple_validation_outputs_do_not_silently_replace_each_other(self):
         """Reject ambiguous package evidence instead of choosing one test's validation receipt."""
@@ -315,6 +352,33 @@ else:
         self.assertEqual(run.call_args.kwargs["bazel"], "selected-bazel")
         self.assertEqual(run.call_args.kwargs["options"], [*container.OPTIONS, "--jobs=2"])
         self.assertEqual(run.call_args.kwargs["source_files"], ["preparation.mk", "another.mk"])
+
+
+class SourceArchiveBindingTest(unittest.TestCase):
+    """Tie the actual layer validator's inputs to unique published archive names."""
+
+    def test_archive_bindings_include_every_input_and_detect_changed_bytes(self):
+        """Use content hashes so a later build of the same names cannot stand in for tested inputs."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in ("runtime.tar", "dependencies.tar", "config.tar", "symbols.tar", "library.tar")]
+            for path in paths: path.write_bytes(path.name.encode())
+            checked = oci_source_layers_test.archive_hashes(paths)
+            self.assertEqual(set(checked), {path.name for path in paths})
+            self.assertEqual(checked["runtime.tar"], hashlib.sha256(b"runtime.tar").hexdigest())
+            paths[0].write_bytes(b"different configuration")
+            self.assertNotEqual(oci_source_layers_test.archive_hashes(paths), checked)
+
+    def test_duplicate_basenames_cannot_hide_a_validated_input(self):
+        """Reject ambiguous role/library names even when their paths or archive bytes differ."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / "first/output.tar", root / "second/output.tar"]
+            for path in paths:
+                path.parent.mkdir()
+                path.write_bytes(b"archive bytes")
+            with self.assertRaisesRegex(ValueError, "basenames must be unique"):
+                oci_source_layers_test.archive_hashes(paths)
 
 
 class TestEvidenceTest(unittest.TestCase):

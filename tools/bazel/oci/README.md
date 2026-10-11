@@ -1,4 +1,49 @@
-# Shared container manifest labels and OCI tools
+# Shared OCI container tools
+
+## Package contracts and shared tests
+
+`package_contract.py` checks declared package contents and provenance. Container
+owners supply expectations; the implementation has no table of container names,
+package names, module versions or public targets. SWSS and Syncd use this same
+module and select the same package/image regression tests in their `:ci_tests`.
+
+Each owner BUILD generates `:package_policy` with `write_file` and `json.encode`.
+It reuses the existing APT policy's identity and features, then adds the checks
+that APT selection does not describe. The generated JSON is a declared action
+and test input, not another checked-in copy of those values.
+
+| Policy field | Purpose |
+| --- | --- |
+| `debug_tools` | Expected debug package selection. Runtime cannot contain this debug selection. |
+| `retained_requirements` | Requirements for imported runtime packages which debug must inherit. For example, when FIPS is enabled, Syncd requires `openssh-client` with `+fips` in its version and the declared `usr/bin/ssh` ELF. |
+| `install_inventory` | How to read source-owned install declarations and compare the resulting files, modes and data bytes. SWSS reads its existing C++/Lua declarations and Debian install file; the policy does not copy the program list. |
+| `libraries`, `required_debug_paths`, `config_paths` | Required library payloads and SONAME links, matching symbols, and installed configuration metadata. |
+| `native` | Required native package/SONAME coverage, explicitly accepted existing symbol gaps, and source/imported symbol requirements. |
+| `image_validation` | Expected startup/configuration, archive tags, and explicitly permitted installed-state changes. |
+
+Syncd's existing `config/source_packages.json` remains the declaration of source
+package identities, dependency controls, module revisions and required paths.
+The shared source adapter compares it with the actual public target bindings,
+resolved module files and archive contents. Receipts record the measured hashes;
+they cannot supply their own expected policy. SWSS's source install lists remain
+in the SWSS repository.
+
+The input adapters retain their distinct jobs: source TAR assembly uses
+`package_contract.py`; original imported DEB identities are checked by the
+read-only `package_receipts.py` after upstream BSD tar extraction; reviewed
+alternatives and provider files use `package_state.py`. Reusable payload, ELF
+and image checks are in `package_payloads.py`, `native_packages.py` and
+`image_validation.py`. All receive their expectations explicitly.
+
+The common tests cover both owner policies and unrelated package/architecture
+fixtures. `swss_package_contract_test` additionally supplies real source-built
+archives to the same validator. These checks do not establish guest boot or
+forwarding behavior.
+
+The real archive test keeps the workspace's default configuration and records
+the SHA256 of each validated input. CI compares those hashes with the exported
+artifacts and the public upload list, preventing a different configuration or
+changed archive from being published under a successful package-test result.
 
 ## Select APT additions for a container
 
