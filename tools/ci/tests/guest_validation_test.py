@@ -42,6 +42,25 @@ class Serial:
             assert self.match
 
 
+class ChunkedSerial(Serial):
+    """Match each received chunk, as the real serial expect loop does."""
+
+    def __init__(self, chunks):
+        super().__init__([])
+        self.chunks = iter(chunks)
+        self.buffer = ""
+
+    def expect(self, pattern, timeout):
+        self.timeouts.append(timeout)
+        if pattern.startswith("(?m)"):
+            for chunk in self.chunks:
+                self.buffer += chunk
+                self.match = re.search(pattern, self.buffer)
+                if self.match:
+                    return
+            raise TimeoutError("No complete guest receipt")
+
+
 class CriticalProcessesTest(unittest.TestCase):
     def test_program_and_group_with_unrelated_finished_process(self):
         self.assertEqual(guest_probe.critical_status(
@@ -107,6 +126,41 @@ class ProbeTest(unittest.TestCase):
 
 
 class TransportTest(unittest.TestCase):
+    def test_receipt_waits_for_a_complete_serial_line(self):
+        value = healthy()
+        line = guest_probe.MARKER + json.dumps(value)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); image = root / "image"; image.write_bytes(b"image")
+            for ending in ("\n", "\r\n"):
+                output = line + ending
+                for split in range(1, len(output)):
+                    with self.subTest(ending=repr(ending), split=split):
+                        serial = ChunkedSerial([output[:split], output[split:]])
+                        result = guest_validation.validate(serial, "prompt", root / "receipt.json", image)
+                        self.assertEqual(result["probes"], [value])
+                        self.assertEqual(serial.buffer, output)
+
+    def test_malformed_complete_receipt_remains_a_failure(self):
+        serial = ChunkedSerial([guest_probe.MARKER + '{"sc', "\r\n"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); image = root / "image"; image.write_bytes(b"image")
+            with self.assertRaises(json.JSONDecodeError):
+                guest_validation.validate(serial, "prompt", root / "receipt.json", image)
+            saved = json.loads((root / "receipt.json").read_text())
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["probes"], [])
+        self.assertIn("Unterminated string", saved["error"])
+
+    def test_receipt_without_newline_times_out(self):
+        serial = ChunkedSerial([guest_probe.MARKER + json.dumps(healthy())])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); image = root / "image"; image.write_bytes(b"image")
+            with self.assertRaisesRegex(TimeoutError, "complete guest receipt"):
+                guest_validation.validate(serial, "prompt", root / "receipt.json", image)
+            saved = json.loads((root / "receipt.json").read_text())
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["probes"], [])
+
     def test_payload_is_exact_and_fits_serial_line(self):
         command = guest_validation.probe_command()
         self.assertLess(len(command.encode()), 3500)
@@ -172,8 +226,15 @@ class TransportTest(unittest.TestCase):
                 guest_validation.verify_report(report, image)
 
     def test_echoed_command_is_not_a_result_line(self):
-        pattern = r"(?m)^" + guest_probe.MARKER + r"([^\r\n]+)\r?$"
-        self.assertIsNone(re.search(pattern, "sudo python3 -c 'print(\"" + guest_probe.MARKER + "{}\")'\r\n"))
+        value = healthy()
+        serial = ChunkedSerial([
+            "sudo python3 -c 'print(\"" + guest_probe.MARKER + "{}\")'\r\n",
+            guest_probe.MARKER + json.dumps(value) + "\r\n",
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); image = root / "image"; image.write_bytes(b"image")
+            result = guest_validation.validate(serial, "prompt", root / "receipt.json", image)
+        self.assertEqual(result["probes"], [value])
 
 
 if __name__ == "__main__":
