@@ -53,8 +53,10 @@ def validate(session, prompt, report, image, timeout=600, clock=time.monotonic, 
                 digest.update(block)
         result["image_sha256"] = digest.hexdigest()
         payload = probe_command()
-        # Require a real output line, not the terminal's echoed command.
-        pattern = r"(?m)^" + MARKER + r"([^\r\n]+)\r?$"
+        # Require a real output line, not the terminal's echoed command. An
+        # end-of-buffer anchor also matches partial serial reads, so wait for
+        # the actual newline before parsing the JSON receipt.
+        pattern = r"(?m)^" + MARKER + r"([^\r\n]+)\r?\n"
         while clock() - started < timeout:
             remaining = timeout - (clock() - started)
             session.sendline(payload)
