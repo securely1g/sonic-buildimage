@@ -69,6 +69,10 @@ claim byte-for-byte equivalence to a later floating Make build.
 
 ## Building before the dependency PRs merge
 
+Distroless `0.9.4.sonic.5` resolves directly from the maintained registry.
+Its published fixes provide the package headers, pkg-config files and concrete
+package labels used by the source producers; no Distroless override is needed.
+
 Normal registry URLs remain maintained `main` and BCR. `draft_sources.json`
 temporarily names the exact reviewed registration commits or source archives
 needed by this stacked image change. The preparation helper verifies each source
