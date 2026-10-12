@@ -55,6 +55,9 @@ jobs:
             --receipt artifacts/base-images/draft-sources.json \
             --bazelrc-output .bazelrc.user
       - name: Build and inspect runtime images and matching symbols
+        env:
+          # Bazel records its client environment in retained build events.
+          BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/ci/base_images.py \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
