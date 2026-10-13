@@ -1,4 +1,5 @@
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
@@ -267,15 +268,11 @@ _RUNTIME_DEBS = [
     "//:target/debs/trixie/libsai_1.0.0_amd64.deb",
 ]
 
-# Bind the inherited P4 inputs to the debug validation receipt. Their payload
-# is already in the runtime image and is not added a second time below.
-_DEBUG_DEBS = _RUNTIME_DEBS
-
 # A package shared by runtime and debug is extracted once. These public
 # toolchain variables are provided by tar.bzl; no local extraction rule wraps it.
 _DEB_ARCHIVES = {
     source: "extracted_debs/" + source.split("/")[-1]
-    for source in depset(_RUNTIME_DEBS + _DEBUG_DEBS).to_list()
+    for source in _RUNTIME_DEBS
 }
 
 [
@@ -309,9 +306,32 @@ case "$${{members[2]}}" in data.tar|data.tar.gz|data.tar.xz|data.tar.bz2) ;; *) 
     for source, directory in _DEB_ARCHIVES.items()
 ]
 
-# Policy and provenance are validated independently of archive extraction.
-# BSD tar creates PAX directly because Distroless flatten writes GNU headers,
-# which cannot preserve the imported packages' extended metadata.
+# Assemble the inherited P4 payload once. BSD tar preserves extended metadata
+# with PAX headers; Distroless flatten writes GNU headers instead.
+genrule(
+    name = "runtime_debs_payload",
+    srcs = [_DEB_ARCHIVES[source] + "/data.archive" for source in _RUNTIME_DEBS],
+    outs = ["runtime_debs/payload.tar"],
+    cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
+          "\"$(BSDTAR_BIN)\" --format=pax -cf \"$@\" " +
+          " ".join(["\"@$(execpath " + _DEB_ARCHIVES[source] + "/data.archive)\"" for source in _RUNTIME_DEBS]),
+    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    visibility = ["//visibility:private"],
+)
+
+# Receipts resolve payload.tar beside manifest.json. Preserve that public file
+# layout with a declared symlink, without assembling or storing a second TAR.
+copy_file(
+    name = "debug_debs_payload",
+    src = "runtime_debs/payload.tar",
+    out = "debug_debs/payload.tar",
+    allow_symlink = True,
+    visibility = ["//visibility:private"],
+)
+
+# Validate policy and provenance separately for each image variant. Debug
+# inherits the same package bytes and binds its receipt to the runtime receipt.
 _PACKAGE_SETS = {
     "runtime_debs": {
         "srcs": _RUNTIME_DEBS,
@@ -331,7 +351,7 @@ _PACKAGE_SETS = {
         "parent": "",
     },
     "debug_debs": {
-        "srcs": _DEBUG_DEBS,
+        "srcs": _RUNTIME_DEBS,
         "context": {
             "image": _APT_POLICY["image"],
             "variant": "debug",
@@ -351,8 +371,8 @@ _PACKAGE_SETS = {
 
 [
     genrule(
-        name = name + "_layer",
-        srcs = inputs["srcs"] + [
+        name = name + "_receipt",
+        srcs = inputs["srcs"] + [name + "/payload.tar"] + [
             _DEB_ARCHIVES[source] + "/" + filename
             for source in inputs["srcs"]
             for filename in [
@@ -362,15 +382,10 @@ _PACKAGE_SETS = {
                 "data.archive",
             ]
         ] + ([inputs["parent"]] if inputs["parent"] else []),
-        outs = [
-            name + "/payload.tar",
-            name + "/manifest.json",
-        ],
+        outs = [name + "/manifest.json"],
         cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
-              "\"$(BSDTAR_BIN)\" --format=pax -cf \"$(RULEDIR)/" + name + "/payload.tar\" " +
-              " ".join(["\"@$(execpath " + _DEB_ARCHIVES[source] + "/data.archive)\"" for source in inputs["srcs"]]) + "\n" +
               "\"$(execpath //tools/bazel/oci:package_receipts)\"" +
-              " --payload='$(RULEDIR)/" + name + "/payload.tar'" +
+              " --payload='$(execpath " + name + "/payload.tar)'" +
               " --out='$(RULEDIR)/" + name + "/manifest.json'" +
               " --architecture=" + _APT_POLICY["architecture"] +
               " --context='" + json.encode(inputs["context"]) + "'" +
@@ -383,11 +398,7 @@ _PACKAGE_SETS = {
                   "control": "$(execpath " + _DEB_ARCHIVES[source] + "/control.archive)",
                   "data": "$(execpath " + _DEB_ARCHIVES[source] + "/data.archive)",
               }) + "'" for source in inputs["srcs"]]),
-        toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
-        tools = [
-            "//tools/bazel/oci:package_receipts",
-            "@bsd_tar_toolchains//:resolved_toolchain",
-        ],
+        tools = ["//tools/bazel/oci:package_receipts"],
         visibility = ["//visibility:private"],
     )
     for name, inputs in _PACKAGE_SETS.items()
