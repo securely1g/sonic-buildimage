@@ -71,13 +71,13 @@ FILES = {
 BEP = {
     "archive": [
         ("archive-tests", "artifacts/archive/test-events.jsonl", 5),
-        ("python-tests", "artifacts/config-engine/test-events.jsonl", 12),
+        ("python-tests", "artifacts/config-engine/test-events.jsonl", 13),
     ],
     "source": [("source-tests", "artifacts/swss/test-events.jsonl", 14)],
     "syncd": [],
     "vs": [],
 }
-RECEIPT_TEST_COUNTS = {"archive": ("python", 7), "source": ("source", 14), "syncd": ("syncd", 7)}
+RECEIPT_TEST_COUNTS = {"archive": ("python", 8), "source": ("source", 14), "syncd": ("syncd", 7)}
 SUMMARY = {
     "archive": "artifacts/archive/public-summary.json",
     "source": "artifacts/swss/public-summary.json",

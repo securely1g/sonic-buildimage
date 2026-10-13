@@ -80,7 +80,7 @@ def receipt(kind, architecture="amd64"):
                 "tests": {"//tests:python_" + str(number): {
                     "result": {"tests": 3, "failures": 0, "errors": 0, "skipped": 0},
                     "test.log": {"path": SENTINEL}}
-                    for number in range(7)}}
+                    for number in range(artifacts.RECEIPT_TEST_COUNTS["archive"][1])}}
     if kind == "source":
         return {"status": "passed", "revision": REVISION, **unsafe,
                 "tests": {"//tests:source_" + str(number): "passed" for number in range(14)},
