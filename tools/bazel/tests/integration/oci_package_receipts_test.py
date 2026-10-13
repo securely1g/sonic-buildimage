@@ -13,7 +13,7 @@ from tools.bazel.tests.oci_contract_fixture import owner_policies
 
 
 parser = argparse.ArgumentParser()
-for name in ("payload", "manifest", "repeat-payload", "repeat-manifest", "image"):
+for name in ("payload", "manifest", "repeat-payload", "repeat-manifest", "inherited-payload", "image"):
     parser.add_argument("--" + name, required=True, type=Path)
 parser.add_argument("--package", action="append", type=json.loads, required=True)
 args, remaining = parser.parse_known_args()
@@ -73,6 +73,21 @@ class DirectPackageInputsTest(unittest.TestCase):
         """Repeated extraction of identical declared packages must produce identical payloads and receipts."""
         self.assertEqual(args.payload.read_bytes(), args.repeat_payload.read_bytes())
         self.assertEqual(args.manifest.read_bytes(), args.repeat_manifest.read_bytes())
+
+    def test_debug_receipt_reuses_the_runtime_payload(self):
+        """Keep two variant receipts bound to one TAR through a declared runfiles link."""
+        runtime = json.loads(args.manifest.read_text())
+        debug = package_receipts.receipt(
+            args.package[:2], {"variant": "debug"}, args.inherited_payload,
+            args.manifest, architecture="amd64")
+        self.assertNotEqual(args.payload.parent, args.inherited_payload.parent)
+        self.assertEqual(args.inherited_payload.name, "payload.tar")
+        self.assertEqual(args.payload.read_bytes(), args.inherited_payload.read_bytes())
+        self.assertEqual(debug["variant"], "debug")
+        self.assertEqual(debug["payload"], runtime["payload"])
+        self.assertEqual(debug["packages"], runtime["packages"])
+        self.assertEqual(debug["runtime_manifest_sha256"],
+                         hashlib.sha256(args.manifest.read_bytes()).hexdigest())
 
     def test_rejects_foreign_and_duplicate_packages(self):
         """Reject a foreign package architecture or repeated package identity before publication."""
