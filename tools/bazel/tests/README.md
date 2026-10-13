@@ -141,3 +141,12 @@ container boot, live service health or forwarding behavior.
 and Make export checks. [oci_base_fixture.py](oci_base_fixture.py) supplies native
 OCI/Docker-save inputs for base preparation and consumer checks. These are fixture
 generators, not additional test suites.
+
+Installed-wheel checks share `integration/installed_wheel_fixture.py` for a
+private virtual environment, installation, checkout-path exclusion and wheel
+receipts. Component tests retain their own metadata, installed import, command
+and API probes. The fixture can borrow declared third-party runfiles; it does
+not claim an independently installed dependency closure.
+`installed_wheel_fixture_test` checks that owner sources remain unimportable,
+external declared dependencies remain available, and required receipts cannot
+be omitted. Each receipt identifies only the component wheels its probes tested.

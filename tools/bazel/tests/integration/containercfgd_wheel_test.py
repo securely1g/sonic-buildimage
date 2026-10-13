@@ -1,22 +1,16 @@
 """Install the wheel and exercise its command without Redis or system writes."""
 
 from email.parser import BytesParser
-import hashlib
 import json
 import os
 from pathlib import Path
-import platform
 import runpy
 import subprocess
 import sys
-import tempfile
 from unittest import mock
-import venv
 import zipfile
 
-from installer import install
-from installer.destinations import SchemeDictionaryDestination
-from installer.sources import WheelFile
+from tools.bazel.tests.integration.installed_wheel_fixture import installed_wheels, write_wheel_receipt
 from packaging.utils import canonicalize_name
 import setuptools
 
@@ -41,34 +35,12 @@ def main():
         assert {canonicalize_name(value) for value in metadata.get_all("Requires-Dist", [])} == {
             canonicalize_name(value) for value in contract["install_requires"]}
 
-    with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
-        root = Path(temporary)
-        environment = root / "environment"
-        venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
-        python = environment / "bin/python"
-        scheme = json.loads(subprocess.check_output(
-            [str(python), "-I", "-c", "import json,sysconfig;print(json.dumps(sysconfig.get_paths()))"],
-            text=True))
-        site = Path(scheme["purelib"])
-        site.mkdir(parents=True, exist_ok=True)
-        # Only external declared dependencies may come from Bazel runfiles;
-        # containercfgd and py-common must come from the installed wheels.
-        own_roots = [Path(__file__).absolute().parents[4], Path(__file__).resolve().parents[4]]
-        external = [str(Path(path).resolve()) for path in sys.path if path and
-                    Path(path).is_dir() and not any(Path(path).resolve().is_relative_to(
-                        own.resolve()) for own in own_roots)]
-        (site / "declared-dependencies.pth").write_text("\n".join(external) + "\n")
-        destination = SchemeDictionaryDestination(
-            scheme_dict={key: scheme[key] for key in ("purelib", "platlib", "scripts", "data")} |
-                        {"headers": scheme["include"]},
-            interpreter=str(python), script_kind="posix", bytecode_optimization_levels=(),
-        )
-        for archive in (common, wheel):
-            with WheelFile.open(archive) as source:
-                install(source, destination, additional_metadata={"INSTALLER": b"Bazel test\n"})
+    own_roots = [Path(__file__).absolute().parents[4], Path(__file__).resolve().parents[4]]
+    with installed_wheels((common, wheel), exclude_source_roots=own_roots) as installed:
+        root, python, site = installed.root, installed.python, installed.site
         for name, source in sources.items():
             assert (site / name).read_bytes() == source.read_bytes(), name
-        executable = environment / "bin/containercfgd"
+        executable = installed.scripts / "containercfgd"
         assert os.access(executable, os.X_OK)
         probe = """
 import builtins, importlib.metadata, io, json, pathlib, runpy, sys
@@ -99,22 +71,12 @@ with mock.patch.object(containercfgd.ContainerConfigDaemon, 'run') as run:
     run.assert_called_once()
 print('Installed containercfgd command and py-common imports passed')
 """
-        env = dict(os.environ, CONTAINER_NAME="swss", NAMESPACE_ID="")
-        for name in ("PYTHONPATH", "PYTHONHOME"):
-            env.pop(name, None)
+        env = dict(installed.env, CONTAINER_NAME="swss", NAMESPACE_ID="")
         entries = dict(value.split(" = ", 1) for value in contract["entry_points"]["console_scripts"])
         subprocess.run([str(python), "-I", "-c", probe, str(site), str(executable),
                         json.dumps(entries), contract["version"]],
                        cwd=root, env=env, check=True, timeout=30)
-    output = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR")
-    if output:
-        Path(output).mkdir(parents=True, exist_ok=True)
-        (Path(output) / "wheels.json").write_text(json.dumps({
-            "status": "passed", "python": platform.python_version(),
-            "architecture": platform.machine(), "wheels": [{
-                "filename": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
-            }],
-        }, indent=2) + "\n")
+    write_wheel_receipt([wheel])
 
 
 if __name__ == "__main__":
