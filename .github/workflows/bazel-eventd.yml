@@ -1,0 +1,106 @@
+name: Bazel event services
+
+on:
+  pull_request:
+    paths:
+      - src/sonic-eventd/**
+      - MODULE.bazel
+      - tools/bazel/common.bazelrc
+      - .github/workflows/bazel-eventd.yml
+  push:
+    branches: [master]
+    paths:
+      - src/sonic-eventd/**
+      - MODULE.bazel
+      - tools/bazel/common.bazelrc
+      - .github/workflows/bazel-eventd.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native event services (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl file git libtool patch pkg-config python3 tar unzip zstd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Draft validation keeps the default registry on maintained main.
+      - name: Check out the owned multiarch header patch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-build-infra
+          ref: 0b76749e7297476c5bfde0f0b3572ddf96052d01
+          path: _eventd_dependencies/multiarch
+          persist-credentials: false
+      - name: Check out the existing pkg-config whitespace patch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-build-infra
+          ref: 0b76749e7297476c5bfde0f0b3572ddf96052d01
+          path: _eventd_dependencies/pkgconfig
+          persist-credentials: false
+      - name: Prepare the exact Distroless source candidate
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/distroless.tar.gz" \
+            https://github.com/bazel-contrib/rules_distroless/releases/download/v0.9.4/rules_distroless-v0.9.4.tar.gz
+          echo "5d43f4f44f0f0fb614194a07a6dcf7b29338cfc8ab7f6129ad1e4403c1ad1c73  $RUNNER_TEMP/distroless.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/distroless-eventd"
+          tar -xzf "$RUNNER_TEMP/distroless.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/distroless-eventd"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/include-fragments.patch" \
+            https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/19f060dda00ce7140eae3af4e9a637f9cfeb5034/modules/rules_distroless/0.9.4.sonic.1/patches/0002-include-fragments.patch
+          echo "88da687bfa7ecef1de6c0a309dc1abb8712d10f48caec22e9c74df30d64e639a  $RUNNER_TEMP/include-fragments.patch" | sha256sum --check --strict
+          patch -d "$RUNNER_TEMP/distroless-eventd" -p1 < "$RUNNER_TEMP/include-fragments.patch"
+          patch -d "$RUNNER_TEMP/distroless-eventd" -p1 < _eventd_dependencies/pkgconfig/third_party/rules_distroless/0002-pkgconfig-whitespace.patch
+          patch -d "$RUNNER_TEMP/distroless-eventd" -p1 < _eventd_dependencies/multiarch/third_party/rules_distroless/0003-multiarch-headers.patch
+          mkdir -p artifacts/eventd
+          sha256sum "$RUNNER_TEMP/distroless.tar.gz" "$RUNNER_TEMP/include-fragments.patch" \
+            _eventd_dependencies/pkgconfig/third_party/rules_distroless/0002-pkgconfig-whitespace.patch \
+            _eventd_dependencies/multiarch/third_party/rules_distroless/0003-multiarch-headers.patch \
+            > artifacts/eventd/distroless-inputs.sha256
+
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: eventd-${{ matrix.architecture }}
+          cache-version: "8.5.1"
+      - name: Audit, build and run all original suites with private Redis
+        env:
+          # Bazel records its client environment in retained build events.
+          BAZELISK_GITHUB_TOKEN: ""
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd \
+            --bazel-arg="--override_module=rules_distroless=$RUNNER_TEMP/distroless-eventd"
+          git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
+      - name: Upload native packages and test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eventd-${{ matrix.architecture }}
+          path: artifacts/eventd
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
