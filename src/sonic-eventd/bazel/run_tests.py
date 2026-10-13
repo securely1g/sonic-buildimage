@@ -37,7 +37,7 @@ def member_filter(member, destination):
 def main():
     binary, archive, fixture = map(locate, sys.argv[1:])
     sources = fixture.parent.parent
-    expected = {'eventd_tests_bin': 6, 'eventdb_tests_bin': 4, 'rsyslog_plugin_tests_bin': 13}[binary.name]
+    expected = {'eventd_tests_bin': 6, 'eventdb_tests_bin': 4, 'rsyslog_plugin_tests_bin': 15}[binary.name]
     with tempfile.TemporaryDirectory(dir='/tmp', prefix='eventd-') as temp:
         root = Path(temp); runtime = root/'runtime'; work = root/'work'
         runtime.mkdir(); work.mkdir()
@@ -109,9 +109,22 @@ def main():
                 raise ValueError('The original suite was incomplete or skipped cases')
             if 'redis not available' in result.stdout or 'Unable to get DB Connector' in result.stdout:
                 raise ValueError('The original suite fell back because Redis was unavailable')
+            fixture_rows = {}
+            if binary.name == 'rsyslog_plugin_tests_bin':
+                for name, count in {'onMessage': 4, 'onMessage_noParams': 3}.items():
+                    matches = [case for case in cases if case.get('classname') == 'rsyslog_plugin' and case.get('name') == name]
+                    if len(matches) != 1:
+                        raise ValueError('Missing message fixture test: ' + name)
+                    values = [item.get('value') for item in matches[0].findall('./properties/property')
+                              if item.get('name') == 'fixture_rows']
+                    if matches[0].get('fixture_rows') is not None:
+                        values.append(matches[0].get('fixture_rows'))
+                    if values != [str(count)]:
+                        raise ValueError('Message fixture rows were not exercised: ' + name)
+                    fixture_rows[name] = count
             output = Path(os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR', str(root)))
             output.mkdir(parents=True, exist_ok=True); shutil.copyfile(report, output/'gtest.xml')
-            (output/'services.json').write_text(json.dumps({'_generated': {'notice':'AUTO-GENERATED. DO NOT EDIT MANUALLY.', 'generator':'src/sonic-eventd/bazel/run_tests.py'}, 'test_cases':len(cases), 'redis_instances':len(children), 'host_services_used':False}, indent=2)+'\n')
+            (output/'services.json').write_text(json.dumps({'_generated': {'notice':'AUTO-GENERATED. DO NOT EDIT MANUALLY.', 'generator':'src/sonic-eventd/bazel/run_tests.py'}, 'test_cases':len(cases), 'fixture_rows':fixture_rows, 'redis_instances':len(children), 'host_services_used':False}, indent=2)+'\n')
             return 0
         finally:
             for process, log in children:

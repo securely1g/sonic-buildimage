@@ -54,11 +54,15 @@ bug; CI explicitly validates the fixed source candidate.
 
 Before building, the helper audits the action graph and rejects DEB production
 or Make/package-build wrappers. It runs all three original C++ suites: six
-eventd tests, four eventdb tests and thirteen rsyslog-plugin tests. Assertions
-and production behavior remain unchanged. Skipped cases, a missing Redis service
+eventd tests, four eventdb tests and thirteen original rsyslog-plugin tests plus two fixture-parser regressions.
+Production behavior remains unchanged. The two message tests now read quoted
+messages and textual booleans, fail on missing or malformed input, and require
+all four and three fixture rows to execute. The empty-message row is written
+as `"" true`, preserving its original meaning. Their row counts are checked in
+the GoogleTest report; a passing testcase count alone is insufficient. Skipped cases, a missing Redis service
 or the original tests' Redis-unavailable fallback fail the wrapper.
 
-Test JSON files are copied into a temporary working directory before replacing
+Test JSON and TXT files are copied into a temporary working directory before replacing
 Redis endpoints. Each configured Redis instance runs from the declared Debian
 test runtime with a unique loopback port and private Unix socket, without
 persistence. Cleanup terminates only those child processes. The suites are marked
@@ -75,3 +79,12 @@ in Bazel's undeclared test outputs.
 Run the helper after adding or moving a source file or installed payload. This
 validates the component's build and packaging; it does not prove complete SONiC
 image integration, guest boot or forwarding.
+
+## Fixture provenance
+
+The TXT input declaration is adapted from
+[songqing-sq/sonic-buildimage commit 1b1b1b54](https://github.com/songqing-sq/sonic-buildimage/commit/1b1b1b5471c283a9afa32c1169140220308917d7).
+Its broader shell-runner migration is not imported. The fixture declaration is
+adapted to this component's existing Python runner with the original author
+credited. Both source trees shared the old whitespace/boolean parsing defect;
+the parser correction here is additional work, not an upstream fix.
