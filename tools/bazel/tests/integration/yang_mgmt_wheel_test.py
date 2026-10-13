@@ -1,22 +1,15 @@
 """Install the wheel and validate real SONiC YANG data outside the source tree."""
 
 from email.parser import BytesParser
-import hashlib
-import json
 import os
 from pathlib import Path
-import platform
 import runpy
 import subprocess
 import sys
-import tempfile
 from unittest import mock
-import venv
 import zipfile
 
-from installer import install
-from installer.destinations import SchemeDictionaryDestination
-from installer.sources import WheelFile
+from tools.bazel.tests.integration.installed_wheel_fixture import installed_wheels, write_wheel_receipt
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 import setuptools
@@ -50,27 +43,9 @@ def main():
             entry = next(name for name in names if name.endswith(".data/scripts/" + script))
             assert package.read(entry).splitlines()[1:] == (setup.parent / script).read_bytes().splitlines()[1:]
 
-    with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
-        root = Path(temporary)
-        environment = root / "environment"
-        venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
-        python = environment / "bin/python"
-        scheme = json.loads(subprocess.check_output(
-            [str(python), "-I", "-c", "import json,sysconfig;print(json.dumps(sysconfig.get_paths()))"],
-            text=True))
-        site = Path(scheme["purelib"])
-        site.mkdir(parents=True, exist_ok=True)
-        own_roots = [Path(__file__).absolute().parents[4], Path(__file__).resolve().parents[4]]
-        external = [str(Path(path).resolve()) for path in sys.path if path and Path(path).is_dir()
-                    and not any(Path(path).resolve().is_relative_to(own.resolve()) for own in own_roots)]
-        (site / "declared-dependencies.pth").write_text("\n".join(external) + "\n")
-        destination = SchemeDictionaryDestination(
-            scheme_dict={key: scheme[key] for key in ("purelib", "platlib", "scripts", "data")} |
-                        {"headers": scheme["include"]},
-            interpreter=str(python), script_kind="posix", bytecode_optimization_levels=(),
-        )
-        with WheelFile.open(wheel) as source:
-            install(source, destination, additional_metadata={"INSTALLER": b"Bazel test\n"})
+    own_roots = [Path(__file__).absolute().parents[4], Path(__file__).resolve().parents[4]]
+    with installed_wheels([wheel], exclude_source_roots=own_roots) as installed:
+        root, python, site = installed.root, installed.python, installed.site
         probe = '''
 import importlib.metadata, pathlib, sys
 import sonic_yang, sonic_yang_ext, sonic_yang_path
@@ -99,21 +74,14 @@ else:
     raise AssertionError('Invalid port bypassed installed YANG validation')
 print('Installed wheel: production models, ConfigDB roundtrip, path translation and invalid-data rejection passed')
 '''
-        env = dict(os.environ)
-        for name in ("PYTHONPATH", "PYTHONHOME"):
-            env.pop(name, None)
+        env = installed.env
         subprocess.run([str(python), "-I", "-c", probe, str(site), str(models)],
                        cwd=root, env=env, check=True, timeout=120)
-        script = environment / "bin/sonic-cfg-help"
+        script = installed.scripts / "sonic-cfg-help"
         assert os.access(script, os.X_OK)
         output = subprocess.check_output([str(script), "--help"], cwd=root, env=env, text=True)
         assert "--table" in output and "--field" in output, output
-    directory = Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"])
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "wheels.json").write_text(json.dumps({
-        "status": "passed", "python": platform.python_version(), "architecture": platform.machine(),
-        "wheels": [{"filename": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}],
-    }, indent=2) + "\n")
+    write_wheel_receipt([wheel], required=True)
 
 
 if __name__ == "__main__":

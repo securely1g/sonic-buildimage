@@ -13,6 +13,20 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
+# Shared installed-wheel mechanics: reject owner checkout imports and retain
+# receipts for the exact artifacts exercised by component-specific probes.
+py_test(
+    name = "installed_wheel_fixture_test",
+    srcs = [
+        "integration/installed_wheel_fixture.py",
+        "integration/installed_wheel_fixture_test.py",
+    ],
+    legacy_create_init = False,
+    main = "integration/installed_wheel_fixture_test.py",
+    python_version = "3.13",
+    deps = [requirement("installer")],
+)
+
 py_test(
     name = "sonic_yang_mgmt_full_test",
     size = "large",
@@ -39,7 +53,10 @@ py_test(
 
 py_test(
     name = "sonic_yang_mgmt_wheel_test",
-    srcs = ["integration/yang_mgmt_wheel_test.py"],
+    srcs = [
+        "integration/installed_wheel_fixture.py",
+        "integration/yang_mgmt_wheel_test.py",
+    ],
     args = [
         "$(rootpath //src/sonic-yang-mgmt:sonic_yang_mgmt_wheel)",
         "$(rootpath //src/sonic-yang-mgmt:setup.py)",

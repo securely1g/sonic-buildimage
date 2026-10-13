@@ -21,6 +21,7 @@ WHEELS = {
     "sonic_config_engine-1.0-py3-none-any.whl": "//src/sonic-config-engine:sonic_config_engine_wheel",
 }
 TESTS = [
+    "//tools/bazel/tests:installed_wheel_fixture_test",
     "//tools/bazel/tests:sonic_yang_mgmt_full_test",
     "//tools/bazel/tests:sonic_yang_mgmt_wheel_test",
     "//tools/bazel/tests:sonic_py_common_test",
