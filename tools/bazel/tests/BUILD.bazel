@@ -13,6 +13,76 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
+# Shared installed-wheel mechanics: reject owner checkout imports and retain
+# receipts for the exact artifacts exercised by component-specific probes.
+py_test(
+    name = "installed_wheel_fixture_test",
+    srcs = [
+        "integration/installed_wheel_fixture.py",
+        "integration/installed_wheel_fixture_test.py",
+    ],
+    legacy_create_init = False,
+    main = "integration/installed_wheel_fixture_test.py",
+    python_version = "3.13",
+    deps = [requirement("installer")],
+)
+
+py_test(
+    name = "sonic_yang_mgmt_full_test",
+    size = "large",
+    srcs = ["integration/component_pytest_runner.py"],
+    args = [
+        "--component-setup=$(rootpath //src/sonic-yang-mgmt:setup.py)",
+        "--models=$(rootpath @sonic_yang_models//:yang_models)",
+        "--yang-config=$(rootpath //src/sonic-yang-models:tests/files/sample_config_db.json)",
+    ],
+    data = [
+        "//src/sonic-yang-mgmt:setup.py",
+        "//src/sonic-yang-mgmt:test_sources",
+        "//src/sonic-yang-models:tests/files/sample_config_db.json",
+        "@sonic_yang_models//:yang_models",
+    ],
+    legacy_create_init = False,
+    main = "integration/component_pytest_runner.py",
+    python_version = "3.13",
+    deps = [
+        "//src/sonic-yang-mgmt:sonic_yang_mgmt",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
+    name = "sonic_yang_mgmt_wheel_test",
+    srcs = [
+        "integration/installed_wheel_fixture.py",
+        "integration/yang_mgmt_wheel_test.py",
+    ],
+    args = [
+        "$(rootpath //src/sonic-yang-mgmt:sonic_yang_mgmt_wheel)",
+        "$(rootpath //src/sonic-yang-mgmt:setup.py)",
+        "$(rootpath @sonic_yang_models//:yang_models)",
+    ],
+    data = [
+        "//src/sonic-yang-mgmt:setup.py",
+        "//src/sonic-yang-mgmt:sonic_yang_mgmt_wheel",
+        "//src/sonic-yang-mgmt:test_sources",
+        "@sonic_yang_models//:yang_models",
+    ],
+    legacy_create_init = False,
+    main = "integration/yang_mgmt_wheel_test.py",
+    python_version = "3.13",
+    deps = [
+        "@libyang_python//:libyang",
+        requirement("installer"),
+        requirement("packaging"),
+        requirement("setuptools"),
+        requirement("ijson"),
+        requirement("jsondiff"),
+        requirement("jsonpointer"),
+        requirement("tabulate"),
+    ],
+)
+
 py_test(
     name = "sonic_config_engine_full_test",
     size = "large",
@@ -227,7 +297,6 @@ py_test(
     name = "select_apt_payloads_test",
     size = "small",
     srcs = ["integration/select_apt_payloads_test.py"],
-    main = "integration/select_apt_payloads_test.py",
     args = [
         "$(rootpath @orchagent_apt_inputs//:apt_inputs.bzl)",
         "$(rootpath //dockers/docker-orchagent:runtime_layer_policy)",
@@ -235,11 +304,12 @@ py_test(
         "$(rootpath //dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel)",
     ],
     data = [
-        "@orchagent_apt_inputs//:apt_inputs.bzl",
         "//dockers/docker-orchagent:runtime_layer_policy",
         "//dockers/docker-orchagent/bazel:apt.lock.json",
         "//dockers/docker-orchagent/bazel:apt_inputs.MODULE.bazel",
+        "@orchagent_apt_inputs//:apt_inputs.bzl",
     ],
+    main = "integration/select_apt_payloads_test.py",
     deps = [
         ":oci_base_fixture_lib",
         "//tools/bazel/oci:apt_selection",

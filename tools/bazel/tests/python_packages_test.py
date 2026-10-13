@@ -40,8 +40,11 @@ class PythonPackageEvidenceTest(unittest.TestCase):
                 contents["pytest-inventory.json"] = json.dumps({
                     "python": "3.13.9", "collected": 1, "tests": ["test_example"],
                 })
-            if name == "sonic_python_wheels_test":
-                contents["wheels.json"] = json.dumps(self.wheel_receipt)
+            for target, _, _, expected in python_packages.WHEEL_CHECKS:
+                if name == target:
+                    contents["wheels.json"] = json.dumps(dict(self.wheel_receipt, wheels=[
+                        item for item in self.wheel_receipt["wheels"] if item["filename"] in expected
+                    ]))
             if contents:
                 outputs = source / "test.outputs"
                 outputs.mkdir()
@@ -72,7 +75,10 @@ class PythonPackageEvidenceTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "passed")
         self.assertEqual(receipt["revision"], self.revision)
         self.assertEqual(set(receipt["tests"]), set(python_packages.TESTS))
-        self.assertEqual(json.loads((self.directory / "wheels.json").read_text()), self.wheel_receipt)
+        for _, filename, _, expected in python_packages.WHEEL_CHECKS:
+            self.assertEqual(json.loads((self.directory / filename).read_text()), dict(
+                self.wheel_receipt, wheels=[item for item in self.wheel_receipt["wheels"]
+                                           if item["filename"] in expected]))
         for target, evidence in receipt["tests"].items():
             if target.endswith("_full_test"):
                 self.assertEqual(json.loads((self.directory / evidence["inventory"]["path"]).read_text())["collected"], 1)

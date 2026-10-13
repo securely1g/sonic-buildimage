@@ -127,6 +127,8 @@ container boot, live service health or forwarding behavior.
 | [`sonic_config_engine_full_test`](integration/component_pytest_runner.py) | Discover the complete config-engine `tests/` tree using declared sources, fixtures and its existing conftest setup. Run CLI subprocesses with the selected Python interpreter and preserve existing explicit skips. |
 | [`sonic_py_common_full_test`](integration/component_pytest_runner.py) | Discover the complete py-common `tests/` tree, including DB and generated gRPC behavior. Use writable copies for existing source-generating hooks; preserve the original assertions, mocks and explicit skips. |
 | [`sonic_python_wheels_test`](integration/sonic_python_wheels_test.py) | Install both generated wheels in a temporary scheme, check installed module and script paths, package metadata, generated gRPC exports and template bytes, then execute installed cfggen and DB command entry points with declared external dependencies. Retain the installation receipt in `wheels.json`. |
+| `sonic_yang_mgmt_full_test` | Run every existing YANG-management pytest case using declared production models and sample ConfigDB data. Retain collected test names and JUnit results. |
+| [`sonic_yang_mgmt_wheel_test`](integration/yang_mgmt_wheel_test.py) | Install the generated wheel outside the source checkout, validate its modules, metadata and command, and exercise production-model data validation and path translation. |
 | [`sonic_cfggen_cli_test`](../../../src/sonic-config-engine/README.bazel.md) | Run the real config-engine command with Common/YANG imports and check input merging, filters, includes, multiple output destinations, namespace input and failure exits. |
 | [sonic_py_common_native_test.py](integration/sonic_py_common_native_test.py) | Import every selected Python helper and exercise the real source-built Common extension. The shared [pytest runner](integration/pytest_runner.py) also runs 44 existing interface, BGP and EEPROM cases from the component tree, for 46 cases total; it disables legacy source-mutating conftest hooks and coverage defaults. |
 | [sonic_docker_archive_test.py](integration/sonic_docker_archive_test.py) | Check Docker archive metadata and payload for the selected AMD64/ARM64 fixture and require reproducible gzip exports despite source names or requested timestamps changing. |
@@ -137,3 +139,12 @@ container boot, live service health or forwarding behavior.
 and Make export checks. [oci_base_fixture.py](oci_base_fixture.py) supplies native
 OCI/Docker-save inputs for base preparation and consumer checks. These are fixture
 generators, not additional test suites.
+
+Installed-wheel checks share `integration/installed_wheel_fixture.py` for a
+private virtual environment, installation, checkout-path exclusion and wheel
+receipts. Component tests retain their own metadata, installed import, command
+and API probes. The fixture can borrow declared third-party runfiles; it does
+not claim an independently installed dependency closure.
+`installed_wheel_fixture_test` checks that owner sources remain unimportable,
+external declared dependencies remain available, and required receipts cannot
+be omitted. Each receipt identifies only the component wheels its probes tested.
