@@ -74,6 +74,12 @@ P4/DASH tuple has no matching debug artifacts in the reviewed release inventory;
 those gaps remain explicit. Static development libraries retain their own
 symbols. A successful build is not a FIPS certification claim.
 
+The four imported P4 packages form one aggregate runtime TAR. Both variants
+retain separate package receipts, with the debug receipt bound to the runtime
+receipt and the same payload hash. A declared symlink keeps `payload.tar`
+beside the debug receipt without assembling a second copy. The debug image
+inherits this payload through its runtime base.
+
 ## APT and installed package state
 
 Both containers use the common `apt_layer`, `sonic_layer`, `oci_image`,
