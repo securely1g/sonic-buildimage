@@ -23,8 +23,11 @@ class PythonPackageEvidenceTest(unittest.TestCase):
         self.wheel_receipt = {
             "status": "passed", "architecture": "x86_64", "python": "3.13.9",
             "wheels": [{"filename": name, "sha256": hashlib.sha256(name.encode()).hexdigest()}
-                       for name in python_packages.WHEELS],
+                       for name in python_packages.WHEELS if not name.startswith("sonic_containercfgd-")],
         }
+        self.container_receipt = dict(self.wheel_receipt, wheels=[
+            {"filename": name, "sha256": hashlib.sha256(name.encode()).hexdigest()}
+            for name in python_packages.WHEELS if name.startswith("sonic_containercfgd-")])
 
     def fixture(self, *, zipped=False):
         for target in python_packages.TESTS:
@@ -42,6 +45,8 @@ class PythonPackageEvidenceTest(unittest.TestCase):
                 })
             if name == "sonic_python_wheels_test":
                 contents["wheels.json"] = json.dumps(self.wheel_receipt)
+            if name == "containercfgd_wheel_test":
+                contents["wheels.json"] = json.dumps(self.container_receipt)
             if contents:
                 outputs = source / "test.outputs"
                 outputs.mkdir()
@@ -81,6 +86,13 @@ class PythonPackageEvidenceTest(unittest.TestCase):
         """Read the same required receipts when Bazel archives undeclared outputs."""
         self.fixture(zipped=True)
         self.assertEqual(self.collect()["status"], "passed")
+
+    def test_different_containercfgd_wheel_bytes_fail(self):
+        """Reject a containercfgd wheel that was not installed by its own test."""
+        self.container_receipt["wheels"][0]["sha256"] = "0" * 64
+        self.fixture()
+        with self.assertRaisesRegex(ValueError, "Retained containercfgd wheel differs"):
+            self.collect()
 
     def test_missing_xml_fails_and_records_failure(self):
         """An artifact upload cannot turn missing source-suite evidence into success."""

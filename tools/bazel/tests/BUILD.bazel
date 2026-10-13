@@ -13,6 +13,68 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
+# Shared installed-wheel mechanics: reject owner checkout imports and retain
+# receipts for the exact artifacts exercised by component-specific probes.
+py_test(
+    name = "installed_wheel_fixture_test",
+    srcs = [
+        "integration/installed_wheel_fixture.py",
+        "integration/installed_wheel_fixture_test.py",
+    ],
+    legacy_create_init = False,
+    main = "integration/installed_wheel_fixture_test.py",
+    python_version = "3.13",
+    deps = [requirement("installer")],
+)
+
+py_test(
+    name = "containercfgd_full_test",
+    srcs = [
+        "integration/component_pytest_runner.py",
+        "integration/containercfgd_pytest_runner.py",
+    ],
+    args = ["--component-setup=$(rootpath //src/sonic-containercfgd:setup.py)"],
+    data = [
+        "//src/sonic-containercfgd:setup.py",
+        "//src/sonic-containercfgd:test_sources",
+    ],
+    legacy_create_init = False,
+    main = "integration/containercfgd_pytest_runner.py",
+    python_version = "3.13",
+    deps = [
+        "//src/sonic-containercfgd:containercfgd",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
+    name = "containercfgd_wheel_test",
+    srcs = [
+        "integration/containercfgd_wheel_test.py",
+        "integration/installed_wheel_fixture.py",
+    ],
+    args = [
+        "$(rootpath //src/sonic-containercfgd:sonic_containercfgd_wheel)",
+        "$(rootpath //src/sonic-containercfgd:setup.py)",
+        "$(rootpath //src/sonic-py-common:sonic_py_common_wheel)",
+    ],
+    data = [
+        "//src/sonic-containercfgd:setup.py",
+        "//src/sonic-containercfgd:sonic_containercfgd_wheel",
+        "//src/sonic-containercfgd:test_sources",
+        "//src/sonic-py-common:sonic_py_common_wheel",
+    ],
+    legacy_create_init = False,
+    main = "integration/containercfgd_wheel_test.py",
+    python_version = "3.13",
+    deps = [
+        "//src/sonic-py-common:sonic_py_common",
+        requirement("installer"),
+        requirement("packaging"),
+        requirement("setuptools"),
+    ],
+)
+
 py_test(
     name = "sonic_config_engine_full_test",
     size = "large",

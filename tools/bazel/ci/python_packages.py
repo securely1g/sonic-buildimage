@@ -16,10 +16,14 @@ from tools.bazel.ci import artifact_validation, build
 
 
 WHEELS = {
+    "sonic_containercfgd-1.0-py3-none-any.whl": "//src/sonic-containercfgd:sonic_containercfgd_wheel",
     "sonic_py_common-1.0-py3-none-any.whl": "//src/sonic-py-common:sonic_py_common_wheel",
     "sonic_config_engine-1.0-py3-none-any.whl": "//src/sonic-config-engine:sonic_config_engine_wheel",
 }
 TESTS = [
+    "//tools/bazel/tests:installed_wheel_fixture_test",
+    "//tools/bazel/tests:containercfgd_full_test",
+    "//tools/bazel/tests:containercfgd_wheel_test",
     "//tools/bazel/tests:sonic_py_common_test",
     "//tools/bazel/tests:sonic_py_common_full_test",
     "//tools/bazel/tests:sonic_config_engine_full_test",
@@ -105,10 +109,24 @@ def collect(workspace, directory, revision, architecture, *, bazel="bazel", opti
             raise ValueError("Installed-wheel receipt does not describe this successful native run")
         if not installed["python"].startswith("3.13."):
             raise ValueError("Installed-wheel test used a different Python version")
-        if {wheel["filename"]: wheel["sha256"] for wheel in installed["wheels"]} != hashes:
+        common_config_hashes = {name: value for name, value in hashes.items()
+                               if not name.startswith("sonic_containercfgd-")}
+        if {wheel["filename"]: wheel["sha256"] for wheel in installed["wheels"]} != common_config_hashes:
             raise ValueError("Retained wheels differ from the installed-wheel test inputs")
         (directory / "wheels.json").write_bytes(wheel_receipt)
         receipt["installed_wheels"] = file_evidence(directory / "wheels.json", directory)
+        container_receipt = test_output(
+            workspace / "bazel-testlogs/tools/bazel/tests/containercfgd_wheel_test", "wheels.json")
+        container = json.loads(container_receipt)
+        if (container["status"] != "passed" or container["architecture"] != MACHINES[architecture]
+                or container["python"] != installed["python"]):
+            raise ValueError("Containercfgd installed-wheel receipt does not match this native run")
+        container_hashes = {name: value for name, value in hashes.items()
+                            if name.startswith("sonic_containercfgd-")}
+        if {wheel["filename"]: wheel["sha256"] for wheel in container["wheels"]} != container_hashes:
+            raise ValueError("Retained containercfgd wheel differs from the installed-wheel test input")
+        (directory / "containercfgd-wheels.json").write_bytes(container_receipt)
+        receipt["installed_containercfgd"] = file_evidence(directory / "containercfgd-wheels.json", directory)
         receipt["python"] = installed["python"]
         receipt["status"] = "passed"
     except Exception as error:
