@@ -34,6 +34,16 @@ def check_p4_inputs(lock_path, debs, manifests):
     files = {path.name: path for path in debs}
     require(len(debs) == len(files) == 4 and set(files) == {item["filename"] for item in packages},
             "P4 runtime input files differ from the lock")
+    runtime, debug = [json.loads(path.read_bytes()) for path in manifests]
+    require(runtime["variant"] == "runtime" and debug["variant"] == "debug",
+            "P4 receipts do not identify both image variants")
+    require(debug["runtime_manifest_sha256"] == sha(manifests[0]),
+            "P4 debug receipt is not bound to the runtime receipt")
+    require(runtime["payload"] == debug["payload"], "P4 debug receipt changes the runtime payload")
+    for manifest_path in manifests:
+        payload_path = manifest_path.parent / runtime["payload"]["path"]
+        require(payload_path.is_file() and sha(payload_path) == runtime["payload"]["sha256"],
+                "P4 receipt cannot resolve its verified sibling payload: " + str(manifest_path))
     for package in packages:
         path = files[package["filename"]]
         require(path.stat().st_size == package["size"] and sha(path) == package["sha256"],
