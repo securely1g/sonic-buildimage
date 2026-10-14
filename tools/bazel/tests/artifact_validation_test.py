@@ -3,6 +3,7 @@
 
 import hashlib
 import io
+import os
 from pathlib import Path
 import re
 import shutil
@@ -219,6 +220,19 @@ class ElfDebugTest(unittest.TestCase):
         self.assertEqual(pairs, [{"path": self.name, "build_id": self.identifier,
                                   "debug_path": self.debug_name}])
         self.assertEqual(gaps, [])
+
+    def test_read_only_runtime_is_never_rewritten_during_symbol_validation(self):
+        """Inspect a packaged read-only library without requiring a writable ELF."""
+        self.binary.chmod(0o555)
+        os.utime(self.binary, (1700000000, 1700000000))
+        before = self.binary.stat()
+        contents = self.binary.read_bytes()
+        pairs, gaps = validation.elf_debug(self.root, self.expected, set())
+        self.assertEqual(len(pairs), 1)
+        self.assertFalse(gaps)
+        self.assertEqual(self.binary.read_bytes(), contents)
+        after = self.binary.stat()
+        self.assertEqual((after.st_mode, after.st_mtime_ns), (before.st_mode, before.st_mtime_ns))
 
     def test_rejects_unstripped_runtime(self):
         """Fail when the runtime executable still contains its debug information."""

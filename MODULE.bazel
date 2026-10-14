@@ -18,6 +18,7 @@ use_repo(
     "p4_prebuilt_p4c",
     "p4_prebuilt_pi",
 )
+
 include("//src/sonic-supervisord-utilities-rs:deps.MODULE.bazel")
 
 bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
@@ -28,11 +29,11 @@ bazel_dep(name = "pigz", version = "2.8")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # Use the already-published Python binding required by sonic-yang-mgmt.
-bazel_dep(name = "libyang-python", version = "3.1.0-sonic.1", repo_name = "libyang_python")
+bazel_dep(name = "libyang-python", version = "3.1.0.sonic.2", repo_name = "libyang_python")
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.1")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.5")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -48,7 +49,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-8043a299756436464a8b58662921dfd50172a3ff",
+    version = "0.0.17-246a0a53d2b4e8fdf31f0b8ae4573e54a012689e",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -58,11 +59,11 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.0-e9402b77ba43aee6323665921598ef67e66293f9",
+    version = "0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3",
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.2-cec18aae143f8b0338703ca0ab2683a60ef2465d", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.4-db8f451c76fdc1135cd40f585c218e7d589a7223", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -70,7 +71,7 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-yang-models",
-    version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
+    version = "1.0.1-6729b56da1241f4d1d5ecb633d625846dd7e39d0",
     repo_name = "sonic_yang_models",
 )
 
@@ -100,7 +101,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0-sonic.2",
+    version = "3.7.0.sonic.3",
 )
 
 single_version_override(
@@ -193,7 +194,46 @@ use_repo(apt, "trixie")
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
-    packages = ["liblua5.1-0-dev", "redis-server"],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+    packages = [
+        "liblua5.1-0-dev",
+        "redis-server",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
 use_repo(apt, "eventd_deps")
+
+# The source-built base starts with an immutable upstream Debian filesystem.
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+oci.pull(
+    name = "debian_trixie",
+    digest = "sha256:fac46bff2e02f51425b6e33b0e1169f55dfb053d83511ca28aa50c09fd5ed7a4",
+    image = "docker.io/library/debian",
+    platforms = [
+        "linux/amd64",
+        "linux/arm64/v8",
+    ],
+)
+use_repo(oci, "debian_trixie", "debian_trixie_linux_amd64", "debian_trixie_linux_arm64_v8")
+
+include("//dockers/docker-base-trixie/bazel:apt_inputs.MODULE.bazel")
+
+apt_inputs(
+    name = "base_apt_inputs",
+    lock = "//dockers/docker-base-trixie/bazel:apt.lock.json",
+)
+
+bazel_dep(name = "socat", version = "1.8.0.2.sonic.1")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.1")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.3")
+bazel_dep(name = "libyang", version = "3.12.2.sonic.1")
+
+single_version_override(
+    module_name = "sonic-rust-deps",
+    version = "0.0.4-f2e4f74ef70c7f1524a5d17eb11d7776d59d878e",
+)
+
+bazel_dep(name = "sonic-fips", version = "0.0.2-6ef4c4f2e81efa4ac456f7274398c0fb16a62c24", repo_name = "sonic_fips")

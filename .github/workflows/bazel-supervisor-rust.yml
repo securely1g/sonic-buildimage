@@ -5,6 +5,8 @@ on:
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
+      - dockers/docker-base-trixie/bazel/draft_sources.json
+      - tools/bazel/ci/prepare_draft_sources.py
       - tools/bazel/common.bazelrc
       - src/sonic-supervisord-utilities-rs/**
   push:
@@ -12,6 +14,8 @@ on:
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
+      - dockers/docker-base-trixie/bazel/draft_sources.json
+      - tools/bazel/ci/prepare_draft_sources.py
       - tools/bazel/common.bazelrc
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
@@ -54,14 +58,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check out the exact shared dependency candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: securely1g/sonic-build-infra
-          ref: f2e4f74ef70c7f1524a5d17eb11d7776d59d878e
-          path: _rust_dependencies/infra
-          persist-credentials: false
-
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -69,6 +65,23 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
+
+      - name: Prepare the reviewed dependency sources
+        run: |
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$RUNNER_TEMP/base-source-dependencies" \
+            --receipt artifacts/dependencies/draft-sources.json \
+            --bazelrc-output .bazelrc.user
+
+      - name: Retain reviewed source provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.job }}-draft-sources-${{ strategy.job-index }}
+          path: artifacts/dependencies/draft-sources.json
+          if-no-files-found: error
+          retention-days: 14
+
 
       - name: Verify native architecture and clean dependency inputs
         env:
@@ -91,8 +104,7 @@ jobs:
           set -euo pipefail
           flags=(--jobs=4
             "--platforms=@sonic_build_infra//platforms:${MACHINE}_trixie"
-            "--host_platform=@sonic_build_infra//platforms:${MACHINE}_trixie"
-            "--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_rust_dependencies/infra/rust/deps")
+            "--host_platform=@sonic_build_infra//platforms:${MACHINE}_trixie")
           targets=(//src/sonic-supervisord-utilities-rs:unit_tests
             //src/sonic-supervisord-utilities-rs:integration_tests
             //src/sonic-supervisord-utilities-rs:listener_tests
