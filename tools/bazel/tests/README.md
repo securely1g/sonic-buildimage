@@ -3,6 +3,8 @@
 This directory holds tests for the Bazel helpers, Make container integration,
 OCI publication and source-built Python dependency checks. Existing component
 behavior tests remain with `src/sonic-config-engine` and `src/sonic-py-common`.
+The Python supervisor suite remains with `src/sonic-supervisord-utilities`;
+its central target stages the sibling config-engine Redis fixtures it imports.
 
 Run the self-contained unit tests from the repository root:
 
@@ -53,6 +55,8 @@ bazel test \
   //tools/bazel/tests:sonic_py_common_full_test \
   //tools/bazel/tests:sonic_config_engine_full_test \
   //tools/bazel/tests:sonic_python_wheels_test \
+  //tools/bazel/tests:supervisor_python_full_test \
+  //tools/bazel/tests:supervisor_python_wheel_test \
   //src/sonic-config-engine:sonic_cfggen_cli_test \
   //tools/bazel/tests:manifest_labels_test \
   //tools/bazel/tests:prepare_oci_base_test \
@@ -70,8 +74,8 @@ bazel test \
 needs. CI selects the same tests explicitly and retains raw logs and cache
 records in the job workspace. The [workflow](../../../.github/workflows/bazel-swss-oci.yml)
 supplies the supported native AMD64/ARM64 platform flags and execution dependencies.
-The Python checks run both complete component test directories and install both
-source-built wheels. Public archive artifacts retain the wheels, hashes and
+The Python checks run the complete config-engine, py-common and Python supervisor
+test directories and install their source-built wheels. Public archive artifacts retain the wheels, hashes and
 extracted test counts/status. Collection still requires test logs/XML, collected
 test inventories and the installed-wheel receipt locally. Missing evidence or
 mismatched installed wheel hashes fail collection.
@@ -137,3 +141,12 @@ container boot, live service health or forwarding behavior.
 and Make export checks. [oci_base_fixture.py](oci_base_fixture.py) supplies native
 OCI/Docker-save inputs for base preparation and consumer checks. These are fixture
 generators, not additional test suites.
+
+Installed-wheel checks share `integration/installed_wheel_fixture.py` for a
+private virtual environment, installation, checkout-path exclusion and wheel
+receipts. Component tests retain their own metadata, installed import, command
+and API probes. The fixture can borrow declared third-party runfiles; it does
+not claim an independently installed dependency closure.
+`installed_wheel_fixture_test` checks that owner sources remain unimportable,
+external declared dependencies remain available, and required receipts cannot
+be omitted. Each receipt identifies only the component wheels its probes tested.

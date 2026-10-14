@@ -23,8 +23,12 @@ class PythonPackageEvidenceTest(unittest.TestCase):
         self.wheel_receipt = {
             "status": "passed", "architecture": "x86_64", "python": "3.13.9",
             "wheels": [{"filename": name, "sha256": hashlib.sha256(name.encode()).hexdigest()}
-                       for name in python_packages.WHEELS],
+                       for name in python_packages.WHEELS if not name.startswith("sonic_supervisord_utilities-")],
         }
+
+        self.supervisor_receipt = dict(self.wheel_receipt, wheels=[
+            {"filename": name, "sha256": hashlib.sha256(name.encode()).hexdigest()}
+            for name in python_packages.WHEELS if name.startswith("sonic_supervisord_utilities-")])
 
     def fixture(self, *, zipped=False):
         for target in python_packages.TESTS:
@@ -42,6 +46,8 @@ class PythonPackageEvidenceTest(unittest.TestCase):
                 })
             if name == "sonic_python_wheels_test":
                 contents["wheels.json"] = json.dumps(self.wheel_receipt)
+            if name == "supervisor_python_wheel_test":
+                contents["wheels.json"] = json.dumps(self.supervisor_receipt)
             if contents:
                 outputs = source / "test.outputs"
                 outputs.mkdir()
@@ -81,6 +87,20 @@ class PythonPackageEvidenceTest(unittest.TestCase):
         """Read the same required receipts when Bazel archives undeclared outputs."""
         self.fixture(zipped=True)
         self.assertEqual(self.collect()["status"], "passed")
+
+    def test_different_supervisor_wheel_bytes_fail(self):
+        """Reject a supervisor wheel that differs from its installation test input."""
+        self.supervisor_receipt["wheels"][0]["sha256"] = "0" * 64
+        self.fixture()
+        with self.assertRaisesRegex(ValueError, "Retained wheels differ.*supervisor_python_wheel_test"):
+            self.collect()
+
+    def test_every_published_wheel_needs_an_installation_check(self):
+        """A new wheel cannot be published without a matching installation receipt."""
+        self.fixture()
+        with mock.patch.object(python_packages, "WHEEL_CHECKS", python_packages.WHEEL_CHECKS[:1]):
+            with self.assertRaisesRegex(ValueError, "retained wheel has no installed-wheel check"):
+                self.collect()
 
     def test_missing_xml_fails_and_records_failure(self):
         """An artifact upload cannot turn missing source-suite evidence into success."""

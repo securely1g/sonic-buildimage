@@ -16,15 +16,27 @@ from tools.bazel.ci import artifact_validation, build
 
 
 WHEELS = {
+    "sonic_supervisord_utilities-1.0-py3-none-any.whl": "//src/sonic-supervisord-utilities:sonic_supervisord_utilities_wheel",
     "sonic_py_common-1.0-py3-none-any.whl": "//src/sonic-py-common:sonic_py_common_wheel",
     "sonic_config_engine-1.0-py3-none-any.whl": "//src/sonic-config-engine:sonic_config_engine_wheel",
 }
 TESTS = [
+    "//tools/bazel/tests:installed_wheel_fixture_test",
+    "//tools/bazel/tests:supervisor_python_full_test",
+    "//tools/bazel/tests:supervisor_python_wheel_test",
     "//tools/bazel/tests:sonic_py_common_test",
     "//tools/bazel/tests:sonic_py_common_full_test",
     "//tools/bazel/tests:sonic_config_engine_full_test",
     "//tools/bazel/tests:sonic_python_wheels_test",
     "//src/sonic-config-engine:sonic_cfggen_cli_test",
+]
+WHEEL_CHECKS = [
+    ("sonic_python_wheels_test", "wheels.json", "installed_wheels", [
+        "sonic_py_common-1.0-py3-none-any.whl", "sonic_config_engine-1.0-py3-none-any.whl",
+    ]),
+    ("supervisor_python_wheel_test", "supervisor-wheels.json", "installed_supervisor", [
+        "sonic_supervisord_utilities-1.0-py3-none-any.whl",
+    ]),
 ]
 MACHINES = {"amd64": "x86_64", "arm64": "aarch64"}
 
@@ -98,18 +110,25 @@ def collect(workspace, directory, revision, architecture, *, bazel="bazel", opti
                 output.write_bytes(inventory)
                 evidence["inventory"] = file_evidence(output, directory)
             receipt["tests"][target] = evidence
-        wheel_receipt = test_output(
-            workspace / "bazel-testlogs/tools/bazel/tests/sonic_python_wheels_test", "wheels.json")
-        installed = json.loads(wheel_receipt)
-        if installed["status"] != "passed" or installed["architecture"] != MACHINES[architecture]:
-            raise ValueError("Installed-wheel receipt does not describe this successful native run")
-        if not installed["python"].startswith("3.13."):
-            raise ValueError("Installed-wheel test used a different Python version")
-        if {wheel["filename"]: wheel["sha256"] for wheel in installed["wheels"]} != hashes:
-            raise ValueError("Retained wheels differ from the installed-wheel test inputs")
-        (directory / "wheels.json").write_bytes(wheel_receipt)
-        receipt["installed_wheels"] = file_evidence(directory / "wheels.json", directory)
-        receipt["python"] = installed["python"]
+        checked = set()
+        for target, filename, receipt_key, expected in WHEEL_CHECKS:
+            wheel_receipt = test_output(workspace / "bazel-testlogs/tools/bazel/tests" / target, "wheels.json")
+            installed = json.loads(wheel_receipt)
+            if installed["status"] != "passed" or installed["architecture"] != MACHINES[architecture]:
+                raise ValueError("Installed-wheel receipt does not describe this successful native run")
+            if not installed["python"].startswith("3.13."):
+                raise ValueError("Installed-wheel test used a different Python version")
+            if "python" in receipt and receipt["python"] != installed["python"]:
+                raise ValueError("Installed-wheel checks used different Python versions")
+            if {wheel["filename"]: wheel["sha256"] for wheel in installed["wheels"]} != {
+                    name: hashes[name] for name in expected}:
+                raise ValueError("Retained wheels differ from the installed-wheel test inputs: " + target)
+            (directory / filename).write_bytes(wheel_receipt)
+            receipt[receipt_key] = file_evidence(directory / filename, directory)
+            receipt["python"] = installed["python"]
+            checked.update(expected)
+        if checked != set(hashes):
+            raise ValueError("A retained wheel has no installed-wheel check")
         receipt["status"] = "passed"
     except Exception as error:
         receipt.update(status="failed", error=str(error))
