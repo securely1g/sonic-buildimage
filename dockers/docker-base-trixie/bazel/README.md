@@ -73,6 +73,9 @@ Distroless `0.9.4.sonic.5` resolves directly from the maintained registry.
 Its published fixes provide the package headers, pkg-config files and concrete
 package labels used by the source producers; no Distroless override is needed.
 
+Sairedis `0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3` also resolves directly from
+maintained `main`, using its landed source commit without a draft override.
+
 Normal registry URLs remain maintained `main` and BCR. `draft_sources.json`
 temporarily names the exact reviewed registration commits or source archives
 needed by this stacked image change. The preparation helper verifies each source
