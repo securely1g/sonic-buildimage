@@ -41,7 +41,7 @@ explicit `--override_module` flags for the source candidates when running the
 SDK checks. The scoped workflow prepares and pins these inputs:
 
 - [sairedis #3](https://github.com/securely1g/sonic-sairedis/pull/3), source
-  `b5a8f7e94d35007a4ce57238064346977b12ea0c`.
+  `befd501a41549c9fedea9a116d081a6ad542cbe3`.
 - Upstream Distroless 0.9.4, archive SHA-256
   `5d43f4f44f0f0fb614194a07a6dcf7b29338cfc8ab7f6129ad1e4403c1ad1c73`,
   with the published Protobuf header fix and
