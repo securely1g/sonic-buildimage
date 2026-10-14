@@ -83,6 +83,49 @@ assert declared_dependency.VALUE == 'declared dependency'
                 write_wheel_receipt([], required=True)
             write_wheel_receipt([])
 
+    def test_failed_receipt_retains_component_metadata_and_completed_probes(self):
+        """A later probe failure must retain the installed-wheel evidence so far."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wheel = sample_wheel(root)
+            details = {
+                "installed_modules": {"fixture_component": "fixture_component/__init__.py"},
+                "redis_dump_load": {"version": "1.0", "source_sha256": "probe-hash", "pipeline_reader": True},
+                "commands": ["fixture-command"], "tests_run": 2,
+            }
+            with mock.patch.dict(os.environ, {"TEST_UNDECLARED_OUTPUTS_DIR": str(root)}):
+                write_wheel_receipt([wheel], status="failed", details=details,
+                                    wheel_metadata={wheel: {"distribution": "fixture-component", "version": "1.0"}})
+            receipt = json.loads((root / "wheels.json").read_text())
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["wheels"], [{
+                "filename": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                "distribution": "fixture-component", "version": "1.0",
+            }])
+            for name, value in details.items():
+                self.assertEqual(receipt[name], value)
+
+    def test_setup_failure_receipt_omits_uninstalled_wheels(self):
+        """Failed setup cannot claim that any wheel installation was checked."""
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.dict(os.environ, {"TEST_UNDECLARED_OUTPUTS_DIR": temporary}):
+                write_wheel_receipt(None, status="failed", details={"tests_run": 0})
+            receipt = json.loads((Path(temporary) / "wheels.json").read_text())
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["tests_run"], 0)
+            self.assertNotIn("wheels", receipt)
+
+    def test_component_details_cannot_replace_computed_evidence(self):
+        """Extra probe metadata cannot turn a failed run or other bytes into a pass."""
+        for field in ("status", "python", "architecture", "wheels"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "computed receipt fields"):
+                write_wheel_receipt([], status="failed", details={field: "replacement"})
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel = sample_wheel(Path(temporary))
+            for field in ("filename", "sha256"):
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "tested filename or hash"):
+                    write_wheel_receipt([wheel], wheel_metadata={wheel: {field: "replacement"}})
+
 
 if __name__ == "__main__":
     unittest.main()

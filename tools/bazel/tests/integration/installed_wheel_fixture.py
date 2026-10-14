@@ -20,6 +20,7 @@ from installer.sources import WheelFile
 @dataclass(frozen=True)
 class InstalledWheels:
     root: Path
+    environment: Path
     python: Path
     site: Path
     scripts: Path
@@ -61,19 +62,31 @@ def installed_wheels(wheels, *, exclude_source_roots):
         env = dict(os.environ)
         for name in ("PYTHONPATH", "PYTHONHOME"):
             env.pop(name, None)
-        yield InstalledWheels(root, python, site, Path(scheme["scripts"]), env)
+        yield InstalledWheels(root, environment, python, site, Path(scheme["scripts"]), env)
 
 
-def write_wheel_receipt(wheels, *, required=False):
-    """Record the tested component wheel bytes only after all its probes pass."""
+def write_wheel_receipt(wheels, *, required=False, status="passed", wheel_metadata=None, details=None):
+    """Record wheel bytes and probe results, including partial failed test runs.
+
+    Pass ``None`` for wheels when setup failed before installation completed.
+    Component metadata and probe details may supplement the computed evidence,
+    but cannot replace wheel hashes, native identity, or the explicit status.
+    """
+    details = details or {}
+    if set(details) & {"status", "python", "architecture", "wheels"}:
+        raise ValueError("Probe details cannot replace computed receipt fields")
+    receipt = dict(details, status=status, python=platform.python_version(), architecture=platform.machine())
+    if wheels is not None:
+        receipt["wheels"] = []
+        for wheel in wheels:
+            metadata = (wheel_metadata or {}).get(wheel, {})
+            if set(metadata) & {"filename", "sha256"}:
+                raise ValueError("Wheel metadata cannot replace the tested filename or hash")
+            receipt["wheels"].append(dict(
+                metadata, filename=wheel.name, sha256=hashlib.sha256(wheel.read_bytes()).hexdigest()))
     directory = (os.environ["TEST_UNDECLARED_OUTPUTS_DIR"] if required else
                  os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR"))
     if directory:
         output = Path(directory)
         output.mkdir(parents=True, exist_ok=True)
-        (output / "wheels.json").write_text(json.dumps({
-            "status": "passed", "python": platform.python_version(),
-            "architecture": platform.machine(), "wheels": [{
-                "filename": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
-            } for wheel in wheels],
-        }, indent=2) + "\n")
+        (output / "wheels.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")

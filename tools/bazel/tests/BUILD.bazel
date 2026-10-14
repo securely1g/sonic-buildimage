@@ -145,7 +145,10 @@ py_test(
 py_test(
     name = "sonic_python_wheels_test",
     size = "medium",
-    srcs = ["integration/sonic_python_wheels_test.py"],
+    srcs = [
+        "integration/installed_wheel_fixture.py",
+        "integration/sonic_python_wheels_test.py",
+    ],
     args = [
         "--common-wheel=$(rootpath //src/sonic-py-common:sonic_py_common_wheel)",
         "--config-wheel=$(rootpath //src/sonic-config-engine:sonic_config_engine_wheel)",
