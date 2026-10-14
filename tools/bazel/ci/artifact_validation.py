@@ -68,10 +68,15 @@ def payload(path, require_root=True):
     with tarfile.open(path) as archive:
         for member in archive:
             name = path_name(member.name)
-            require(name not in result, "duplicate package member: " + name)
             item = metadata(member)
             require(item["kind"] != "other", "unsupported package member: " + name)
             require(not require_root or (member.uid, member.gid) == (0, 0), "non-root package owner: " + name)
+            if name in result:
+                # Flattened component archives can repeat their shared parent
+                # directories. Files and conflicting install metadata may not.
+                require(item["kind"] == "directory" and result[name] == item,
+                        "duplicate package member: " + name)
+                continue
             if member.isfile():
                 with archive.extractfile(member) as stream:
                     data = stream.read()
