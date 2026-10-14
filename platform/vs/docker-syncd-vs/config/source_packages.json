@@ -1,0 +1,224 @@
+{
+  "schema": 1,
+  "image": "docker-syncd-vs",
+  "architecture": "amd64",
+  "distribution": "trixie",
+  "description": "Reviewed source-owner targets and installed paths for the Syncd image. The source-built config-engine base supplies the other project libraries, Python packages and service tools. Only PI, BMv2, P4C and DASH SAI retain their cached package inputs.",
+  "packages": [
+    {
+      "package": "libswsscommon",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libswsscommon",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "libboost-serialization1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libnl-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (>= 3.7.0-0.2+b1sonic1), libstdc++6 (>= 13.1), libuuid1 (>= 2.16), libyang3 (>= 3.12.2), libzmq5 (>= 4.0.1+dfsg)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-swss-common",
+        "version": "0.0.4-db8f451c76fdc1135cd40f585c218e7d589a7223",
+        "commit": "db8f451c76fdc1135cd40f585c218e7d589a7223",
+        "target": "@sonic_swss_common//:libswsscommon_pkg"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libswsscommon.so.0": "symlink",
+        "usr/bin/swssloglevel": "elf",
+        "run/redis/sonic-db/database_config.json": "file",
+        "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0": "symlink"
+      },
+      "path_modes": {
+        "run/redis/sonic-db/database_config.json": 420,
+        "usr/share/swss/consumer_state_table_pops.lua": 420,
+        "usr/share/swss/consumer_table_pops.lua": 420,
+        "usr/share/swss/fdb_flush.lua": 420,
+        "usr/share/swss/fdb_flush.v2.lua": 420,
+        "usr/share/swss/portcounter.lua": 420,
+        "usr/share/swss/producer_state_table_apply_view.lua": 420,
+        "usr/share/swss/table_dump.lua": 420
+      }
+    },
+    {
+      "package": "libsairedis",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libsairedis",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-sairedis",
+        "version": "0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "commit": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "target": "@sonic_sairedis//lib:libsairedis_pkg"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsairedis.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsairedis.so.0": "symlink"
+      }
+    },
+    {
+      "package": "libsaimetadata",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libsaimetadata",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-sairedis",
+        "version": "0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "commit": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "target": "@sonic_sairedis//meta:libsaimetadata_pkg"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsaimeta.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaimeta.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libsaimetadata.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaimetadata.so.0": "symlink"
+      }
+    },
+    {
+      "package": "libsaivs",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libsaivs",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libsaimetadata (>= 1.0.0), libstdc++6 (>= 13.1)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-sairedis",
+        "version": "0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "commit": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "target": "@sonic_sairedis//vslib:libsaivs_pkg"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsaivs.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaivs.so.0": "symlink"
+      }
+    },
+    {
+      "package": "syncd-vs",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "syncd-vs",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "init-system-helpers (>= 1.54~)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-sairedis",
+        "version": "0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "commit": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+        "target": "@sonic_sairedis//syncd:syncd_pkg"
+      },
+      "required_paths": {
+        "usr/bin/syncd": "elf",
+        "usr/bin/syncd_dash": "elf",
+        "etc/init.d/syncd": "file"
+      }
+    },
+    {
+      "package": "openssh-client",
+      "version": "1:10.0p1-7+fips",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "openssh-client",
+        "Version": "1:10.0p1-7+fips",
+        "Architecture": "amd64",
+        "Depends": "adduser, init-system-helpers (>= 1.66~), passwd, libc6 (>= 2.38), libedit2 (>= 2.11-20080614-0), libfido2-1 (>= 1.8.0), libgssapi-krb5-2 (>= 1.17), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.0), zlib1g (>= 1:1.1.4)",
+        "Pre-Depends": "",
+        "Provides": "ssh-client",
+        "Multi-Arch": "foreign"
+      },
+      "source": {
+        "module": "sonic-fips",
+        "version": "0.0.2-6ef4c4f2e81efa4ac456f7274398c0fb16a62c24",
+        "commit": "6ef4c4f2e81efa4ac456f7274398c0fb16a62c24",
+        "target": "@sonic_fips//openssh:openssh_client_pkg"
+      },
+      "required_paths": {
+        "usr/bin/ssh": "elf",
+        "usr/bin/ssh-agent": "elf",
+        "usr/lib/systemd/user/ssh-agent.socket": "file"
+      },
+      "path_modes": {
+        "usr/bin/ssh-agent": 1517
+      },
+      "path_owners": {
+        "usr/bin/ssh-agent": {"uid": 0, "gid": 104}
+      }
+    },
+    {
+      "package": "libnl-3-dev",
+      "version": "3.7.0-0.2+b1sonic1",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libnl-3-dev",
+        "Version": "3.7.0-0.2+b1sonic1",
+        "Architecture": "amd64",
+        "Depends": "libnl-3-200 (= 3.7.0-0.2+b1sonic1)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "same"
+      },
+      "source": {
+        "module": "libnl3",
+        "version": "3.7.0.sonic.3",
+        "release": "3.7.0",
+        "target": "@libnl3//:libnl-3-dev_files"
+      },
+      "required_paths": {
+        "usr/include/libnl3/netlink/netlink.h": "file",
+        "usr/lib/x86_64-linux-gnu/libnl-3.a": "file"
+      }
+    },
+    {
+      "package": "libnl-route-3-dev",
+      "version": "3.7.0-0.2+b1sonic1",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libnl-route-3-dev",
+        "Version": "3.7.0-0.2+b1sonic1",
+        "Architecture": "amd64",
+        "Depends": "libnl-3-dev (= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (= 3.7.0-0.2+b1sonic1)",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "same"
+      },
+      "source": {
+        "module": "libnl3",
+        "version": "3.7.0.sonic.3",
+        "release": "3.7.0",
+        "target": "@libnl3//:libnl-route-3-dev_files"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libnl-route-3.a": "file"
+      }
+    }
+  ]
+}

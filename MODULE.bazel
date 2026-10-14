@@ -237,3 +237,37 @@ single_version_override(
 )
 
 bazel_dep(name = "sonic-fips", version = "0.0.2-6ef4c4f2e81efa4ac456f7274398c0fb16a62c24", repo_name = "sonic_fips")
+
+# Syncd uses the same pinned Debian snapshot as its source-built base.
+include("//platform/vs/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
+
+apt_inputs(
+    name = "syncd_apt_inputs",
+    lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
+)
+
+# Bind the shared library payload receipts to the modules actually resolved by
+# Bazel, even when the owners do not export MODULE.bazel as a public target.
+source_modules = use_repo_rule("//tools/bazel/oci:source_modules.bzl", "source_modules")
+
+source_modules(
+    name = "syncd_source_modules",
+    modules = {
+        "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
+        "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
+        "@sonic_fips//:MODULE.bazel": "sonic-fips",
+        "@libnl3//:MODULE.bazel": "libnl3",
+    },
+)
+
+# The source owner keeps its install declarations in BUILD/Debian metadata.
+# Expose those exact resolved files to the sandboxed package-contract test.
+source_files = use_repo_rule("//tools/bazel/oci:source_modules.bzl", "source_files")
+
+source_files(
+    name = "swss_install_contract",
+    files = {
+        "@sonic_swss//dist:BUILD.bazel": "dist-BUILD.bazel.txt",
+        "@sonic_swss//:debian/swss.install": "swss.install.txt",
+    },
+)
