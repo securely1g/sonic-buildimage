@@ -14,6 +14,42 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
+py_test(
+    name = "openssh_helper_state_test",
+    srcs = ["openssh_helper_state_test.py"],
+    data = [
+        "//platform/vs/docker-syncd-vs/config:runtime_package_state.json",
+        "//tools/bazel/dpkg/source_controls:files",
+        "//tools/bazel/dpkg/source_controls:manifest.json",
+    ],
+)
+
+py_test(
+    name = "alternatives_state_test",
+    srcs = ["alternatives_state_test.py"],
+    deps = ["//tools/bazel/oci:alternatives_state_lib"],
+)
+
+py_test(
+    name = "dpkg_state_test",
+    srcs = ["dpkg_state_test.py"],
+    deps = ["//tools/bazel/oci:dpkg_state_lib"],
+)
+
+py_test(
+    name = "dpkg_state_validation_test",
+    srcs = ["dpkg_state_validation_test.py"],
+    data = ["dpkg_transactions.lock.json"],
+    deps = ["//tools/bazel/ci:validate_dpkg_state"],
+)
+
+# Pure orchestration tests use fake archive bytes and never build DEBs/images.
+py_test(
+    name = "service_dpkg_validation_test",
+    srcs = ["service_dpkg_validation_test.py"],
+    deps = ["//tools/bazel/ci:service_image_validation"],
+)
+
 _OCI_OWNER_POLICIES = [
     "//dockers/docker-orchagent:package_policy",
     "//platform/vs/docker-syncd-vs:package_policy",

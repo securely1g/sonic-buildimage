@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the installed AMD64 Syncd source image and debug companion."""
+"""Verify AMD64 Syncd runtime behavior and both service images' APT operations."""
 import argparse
 import ast
 import hashlib
@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci.bazel_commands import inspect_actions
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.ci.validate_runtime import validate as validate_runtime
+from tools.bazel.ci.validate_dpkg_state import validate as validate_dpkg_state
 from tools.bazel.oci.image_validation import validate_images
 from tools.bazel.oci.native_packages import validate_native
 from tools.bazel.oci.oci_inventory import apply_layer, resolve_path
@@ -22,6 +23,7 @@ from tools.bazel.oci.source_base_validation import validate_source_base
 
 OWNER = "//platform/vs/docker-syncd-vs"
 CONFIG_ENGINE = "//dockers/docker-config-engine-trixie"
+ORCHAGENT = "//dockers/docker-orchagent"
 TARGETS = {
     "runtime": OWNER + ":docker-syncd-vs",
     "debug": OWNER + ":docker-syncd-vs-dbg",
@@ -45,7 +47,13 @@ TARGETS = {
     "runtime_metadata": OWNER + ":runtime_package_metadata",
     "debug_status": OWNER + ":debug_installed_packages",
     "debug_metadata": OWNER + ":debug_package_metadata",
+    "runtime_dpkg_receipt": OWNER + ":installed_package_database_receipt",
+    "debug_dpkg_receipt": OWNER + ":debug_package_database_receipt",
     "dpkg_filter": "//dockers/docker-base-trixie:dpkg_01_drop",
+    "orchagent_runtime": ORCHAGENT + ":docker-orchagent",
+    "orchagent_debug": ORCHAGENT + ":docker-orchagent-dbg",
+    "orchagent_runtime_archive": ORCHAGENT + ":docker-orchagent.gz",
+    "orchagent_debug_archive": ORCHAGENT + ":docker-orchagent-dbg.gz",
 }
 
 
@@ -136,9 +144,11 @@ def validate_package_state(paths, policy):
                 agent.get("gid") == 104 and agent.get("mode") == 0o2755,
                 "ssh-agent lacks the reviewed OpenSSH group ownership and setgid mode")
         metadata_name = "syncd-packages.json" if variant == "runtime" else "syncd-debug-packages.json"
+        dpkg_receipt = paths[variant + "_dpkg_receipt"]
+        dpkg_name = "syncd-dpkg-state.json" if variant == "runtime" else "syncd-debug-dpkg-state.json"
         expected = {
-            "var/lib/dpkg/status": paths[variant + "_status"],
             "usr/share/sonic/bazel/" + metadata_name: paths[variant + "_metadata"],
+            "usr/share/sonic/bazel/" + dpkg_name: dpkg_receipt,
         }
         for name, path in expected.items():
             require(resolve_path(name, files) == name, "installed package state is redirected: " + name)
@@ -146,6 +156,18 @@ def validate_package_state(paths, policy):
                 "kind": "file", "uid": 0, "gid": 0, "mode": 0o644,
                 "size": path.stat().st_size, "sha256": sha(path),
             }, "installed package state differs from its checked output: " + name)
+        state = json.loads(dpkg_receipt.read_text())
+        require(state.get("architecture") == policy["architecture"] and
+                state.get("status_input_sha256") == sha(paths[variant + "_status"]) and
+                state.get("apt_selection_sha256") == sha(paths[variant + "_selection"]),
+                "dpkg ownership receipt belongs to different package inputs")
+        require("var/lib/dpkg/status" in state["info_files"], "dpkg receipt lacks the final status file")
+        for name, expected_file in state["info_files"].items():
+            require(resolve_path(name, files) == name and all(files.get(name, {}).get(key) == value
+                    for key, value in dict(expected_file, kind="file", uid=0, gid=0).items()),
+                    "installed dpkg metadata differs from its checked output: " + name)
+        for name in state.get("removed_paths", []):
+            require(name not in files, "obsolete package file remains in the image: " + name)
         receipt = json.loads(paths[variant + "_metadata"].read_bytes())
         require(receipt.get("schema") == 1 and receipt.get("architecture") == policy["architecture"],
                 "installed package metadata has a different schema or architecture")
@@ -158,7 +180,8 @@ def validate_package_state(paths, policy):
                     "debug package database is missing installed tools")
         reports[variant] = {
             "image_manifest_digest": layout.descriptor["digest"],
-            "status_sha256": sha(paths[variant + "_status"]),
+            "status_sha256": state["info_files"]["var/lib/dpkg/status"]["sha256"],
+            "dpkg_receipt_sha256": sha(dpkg_receipt),
             "metadata_sha256": sha(paths[variant + "_metadata"]),
             "package_count": len(check["packages"]),
             "group_file_sha256": group_sha,
@@ -167,8 +190,45 @@ def validate_package_state(paths, policy):
     return reports
 
 
+def validate_dpkg_images(paths, output):
+    """Exercise exact source-built service images; this profile remains AMD64-only."""
+    cases = (
+        ("syncd", "runtime", "", ["socat", "syncd-vs", "libnanomsg-dev"]),
+        ("syncd", "debug", "", ["socat", "syncd-vs", "gdbserver", "vim"]),
+        ("orchagent", "runtime", "orchagent_", ["socat", "swss", "tcpdump"]),
+        ("orchagent", "debug", "orchagent_", ["socat", "swss", "gdbserver", "vim-tiny"]),
+    )
+    results = {}
+    for image, variant, prefix, packages in cases:
+        name = image + "-" + variant
+        try:
+            layout = validate_layout(paths[prefix + variant], "linux/amd64")
+            archive = paths[prefix + variant + "_archive"]
+            # tcpdump is a P4C dependency in Syncd; the runtime instead removes
+            # leaf libnanomsg-dev. Each package removal uses a fresh container.
+            receipt = image + ("-debug" if variant == "debug" else "") + "-dpkg-state.json"
+            result = validate_dpkg_state(
+                architecture="amd64", output=output / ("dpkg-" + name), archive=archive,
+                archive_sha256=sha(archive), config_digest=layout.manifest["config"]["digest"],
+                installed_receipts=["/usr/share/sonic/bazel/" + receipt],
+                remove_packages=packages, upgrade_packages=["socat"])
+            results[name] = {"status": result["status"], "archive_sha256": sha(archive),
+                             "image_manifest_digest": layout.descriptor["digest"],
+                             "receipt_sha256": sha(output / ("dpkg-" + name) / "receipt.json")}
+        except Exception as error:
+            results[name] = {"status": "failed", "error": str(error)}
+        finally:
+            save(output / "dpkg-images.json", {"architecture": "amd64", "images": results})
+    require(all(result["status"] == "passed" for result in results.values()),
+            "Installed package transactions failed; see dpkg-images.json and the per-image logs")
+    return results
+
+
 def run(*, bazel, options, output, redis_server):
     output.mkdir(parents=True, exist_ok=True)
+    # The VS/FIPS Make profile selects this same source-built base. Passing it
+    # explicitly also covers direct validation outside the Make wrapper.
+    options = [*options, "--//dockers/docker-orchagent:source_config_engine=true"]
     paths = build_inputs(bazel, options, output)
     save(output / "outputs.json", {key: str(value) for key, value in paths.items()})
     validate_inputs(paths, output=output, redis_server=redis_server)
@@ -229,6 +289,7 @@ def validate_inputs(paths, *, output, redis_server):
     save(report, combined)
     result = validate_runtime(paths["runtime_archive"], paths["debug_archive"], report,
                               owner / "config/runtime_smoke.json", output / "installed-validation.json", redis_server)
+    validate_dpkg_images(paths, output)
     if not result["passed"]:
         raise ValueError("Installed image checks failed; see installed-validation.json")
     print(json.dumps({"passed": True, "report": str(output / "installed-validation.json"),

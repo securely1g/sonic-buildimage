@@ -34,7 +34,7 @@ jobs:
       - name: Install execution and verification tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git j2cli jq libarchive-tools python3
+          apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git init-system-helpers j2cli jq libarchive-tools python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -79,7 +79,7 @@ jobs:
           compression-level: 1
 
   runtime:
-    name: Run the installed base image (${{ matrix.architecture }})
+    name: Run installed images and APT transactions (${{ matrix.architecture }})
     needs: native
     strategy:
       fail-fast: false
@@ -95,6 +95,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check package-state validation guards
+        run: |
+          PYTHONPATH="$PWD" python3 -B -m unittest tools.bazel.tests.dpkg_state_validation_test -v
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: source-base-${{ matrix.architecture }}
@@ -110,15 +113,16 @@ jobs:
           receipt = json.loads((directory / 'receipt.json').read_text())
           assert receipt['status'] == 'passed' and receipt['architecture'] == os.environ['EXPECTED_ARCH']
           assert receipt['revision'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          name = 'docker-config-engine-trixie.gz'
-          assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == receipt['artifacts'][name]['sha256']
-          subprocess.run(['docker', 'load', '--input', str(directory / name)], check=True)
-          actual = json.loads(subprocess.check_output(['docker', 'image', 'inspect', 'docker-config-engine-trixie:latest']))[0]
-          report = json.loads((directory / 'docker-config-engine-trixie.validation.json').read_text())
-          assert actual['Architecture'] == os.environ['EXPECTED_ARCH'] and actual['Os'] == 'linux'
-          assert actual['RootFS']['Layers'] == report['rootfs']['diff_ids']
-          meaningful = lambda values: {key: value for key, value in values.items() if value not in (None, '', [], {}, False)}
-          assert meaningful(actual['Config']) == meaningful(report['config'])
+          for image in ('docker-base-trixie', 'docker-config-engine-trixie'):
+              name = image + '.gz'
+              assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == receipt['artifacts'][name]['sha256']
+              subprocess.run(['docker', 'load', '--input', str(directory / name)], check=True)
+              actual = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image + ':latest']))[0]
+              report = json.loads((directory / (image + '.validation.json')).read_text())
+              assert actual['Architecture'] == os.environ['EXPECTED_ARCH'] and actual['Os'] == 'linux'
+              assert actual['RootFS']['Layers'] == report['rootfs']['diff_ids']
+              meaningful = lambda values: {key: value for key, value in values.items() if value not in (None, '', [], {}, False)}
+              assert meaningful(actual['Config']) == meaningful(report['config'])
           PY
       - name: Exercise installed source programs and Python packages
         run: |
@@ -130,11 +134,34 @@ jobs:
             --mount "type=bind,src=$PWD/artifacts/base-images/docker-config-engine-trixie.validation.json,dst=/probe/validation.json,readonly" \
             --entrypoint /usr/bin/python3 docker-config-engine-trixie:latest \
             -B /probe/smoke.py /probe/validation.json | tee artifacts/base-images/runtime-smoke.json
+      - name: Test package ownership and real APT install, upgrade and remove
+        env:
+          EXPECTED_ARCH: ${{ matrix.architecture }}
+        run: |
+          # The driver downloads checksum-pinned existing Debian packages on
+          # the host; each transaction runs in a fresh container without network.
+          # Test both an APT-added package and source-built socat already in OCI.
+          result=0
+          for image in docker-base-trixie docker-config-engine-trixie; do
+            case "$image" in
+              docker-base-trixie) receipt=base ;;
+              docker-config-engine-trixie) receipt=config-engine ;;
+            esac
+            python3 -B tools/bazel/ci/validate_dpkg_state.py \
+              --architecture "$EXPECTED_ARCH" --image "$image:latest" \
+              --installed-receipt "/usr/share/sonic/bazel/$receipt-dpkg-state.json" \
+              --remove-package socat --remove-package vim-tiny --remove-package less --upgrade-package socat \
+              --output "artifacts/base-images/dpkg-$image" || result=1
+          done
+          exit "$result"
       - name: Retain installed-image validation
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: source-base-runtime-${{ matrix.architecture }}
-          path: artifacts/base-images/runtime-smoke.json
+          path: |
+            artifacts/base-images/runtime-smoke.json
+            artifacts/base-images/dpkg-*/*.json
+            artifacts/base-images/dpkg-*/*.log
           if-no-files-found: warn
           retention-days: 14

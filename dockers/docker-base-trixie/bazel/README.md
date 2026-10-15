@@ -45,9 +45,14 @@ Source-owned paths receive root ownership, and the database configuration uses
 mode `0644`, so a developer checkout's uid or umask cannot leak into the image.
 
 The base keeps Make's `vim-tiny` selection and hard link at `/usr/bin/vim`.
-It declares the `editor`, `ex`, `rview`, `vi`, and `view` alternatives from the
-pinned package's installation script, with each command resolving to
-`/usr/bin/vim.tiny`. Debug images may replace these alternatives with full Vim.
+The shared alternatives initializer registers `editor`, `ex`, `rview`, `vi`,
+and `view` with the real pinned `update-alternatives` tool, using priority 15
+from Vim Tiny's installation script. It also registers Less as `pager` at
+priority 77, preserving the inherited `more` fallback. Both the command links
+and Debian's alternatives records enter the image, so package removal can clean
+up or switch those links. The generated Vim Tiny ownership list includes the
+additional `/usr/bin/vim` hard link. Syncd debug adds full Vim as a higher-priority
+choice; Orchagent debug retains Vim Tiny.
 
 Each native producer keeps its own runtime/debug split. The image's debug target
 collects those providers through the base chain. SymCrypt's integrity-sealed core
@@ -138,23 +143,45 @@ input to Syncd.
 packages, then replaces source-owned package entries using reviewed Make control
 facts and the corresponding source TAR hashes. It checks required files and
 records every native file, including plugins. It validates the final Debian
-dependency relationships before publishing `/var/lib/dpkg/status` and a receipt
-under `/usr/share/sonic/bazel`. No package maintainer script runs on the build host.
+dependency relationships before passing the status to the
+[shared dpkg-state layer](../../../tools/bazel/oci/README.md#keep-dpkg-state-with-the-installed-files).
+That layer writes `/var/lib/dpkg/status`, file ownership lists, payload checksums,
+configuration-file hashes, scripts and trigger registrations. It reuses upstream
+APT data/control targets and exact reviewed source-package controls; its file
+lists describe the new source TARs, not the old Make binaries.
+
+The images retain `base-dpkg-state.json` and `config-engine-dpkg-state.json`
+under `/usr/share/sonic/bazel`, respectively. These receipts bind the generated
+metadata to its inputs and installed bytes. No package maintainer script runs on
+the build host. Initial configuration effects, such as Vim's alternatives and
+the FIPS provider setup, remain declared image inputs; preserving `postinst`
+does not prove that its initial work has run.
+
 The source records use the actual target architecture, including SymCrypt, whose
-legacy package declares `all` despite containing native libraries. This is an
-image inventory; it is not a new DEB or a package-manager installation transaction.
+legacy package declares `all` despite containing native libraries. Source control
+captures retain the original version, architecture, archive SHA-256 and exact
+script bytes. Only reviewed substitutions, such as the Python libyang package
+qualifier for ARM64, are permitted. The ordinary build creates no DEBs.
 
 The source contracts record their retained Make OCI manifest and status digest.
 When changing a producer, update its version, source revision, installed paths
 and verified control facts together. The image does not retain an old Debian
 version as the claimed owner of overwritten source-built files.
 
-`Bazel source base images` builds both architectures, verifies source hashes in
-the assembled image, checks all source ELF/debug pairs, and runs the installed
-config-engine image in a network-isolated container. It exercises cfggen
+`Bazel source base images` is configured to build both architectures, verify
+source hashes in the assembled image, check all source ELF/debug pairs, and run
+the installed config-engine image in a network-isolated container. It exercises cfggen
 rendering, valid and invalid YANG data, Python imports, command scripts, dynamic
 library loading, the legacy provider, and actual SymCrypt provider/engine hashes.
 The owner's original suites remain in their separate producer workflows.
+
+The workflow also runs real APT transactions in fresh native AMD64 and ARM64
+containers for both images. It installs and upgrades a locked Debian `hello`,
+upgrades the image's source-built socat to `1.8.0.3-1+deb13u1`, and checks removal
+and purge of socat and Vim. These checks must leave a clean `dpkg --audit` and
+`apt-get check`. They retain transaction logs and receipts; the new image checks
+are required validation, not a claim that this revision has already passed CI.
+This native base/config-engine coverage does not enable ARM64 Orchagent or Syncd.
 
 ## Refreshing APT and Python inputs
 

@@ -9,7 +9,9 @@ load("//dockers/docker-base-trixie/bazel:accounts.bzl", "GROUP", "PASSWD")
 load("//dockers/docker-base-trixie/bazel:installed_packages.bzl", "installed_packages")
 load("//src/sonic-config-engine:template.bzl", "sonic_cfggen_template")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:alternatives_state.bzl", "alternatives_state")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:dpkg_state.bzl", "dpkg_state")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
@@ -193,14 +195,6 @@ genrule(
             for name in _APT_CONFIGS
         ] + [
             "./etc/apt/sources.list uid=0 gid=0 mode=0644 time=0 type=file content=$(location :apt_sources_" + arch + ")",
-        ] + [
-            # vim-tiny's reviewed postinst selects these commands at priority15.
-            # Manual-page alternatives are omitted by the base dpkg file policy.
-            "./usr/bin/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/" + name
-            for name in ["editor", "ex", "rview", "vi", "view"]
-        ] + [
-            "./etc/alternatives/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/vim.tiny"
-            for name in ["editor", "ex", "rview", "vi", "view"]
         ],
     )
     for arch in [
@@ -215,6 +209,54 @@ alias(
         "@platforms//cpu:x86_64": ":config_files_amd64",
         "@platforms//cpu:arm64": ":config_files_arm64",
     }),
+)
+
+# The rule transitions these inputs to the execution architecture. Upstream
+# BSD tar extracts them privately; only update-alternatives writes image state.
+filegroup(
+    name = "alternatives_tool_payloads",
+    srcs = [
+        "@base_debian//dpkg:data",
+        "@base_debian//libc6:data",
+    ],
+)
+
+alternatives_state(
+    name = "command_alternatives",
+    architecture = _ARCH,
+    base = ":debian_base",
+    controls = {name: "@base_debian//" + name + ":control" for name in [
+        "vim-tiny",
+        "less",
+    ]},
+    groups = json.encode({
+        "vim-tiny": [
+            {
+                "name": name,
+                "link": "/usr/bin/" + name,
+                "path": "/usr/bin/vim.tiny",
+                "priority": 15,
+            }
+            for name in [
+                "editor",
+                "ex",
+                "rview",
+                "vi",
+                "view",
+            ]
+        ],
+        "less": [{
+            "name": "pager",
+            "link": "/usr/bin/pager",
+            "path": "/usr/bin/less",
+            "priority": 77,
+        }],
+    }),
+    payloads = {name: "@base_debian//" + name + ":data" for name in [
+        "vim-tiny",
+        "less",
+    ]},
+    tool_payloads = [":alternatives_tool_payloads"],
 )
 
 # Reproduce the reviewed system account state without running postinst on the host.
@@ -281,6 +323,48 @@ tar(
     ],
 )
 
+# Keep package ownership and lifecycle controls with the actual installed files.
+# The control/data archives are supplied by Distroless; tar.bzl assembles state.
+dpkg_state(
+    name = "installed_package_database",
+    apt_controls = select({
+        "@platforms//cpu:" + cpu: [label + ":control" for label in APT_INPUTS["base_debian"][arch].values()]
+        for cpu, arch in [
+            ("x86_64", "amd64"),
+            ("arm64", "arm64"),
+        ]
+    }),
+    apt_payloads = select({
+        "@platforms//cpu:" + cpu: [label + ":data" for label in APT_INPUTS["base_debian"][arch].values()]
+        for cpu, arch in [
+            ("x86_64", "amd64"),
+            ("arm64", "arm64"),
+        ]
+    }),
+    apt_receipt = ":debian_runtime_selection",
+    architecture = select({
+        "@platforms//cpu:x86_64": "amd64",
+        "@platforms//cpu:arm64": "arm64",
+    }),
+    base = ":debian_base",
+    extra_owned_paths = {"vim-tiny": ["usr/bin/vim"]},
+    normalization = json.encode({}),
+    payload_layers = [
+        ":debian_runtime_filtered",
+        ":source_runtime",
+        ":python_runtime",
+        ":certificates",
+        ":vim_command",
+        ":config_files",
+        ":command_alternatives",
+        ":accounts",
+        ":groups",
+    ],
+    receipt_path = "usr/share/sonic/bazel/base-dpkg-state.json",
+    sources = _SOURCE_TARS,
+    status = ":installed_packages",
+)
+
 manifest_labels(
     name = "labels",
     out = "manifest.labels",
@@ -300,9 +384,11 @@ oci_image(
         ":certificates",
         ":vim_command",
         ":config_files",
+        ":command_alternatives",
         ":accounts",
         ":groups",
         ":installed_package_state",
+        ":installed_package_database",
     ],
     workdir = "/",
 )

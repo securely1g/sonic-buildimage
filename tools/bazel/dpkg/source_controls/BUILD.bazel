@@ -1,0 +1,13 @@
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["manifest.json"])
+
+# The original control bytes and provenance are explicit image action inputs.
+# capture.py is an offline refresh tool, not part of ordinary image assembly.
+filegroup(
+    name = "files",
+    srcs = ["manifest.json"] + glob(
+        ["*/*"],
+        exclude = ["**/__pycache__/**"],
+    ),
+)

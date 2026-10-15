@@ -7,7 +7,9 @@ load("@syncd_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("@tar.bzl", "tar")
 load("//dockers/docker-base-trixie/bazel:installed_packages.bzl", "installed_packages")
 load("//tools/bazel/dpkg:defs.bzl", "dpkg_filter", "sonic_layer")
+load("//tools/bazel/oci:alternatives_state.bzl", "alternatives_state")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:dpkg_state.bzl", "dpkg_state")
 load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
@@ -505,6 +507,27 @@ alias(
     actual = "//platform/vs/docker-syncd-vs/config:runtime_package_state",
 )
 
+dpkg_state(
+    name = "installed_package_database",
+    apt_controls = [label + ":control" for label in APT_INPUTS["syncd_vs_debian"]["amd64"].values()],
+    apt_payloads = [label + ":data" for label in APT_INPUTS["syncd_vs_debian"]["amd64"].values()],
+    apt_receipt = ":runtime_apt_selection",
+    architecture = "amd64",
+    base = ":config_engine_base_layout",
+    imported_controls = [_DEB_ARCHIVES[source] + "/control.archive" for source in _RUNTIME_DEBS],
+    imported_payloads = [_DEB_ARCHIVES[source] + "/data.archive" for source in _RUNTIME_DEBS],
+    payload_layers = [
+        ":apt_deps",
+        ":runtime_packages",
+        ":runtime_package_state",
+        "//platform/vs/docker-syncd-vs/config:groups",
+        "//platform/vs/docker-syncd-vs/config:files",
+    ],
+    receipt_path = "usr/share/sonic/bazel/syncd-dpkg-state.json",
+    sources = _SOURCE_PACKAGES,
+    status = ":installed_packages",
+)
+
 # Runtime image and Make-compatible archive; keep the layer order explicit.
 oci_image(
     name = "docker-syncd-vs",
@@ -520,6 +543,7 @@ oci_image(
         ":runtime_package_state",
         "//platform/vs/docker-syncd-vs/config:groups",
         "//platform/vs/docker-syncd-vs/config:files",
+        ":installed_package_database",
     ],
 )
 
@@ -568,13 +592,39 @@ filegroup(
     output_group = "selection",
 )
 
-# Debug adds tools and native symbols while retaining the runtime FIPS packages
-# and ELF files. Reuse the existing Vim alternatives implementation.
+# Keep runtime files unchanged while registering full Vim's managed commands.
+# /usr/bin/vim remains the existing runtime hard link, as in the Make profile.
+alternatives_state(
+    name = "debug_alternatives",
+    architecture = "amd64",
+    base = ":docker-syncd-vs",
+    controls = {"vim": "@syncd_vs_debug_debian//vim:control"},
+    groups = json.encode({"vim": [
+        {
+            "name": name,
+            "link": "/usr/bin/" + name,
+            "path": "/usr/bin/vim.basic",
+            "priority": 30,
+        }
+        for name in [
+            "editor",
+            "ex",
+            "rview",
+            "rvim",
+            "vi",
+            "view",
+            "vimdiff",
+        ]
+    ]}),
+    payloads = {"vim": "@syncd_vs_debug_debian//vim:data"},
+    tool_payloads = ["//dockers/docker-base-trixie:alternatives_tool_payloads"],
+)
+
 sonic_layer(
     name = "debug_tools",
     tars = [
         ":debug_layer",
-        "@sonic_build_infra//deps/vim:vim_alternatives_pkg",
+        ":debug_alternatives",
     ],
 )
 
@@ -620,6 +670,21 @@ tar(
     ],
 )
 
+dpkg_state(
+    name = "debug_package_database",
+    apt_controls = [label + ":control" for label in APT_INPUTS["syncd_vs_debug_debian"]["amd64"].values()],
+    apt_payloads = [label + ":data" for label in APT_INPUTS["syncd_vs_debug_debian"]["amd64"].values()],
+    apt_receipt = ":debug_apt_selection",
+    architecture = "amd64",
+    base = ":docker-syncd-vs",
+    payload_layers = [
+        ":debug_tools",
+        ":debug_packages",
+    ],
+    receipt_path = "usr/share/sonic/bazel/syncd-debug-dpkg-state.json",
+    status = ":debug_installed_packages",
+)
+
 # Debug extends the exact runtime layers; only the deferred P4 inputs have symbol gaps.
 oci_image(
     name = "docker-syncd-vs-dbg",
@@ -630,6 +695,7 @@ oci_image(
         ":debug_tools",
         ":debug_packages",
         ":debug_installed_package_state",
+        ":debug_package_database",
     ],
 )
 

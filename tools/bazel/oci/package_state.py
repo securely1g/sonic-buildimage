@@ -16,6 +16,12 @@ from tools.bazel.oci.package_contract import (identity as policy_identity, read_
                                              reject_source_packages, validate_policy)
 
 SCRIPTS = {"preinst", "postinst", "prerm", "postrm", "triggers"}
+# These records let the unmodified OpenSSH postrm remove its enabled user
+# socket. The contract pins their bytes to the reviewed Make image.
+SYSTEMD_HELPER_FILES = {
+    "var/lib/systemd/deb-systemd-user-helper-enabled/sockets.target.wants/ssh-agent.socket",
+    "var/lib/systemd/deb-systemd-user-helper-enabled/ssh-agent.socket.dsh-also",
+}
 
 
 def differing_fields(expected, actual, prefix=""):
@@ -194,10 +200,11 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
             data = None
         elif kind == "file":
             require(set(entry) == {"path", "kind", "mode", "uid", "gid", "text", "sha256", "size"} and
-                    path.startswith("var/lib/dpkg/alternatives/"), "invalid alternatives state file: " + path)
+                    (path.startswith("var/lib/dpkg/alternatives/") or path in SYSTEMD_HELPER_FILES),
+                    "invalid package helper state file: " + path)
             data = entry["text"].encode()
             require(len(data) == entry["size"] and hashlib.sha256(data).hexdigest() == entry["sha256"],
-                    "alternatives state bytes changed: " + path)
+                    "package helper state bytes changed: " + path)
             metadata = {name: entry[name] for name in ("kind", "mode", "uid", "gid", "sha256", "size")}
         else:
             raise ValueError("unsupported package state entry: " + path)

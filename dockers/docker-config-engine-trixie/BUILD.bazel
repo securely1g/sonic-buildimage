@@ -7,6 +7,7 @@ load("@tar.bzl", "tar")
 load("//dockers/docker-base-trixie/bazel:installed_packages.bzl", "installed_packages")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:dpkg_state.bzl", "dpkg_state")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
@@ -206,6 +207,49 @@ tar(
     ],
 )
 
+# Keep package ownership and lifecycle controls with the actual installed files.
+# The control/data archives are supplied by Distroless; tar.bzl assembles state.
+dpkg_state(
+    name = "installed_package_database",
+    apt_controls = select({
+        "@platforms//cpu:" + cpu: [label + ":control" for label in APT_INPUTS["config_engine_debian"][arch].values()]
+        for cpu, arch in [
+            ("x86_64", "amd64"),
+            ("arm64", "arm64"),
+        ]
+    }),
+    apt_payloads = select({
+        "@platforms//cpu:" + cpu: [label + ":data" for label in APT_INPUTS["config_engine_debian"][arch].values()]
+        for cpu, arch in [
+            ("x86_64", "amd64"),
+            ("arm64", "arm64"),
+        ]
+    }),
+    apt_receipt = ":debian_runtime_selection",
+    architecture = select({
+        "@platforms//cpu:x86_64": "amd64",
+        "@platforms//cpu:arm64": "arm64",
+    }),
+    base = "//dockers/docker-base-trixie:docker-base-trixie",
+    normalization = json.encode({
+        "directory_aliases": {"var/run": {
+            "linkname": "/run",
+            "target": "run",
+        }},
+        "root_owned": True,
+        "modes": {"run/redis/sonic-db/database_config.json": "0644"},
+    }),
+    payload_layers = [
+        ":debian_runtime_filtered",
+        ":source_runtime",
+        ":python_and_models",
+        ":config_files",
+    ],
+    receipt_path = "usr/share/sonic/bazel/config-engine-dpkg-state.json",
+    sources = _SOURCE_TARS,
+    status = ":installed_packages",
+)
+
 manifest_labels(
     name = "labels",
     out = "manifest.labels",
@@ -222,6 +266,7 @@ oci_image(
         ":python_and_models",
         ":config_files",
         ":installed_package_state",
+        ":installed_package_database",
     ],
 )
 

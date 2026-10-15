@@ -3,6 +3,38 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 package(default_visibility = ["//visibility:public"])
 
 py_library(
+    name = "alternatives_state_lib",
+    srcs = ["alternatives_state.py"],
+    deps = [
+        ":oci_inventory",
+        ":oci_layout",
+    ],
+)
+
+py_binary(
+    name = "alternatives_state",
+    srcs = ["alternatives_state.py"],
+    deps = [":alternatives_state_lib"],
+)
+
+py_library(
+    name = "dpkg_state_lib",
+    srcs = ["dpkg_state.py"],
+    deps = [
+        ":normalize_layer_lib",
+        ":oci_inventory",
+        ":oci_layout",
+        "@sonic_build_infra//apt:lib",
+    ],
+)
+
+py_binary(
+    name = "dpkg_state",
+    srcs = ["dpkg_state.py"],
+    deps = [":dpkg_state_lib"],
+)
+
+py_library(
     name = "source_base_validation",
     srcs = ["source_base_validation.py"],
     deps = [

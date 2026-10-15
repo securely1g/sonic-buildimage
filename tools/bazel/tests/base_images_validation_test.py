@@ -78,6 +78,10 @@ class CachedImageLayoutTest(unittest.TestCase):
                 self.assertEqual(queries, ["docker-base-trixie"])
                 self.assertEqual(json.loads((artifacts / "receipt.json").read_text())["status"], "passed")
                 self.assertIn("//dockers/docker-base-trixie:docker-base-trixie", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:dpkg_state_test", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:alternatives_state_test", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:openssh_helper_state_test", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:dpkg_state_validation_test", audit.call_args.args[2])
 
     def test_cached_archives_materialize_layout_for_each_native_architecture(self):
         for architecture in ("amd64", "arm64"):
