@@ -1,0 +1,125 @@
+{
+  "packages": {
+    "libdashapi": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.32), libgcc-s1 (>= 3.0), libprotobuf32t64 (>= 3.21.12), libstdc++6 (>= 14)",
+        "Description": "DASH API definition for the SONiC project.",
+        "Installed-Size": "2705",
+        "Maintainer": "Ze Gan <zegan@microsoft.com>",
+        "Package": "libdashapi",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
+      },
+      "required_paths": [
+        "usr/lib/libdashapi.so",
+        "usr/lib/python3/dist-packages/dash_api/_utils.so"
+      ],
+      "source_revision": "2a6e390b96a4fc17c191fa0da4b7ed1f40aed069",
+      "target": "@sonic_dash_api//:libdashapi_pkg"
+    },
+    "libprotobuf32t64": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Breaks": "cura-engine (<< 1:3.3.0-2.1+b1), libarcus3 (<< 3.3.0-2), libprotobuf32 (<< 3.21.12+sonic.1)",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 14), zlib1g (>= 1:1.1.4)",
+        "Description": "protocol buffers C++ library\n Protocol buffers are a flexible, efficient, automated mechanism for\n serializing structured data - similar to XML, but smaller, faster, and\n simpler. You define how you want your data to be structured once, then you can\n use special generated source code to easily write and read your structured\n data to and from a variety of data streams and using a variety of languages.\n You can even update your data structure without breaking deployed programs\n that are compiled against the \"old\" format.\n .\n Google uses Protocol Buffers for almost all of its internal RPC protocols and\n file formats.\n .\n This package contains the runtime library needed for C++ applications.",
+        "Homepage": "https://github.com/google/protobuf/",
+        "Installed-Size": "3520",
+        "Maintainer": "Laszlo Boszormenyi (GCS) <gcs@debian.org>",
+        "Multi-Arch": "same",
+        "Package": "libprotobuf32t64",
+        "Priority": "optional",
+        "Provides": "libprotobuf32 (= 3.21.12+sonic.1)",
+        "Replaces": "libprotobuf32",
+        "Section": "libs",
+        "Source": "protobuf",
+        "Version": "3.21.12+sonic.1"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libprotobuf.so.32"
+      ],
+      "source_revision": "3.21.12-sonic.1",
+      "target": "@sonic_dash_api//:protobuf_runtime_pkg"
+    },
+    "libsaimetadata": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Description": "This package contains SAI-Metadata implementation for SONiC project.",
+        "Installed-Size": "4763",
+        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
+        "Package": "libsaimetadata",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libsaimetadata.so.0"
+      ],
+      "source_revision": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+      "target": "@sonic_sairedis//meta:libsaimetadata_pkg"
+    },
+    "libsairedis": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 13.1), libswsscommon (>= 1.0.0)",
+        "Description": "This package contains SAI-Redis implementation for SONiC project.",
+        "Installed-Size": "1918",
+        "Maintainer": "Kamil Cudnik <kcudnik@microsoft.com>",
+        "Package": "libsairedis",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libsairedis.so.0"
+      ],
+      "source_revision": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+      "target": "@sonic_sairedis//lib:libsairedis_pkg"
+    },
+    "libswsscommon": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libboost-serialization1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libhiredis1.1.0 (>= 1.2.0), libnl-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (>= 3.7.0-0.2+b1sonic1), libstdc++6 (>= 13.1), libuuid1 (>= 2.16), libyang3 (>= 3.12.2), libzmq5 (>= 4.0.1+dfsg)",
+        "Description": "This package contains Switch State Service common library.",
+        "Installed-Size": "1877",
+        "Maintainer": "Shuotian Cheng <shuche@microsoft.com>",
+        "Package": "libswsscommon",
+        "Priority": "optional",
+        "Section": "libs",
+        "Source": "sonic",
+        "Version": "1.0.0"
+      },
+      "required_paths": [
+        "usr/lib/{multiarch}/libswsscommon.so.0"
+      ],
+      "source_revision": "db8f451c76fdc1135cd40f585c218e7d589a7223",
+      "target": "@sonic_swss_common//:libswsscommon_pkg"
+    },
+    "swss": {
+      "control_fields": {
+        "Architecture": "amd64",
+        "Depends": "libc6 (>= 2.38), libgcc-s1 (>= 4.2), libhiredis1.1.0 (>= 1.2.0), libjansson4 (>= 2.14), libjemalloc2 (>= 5.0.0), libnl-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-nf-3-200 (>= 3.7.0-0.2+b1sonic1), libnl-route-3-200 (>= 3.7.0-0.2+b1sonic1), libprotobuf32t64 (>= 3.21.12), libsaimetadata (>= 1.0.0), libsairedis (>= 1.0.0), libstdc++6 (>= 14), libswsscommon (>= 1.0.0), libteam5 (>= 1.27), libteamdctl0 (>= 1.9)",
+        "Description": "This package contains Switch State Service for SONiC project.",
+        "Installed-Size": "23813",
+        "Maintainer": "Shuotian Cheng <shuche@microsoft.com>",
+        "Package": "swss",
+        "Priority": "optional",
+        "Section": "net",
+        "Source": "sonic",
+        "Version": "1.0.0"
+      },
+      "required_paths": [
+        "usr/bin/orchagent"
+      ],
+      "source_revision": "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
+      "target": "@sonic_swss//dist:swss_pkg"
+    }
+  },
+  "schema": 1
+}

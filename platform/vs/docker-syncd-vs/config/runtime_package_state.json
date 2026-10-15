@@ -480,6 +480,26 @@
       "size": 271,
       "text": "auto\n/usr/bin/mpirun\nmpiexec\n/usr/bin/mpiexec\nmpiexec.1.gz\n/usr/share/man/man1/mpiexec.1.gz\nmpirun.1.gz\n/usr/share/man/man1/mpirun.1.gz\n\n/usr/bin/mpirun.openmpi\n50\n/usr/bin/mpiexec.openmpi\n/usr/share/man/man1/mpiexec.openmpi.1.gz\n/usr/share/man/man1/mpirun.openmpi.1.gz\n\n",
       "uid": 0
+    },
+    {
+      "gid": 0,
+      "kind": "file",
+      "mode": 420,
+      "path": "var/lib/systemd/deb-systemd-user-helper-enabled/sockets.target.wants/ssh-agent.socket",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "text": "",
+      "uid": 0
+    },
+    {
+      "gid": 0,
+      "kind": "file",
+      "mode": 420,
+      "path": "var/lib/systemd/deb-systemd-user-helper-enabled/ssh-agent.socket.dsh-also",
+      "sha256": "818ef11e9d53a0081b34d411559532cb924fa0959eff86c7ef54e2863039d1d6",
+      "size": 56,
+      "text": "/etc/systemd/user/sockets.target.wants/ssh-agent.socket\n",
+      "uid": 0
     }
   ],
   "make_package_state_inputs": {
@@ -601,6 +621,30 @@
     "buildimage_revision": "6e1eb6baae67a34b9a7d031d7bca7d436c86fc83",
     "legacy_dockerfile_sha256": "c58a1d83283aac77755b085ed0cd7fd3eb386425577fac540529ea293990d622",
     "openssh_client_installation_state": "Make openssh-client 1:10.0p1-7+fips postinst: _ssh gid104, ssh-agent2755, user socket enablement; unchanged tmpfiles exclusion. Native OCI sha256:7508faf7a33bc1203a89031c0b5005a8e1c43034b70bc71c6536aacbdcd74a99. This models these concrete entries, not every maintainer-script effect.",
+    "openssh_user_helper_state": {
+      "capture": "Exact generated records from retained Make docker-syncd-vs.gz; do not edit manually.",
+      "layer": "sha256:a85f2f3a4e03ddfdbc8ec9ab522a7dc3f6786e5443885ef95f247c75e2194bcd",
+      "matching_files": {
+        "usr/lib/systemd/user/ssh-agent.socket": {
+          "sha256": "d832c5044298c90a3245565708e516fa35e5e5c77cf680ad39829ccbdcf5a94b",
+          "size": 355
+        },
+        "var/lib/dpkg/info/openssh-client.postinst": {
+          "sha256": "062c275d9c918c542989693a7a0e8def89cb776e0243e8e0d04b737e0637533b",
+          "size": 2859
+        },
+        "var/lib/dpkg/info/openssh-client.postrm": {
+          "sha256": "1d1d2705f782fce2b4ca556d626dc4ce31d4b73a086c024c94505050b8053c03",
+          "size": 959
+        }
+      },
+      "oci_manifest": "sha256:40e6737e84e5a9f36051651dbb9da60bdcb5e242c0279636413db5f208daae1d",
+      "package": "openssh-client",
+      "reference_version": "1:10.0p1-7+deb13u4",
+      "review": "The reference and source package postinst, postrm, and ssh-agent.socket are byte-for-byte identical. Only their generated user socket enablement records are reused.",
+      "runtime_archive_sha256": "697fe0d34049d73c999731afdf0a31cec07e6394cfa8186289c580bb4ee30dd3",
+      "source_version": "1:10.0p1-7+fips"
+    },
     "runtime_archive_sha256": "dc470c9e1b2f00b94f59dc0e0a05d5b0dbcac4c7f286dad285611b7d439db60a",
     "scope": "Retained native AMD64 Trixie VS reference; current full native comparison remains required."
   },

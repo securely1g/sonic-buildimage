@@ -194,6 +194,25 @@ class PackageStateLayerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "package state owner changed"):
             self.build()
 
+    def test_only_reviewed_systemd_helper_records_are_published(self):
+        """Preserve SSH purge bookkeeping without allowing arbitrary state files."""
+        state = json.loads(self.contract.read_bytes())
+        for path in sorted(subject.SYSTEMD_HELPER_FILES):
+            data = "" if path.endswith("/ssh-agent.socket") else "/etc/systemd/user/sockets.target.wants/ssh-agent.socket\n"
+            state["entries"].append({"path": path, "kind": "file", "mode": 0o644,
+                                     "uid": 0, "gid": 0, "text": data,
+                                     "sha256": hashlib.sha256(data.encode()).hexdigest(),
+                                     "size": len(data.encode())})
+        self.contract.write_text(json.dumps(state))
+        self.build()
+        files = {}
+        apply_layer(self.output, files)
+        self.assertTrue(subject.SYSTEMD_HELPER_FILES <= files.keys())
+        state["entries"][-1]["path"] = "var/lib/systemd/unreviewed-state"
+        self.contract.write_text(json.dumps(state))
+        with self.assertRaisesRegex(ValueError, "invalid package helper state file"):
+            self.build()
+
     def test_selected_owner_must_match_canonical_lock_key(self):
         """Bind a selected state owner to its exact package identity in the canonical lock."""
         self.mutate(self.selection, lambda value: value["selected"][0].update(key="/trixie/other:amd64=1.0"))

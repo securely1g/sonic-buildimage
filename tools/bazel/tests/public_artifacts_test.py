@@ -384,23 +384,31 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(ready, summary)
                 self.assertEqual(paths, [])
 
-    def test_archive_requires_all_nine_native_workflow_tests(self):
+    def test_archive_requires_all_fourteen_native_workflow_tests(self):
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture):
                 seed(self.root, "archive", architecture)
                 event_path = "artifacts/archive/test-events.jsonl"
-                write(self.root, event_path, events(9))
+                write(self.root, event_path, events(14))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertTrue(ready)
-                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 9)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 14)
                 self.assertTrue(paths)
 
-                write(self.root, event_path, events(8))
+                write(self.root, event_path, events(13))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])
                 self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
                               summary["blocked"])
+
+    def test_archive_result_count_matches_workflow_test_targets(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        command = workflow.split('"$BAZEL" test ', 1)[1].split("2>&1", 1)[0]
+        targets = [line.strip().removesuffix("\\").strip() for line in command.splitlines()
+                   if line.strip().startswith("//")]
+        self.assertEqual(len(targets), len(set(targets)))
+        self.assertEqual(artifacts.BEP["archive"][0][2], len(targets))
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")

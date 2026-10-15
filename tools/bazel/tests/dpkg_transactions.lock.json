@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "purpose": "Real Debian packages for offline apt install, upgrade and remove checks; no test DEBs are built.",
+  "package": "hello",
+  "executable": "/usr/bin/hello",
+  "versions": [
+    "2.10-3",
+    "2.10-5"
+  ],
+  "packages": {
+    "amd64": [
+      {
+        "version": "2.10-3",
+        "url": "https://deb.debian.org/debian/pool/main/h/hello/hello_2.10-3_amd64.deb",
+        "sha256": "2e6e2f1a0007dc43bc91c273fd36e91e40a4f1c2765a03eca68b70a42103878a",
+        "bytes": 53080
+      },
+      {
+        "version": "2.10-5",
+        "url": "https://deb.debian.org/debian/pool/main/h/hello/hello_2.10-5_amd64.deb",
+        "sha256": "4536aabbb75ec21ffe161099ee4b97274945770bdb0682e25ec322421211ca5e",
+        "bytes": 53228
+      }
+    ],
+    "arm64": [
+      {
+        "version": "2.10-3",
+        "url": "https://deb.debian.org/debian/pool/main/h/hello/hello_2.10-3_arm64.deb",
+        "sha256": "f7b20d304db0f3a18da28eb2000de2b0205eaa340c1d0fecec3b7c50acc932dc",
+        "bytes": 52308
+      },
+      {
+        "version": "2.10-5",
+        "url": "https://deb.debian.org/debian/pool/main/h/hello/hello_2.10-5_arm64.deb",
+        "sha256": "7a917c7f44fbd3373dff0f35a0b6bdf8ef564ff90579d8b130ff52fbf33fce1f",
+        "bytes": 52660
+      }
+    ]
+  },
+  "upgrade_packages": {
+    "socat": {
+      "package": "socat",
+      "executable": "/usr/bin/socat",
+      "arguments": [
+        "-V"
+      ],
+      "versions": [
+        "1.8.0.3-1+deb13u1"
+      ],
+      "packages": {
+        "amd64": [
+          {
+            "version": "1.8.0.3-1+deb13u1",
+            "url": "https://deb.debian.org/debian/pool/main/s/socat/socat_1.8.0.3-1+deb13u1_amd64.deb",
+            "sha256": "c87c1e6eccc6d5828138dda794d28a7f283fe4e4010074fffbe4dc8354eef08d",
+            "bytes": 423768
+          }
+        ],
+        "arm64": [
+          {
+            "version": "1.8.0.3-1+deb13u1",
+            "url": "https://deb.debian.org/debian/pool/main/s/socat/socat_1.8.0.3-1+deb13u1_arm64.deb",
+            "sha256": "7efdac975d8b3b4e30aa684cffcb5e2c8b97ac7de75528568ba21b0b193ca5cd",
+            "bytes": 411020
+          }
+        ]
+      }
+    }
+  }
+}

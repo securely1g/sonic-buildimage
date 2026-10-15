@@ -111,7 +111,8 @@ ownership. Receipts keep `skipped_source` separate from `skipped_make`, and
 debug must match runtime's source receipt. Syncd uses this for the Common,
 sairedis and metadata targets already consumed by Orchagent. The image's source
 adapter and final-image checks validate the payload and symbol hashes; APT
-selection does not claim that these TARs were installed as Debian packages.
+selection checks package choice. The separate dpkg-state layer below records
+the files and controls needed for later package-manager operations.
 
 The shared tool preserves the existing receipt formats: source-built containers
 receive `group`, `skipped_retained`, `image` and `policy_sha256`; Make consumers
@@ -120,6 +121,77 @@ an empty `provided_package_replacements` list for compatibility. Both include
 the base manifest digest and complete dependency-check evidence. Shared tests run as
 `//tools/bazel/tests:apt_selection_test`; container suites check their declared
 policies, package contracts and replacement restrictions.
+
+## Keep dpkg state with the installed files
+
+Base, config-engine, Orchagent and Syncd use the common
+[`dpkg_state`](dpkg_state.bzl) layer after their package payloads. The existing
+`installed_packages.py` checks versions and dependencies; `dpkg_state.py` adds
+the corresponding file ownership and lifecycle metadata. For example, listing
+socat in `/var/lib/dpkg/status` alone is insufficient: dpkg also needs its
+`.list` file to remove the old executable during an upgrade or removal.
+
+The layer reuses upstream `rules_distroless` `:data` and `:control` inputs for
+selected APT packages, and the original extracted controls for imported DEBs.
+Source-built TARs use [reviewed control captures](../dpkg/source_controls/README.md)
+from existing Make packages, with explicit provenance and narrowly declared
+architecture/version substitutions. The captures preserve the actual generated
+installation and removal scripts. They do not build or invent another DEB.
+Upstream `tar.bzl` packages the generated metadata into the OCI layer.
+
+The helper preserves unrelated base records, derives `.list` and `.md5sums`
+from the installed payloads, retains configuration-file declarations and their
+original hashes, and writes scripts, library metadata and trigger registrations.
+It removes stale metadata and obsolete owned files when a package is replaced.
+Directory aliases remain meaningful to dpkg: Common's configuration is physically
+under `/run/redis/sonic-db`, but its ownership and configuration declaration both
+retain `/var/run/redis/sonic-db/database_config.json`.
+
+Each image carries a `*-dpkg-state.json` receipt under `/usr/share/sonic/bazel`.
+It records control-file hashes and modes, package provenance and the explicit
+limits `maintainer_scripts_executed: false` and
+`installation_triggers_processed: false`. Capturing a script prepares future APT
+operations; it does not run its initial installation work. Required users,
+alternatives, generated files and loader state still need declared image setup
+and runtime checks.
+
+For alternatives such as `editor` and `pager`, `alternatives_state.py` invokes
+the declared native Debian `update-alternatives` tool against a temporary root.
+It preserves inherited choices and adds reviewed providers from the package's
+actual scripts, then emits database records and command links for `tar.bzl`.
+It does not execute those package scripts or hand-write Debian's database format.
+This matters on removal: static Vim links without their alternatives records
+remain dangling after Vim's removal script succeeds. Base registers Vim Tiny
+and Less; Syncd debug adds full Vim while retaining Vim Tiny as a fallback.
+
+### Validate real package transactions
+
+[`validate_dpkg_state.py`](../ci/validate_dpkg_state.py) runs each probe in a fresh
+native container with networking disabled. It uses checksum-pinned, existing
+Debian packages from [the transaction lock](../tests/dpkg_transactions.lock.json),
+checks ownership and receipt hashes, then runs `dpkg --audit` and `apt-get check`.
+Its probes install and upgrade `hello`, remove packages already assembled into
+the image, and upgrade the source-built socat from `1.8.0.2-1` to Debian
+`1.8.0.3-1+deb13u1`. The socat probe checks that obsolete owned files disappear.
+The removal probes check that `apt-get remove` keeps configuration files and
+`apt-get purge` removes them; for example, Vim's configuration must survive
+removing `vim-tiny` until it is purged.
+
+After loading the new base image, run the configured AMD64 checks with:
+
+```sh
+python3 -B tools/bazel/ci/validate_dpkg_state.py \
+  --architecture amd64 --image docker-base-trixie:latest \
+  --installed-receipt /usr/share/sonic/bazel/base-dpkg-state.json \
+  --remove-package socat --remove-package vim-tiny --upgrade-package socat \
+  --output artifacts/dpkg-base
+```
+
+The base/config-engine workflow configures these checks on native AMD64 and
+ARM64 runners. Orchagent and Syncd images remain AMD64-only; shared ARM64 helper
+tests do not extend that support. Retained receipts and logs establish which
+image passed. The new transaction jobs must pass before claiming validation of
+this change; helper-test results alone are insufficient.
 
 ## Render container manifests
 

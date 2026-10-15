@@ -143,6 +143,10 @@ def main():
                             image + ".packages.json": owner + "runtime_package_metadata"})
         targets["config-engine.path-normalization.json"] = "//dockers/docker-config-engine-trixie:runtime_path_normalization"
         tests = ["//dockers/docker-base-trixie/bazel:installed_packages_test",
+                 "//tools/bazel/tests:alternatives_state_test",
+                 "//tools/bazel/tests:openssh_helper_state_test",
+                 "//tools/bazel/tests:dpkg_state_test",
+                 "//tools/bazel/tests:dpkg_state_validation_test",
                  "//src/sonic-config-engine:sonic_cfggen_cli_test"]
         layouts = ["//dockers/" + image + ":" + image for image in IMAGES]
         receipt["action_audit"] = bazel_commands.audit_targets(
