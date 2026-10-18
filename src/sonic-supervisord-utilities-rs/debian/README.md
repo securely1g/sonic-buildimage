@@ -21,8 +21,8 @@ package check needs the source-built Common DEB; archive checks alone do not
 establish successful installation of that dependency closure.
 
 During review, the workflow checks out the exact shared packaging and metadata
-changes from sonic-build-infra PRs #45 and #46 and library symbols from
-sonic-swss-common PR #25. The image integration in buildimage PR #33 consumes
+changes from sonic-build-infra PRs #45 and #46 and the Common library metadata
+and actual dependency DEB from sonic-swss-common PR #26. The image integration in buildimage PR #33 consumes
 this package separately.
 
 Native CI also builds the actual Common and libyang dependency DEBs from their
