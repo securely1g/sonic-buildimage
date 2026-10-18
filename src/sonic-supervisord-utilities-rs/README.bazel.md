@@ -77,5 +77,6 @@ Local commands and native CI select `sonic-rust-deps` version
 `0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1` from SONiC registry `main`.
 This registration uses landed `sonic-build-infra` source
 `6d9c70f708d7420e9e2b2cdc906b80cee6b140f1` for the supervisor aliases
-and native linking support. Both paths use ordinary module resolution without
-a local source checkout or module override.
+and native linking support. Ordinary runtime builds use this declared version. The Debian package validation
+workflow retains its exact landed Rust source override while selecting its
+reviewed draft package registry; that source matches the canonical registration.
