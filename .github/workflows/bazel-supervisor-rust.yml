@@ -54,11 +54,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check out the exact shared dependency candidate
+      - name: Check out the landed shared dependency source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-build-infra
-          ref: f2e4f74ef70c7f1524a5d17eb11d7776d59d878e
+          ref: 6d9c70f708d7420e9e2b2cdc906b80cee6b140f1
           path: _rust_dependencies/infra
           persist-credentials: false
 
