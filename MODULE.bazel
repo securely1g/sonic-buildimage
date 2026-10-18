@@ -271,3 +271,22 @@ source_files(
         "@sonic_swss//:debian/swss.install": "swss.install.txt",
     },
 )
+
+# Metadata comes from the exact Debian libraries used by the event-service ELFs.
+apt.install(
+    dependency_set = "eventd_package_deps",
+    packages = [
+        "libboost-serialization1.83.0",
+        "libc6",
+        "libgcc-s1",
+        "liblua5.1-0",
+        "libstdc++6",
+        "libzmq5",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "eventd_package_deps")
