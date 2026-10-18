@@ -6,6 +6,7 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/check_eventd_install.sh
       - .github/workflows/bazel-eventd.yml
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/check_eventd_install.sh
       - .github/workflows/bazel-eventd.yml
   workflow_dispatch:
 
@@ -83,14 +85,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-build-infra
-          ref: 38ff19ef6e0216bef4cc7e1b15d0cffe0701794e
+          ref: b6ab14f2c71022244488e1f48e1c8366771fd640
           path: _eventd_dependencies/package-infra
           persist-credentials: false
       - name: Check out Common's reviewed library metadata
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-swss-common
-          ref: 03def03d30e39eb8b9bbdaef86eddcdfb4089fc5
+          ref: 2ef9d75f145bb25a6c614460624fc62360e89ed5
           path: _eventd_dependencies/common
           persist-credentials: false
 
@@ -101,6 +103,29 @@ jobs:
           repository-cache: true
           disk-cache: eventd-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Select the reviewed Draft package registry
+        run: |
+          python3 - <<'PYCODE'
+          import os, shlex, shutil, subprocess
+          from pathlib import Path
+          branch = 'codex/common-debian-package-dependencies'
+          observed = subprocess.check_output(['git', 'ls-remote', 'https://github.com/securely1g/sonic-bazel-registry.git', 'refs/heads/' + branch], text=True).split()[0]
+          assert observed == '3731527306262363533163e95776c352e5b69923'
+          directory = Path(os.environ['RUNNER_TEMP']) / 'package-registry'
+          directory.mkdir()
+          rc = directory / 'effective.bazelrc'
+          rc.write_text(Path('.bazelrc').read_text().replace(
+              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main',
+              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + branch))
+          binary = shutil.which('bazel')
+          assert binary
+          wrapper = directory / 'bazel'
+          wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(binary) + ' --noworkspace_rc --bazelrc=' + shlex.quote(str(rc)) + ' "$@"\n')
+          wrapper.chmod(0o755)
+          with open(os.environ['GITHUB_PATH'], 'a') as output: output.write(str(directory) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as output: output.write('SONIC_NATIVE_BAZEL=' + binary + '\n')
+          PYCODE
+
       - name: Audit, build and run all original suites with private Redis
         env:
           # Bazel records its client environment in retained build events.
@@ -141,6 +166,36 @@ jobs:
           git -C _eventd_dependencies/common rev-parse HEAD > artifacts/eventd/debian/common-revision.txt
           cp MODULE.bazel.lock artifacts/eventd/debian/MODULE.bazel.lock
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
+      - name: Build the real Common dependency package
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/artifacts/eventd/debian/dependencies"
+          mkdir -p "$evidence"
+          cd _eventd_dependencies/common
+          # Validate pending producer registrations without changing the tracked main RC.
+          python3 - "$RUNNER_TEMP/common-package.bazelrc" <<'PYCODE'
+          import sys
+          from pathlib import Path
+          config = Path('.bazelrc').read_text().replace(
+              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main',
+              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/common-debian-package-dependencies')
+          Path(sys.argv[1]).write_text('\n'.join(line for line in config.splitlines() if not line.startswith('try-import ')) + '\n')
+          PYCODE
+          observed=$(git ls-remote https://github.com/securely1g/sonic-bazel-registry.git refs/heads/codex/common-debian-package-dependencies | cut -f1)
+          test "$observed" = 3731527306262363533163e95776c352e5b69923
+          printf '%s\n' "$observed" > "$evidence/registry-revision.txt"
+          cp "$RUNNER_TEMP/common-package.bazelrc" "$evidence/effective.bazelrc"
+          machine=$(uname -m)
+          startup=(--output_base="$RUNNER_TEMP/common-debian" --noworkspace_rc --bazelrc="$RUNNER_TEMP/common-package.bazelrc")
+          flags=(--jobs=4 "--platforms=@sonic_build_infra//platforms:${machine}_trixie"
+            "--host_platform=@sonic_build_infra//platforms:${machine}_trixie")
+          "$SONIC_NATIVE_BAZEL" "${startup[@]}" build "${flags[@]}" //debian:libswsscommon_check @libyang//:libyang3_deb
+          for target in //debian:libswsscommon_check //debian:libswsscommon_deb @libyang//:libyang3_deb; do
+            output=$("$SONIC_NATIVE_BAZEL" "${startup[@]}" cquery "${flags[@]}" --output=files "$target")
+            cp "$output" "$evidence/"
+          done
+          cp MODULE.bazel.lock "$evidence/MODULE.bazel.lock"
+
       - name: Upload native packages and test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -150,3 +205,34 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
+
+  installed-package:
+    name: Installed eventd packages (${{ matrix.architecture }})
+    needs: native
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: eventd-${{ matrix.architecture }}
+          path: packages
+      - name: Install, reinstall, remove and purge with real dependencies
+        env:
+          SONIC_DEB_TEST_CONTAINER: 1
+        run: bash tools/bazel/ci/check_eventd_install.sh packages/debian
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: eventd-installation-${{ matrix.architecture }}
+          path: packages/debian/installation.json
+          if-no-files-found: warn
