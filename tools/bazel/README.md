@@ -24,6 +24,12 @@ do not depend on SWSS helper modules. Shared Python libraries use repository
 imports such as `from tools.bazel import build_helpers`. Command-line entrypoints
 set their repository import path so Make and CI can invoke them directly.
 
+`downloader.cfg` selects a mirror for the pigz 2.8 source archive used to compress
+container images. The MacPorts mirror serves the same bytes as BCR's pinned
+archive; Bazel continues to check its original SHA-256 checksum. This avoids
+intermittent checksum failures from the upstream download URL without changing
+the compressor version, patches or build options.
+
 `build_helpers.py options` prepares optional repository/disk caches and prints
 one argument per line for a Bash array; `--arguments` accepts shell-quoted,
 single-line options without evaluating shell commands. `build_helpers.py export`
