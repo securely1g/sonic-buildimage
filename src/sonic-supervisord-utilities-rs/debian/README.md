@@ -24,3 +24,10 @@ During review, the workflow checks out the exact shared packaging and metadata
 changes from sonic-build-infra PRs #45 and #46 and library symbols from
 sonic-swss-common PR #25. The image integration in buildimage PR #33 consumes
 this package separately.
+
+Native CI also builds the actual Common and libyang dependency DEBs from their
+reviewed source producers, then installs all three packages in a fresh Debian
+container. It checks listener startup with `--help`, normal apt reinstall,
+removal and purge, and verifies that dpkg has no incomplete package state.
+This tests replacement at the existing `1.0.0` version; it does not claim an
+upgrade between different release versions.
