@@ -7,6 +7,7 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - src/sonic-supervisord-utilities-rs/**
+      - tools/bazel/ci/check_listener_deb.py
   push:
     branches: [master]
     paths:
@@ -14,6 +15,7 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - src/sonic-supervisord-utilities-rs/**
+      - tools/bazel/ci/check_listener_deb.py
   workflow_dispatch:
 
 permissions:
@@ -72,7 +74,7 @@ jobs:
 
       - name: Include the reviewed control-file packaging interface
         run: |
-          # Combine infra #45 and #46 for this draft consumer. No packages run here.
+          # Combine infra #45 and #46 for this draft consumer.
           git -C _package_dependencies/infra fetch --depth=2 origin 36d0a0c04bc750af16c8978207a8c0279d9881f5
           git -C _package_dependencies/infra cherry-pick --no-commit FETCH_HEAD
 
@@ -130,7 +132,7 @@ jobs:
           cp -aL bazel-testlogs/src/sonic-supervisord-utilities-rs artifacts/supervisor-rust/tests
           git diff --exit-code
 
-      - name: Generate source-owned Debian metadata without creating a DEB
+      - name: Build and inspect the source-owned Debian package
         env:
           MACHINE: ${{ matrix.machine }}
           DEBIAN_ARCH: ${{ matrix.debian_arch }}
@@ -171,10 +173,18 @@ jobs:
           python3 _package_dependencies/infra/deb/check_control.py \
             --input "$evidence/binary.control" --output "$evidence/checked.control" \
             --package sonic-supervisord-utilities-rs --version 1.0.0 --architecture "$DEBIAN_ARCH"
-          # Inspect the archive action for review; never build the package target.
+          # Record and build the explicitly approved package-producing action.
           bazel aquery "${flags[@]}" --output=jsonproto \
             'mnemonic("DebAssemble", deps(//src/sonic-supervisord-utilities-rs/debian:package))' \
             > "$evidence/proposed-deb-action.json"
+          package=//src/sonic-supervisord-utilities-rs/debian:package
+          bazel build "${flags[@]}" "$package"
+          deb=$(bazel cquery "${flags[@]}" --output=files "$package")
+          data=$(bazel cquery "${flags[@]}" --output=files //src/sonic-supervisord-utilities-rs/debian:package_data)
+          cp "$deb" "$evidence/"
+          python3 tools/bazel/ci/check_listener_deb.py --deb "$deb" --data "$data" \
+            --control "$evidence/checked.control" --architecture "$DEBIAN_ARCH" \
+            --output "$evidence/package.json"
           cp MODULE.bazel.lock "$evidence/MODULE.bazel.lock"
           git diff --exit-code
 
