@@ -1,4 +1,4 @@
-# Source-built Debian package prototype
+# Source-built Debian package
 
 `//src/sonic-supervisord-utilities-rs/debian:metadata` runs the declared
 `dpkg-shlibdeps` and `dpkg-gencontrol` tools against the existing release
@@ -18,20 +18,26 @@ Make debhelper flow also installs. It is tagged `manual` so wildcard builds do n
 produce a DEB. This source component has no maintainer scripts or conffiles.
 Its existing runtime and debug TARs remain available.
 
-## Draft dependencies and validation boundary
+## Draft dependencies and validation
 
-This prototype requires the metadata API in [sonic-build-infra #45](https://github.com/securely1g/sonic-build-infra/pull/45), the tools in
-[#46](https://github.com/securely1g/sonic-build-infra/pull/46), and [Common #25](https://github.com/securely1g/sonic-swss-common/pull/25)'s source-owned `//dist:libswsscommon_symbols` target. The current
-image registry pins do not contain all three. Use explicit local module
-overrides to review the action graph until those dependencies are published;
-do not replace the image's other infrastructure changes with an older release.
+The package assembler comes from [sonic-build-infra #45](https://github.com/securely1g/sonic-build-infra/pull/45), and the declared Debian metadata tools come from
+[#46](https://github.com/securely1g/sonic-build-infra/pull/46). Common's source
+library and symbols remain the metadata inputs; [Common #26](https://github.com/securely1g/sonic-swss-common/pull/26)
+provides the real dependency DEB for installed-package validation.
 
-An action query can inspect `:package` without creating an archive. Building
-`:metadata` creates text files and the existing source/runtime dependencies.
-Executing `:package` is the distinct DEB-producing step and has not been run.
+The native workflow selects a reviewed infrastructure snapshot from
+[registry #73](https://github.com/securely1g/sonic-bazel-registry/pull/73) and
+records the temporary registry revision. The checked-in registry URLs continue
+to use `main`. These prerequisites remain Draft until their source and registry
+changes land.
 
-Native AMD64 and ARM64 CI checks out those exact reviewed commits, combines the
-two infrastructure changes without committing, and records the resulting tree
-hash. It audits and builds only `:metadata`, validates the resulting control,
-and retains the proposed DEB assembly action from `aquery`. Package creation and
-installation validation remain pending.
+[Native AMD64 and ARM64 validation passed](https://github.com/securely1g/sonic-buildimage/actions/runs/39095381937):
+
+- Original Rust tests, release runtime checks and detached debug-symbol checks.
+- Actual `:package` creation and archive validation against its payload/control.
+- Fresh Debian installation with real source-built Common and libyang packages.
+- Listener startup, same-version reinstall, removal, purge and clean dpkg state.
+
+The package keeps its original `1.0.0` version, so these checks do not claim a
+transition between different listener versions. Final container service and
+watchdog behavior are validated by the image consumer.
