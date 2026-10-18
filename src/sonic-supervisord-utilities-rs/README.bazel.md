@@ -3,7 +3,10 @@
 The public `:runtime` and `:runtime.debug_symbols` targets install the
 source-built listener at `/usr/bin/supervisor-proc-exit-listener-rs` and its
 matching detached build-ID symbols. This matches `debian/install`. Both native
-AMD64 and ARM64 Debian Trixie are supported; Bazel never produces a DEB here.
+AMD64 and ARM64 Debian Trixie are supported. These runtime/debug targets do not
+produce DEBs. A separate, manual [Debian package target](debian/README.bazel.md)
+is prepared for real image installation; its package-creation action has not
+been executed.
 
 `:supervisor_library` owns this component's Rust code. It depends directly on
 `@sonic_swss_common//crates/swss-common:swss_common`; Common retains its source,

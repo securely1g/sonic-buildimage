@@ -54,6 +54,36 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check out the landed shared dependency source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-build-infra
+          ref: 6d9c70f708d7420e9e2b2cdc906b80cee6b140f1
+          path: _rust_dependencies/infra
+          persist-credentials: false
+
+      - name: Check out the reviewed Debian metadata tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-build-infra
+          ref: 4a1a3287ee859352fe04dd63df3838d5fe00f3a5
+          path: _package_dependencies/infra
+          persist-credentials: false
+
+      - name: Include the reviewed control-file packaging interface
+        run: |
+          # Combine infra #45 and #46 for this draft consumer. No packages run here.
+          git -C _package_dependencies/infra fetch --depth=2 origin 36d0a0c04bc750af16c8978207a8c0279d9881f5
+          git -C _package_dependencies/infra cherry-pick --no-commit FETCH_HEAD
+
+      - name: Check out Common's reviewed library metadata
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-swss-common
+          ref: 03def03d30e39eb8b9bbdaef86eddcdfb4089fc5
+          path: _package_dependencies/common
+          persist-credentials: false
+
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -98,6 +128,54 @@ jobs:
             > artifacts/supervisor-rust/rust-libraries.txt
           cp MODULE.bazel.lock artifacts/supervisor-rust/MODULE.bazel.lock
           cp -aL bazel-testlogs/src/sonic-supervisord-utilities-rs artifacts/supervisor-rust/tests
+          git diff --exit-code
+
+      - name: Generate source-owned Debian metadata without creating a DEB
+        env:
+          MACHINE: ${{ matrix.machine }}
+          DEBIAN_ARCH: ${{ matrix.debian_arch }}
+        run: |
+          set -euo pipefail
+          flags=(--jobs=4
+            "--platforms=@sonic_build_infra//platforms:${MACHINE}_trixie"
+            "--host_platform=@sonic_build_infra//platforms:${MACHINE}_trixie"
+            "--override_module=sonic-build-infra=$GITHUB_WORKSPACE/_package_dependencies/infra"
+            "--override_module=sonic-swss-common=$GITHUB_WORKSPACE/_package_dependencies/common"
+            "--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_rust_dependencies/infra/rust/deps")
+          metadata=//src/sonic-supervisord-utilities-rs/debian:metadata
+          evidence=artifacts/supervisor-rust/debian
+          mkdir -p "$evidence"
+          python3 - <<'PYCODE'
+          import json
+          import subprocess
+          from pathlib import Path
+          def git(directory, *args):
+              return subprocess.check_output(["git", "-C", directory, *args], text=True).strip()
+          infra = "_package_dependencies/infra"
+          provenance = {
+              "metadata_tools_commit": git(infra, "rev-parse", "HEAD"),
+              "control_interface_commit": git(infra, "rev-parse", "FETCH_HEAD"),
+              "combined_infra_tree": git(infra, "write-tree"),
+              "common_commit": git("_package_dependencies/common", "rev-parse", "HEAD"),
+              "rust_dependencies_commit": git("_rust_dependencies/infra", "rev-parse", "HEAD"),
+          }
+          Path("artifacts/supervisor-rust/debian/prerequisites.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          PYCODE
+          audit_flags=()
+          for flag in "${flags[@]}"; do audit_flags+=("--bazel-arg=$flag"); done
+          python3 tools/bazel/ci/bazel_commands.py "${audit_flags[@]}" \
+            --output "$evidence/action-audit.json" "$metadata"
+          bazel build "${flags[@]}" "$metadata"
+          bazel cquery "${flags[@]}" --output=files "$metadata" > "$evidence/outputs.txt"
+          while IFS= read -r output; do cp "$output" "$evidence/"; done < "$evidence/outputs.txt"
+          python3 _package_dependencies/infra/deb/check_control.py \
+            --input "$evidence/binary.control" --output "$evidence/checked.control" \
+            --package sonic-supervisord-utilities-rs --version 1.0.0 --architecture "$DEBIAN_ARCH"
+          # Inspect the archive action for review; never build the package target.
+          bazel aquery "${flags[@]}" --output=jsonproto \
+            'mnemonic("DebAssemble", deps(//src/sonic-supervisord-utilities-rs/debian:package))' \
+            > "$evidence/proposed-deb-action.json"
+          cp MODULE.bazel.lock "$evidence/MODULE.bazel.lock"
           git diff --exit-code
 
       - name: Retain source and installed-package evidence
