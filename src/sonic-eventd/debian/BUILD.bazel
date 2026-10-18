@@ -34,7 +34,7 @@ gzip_compress(
 [
     tar(
         name = name + "_directories",
-        mtree = [path + " uid=0 gid=0 mode=0755 type=dir" for path in [
+        mtree = ["./" + path + " uid=0 gid=0 mode=0755 type=dir" for path in [
             "etc",
             "usr",
             "usr/bin",
