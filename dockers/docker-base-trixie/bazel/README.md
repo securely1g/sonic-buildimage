@@ -76,6 +76,8 @@ package labels used by the source producers; no Distroless override is needed.
 Sairedis `0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3` also resolves directly from
 maintained `main`, using its landed source commit without a draft override.
 
+Rust dependencies `0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1` resolve directly from maintained `main` after registry #61 landed. Their source is the maintained infrastructure commit; no Rust draft override is needed.
+
 Common selects landed source `db8f451c76fdc1135cd40f585c218e7d589a7223` through
 its reviewed registry #57 recipe. Its shared SWIG API comes from the refreshed
 combined infrastructure recipe, which also retains required sysroot and Kerberos
