@@ -29,10 +29,39 @@ gzip_compress(
     ]
 ]
 
+# dpkg requires directory entries before unpacking files in new directories.
+# The existing OCI runtime TARs omit these because tar extraction creates them.
+[
+    tar(
+        name = name + "_directories",
+        mtree = [path + " uid=0 gid=0 mode=0755 type=dir" for path in [
+            "etc",
+            "usr",
+            "usr/bin",
+            "usr/share",
+            "usr/share/doc",
+        ] + directories],
+    )
+    for name, directories in [
+        (
+            "eventd",
+            ["etc/evprofile"],
+        ),
+        (
+            "rsyslog_plugin",
+            [
+                "etc/monit",
+                "etc/monit/conf.d",
+            ],
+        ),
+    ]
+]
+
 [
     flatten(
         name = name + "_data",
         tars = [
+            ":" + name + "_directories",
             "//src/sonic-eventd:" + runtime,
             ":" + name + "_documentation",
         ],
