@@ -54,14 +54,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check out the landed shared dependency source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: securely1g/sonic-build-infra
-          ref: 6d9c70f708d7420e9e2b2cdc906b80cee6b140f1
-          path: _rust_dependencies/infra
-          persist-credentials: false
-
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -91,8 +83,7 @@ jobs:
           set -euo pipefail
           flags=(--jobs=4
             "--platforms=@sonic_build_infra//platforms:${MACHINE}_trixie"
-            "--host_platform=@sonic_build_infra//platforms:${MACHINE}_trixie"
-            "--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_rust_dependencies/infra/rust/deps")
+            "--host_platform=@sonic_build_infra//platforms:${MACHINE}_trixie")
           targets=(//src/sonic-supervisord-utilities-rs:unit_tests
             //src/sonic-supervisord-utilities-rs:integration_tests
             //src/sonic-supervisord-utilities-rs:listener_tests

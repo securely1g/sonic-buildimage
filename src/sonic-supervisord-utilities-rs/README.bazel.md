@@ -69,23 +69,9 @@ The shared graph's established release logging cap remains in effect.
 
 ## Shared dependency validation
 
-The committed registry URLs stay on SONiC registry `main` and BCR. The current
-registered `sonic-rust-deps` version lacks the supervisor aliases and native
-linking support. Registry PR #61 publishes that support from the landed
-`sonic-build-infra` commit `6d9c70f708d7420e9e2b2cdc906b80cee6b140f1`.
-Until that registration lands, the commands above require an explicit override
-of the shared module, matching the native CI workflow:
-
-```sh
-git clone https://github.com/securely1g/sonic-build-infra.git /path/to/sonic-build-infra
-git -C /path/to/sonic-build-infra checkout --detach 6d9c70f708d7420e9e2b2cdc906b80cee6b140f1
-bazel test --override_module=sonic-rust-deps=/path/to/sonic-build-infra/rust/deps \
-  //src/sonic-supervisord-utilities-rs:unit_tests \
-  //src/sonic-supervisord-utilities-rs:integration_tests \
-  //src/sonic-supervisord-utilities-rs:listener_tests \
-  //src/sonic-supervisord-utilities-rs:package_test
-```
-
-The override selects source already merged on the maintained infrastructure
-branch; it does not replace the pending registry registration. Remove it and
-select the registered module version before declaring this consumer ready.
+Local commands and native CI select `sonic-rust-deps` version
+`0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1` from SONiC registry `main`.
+This registration uses landed `sonic-build-infra` source
+`6d9c70f708d7420e9e2b2cdc906b80cee6b140f1` for the supervisor aliases
+and native linking support. Both paths use ordinary module resolution without
+a local source checkout or module override.
