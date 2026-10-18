@@ -5,8 +5,9 @@ source-built listener at `/usr/bin/supervisor-proc-exit-listener-rs` and its
 matching detached build-ID symbols. This matches `debian/install`. Both native
 AMD64 and ARM64 Debian Trixie are supported. These runtime/debug targets do not
 produce DEBs. A separate, manual [Debian package target](debian/README.bazel.md)
-is prepared for real image installation; its package-creation action has not
-been executed.
+produces the original `1.0.0` package for real image installation. Native AMD64
+and ARM64 CI builds it and validates installation with the real Common package,
+listener startup, reinstall, removal and purge.
 
 `:supervisor_library` owns this component's Rust code. It depends directly on
 `@sonic_swss_common//crates/swss-common:swss_common`; Common retains its source,
