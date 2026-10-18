@@ -150,15 +150,15 @@ jobs:
             "--override_module=sonic-swss-common=$GITHUB_WORKSPACE/_eventd_dependencies/common"
             "--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra/rust/deps")
           targets=(//src/sonic-eventd/debian:eventd_package_check
-            //src/sonic-eventd/debian:rsyslog_plugin_package_check)
+            //src/sonic-eventd/debian:rsyslog_plugin_package_check
+            //src/sonic-eventd/debian:sonic_eventd_deb
+            //src/sonic-eventd/debian:sonic_rsyslog_plugin_deb)
           mkdir -p artifacts/eventd/debian
           bazel aquery "${flags[@]}" --output=jsonproto \
             'mnemonic("DebAssemble", deps(//src/sonic-eventd/debian:eventd_package_check + //src/sonic-eventd/debian:rsyslog_plugin_package_check))' \
             > artifacts/eventd/debian/assembly-actions.json
           bazel build "${flags[@]}" "${targets[@]}"
-          for target in "${targets[@]}" \
-            //src/sonic-eventd/debian:sonic_eventd_deb \
-            //src/sonic-eventd/debian:sonic_rsyslog_plugin_deb; do
+          for target in "${targets[@]}"; do
             output=$(bazel cquery "${flags[@]}" --output=files "$target")
             cp "$output" artifacts/eventd/debian/
           done
@@ -189,7 +189,8 @@ jobs:
           startup=(--output_base="$RUNNER_TEMP/common-debian" --noworkspace_rc --bazelrc="$RUNNER_TEMP/common-package.bazelrc")
           flags=(--jobs=4 "--platforms=@sonic_build_infra//platforms:${machine}_trixie"
             "--host_platform=@sonic_build_infra//platforms:${machine}_trixie")
-          "$SONIC_NATIVE_BAZEL" "${startup[@]}" build "${flags[@]}" //debian:libswsscommon_check @libyang//:libyang3_deb
+          "$SONIC_NATIVE_BAZEL" "${startup[@]}" build "${flags[@]}" \
+            //debian:libswsscommon_check //debian:libswsscommon_deb @libyang//:libyang3_deb
           for target in //debian:libswsscommon_check //debian:libswsscommon_deb @libyang//:libyang3_deb; do
             output=$("$SONIC_NATIVE_BAZEL" "${startup[@]}" cquery "${flags[@]}" --output=files "$target")
             cp "$output" "$evidence/"
