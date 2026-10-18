@@ -85,14 +85,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-build-infra
-          ref: b6ab14f2c71022244488e1f48e1c8366771fd640
+          ref: 7339c0da8283fdc43dc90feb48136c9b574ee3e7
           path: _eventd_dependencies/package-infra
           persist-credentials: false
       - name: Check out Common's reviewed library metadata
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-swss-common
-          ref: 2ef9d75f145bb25a6c614460624fc62360e89ed5
+          ref: e4db486d14b726af21ad14a85334a60add07ec22
           path: _eventd_dependencies/common
           persist-credentials: false
 
@@ -108,9 +108,9 @@ jobs:
           python3 - <<'PYCODE'
           import os, shlex, shutil, subprocess
           from pathlib import Path
-          branch = 'codex/common-debian-package-dependencies'
+          branch = 'codex/source-debian-runtime-permissions'
           observed = subprocess.check_output(['git', 'ls-remote', 'https://github.com/securely1g/sonic-bazel-registry.git', 'refs/heads/' + branch], text=True).split()[0]
-          assert observed == '3731527306262363533163e95776c352e5b69923'
+          assert observed == '7f8a0fd08ceb36cfaca9645a24e7f1dd174e0302'
           directory = Path(os.environ['RUNNER_TEMP']) / 'package-registry'
           directory.mkdir()
           rc = directory / 'effective.bazelrc'
@@ -178,11 +178,11 @@ jobs:
           from pathlib import Path
           config = Path('.bazelrc').read_text().replace(
               'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main',
-              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/common-debian-package-dependencies')
+              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/source-debian-runtime-permissions')
           Path(sys.argv[1]).write_text('\n'.join(line for line in config.splitlines() if not line.startswith('try-import ')) + '\n')
           PYCODE
-          observed=$(git ls-remote https://github.com/securely1g/sonic-bazel-registry.git refs/heads/codex/common-debian-package-dependencies | cut -f1)
-          test "$observed" = 3731527306262363533163e95776c352e5b69923
+          observed=$(git ls-remote https://github.com/securely1g/sonic-bazel-registry.git refs/heads/codex/source-debian-runtime-permissions | cut -f1)
+          test "$observed" = 7f8a0fd08ceb36cfaca9645a24e7f1dd174e0302
           printf '%s\n' "$observed" > "$evidence/registry-revision.txt"
           cp "$RUNNER_TEMP/common-package.bazelrc" "$evidence/effective.bazelrc"
           machine=$(uname -m)
