@@ -196,9 +196,12 @@ jobs:
             'mnemonic("DebAssemble", deps(//src/sonic-supervisord-utilities-rs/debian:package))' \
             > "$evidence/proposed-deb-action.json"
           package=//src/sonic-supervisord-utilities-rs/debian:package
-          bazel build "${flags[@]}" "$package"
+          # A cached DEB does not require Bazel to materialize its input TAR.
+          # Request the TAR as an output because the archive check reads it.
+          data_target=//src/sonic-supervisord-utilities-rs/debian:package_data
+          bazel build "${flags[@]}" "$package" "$data_target"
           deb=$(bazel cquery "${flags[@]}" --output=files "$package")
-          data=$(bazel cquery "${flags[@]}" --output=files //src/sonic-supervisord-utilities-rs/debian:package_data)
+          data=$(bazel cquery "${flags[@]}" --output=files "$data_target")
           cp "$deb" "$evidence/"
           python3 tools/bazel/ci/check_listener_deb.py --deb "$deb" --data "$data" \
             --control "$evidence/checked.control" --architecture "$DEBIAN_ARCH" \
@@ -229,7 +232,8 @@ jobs:
           startup=(--output_base="$RUNNER_TEMP/common-debian" --noworkspace_rc --bazelrc="$RUNNER_TEMP/common-package.bazelrc")
           flags=(--jobs=4 "--platforms=@sonic_build_infra//platforms:${machine}_trixie"
             "--host_platform=@sonic_build_infra//platforms:${machine}_trixie")
-          "$SONIC_NATIVE_BAZEL" "${startup[@]}" build "${flags[@]}" //debian:libswsscommon_check @libyang//:libyang3_deb
+          "$SONIC_NATIVE_BAZEL" "${startup[@]}" build "${flags[@]}" \
+            //debian:libswsscommon_check //debian:libswsscommon_deb @libyang//:libyang3_deb
           for target in //debian:libswsscommon_check //debian:libswsscommon_deb @libyang//:libyang3_deb; do
             output=$("$SONIC_NATIVE_BAZEL" "${startup[@]}" cquery "${flags[@]}" --output=files "$target")
             cp "$output" "$evidence/"
