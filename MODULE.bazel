@@ -200,3 +200,22 @@ single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",
 )
+
+# Metadata comes from the exact Debian libraries used by the event-service ELFs.
+apt.install(
+    dependency_set = "eventd_package_deps",
+    packages = [
+        "libboost-serialization1.83.0",
+        "libc6",
+        "libgcc-s1",
+        "liblua5.1-0",
+        "libstdc++6",
+        "libzmq5",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "eventd_package_deps")

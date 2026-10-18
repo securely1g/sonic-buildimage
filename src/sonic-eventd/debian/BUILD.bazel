@@ -1,0 +1,155 @@
+load("@rules_distroless//distroless:defs.bzl", "flatten")
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
+load("@sonic_build_infra//deb:metadata.bzl", "debian_library", "debian_metadata")
+load("@sonic_build_infra//deb:sonic_deb.bzl", "sonic_deb")
+load("@sonic_build_infra//deb:validation.bzl", "validate_debian_package")
+load("@tar.bzl", "tar")
+
+package(default_visibility = ["//visibility:public"])
+
+gzip_compress(
+    name = "changelog_gzip",
+    src = "changelog",
+    level = 9,
+)
+
+# Match the two original dh_install manifests and retain the native changelog.
+[
+    tar(
+        name = name + "_documentation",
+        srcs = [":changelog_gzip"],
+        mtree = [
+            "usr/share/doc/" + package_name + " uid=0 gid=0 mode=0755 type=dir",
+            "usr/share/doc/" + package_name + "/changelog.gz uid=0 gid=0 mode=0644 type=file content=$(location :changelog_gzip)",
+        ],
+    )
+    for name, package_name in [
+        ("eventd", "sonic-eventd"),
+        ("rsyslog_plugin", "sonic-rsyslog-plugin"),
+    ]
+]
+
+[
+    flatten(
+        name = name + "_data",
+        tars = [
+            "//src/sonic-eventd:" + runtime,
+            ":" + name + "_documentation",
+        ],
+    )
+    for name, runtime in [
+        ("eventd", "eventd_runtime"),
+        ("rsyslog_plugin", "rsyslog_plugin_runtime"),
+    ]
+]
+
+# Use the same Debian helper as Make to register the staged /etc files.
+[
+    genrule(
+        name = name + "_conffiles",
+        srcs = [
+            "changelog",
+            "compat",
+            "control",
+            ":" + name + "_data",
+        ],
+        outs = [package_name + ".conffiles"],
+        cmd = """
+set -eu
+execroot="$$PWD"
+output="$$execroot/$@"
+helper="$$execroot/$(execpath @sonic_build_infra//tools/build_tools:dh_installdeb)"
+work="$$(mktemp -d)"
+trap 'rm -rf "$$work"' EXIT
+mkdir -p "$$work/debian/@PACKAGE@"
+cp "$(location control)" "$$work/debian/control"
+cp "$(location changelog)" "$$work/debian/changelog"
+cp "$(location compat)" "$$work/debian/compat"
+"$(BSDTAR_BIN)" -xf "$(location :@NAME@_data)" -C "$$work/debian/@PACKAGE@"
+cd "$$work"
+"$$helper" -p@PACKAGE@
+cp "debian/@PACKAGE@/DEBIAN/conffiles" "$$output"
+""".replace("@PACKAGE@", package_name).replace("@NAME@", name),
+        toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+        tools = ["@sonic_build_infra//tools/build_tools:dh_installdeb"],
+    )
+    for name, package_name in [
+        ("eventd", "sonic-eventd"),
+        ("rsyslog_plugin", "sonic-rsyslog-plugin"),
+    ]
+]
+
+# Use library payloads and ABI metadata from the same pinned native inputs.
+_FOREIGN_LIBRARIES = [
+    "libc6",
+    "libgcc-s1",
+    "libstdc++6",
+    "libzmq5",
+    "libboost-serialization1.83.0",
+    "liblua5.1-0",
+]
+
+[
+    debian_library(
+        name = package_name + "_metadata",
+        control_tar = "@eventd_package_deps//" + package_name + ":control",
+        data = "@eventd_package_deps//" + package_name + ":data",
+    )
+    for package_name in _FOREIGN_LIBRARIES
+]
+
+debian_library(
+    name = "common_metadata",
+    data = "@sonic_swss_common//dist:libswsscommon_pkg",
+    symbols = "@sonic_swss_common//dist:libswsscommon_symbols",
+)
+
+[
+    debian_metadata(
+        name = name + "_metadata",
+        changelog = "changelog",
+        control = "control",
+        data = ":" + name + "_data",
+        dependencies = [":" + library + "_metadata" for library in _FOREIGN_LIBRARIES] + [":common_metadata"],
+        package = package_name,
+        # The source is compiled directly; Make's misc:Built-Using is empty too.
+        substitutions = {"misc:Built-Using": ""},
+    )
+    for name, package_name in [
+        ("eventd", "sonic-eventd"),
+        ("rsyslog_plugin", "sonic-rsyslog-plugin"),
+    ]
+]
+
+[
+    sonic_deb(
+        name = name,
+        control_file = ":" + stem + "_metadata",
+        control_files = {":" + stem + "_conffiles": "conffiles"},
+        data = ":" + stem + "_data",
+        package = package_name,
+        tags = ["manual"],
+        version = "1.0.0-0",
+    )
+    for name, stem, package_name in [
+        ("sonic_eventd_deb", "eventd", "sonic-eventd"),
+        ("sonic_rsyslog_plugin_deb", "rsyslog_plugin", "sonic-rsyslog-plugin"),
+    ]
+]
+
+[
+    validate_debian_package(
+        name = stem + "_package_check",
+        control = ":" + stem + "_metadata",
+        control_files = {":" + stem + "_conffiles": "conffiles"},
+        data = ":" + stem + "_data",
+        deb = ":" + name,
+        package = package_name,
+        tags = ["manual"],
+        version = "1.0.0-0",
+    )
+    for name, stem, package_name in [
+        ("sonic_eventd_deb", "eventd", "sonic-eventd"),
+        ("sonic_rsyslog_plugin_deb", "rsyslog_plugin", "sonic-rsyslog-plugin"),
+    ]
+]
