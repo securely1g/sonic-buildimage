@@ -5,3 +5,20 @@ bazel_dep(
     version = "0.0.2-127e89b9396824166caa6a300872398c6896bfec",
     repo_name = "sonic_rust_deps",
 )
+
+# The package metadata uses the same pinned Debian library payloads and their
+# original symbols/control files. Source Common supplies its own symbols.
+listener_package_apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+listener_package_apt.install(
+    dependency_set = "listener_package_deps",
+    packages = [
+        "libc6",
+        "libgcc-s1",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(listener_package_apt, "listener_package_deps")

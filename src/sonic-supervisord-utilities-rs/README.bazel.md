@@ -3,7 +3,11 @@
 The public `:runtime` and `:runtime.debug_symbols` targets install the
 source-built listener at `/usr/bin/supervisor-proc-exit-listener-rs` and its
 matching detached build-ID symbols. This matches `debian/install`. Both native
-AMD64 and ARM64 Debian Trixie are supported; Bazel never produces a DEB here.
+AMD64 and ARM64 Debian Trixie are supported. These runtime/debug targets do not
+produce DEBs. A separate, manual [Debian package target](debian/README.bazel.md)
+produces the original `1.0.0` package for real image installation. Native AMD64
+and ARM64 CI builds it and validates installation with the real Common package,
+listener startup, reinstall, removal and purge.
 
 `:supervisor_library` owns this component's Rust code. It depends directly on
 `@sonic_swss_common//crates/swss-common:swss_common`; Common retains its source,
@@ -67,12 +71,25 @@ The test injector remains pinned to upstream Git commit
 `c7317906a1d514ef99bf2fbd4c943908c265d280` (injectorpp 0.4.0).
 The shared graph's established release logging cap remains in effect.
 
-## Draft dependency
+## Shared dependency validation
 
-The committed registry URLs stay on SONiC registry `main` and BCR. Until the
-new shared aliases and native linking fix are registered from merged source,
-validation explicitly
-supplies `--override_module=sonic-rust-deps=/path/to/sonic-build-infra/rust/deps`
-from the reviewed shared-dependency source candidate. The workflow pins that
-source commit. Remove the temporary override and select the registered module
-version before declaring this consumer ready.
+The committed registry URLs stay on SONiC registry `main` and BCR. The current
+registered `sonic-rust-deps` version lacks the supervisor aliases and native
+linking support. Registry PR #61 publishes that support from the landed
+`sonic-build-infra` commit `6d9c70f708d7420e9e2b2cdc906b80cee6b140f1`.
+Until that registration lands, the commands above require an explicit override
+of the shared module, matching the native CI workflow:
+
+```sh
+git clone https://github.com/securely1g/sonic-build-infra.git /path/to/sonic-build-infra
+git -C /path/to/sonic-build-infra checkout --detach 6d9c70f708d7420e9e2b2cdc906b80cee6b140f1
+bazel test --override_module=sonic-rust-deps=/path/to/sonic-build-infra/rust/deps \
+  //src/sonic-supervisord-utilities-rs:unit_tests \
+  //src/sonic-supervisord-utilities-rs:integration_tests \
+  //src/sonic-supervisord-utilities-rs:listener_tests \
+  //src/sonic-supervisord-utilities-rs:package_test
+```
+
+The override selects source already merged on the maintained infrastructure
+branch; it does not replace the pending registry registration. Remove it and
+select the registered module version before declaring this consumer ready.

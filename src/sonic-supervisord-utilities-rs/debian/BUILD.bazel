@@ -1,0 +1,103 @@
+load("@rules_distroless//distroless:defs.bzl", "flatten")
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
+load("@sonic_build_infra//deb:sonic_deb.bzl", "sonic_deb")
+load("@tar.bzl", "tar")
+
+package(default_visibility = ["//visibility:public"])
+
+# The unchanged Make dh sequence also installs this native-package changelog.
+gzip_compress(
+    name = "changelog_gzip",
+    src = "changelog",
+    level = 9,
+)
+
+tar(
+    name = "documentation",
+    srcs = [":changelog_gzip"],
+    mtree = [
+        "usr/share/doc/sonic-supervisord-utilities-rs uid=0 gid=0 mode=0755 type=dir",
+        "usr/share/doc/sonic-supervisord-utilities-rs/changelog.gz uid=0 gid=0 mode=0644 type=file content=$(location :changelog_gzip)",
+    ],
+)
+
+flatten(
+    name = "package_data",
+    tars = [
+        "//src/sonic-supervisord-utilities-rs:runtime",
+        ":documentation",
+    ],
+)
+
+# Use the actual release payload and the source owner's control/changelog.
+# These commands generate text metadata only, before any DEB assembly action.
+_METADATA_COMMAND = """
+set -eu
+export DEB_HOST_ARCH=@DEBARCH@
+execroot="$$PWD"
+shlibdeps="$$execroot/$(execpath @sonic_build_infra//tools/build_tools:dpkg-shlibdeps)"
+gencontrol="$$execroot/$(execpath @sonic_build_infra//tools/build_tools:dpkg-gencontrol)"
+control_output="$$execroot/$(location binary.control)"
+substvars_output="$$execroot/$(location runtime.substvars)"
+work="$$(mktemp -d)"
+trap 'rm -rf "$$work"' EXIT
+mkdir -p "$$work/debian" "$$work/package/DEBIAN" \
+    "$$work/libc/DEBIAN" "$$work/libgcc/DEBIAN" "$$work/common/DEBIAN"
+cp "$(location control)" "$$work/debian/control"
+cp "$(location changelog)" "$$work/debian/changelog"
+"$(BSDTAR_BIN)" -xf "$(location :package_data)" -C "$$work/package"
+"$(BSDTAR_BIN)" -xf "$(location @listener_package_deps//libc6:data)" -C "$$work/libc"
+"$(BSDTAR_BIN)" -xf "$(location @listener_package_deps//libc6:control)" -C "$$work/libc/DEBIAN"
+"$(BSDTAR_BIN)" -xf "$(location @listener_package_deps//libgcc-s1:data)" -C "$$work/libgcc"
+"$(BSDTAR_BIN)" -xf "$(location @listener_package_deps//libgcc-s1:control)" -C "$$work/libgcc/DEBIAN"
+"$(BSDTAR_BIN)" -xf "$(location @sonic_swss_common//dist:libswsscommon_pkg)" -C "$$work/common"
+cp "$(location @sonic_swss_common//dist:libswsscommon_symbols)" "$$work/common/DEBIAN/symbols"
+cd "$$work"
+"$$shlibdeps" -O \
+    -l"$$work/libc/usr/lib/@MULTIARCH@" \
+    -l"$$work/libgcc/usr/lib/@MULTIARCH@" \
+    -l"$$work/common/usr/lib/@MULTIARCH@" \
+    -S"$$work/libc" -S"$$work/libgcc" -S"$$work/common" \
+    "$$work/package/usr/bin/supervisor-proc-exit-listener-rs" > "$$substvars_output"
+"$$gencontrol" -psonic-supervisord-utilities-rs -P"$$work/package" \
+    -T"$$substvars_output" -O"$$control_output"
+"""
+
+genrule(
+    name = "metadata",
+    srcs = [
+        "changelog",
+        "control",
+        ":package_data",
+        "@listener_package_deps//libc6:control",
+        "@listener_package_deps//libc6:data",
+        "@listener_package_deps//libgcc-s1:control",
+        "@listener_package_deps//libgcc-s1:data",
+        "@sonic_swss_common//dist:libswsscommon_pkg",
+        "@sonic_swss_common//dist:libswsscommon_symbols",
+    ],
+    outs = [
+        "binary.control",
+        "runtime.substvars",
+    ],
+    cmd = select({
+        "@platforms//cpu:x86_64": _METADATA_COMMAND.replace("@MULTIARCH@", "x86_64-linux-gnu").replace("@DEBARCH@", "amd64"),
+        "@platforms//cpu:aarch64": _METADATA_COMMAND.replace("@MULTIARCH@", "aarch64-linux-gnu").replace("@DEBARCH@", "arm64"),
+    }),
+    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    tools = [
+        "@sonic_build_infra//tools/build_tools:dpkg-gencontrol",
+        "@sonic_build_infra//tools/build_tools:dpkg-shlibdeps",
+    ],
+)
+
+# This component has no maintainer scripts or conffiles. The check compares
+# its generated version with the explicit packaging contract below.
+sonic_deb(
+    name = "package",
+    control_file = ":binary.control",
+    data = ":package_data",
+    package = "sonic-supervisord-utilities-rs",
+    tags = ["manual"],
+    version = "1.0.0",
+)
