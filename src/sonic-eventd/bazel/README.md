@@ -88,3 +88,37 @@ Its broader shell-runner migration is not imported. The fixture declaration is
 adapted to this component's existing Python runner with the original author
 credited. Both source trees shared the old whitespace/boolean parsing defect;
 the parser correction here is additional work, not an upstream fix.
+
+## Debian packages
+
+The Debian producer keeps the two original package boundaries:
+
+```sh
+bazel build \
+  //src/sonic-eventd/debian:sonic_eventd_deb \
+  //src/sonic-eventd/debian:sonic_rsyslog_plugin_deb
+```
+
+Both have version `1.0.0-0` from the original changelog and target AMD64 or ARM64.
+The package data uses the runtime TARs above plus the original compressed
+changelog. Dependencies are computed from the actual ELF files using the source
+control file, the matching foreign-library metadata and source-built Common
+symbols. No control information is copied from a previously installed image.
+
+The original Debian `dh_installdeb` helper registers the staged `/etc` files as
+conffiles, using the source control, changelog and compatibility level.
+For example, `/etc/eventd.json` remains user-editable configuration across package
+reinstallation, and dpkg can preserve it during removal and delete it on purge.
+The shared archive check compares the produced data and control bytes, modes,
+ownership, checksum list and native ELF architecture with the declared inputs.
+Installation and configuration behavior must also be validated through the consuming
+image's real package manager; an archive check does not replace that validation.
+
+```sh
+bazel build \
+  //src/sonic-eventd/debian:eventd_package_check \
+  //src/sonic-eventd/debian:rsyslog_plugin_package_check
+```
+
+Image composition belongs to buildimage PR #33 and consumes these source-owned
+packages separately. The source-build/runtime/debug targets remain unchanged.

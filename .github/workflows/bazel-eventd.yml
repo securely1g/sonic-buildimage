@@ -79,6 +79,21 @@ jobs:
             _eventd_dependencies/multiarch/third_party/rules_distroless/0003-multiarch-headers.patch \
             > artifacts/eventd/distroless-inputs.sha256
 
+      - name: Check out the reviewed Debian producer tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-build-infra
+          ref: 38ff19ef6e0216bef4cc7e1b15d0cffe0701794e
+          path: _eventd_dependencies/package-infra
+          persist-credentials: false
+      - name: Check out Common's reviewed library metadata
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-swss-common
+          ref: 03def03d30e39eb8b9bbdaef86eddcdfb4089fc5
+          path: _eventd_dependencies/common
+          persist-credentials: false
+
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -96,7 +111,38 @@ jobs:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd \
-            --bazel-arg="--override_module=rules_distroless=$RUNNER_TEMP/distroless-eventd"
+            --bazel-arg="--override_module=rules_distroless=$RUNNER_TEMP/distroless-eventd" \
+            --bazel-arg="--override_module=sonic-build-infra=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra" \
+            --bazel-arg="--override_module=sonic-swss-common=$GITHUB_WORKSPACE/_eventd_dependencies/common" \
+            --bazel-arg="--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra/rust/deps"
+          git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
+      - name: Build and inspect Debian packages
+        run: |
+          set -euo pipefail
+          machine=$(uname -m)
+          flags=(--jobs=4
+            "--platforms=@sonic_build_infra//platforms:${machine}_trixie"
+            "--host_platform=@sonic_build_infra//platforms:${machine}_trixie"
+            "--override_module=rules_distroless=$RUNNER_TEMP/distroless-eventd"
+            "--override_module=sonic-build-infra=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra"
+            "--override_module=sonic-swss-common=$GITHUB_WORKSPACE/_eventd_dependencies/common"
+            "--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra/rust/deps")
+          targets=(//src/sonic-eventd/debian:eventd_package_check
+            //src/sonic-eventd/debian:rsyslog_plugin_package_check)
+          mkdir -p artifacts/eventd/debian
+          bazel aquery "${flags[@]}" --output=jsonproto \
+            'mnemonic("DebAssemble", deps(//src/sonic-eventd/debian:eventd_package_check + //src/sonic-eventd/debian:rsyslog_plugin_package_check))' \
+            > artifacts/eventd/debian/assembly-actions.json
+          bazel build "${flags[@]}" "${targets[@]}"
+          for target in "${targets[@]}" \
+            //src/sonic-eventd/debian:sonic_eventd_deb \
+            //src/sonic-eventd/debian:sonic_rsyslog_plugin_deb; do
+            output=$(bazel cquery "${flags[@]}" --output=files "$target")
+            cp "$output" artifacts/eventd/debian/
+          done
+          git -C _eventd_dependencies/package-infra rev-parse HEAD > artifacts/eventd/debian/tools-revision.txt
+          git -C _eventd_dependencies/common rev-parse HEAD > artifacts/eventd/debian/common-revision.txt
+          cp MODULE.bazel.lock artifacts/eventd/debian/MODULE.bazel.lock
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence
         if: always()
