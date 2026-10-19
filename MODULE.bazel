@@ -49,7 +49,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.17-246a0a53d2b4e8fdf31f0b8ae4573e54a012689e",
+    version = "0.0.16-1d6990a2ba2980315f086a461a08312bbc3f217c",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -236,4 +236,11 @@ single_version_override(
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.2-6ef4c4f2e81efa4ac456f7274398c0fb16a62c24", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.2-996620548fdbac8930e74d788a6226ffc5371287", repo_name = "sonic_fips")
+
+# Select the landed sysroot/Kerberos source while older Draft consumers
+# retain their previous module declarations.
+single_version_override(
+    module_name = "sonic-build-infra",
+    version = "0.0.16-1d6990a2ba2980315f086a461a08312bbc3f217c",
+)

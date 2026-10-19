@@ -173,3 +173,7 @@ map from that same lock. There is no separately maintained checked label map.
 For Python changes, edit the owning `requirements.in` and regenerate the shared
 config-engine lock with the existing documented `uv pip compile` command. Keep
 base-specific declarations in `dockers/docker-base-trixie/requirements.in`.
+
+Shared sysroot and Kerberos tools now resolve from maintained registry `main` as `0.0.16-1d6990a2ba2980315f086a461a08312bbc3f217c`, using landed infrastructure master. The root override keeps older Draft consumer declarations from selecting their obsolete integration snapshot. Common also resolves from main; both temporary source overrides have been removed. Remaining entries in `draft_sources.json` retain their explicit reviewed source recipes.
+
+The FIPS runtime registration uses source `996620548fdbac8930e74d788a6226ffc5371287`, which selects the combined sysroot API used by the landed infrastructure. OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
