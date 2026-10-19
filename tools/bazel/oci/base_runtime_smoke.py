@@ -21,6 +21,16 @@ def command(*arguments, input=None):
     return result.stdout + result.stderr
 
 
+def verify_directory_alias(alias, target):
+    """Permit a redundant ./ prefix on the same relative target, without resolving it."""
+    assert os.path.islink(alias), alias
+    actual = os.readlink(alias)
+    if not target.startswith("/"):
+        while actual.startswith("./"):
+            actual = actual[2:]
+    assert actual == target, alias
+
+
 def main():
     report = json.loads(Path(sys.argv[1]).read_text())
     machine = platform.machine()
@@ -29,7 +39,7 @@ def main():
         "aarch64": ("aarch64-linux-gnu", "/lib/ld-linux-aarch64.so.1"),
     }[machine]
     for alias, target in {"/bin": "usr/bin", "/sbin": "usr/sbin", "/lib": "usr/lib", "/var/run": "/run"}.items():
-        assert os.path.islink(alias) and os.readlink(alias) == target, alias
+        verify_directory_alias(alias, target)
     assert Path("/var/run/redis/sonic-db/database_config.json").resolve() == Path("/run/redis/sonic-db/database_config.json")
     assert "DATABASES" in json.loads(Path("/var/run/redis/sonic-db/database_config.json").read_text())
     database_config = os.stat("/run/redis/sonic-db/database_config.json")
@@ -100,7 +110,10 @@ def main():
                      "-pre", "ID:symcrypt", "-pre", "LIST_ADD:1", "-pre", "LOAD", "-t", "-c")
     assert "[ available ]" in output and "SCOSSL" in output
     assert digest in command("openssl", "dgst", "-engine", engine, "-sha256", input="abc")
-    assert os.stat("/usr/bin/vim").st_ino == os.stat("/usr/bin/vim.tiny").st_ino
+    # This image-owned compatibility name follows Debian's managed vi command;
+    # it must not retain old executable bytes when vim-tiny is upgraded.
+    verify_directory_alias("/usr/bin/vim", "vi")
+    assert Path("/usr/bin/vim").resolve() == Path("/usr/bin/vim.tiny")
     for name in ("editor", "ex", "rview", "vi", "view"):
         assert os.readlink("/usr/bin/" + name) == "/etc/alternatives/" + name
         assert os.readlink("/etc/alternatives/" + name) == "/usr/bin/vim.tiny"
@@ -111,7 +124,7 @@ def main():
     print(json.dumps({"status": "passed", "machine": machine, "source_elf_count": len(report["native"]),
                       "checks": ["installed source hashes and library loading", "cfggen render", "YANG valid/invalid data",
                                  "Python dependencies and command scripts", "native ip/socat", "legacy provider",
-                                 "sealed SymCrypt constructor", "provider and engine SHA256", "Vim hard link"]}, indent=2))
+                                 "sealed SymCrypt constructor", "provider and engine SHA256", "Vim command alias and alternatives"]}, indent=2))
 
 
 if __name__ == "__main__":

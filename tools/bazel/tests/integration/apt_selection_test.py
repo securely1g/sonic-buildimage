@@ -138,6 +138,40 @@ class AptSelectionTest(unittest.TestCase):
         self.assertEqual(receipt["retained_manifest_sha256"], hashlib.sha256(fixture.manifest.read_bytes()).hexdigest())
         self.assertEqual(receipt["dependency_check"]["packages"]["local-driver"]["Version"], "2.0")
 
+    def test_runtime_layer_does_not_satisfy_apt_dependencies(self):
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        source = manifest["source_packages"][0]
+        source.pop("control_fields")
+        source["kind"] = "runtime-layer"
+        fixture.manifest.write_text(json.dumps(manifest))
+        retained, _, _ = subject.retained_packages(fixture.manifest,
+            policy=subject.read_policy(fixture.policy), variant="runtime")
+        self.assertNotIn("local-driver", retained)
+        # The requested APT package really depends on local-driver >= 2.0.
+        # Having that name in a SONiC TAR cannot make the dependency valid.
+        with self.assertRaises(ValueError):
+            fixture.select()
+
+    def test_duplicate_runtime_layer_identity_is_rejected(self):
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        source = manifest["source_packages"][0]
+        source.pop("control_fields")
+        source["kind"] = "runtime-layer"
+        manifest["source_packages"].append(dict(source))
+        fixture.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "duplicate imported/source package identity"):
+            fixture.select()
+
+    def test_runtime_layer_cannot_inject_package_controls(self):
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        manifest["source_packages"][0]["kind"] = "runtime-layer"
+        fixture.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "must not satisfy Debian dependencies"):
+            fixture.select()
+
     def test_source_inventory_rejects_missing_provenance_and_duplicate_owners(self):
         """A package cannot be supplied by both Make and source or lack a built TAR identity."""
         fixture = Fixture(self.root)

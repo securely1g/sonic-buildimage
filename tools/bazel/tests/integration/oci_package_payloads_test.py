@@ -73,7 +73,7 @@ class ValidatePayloadsTest(unittest.TestCase):
         function(manifest)
         path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-    def merged_base(self, *, lib_target="usr/lib"):
+    def merged_base(self, *, lib_target="usr/lib", relative_prefix="", lib_metadata=None):
         path = self.root / "base.oci"
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w", format=tarfile.GNU_FORMAT) as archive:
@@ -84,6 +84,11 @@ class ValidatePayloadsTest(unittest.TestCase):
                 alias = tarfile.TarInfo(name)
                 alias.type, alias.mode = tarfile.SYMTYPE, 0o777
                 alias.linkname = lib_target if name == "lib" else value["linkname"]
+                if not alias.linkname.startswith("/"):
+                    alias.linkname = relative_prefix + alias.linkname
+                if name == "lib":
+                    for field, value in (lib_metadata or {}).items():
+                        setattr(alias, field, value)
                 archive.addfile(alias)
         layer = data.getvalue()
         config = {"architecture": "amd64", "os": "linux",
@@ -283,6 +288,43 @@ class ValidatePayloadsTest(unittest.TestCase):
         _, payload = self.fixture()
         with self.assertRaisesRegex(ValueError, "unsupported directory alias: lib"):
             subject.normalize(payload, self.merged_base(lib_target="elsewhere"), self.root / "normalized.tar", expected_platform="linux/amd64")
+
+    def test_merged_usr_aliases_accept_equivalent_relative_prefixes(self):
+        """umoci's ./usr/bin spelling has the same target as the checked usr/bin alias."""
+        payload = self.root / "aliases.tar"
+        for prefix in ("./", "././"):
+            with self.subTest(prefix=prefix):
+                with tarfile.open(payload, "w") as archive:
+                    alias = tarfile.TarInfo("lib")
+                    alias.type, alias.mode, alias.linkname = tarfile.SYMTYPE, 0o777, prefix + "usr/lib"
+                    archive.addfile(alias)
+                result = subject.normalize(payload, self.merged_base(relative_prefix=prefix),
+                                           self.root / "normalized.tar", expected_platform="linux/amd64")
+                self.assertEqual(result["skipped_alias_entries"], 1)
+
+    def test_merged_usr_aliases_reject_changed_absolute_and_parent_targets(self):
+        """Equivalent prefixes must not authorize another destination or a parent traversal."""
+        _, payload = self.fixture()
+        for target in ("usr/bin", "../usr/lib", "./../usr/lib", "usr/../usr/lib", "/usr/lib", ".//usr/lib"):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(ValueError, "unsupported directory alias: lib"):
+                    subject.normalize(payload, self.merged_base(lib_target=target),
+                                      self.root / "normalized.tar", expected_platform="linux/amd64")
+                with tarfile.open(payload, "w") as archive:
+                    alias = tarfile.TarInfo("lib")
+                    alias.type, alias.mode, alias.linkname = tarfile.SYMTYPE, 0o777, target
+                    archive.addfile(alias)
+                with self.assertRaisesRegex(ValueError, "changes a directory alias: lib"):
+                    subject.normalize(payload, self.merged_base(), self.root / "normalized.tar", expected_platform="linux/amd64")
+
+    def test_equivalent_alias_targets_still_require_original_ownership_and_mode(self):
+        """Normalizing the target spelling must leave the base metadata checks intact."""
+        _, payload = self.fixture()
+        for metadata in ({"uid": 123}, {"gid": 456}, {"mode": 0o755}):
+            with self.subTest(metadata=metadata):
+                with self.assertRaisesRegex(ValueError, "unsupported directory alias: lib"):
+                    subject.normalize(payload, self.merged_base(relative_prefix="./", lib_metadata=metadata),
+                                      self.root / "normalized.tar", expected_platform="linux/amd64")
 
     def test_reserved_whiteout_is_rejected(self):
         """Imported package archives must not use OCI whiteouts to remove inherited files."""

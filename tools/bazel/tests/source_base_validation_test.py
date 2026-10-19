@@ -86,6 +86,7 @@ class SourceBaseTest(unittest.TestCase):
         self.runtime_tail = []
         self.debug_tail = []
         self.replacing = None
+        self.independent_debug = False
 
     def run_validation(self):
         metadata = []
@@ -97,7 +98,8 @@ class SourceBaseTest(unittest.TestCase):
             metadata.append(path)
             files[name] = raw
         runtime_layers = [layer(files), *self.runtime_tail]
-        debug_layers = [*runtime_layers, layer(self.symbols), *self.debug_tail]
+        debug_layers = ([layer(dict(files, **self.symbols))] if self.independent_debug else
+                        [*runtime_layers, layer(self.symbols)]) + self.debug_tail
         for name, layers in (("runtime", runtime_layers), ("debug", debug_layers)):
             config = {"architecture": self.native, "os": "linux", "config": {},
                       "rootfs": {"type": "layers", "diff_ids": [fixture.digest(x) for x in layers]}}
@@ -119,6 +121,50 @@ class SourceBaseTest(unittest.TestCase):
         self.assertIn("libc.so.6", result["external_needed"])
         self.assertRegex(result["runtime_manifest_digest"], r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(result["debug_manifest_digest"], r"^sha256:[0-9a-f]{64}$")
+
+    def test_independent_debug_rootfs_keeps_source_bytes_and_symbols(self):
+        self.independent_debug = True
+        self.reports[1]["source_packages"][0]["target"] = "@sonic_fips//symcrypt:symcrypt_openssl_deb"
+        self.assertEqual(self.run_validation()["status"], "passed")
+        self.debug_tail = [layer({self.ordinary: self.pairs["replacement"][0]})]
+        with self.assertRaisesRegex(ValueError, "changed declared source"):
+            self.run_validation()
+
+    def test_runtime_layers_have_source_provenance_without_debian_versions(self):
+        for report in self.reports:
+            package = report["source_packages"][0]
+            package["packaging"] = "runtime-layer"
+            del package["version"]
+        result = self.run_validation()
+        self.assertEqual(result["elf_count"], 2)
+        self.assertEqual({pair["source_revision"] for pair in result["paired_symbols"]}, {"a" * 40})
+        self.debug_tail = [layer({self.ordinary: self.pairs["replacement"][0]})]
+        with self.assertRaisesRegex(ValueError, "changed declared source"):
+            self.run_validation()
+
+    def test_debian_source_records_still_require_the_installed_version(self):
+        del self.reports[0]["source_packages"][0]["version"]
+        with self.assertRaisesRegex(ValueError, "lacks its installed version"):
+            self.run_validation()
+
+    def test_unversioned_sealed_runtime_layer_requires_its_source_target(self):
+        package = self.reports[1]["source_packages"][0]
+        package["packaging"] = "runtime-layer"
+        del package["version"]
+        package["target"] = "@sonic_fips//symcrypt:symcrypt_openssl_deb"
+        with self.assertRaisesRegex(ValueError, "sealed core lacks"):
+            self.run_validation()
+
+    def test_sealed_runtime_layer_rejects_wrong_version_and_identity(self):
+        package = self.reports[1]["source_packages"][0]
+        package["packaging"] = "runtime-layer"
+        for key in ("package", "target", "version", "source_revision"):
+            with self.subTest(key=key):
+                old = package[key]
+                package[key] = "1.0.sonic.1" if key == "source_revision" else "wrong"
+                with self.assertRaisesRegex(ValueError, "sealed core lacks"):
+                    self.run_validation()
+                package[key] = old
 
     def test_read_only_source_elf(self):
         self.files[self.ordinary] = (self.files[self.ordinary], {"mode": 0o444})

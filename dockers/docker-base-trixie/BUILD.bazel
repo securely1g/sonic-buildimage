@@ -1,16 +1,20 @@
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@base_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("@config_engine_pip//:requirements.bzl", "whl_requirement")
-load("@rules_distroless//distroless:defs.bzl", "cacerts", "group", "passwd")
+load("@rules_distroless//apt:defs.bzl", "apt_install")
+load("@rules_distroless//distroless:defs.bzl", "flatten")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("@sonic_build_infra//python:wheel_layer.bzl", "wheel_layer")
 load("@tar.bzl", "tar")
-load("//dockers/docker-base-trixie/bazel:accounts.bzl", "GROUP", "PASSWD")
-load("//dockers/docker-base-trixie/bazel:installed_packages.bzl", "installed_packages")
 load("//src/sonic-config-engine:template.bzl", "sonic_cfggen_template")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_install_inputs.bzl", "apt_install_inputs")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:installed_source_metadata.bzl", "installed_source_metadata")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
+load("//tools/bazel/oci:repack_oci.bzl", "repack_oci")
+load("//tools/bazel/oci:rootfs_metadata.bzl", "rootfs_metadata")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
@@ -76,9 +80,75 @@ filegroup(
     output_group = "selection",
 )
 
-sonic_layer(
-    name = "debian_runtime_filtered",
-    tars = [":debian_runtime"],
+# First install the selected foreign packages, then the source-built packages.
+# Every transaction runs the original maintainer scripts and records dpkg state.
+# The pinned official Debian image has one complete layer; copy it verbatim.
+run_binary(
+    name = "debian_rootfs",
+    srcs = [":debian_base"],
+    outs = ["debian-rootfs.tar.gz"],
+    args = [
+        "--image",
+        "$(location :debian_base)",
+        "--output",
+        "$(location debian-rootfs.tar.gz)",
+    ] + select({
+        "@platforms//cpu:x86_64": [
+            "--architecture",
+            "amd64",
+        ],
+        "@platforms//cpu:arm64": [
+            "--architecture",
+            "arm64",
+        ],
+    }),
+    tool = "//tools/bazel/oci:single_layer_rootfs",
+)
+
+apt_install_inputs(
+    name = "debian_install_inputs",
+    packages = select({
+        "@platforms//cpu:" + cpu: {key: label + ":deb" for key, label in APT_INPUTS["base_debian"][arch].items()}
+        for cpu, arch in [
+            ("x86_64", "amd64"),
+            ("arm64", "arm64"),
+        ]
+    }),
+    selection = ":debian_runtime_selection",
+)
+
+flatten(
+    name = "installation_base",
+    deduplicate = True,
+    tars = [
+        ":debian_rootfs",
+        ":config_files",
+    ],
+)
+
+apt_install(
+    name = "configured_debian",
+    architecture = _ARCH,
+    base = ":installation_base",
+    bwrap = "//tools/bazel/oci:bubblewrap",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    packages = select({
+        "@platforms//cpu:" + cpu: [label + ":deb" for label in APT_INPUTS["base_debian"][arch].values()]
+        for cpu, arch in [
+            ("x86_64", "amd64"),
+            ("arm64", "arm64"),
+        ]
+    }),
+    packages_manifest = ":debian_install_inputs",
+    # Requires a dedicated native root worker with namespace capabilities.
+    tags = ["manual"],
+)
+
+filegroup(
+    name = "configured_debian_receipt",
+    srcs = [":configured_debian"],
+    output_group = "receipt",
+    tags = ["manual"],
 )
 
 # Install the wheels through PyPA installer so metadata and console scripts
@@ -101,11 +171,6 @@ wheel_layer(
         "toposort",
         "typing-extensions",
     ]],
-)
-
-cacerts(
-    name = "certificates",
-    package = "@base_debian//ca-certificates:data",
 )
 
 [
@@ -144,22 +209,11 @@ _APT_CONFIGS = [
     "no-check-valid-until",
 ]
 
-# The Dockerfile uses a hard link, not an empty mtree file or a symlink.
-# Extract the pinned payload with upstream BSD tar and let the same tool record
-# the two names of the inode. No Debian package is built or installed here.
-genrule(
+# Keep the vim command without retaining an old executable after vim-tiny is
+# upgraded. Debian's vi alternative selects the currently installed editor.
+tar(
     name = "vim_command",
-    srcs = ["@base_debian//vim-tiny:data"],
-    outs = ["vim-command.tar"],
-    cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8 TZ=UTC\n" +
-          'mkdir -p "$(@D)/vim-command/usr/bin"\n' +
-          '"$(BSDTAR_BIN)" -xOf "$(execpath @base_debian//vim-tiny:data)" ./usr/bin/vim.tiny > "$(@D)/vim-command/usr/bin/vim.tiny"\n' +
-          'chmod 0755 "$(@D)/vim-command/usr/bin/vim.tiny"\n' +
-          'ln "$(@D)/vim-command/usr/bin/vim.tiny" "$(@D)/vim-command/usr/bin/vim"\n' +
-          'touch -t 197001010000 "$(@D)/vim-command/usr/bin/vim.tiny"\n' +
-          '"$(BSDTAR_BIN)" --format=gnutar --uid 0 --gid 0 --uname root --gname root -cf "$@" -C "$(@D)/vim-command" usr/bin/vim.tiny usr/bin/vim',
-    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    mtree = ["./usr/bin/vim uid=0 gid=0 mode=0777 time=0 type=link link=vi"],
 )
 
 [
@@ -193,14 +247,6 @@ genrule(
             for name in _APT_CONFIGS
         ] + [
             "./etc/apt/sources.list uid=0 gid=0 mode=0644 time=0 type=file content=$(location :apt_sources_" + arch + ")",
-        ] + [
-            # vim-tiny's reviewed postinst selects these commands at priority15.
-            # Manual-page alternatives are omitted by the base dpkg file policy.
-            "./usr/bin/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/" + name
-            for name in ["editor", "ex", "rview", "vi", "view"]
-        ] + [
-            "./etc/alternatives/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/vim.tiny"
-            for name in ["editor", "ex", "rview", "vi", "view"]
         ],
     )
     for arch in [
@@ -215,17 +261,6 @@ alias(
         "@platforms//cpu:x86_64": ":config_files_amd64",
         "@platforms//cpu:arm64": ":config_files_arm64",
     }),
-)
-
-# Reproduce the reviewed system account state without running postinst on the host.
-passwd(
-    name = "accounts",
-    entries = [dict(entry) for entry in PASSWD],
-)
-
-group(
-    name = "groups",
-    entries = GROUP,
 )
 
 # Source-owned runtime and development payloads that Make installs in this base.
@@ -247,38 +282,73 @@ sonic_layer(
     tars = _SOURCE_TARS.values(),
 )
 
-installed_packages(
-    name = "installed_packages",
-    apt_receipt = ":debian_runtime_selection",
+# These components replace distro-owned files or satisfy Debian dependencies.
+# Keep their original package identity. The SymCrypt plugin remains a TAR layer.
+_SOURCE_DEBS = {
+    "socat": "@socat//:socat_deb",
+    "iproute2": "@iproute2//:iproute2_deb",
+    "libssl3t64": "@sonic_fips//openssl:libssl3t64_deb",
+    "libssl-dev": "@sonic_fips//openssl:libssl_dev_deb",
+    "openssl": "@sonic_fips//openssl:openssl_deb",
+    "libk5crypto3": "@sonic_fips//krb5:libk5crypto3_deb",
+    "libkrb5support0": "@sonic_fips//krb5:libkrb5support0_deb",
+    "libkrb5-3": "@sonic_fips//krb5:libkrb5_3_deb",
+    "libgssapi-krb5-2": "@sonic_fips//krb5:libgssapi_krb5_2_deb",
+}
+
+apt_install(
+    name = "configured_sources",
     architecture = _ARCH,
-    base = ":debian_base",
-    controls = select({
-        "@platforms//cpu:" + cpu: [label + ":control" for label in APT_INPUTS["base_debian"][arch].values()]
-        for cpu, arch in [
-            ("x86_64", "amd64"),
-            ("arm64", "arm64"),
-        ]
-    }),
-    source_spec = "//dockers/docker-base-trixie/bazel:source_packages.json",
-    sources = _SOURCE_TARS,
+    base = ":configured_debian",
+    bwrap = "//tools/bazel/oci:bubblewrap",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    packages = _SOURCE_DEBS.values(),
+    tags = ["manual"],
 )
 
 filegroup(
+    name = "installation_receipt",
+    srcs = [":configured_sources"],
+    output_group = "receipt",
+)
+
+installed_source_metadata(
     name = "runtime_package_metadata",
-    srcs = [":installed_packages"],
-    output_group = "metadata",
+    architecture = _ARCH,
+    installation = ":installation_receipt",
+    packages = _SOURCE_DEBS,
+    payloads = {"symcrypt-openssl": "@sonic_fips//symcrypt:runtime"},
+    runtime_layer = "@sonic_fips//symcrypt:runtime",
+    rootfs = ":configured_sources",
+    spec = "//dockers/docker-base-trixie/bazel:source_packages.json",
 )
 
 tar(
-    name = "installed_package_state",
-    srcs = [
-        ":installed_packages",
-        ":runtime_package_metadata",
-    ],
+    name = "source_provenance",
+    srcs = [":runtime_package_metadata"],
     mtree = [
-        "var/lib/dpkg/status uid=0 gid=0 mode=0644 time=0 type=file content=$(location :installed_packages)",
-        "usr/share/sonic/bazel/base-packages.json uid=0 gid=0 mode=0644 time=0 type=file content=$(location :runtime_package_metadata)",
+        "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
+        "usr/share/sonic/bazel/base-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :runtime_package_metadata)",
     ],
+)
+
+# APT owns Debian package files/state. Ordinary runtime and wheel layers follow it.
+flatten(
+    name = "complete_filesystem",
+    deduplicate = True,
+    tars = [
+        ":configured_sources",
+        "@sonic_fips//symcrypt:runtime",
+        ":python_runtime",
+        ":vim_command",
+        ":source_provenance",
+    ],
+)
+
+rootfs_metadata(
+    name = "rootfs",
+    src = ":complete_filesystem",
+    tars = _SOURCE_TARS.values(),
 )
 
 manifest_labels(
@@ -287,23 +357,25 @@ manifest_labels(
     manifest = "//:target/bazel-manifests/docker-base-trixie/manifest.json",
 )
 
+# The installer returns a complete filesystem, including package removals.
+# Start a fresh OCI filesystem so old base files cannot reappear underneath it.
+repack_oci(
+    name = "configured_image",
+    base = ":debian_base",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    platform = select({
+        "@platforms//cpu:x86_64": "linux/amd64",
+        "@platforms//cpu:arm64": "linux/arm64",
+    }),
+    tars = [":rootfs"],
+)
+
 oci_image(
     name = "docker-base-trixie",
-    base = ":debian_base",
+    base = ":configured_image",
     cmd = [],
     entrypoint = [],
     labels = ":labels",
-    tars = [
-        ":debian_runtime_filtered",
-        ":source_runtime",
-        ":python_runtime",
-        ":certificates",
-        ":vim_command",
-        ":config_files",
-        ":accounts",
-        ":groups",
-        ":installed_package_state",
-    ],
     workdir = "/",
 )
 

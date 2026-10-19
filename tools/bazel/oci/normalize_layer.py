@@ -32,6 +32,17 @@ def normalized_path(value, *, directory_aliases=DIRECTORY_ALIASES):
     return name
 
 
+def same_alias_link(value, expected):
+    """Accept leading ./ on relative alias targets without resolving parent paths."""
+    if value == expected:
+        return True
+    if PurePosixPath(value).is_absolute() or '..' in PurePosixPath(value).parts or PurePosixPath(expected).is_absolute():
+        return False
+    while value.startswith('./'):
+        value = value[2:]
+    return value == expected
+
+
 def normalized_member(member, *, directory_aliases=DIRECTORY_ALIASES, root_owned=False, modes=None):
     """Copy one supported member, preserving imported owners unless explicitly changed."""
     name = path_name(member.name)
@@ -49,7 +60,7 @@ def normalized_member(member, *, directory_aliases=DIRECTORY_ALIASES, root_owned
         if output.issym():
             output.mode = 0o777
     if name in directory_aliases:
-        require(output.isdir() or (output.issym() and output.linkname == directory_aliases[name]['linkname']),
+        require(output.isdir() or (output.issym() and same_alias_link(output.linkname, directory_aliases[name]['linkname'])),
                 'package payload changes a directory alias: ' + name)
         require(output.uid == 0 and output.gid == 0 and output.mode == (0o755 if output.isdir() else 0o777),
                 'package payload changes directory alias metadata: ' + name)
@@ -81,8 +92,11 @@ def base_aliases(base, *, expected_platform, directory_aliases=DIRECTORY_ALIASES
                 name = path_name(member.name)
                 pure = PurePosixPath(name)
                 if name in targets:
+                    linkname = member.linkname
+                    if member.issym() and name in directory_aliases and same_alias_link(linkname, directory_aliases[name]['linkname']):
+                        linkname = directory_aliases[name]['linkname']
                     additions[name] = {'kind': 'symlink' if member.issym() else 'directory' if member.isdir() else 'other',
-                                       'linkname': member.linkname, 'uid': member.uid, 'gid': member.gid, 'mode': member.mode}
+                                       'linkname': linkname, 'uid': member.uid, 'gid': member.gid, 'mode': member.mode}
                 elif pure.name == '.wh..wh..opq':
                     parent = str(pure.parent)
                     removals.update(target for target in targets if parent == '.' or target.startswith(parent + '/'))
