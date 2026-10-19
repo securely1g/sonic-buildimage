@@ -108,7 +108,9 @@ def build_sdk(common_source, output_dir, arch, bazel="bazel", output_base=None, 
             raise ValueError(f"{SDK_TARGET} must produce exactly one SDK archive")
         # Another build can repoint the checkout's bazel-out convenience link.
         # Resolve against this private server's execution root instead.
-        execution_root = Path(run("info", *options, "execution_root", capture=True))
+        # Bazel 8.5.1 can misresolve root-module platform aliases for info.
+        # This location-only query needs neither platforms nor build settings.
+        execution_root = Path(run("info", "--platforms=", "execution_root", capture=True))
         archive = execution_root / files[0]
         source_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=common_source, text=True).strip()

@@ -71,6 +71,7 @@ elif command == "build" and (root / "fail-build").exists():
 elif command == "cquery":
     print("bazel-out/sdk.tar" if (root / "relative-output").exists() else root / "sdk.tar")
 elif command == "info":
+    assert "--platforms=" in sys.argv
     print(root / "execution-root")
 ''')
         bazel.chmod(0o755)
