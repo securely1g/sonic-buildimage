@@ -242,13 +242,6 @@ single_version_override(
 
 bazel_dep(name = "sonic-fips", version = "0.0.2-c199929d77ea632c94212d945c0f6f33cf581746", repo_name = "sonic_fips")
 
-# Select the landed Debian GCC toolchains while older consumers retain
-# their previous module declarations.
-single_version_override(
-    module_name = "sonic-build-infra",
-    version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",
-)
-
 # Syncd uses the same pinned Debian snapshot as its source-built base.
 include("//platform/vs/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
 
@@ -286,7 +279,7 @@ source_files(
 # Pin the reviewed Debian GCC toolchain version; commit suffixes do not sort chronologically.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.16-72d9705e37d0e83a072cad3eb73b75cd6cc1e4c6",
+    version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",
 )
 
 single_version_override(

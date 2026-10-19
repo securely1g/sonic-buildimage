@@ -215,7 +215,7 @@ For Python changes, edit the owning `requirements.in` and regenerate the shared
 config-engine lock with the existing documented `uv pip compile` command. Keep
 base-specific declarations in `dockers/docker-base-trixie/requirements.in`.
 
-Shared sysroot and Kerberos tools use landed infrastructure `0.0.17-8baf1ad829c5095297d85148b042145b87d623a3` from registry #81. Distroless #82 supplies the Debian library linking interface used by native shared libraries. Both resolve through maintained `main`; no infrastructure source override is needed. The root version selection keeps older consumer declarations from choosing an obsolete compiler snapshot.
+Shared sysroot and Kerberos tools use landed infrastructure `0.0.17-8baf1ad829c5095297d85148b042145b87d623a3` from registry #81 through maintained `main`. The root version selection keeps older consumer declarations from choosing an obsolete compiler snapshot. The shared APT installer still uses the reviewed Distroless `0.9.4.sonic.7` recipe from registry #72. FIPS TARs retain their existing producer implementation at `c199929d77ea632c94212d945c0f6f33cf581746`, with only its compiler module declarations refreshed.
 
 ## Configure the foreign Debian packages first
 
