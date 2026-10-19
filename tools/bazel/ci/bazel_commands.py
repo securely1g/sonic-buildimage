@@ -3,9 +3,6 @@ import hashlib
 import json
 import re
 
-LINKER = re.compile(r"(?:.*-)?(?:gcc|g\+\+|cc|c\+\+|clang|clang\+\+|ld|ld\.gold|ld\.lld)(?:-[0-9]+)?\Z")
-STRIPPER = re.compile(r"(?:.*-)?(?:strip|llvm-strip)\Z")
-
 
 def inspect_actions(path):
     value = json.loads(path.read_bytes())
@@ -20,16 +17,8 @@ def inspect_actions(path):
     outputs, suspicious = [], []
     for action in value.get("actions", []):
         outputs.extend(artifacts[identifier] for identifier in action.get("outputIds", []))
-        arguments = action.get("arguments", [])
-        command = " ".join(arguments)
-        program = arguments[0].rsplit("/", 1)[-1] if arguments else ""
-        native_tool = (action.get("mnemonic") == "CppLink" and LINKER.fullmatch(program)
-                       or action.get("mnemonic") == "CcStrip" and STRIPPER.fullmatch(program))
-        # A linker may produce a binary named make, and strip may read it. Those
-        # file operands are not commands. Shell and unknown wrappers still need
-        # inspection of their command text, even when tagged as a link action.
-        wrapper_text = arguments[0] if native_tool else command
-        wrapper = re.search(r"(?:^|[/\s])(?:make|gmake|dpkg-buildpackage)(?:\s|$)", wrapper_text)
+        command = " ".join(action.get("arguments", []))
+        wrapper = re.search(r"(?:^|[/\s])(?:make|gmake|dpkg-buildpackage)(?:\s|$)", command)
         deb_build = "dpkg-deb" in command and re.search(r"(?:--build|(?:^|\s)-b(?:\s|$))", command)
         if wrapper or deb_build:
             suspicious.append({"mnemonic": action.get("mnemonic"), "arguments_sha256": hashlib.sha256(command.encode()).hexdigest()})
