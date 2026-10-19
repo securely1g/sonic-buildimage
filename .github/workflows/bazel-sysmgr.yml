@@ -74,6 +74,9 @@ jobs:
           disk-cache: buildimage-sysmgr-${{ matrix.mode }}-amd64
           cache-version: "8.5.1"
 
+      - name: Select the reviewed infrastructure registration
+        run: python3 tools/bazel/ci/draft_registry.py --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/debian-gcc-toolchains
+
       - name: Audit scoped Bazel actions
         run: |
           python3 -B tools/bazel/ci/bazel_commands.py \
