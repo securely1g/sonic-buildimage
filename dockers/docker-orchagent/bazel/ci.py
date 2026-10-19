@@ -44,7 +44,7 @@ TESTS = [
     "//tools/bazel/tests:supervisor_python_full_test",
     "//tools/bazel/tests:supervisor_python_wheel_test",
     "//src/sonic-config-engine:sonic_cfggen_cli_test",
-    "@sonic_swss//crates/countersyncd:common_rust_test",
+    "//tools/bazel/tests:swss_common_rust_test",
     "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
     "//tools/bazel/tests:manifest_labels_test",
     "//tools/bazel/tests:manifest_labels_action_test",
