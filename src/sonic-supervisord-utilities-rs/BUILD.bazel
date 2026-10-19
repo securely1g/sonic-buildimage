@@ -4,6 +4,7 @@ load("@rules_rs//rs:rust_test.bzl", "rust_test")
 load("@rules_python//python:defs.bzl", "py_test")
 load("@sonic_build_infra//tar:sonic_deploy_tar.bzl", "sonic_deploy_tar")
 load(":bazel/release.bzl", "release_binary")
+load("//tools/bazel/tests:runtime.bzl", "common_runtime_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -54,7 +55,8 @@ rust_binary(
 )
 
 rust_test(
-    name = "unit_tests",
+    name = "unit_tests_binary",
+    tags = ["manual"],
     args = ["--test-threads=1"],
     crate = ":supervisor_library",
     experimental_use_cc_common_link = 1,
@@ -63,7 +65,8 @@ rust_test(
 
 [
     rust_test(
-        name = name,
+        name = name + "_binary",
+        tags = ["manual"],
         srcs = ["tests/" + source],
         args = ["--test-threads=1"],
         crate_root = "tests/" + source,
@@ -106,3 +109,13 @@ py_test(
     ],
     deps = ["//tools/bazel/ci:artifact_validation"],
 )
+
+# Keep CI's public test labels while supplying declared transitive libraries.
+[
+    common_runtime_test(
+        name = name,
+        binary = ":" + name + "_binary",
+        test_args = ["--test-threads=1"],
+    )
+    for name in ["unit_tests", "integration_tests", "listener_tests"]
+]
