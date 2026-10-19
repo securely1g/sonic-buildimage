@@ -41,7 +41,7 @@ def main():
     (directory / "selection.json").write_text(json.dumps({
         "registry": args.registry,
         "prerequisite": "https://github.com/securely1g/sonic-bazel-registry/pull/80",
-        "missing_version": "0.0.16-0c1d31528ad50c6505117a6df7409ccebee863cf",
+        "missing_version": "0.0.16-72d9705e37d0e83a072cad3eb73b75cd6cc1e4c6",
         "original_bazel": bazel,
     }, indent=2) + "\n")
     print("Draft validation registry:", args.registry)
