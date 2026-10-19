@@ -83,7 +83,7 @@ def main():
 
     try:
         version = capture(["version", "--gnu_format"])
-        if version != "bazel 6.4.0":
+        if [line for line in version.splitlines() if line.startswith("bazel ")] != ["bazel 6.4.0"]:
             raise ValueError("P4RT must run with Bazel 6.4.0: " + version)
         (output / "bazel-version.txt").write_text(version + "\n")
         shutil.copyfile(sdk / "sdk-build.json", output / "sdk-build.json")

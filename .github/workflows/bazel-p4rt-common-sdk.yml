@@ -43,7 +43,9 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    container: debian:trixie-20260918
+    container:
+      image: debian:trixie-20260918
+      options: --init
     defaults:
       run:
         shell: bash

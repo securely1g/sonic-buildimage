@@ -49,7 +49,8 @@ class P4rtCommonSdkTest(unittest.TestCase):
     def prepare(self):
         prepare_repository(self.archive, self.output, self.arch, {"producer_bazel_version": "8.5.1"})
 
-    def fake_bazel(self):
+    def fake_bazel(self, version="bazel 8.5.1"):
+        (self.source / "version-output").write_text(version + "\n")
         (self.source / "MODULE.bazel").write_text('module(name="common")\n')
         subprocess.run(["git", "init", "-q", str(self.source)], check=True)
         subprocess.run(["git", "-C", str(self.source), "add", "MODULE.bazel"], check=True)
@@ -64,7 +65,7 @@ with (root / "calls.jsonl").open("a") as calls:
     calls.write(json.dumps(sys.argv[1:]) + "\\n")
 command = sys.argv[2]
 if command == "version":
-    print("bazel 8.5.1")
+    print((root / "version-output").read_text().strip())
 elif command == "build" and (root / "fail-build").exists():
     sys.exit(1)
 elif command == "cquery":
@@ -137,6 +138,18 @@ elif command == "cquery":
         self.assertEqual((self.output / "include/swss/dbconnector.h").read_text(), "one")
         calls = [json.loads(line) for line in (self.source / "calls.jsonl").read_text().splitlines()]
         self.assertEqual(calls[-1][1], "shutdown")
+
+    def test_bazelisk_banner_does_not_hide_the_producer_version(self):
+        bazel = self.fake_bazel("Bazelisk v1.29.0\nbazel 8.5.1")
+        build_sdk(self.source, self.output, self.arch, bazel)
+        self.assertTrue((self.output / "lib/libswsscommon.so.0").is_file())
+
+    def test_wrong_version_is_rejected_even_with_bazelisk_banner(self):
+        bazel = self.fake_bazel("Bazelisk v1.29.0\nbazel 6.4.0")
+        with self.assertRaisesRegex(ValueError, "must build with Bazel 8.5.1"):
+            build_sdk(self.source, self.output, self.arch, bazel)
+        calls = [json.loads(line) for line in (self.source / "calls.jsonl").read_text().splitlines()]
+        self.assertFalse(any(call[1] == "build" for call in calls))
 
 
 if __name__ == "__main__":

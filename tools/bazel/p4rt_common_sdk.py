@@ -97,7 +97,8 @@ def build_sdk(common_source, output_dir, arch, bazel="bazel", output_base=None, 
 
     try:
         version = run("version", "--gnu_format", capture=True)
-        if version != f"bazel {BAZEL_VERSION}":
+        # Bazelisk prints its own banner before Bazel's GNU version line.
+        if [line for line in version.splitlines() if line.startswith("bazel ")] != [f"bazel {BAZEL_VERSION}"]:
             raise ValueError(f"Common must build with Bazel {BAZEL_VERSION}; got {version!r}")
         # Always let Bazel check the source graph. An existing SDK is not a stamp
         # proving that headers, generated schema, flags or dependencies are current.
