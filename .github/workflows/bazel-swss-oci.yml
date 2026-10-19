@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       skip_vs:
-        description: Skip the full VS/P4RT build; clear only for approved package execution
+        description: Skip the full VS image build
         type: boolean
         default: true
 
@@ -489,8 +489,8 @@ jobs:
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             SONIC_RUN_CMDS="python3 -B tools/bazel/ci/verify_p4rt_debug.py \
-              --runtime-deb target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
-              --debug-deb target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
+              --runtime-tar target/files/trixie/sonic-p4rt_0.0.1_amd64.tar.bz2 \
+              --debug-tar target/files/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.tar.bz2 \
               --source-root src/sonic-p4rt/sonic-pins \
               --output artifacts/vs/p4rt-debug-verification.json" \
             2>&1 | tee artifacts/vs/p4rt-debug-verification.log
