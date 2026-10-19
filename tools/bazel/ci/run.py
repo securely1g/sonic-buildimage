@@ -251,13 +251,13 @@ def main():
                                        directory, receipt, "output-base").strip())
             fetched = output_base / "external/rules_distroless+/MODULE.bazel"
             text = fetched.read_text()
-            if not re.search(r'\bversion\s*=\s*"0\.9\.4-sonic\.1"', text):
+            if not re.search(r'\bversion\s*=\s*"0\.9\.4\.sonic\.6"', text):
                 raise ValueError("Expected the native Distroless header-fix module")
             shutil.copyfile(fetched, directory / "rules_distroless.MODULE.bazel")
             receipt["resolution"] = resolution.collect(
                 ROOT, directory, bazel=[args.bazel], options=graph_options + GIT_OPTIONS)
             receipt["rust_input_verification"] = rust.verify(ROOT, directory / "rust")
-            receipt["distroless_version"] = "0.9.4-sonic.1"
+            receipt["distroless_version"] = "0.9.4.sonic.6"
             receipt["status"] = "passed"
             return
         if args.command == "build":

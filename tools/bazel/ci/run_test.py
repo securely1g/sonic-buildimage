@@ -82,5 +82,30 @@ class RustGraphTest(unittest.TestCase):
         self.assertEqual(ci.verify_tests(path, [target]), {target: "PASSED"})
 
 
+class HeaderResolutionTest(unittest.TestCase):
+    def test_header_check_accepts_current_distroless_and_records_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifacts = root / "artifacts"
+            output = root / "output"
+            fetched = output / "external/rules_distroless+/MODULE.bazel"
+            fetched.parent.mkdir(parents=True)
+            fetched.write_text('module(name = "rules_distroless", version = "0.9.4.sonic.6")\n')
+            with mock.patch.object(ci.sys, "argv", ["run.py", "headers", "--artifacts", str(artifacts)]), \
+                    mock.patch.object(ci, "execute", return_value="revision"), \
+                    mock.patch.object(ci, "check_bazel_version", return_value="bazel 8.5.1"), \
+                    mock.patch.object(ci.platform, "machine", return_value="x86_64"), \
+                    mock.patch.object(ci.platform, "freedesktop_os_release", return_value={"VERSION_CODENAME": "trixie"}), \
+                    mock.patch.object(ci, "verify_tests", return_value={}), \
+                    mock.patch.object(ci, "capture", return_value=str(output)), \
+                    mock.patch.object(ci.resolution, "collect", return_value={}), \
+                    mock.patch.object(ci.rust, "verify", return_value={}):
+                ci.main()
+            receipt = json.loads((artifacts / "receipt.json").read_text())
+            self.assertEqual(receipt["status"], "passed")
+            self.assertEqual(receipt["distroless_version"], "0.9.4.sonic.6")
+            self.assertEqual((artifacts / "rules_distroless.MODULE.bazel").read_text(), fetched.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()
