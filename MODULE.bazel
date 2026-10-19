@@ -31,7 +31,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.15-8043a299756436464a8b58662921dfd50172a3ff",
+    version = "0.0.16-0c1d31528ad50c6505117a6df7409ccebee863cf",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -171,3 +171,9 @@ apt_inputs(
 
 apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
 use_repo(apt, "trixie")
+
+# Commit suffixes do not sort by source date; keep the selected compiler revision.
+single_version_override(
+    module_name = "sonic-build-infra",
+    version = "0.0.16-0c1d31528ad50c6505117a6df7409ccebee863cf",
+)
