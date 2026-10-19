@@ -308,3 +308,11 @@ Use `bazel help --announce_rc` to inspect the effective rc selection. Keep one
 SONiC registry endpoint; do not add another endpoint in a home or user rc.
 Generated resolution receipts list registry lookup URLs from the lock; a reused
 lock can also contain historical lookups.
+
+### pigz source download
+
+`downloader.cfg` redirects only the pinned pigz 2.8 archive to MacPorts.
+The mirror serves the original source bytes, verified against BCR's unchanged
+SHA-256. Module versions, archive integrity and registry recipes stay unchanged.
+The workspace configuration applies to local builds and CI. Common SDK builds
+run in their own source workspace and retain that workspace's configuration.
