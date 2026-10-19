@@ -51,7 +51,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.16-1d6990a2ba2980315f086a461a08312bbc3f217c",
+    version = "0.0.16-0c1d31528ad50c6505117a6df7409ccebee863cf",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -276,10 +276,10 @@ source_files(
     },
 )
 
-# Reviewed producer snapshot: commit suffixes do not sort chronologically.
+# Select the landed Debian GCC toolchains; commit suffixes do not sort chronologically.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.16-1d6990a2ba2980315f086a461a08312bbc3f217c",
+    version = "0.0.16-0c1d31528ad50c6505117a6df7409ccebee863cf",
 )
 
 single_version_override(
