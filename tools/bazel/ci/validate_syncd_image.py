@@ -34,6 +34,10 @@ TARGETS = {
     "policy": OWNER + ":package_policy",
     "runtime_handoff": OWNER + ":runtime_import_manifest",
     "debug_handoff": OWNER + ":debug_import_manifest",
+    # Cache hits for manifests need not materialize their intermediate TARs.
+    # Native validation opens these payloads beside the requested manifests.
+    "runtime_handoff_payload": OWNER + ":runtime_debs",
+    "debug_handoff_payload": OWNER + ":debug_debs",
     "source_runtime": OWNER + ":source_runtime_payloads",
     "ordinary_source_layer": OWNER + ":source_runtime_layer",
     "source_debug": OWNER + ":rdeps_debug_symbols",

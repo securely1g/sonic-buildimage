@@ -60,6 +60,39 @@ class ServiceDpkgValidationTest(unittest.TestCase):
             with self.subTest(program=program):
                 self.audit_build(program, reject=True)
 
+    def test_cached_handoff_manifests_materialize_their_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            paths = {label: output / ("artifact-" + str(index))
+                     for index, label in enumerate(validation.TARGETS.values())}
+            for variant in ("runtime", "debug"):
+                directory = output / (variant + "_debs")
+                directory.mkdir()
+                paths[validation.OWNER + ":" + variant + "_import_manifest"] = directory / "manifest.json"
+                paths[validation.OWNER + ":" + variant + "_debs"] = directory / "payload.tar"
+            commands = []
+
+            def run(arguments, **kwargs):
+                commands.append(arguments)
+                if arguments[1] == "aquery":
+                    json.dump({"actions": [{"mnemonic": "Tar", "arguments": ["bsdtar", "-cf", "payload.tar"]}]},
+                              kwargs["stdout"])
+                if arguments[1] == "build":
+                    # A cache hit only materializes requested outputs; having a
+                    # manifest does not guarantee its sibling TAR is present.
+                    for label in arguments[2:]:
+                        paths[label].write_bytes(b"cached output")
+                return SimpleNamespace(stdout="".join(label + "\t" + repr([str(paths[label])]) + "\n"
+                                                       for label in validation.TARGETS.values()))
+
+            with mock.patch.object(validation.subprocess, "run", side_effect=run):
+                resolved = validation.build_inputs(["bazel"], [], output)
+            self.assertEqual([command[1] for command in commands], ["aquery", "build", "cquery"])
+            for variant in ("runtime", "debug"):
+                payload = resolved[variant + "_handoff"].parent / "payload.tar"
+                self.assertTrue(payload.is_file(), "cached manifest omitted its validation payload")
+                self.assertIn(validation.OWNER + ":" + variant + "_debs", commands[0][-1])
+
     def run_images(self, fail_first=False):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
