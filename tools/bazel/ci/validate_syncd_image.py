@@ -44,7 +44,7 @@ TARGETS = {
     "base_symbols": CONFIG_ENGINE + ":docker-config-engine-trixie.debug_symbols",
     "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
     "config_metadata": CONFIG_ENGINE + ":runtime_package_metadata",
-    "runtime_configured": OWNER + ":configured_sources",
+    "runtime_configured": OWNER + ":configured_debian",
     "runtime_rootfs": OWNER + ":rootfs",
     "runtime_metadata": OWNER + ":runtime_package_metadata",
     "debug_configured": OWNER + ":configured_debug",
@@ -73,14 +73,15 @@ def build_inputs(bazel, options, output):
     expression = "set(" + " ".join(targets) + ")"
     actions = output / "actions.json"
     with actions.open("w") as result, (output / "aquery.log").open("w") as log:
-        subprocess.run(bazel + ["aquery", *options, "--output=jsonproto", "deps(" + expression + ")"],
+        subprocess.run(bazel + ["aquery", *options, "--include_file_write_contents", "--output=jsonproto", "deps(" + expression + ")"],
                        stdout=result, stderr=log, check=True)
     audit = inspect_actions(actions)
     audit["targets"] = targets
-    audit["deb_generation_authorized"] = True
+    audit["deb_generation_authorized"] = False
     save(output / "action-audit.json", audit)
     require(audit["action_count"] > 0, "Image build action graph is empty")
-    require(not audit["packaging_wrappers"], "Packaging wrapper found in image build action graph")
+    require(not (audit["deb_outputs"] or audit["deb_packaging_actions"] or audit["packaging_wrappers"]),
+            "DEB or packaging wrapper found in image build action graph")
     with (output / "build.log").open("w") as log:
         subprocess.run(bazel + ["build", *options, *targets], stdout=log, stderr=subprocess.STDOUT, check=True)
     formatter = "str(target.label) + '\\t' + repr([f.path for f in target.files.to_list()])"

@@ -175,6 +175,18 @@ class SourceBaseTest(unittest.TestCase):
         self.reports[0]["source_packages"][0]["source_revision"] = "3.7.0.sonic.3"
         self.assertEqual(self.run_validation()["status"], "passed")
 
+    def test_excluded_baseline_plugins_remain_absent_in_both_images(self):
+        path = "usr/lib/" + self.triplet + "/libnl/cli/cls/basic.so"
+        self.reports[0]["source_packages"][0]["excluded_baseline_paths"] = [path]
+        self.assertEqual(self.run_validation()["status"], "passed")
+        for image in ("runtime_tail", "debug_tail"):
+            for payload in (self.pairs["ordinary"][0], (b"", {"type": tarfile.SYMTYPE, "linkname": "missing.so"})):
+                with self.subTest(image=image, symlink=isinstance(payload, tuple)):
+                    setattr(self, image, [layer({path: payload})])
+                    with self.assertRaisesRegex(ValueError, "excluded baseline file"):
+                        self.run_validation()
+                    setattr(self, image, [])
+
     def test_runtime_hash_and_metadata_changes(self):
         for attrs in ({"mode": 0o755}, {"uid": 123}, {"gid": 456}):
             with self.subTest(attrs=attrs):

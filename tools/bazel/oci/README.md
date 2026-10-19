@@ -28,15 +28,15 @@ and test input, not another checked-in copy of those values.
 Syncd's
 [`config/source_packages.json`](../../../platform/vs/docker-syncd-vs/config/source_packages.json)
 declares source package identities, immutable revisions and required paths.
-The generated source contract reads actual controls for Debian inputs and source
-provenance for ordinary runtime TARs. TARs do not declare invented Debian controls.
+The generated source contract reads the source provenance for runtime TARs.
+Original imported Debian archives retain their own separate package receipts. TARs do not declare invented Debian controls.
 It binds each payload to its public owner target and archive hash.
 The shared source adapter compares it with the actual public target bindings,
 resolved module files and archive contents. Receipts record the measured hashes;
 they cannot supply their own expected policy. SWSS's source install lists remain
 in the SWSS repository.
 
-The input adapters retain their distinct jobs: source TAR/DEB payload verification
+The input adapters retain their distinct jobs: source TAR payload verification
 uses `package_contract.py`; original imported DEB identities are checked by the
 read-only `package_receipts.py` after upstream BSD tar extraction.
 Original package scripts create alternatives and provider files during installation. Reusable payload, ELF
@@ -97,8 +97,8 @@ distribution, features and complete original package controls before retention.
 Debug selection also requires `base_package_metadata` from the exact runtime
 selection receipt and matching runtime Make-manifest hash.
 
-Syncd-vs supplies its source-built FIPS OpenSSH DEB in the source package
-inventory. Debug inherits that package unchanged; the policy has no replacement option. The
+Syncd-vs supplies its source-built FIPS OpenSSH runtime TAR in the source
+inventory. Debug inherits those exact files; the policy has no replacement option. The
 container handoff validator rejects missing or ordinary runtime OpenSSH and a
 separate OpenSSH package in debug. FIPS applies to both variants. The shared
 selector rejects conflicting inherited package controls for every container.
@@ -151,17 +151,26 @@ require turning every SONiC component into a DEB. Common, SWSS, Sairedis, DASH,
 Eventd and the Rust listener retain their existing binary/runtime layers. Python
 packages retain their wheel layers. They are not added to dpkg's database.
 
-Components that replace Debian-managed files need genuine ownership and dependency
-records. For example, FIPS OpenSSL replaces Debian's OpenSSL libraries; hiding
-that replacement from dpkg would let later installs select incompatible files.
-Those replacements use original source-owned DEBs through the shared installer.
-OpenSSH's original script creates `_ssh` and sets `ssh-agent` permissions.
+All source components also use TARs when they replace Debian-managed files.
+The image first installs the locked Debian baseline through APT, preserving its
+real versions, dependency controls, file lists and configuration effects. A
+source TAR can replace only files owned by its same-named Debian package. The check binds
+those replacements to the exact source payload; it never rewrites dpkg records
+or labels the Debian baseline as a source-built package.
 
-Source-built bases reject TARs that overwrite Debian-owned files. The existing
-Make-base path permits only verified overlays of files owned by the same source
-package, while retaining its original package records. Package-manager state is
-never replaced by source TARs. The checks record source file hashes separately
-from actual installed package controls.
+For example, Syncd installs Debian's OpenSSH baseline so its original script
+creates `_ssh` and configures `ssh-agent`. The image path normalizer preserves
+that installed numeric ownership and mode while copying the source-built
+`ssh-agent` bytes from its runtime TAR. Configuration, symlinks and loader state
+are checked in the completed image.
+
+`installed_source_metadata` emits both a source receipt and an
+`apt_preferences` output group. Each image installs the latter under
+`/etc/apt/preferences.d`, with `Pin-Priority: -1` for the source package identities. This protects ordinary APT version selection. Explicit
+removal, direct dpkg use and administrator overrides remain outside the
+additional-package contract. The receipts distinguish actual baseline versions
+from source revisions; source-only programs never become fictitious APT
+providers. Package-manager state is never replaced by a source TAR.
 
 The installation action runs as root inside the declared, digest-pinned native
 Trixie build container. Its private namespace cannot access the build container's
@@ -172,8 +181,8 @@ AMD64 and ARM64 workers.
 
 `apt_install` records the exact input DEB hashes, installed versions, scripts,
 triggers and final filesystem hash. [`installed_source_metadata.py`](installed_source_metadata.py)
-then checks that source ELF bytes match their input packages or runtime TARs and
-records the actual dpkg status, ownership and modes. This tool only reads package
+then checks that source files and symlinks match their declared runtime TARs and
+records the actual dpkg status, ownership, modes and separate baseline/source identities. This tool only reads package
 state. Debug images check the inherited source proof again after installing
 their extra tools, and publish a new proof for the resulting database.
 
@@ -184,6 +193,14 @@ applies the owner's labels and entrypoint. This preserves removed package files,
 users, alternatives and library-cache updates without synthesizing dpkg records
 or maintaining a custom OCI archive converter. Source debug symbols remain
 separate layers associated with the exact source graph.
+
+The native image launcher and CI audit selected Bazel actions before execution.
+They reject DEB outputs, Debian packaging commands and arbitrary Make wrappers.
+The existing FIPS, socat and iproute2 recipes compile and install upstream source
+through `rules_foreign_cc`. The audit recognizes their exact source rules,
+generated executable scripts, declared Make tool and reviewed compilation/install
+goals, and records them separately as `foreign_source_builds`. Debian packaging
+commands remain rejected inside those scripts.
 
 ### Validate real package transactions
 
@@ -198,10 +215,15 @@ installer has passed.
 The install probe adds checksum-pinned `qrencode` through a small local APT
 repository. APT must resolve and install its new `libqrencode4` dependency. The
 probe executes `qrencode`, verifies every pre-existing Debian package version,
-and checks that the existing source files are unchanged. Config-engine also runs
+and checks that the existing source bytes, modes, owners and symlink targets are unchanged. Config-engine also runs
 its existing command and Python-wheel smoke tests in the changed container.
 The probe does not require converting SONiC applications into packages that APT
 can upgrade or remove.
+Source receipts also record intentionally excluded baseline paths. For libnl,
+the installed Debian CLI package continues satisfying dependencies, while ten
+exact dpkg path exclusions omit its unused `libnl/cli` plugin files. The source
+CLI loads its ten source-built plugins from `libnl-3/cli`. Runtime and debug
+validation, plus the APT transaction probe, reject reintroduced baseline copies.
 
 After loading the new base image:
 

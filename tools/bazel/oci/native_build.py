@@ -15,6 +15,33 @@ import subprocess
 import sys
 
 ENVIRONMENT = 'debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c'
+COMMANDS = {'build', 'test', 'run', 'aquery', 'cquery', 'query', 'info'}
+
+
+def audit_command(argv, workspace):
+    """Audit the exact Make-selected image graph inside its build environment."""
+    from tools.bazel.ci import bazel_commands
+
+    operation = next((index for index, value in enumerate(argv[1:], 1) if value in COMMANDS), None)
+    if operation is None:
+        raise ValueError('Missing Bazel image command')
+    if argv[operation] not in {'build', 'test', 'run'}:
+        return
+    options, targets = [], []
+    for argument in argv[operation + 1:]:
+        if argument == '--':
+            break  # Remaining arguments belong to the selected program.
+        if argument.startswith('--'):
+            options.append(argument)
+        elif argument.startswith(('//', '@', ':')):
+            targets.append(argument)
+        else:
+            raise ValueError('Native image builds require explicit Bazel target labels and --option=value syntax: ' + argument)
+    if not targets:
+        raise ValueError('Native image builds require explicit Bazel target labels')
+    key = hashlib.sha256(json.dumps(argv).encode()).hexdigest()[:16]
+    bazel_commands.audit_targets(argv[0], options, targets, startup=argv[1:operation],
+        workspace=workspace, output=workspace / 'target/bazel-native' / ('action-audit-' + key + '.json'))
 
 
 def command(arguments, workspace, bazel, cache, startup=()):
@@ -69,6 +96,7 @@ def command(arguments, workspace, bazel, cache, startup=()):
 apt-get update >&2
 apt-get install -y --no-install-recommends ca-certificates build-essential git libarchive-tools python3 >&2
 git config --global --add safe.directory "$PWD"
+python3 -B -c 'from pathlib import Path; import sys; from tools.bazel.oci.native_build import audit_command; audit_command(sys.argv[1:], Path.cwd())' "$@"
 exec "$@"
 '''
     result.extend([ENVIRONMENT, 'sh', '-c', script, 'native-bazel', str(bazel.resolve()),
@@ -78,8 +106,8 @@ exec "$@"
 
 def main():
     arguments = sys.argv[1:]
-    if not arguments or arguments[0] not in {'build', 'test', 'aquery', 'cquery', 'query', 'info'}:
-        raise SystemExit('Pass one Bazel image build/test/query command')
+    if not arguments or arguments[0] not in COMMANDS:
+        raise SystemExit('Pass one Bazel image build/test/run/query command')
     startup = json.loads(os.environ.get('BAZEL_NATIVE_STARTUP_ARGS', '[]'))
     if not isinstance(startup, list) or any(not isinstance(item, str) or not item.startswith('--') for item in startup):
         raise SystemExit('BAZEL_NATIVE_STARTUP_ARGS must be a JSON array of Bazel startup options')
@@ -87,6 +115,9 @@ def main():
     if not executable:
         raise SystemExit('Bazel executable was not found')
     if os.geteuid() == 0 and os.environ.get('APT_INSTALL_BUILD_CONTAINER') == ENVIRONMENT:
+        # Direct execution and Make's Docker launcher use the same preflight.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+        audit_command([executable, *startup, *arguments], Path.cwd())
         os.execv(executable, [executable, *startup, *arguments])
     workspace = Path.cwd()
     key = hashlib.sha256(str(workspace.resolve()).encode()).hexdigest()[:16]

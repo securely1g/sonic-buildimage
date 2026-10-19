@@ -283,6 +283,39 @@ class ValidatePayloadsTest(unittest.TestCase):
             self.assertEqual(entries["usr/lib/example/hardlink"].linkname, "./usr/lib/example/libexample.so.1")
             self.assertEqual(archive.extractfile(entries["run/redis/config"]).read(), b"config")
 
+    def test_rootfs_metadata_preserves_installed_ssh_agent_group_and_mode(self):
+        """Keep Debian's allocated group/setgid bit while installing source bytes."""
+        from tools.bazel.oci.normalize_layer import normalize
+        baseline, payload, output = [self.root / name for name in ("baseline.tar", "source.tar", "normalized.tar")]
+        for path, data, uid, gid, mode in (
+                (baseline, b"distro", 0, 987, 0o2755),
+                (payload, b"source", 123, 456, 0o755)):
+            with tarfile.open(path, "w") as archive:
+                entry = tarfile.TarInfo("usr/bin/ssh-agent")
+                entry.size, entry.uid, entry.gid, entry.mode = len(data), uid, gid, mode
+                archive.addfile(entry, io.BytesIO(data))
+        receipt = normalize(payload, baseline, output, expected_platform="linux/amd64",
+                            directory_aliases={}, root_owned=True,
+                            preserve_metadata=["usr/bin/ssh-agent"])
+        self.assertEqual(receipt["base_manifest_digest"], "sha256:" + hashlib.sha256(baseline.read_bytes()).hexdigest())
+        with tarfile.open(output) as archive:
+            entry = archive.getmember("./usr/bin/ssh-agent")
+            self.assertEqual((entry.uid, entry.gid, entry.mode), (0, 987, 0o2755))
+            self.assertEqual(archive.extractfile(entry).read(), b"source")
+        self.assertEqual(receipt["preserved_metadata"], {"usr/bin/ssh-agent": {"uid": 0, "gid": 987, "mode": 0o2755}})
+        with self.assertRaisesRegex(ValueError, "mode override conflicts"):
+            normalize(payload, baseline, output, expected_platform="linux/amd64",
+                      directory_aliases={}, preserve_metadata=["usr/bin/ssh-agent"],
+                      modes={"usr/bin/ssh-agent": "0755"})
+        with self.assertRaisesRegex(ValueError, "baseline must supply a regular file"):
+            normalize(payload, baseline, output, expected_platform="linux/amd64",
+                      directory_aliases={}, preserve_metadata=["usr/bin/missing"])
+        with tarfile.open(payload, "w"):
+            pass
+        with self.assertRaisesRegex(ValueError, "source TAR lacks"):
+            normalize(payload, baseline, output, expected_platform="linux/amd64",
+                      directory_aliases={}, preserve_metadata=["usr/bin/ssh-agent"])
+
     def test_merged_usr_normalization_rejects_a_changed_base_alias(self):
         """Normalize only against a base whose directory aliases match the expected layout."""
         _, payload = self.fixture()

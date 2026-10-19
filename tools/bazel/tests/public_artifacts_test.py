@@ -239,7 +239,7 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertNotIn(SENTINEL, json.dumps(summary))
                 self.assertEqual(summary["architecture"], "amd64")
 
-    def test_authorized_source_deb_actions_are_reported_without_raw_commands(self):
+    def test_old_deb_authorization_cannot_bypass_tar_only_publication(self):
         seed(self.root, "syncd")
         write_json(self.root, "artifacts/syncd-vs/bazel/execution-gate-audit.json", {
             "action_count": 12, "output_count": 24,
@@ -248,7 +248,7 @@ class PublicArtifactsTest(unittest.TestCase):
             "deb_generation_authorized": True, "packaging_wrappers": [],
         })
         summary, _paths, ready = self.prepare("syncd")
-        self.assertTrue(ready)
+        self.assertFalse(ready)
         audit = summary["receipts"]["execution_audit"]
         self.assertEqual(audit["deb_output_count"], 1)
         self.assertEqual(audit["deb_packaging_action_count"], 1)
@@ -256,8 +256,8 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertEqual(audit["packaging_wrapper_count"], 0)
         self.assertNotIn(SENTINEL, json.dumps(summary))
 
-    def test_deb_actions_require_explicit_boolean_authorization(self):
-        for authorized in (None, False, "true", 1):
+    def test_deb_actions_are_rejected_regardless_of_old_authorization(self):
+        for authorized in (None, False, True, "true", 1):
             for key in ("deb_outputs", "deb_packaging_actions"):
                 with self.subTest(authorized=authorized, key=key):
                     seed(self.root, "syncd")

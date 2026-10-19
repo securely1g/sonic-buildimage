@@ -13,6 +13,7 @@ load("//tools/bazel/oci:apt_install_inputs.bzl", "apt_install_inputs")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:installed_source_metadata.bzl", "installed_source_metadata")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
+load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:repack_oci.bzl", "repack_oci")
 load("//tools/bazel/oci:rootfs_metadata.bzl", "rootfs_metadata")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
@@ -80,8 +81,8 @@ filegroup(
     output_group = "selection",
 )
 
-# First install the selected foreign packages, then the source-built packages.
-# Every transaction runs the original maintainer scripts and records dpkg state.
+# Install the locked Debian baseline with its original maintainer scripts.
+# Source runtime TARs follow it and retain separate, checked provenance.
 # The pinned official Debian image has one complete layer; copy it verbatim.
 run_binary(
     name = "debian_rootfs",
@@ -278,67 +279,81 @@ _SOURCE_TARS = {
 }
 
 sonic_layer(
-    name = "source_runtime",
+    name = "source_runtime_original_paths",
     tars = _SOURCE_TARS.values(),
 )
 
-# These components replace distro-owned files or satisfy Debian dependencies.
-# Keep their original package identity. The SymCrypt plugin remains a TAR layer.
-_SOURCE_DEBS = {
-    "socat": "@socat//:socat_deb",
-    "iproute2": "@iproute2//:iproute2_deb",
-    "libssl3t64": "@sonic_fips//openssl:libssl3t64_deb",
-    "libssl-dev": "@sonic_fips//openssl:libssl_dev_deb",
-    "openssl": "@sonic_fips//openssl:openssl_deb",
-    "libk5crypto3": "@sonic_fips//krb5:libk5crypto3_deb",
-    "libkrb5support0": "@sonic_fips//krb5:libkrb5support0_deb",
-    "libkrb5-3": "@sonic_fips//krb5:libkrb5_3_deb",
-    "libgssapi-krb5-2": "@sonic_fips//krb5:libgssapi_krb5_2_deb",
-}
-
-apt_install(
-    name = "configured_sources",
-    architecture = _ARCH,
+normalize_layer(
+    name = "source_runtime",
+    src = ":source_runtime_original_paths",
     base = ":configured_debian",
-    bwrap = "//tools/bazel/oci:bubblewrap",
-    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
-    packages = _SOURCE_DEBS.values(),
-    tags = ["manual"],
+    directory_aliases = select({
+        "@platforms//cpu:x86_64": {
+            "bin": "usr/bin",
+            "lib": "usr/lib",
+            "lib64": "usr/lib64",
+            "sbin": "usr/sbin",
+            "var/run": "/run",
+        },
+        "@platforms//cpu:arm64": {
+            "bin": "usr/bin",
+            "lib": "usr/lib",
+            "sbin": "usr/sbin",
+            "var/run": "/run",
+        },
+    }),
+    expected_platform = select({
+        "@platforms//cpu:x86_64": "linux/amd64",
+        "@platforms//cpu:arm64": "linux/arm64",
+    }),
+    root_owned = True,
+    tars = _SOURCE_TARS.values(),
 )
 
 filegroup(
     name = "installation_receipt",
-    srcs = [":configured_sources"],
+    srcs = [":configured_debian"],
     output_group = "receipt",
 )
 
 installed_source_metadata(
     name = "runtime_package_metadata",
+    allow_same_owner_overlays = True,
     architecture = _ARCH,
     installation = ":installation_receipt",
-    packages = _SOURCE_DEBS,
-    payloads = {"symcrypt-openssl": "@sonic_fips//symcrypt:runtime"},
-    runtime_layer = "@sonic_fips//symcrypt:runtime",
-    rootfs = ":configured_sources",
+    payloads = _SOURCE_TARS,
+    rootfs = ":configured_debian",
+    runtime_layer = ":source_runtime",
     spec = "//dockers/docker-base-trixie/bazel:source_packages.json",
+)
+
+filegroup(
+    name = "source_apt_preferences",
+    srcs = [":runtime_package_metadata"],
+    output_group = "apt_preferences",
 )
 
 tar(
     name = "source_provenance",
-    srcs = [":runtime_package_metadata"],
+    srcs = [
+        ":runtime_package_metadata",
+        ":source_apt_preferences",
+    ],
     mtree = [
+        "etc/apt/preferences.d type=dir mode=0755 uid=0 gid=0 time=0",
+        "etc/apt/preferences.d/sonic-source-base type=file mode=0644 uid=0 gid=0 time=0 content=$(location :source_apt_preferences)",
         "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
         "usr/share/sonic/bazel/base-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :runtime_package_metadata)",
     ],
 )
 
-# APT owns Debian package files/state. Ordinary runtime and wheel layers follow it.
+# Keep genuine Debian state; source TARs and their provenance follow installation.
 flatten(
     name = "complete_filesystem",
     deduplicate = True,
     tars = [
-        ":configured_sources",
-        "@sonic_fips//symcrypt:runtime",
+        ":configured_debian",
+        ":source_runtime",
         ":python_runtime",
         ":vim_command",
         ":source_provenance",

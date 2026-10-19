@@ -51,6 +51,15 @@ def main():
         assert hashlib.sha256(binary.read_bytes()).hexdigest() == item["sha256"], name
         output = command(loader, "--list", str(binary))
         assert "not found" not in output, (name, output)
+    # Exercise the installed CLI modules, including their constructors, at the
+    # directory compiled into source libnl. Debian's unused copies must stay
+    # excluded both before and after the additional-package APT transaction.
+    plugin_prefix = "usr/lib/" + triplet + "/libnl-3/cli/"
+    plugins = sorted(name for name in report["native"] if name.startswith(plugin_prefix))
+    assert len(plugins) == 10, plugins
+    for name in plugins:
+        ctypes.CDLL("/" + name)
+        assert not os.path.lexists("/" + name.replace("/libnl-3/cli/", "/libnl/cli/")), name
     for name in ("swsscommon.swsscommon", "libyang", "sonic_yang", "sonic_yang_ext", "sonic_yang_path",
                  "sonic_py_common", "openconfig_acl", "minigraph",
                  "sonic_yang_cfg_generator", "supervisor", "supervisord_dependent_startup"):
@@ -124,6 +133,7 @@ def main():
     print(json.dumps({"status": "passed", "machine": machine, "source_elf_count": len(report["native"]),
                       "checks": ["installed source hashes and library loading", "cfggen render", "YANG valid/invalid data",
                                  "Python dependencies and command scripts", "native ip/socat", "legacy provider",
+                                 "ten source libnl CLI plugins without Debian duplicates",
                                  "sealed SymCrypt constructor", "provider and engine SHA256", "Vim command alias and alternatives"]}, indent=2))
 
 

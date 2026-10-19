@@ -161,8 +161,7 @@ config_setting(
     },
 )
 
-# Keep the source owners' binary layers and debug-aspect traversal. Only
-# replacements of distribution packages need Debian package ownership.
+# Consume source runtime TARs and retain their matching debug-aspect edges.
 _SOURCE_PACKAGES = {
     "libswsscommon": "@sonic_swss_common//:libswsscommon_pkg",
     "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
@@ -174,75 +173,33 @@ _SOURCE_PACKAGES = {
     "libnl-route-3-dev": "@libnl3//:libnl-route-3-dev_files",
 }
 
-_SOURCE_DEBS = {
-    "openssh-client": "@sonic_fips//openssh:openssh_client_deb",
-    "libnl-3-dev": "@libnl3//:libnl_3_dev_deb",
-    "libnl-route-3-dev": "@libnl3//:libnl_route_3_dev_deb",
-}
-
-_SOURCE_LAYERS = {name: target for name, target in _SOURCE_PACKAGES.items() if name not in _SOURCE_DEBS}
-
-_SOURCE_TARGETS = dict(_SOURCE_LAYERS)
-
-_SOURCE_TARGETS.update(_SOURCE_DEBS)
-
 sonic_layer(
     name = "source_runtime_files",
     root_owned = True,
-    tars = _SOURCE_LAYERS.values(),
+    tars = _SOURCE_PACKAGES.values(),
 )
 
 # Common's runtime uses /var/run; preserve the base's /var/run -> /run link.
 normalize_layer(
     name = "source_runtime_layer",
     src = ":source_runtime_files",
-    base = ":config_engine_base_layout",
+    base = ":configured_debian",
     expected_platform = "linux/amd64",
     modes = {"run/redis/sonic-db/database_config.json": "0644"},
+    preserve_metadata = ["usr/bin/ssh-agent"],
     root_owned = True,
-    tars = _SOURCE_LAYERS.values(),
+    tars = _SOURCE_PACKAGES.values(),
 )
 
-# Inspect Debian replacements with the upstream tar toolchain. Ordinary
-# source layers retain their existing TAR inputs and do not enter dpkg state.
-_SOURCE_DATA = {
-    name: "source_debs/" + name + "/data.archive"
-    for name in _SOURCE_DEBS
-}
-
-_SOURCE_DATA.update(_SOURCE_LAYERS)
-
-[
-    genrule(
-        name = "extract_source_" + name,
-        srcs = [source],
-        outs = [_SOURCE_DATA[name]],
-        cmd = """set -euo pipefail
-mapfile -t members < <("$(BSDTAR_BIN)" -tf "$(execpath {source})")
-[[ "$${{#members[@]}}" == 3 && "$${{members[0]}}" == debian-binary ]]
-case "$${{members[2]}}" in data.tar|data.tar.gz|data.tar.xz|data.tar.bz2) ;; *) exit 1 ;; esac
-"$(BSDTAR_BIN)" -xOf "$(execpath {source})" "$${{members[2]}}" > "$@"
-""".format(source = source),
-        toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
-        tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    )
-    for name, source in _SOURCE_DEBS.items()
-]
-
-genrule(
+run_binary(
     name = "source_contract",
-    srcs = ["//platform/vs/docker-syncd-vs/config:source_packages.json"] + _SOURCE_DEBS.values(),
+    srcs = ["//platform/vs/docker-syncd-vs/config:source_packages.json"],
     outs = ["source_contract.json"],
-    cmd = '"$(execpath //tools/bazel/oci:source_package_contract)"' +
-          ' --spec="$(execpath //platform/vs/docker-syncd-vs/config:source_packages.json)"' +
-          ' --tar="$(BSDTAR_BIN)" --output="$@" ' +
-          " ".join(['--package="' + name + "=$(execpath " + target + ')"' for name, target in _SOURCE_DEBS.items()]) + " " +
-          " ".join(['--package-target="' + name + "=" + target + '"' for name, target in _SOURCE_TARGETS.items()]),
-    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    tools = [
-        "//tools/bazel/oci:source_package_contract",
-        "@bsd_tar_toolchains//:resolved_toolchain",
-    ],
+    args = [
+        "--spec=$(location //platform/vs/docker-syncd-vs/config:source_packages.json)",
+        "--output=$(location source_contract.json)",
+    ] + ["--package-target=" + name + "=" + target for name, target in _SOURCE_PACKAGES.items()],
+    tool = "//tools/bazel/oci:source_package_contract",
 )
 
 run_binary(
@@ -254,7 +211,7 @@ run_binary(
         "@syncd_source_modules//:sonic-fips.MODULE.bazel",
         "@syncd_source_modules//:sonic-sairedis.MODULE.bazel",
         "@syncd_source_modules//:sonic-swss-common.MODULE.bazel",
-    ] + _SOURCE_DATA.values(),
+    ] + _SOURCE_PACKAGES.values(),
     outs = [
         "source_packages.receipt.json",
         "source_runtime.tar",
@@ -268,8 +225,8 @@ run_binary(
                "--module=libnl3=$(execpath @syncd_source_modules//:libnl3.MODULE.bazel)",
                "--out-tar=$(execpath source_runtime.tar)",
                "--receipt=$(execpath source_packages.receipt.json)",
-           ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_DATA.items()] +
-           ["--package-target=" + name + "=" + target for name, target in _SOURCE_TARGETS.items()],
+           ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()] +
+           ["--package-target=" + name + "=" + target for name, target in _SOURCE_PACKAGES.items()],
     mnemonic = "ValidateSyncdSourceRuntime",
     target_compatible_with = [
         "@platforms//cpu:x86_64",
@@ -532,47 +489,57 @@ debug_symbols_layer(
 
 apt_install_inputs(
     name = "runtime_install_inputs",
-    additional_packages = _RUNTIME_DEBS + _SOURCE_DEBS.values(),
+    additional_packages = _RUNTIME_DEBS,
     packages = {key: label + ":deb" for key, label in APT_INPUTS["syncd_vs_debian"]["amd64"].items()},
     selection = ":runtime_apt_selection",
 )
 
-# Install selected Debian packages and genuine Debian replacements together:
-# libibverbs-dev needs source libnl development packages, and openmpi-bin needs
-# the source OpenSSH client. APT must see both sides in the same transaction.
+# Install locked Debian inputs and retained P4 packages with genuine controls.
+# Source TARs are applied afterwards without producing a Debian package.
 apt_install(
-    name = "configured_sources",
+    name = "configured_debian",
     architecture = "amd64",
     base = "//dockers/docker-config-engine-trixie:rootfs",
     bwrap = "//tools/bazel/oci:bubblewrap",
     execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
-    packages = [label + ":deb" for label in APT_INPUTS["syncd_vs_debian"]["amd64"].values()] + _RUNTIME_DEBS + _SOURCE_DEBS.values(),
+    packages = [label + ":deb" for label in APT_INPUTS["syncd_vs_debian"]["amd64"].values()] + _RUNTIME_DEBS,
     packages_manifest = ":runtime_install_inputs",
     tags = ["manual"],
 )
 
 filegroup(
     name = "installation_receipt",
-    srcs = [":configured_sources"],
+    srcs = [":configured_debian"],
     output_group = "receipt",
 )
 
 installed_source_metadata(
     name = "runtime_package_metadata",
+    allow_same_owner_overlays = True,
     architecture = "amd64",
     installation = ":installation_receipt",
-    packages = _SOURCE_DEBS,
-    payloads = _SOURCE_LAYERS,
-    rootfs = ":configured_sources",
+    payloads = _SOURCE_PACKAGES,
+    rootfs = ":configured_debian",
     runtime_layer = ":source_runtime_layer",
     selection = ":runtime_apt_selection",
     spec = "//platform/vs/docker-syncd-vs/config:source_packages.json",
 )
 
+filegroup(
+    name = "source_apt_preferences",
+    srcs = [":runtime_package_metadata"],
+    output_group = "apt_preferences",
+)
+
 tar(
     name = "source_provenance",
-    srcs = [":runtime_package_metadata"],
+    srcs = [
+        ":runtime_package_metadata",
+        ":source_apt_preferences",
+    ],
     mtree = [
+        "etc/apt/preferences.d type=dir mode=0755 uid=0 gid=0 time=0",
+        "etc/apt/preferences.d/sonic-source-syncd type=file mode=0644 uid=0 gid=0 time=0 content=$(location :source_apt_preferences)",
         "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
         "usr/share/sonic/bazel/syncd-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :runtime_package_metadata)",
     ],
@@ -582,7 +549,7 @@ flatten(
     name = "complete_filesystem",
     deduplicate = True,
     tars = [
-        ":configured_sources",
+        ":configured_debian",
         ":source_runtime_layer",
         "//platform/vs/docker-syncd-vs/config:files",
         ":source_provenance",
@@ -689,8 +656,7 @@ installed_source_metadata(
     inherited_metadata = ":runtime_package_metadata",
     inherited_metadata_path = "usr/share/sonic/bazel/syncd-packages.json",
     installation = ":debug_installation_receipt",
-    packages = _SOURCE_DEBS,
-    payloads = _SOURCE_LAYERS,
+    payloads = _SOURCE_PACKAGES,
     rootfs = ":configured_debug",
     spec = ":source_contract",
 )

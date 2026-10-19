@@ -114,7 +114,7 @@ class CachedImageLayoutTest(unittest.TestCase):
                 self.assertIn("//tools/bazel/tests:unpack_oci_test", audit.call_args.args[2])
                 self.assertIn("//tools/bazel/tests:repack_oci_test", audit.call_args.args[2])
                 self.assertIn("//tools/bazel/tests:dpkg_state_validation_test", audit.call_args.args[2])
-                self.assertTrue(audit.call_args.kwargs["allow_deb"])
+                self.assertNotIn("allow_deb", audit.call_args.kwargs)
                 # The source TAR can use a different path from the installed
                 # DEB (dh_python3 renames _libyang.so). Symbol validation must
                 # inspect the current image's complete configured filesystem.

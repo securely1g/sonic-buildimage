@@ -9,9 +9,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
-import subprocess
 import tarfile
-import tempfile
 
 from sonic_apt import dependencies
 from tools.bazel.oci.oci_inventory import apply_layer, resolve_path
@@ -61,13 +59,40 @@ def package_state_path(path):
                for prefix in ('var/lib/dpkg', 'var/lib/apt'))
 
 
-def describe(rootfs, installation, spec, archives, architecture, tar, inherited_metadata=None, inherited_metadata_path=None,
+def source_specification(path):
+    specification = json.loads(path.read_text())
+    if isinstance(specification.get('packages'), list):
+        specification['packages'] = {item['package']: {
+            'target': item['source'].get('target'),
+            'source_revision': item['source'].get('commit', item['source'].get('release')),
+            'source_version': item['source'].get('version'),
+            'required_paths': list(item['required_paths']),
+        } for item in specification['packages']}
+    require(specification.get('schema') == 1 and isinstance(specification.get('packages'), dict),
+            'invalid source declarations')
+    require(all(isinstance(name, str) and re.fullmatch(r'[a-z0-9][a-z0-9+.-]*', name)
+                for name in specification['packages']), 'invalid source package names')
+    return specification
+
+
+def apt_preferences(specification):
+    """Protect source payloads using APT's standard version-selection policy."""
+    names = {name for name in specification['packages']}
+    return ('# Generated from the source overlay declarations; do not edit.\n'
+            '# dpkg retains the real Debian baseline versions. Source provenance\n'
+            '# is recorded separately under /usr/share/sonic/bazel.\n'
+            'Package: ' + ' '.join(sorted(names)) + '\nPin: version *\nPin-Priority: -1\n')
+
+
+def describe(rootfs, installation, spec, architecture, inherited_metadata=None, inherited_metadata_path=None,
              selection=None, payloads=None, runtime_layer=None, path_filters=None, allow_same_owner_overlays=False):
     payloads = payloads or {}
-    require(not set(archives).intersection(payloads), 'source has both Debian and runtime-layer inputs')
     receipt = json.loads(installation.read_text())
     require(receipt.get('status') == 'passed' and receipt.get('architecture') == architecture and
             receipt.get('rootfs_sha256') == sha(rootfs), 'installation receipt does not match the rootfs')
+    specification = source_specification(spec)
+    require(set(specification['packages']) == set(payloads),
+            'source declarations differ from actual source inputs')
     files = {}
     apply_layer(rootfs, files)
     owned = {}
@@ -81,8 +106,11 @@ def describe(rootfs, installation, spec, archives, architecture, tar, inherited_
                 owner = Path(name).name.removesuffix('.list').split(':', 1)[0]
                 for path in stream.extractfile(entry).read().decode().splitlines():
                     path = path.lstrip('/')
-                    for target in (path_location(path, files), resolve_path(path, files)):
-                        owned.setdefault(target, set()).add(owner)
+                    # dpkg owns the named symlink, not its referent. Only
+                    # canonicalize parent-directory aliases (for example
+                    # /lib -> /usr/lib), keeping development .so links
+                    # separate from the runtime libraries they reference.
+                    owned.setdefault(path_location(path, files), set()).add(owner)
     verified_overlays = {}
     if runtime_layer:
         with tarfile.open(runtime_layer) as stream:
@@ -105,7 +133,7 @@ def describe(rootfs, installation, spec, archives, architecture, tar, inherited_
                     'runtime layer must not change package-manager state: ' + path)
             if entry.get('kind') == 'directory' and files.get(target, {}).get('kind') in (None, 'directory'):
                 continue
-            owners = owned.get(target, set()) | owned.get(resolve_path(path, files), set())
+            owners = owned.get(target, set())
             if owners:
                 providers = supplied.get(target, {})
                 require(allow_same_owner_overlays and owners <= providers.keys(),
@@ -126,16 +154,6 @@ def describe(rootfs, installation, spec, archives, architecture, tar, inherited_
     check.update(packages=controls, base_package_inventory_sha256=hashlib.sha256(
         json.dumps(controls, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
     runtime_provenance = selection_provenance(selection, controls, architecture) if selection else {}
-    specification = json.loads(spec.read_text())
-    if isinstance(specification.get('packages'), list):
-        specification['packages'] = {item['package']: {
-            'target': item.get('deb_target', item['source'].get('target')),
-            'source_revision': item['source'].get('commit', item['source'].get('release')),
-            'required_paths': list(item['required_paths']),
-        } for item in specification['packages']}
-    require(specification.get('schema') == 1 and set(specification['packages']) == set(archives) | set(payloads),
-            'source declarations differ from actual source inputs')
-    input_hashes = {item['sha256'] for item in receipt['input_packages']}
     inherited_hash = None
     if inherited_metadata is not None:
         # Debug APT adds tools to an already configured runtime filesystem.
@@ -146,52 +164,9 @@ def describe(rootfs, installation, spec, archives, architecture, tar, inherited_
                 'inherited source metadata differs from the configured filesystem')
         previous = json.loads(inherited_metadata.read_text())
         require(previous.get('architecture') == architecture and
-                {item['package'] for item in previous['source_packages']} == set(archives) | set(payloads),
+                {item['package'] for item in previous['source_packages']} == set(payloads),
                 'inherited source metadata names different packages or architecture')
-        input_hashes.update(item['deb_sha256'] for item in previous['source_packages'] if 'deb_sha256' in item)
     provenance = []
-    with tempfile.TemporaryDirectory(prefix='source-deb-inspection-') as temporary:
-        for name, archive in sorted(archives.items()):
-            item = specification['packages'][name]
-            require('control_fields' not in item, 'source declarations must not copy Debian controls')
-            digest = sha(archive)
-            require(digest in input_hashes, 'source package was not an installation input: ' + name)
-            members = subprocess.check_output([tar, '-tf', archive], text=True).splitlines()
-            require(len(members) == 3 and members[0] == 'debian-binary' and
-                    members[1].startswith('control.tar') and members[2].startswith('data.tar'),
-                    'invalid Debian archive: ' + name)
-            extracted = []
-            for member in members[1:]:
-                output = Path(temporary) / member
-                with output.open('wb') as destination:
-                    subprocess.run([tar, '-xOf', archive, member], stdout=destination, check=True)
-                extracted.append(output)
-            with tarfile.open(extracted[0]) as stream:
-                control = [entry for entry in stream if entry.name.removeprefix('./') == 'control']
-                require(len(control) == 1, 'missing original package control: ' + name)
-                package = dependencies.package_from_control(stream.extractfile(control[0]).read(), origin=name)
-            require(package.name == name and name in installed and package.version == installed[name].version,
-                    'installed source package identity differs: ' + name)
-            payload = {}
-            apply_layer(extracted[1], payload)
-            native = []
-            for path, entry in payload.items():
-                if 'elf_machine' not in entry:
-                    continue
-                target = resolve_path(path, files)
-                actual = files.get(target, {})
-                # Maintainer scripts may intentionally change ownership/mode
-                # (openssh-client assigns ssh-agent to its new _ssh group).
-                # Their actual final metadata is recorded; ELF bytes must match.
-                require(actual.get('sha256') == entry['sha256'],
-                        'installed image changed a source ELF: ' + path)
-                native.append({'path': target, **{key: actual[key] for key in ('sha256', 'mode', 'uid', 'gid')}})
-            triplet = {'amd64': 'x86_64-linux-gnu', 'arm64': 'aarch64-linux-gnu'}[architecture]
-            require(all(resolve_path(path.format(multiarch=triplet), files) in files for path in item['required_paths']),
-                    'installed image lacks a required source path: ' + name)
-            provenance.append({'package': name, 'packaging': 'deb', 'version': package.version, 'target': item['target'],
-                'source_revision': item['source_revision'], 'payload_sha256': sha(extracted[1]),
-                'deb_sha256': digest, 'native_files': sorted(native, key=lambda entry: entry['path'])})
     for name, archive in sorted(payloads.items()):
         item = specification['packages'][name]
         require('control_fields' not in item, 'runtime-layer declarations must not invent Debian controls')
@@ -199,7 +174,24 @@ def describe(rootfs, installation, spec, archives, architecture, tar, inherited_
         apply_layer(archive, payload)
         native = []
         runtime_files = []
+        runtime_links = []
         for path, entry in payload.items():
+            if entry.get('kind') == 'symlink':
+                target = path_location(path, files)
+                actual = files.get(target, {})
+                included = True
+                if path_filters:
+                    for line in path_filters.read_text().splitlines():
+                        fields = line.split()
+                        if len(fields) == 2 and fields[0] in ('path-include', 'path-exclude') and fnmatch.fnmatchcase('/' + path, fields[1]):
+                            included = fields[0] == 'path-include'
+                if not included and not actual:
+                    continue
+                require(actual.get('kind') == 'symlink' and actual.get('linkname') == entry['linkname'],
+                        'image changed a runtime-layer symlink: ' + path)
+                runtime_links.append({'path': target, **{key: actual[key]
+                    for key in ('kind', 'linkname', 'mode', 'uid', 'gid')}})
+                continue
             if entry.get('kind') != 'file':
                 continue
             target = resolve_path(path, files)
@@ -220,19 +212,33 @@ def describe(rootfs, installation, spec, archives, architecture, tar, inherited_
         triplet = {'amd64': 'x86_64-linux-gnu', 'arm64': 'aarch64-linux-gnu'}[architecture]
         require(all(resolve_path(path.format(multiarch=triplet), files) in files for path in item['required_paths']),
                 'image lacks a required runtime-layer path: ' + name)
+        excluded_baseline_paths = []
+        for path in item.get('excluded_baseline_paths', []):
+            path = path.format(multiarch=triplet)
+            require(path and not path.startswith('/') and '..' not in PurePosixPath(path).parts and
+                    str(PurePosixPath(path)) == path, 'invalid excluded baseline path: ' + path)
+            target = path_location(path, files)
+            require(target not in files, 'image retains an excluded baseline file: ' + path)
+            excluded_baseline_paths.append(target)
         if inherited_metadata is not None:
             prior = next(entry for entry in previous['source_packages'] if entry['package'] == name)
             require(prior.get('payload_sha256') == sha(archive), 'inherited runtime-layer source changed: ' + name)
         provenance.append({'package': name, 'packaging': 'runtime-layer', 'target': item['target'],
             'source_revision': item['source_revision'], 'payload_sha256': sha(archive),
+            'source_version': item.get('source_version'),
+            'debian_baseline': {owner: {'version': installed[owner].version,
+                'architecture': installed[owner].architecture}
+                for owner in [name] if owner in installed},
             'runtime_files': sorted(runtime_files, key=lambda entry: entry['path']),
+            'runtime_links': sorted(runtime_links, key=lambda entry: entry['path']),
+            'excluded_baseline_paths': sorted(excluded_baseline_paths),
             'native_files': sorted(native, key=lambda entry: entry['path'])})
     overlay_proof = {}
     if verified_overlays:
-        owners = {owner for record in verified_overlays.values() for owner in record['owners']}
+        sources = {owner for record in verified_overlays.values() for owner in record['owners']}
         overlay_proof['verified_overlays'] = {
             'runtime_layer_sha256': sha(runtime_layer), 'paths': verified_overlays,
-            'payload_sha256': {name: sha(payloads[name]) for name in sorted(owners)}}
+            'payload_sha256': {name: sha(payloads[name]) for name in sorted(sources)}}
     elif inherited_metadata is not None and previous.get('verified_overlays'):
         proof = previous['verified_overlays']
         require(all(files.get(path) == entry['file'] for path, entry in proof['paths'].items()),
@@ -258,21 +264,20 @@ def main():
     parser.add_argument('--inherited-metadata-path')
     parser.add_argument('--selection', type=Path)
     parser.add_argument('--architecture', required=True)
-    parser.add_argument('--tar', required=True)
-    parser.add_argument('--package', action='append', default=[])
     parser.add_argument('--payload', action='append', default=[])
     parser.add_argument('--runtime-layer', type=Path)
     parser.add_argument('--path-filters', type=Path)
     parser.add_argument('--allow-same-owner-overlays', action='store_true')
+    parser.add_argument('--apt-preferences', type=Path)
     args = parser.parse_args()
-    archives = dict(value.split('=', 1) for value in args.package)
-    require(len(archives) == len(args.package), 'duplicate source package')
     payloads = dict(value.split('=', 1) for value in args.payload)
     require(len(payloads) == len(args.payload), 'duplicate source runtime layer')
-    result = describe(args.rootfs, args.installation, args.spec, archives, args.architecture, args.tar,
+    result = describe(args.rootfs, args.installation, args.spec, args.architecture,
                       args.inherited_metadata, args.inherited_metadata_path, args.selection, payloads, args.runtime_layer,
                       args.path_filters, args.allow_same_owner_overlays)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+    if args.apt_preferences:
+        args.apt_preferences.write_text(apt_preferences(source_specification(args.spec)))
 
 
 if __name__ == '__main__':
