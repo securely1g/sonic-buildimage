@@ -33,7 +33,7 @@ concurrency:
 jobs:
   native:
     name: P4RT SDK (${{ matrix.arch }})
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -121,7 +121,7 @@ jobs:
           python3 -B tools/bazel/ci/p4rt_common_sdk.py \
             --source src/sonic-p4rt/sonic-pins --sdk "$RUNNER_TEMP/common-sdk" \
             --output-base "$RUNNER_TEMP/p4rt-bazel-6" \
-            --output artifacts/p4rt --arch '${{ matrix.arch }}' --jobs 2
+            --output artifacts/p4rt --arch '${{ matrix.arch }}' --jobs 4
 
       - name: Upload SDK handoff validation
         if: always()
