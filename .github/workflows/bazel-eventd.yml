@@ -46,41 +46,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Draft validation keeps the default registry on maintained main.
-      - name: Check out the owned multiarch header patch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: securely1g/sonic-build-infra
-          ref: 0b76749e7297476c5bfde0f0b3572ddf96052d01
-          path: _eventd_dependencies/multiarch
-          persist-credentials: false
-      - name: Check out the existing pkg-config whitespace patch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: securely1g/sonic-build-infra
-          ref: 0b76749e7297476c5bfde0f0b3572ddf96052d01
-          path: _eventd_dependencies/pkgconfig
-          persist-credentials: false
-      - name: Prepare the exact Distroless source candidate
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/distroless.tar.gz" \
-            https://github.com/bazel-contrib/rules_distroless/releases/download/v0.9.4/rules_distroless-v0.9.4.tar.gz
-          echo "5d43f4f44f0f0fb614194a07a6dcf7b29338cfc8ab7f6129ad1e4403c1ad1c73  $RUNNER_TEMP/distroless.tar.gz" | sha256sum --check --strict
-          mkdir -p "$RUNNER_TEMP/distroless-eventd"
-          tar -xzf "$RUNNER_TEMP/distroless.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/distroless-eventd"
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/include-fragments.patch" \
-            https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/19f060dda00ce7140eae3af4e9a637f9cfeb5034/modules/rules_distroless/0.9.4.sonic.1/patches/0002-include-fragments.patch
-          echo "88da687bfa7ecef1de6c0a309dc1abb8712d10f48caec22e9c74df30d64e639a  $RUNNER_TEMP/include-fragments.patch" | sha256sum --check --strict
-          patch -d "$RUNNER_TEMP/distroless-eventd" -p1 < "$RUNNER_TEMP/include-fragments.patch"
-          patch -d "$RUNNER_TEMP/distroless-eventd" -p1 < _eventd_dependencies/pkgconfig/third_party/rules_distroless/0002-pkgconfig-whitespace.patch
-          patch -d "$RUNNER_TEMP/distroless-eventd" -p1 < _eventd_dependencies/multiarch/third_party/rules_distroless/0003-multiarch-headers.patch
-          mkdir -p artifacts/eventd
-          sha256sum "$RUNNER_TEMP/distroless.tar.gz" "$RUNNER_TEMP/include-fragments.patch" \
-            _eventd_dependencies/pkgconfig/third_party/rules_distroless/0002-pkgconfig-whitespace.patch \
-            _eventd_dependencies/multiarch/third_party/rules_distroless/0003-multiarch-headers.patch \
-            > artifacts/eventd/distroless-inputs.sha256
-
       - name: Check out the reviewed Debian producer tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,7 +75,7 @@ jobs:
           from pathlib import Path
           branch = 'codex/image-package-gcc-integration'
           observed = subprocess.check_output(['git', 'ls-remote', 'https://github.com/securely1g/sonic-bazel-registry.git', 'refs/heads/' + branch], text=True).split()[0]
-          assert observed == '0a55b33a8dddbea8d39fcdfad2d6208aa0e656b0'
+          assert observed == 'a2feab517f0feaf1c580991b78a97f0388baea46'
           directory = Path(os.environ['RUNNER_TEMP']) / 'package-registry'
           directory.mkdir()
           rc = directory / 'effective.bazelrc'
@@ -133,7 +98,6 @@ jobs:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd \
-            --bazel-arg="--override_module=rules_distroless=$RUNNER_TEMP/distroless-eventd" \
             --bazel-arg="--override_module=sonic-build-infra=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra" \
             --bazel-arg="--override_module=sonic-swss-common=$GITHUB_WORKSPACE/_eventd_dependencies/common" \
             --bazel-arg="--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra/rust/deps"
@@ -145,7 +109,6 @@ jobs:
           flags=(--jobs=4
             "--platforms=@sonic_build_infra//platforms:${machine}_trixie"
             "--host_platform=@sonic_build_infra//platforms:${machine}_trixie"
-            "--override_module=rules_distroless=$RUNNER_TEMP/distroless-eventd"
             "--override_module=sonic-build-infra=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra"
             "--override_module=sonic-swss-common=$GITHUB_WORKSPACE/_eventd_dependencies/common"
             "--override_module=sonic-rust-deps=$GITHUB_WORKSPACE/_eventd_dependencies/package-infra/rust/deps")
@@ -182,7 +145,7 @@ jobs:
           Path(sys.argv[1]).write_text('\n'.join(line for line in config.splitlines() if not line.startswith('try-import ')) + '\n')
           PYCODE
           observed=$(git ls-remote https://github.com/securely1g/sonic-bazel-registry.git refs/heads/codex/image-package-gcc-integration | cut -f1)
-          test "$observed" = 0a55b33a8dddbea8d39fcdfad2d6208aa0e656b0
+          test "$observed" = a2feab517f0feaf1c580991b78a97f0388baea46
           printf '%s\n' "$observed" > "$evidence/registry-revision.txt"
           cp "$RUNNER_TEMP/common-package.bazelrc" "$evidence/effective.bazelrc"
           machine=$(uname -m)
