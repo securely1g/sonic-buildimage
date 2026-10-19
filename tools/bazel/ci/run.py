@@ -21,7 +21,7 @@ import rust
 
 ROOT = Path(__file__).resolve().parents[3]
 TEST_TARGETS = [
-    "@sonic_swss//crates/countersyncd:common_rust_test",
+    "//tools/bazel/tests:swss_common_rust_test",
     "//tools/bazel/image:metadata_test",
     "//tools/bazel/image:host_test",
     "//tools/bazel/image:store_test",
