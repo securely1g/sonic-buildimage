@@ -75,13 +75,13 @@ single_version_override(
     version = "0.2.20",
 )
 
-bazel_dep(name = "rules_distroless", version = "0.9.4-sonic.1")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.6")
 
 # Pinned component sources still request older dotted versions, which sort
 # above the native header-fix registration despite containing older changes.
 single_version_override(
     module_name = "rules_distroless",
-    version = "0.9.4-sonic.1",
+    version = "0.9.4.sonic.6",
 )
 
 # Keep the timestamp API required by the landed build infrastructure selected.
