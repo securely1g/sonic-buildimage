@@ -125,7 +125,7 @@ else:
             return result
         return self.original_execute(command, directory, receipt, name, **kwargs)
 
-    def run_ci(self, mode="pass", *, error=None, resolution_error=None, machine="x86_64", source_files=()):
+    def run_ci(self, mode="pass", *, error=None, resolution_error=None, machine="x86_64", source_files=(), allow_deb=False):
         (self.root / "mode").write_text(mode)
         console = io.StringIO()
         self.original_execute = command_log.execute
@@ -137,11 +137,11 @@ else:
              contextlib.redirect_stdout(console), contextlib.redirect_stderr(console):
             if error is None:
                 container.run(self.owner, workspace=self.root, artifacts=self.artifacts,
-                              bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files)
+                              bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files, allow_deb=allow_deb)
             else:
                 with self.assertRaises(error):
                     container.run(self.owner, workspace=self.root, artifacts=self.artifacts,
-                                  bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files)
+                                  bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files, allow_deb=allow_deb)
         self.assertFalse((self.artifacts / "actions.raw.json").exists())
         self.assertFalse((self.artifacts / "tests.raw.json").exists())
         self.assertNotIn("private-action-data", console.getvalue())
@@ -209,6 +209,16 @@ else:
     def test_deb_output_blocks_execution(self):
         """A DEB-producing graph must fail before any selected test or archive runs."""
         self.assert_failed_without_report(self.run_ci("deb", error=ValueError))
+        self.assert_no_actions_executed()
+
+    def test_approved_deb_graph_runs_and_records_approval(self):
+        receipt = self.run_ci("deb", allow_deb=True)
+        self.assertEqual(receipt["status"], "passed")
+        self.assertTrue(receipt["action_audit"]["deb_generation_authorized"])
+        self.assertEqual(receipt["action_audit"]["deb_outputs"], ["unsafe.deb"])
+
+    def test_approval_does_not_allow_a_make_wrapper(self):
+        self.assert_failed_without_report(self.run_ci("wrapper", allow_deb=True, error=ValueError))
         self.assert_no_actions_executed()
 
     def test_packaging_wrapper_blocks_execution(self):

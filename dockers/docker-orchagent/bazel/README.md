@@ -10,15 +10,17 @@ configurations independently. For SWSS, on native AMD64 Debian Trixie with
 `PLATFORM=vs` and ASAN disabled, the switch makes Bazel compile
 SWSS and assemble its runtime and debug OCI images. Other SWSS configurations
 continue to use Make, even with the switch set to `y`.
-Make continues to generate the container manifests and build
-the config-engine base, the Scapy wheel, other containers, host packages, kernel
-and final `sonic-vs.img.gz` virtual-machine image.
+Make continues to generate the container manifests and build the Scapy wheel,
+other containers, host packages, kernel and final `sonic-vs.img.gz` virtual-machine
+image. FIPS builds use the source-built config-engine base; other supported SWSS
+builds consume Make's prepared config-engine OCI base.
 
 The source and toolchain revisions are declared in the root `MODULE.bazel`; they do not change
 the source revisions used by Make's existing submodules. SWSS and its declared
-source dependencies produce runtime tar layers and matching debug symbols.
-Pinned Debian packages supply external runtime dependencies; Bazel does not
-create Debian packages in this path.
+source dependencies keep their existing binary TAR layers and matching debug symbols.
+Pinned Debian packages supply external runtime dependencies. The shared
+`rules_distroless` installer runs APT and the original package scripts in a
+private native build filesystem before assembling OCI layers.
 
 Make selects the builder before starting the build. Missing or invalid metadata
 for a selected Bazel target, a missing Bazel executable, or a Bazel build failure
@@ -76,12 +78,13 @@ existing name-based selector.
 After checking hashes and file overlaps, the selector copies the selected
 archives intact into a declared directory. Standard Distroless `flatten` merges
 that directory into a layer. It needs no new lock importer, package provider or
-selected-manifest patch. Distroless `0.9.4.sonic.1` retains the existing Protobuf
-header fix and sorts above plain 0.9.4 without a root override.
+selected-manifest patch. The selected Distroless module retains the existing
+Protobuf header fix and also supplies `apt_install` for package configuration.
 
 The shared `//tools/bazel/oci:apt_selection` library validates the declared
 policy, inspects OCI base and candidate files, calls `sonic_apt.selection`, and
-stages the selected archives and receipt. Other containers, including syncd-vs,
+stages the selected archives and receipt. The image passes that selection to
+`apt_install` for real package installation. Other containers, including syncd-vs,
 use that same implementation. Orchagent declares its AMD64/Trixie policy in
 `dockers/docker-orchagent/BUILD.bazel`; the macro generates the policy JSON and
 selects the shared command-line program. The owner suite checks the actual
@@ -92,12 +95,24 @@ from source-owned Bazel targets. Its `retained_source = "none"` policy records
 that profile, with no retained-package manifest, feature requirements or debug
 replacements. Runtime selection reads the checked config-engine
 base; debug selection reads the completed Orchagent runtime and receives its
-`runtime_apt_selection` receipt as the declared `base_package_metadata` input.
-This carries the runtime APT packages and their requirements because archive
-assembly leaves the inherited dpkg database unchanged. The child checks that
-metadata against the actual dpkg baseline and validates the combined set again.
-Source-built payloads still rely on their owner contracts and runtime checks;
-this does not synthesize Debian metadata for them.
+`runtime_package_metadata` receipt as the declared `base_package_metadata` input.
+Runtime installs the selected original Debian archives and the source-built
+Protobuf DEB, which replaces a Debian library. SWSS, Common, sairedis and DASH
+keep their ordinary binary layers; the Python runtime keeps its wheel layer.
+Debug starts with that filesystem and installs its extra tools.
+APT and dpkg own the database, file lists, conffiles, scripts and triggers in
+both variants. Upstream `umoci repack` creates the resulting OCI delta, including
+removed files, while preserving the base image's configuration.
+
+The [source declarations](source_packages.json) identify SWSS, Common, sairedis,
+SAI metadata, DASH API and Protobuf. Only actual Debian packages contribute to
+dpkg state. `installed_source_metadata.py` checks source ELF bytes and rejects
+binary layers that overwrite files owned by Debian packages on source-built
+bases. The existing Make-base path permits only verified replacements owned by
+the same source package. Neither path invents package records for SONiC programs. Each image
+retains `orchagent-packages.json` under `/usr/share/sonic/bazel`, bound to its own
+configured filesystem and installation receipt. Matching source symbols remain
+a separate debug layer; source symbols are not fabricated Debian package entries.
 
 The `runtime_apt_selection` and `debug_apt_selection` targets expose receipts with
 the base digest, lock/policy hashes, selected and skipped packages, the validated
@@ -108,9 +123,12 @@ Dependency checking was introduced by infrastructure PR #27 and registry PR #45.
 [Infrastructure #29](https://github.com/securely1g/sonic-build-infra/pull/29)
 and [registry #51](https://github.com/securely1g/sonic-bazel-registry/pull/51) supply
 the declarative `apt_layer` policy input API and registration; it provides
-the generated policy argument used here. This draft consumer temporarily selects
-that source with an exact `git_override`; registry URLs remain on `main`.
-Remove the source override after its registered version lands.
+the generated policy argument used here. The current draft package producers and
+installer are selected by the reviewed
+[dependency manifest](../../docker-base-trixie/bazel/draft_sources.json).
+Its preparation tool verifies exact source archives and registry metadata;
+ordinary registry URLs remain on `main`. Refresh these temporary inputs as the
+owner PRs and their registrations land.
 
 Native AMD64/ARM64 archive checks and AMD64 source-layer checks are configured
 for PR updates. Full VS/P4RT builds also run automatically for PR branches in
@@ -144,10 +162,16 @@ To update packages in a separate clean checkout:
    automatically. Run the owner tests and rebuild
    both images; check the automatic selection receipts and installed consumers.
 
-The selector does not evaluate dependency-version requirements or run package
-installation scripts. It does not update the inherited dpkg database or
-regenerate loader/Python caches. Full image support remains AMD64; native ARM64
-helper tests do not establish a complete ARM64 image.
+The selector checks the proposed package set; `apt_install` performs initial
+configuration and processes the original package scripts and triggers. The
+[real transaction checks](../../../tools/bazel/oci/README.md#validate-real-package-transactions)
+verify initial state, then install an additional package and its new
+dependencies in a fresh container. Existing packages and source files must stay
+unchanged. They bind the checked package state and source
+bytes to the actual image; a successful source build alone does not establish
+that these installed-image checks passed.
+Full Orchagent image support remains AMD64; native ARM64 base/config-engine and
+helper checks do not establish a complete ARM64 Orchagent image.
 
 ## Startup configuration
 
@@ -377,11 +401,20 @@ Workflow concurrency is scoped to the source revision so a new push can run its
 hosted checks while an older full VS build keeps its progress. A rerun of the same
 revision supersedes its earlier run; a new full VS job waits for its runner.
 
-The Make base supplies Python Common bindings while Bazel supplies Common's C++
-library; their compatibility must be checked with the complete image. Guest
-boot, forwarding, ARM64 images and cross builds remain unvalidated. ASAN uses
-the existing Make path. Listing SWSS in `SONIC_PACKAGES_LOCAL` is rejected when
-its Bazel path is selected.
+When Make supplies the config-engine base, its Python Common bindings must be
+compatible with Bazel's Common C++ library; check this in the complete image.
+That base already records Common as a Debian package. This compatibility path
+allows Common's declared runtime TAR to replace its own package's files, as the
+existing Bazel image build did. It preserves the original dpkg records and
+rejects changes to another package's files or package-manager state. The source
+receipt records the replacement bytes, links, modes and owners; final image
+validation checks them against the exact normalized TAR. This supports adding
+packages with APT, not upgrading or removing the overlaid Common source with APT.
+The source-built config-engine base uses Common's source-owned bindings instead.
+Guest boot and forwarding need their separate runtime checks. ARM64 Orchagent
+images and cross builds remain outside the supported profile. ASAN uses the
+existing Make path. Listing SWSS in `SONIC_PACKAGES_LOCAL` is rejected when its
+Bazel path is selected.
 
 To reproduce the source-layer check in native AMD64 Trixie, install the execution
 tools listed in `.github/workflows/bazel-oci.yml`, make the pinned Bazel

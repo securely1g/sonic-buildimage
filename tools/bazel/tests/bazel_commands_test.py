@@ -12,7 +12,7 @@ from tools.bazel.ci import bazel_commands
 
 
 class ActionAuditTest(unittest.TestCase):
-    def audit(self, output_name, arguments):
+    def audit(self, output_name, arguments, *, allow_deb=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             graph = {
@@ -30,7 +30,7 @@ class ActionAuditTest(unittest.TestCase):
                 try:
                     return bazel_commands.audit_targets(
                         "bazel", ["--platforms=native"], ["//:checked"],
-                        workspace=root, output=root / "audit.json")
+                        workspace=root, output=root / "audit.json", allow_deb=allow_deb)
                 finally:
                     summary = (root / "audit.json").read_text()
                     self.assertNotIn("private-value", summary)
@@ -43,6 +43,23 @@ class ActionAuditTest(unittest.TestCase):
     def test_rejects_debian_output(self):
         with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
             self.audit("package.deb", ["packager"])
+
+    def test_explicit_approval_allows_actual_deb_assembly(self):
+        result = self.audit("package.deb", ["dpkg-deb", "--build", "tree", "package.deb"], allow_deb=True)
+        self.assertTrue(result["deb_generation_authorized"])
+        self.assertEqual(len(result["deb_packaging_actions"]), 1)
+        self.assertEqual(result["packaging_wrappers"], [])
+
+    def test_shell_comment_is_not_a_make_invocation(self):
+        result = self.audit("package.deb", ["bash", "-c", "# make sure data is compressed\ntar -czf data.tar.gz tree"], allow_deb=True)
+        self.assertEqual(result["packaging_wrappers"], [])
+        with self.assertRaises(ValueError):
+            self.audit("package.deb", ["bash", "-c", "# comment\nmake package"], allow_deb=True)
+
+    def test_deb_approval_does_not_allow_make_or_dpkg_buildpackage(self):
+        for command in (["sh", "-c", "make package"], ["dpkg-buildpackage", "-b"]):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                self.audit("package.deb", command, allow_deb=True)
 
     def test_rejects_wrapped_packaging_with_hidden_output(self):
         for command in (["dpkg-deb", "--build", "tree", "output"],

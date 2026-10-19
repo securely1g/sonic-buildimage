@@ -12,14 +12,16 @@ from tools.bazel.oci.package_contract import read_policy
 IMAGE_INPUTS = (
     "runtime_path", "debug_path", "runtime_handoff", "debug_handoff",
     "runtime_manifest_path", "debug_manifest_path", "source_contract_path",
-    "apt_lock_path", "dpkg_filter_path", "base_path", "apt_layer", "debug_tools_layer",
-    "runtime_apt_selection", "debug_apt_selection", "package_state_contract",
+    "apt_lock_path", "dpkg_filter_path", "base_path",
+    "configured_runtime_tar", "configured_debug_tar", "runtime_rootfs_tar",
+    "runtime_installation", "debug_installation", "runtime_package_metadata",
+    "runtime_apt_selection", "debug_apt_selection",
     "runtime_archive", "debug_archive", "source_runtime_tar", "source_debug_tar",
-    "source_receipt", "base_debug_symbols", "base_debug_receipt", "base_debug_package_manifest",
+    "source_receipt",
 )
 NATIVE_INPUTS = (
     "source_contract_path", "source_runtime_tar", "source_debug_tar", "source_receipt",
-    "base_path", "runtime_path", "base_debug_symbols", "base_debug_receipt", "base_debug_package_manifest",
+    "base_path", "runtime_path",
 )
 P4_RUNTIME_PACKAGES = {"p4lang-pi", "p4lang-bmv2", "p4lang-p4c", "libsai"}
 
@@ -66,7 +68,7 @@ def check_p4_inputs(lock_path, debs, manifests):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in (*IMAGE_INPUTS, "policy", "p4_lock", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy"):
+    for name in (*IMAGE_INPUTS, "policy", "p4_lock", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy", "debug_package_metadata"):
         parser.add_argument("--" + name.replace("_", "-"), required=True, type=Path)
     parser.add_argument("--p4-deb", action="append", required=True, type=Path)
     inputs = vars(parser.parse_args())
@@ -77,7 +79,9 @@ def main():
         require(sha(inputs["make_" + variant + "_archive"]) == sha(inputs[variant + "_archive"]),
                 variant + " Make archive differs from the Bazel output")
     images = image_validation.validate_images(
-        source_root=Path.cwd(), policy=policy, **{name: inputs[name] for name in IMAGE_INPUTS})
+        source_root=Path.cwd(), policy=policy,
+        debug_metadata_files={"usr/share/sonic/bazel/syncd-packages.json": inputs["debug_package_metadata"]},
+        **{name: inputs[name] for name in IMAGE_INPUTS})
     native = native_packages.validate_native(
         inputs["runtime_handoff"], inputs["debug_handoff"], policy=policy,
         readelf=str(inputs["readelf"].resolve()), objcopy=str(inputs["objcopy"].resolve()),

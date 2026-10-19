@@ -8,7 +8,11 @@ load("@sonic_sairedis//bazel:common.bzl", "working_directory_test")
 
 package(default_visibility = ["//visibility:public"])
 
-_AMD64 = ["@platforms//cpu:x86_64", "@platforms//os:linux"]
+_AMD64 = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+]
+
 _TAR = "@bsd_tar_toolchains//:resolved_toolchain"
 
 # http_file repositories verify the existing packages against packages.lock.json.
@@ -24,12 +28,12 @@ _PACKAGES = {
         name = name + "_data",
         srcs = [source],
         outs = [name + ".data.tar"],
-        cmd = 'set -euo pipefail\nexport LC_ALL=C.UTF-8\n' +
+        cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
               '"$(BSDTAR_BIN)" -xOf "$(execpath ' + source + ')" data.tar.xz | ' +
               '"$(BSDTAR_BIN)" --format=pax -cf "$@" @-',
+        target_compatible_with = _AMD64,
         toolchains = [_TAR],
         tools = [_TAR],
-        target_compatible_with = _AMD64,
     )
     for name, source in _PACKAGES.items()
 ]
@@ -49,9 +53,9 @@ _LIBRARIES = {
         outs = [output],
         cmd = 'export LC_ALL=C.UTF-8\n"$(BSDTAR_BIN)" -xOf "$(execpath :' + source +
               '_data)" ./usr/lib/x86_64-linux-gnu/' + original + ' > "$@"',
+        target_compatible_with = _AMD64,
         toolchains = [_TAR],
         tools = [_TAR],
-        target_compatible_with = _AMD64,
     )
     for name, (source, original, output) in _LIBRARIES.items()
 ]
@@ -67,14 +71,14 @@ _LIBRARIES = {
 
 cc_library(
     name = "dash_sai",
+    target_compatible_with = _AMD64,
     deps = [
         ":libsai",
         ":piprotobuf",
         ":piprotogrpc",
-        "@p4_sdk_debian//libprotobuf-dev:libprotobuf",
         "@p4_sdk_debian//libgrpc++-dev:libgrpc++",
+        "@p4_sdk_debian//libprotobuf-dev:libprotobuf",
     ],
-    target_compatible_with = _AMD64,
 )
 
 # Explicit public header inventory from the locked libsai-dev package. Keep it
@@ -166,13 +170,13 @@ genrule(
     name = "sai_header_files",
     srcs = [":dash_dev_data"],
     outs = ["include/sai/" + name for name in _SAI_HEADERS],
-    cmd = 'set -euo pipefail\nexport LC_ALL=C.UTF-8\n' +
+    cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
           'mkdir -p "$(RULEDIR)/include/sai"\n' +
           '"$(BSDTAR_BIN)" -xf "$(execpath :dash_dev_data)" ' +
           '-C "$(RULEDIR)/include/sai" --strip-components=4 ./usr/include/sai',
+    target_compatible_with = _AMD64,
     toolchains = [_TAR],
     tools = [_TAR],
-    target_compatible_with = _AMD64,
 )
 
 cc_library(
@@ -186,27 +190,33 @@ cc_binary(
     name = "sdk_smoke",
     testonly = True,
     srcs = ["sdk_smoke.cc"],
-    deps = [":sai_headers", ":dash_sai"],
     target_compatible_with = _AMD64,
+    deps = [
+        ":dash_sai",
+        ":sai_headers",
+    ],
 )
 
 working_directory_test(
     name = "sdk_runtime_test",
     program = ":sdk_smoke",
-    working_directory = "tools/bazel/p4/sdk",
     tags = ["manual"],
     target_compatible_with = _AMD64,
+    working_directory = "tools/bazel/p4/sdk",
 )
 
 py_test(
     name = "packages_test",
     srcs = ["packages_test.py"],
-    main = "packages_test.py",
     args = [
-        "--syncd-runtime", "$(rootpath @sonic_sairedis//syncd:syncd_pkg)",
-        "--syncd-debug", "$(rootpath @sonic_sairedis//syncd:syncd_pkg.debug_symbols)",
-        "--vs-runtime", "$(rootpath @sonic_sairedis//vslib:libsaivs_pkg)",
-        "--vs-debug", "$(rootpath @sonic_sairedis//vslib:libsaivs_pkg.debug_symbols)",
+        "--syncd-runtime",
+        "$(rootpath @sonic_sairedis//syncd:syncd_pkg)",
+        "--syncd-debug",
+        "$(rootpath @sonic_sairedis//syncd:syncd_pkg.debug_symbols)",
+        "--vs-runtime",
+        "$(rootpath @sonic_sairedis//vslib:libsaivs_pkg)",
+        "--vs-debug",
+        "$(rootpath @sonic_sairedis//vslib:libsaivs_pkg.debug_symbols)",
     ],
     data = [
         "@sonic_sairedis//syncd:syncd_pkg",
@@ -214,7 +224,8 @@ py_test(
         "@sonic_sairedis//vslib:libsaivs_pkg",
         "@sonic_sairedis//vslib:libsaivs_pkg.debug_symbols",
     ],
-    deps = ["//tools/bazel/ci:artifact_validation"],
+    main = "packages_test.py",
     tags = ["manual"],
     target_compatible_with = _AMD64,
+    deps = ["//tools/bazel/ci:artifact_validation"],
 )
