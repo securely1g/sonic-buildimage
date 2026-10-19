@@ -83,9 +83,6 @@ jobs:
           disk-cache: ${{ github.workflow }}-AMD64
           cache-version: "8.5.1"
 
-      - name: Select the reviewed infrastructure registration
-        run: python3 tools/bazel/ci/draft_registry.py --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/debian-gcc-toolchains
-
       - name: Verify native Trixie and clean dependency state
         run: |
           test "$(uname -m)" = x86_64
