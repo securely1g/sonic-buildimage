@@ -74,6 +74,9 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Select the reviewed infrastructure registration
+        run: python3 tools/bazel/ci/draft_registry.py --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/debian-gcc-toolchains
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -313,6 +316,9 @@ jobs:
           repository-cache: true
           disk-cache: buildimage-swss-oci-amd64
           cache-version: "8.5.1"
+
+      - name: Select the reviewed infrastructure registration
+        run: python3 tools/bazel/ci/draft_registry.py --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/debian-gcc-toolchains
 
       - name: Check Make handoff and archive validation
         run: |
