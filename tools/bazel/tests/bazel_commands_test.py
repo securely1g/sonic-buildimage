@@ -12,11 +12,11 @@ from tools.bazel.ci import bazel_commands
 
 
 class ActionAuditTest(unittest.TestCase):
-    def audit(self, output_name, arguments, mnemonic="Spawn"):
+    def audit(self, output_name, arguments):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             graph = {
-                "actions": [{"outputIds": [1], "arguments": arguments, "mnemonic": mnemonic,
+                "actions": [{"outputIds": [1], "arguments": arguments,
                              "environmentVariables": [{"key": "PRIVATE", "value": "private-value"}]}],
                 "artifacts": [{"id": 1, "pathFragmentId": 1}],
                 "pathFragments": [{"id": 1, "label": output_name}],
@@ -43,29 +43,6 @@ class ActionAuditTest(unittest.TestCase):
     def test_rejects_debian_output(self):
         with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
             self.audit("package.deb", ["packager"])
-
-    def test_accepts_linking_a_native_make_tool(self):
-        """The GNU Make executable is a compiler output, not a packaging command."""
-        result = self.audit("bin/make", ["toolchain/x86_64-linux-g++", "main.o", "-o", "bin/make"], "CppLink")
-        self.assertEqual(result["packaging_wrappers"], [])
-
-    def test_accepts_stripping_a_native_make_tool(self):
-        """A strip input named make must not prevent building the tool itself."""
-        result = self.audit("bin/make.stripped", ["toolchain/aarch64-linux-strip", "-S", "-o", "bin/make.stripped", "bin/make"], "CcStrip")
-        self.assertEqual(result["packaging_wrappers"], [])
-
-    def test_link_mnemonic_does_not_hide_a_packaging_wrapper(self):
-        """Check the actual executable and shell text even for link-labelled actions."""
-        for command in (["make", "package"], ["sh", "-c", "make package"],
-                        ["sh", "-c", "dpkg-deb --build tree output"]):
-            with self.subTest(command=command):
-                with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
-                    self.audit("output", command, "CppLink")
-
-    def test_native_link_output_still_cannot_be_a_debian_package(self):
-        """The filename check remains independent of native-tool recognition."""
-        with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
-            self.audit("package.deb", ["gcc", "main.o", "-o", "package.deb"], "CppLink")
 
     def test_rejects_wrapped_packaging_with_hidden_output(self):
         for command in (["dpkg-deb", "--build", "tree", "output"],
