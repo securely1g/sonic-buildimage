@@ -1,7 +1,19 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-19T20:15:55.340829Z",
+  "generated_at": "2026-10-19T22:04:42.395732Z",
   "pull_requests": [
+    {
+      "base_sha": "af35f605975215872e69dba5a291cb52fd5faafa",
+      "draft": true,
+      "head_branch": "codex/p4rt-common-sdk",
+      "head_sha": "d69316c6ecfc4594250c16d3b187ed741393c972",
+      "merged_at": null,
+      "number": 36,
+      "state": "open",
+      "title": "Let Bazel 6 P4RT use Common's Bazel 8 library and headers",
+      "updated_at": "2026-10-19T22:03:58Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/pull/36"
+    },
     {
       "base_sha": "1699b8b11c67c99657d065e790ac4fd9a399290b",
       "draft": true,
@@ -11,7 +23,7 @@
       "number": 35,
       "state": "open",
       "title": "Build Debian packages for the event services",
-      "updated_at": "2026-10-19T03:02:03Z",
+      "updated_at": "2026-10-19T20:21:38Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/35"
     },
     {
@@ -23,7 +35,7 @@
       "number": 34,
       "state": "open",
       "title": "Build a Debian package for the Rust supervisor listener",
-      "updated_at": "2026-10-19T03:02:00Z",
+      "updated_at": "2026-10-19T20:21:35Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/34"
     },
     {
@@ -401,6 +413,1220 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "codex/p4rt-common-sdk",
+      "completed_at": null,
+      "conclusion": null,
+      "event": "pull_request",
+      "jobs": [
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118333074921,
+          "kind": "source",
+          "name": "SWSS source layers (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 4.0,
+            "setup": 26.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-10-19T22:04:04Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-19T22:04:06Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:05Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:10Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-19T22:04:06Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:30Z",
+              "conclusion": "success",
+              "duration_seconds": 20.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:35Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:35Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-19T22:04:35Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:35Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make handoff and archive validation",
+              "number": 7,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Build and inspect SWSS runtime and debug layers",
+              "number": 8,
+              "phase": "build",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain the verified GitLab source downloads",
+              "number": 9,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload the source downloads for the VS job",
+              "number": 10,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public source layers and evidence",
+              "number": 12,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 22,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 23,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 24,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39332260284/job/118333074921"
+        },
+        {
+          "architecture": "arm64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118333075437,
+          "kind": "container",
+          "name": "Container archive (ARM64)",
+          "phases": {
+            "build": null,
+            "other": 5.0,
+            "setup": 24.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-10-19T22:04:06Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-19T22:04:08Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:07Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:13Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-19T22:04:08Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:31Z",
+              "conclusion": "success",
+              "duration_seconds": 18.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:13Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:36Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:31Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:36Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-19T22:04:36Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:36Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39332260284/job/118333075437"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118333075668,
+          "kind": "container",
+          "name": "Container archive (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 5.0,
+            "setup": 28.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-10-19T22:04:04Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-19T22:04:06Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:04Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:11Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-19T22:04:06Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:32Z",
+              "conclusion": "success",
+              "duration_seconds": 21.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:11Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:37Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:32Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:04:37Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-19T22:04:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:04:37Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39332260284/job/118333075668"
+        }
+      ],
+      "pr_association": "github",
+      "pr_association_note": null,
+      "pr_numbers": [
+        36
+      ],
+      "run_id": 39332260284,
+      "source_sha": "d69316c6ecfc4594250c16d3b187ed741393c972",
+      "started_at": "2026-10-19T22:04:01Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-19T22:04:06Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39332260284/attempts/1",
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml"
+    },
+    {
+      "attempt": 1,
+      "branch": "codex/p4rt-common-sdk",
+      "completed_at": "2026-10-19T22:04:01Z",
+      "conclusion": "cancelled",
+      "event": "pull_request",
+      "jobs": [
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-19T22:04:01Z",
+          "conclusion": "cancelled",
+          "duration_seconds": 308.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118330980555,
+          "kind": "source",
+          "name": "SWSS source layers (AMD64)",
+          "phases": {
+            "build": 240.0,
+            "other": 7.0,
+            "setup": 34.0,
+            "upload": 2.0,
+            "validation": 20.0
+          },
+          "started_at": "2026-10-19T21:58:53Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-19T21:58:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:58:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:58:59Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-19T21:58:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:19Z",
+              "conclusion": "success",
+              "duration_seconds": 20.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:58:59Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:25Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:59:19Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:25Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-19T21:59:25Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:32Z",
+              "conclusion": "success",
+              "duration_seconds": 7.0,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:59:25Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:52Z",
+              "conclusion": "success",
+              "duration_seconds": 20.0,
+              "name": "Check Make handoff and archive validation",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-19T21:59:32Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "cancelled",
+              "duration_seconds": 240.0,
+              "name": "Build and inspect SWSS runtime and debug layers",
+              "number": 8,
+              "phase": "build",
+              "started_at": "2026-10-19T21:59:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Retain the verified GitLab source downloads",
+              "number": 9,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Upload the source downloads for the VS job",
+              "number": 10,
+              "phase": "upload",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Prepare public artifact list",
+              "number": 11,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:54Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Upload public source layers and evidence",
+              "number": 12,
+              "phase": "upload",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:54Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 22,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Post Checkout repository",
+              "number": 23,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:57Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Stop containers",
+              "number": 24,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 25,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:57Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39331625425/job/118330980555"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-19T22:03:58Z",
+          "conclusion": "cancelled",
+          "duration_seconds": 305.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118330980869,
+          "kind": "container",
+          "name": "Container archive (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 4.0,
+            "setup": 31.0,
+            "upload": 1.0,
+            "validation": 266.0
+          },
+          "started_at": "2026-10-19T21:58:53Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-19T21:58:55Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:58:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:58:57Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-19T21:58:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:15Z",
+              "conclusion": "success",
+              "duration_seconds": 18.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:58:57Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:20Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:59:15Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:20Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-19T21:59:20Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:26Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:59:20Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:28Z",
+              "conclusion": "success",
+              "duration_seconds": 62.0,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-19T21:59:26Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:49Z",
+              "conclusion": "success",
+              "duration_seconds": 21.0,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": "2026-10-19T22:00:28Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "cancelled",
+              "duration_seconds": 183.0,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-19T22:00:49Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:52Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:53Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": "2026-10-19T22:03:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:53Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:54Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:03:55Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 29,
+              "phase": "other",
+              "started_at": "2026-10-19T22:03:55Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39331625425/job/118330980869"
+        },
+        {
+          "architecture": "arm64",
+          "completed_at": "2026-10-19T22:00:15Z",
+          "conclusion": "failure",
+          "duration_seconds": 80.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118330980937,
+          "kind": "container",
+          "name": "Container archive (ARM64)",
+          "phases": {
+            "build": null,
+            "other": 16.0,
+            "setup": 33.0,
+            "upload": 1.0,
+            "validation": 27.0
+          },
+          "started_at": "2026-10-19T21:58:55Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-19T21:58:57Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:58:56Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:03Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-19T21:58:57Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:22Z",
+              "conclusion": "success",
+              "duration_seconds": 19.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:59:03Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:28Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:59:22Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:28Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-19T21:59:28Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T21:59:35Z",
+              "conclusion": "success",
+              "duration_seconds": 7.0,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-19T21:59:28Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:02Z",
+              "conclusion": "failure",
+              "duration_seconds": 27.0,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-19T21:59:35Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:02Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": "2026-10-19T22:00:02Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:02Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-19T22:00:02Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:02Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": "2026-10-19T22:00:02Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:02Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:00:02Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:02Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": "2026-10-19T22:00:02Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:02Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": "2026-10-19T22:00:02Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:03Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": "2026-10-19T22:00:02Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:09Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": "2026-10-19T22:00:03Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:09Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": "2026-10-19T22:00:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:13Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": "2026-10-19T22:00:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-19T22:00:13Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 29,
+              "phase": "other",
+              "started_at": "2026-10-19T22:00:13Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39331625425/job/118330980937"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-19T22:04:01Z",
+          "conclusion": "cancelled",
+          "duration_seconds": 0.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118333074676,
+          "kind": "make-vs",
+          "name": "Make VS with Bazel SWSS (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-19T22:04:01Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39331625425/job/118333074676"
+        }
+      ],
+      "pr_association": "github",
+      "pr_association_note": null,
+      "pr_numbers": [
+        36
+      ],
+      "run_id": 39331625425,
+      "source_sha": "16da6f70b57acacd3a9fb3868237b7b478f69b66",
+      "started_at": "2026-10-19T21:58:50Z",
+      "status": "completed",
+      "updated_at": "2026-10-19T22:04:02Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39331625425/attempts/1",
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/dpkg-package-state",
