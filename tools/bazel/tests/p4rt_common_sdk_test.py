@@ -69,7 +69,9 @@ if command == "version":
 elif command == "build" and (root / "fail-build").exists():
     sys.exit(1)
 elif command == "cquery":
-    print(root / "sdk.tar")
+    print("bazel-out/sdk.tar" if (root / "relative-output").exists() else root / "sdk.tar")
+elif command == "info":
+    print(root / "execution-root")
 ''')
         bazel.chmod(0o755)
         return str(bazel)
@@ -150,6 +152,36 @@ elif command == "cquery":
             build_sdk(self.source, self.output, self.arch, bazel)
         calls = [json.loads(line) for line in (self.source / "calls.jsonl").read_text().splitlines()]
         self.assertFalse(any(call[1] == "build" for call in calls))
+
+    def test_sdk_lookup_uses_the_private_execution_root(self):
+        bazel = self.fake_bazel()
+        private_output = self.source / "execution-root/bazel-out"
+        private_output.mkdir(parents=True)
+        self.archive.rename(private_output / "sdk.tar")
+        other_output = self.root / "another-build-output"
+        other_output.mkdir()
+        (other_output / "sdk.tar").write_text("not this build's SDK")
+        (self.source / "bazel-out").symlink_to(other_output, target_is_directory=True)
+        (self.source / "relative-output").touch()
+        build_sdk(self.source, self.output, self.arch, bazel)
+        self.assertEqual((self.output / "include/swss/dbconnector.h").read_text(), "one")
+
+    def test_make_cache_tracks_the_helper_and_import_template(self):
+        repository = Path(__file__).resolve().parents[3]
+        makefile = """SONIC_P4RT := p4rt.deb
+p4rt.deb_SRC_PATH := src/sonic-p4rt
+include rules/p4rt.dep
+.PHONY: print-inputs
+print-inputs:
+\t@printf '%s\\n' $(p4rt.deb_DEP_FILES)
+"""
+        result = subprocess.run(["make", "--no-print-directory", "-s", "-f", "-", "print-inputs"],
+                                input=makefile, text=True, capture_output=True,
+                                cwd=repository, check=True)
+        inputs = result.stdout.splitlines()
+        self.assertIn("tools/bazel/p4rt_common_sdk.py", inputs)
+        self.assertIn("src/sonic-p4rt/common-sdk.BUILD.bazel", inputs)
+        self.assertTrue(all((repository / name).is_file() for name in inputs), inputs)
 
 
 if __name__ == "__main__":

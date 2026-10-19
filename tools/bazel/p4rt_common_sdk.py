@@ -106,7 +106,10 @@ def build_sdk(common_source, output_dir, arch, bazel="bazel", output_base=None, 
         files = run("cquery", *options, SDK_TARGET, "--output=files", capture=True).splitlines()
         if len(files) != 1:
             raise ValueError(f"{SDK_TARGET} must produce exactly one SDK archive")
-        archive = common_source / files[0]
+        # Another build can repoint the checkout's bazel-out convenience link.
+        # Resolve against this private server's execution root instead.
+        execution_root = Path(run("info", *options, "execution_root", capture=True))
+        archive = execution_root / files[0]
         source_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=common_source, text=True).strip()
         source_dirty = bool(subprocess.check_output(
