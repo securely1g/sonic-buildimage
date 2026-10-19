@@ -62,9 +62,6 @@ jobs:
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
 
-      - name: Select the reviewed infrastructure registration
-        run: python3 tools/bazel/ci/draft_registry.py --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/debian-gcc-toolchains
-
       - name: Verify native architecture and clean dependency inputs
         env:
           EXPECTED_MACHINE: ${{ matrix.machine }}
