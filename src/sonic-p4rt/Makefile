@@ -10,8 +10,12 @@ BAZEL_BUILD_TARGETS = //p4rt_app:p4rt_deb //p4rt_app:p4rt_dbg_deb
 # GNU dwp 2.44 cannot package GCC 14's default DWARF 5 debug information.
 BAZEL_BUILD_OPTS += --fission=opt --copt=-g --copt=-gdwarf-4
 
-# Override sonic_swss_common to use the version specific to this buildimage.
-BAZEL_BUILD_OPTS += --override_repository=sonic_swss_common=/sonic/src/sonic-swss-common
+# Common builds with Bazel 8.5.1; P4RT imports its library and headers with 6.4.0.
+COMMON_SOURCE ?= $(abspath $(CURDIR)/../sonic-swss-common)
+COMMON_SDK := $(CURDIR)/.common-sdk
+COMMON_SDK_BUILDER := $(abspath $(CURDIR)/../../tools/bazel/p4rt_common_sdk.py)
+BAZEL_BUILD_OPTS += --override_repository=sonic_swss_common=$(COMMON_SDK)
+P4RT_BAZEL = USE_BAZEL_VERSION=6.4.0 bazel
 
 # Newer version of gcc has spurious warnings in boringssl package.
 BAZEL_BUILD_OPTS += --copt=-Wno-array-bounds
@@ -20,18 +24,14 @@ BAZEL_BUILD_OPTS += --copt=-Wno-stringop-overflow
 # Keep optimized binaries with the skeleton debug information for the .dwp.
 BAZEL_BUILD_OPTS += -c opt
 
-# Use a host directory to store Bazel cache, if mounted. This will speed up
-# incremental rebuilds on the same system for developers that makes changes
-# to sonic-pins code.
-#
-# To build with Bazel cache, add DOCKER_BUILDER_USER_MOUNT:
-#   DOCKER_BUILDER_USER_MOUNT=<directory on host system>:$BAZEL_CACHE:rw
-#
-# For example:
-#   DOCKER_BUILDER_USER_MOUNT=/tmp/bazel_cache:/bazel:rw make target/...
-#
-BAZEL_CACHE ?= /bazel
-BAZEL_OPTS += $(shell test -d $(BAZEL_CACHE) && echo --output_user_root=$(BAZEL_CACHE)/cache)
+# The slave's /etc/bazel.bazelrc shares repository and disk caches at
+# /bazel_cache. Keep output bases and server state private to each builder.
+# BAZEL_CACHE remains an optional override for direct component builds.
+BAZEL_CACHE ?= /bazel_cache
+ifneq ($(wildcard $(BAZEL_CACHE)/.),)
+BAZEL_BUILD_OPTS += --repository_cache=$(BAZEL_CACHE)/repository_cache --disk_cache=$(BAZEL_CACHE)/disk_cache
+COMMON_CACHE_OPTS = --bazel-arg=--repository_cache=$(BAZEL_CACHE)/repository_cache --bazel-arg=--disk_cache=$(BAZEL_CACHE)/disk_cache
+endif
 
 MAIN_TARGET = $(SONIC_P4RT)
 DERIVED_TARGETS = $(SONIC_P4RT_DBG)
@@ -39,22 +39,18 @@ DERIVED_TARGETS = $(SONIC_P4RT_DBG)
 $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 	function cleanup {
 		# Note: make seems to hang if Bazel is still running
-		cd $(CURDIR)/sonic-pins && (bazel $(BAZEL_OPTS) shutdown; rm -rf bazel-*)
+		cd $(CURDIR)/sonic-pins && ($(P4RT_BAZEL) $(BAZEL_OPTS) shutdown; rm -rf bazel-*)
 	}
 	trap cleanup EXIT
 
-	# TODO: Remove this Makefile workaround
-	# once Bazel natively supports generating cfg_schema.h.
-	if [[ ! -f /sonic/src/sonic-swss-common/common/cfg_schema.h && -f /usr/include/swss/cfg_schema.h ]]; then \
-		if [ ! -d /sonic/src/sonic-swss-common/common ]; then \
-			mkdir -p /sonic/src/sonic-swss-common/common; \
-		fi; \
-		cp /usr/include/swss/cfg_schema.h /sonic/src/sonic-swss-common/common/cfg_schema.h; \
-	fi
+	# Recheck Common's source graph on every P4RT build, including cfg_schema.h.
+	python3 "$(COMMON_SDK_BUILDER)" --common-source "$(COMMON_SOURCE)" \
+		--output-dir "$(COMMON_SDK)" $(COMMON_CACHE_OPTS)
 
 	pushd ./sonic-pins
-	bazel $(BAZEL_OPTS) build $(BAZEL_BUILD_OPTS) $(BAZEL_BUILD_TARGETS)
-	bazel $(BAZEL_OPTS) test $(BAZEL_BUILD_OPTS) //$(BAZEL_TARGET_PATH)/...
+	$(P4RT_BAZEL) $(BAZEL_OPTS) version --gnu_format | grep -x 'bazel 6.4.0'
+	$(P4RT_BAZEL) $(BAZEL_OPTS) build $(BAZEL_BUILD_OPTS) $(BAZEL_BUILD_TARGETS)
+	$(P4RT_BAZEL) $(BAZEL_OPTS) test $(BAZEL_BUILD_OPTS) //$(BAZEL_TARGET_PATH)/...
 	cd ./bazel-bin/$(BAZEL_TARGET_PATH)
 	mv $* $(DERIVED_TARGETS) $(DEST)/
 	popd
