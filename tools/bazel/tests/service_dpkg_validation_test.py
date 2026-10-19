@@ -96,6 +96,10 @@ class ServiceDpkgValidationTest(unittest.TestCase):
                 for call in calls:
                     self.assertEqual(call["archive_sha256"], validation.sha(call["archive"]))
                     self.assertEqual(call["config_digest"], "sha256:" + "a" * 64)
+                    self.assertEqual(call["installed_source_receipts"], [
+                        "/usr/share/sonic/bazel/base-packages.json",
+                        "/usr/share/sonic/bazel/config-engine-packages.json",
+                    ])
                     self.assertNotIn("upgrade_packages", call)
                     self.assertNotIn("remove_packages", call)
                 self.assertEqual(calls[0]["installed_receipts"], ["/usr/share/sonic/bazel/syncd-packages.json"])

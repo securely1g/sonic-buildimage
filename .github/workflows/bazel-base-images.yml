@@ -225,9 +225,11 @@ jobs:
           result=0
           for image in docker-base-trixie docker-config-engine-trixie; do
             smoke_args=()
+            source_receipt_args=()
             if [ "$image" = docker-config-engine-trixie ]; then
               smoke_args=(--runtime-smoke tools/bazel/oci/base_runtime_smoke.py
                 --runtime-validation "artifacts/base-images/$image.validation.json")
+              source_receipt_args=(--installed-source-receipt /usr/share/sonic/bazel/base-packages.json)
             fi
             case "$image" in
               docker-base-trixie) receipt=base ;;
@@ -236,6 +238,7 @@ jobs:
             python3 -B tools/bazel/ci/validate_dpkg_state.py \
               --architecture "$EXPECTED_ARCH" --image "$image:latest" \
               --installed-receipt "/usr/share/sonic/bazel/$receipt-packages.json" \
+              "${source_receipt_args[@]}" \
               "${smoke_args[@]}" \
               --output "artifacts/base-images/dpkg-$image" || result=1
           done

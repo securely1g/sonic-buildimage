@@ -1,8 +1,10 @@
 """Checks that installed-image APT evidence cannot hide incomplete package state."""
 
 import hashlib
+import io
 import json
 import os
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import subprocess
 import tempfile
@@ -232,6 +234,121 @@ class PackageStateValidationTest(unittest.TestCase):
                     self.assertEqual(smoke.call_count, 2)
                 else:
                     self.assertIn("changed an existing package", result["error"])
+
+    def run_install_with_inherited_sources(self, *, mutation=None, conflicting_source=False,
+                                           stale_current_state=False):
+        """Use real receipt/filesystem checks around a simulated APT transaction."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def source_file(name):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("source bytes for " + name)
+                metadata = path.stat()
+                return {"path": name, "sha256": validation.sha(path), "mode": metadata.st_mode & 0o7777,
+                        "uid": metadata.st_uid, "gid": metadata.st_gid}
+
+            base_file = source_file("usr/lib/libcrypto.so.3")
+            common_file = source_file("usr/lib/libswsscommon.so.0")
+            service_file = source_file("usr/bin/orchagent")
+            link = root / "usr/lib/libswsscommon.so"
+            link.symlink_to("libswsscommon.so.0")
+            link_metadata = link.lstat()
+            common_link = {"path": str(link.relative_to(root)), "kind": "symlink", "linkname": "libswsscommon.so.0",
+                           "mode": 0o777, "uid": link_metadata.st_uid, "gid": link_metadata.st_gid}
+            state_name = "var/lib/dpkg/status"
+            state = root / state_name
+            state.parent.mkdir(parents=True)
+            state.write_text("current service dpkg state\n")
+            current_state = validation.sha(state)
+            common = {"package": "libswsscommon", "runtime_files": [common_file], "runtime_links": [common_link]}
+            receipts = {
+                "base": {"schema": 1, "architecture": "amd64", "info_files": {state_name: "a" * 64},
+                         "source_packages": [{"package": "libssl3t64", "runtime_files": [base_file]}]},
+                "config-engine": {"schema": 1, "architecture": "amd64", "info_files": {state_name: "b" * 64},
+                                  "source_packages": [common]},
+                "orchagent": {"schema": 1, "architecture": "amd64",
+                              "info_files": {state_name: "c" * 64 if stale_current_state else current_state},
+                              "source_packages": [common, {"package": "swss", "runtime_files": [service_file]}]},
+            }
+            if conflicting_source:
+                receipts["config-engine"]["source_packages"] = [dict(common, runtime_files=[dict(common_file, sha256="d" * 64)])]
+            paths = {}
+            for name, receipt in receipts.items():
+                paths[name] = "/usr/share/sonic/bazel/" + name + "-packages.json"
+                path = root / paths[name].lstrip("/")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(receipt))
+            lock = validation.read_lock(Path(__file__).with_name("dpkg_transactions.lock.json"), "amd64")
+            before = {"libc6:amd64": {"version": "2.41", "architecture": "amd64"}}
+            after = dict(before, **{row["package"]: {"version": row["version"], "architecture": "amd64"}
+                                    for row in lock["packages"]["amd64"]})
+            commands = []
+
+            def execute(command, _commands):
+                commands.append(command)
+                if command[-2:] == ["install", "qrencode"]:
+                    if mutation == "file":
+                        (root / base_file["path"]).write_text("Debian replacement\n")
+                    elif mutation == "file-to-link":
+                        path = root / base_file["path"]
+                        target = path.with_name("same-bytes.so")
+                        path.rename(target)
+                        path.symlink_to(target.name)
+                    elif mutation == "link":
+                        link.unlink()
+                        link.symlink_to("libswsscommon.so.other")
+                return subprocess.CompletedProcess(command, 0, "amd64\n", "")
+
+            load_receipts = validation.load_installed_receipts
+            verify_receipts = validation.verify_receipt_files
+            source_inventory = validation.source_file_inventory
+            with mock.patch.object(validation.platform, "machine", return_value="x86_64"), \
+                    mock.patch.object(validation, "guest_command", side_effect=execute), \
+                    mock.patch.object(validation, "installed_records", side_effect=[before, after]), \
+                    mock.patch.object(validation, "info_inventory", return_value={}), \
+                    mock.patch.object(validation, "load_installed_receipts", side_effect=lambda names: load_receipts(names, root)), \
+                    mock.patch.object(validation, "verify_receipt_files", side_effect=lambda values: verify_receipts(values, root)), \
+                    mock.patch.object(validation, "source_file_inventory", side_effect=lambda values: source_inventory(values, root)), \
+                    mock.patch.object(validation, "audit"), \
+                    mock.patch.object(validation, "run_runtime_smoke"), \
+                    mock.patch.object(validation.Path, "mkdir"), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = validation.run_guest({
+                    "mode": "install", "architecture": "amd64", "lock": lock,
+                    "installed_receipts": [paths["orchagent"]],
+                    "installed_source_receipts": [paths["base"], paths["config-engine"]],
+                })
+            return result, commands, current_state
+
+    def test_parent_source_receipts_ignore_stale_dpkg_state_but_preserve_all_sources(self):
+        result, _, digest = self.run_install_with_inherited_sources()
+        self.assertEqual(result["status"], "passed", result.get("error"))
+        self.assertEqual(result["verified_info_files"], {"var/lib/dpkg/status": digest})
+        self.assertEqual(result["install"]["preserved_source_files"], 4)  # Identical Common paths overlap.
+        self.assertEqual(len(result["installed_receipts"]), 1)
+        self.assertEqual(len(result["installed_source_receipts"]), 2)
+        self.assertTrue(all(len(row["sha256"]) == 64 for row in result["installed_source_receipts"]))
+        result, commands, _ = self.run_install_with_inherited_sources(stale_current_state=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Installed package-state file differs", result["error"])
+        self.assertFalse(any(command[-2:] == ["install", "qrencode"] for command in commands))
+
+    def test_install_rejects_inherited_file_or_link_mutations(self):
+        for mutation, error in [("file", "Source payload differs"), ("link", "Source symlink differs"),
+                                ("file-to-link", "Source payload is not a regular file")]:
+            with self.subTest(mutation=mutation):
+                result, commands, _ = self.run_install_with_inherited_sources(mutation=mutation)
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(error, result["error"])
+                self.assertTrue(any(command[-2:] == ["install", "qrencode"] for command in commands))
+
+    def test_current_source_receipt_cannot_hide_conflicting_parent_proof(self):
+        result, commands, _ = self.run_install_with_inherited_sources(conflicting_source=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Source payload differs", result["error"])
+        self.assertFalse(any(command[-2:] == ["install", "qrencode"] for command in commands))
 
     def test_runtime_smoke_script_and_report_are_read_only_in_the_same_container(self):
         args = validation.container_arguments("sha256:example", "unique-name", Path("script"), Path("repo"), Path("sources"),

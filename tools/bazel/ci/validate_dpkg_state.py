@@ -283,6 +283,7 @@ def source_file_inventory(receipts, root=Path("/")):
                 require(not name.startswith("/") and ".." not in Path(name).parts,
                         "Invalid source payload path")
                 path = root / name
+                require(path.is_file() and not path.is_symlink(), "Source payload is not a regular file: " + name)
                 metadata = {"sha256": sha(path), "mode": stat.S_IMODE(path.stat().st_mode),
                             "uid": path.stat().st_uid, "gid": path.stat().st_gid}
                 require(all(metadata[key] == entry[key] for key in metadata),
@@ -312,6 +313,18 @@ def run_runtime_smoke(request, commands):
         guest_command(["/usr/bin/python3", "-B", "/probe/runtime_smoke.py", "/probe/runtime_validation.json"], commands)
 
 
+def load_installed_receipts(names, root=Path("/")):
+    receipts, identities = [], []
+    for name in names:
+        require(name.startswith("/usr/share/sonic/bazel/") and ".." not in Path(name).parts,
+                "Invalid installed package-state receipt path")
+        path = root / name.lstrip("/")
+        require(path.is_file() and not path.is_symlink(), "Installed package-state receipt is missing: " + name)
+        receipts.append(json.loads(path.read_text()))
+        identities.append({"path": name, "sha256": sha(path)})
+    return receipts, identities
+
+
 def run_guest(request):
     result = {"_generated": NOTICE, "schema": 1, "status": "running", "mode": request["mode"],
               "architecture": request["architecture"], "commands": []}
@@ -325,15 +338,19 @@ def run_guest(request):
         before = installed_records(commands)
         result["installed"] = info_inventory(before)
         receipts = list(request.get("receipts", []))
-        result["installed_receipts"] = []
-        for name in request.get("installed_receipts", []):
-            require(name.startswith("/usr/share/sonic/bazel/") and ".." not in Path(name).parts,
-                    "Invalid installed package-state receipt path")
-            path = Path(name)
-            require(path.is_file() and not path.is_symlink(), "Installed package-state receipt is missing: " + name)
-            receipts.append(json.loads(path.read_text()))
-            result["installed_receipts"].append({"path": name, "sha256": sha(path)})
+        installed, result["installed_receipts"] = load_installed_receipts(request.get("installed_receipts", []))
+        receipts.extend(installed)
         result["verified_info_files"] = verify_receipt_files(receipts)
+        inherited_sources, result["installed_source_receipts"] = load_installed_receipts(
+            request.get("installed_source_receipts", []))
+        for receipt in inherited_sources:
+            require(receipt.get("schema") == 1 and receipt.get("architecture") == request["architecture"] and
+                    isinstance(receipt.get("source_packages"), list) and receipt["source_packages"],
+                    "Invalid inherited source receipt")
+        # Parent receipts describe an earlier dpkg database. Use only their
+        # source inventories; the current image receipt above owns dpkg state.
+        # Keep overlapping source paths so inconsistent proofs still fail.
+        source_receipts = [*inherited_sources, *receipts]
         audit(commands)
         if request["mode"] == "initial-configuration":
             result["configuration"] = initial_configuration(commands, before)
@@ -347,7 +364,7 @@ def run_guest(request):
             require(not any(package in before or any(key.startswith(package + ":") for key in before)
                             for package in lock["required_dependencies"]),
                     "Dependency probe must install a new library, not reuse an already installed one")
-            protected = source_file_inventory(receipts)
+            protected = source_file_inventory(source_receipts)
             run_runtime_smoke(request, commands)
             guest_command(apt_command(["--no-install-recommends", "install", name]), commands)
             installed = installed_records(commands)
@@ -365,7 +382,7 @@ def run_guest(request):
             guest_command(lock["command"], commands)
             info_inventory(installed)
             audit(commands)
-            require(source_file_inventory(receipts) == protected, "APT changed a source payload")
+            require(source_file_inventory(source_receipts) == protected, "APT changed a source payload")
             run_runtime_smoke(request, commands)
             result["install"] = {"requested_package": name, "added_packages": added,
                                  "preserved_existing_packages": len(before), "preserved_source_files": len(protected),
@@ -419,7 +436,8 @@ def run_probe(image_id, request, repository, sources, output, label, runtime_smo
 
 
 def validate(*, architecture, output, image=None, archive=None, archive_sha256=None,
-             config_digest=None, receipt_paths=(), installed_receipts=(), lock_path=None, runtime_smoke=None, runtime_validation=None):
+             config_digest=None, receipt_paths=(), installed_receipts=(), installed_source_receipts=(),
+             lock_path=None, runtime_smoke=None, runtime_validation=None):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     report = {"_generated": NOTICE, "schema": 1, "status": "running", "architecture": architecture,
@@ -456,6 +474,7 @@ def validate(*, architecture, output, image=None, archive=None, archive_sha256=N
         sources = output / "sources.list"
         sources.write_text("# AUTO-GENERATED. DO NOT EDIT. Local verified test packages only.\ndeb [trusted=yes] file:/probe/packages ./\n")
         common = {"architecture": architecture, "receipts": receipts, "installed_receipts": list(installed_receipts),
+                  "installed_source_receipts": list(installed_source_receipts),
                   "lock": lock, "runtime_smoke": bool(runtime_smoke)}
         requests = [("initial-configuration", dict(common, mode="initial-configuration"), repository),
                     ("install", dict(common, mode="install"), repository)]
@@ -493,6 +512,8 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--package-receipt", action="append", type=Path, default=[])
     parser.add_argument("--installed-receipt", action="append", default=[])
+    parser.add_argument("--installed-source-receipt", action="append", default=[],
+                        help="Inherited receipt used only to preserve source files, not historical dpkg state")
     parser.add_argument("--runtime-smoke", type=Path)
     parser.add_argument("--runtime-validation", type=Path)
     parser.add_argument("--lock", type=Path)
@@ -500,6 +521,7 @@ def main():
     validate(architecture=args.architecture, output=args.output, image=args.image,
              archive=args.archive, archive_sha256=args.archive_sha256, config_digest=args.config_digest,
              receipt_paths=args.package_receipt, installed_receipts=args.installed_receipt,
+             installed_source_receipts=args.installed_source_receipt,
              lock_path=args.lock, runtime_smoke=args.runtime_smoke, runtime_validation=args.runtime_validation)
 
 

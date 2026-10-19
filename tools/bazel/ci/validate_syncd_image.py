@@ -204,7 +204,11 @@ def validate_dpkg_images(paths, output):
             result = validate_dpkg_state(
                 architecture="amd64", output=output / ("dpkg-" + name), archive=archive,
                 archive_sha256=sha(archive), config_digest=layout.manifest["config"]["digest"],
-                installed_receipts=["/usr/share/sonic/bazel/" + receipt])
+                installed_receipts=["/usr/share/sonic/bazel/" + receipt],
+                installed_source_receipts=[
+                    "/usr/share/sonic/bazel/base-packages.json",
+                    "/usr/share/sonic/bazel/config-engine-packages.json",
+                ])
             results[name] = {"status": result["status"], "archive_sha256": sha(archive),
                              "image_manifest_digest": layout.descriptor["digest"],
                              "receipt_sha256": sha(output / ("dpkg-" + name) / "receipt.json")}
