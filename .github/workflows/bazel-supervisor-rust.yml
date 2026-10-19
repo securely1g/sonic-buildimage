@@ -95,9 +95,9 @@ jobs:
           python3 - <<'PYCODE'
           import os, shlex, shutil, subprocess
           from pathlib import Path
-          branch = 'codex/source-debian-runtime-permissions'
+          branch = 'codex/image-package-gcc-integration'
           observed = subprocess.check_output(['git', 'ls-remote', 'https://github.com/securely1g/sonic-bazel-registry.git', 'refs/heads/' + branch], text=True).split()[0]
-          assert observed == '7f8a0fd08ceb36cfaca9645a24e7f1dd174e0302'
+          assert observed == '0a55b33a8dddbea8d39fcdfad2d6208aa0e656b0'
           directory = Path(os.environ['RUNNER_TEMP']) / 'package-registry'
           directory.mkdir()
           rc = directory / 'effective.bazelrc'
@@ -222,11 +222,11 @@ jobs:
           from pathlib import Path
           config = Path('.bazelrc').read_text().replace(
               'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main',
-              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/source-debian-runtime-permissions')
+              'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/image-package-gcc-integration')
           Path(sys.argv[1]).write_text('\n'.join(line for line in config.splitlines() if not line.startswith('try-import ')) + '\n')
           PYCODE
-          observed=$(git ls-remote https://github.com/securely1g/sonic-bazel-registry.git refs/heads/codex/source-debian-runtime-permissions | cut -f1)
-          test "$observed" = 7f8a0fd08ceb36cfaca9645a24e7f1dd174e0302
+          observed=$(git ls-remote https://github.com/securely1g/sonic-bazel-registry.git refs/heads/codex/image-package-gcc-integration | cut -f1)
+          test "$observed" = 0a55b33a8dddbea8d39fcdfad2d6208aa0e656b0
           printf '%s\n' "$observed" > "$evidence/registry-revision.txt"
           cp "$RUNNER_TEMP/common-package.bazelrc" "$evidence/effective.bazelrc"
           machine=$(uname -m)
