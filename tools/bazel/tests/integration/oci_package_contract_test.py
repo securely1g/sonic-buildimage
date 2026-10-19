@@ -401,41 +401,28 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "archive inventory differs"):
             subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
 
-    def test_contract_rejects_invalid_owner_label_and_incomplete_dependency_metadata(self):
-        """Source provenance and dependency checks cannot be weakened by changing one contract field."""
-        variants = []
+    def test_contract_rejects_invalid_owner_label(self):
+        """Source provenance cannot be weakened by changing the owner's target."""
         value = copy.deepcopy(self.value)
         value["packages"][0]["source"]["target"] = "not-a-bazel-label"
-        variants.append(value)
-        value = copy.deepcopy(self.value)
-        deb = next(record for record in value["packages"] if "control_fields" in record)
-        del deb["control_fields"]["Depends"]
-        variants.append(value)
-        for value in variants:
-            with self.subTest(value=value["packages"][0]):
-                self.contract.write_bytes(subject.json_bytes(value))
-                with self.assertRaises(ValueError):
-                    subject.read_contract(self.contract)
+        self.contract.write_bytes(subject.json_bytes(value))
+        with self.assertRaises(ValueError):
+            subject.read_contract(self.contract)
 
-    def test_receipt_cannot_claim_contract_hash_with_different_source_or_dependencies(self):
-        """The contract digest also binds its actual source and dependency records, not just JSON syntax."""
+    def test_receipt_cannot_claim_contract_hash_with_different_source(self):
+        """The contract digest binds its actual source records, not just JSON syntax."""
         value = self.build()
         subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
-        for field in ("source", "control_fields"):
-            with self.subTest(field=field):
-                altered = copy.deepcopy(value)
-                if field == "source":
-                    altered["packages"][0][field].update(commit="a" * 40, version="0.0.1-" + "a" * 40)
-                    if "module_version" in altered["packages"][0][field]:
-                        altered["packages"][0][field]["module_version"] = "0.0.1"
-                    if altered["packages"][0].get("kind") == "runtime-layer":
-                        altered["packages"][0]["version"] = altered["packages"][0][field]["version"]
-                else:
-                    deb = next(record for record in altered["packages"] if "control_fields" in record)
-                    deb[field]["Depends"] = "libc6"
-                self.receipt.write_bytes(subject.json_bytes(altered))
-                with self.assertRaisesRegex(ValueError, "differs from the reviewed contract"):
-                    subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
+        altered = copy.deepcopy(value)
+        source = altered["packages"][0]["source"]
+        source.update(commit="a" * 40, version="0.0.1-" + "a" * 40)
+        if "module_version" in source:
+            source["module_version"] = "0.0.1"
+        if altered["packages"][0].get("kind") == "runtime-layer":
+            altered["packages"][0]["version"] = source["version"]
+        self.receipt.write_bytes(subject.json_bytes(altered))
+        with self.assertRaisesRegex(ValueError, "differs from the reviewed contract"):
+            subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
 
     def test_retained_manifest_keeps_make_and_source_provenance_separate(self):
         """APT sees source dependencies while the original Make input and debug binding remain exact."""
@@ -474,6 +461,22 @@ class UnrelatedSourceContractTest(SourcePackageFixture, unittest.TestCase):
     """Prove source handling is independent of Syncd and the three SONiC libraries."""
 
     contract_document = source_contract()
+
+    def test_contract_rejects_incomplete_dependency_metadata(self):
+        """Debian controls use a package fixture even when the image consumes only runtime TARs."""
+        del self.value["packages"][0]["control_fields"]["Depends"]
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        with self.assertRaises(ValueError):
+            subject.read_contract(self.contract)
+
+    def test_receipt_cannot_claim_contract_hash_with_different_dependencies(self):
+        """A receipt cannot change Debian dependencies while retaining the contract digest."""
+        value = self.build()
+        subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
+        value["packages"][0]["control_fields"]["Depends"] = "libc6 (>= 9.9)"
+        self.receipt.write_bytes(subject.json_bytes(value))
+        with self.assertRaisesRegex(ValueError, "differs from the reviewed contract"):
+            subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
 
     def test_installation_owner_and_setgid_change_metadata_only(self):
         """Image-local group assignment preserves the owner's exact executable bytes."""
