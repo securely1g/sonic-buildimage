@@ -59,8 +59,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils build-essential busybox ca-certificates \
-            gdb git libtool make pigz pkg-config python3 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates \
+            gdb git libtool make pigz pkg-config python3 python3-jinja2 tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,6 +93,10 @@ jobs:
           repository-cache: true
           disk-cache: buildimage-${{ matrix.mode }}-${{ matrix.architecture }}
           cache-version: "8.5.1"
+
+      - name: Check P4RT TAR handoff and isolated debug symbols
+        if: matrix.mode == 'test'
+        run: python3 -B -m unittest discover -s tools/bazel/tests -p 'p4rt*_test.py'
 
       - name: Run Bazel checks and validate outputs
         run: python3 tools/bazel/ci/run.py "${{ matrix.mode }}" --artifacts "artifacts/${{ matrix.mode }}"
