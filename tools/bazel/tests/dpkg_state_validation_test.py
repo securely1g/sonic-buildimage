@@ -182,6 +182,28 @@ class PackageStateValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Source symlink differs'):
                 validation.source_file_inventory([receipt], root)
 
+    def test_flattened_symlink_dot_prefix_preserves_target_and_metadata_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / 'usr/lib/libexample.so.1'
+            path.parent.mkdir(parents=True)
+            path.symlink_to('./libexample.so.1.2.3')
+            metadata = path.lstat()
+            entry = {'path': str(path.relative_to(root)), 'kind': 'symlink',
+                     'linkname': 'libexample.so.1.2.3', 'mode': 0o777,
+                     'uid': metadata.st_uid, 'gid': metadata.st_gid}
+            receipt = {'source_packages': [{'package': 'example', 'runtime_links': [entry]}]}
+            self.assertIn(entry['path'], validation.source_file_inventory([receipt], root))
+            for key, value in [('uid', metadata.st_uid + 1), ('gid', metadata.st_gid + 1), ('mode', 0o755)]:
+                with self.subTest(changed=key):
+                    changed = {'source_packages': [{'runtime_links': [dict(entry, **{key: value})]}]}
+                    with self.assertRaisesRegex(ValueError, 'Source symlink differs'):
+                        validation.source_file_inventory([changed], root)
+            path.unlink()
+            path.symlink_to('./../libexample.so.1.2.3')
+            with self.assertRaisesRegex(ValueError, 'Source symlink differs'):
+                validation.source_file_inventory([receipt], root)
+
     def test_install_checks_new_dependencies_and_preserves_existing_packages(self):
         lock = validation.read_lock(Path(__file__).with_name("dpkg_transactions.lock.json"), "amd64")
         before = {"libc6:amd64": {"version": "2.41", "architecture": "amd64"}}

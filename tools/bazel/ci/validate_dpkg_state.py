@@ -11,7 +11,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import stat
@@ -295,7 +295,9 @@ def source_file_inventory(receipts, root=Path("/")):
                         "Invalid source symlink path")
                 path = root / name
                 require(path.is_symlink(), "Source symlink is missing: " + name)
-                metadata = {"kind": "symlink", "linkname": os.readlink(path),
+                # Match archive inventory normalization: flattening may add ./,
+                # while parent components must retain their path semantics.
+                metadata = {"kind": "symlink", "linkname": str(PurePosixPath(os.readlink(path))),
                             "mode": stat.S_IMODE(path.lstat().st_mode),
                             "uid": path.lstat().st_uid, "gid": path.lstat().st_gid}
                 require(all(metadata[key] == entry[key] for key in metadata),
