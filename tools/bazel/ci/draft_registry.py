@@ -28,7 +28,11 @@ def main():
     effective = directory / "effective.bazelrc"
     effective.write_text(original.replace(canonical, args.registry))
     wrapper = directory / "bazel"
-    wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(bazel)
+    # Bazel's standalone version probe rejects injected startup options.
+    wrapper.write_text("#!/bin/sh\n"
+                       + 'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then\n'
+                       + "  exec " + shlex.quote(bazel) + ' "$@"\nfi\n'
+                       + "exec " + shlex.quote(bazel)
                        + " --noworkspace_rc --bazelrc=" + shlex.quote(str(effective))
                        + ' "$@"\n')
     wrapper.chmod(0o755)
