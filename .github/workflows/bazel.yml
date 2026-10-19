@@ -121,10 +121,18 @@ jobs:
   image:
     name: Bazel VS installer (AMD64)
     needs: ci
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+       github.ref == 'refs/heads/master')
     # Full native prerequisites need substantially more disk than a standard
     # hosted runner. Register this label on a disposable source-build runner.
-    runs-on: [self-hosted, linux, x64, sonic-vs-source]
+    runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
     timeout-minutes: 720
+    env:
+      VS_WORKSPACE: /data/sonic-runner/cache/sonic-buildimage/vs-installer/checkout-${{ github.run_id }}-${{ github.run_attempt }}
+      VS_STATE: /data/sonic-runner/cache/sonic-buildimage/vs-installer/state
     defaults:
       run:
         shell: bash
@@ -133,10 +141,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Never let checkout's cleanup erase another retained source attempt.
+          path: vs-installer-ci/checkout-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Move this checkout into the persistent build area
+        id: relocate
+        run: |
+          staged="$GITHUB_WORKSPACE/vs-installer-ci/checkout-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          /usr/bin/python3 -B "$staged/tools/bazel/ci/image_docker.py" \
+            --relocate-from "$staged" --workspace "$VS_WORKSPACE" \
+            --state "$VS_STATE" --artifacts "$VS_WORKSPACE/artifacts/image"
 
       - name: Initialize every recorded native and Bazel source
+        working-directory: ${{ env.VS_WORKSPACE }}
         run: |
-          export GIT_CONFIG_SYSTEM="$GITHUB_WORKSPACE/tools/bazel/ci/fork-source.gitconfig"
+          export GIT_CONFIG_SYSTEM="$VS_WORKSPACE/tools/bazel/ci/fork-source.gitconfig"
           echo "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM" >> "$GITHUB_ENV"
           git submodule update --init --recursive --jobs 4
 
@@ -144,35 +163,36 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
-            ${{ github.workspace }}/../vs-ci-state/package-cache
-            ${{ github.workspace }}/../vs-ci-state/repository-cache
-          key: sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'tools/bazel/common.bazelrc') }}-${{ github.sha }}
+            ${{ env.VS_STATE }}/package-cache
+            ${{ env.VS_STATE }}/repository-cache
+          key: sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ steps.relocate.outputs.source-cache-key }}-${{ github.sha }}
           restore-keys: |
-            sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'tools/bazel/common.bazelrc') }}-
+            sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ steps.relocate.outputs.source-cache-key }}-
             sonic-vs-bazel-8.5.1-${{ runner.os }}-
 
       - name: Check source-build runner capacity
         run: |
-          df -h "$GITHUB_WORKSPACE"
+          df -h "$VS_WORKSPACE"
           /usr/bin/python3 - <<'PY'
           import os, shutil
-          free = shutil.disk_usage(os.environ["GITHUB_WORKSPACE"]).free
+          free = shutil.disk_usage(os.environ["VS_WORKSPACE"]).free
           if free < 300 * 1024**3:
               raise SystemExit("VS native source build needs at least 300 GiB of free disk after cache restore")
           PY
           docker info > /dev/null
 
       - name: Build and verify sonic-vs.bin with Bazel
+        working-directory: ${{ env.VS_WORKSPACE }}
         run: |
           ca_args=()
           if [[ -n "${SONIC_BUILD_CA_BUNDLE:-}" ]]; then
             ca_args=(--ca-bundle "$SONIC_BUILD_CA_BUNDLE")
           fi
-          sudo /usr/bin/python3 tools/bazel/ci/image.py \
-            --workspace "$GITHUB_WORKSPACE" \
+          /usr/bin/python3 -B tools/bazel/ci/image_docker.py \
+            --workspace "$VS_WORKSPACE" \
             --git-config "$GIT_CONFIG_SYSTEM" \
-            --state "$GITHUB_WORKSPACE/../vs-ci-state" \
-            --artifacts "$GITHUB_WORKSPACE/artifacts/image" \
+            --state "$VS_STATE" \
+            --artifacts "$VS_WORKSPACE/artifacts/image" \
             "${ca_args[@]}"
 
       - name: Upload VS installer and build evidence
@@ -180,7 +200,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-bazel-amd64
-          path: artifacts/image/
+          path: |
+            ${{ env.VS_WORKSPACE }}/artifacts/image/
+            ${{ env.VS_WORKSPACE }}/artifacts/controller/
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

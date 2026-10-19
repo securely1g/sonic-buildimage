@@ -319,7 +319,9 @@ def build(args):
         created = output_root.lstat()
         output_identity = (created.st_dev, created.st_ino)
         receipt["output_cleanup"]["status"] = "retained"
-        for path in (state / "repository-cache", state / "package-cache"):
+        caches = (state / "repository-cache", state / "package-cache")
+        for path in caches:
+            require(not path.is_symlink(), "shared cache must not be a symlink: " + str(path))
             path.mkdir(parents=True, exist_ok=True)
         # Native package recipes legitimately create or rewrite source files.
         # Freeze independent Git checkouts before Make starts; never pass its
@@ -336,7 +338,10 @@ def build(args):
                                   "clone_seconds": source_record["wall_seconds"]}
         if os.geteuid() == 0:
             ownership_changed = True
-            for path in (workspace, state):
+            # Older native Docker trees under state retain their own ownership.
+            # Only this invocation and the two shared caches belong to this job.
+            os.chown(state, 1000, 1000, follow_symlinks=False)
+            for path in (workspace, bazel_workspace, output_root, *caches):
                 chown_tree(path, 1000, 1000)
         spec = build_worker(workspace, state, artifacts, receipt, invocation,
                             getattr(args, "ca_bundle", None))

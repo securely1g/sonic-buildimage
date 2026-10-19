@@ -280,10 +280,17 @@ workspace, output root and caches; no host Cargo installation is needed.
 
 `Bazel VS installer (AMD64)` builds native prerequisites from the checked-out
 sources, then builds `//tools/bazel/image/vs:sonic-vs.bin` with Bazel. It uses a
-disposable self-hosted runner labeled `sonic-vs-source`, because a complete native
+disposable self-hosted runner labeled `sonic-vs-source-master`, because a complete native
 source build needs substantially more disk than standard hosted runners. The
 job requires 300 GiB free after restoring caches. Provision Docker, Git, Python
-3 and passwordless sudo on the runner; 32 GiB RAM is recommended. Native
+3 and access to its local Docker daemon on the runner; 32 GiB RAM is recommended.
+The controller runs as root inside the public worker image, without host sudo.
+The job accepts same-repository PRs and pushes or manual runs on `master`.
+Each run stages a unique checkout, then moves it to
+`/data/sonic-runner/cache/sonic-buildimage/vs-installer/checkout-RUN-ATTEMPT`.
+The sibling `state` directory preserves package and repository caches when the
+one-job runner is replaced. The dedicated bind root permits traversal by worker
+UID1000 while the runner's private host-side cache ancestors stay unchanged. Native
 preparation uses one package job, two compiler jobs per package and a 16-GiB
 worker limit. The later Bazel worker uses four CPUs, 12 GiB and four jobs.
 
@@ -331,7 +338,7 @@ directory, initialize its recursive submodules, and run:
 
 ```sh
 git submodule update --init --recursive --jobs 4
-sudo python3 tools/bazel/ci/image.py \
+python3 -B tools/bazel/ci/image_docker.py \
   --workspace "$PWD" --state "$PWD/../vs-ci-state" \
   --artifacts "$PWD/artifacts/image"
 ```
@@ -346,8 +353,10 @@ worker image. Certificate bytes are excluded from published evidence and the
 SONiC host/service inputs. Without this option, workers use their packaged trust
 stores. The launcher does not mount the host's certificate directories.
 
-The controller owns its dedicated workers and restores checkout ownership
-afterward. It does not remove local SDKs or operate on unrelated Docker workers.
+The controller owns its dedicated workers and restores checkout and shared-cache
+ownership afterward. Cancellation stops its container with time for nested-worker
+cleanup. It does not change ownership inside older retained native Docker state,
+remove local SDKs, or operate on unrelated Docker workers.
 The source-built DASH library and Python extension require matching debug
 symbols in package validation.
 

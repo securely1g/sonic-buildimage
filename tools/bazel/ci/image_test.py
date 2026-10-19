@@ -225,8 +225,12 @@ class ImageControllerTest(unittest.TestCase):
                 mock.patch.object(image, "source_provenance", return_value={"source_commit": "abc123"}), \
                 mock.patch.object(image, "execute", side_effect=execute):
             self.assertEqual(image.build(arguments), 1)
+        receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
         self.assertEqual(chown.call_args_list, [mock.call(self.workspace, 1000, 1000),
-                         mock.call(self.state, 1000, 1000),
+                         mock.call(self.bazel_workspace, 1000, 1000),
+                         mock.call(Path(receipt["output_user_root"]), 1000, 1000),
+                         mock.call(self.state / "repository-cache", 1000, 1000),
+                         mock.call(self.state / "package-cache", 1000, 1000),
                          mock.call(self.bazel_workspace / "target", 1000, 1000),
                          mock.call(self.workspace, *owner)])
         self.assertEqual(len(commands), 4)
@@ -237,6 +241,20 @@ class ImageControllerTest(unittest.TestCase):
         self.assertFalse((self.artifacts / "sonic-vs.bin").exists())
         self.assertEqual(receipt["output_cleanup"]["status"], "retained")
         self.assertTrue(Path(receipt["output_user_root"]).is_dir())
+
+    def test_cache_symlink_is_rejected_before_worker_setup(self):
+        self.state.mkdir()
+        retained = self.root / "another-job"
+        retained.mkdir()
+        (self.state / "package-cache").symlink_to(retained, target_is_directory=True)
+        arguments = argparse.Namespace(workspace=self.workspace, state=self.state, artifacts=self.artifacts)
+        with mock.patch.object(image.os, "geteuid", return_value=1000), \
+                mock.patch.object(image, "source_provenance", return_value={"source_commit": "fixture"}), \
+                mock.patch.object(image, "build_worker") as worker:
+            self.assertEqual(image.build(arguments), 1)
+        worker.assert_not_called()
+        receipt = json.loads((self.artifacts / "image-receipt.json").read_text())
+        self.assertIn("cache must not be a symlink", receipt["error"])
 
     def test_worker_is_built_from_recipe_and_actual_bazel_version_is_checked(self):
         recipe = self.workspace / "tools/bazel/image/worker"

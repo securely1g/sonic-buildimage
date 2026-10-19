@@ -57,6 +57,21 @@ py_test(
 )
 
 py_test(
+    name = "image_docker_test",
+    srcs = [
+        "image.py",
+        "image_docker.py",
+        "image_docker_test.py",
+        "image_inputs.py",
+        "resolution.py",
+        "rust.py",
+        "source_workspace.py",
+        "trust.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
     name = "source_workspace_test",
     srcs = [
         "source_workspace.py",
