@@ -174,6 +174,6 @@ For Python changes, edit the owning `requirements.in` and regenerate the shared
 config-engine lock with the existing documented `uv pip compile` command. Keep
 base-specific declarations in `dockers/docker-base-trixie/requirements.in`.
 
-Shared sysroot and Kerberos tools now resolve from maintained registry `main` as `0.0.16-1d6990a2ba2980315f086a461a08312bbc3f217c`, using landed infrastructure master. The root override keeps older Draft consumer declarations from selecting their obsolete integration snapshot. Common also resolves from main; both temporary source overrides have been removed. Remaining entries in `draft_sources.json` retain their explicit reviewed source recipes.
+Shared sysroot and Kerberos tools use reviewed infrastructure `0.0.16-72d9705e37d0e83a072cad3eb73b75cd6cc1e4c6`, including the GNU linker runtime-library search fix. Draft CI selects the exact registry #80 source recipe from `draft_sources.json`; the normal registry default remains maintained `main`. The root override keeps older consumer declarations from selecting an obsolete infrastructure snapshot.
 
-The FIPS runtime registration uses source `996620548fdbac8930e74d788a6226ffc5371287`, which selects the combined sysroot API used by the landed infrastructure. OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
+The FIPS runtime source is `dcd6a3a1ba873386b1f80d5b0b1f96a23728b399`. It declares the GNU tool runtime files required by SymCrypt, while OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
