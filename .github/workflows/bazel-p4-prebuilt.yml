@@ -51,9 +51,6 @@ jobs:
           disk-cache: false
           cache-version: "8.5.1"
 
-      - name: Select the reviewed infrastructure registration
-        run: python3 tools/bazel/ci/draft_registry.py --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/codex/debian-gcc-toolchains
-
       - name: Test package import and Make selection
         run: python3 -B -m unittest discover -s tools/bazel/p4/tests -p '*_test.py' -v
 
