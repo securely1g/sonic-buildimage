@@ -132,7 +132,7 @@ def collect_test_outputs(events, artifacts, targets, labels=None):
     return collected, validations
 
 
-def run(container, *, workspace, artifacts, bazel, options, source_files=(), allow_deb=False):
+def run(container, *, workspace, artifacts, bazel, options, source_files=()):
     """Run the owner's Bazel CI targets and retain their outputs and failure evidence."""
     require(container.startswith("//") and ":" not in container and
             all(part not in ("", ".", "..") for part in container[2:].split("/")),
@@ -168,15 +168,15 @@ def run(container, *, workspace, artifacts, bazel, options, source_files=(), all
         actions.touch(mode=0o600, exist_ok=False)
         try:
             execute([bazel, "aquery", *options, "deps(set(" + " ".join(targets) + "))",
-                     "--output=jsonproto"], artifacts, receipt, "actions", output_path=actions)
+                     "--include_file_write_contents", "--output=jsonproto"], artifacts, receipt, "actions", output_path=actions)
             audit = inspect_actions(actions)
         finally:
             actions.unlink(missing_ok=True)
         audit["targets"] = targets
-        audit["deb_generation_authorized"] = allow_deb
+        audit["deb_generation_authorized"] = False
         (artifacts / "execution-gate-audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
         receipt["action_audit"] = audit
-        require((allow_deb or not (audit["deb_outputs"] or audit["deb_packaging_actions"])) and not audit["packaging_wrappers"],
+        require(not (audit["deb_outputs"] or audit["deb_packaging_actions"] or audit["packaging_wrappers"]),
                 "container CI contains a DEB or packaging wrapper action")
 
         labels = configured_test_labels(tests, bazel, options, artifacts, receipt, execute)
@@ -220,8 +220,6 @@ def run(container, *, workspace, artifacts, bazel, options, source_files=(), all
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--container", required=True, help="Owner Bazel package, e.g. //dockers/docker-orchagent")
-    parser.add_argument("--allow-deb", action="store_true",
-                        help="Build the explicitly approved source-owned Debian packages")
     parser.add_argument("--bazel", default="bazel")
     parser.add_argument("--bazel-arg", action="append", default=[])
     parser.add_argument("--source-file", action="append", default=[],
@@ -230,7 +228,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         run(args.container, workspace=ROOT, artifacts=args.artifacts.resolve(), bazel=args.bazel,
-            options=[*OPTIONS, *args.bazel_arg], source_files=args.source_file, allow_deb=args.allow_deb)
+            options=[*OPTIONS, *args.bazel_arg], source_files=args.source_file)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         parser.exit(1, "container CI failed: " + str(error) + "\n")
 

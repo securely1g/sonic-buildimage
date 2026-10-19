@@ -425,9 +425,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                 if job_status == "success":
                     audit = receipts["execution_audit"]
                     require(not audit["packaging_wrapper_count"], "unsafe-execution-audit")
-                    require(audit["deb_generation_authorized"] or not (
-                        audit["deb_output_count"] or audit["deb_packaging_action_count"]),
-                        "unapproved-deb-generation")
+                    require(not (audit["deb_output_count"] or audit["deb_packaging_action_count"]),
+                            "unexpected-deb-generation")
             except (ValueError, TypeError):
                 blocked.append({"input": "execution-audit", "reason": "invalid-execution-audit"})
     if kind == "vs" and job_status == "success":

@@ -233,18 +233,10 @@ apt_install(
     tags = ["manual"],
 )
 
-# Protobuf replaces a Debian library, so keep its real package identity.
-# SWSS, Common, sairedis and DASH remain ordinary binary layers.
-_SOURCE_DEBS = {
-    "libprotobuf32t64": "@protobuf_legacy//sonic:libprotobuf32t64_deb",
-}
-
-_SOURCE_LAYERS = {name: target for name, target in _SOURCE_PACKAGES.items() if name not in _SOURCE_DEBS}
-
 sonic_layer(
     name = "source_runtime_files",
     root_owned = True,
-    tars = _SOURCE_LAYERS.values(),
+    tars = _SOURCE_PACKAGES.values(),
 )
 
 # Common's runtime uses /var/run; preserve the base's /var/run -> /run link.
@@ -255,44 +247,41 @@ normalize_layer(
     expected_platform = "linux/amd64",
     modes = {"run/redis/sonic-db/database_config.json": "0644"},
     root_owned = True,
-    tars = _SOURCE_LAYERS.values(),
-)
-
-apt_install(
-    name = "configured_sources",
-    architecture = "amd64",
-    base = ":configured_debian",
-    bwrap = "//tools/bazel/oci:bubblewrap",
-    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
-    packages = _SOURCE_DEBS.values(),
-    tags = ["manual"],
+    tars = _SOURCE_PACKAGES.values(),
 )
 
 filegroup(
     name = "installation_receipt",
-    srcs = [":configured_sources"],
+    srcs = [":configured_debian"],
     output_group = "receipt",
 )
 
 installed_source_metadata(
     name = "runtime_package_metadata",
-    allow_same_owner_overlays = select({
-        ":source_config_engine_enabled": False,
-        "//conditions:default": True,
-    }),
+    allow_same_owner_overlays = True,
     architecture = "amd64",
     installation = ":installation_receipt",
-    packages = _SOURCE_DEBS,
-    payloads = _SOURCE_LAYERS,
-    rootfs = ":configured_sources",
+    payloads = _SOURCE_PACKAGES,
+    rootfs = ":configured_debian",
     runtime_layer = ":source_runtime_layer",
     spec = "//dockers/docker-orchagent/bazel:source_packages.json",
 )
 
+filegroup(
+    name = "source_apt_preferences",
+    srcs = [":runtime_package_metadata"],
+    output_group = "apt_preferences",
+)
+
 tar(
     name = "source_provenance",
-    srcs = [":runtime_package_metadata"],
+    srcs = [
+        ":runtime_package_metadata",
+        ":source_apt_preferences",
+    ],
     mtree = [
+        "etc/apt/preferences.d type=dir mode=0755 uid=0 gid=0 time=0",
+        "etc/apt/preferences.d/sonic-source-orchagent type=file mode=0644 uid=0 gid=0 time=0 content=$(location :source_apt_preferences)",
         "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
         "usr/share/sonic/bazel/orchagent-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :runtime_package_metadata)",
     ],
@@ -302,7 +291,7 @@ flatten(
     name = "complete_filesystem",
     deduplicate = True,
     tars = [
-        ":configured_sources",
+        ":configured_debian",
         ":source_runtime_layer",
         "//dockers/docker-orchagent/config:python_runtime",
         "//dockers/docker-orchagent/config:files",
@@ -395,8 +384,7 @@ installed_source_metadata(
     inherited_metadata = ":runtime_package_metadata",
     inherited_metadata_path = "usr/share/sonic/bazel/orchagent-packages.json",
     installation = ":debug_installation_receipt",
-    packages = _SOURCE_DEBS,
-    payloads = _SOURCE_LAYERS,
+    payloads = _SOURCE_PACKAGES,
     rootfs = ":configured_debug",
     spec = "//dockers/docker-orchagent/bazel:source_packages.json",
 )

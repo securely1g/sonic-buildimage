@@ -12,25 +12,28 @@ from tools.bazel.ci import bazel_commands
 
 
 class ActionAuditTest(unittest.TestCase):
-    def audit(self, output_name, arguments, *, allow_deb=False):
+    def audit(self, output_name, arguments, *, file_contents="", owner="//:checked", executable=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             graph = {
-                "actions": [{"outputIds": [1], "arguments": arguments,
+                "actions": [{"outputIds": [1], "arguments": arguments, "fileContents": file_contents,
+                             "targetId": 1, "mnemonic": "FileWrite", "isExecutable": executable,
                              "environmentVariables": [{"key": "PRIVATE", "value": "private-value"}]}],
+                "targets": [{"id": 1, "label": owner}],
                 "artifacts": [{"id": 1, "pathFragmentId": 1}],
                 "pathFragments": [{"id": 1, "label": output_name}],
             }
             def query(command, *, cwd, stdout, check):
                 self.assertEqual(command[1], "aquery")
                 self.assertIn("--platforms=native", command)
+                self.assertIn("--include_file_write_contents", command)
                 stdout.write(json.dumps(graph))
                 stdout.flush()
             with mock.patch("subprocess.run", side_effect=query):
                 try:
                     return bazel_commands.audit_targets(
                         "bazel", ["--platforms=native"], ["//:checked"],
-                        workspace=root, output=root / "audit.json", allow_deb=allow_deb)
+                        workspace=root, output=root / "audit.json")
                 finally:
                     summary = (root / "audit.json").read_text()
                     self.assertNotIn("private-value", summary)
@@ -44,22 +47,17 @@ class ActionAuditTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
             self.audit("package.deb", ["packager"])
 
-    def test_explicit_approval_allows_actual_deb_assembly(self):
-        result = self.audit("package.deb", ["dpkg-deb", "--build", "tree", "package.deb"], allow_deb=True)
-        self.assertTrue(result["deb_generation_authorized"])
-        self.assertEqual(len(result["deb_packaging_actions"]), 1)
-        self.assertEqual(result["packaging_wrappers"], [])
-
     def test_shell_comment_is_not_a_make_invocation(self):
-        result = self.audit("package.deb", ["bash", "-c", "# make sure data is compressed\ntar -czf data.tar.gz tree"], allow_deb=True)
+        result = self.audit("runtime.tar", ["bash", "-c", "# make sure data is compressed\ntar -czf data.tar.gz tree"])
         self.assertEqual(result["packaging_wrappers"], [])
+        self.assertFalse(result["deb_generation_authorized"])
         with self.assertRaises(ValueError):
-            self.audit("package.deb", ["bash", "-c", "# comment\nmake package"], allow_deb=True)
+            self.audit("runtime.tar", ["bash", "-c", "# comment\nmake package"])
 
-    def test_deb_approval_does_not_allow_make_or_dpkg_buildpackage(self):
-        for command in (["sh", "-c", "make package"], ["dpkg-buildpackage", "-b"]):
-            with self.subTest(command=command), self.assertRaises(ValueError):
-                self.audit("package.deb", command, allow_deb=True)
+    def test_rejects_packaging_commands_in_generated_scripts(self):
+        for command in ("dpkg-deb --build tree output", "make package", "dpkg-buildpackage -b"):
+            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                self.audit("package-script.sh", [], file_contents="#!/bin/sh\n" + command + "\n")
 
     def test_rejects_wrapped_packaging_with_hidden_output(self):
         for command in (["dpkg-deb", "--build", "tree", "output"],
@@ -67,6 +65,37 @@ class ActionAuditTest(unittest.TestCase):
             with self.subTest(command=command):
                 with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                     self.audit("output", command)
+
+    def foreign(self, command, *, owner="@@sonic-fips+//openssl:build", arguments=(), executable=True):
+        return self.audit("bazel-out/k8-fastbuild/bin/external/sonic-fips+/openssl/build_foreign_cc/build_script.sh",
+                          list(arguments), file_contents="#!/bin/sh\n" + command + "\n",
+                          owner=owner, executable=executable)
+
+    def test_records_reviewed_foreign_source_compilation_separately(self):
+        make = "$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/tools/build_tools/configure_runtime_amd64/bin/make"
+        result = self.foreign(make + " build_sw -j4 DESTDIR=$BUILD_TMPDIR/$INSTALL_PREFIX\n" +
+                              make + " install_sw -j4 DESTDIR=$BUILD_TMPDIR/$INSTALL_PREFIX")
+        self.assertEqual(result["packaging_wrappers"], [])
+        self.assertEqual(result["foreign_source_builds"][0]["owner"], "@@sonic-fips+//openssl:build")
+        self.assertEqual(len(result["foreign_source_builds"][0]["sha256"]), 64)
+
+    def test_foreign_script_requires_reviewed_owner_and_executable_output(self):
+        make = "$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/tools/build_tools/configure_runtime_amd64/bin/make all"
+        for kwargs in ({"owner": "@@unreviewed+//:build"}, {"executable": False}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                self.foreign(make, **kwargs)
+
+    def test_foreign_owner_does_not_allow_direct_make_or_other_make_tools(self):
+        for command, arguments in (("make all", ()), ("echo test", ("make", "all"))):
+            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                self.foreign(command, arguments=arguments)
+
+    def test_foreign_owner_never_authorizes_debian_packaging(self):
+        make = "$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/tools/build_tools/configure_runtime_amd64/bin/make"
+        for command in (make + " package", make + " binary", make + " all\ndpkg-deb --build tree output",
+                        make + " all\ndpkg-buildpackage -b"):
+            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                self.foreign(command)
 
 
 if __name__ == "__main__":

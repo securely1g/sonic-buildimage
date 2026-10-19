@@ -6,36 +6,58 @@
         "etc/libnl-3/classid",
         "etc/libnl-3/pktloc"
       ],
-      "source_revision": "3.7.0.sonic.4",
-      "target": "@libnl3//:libnl_3_deb"
+      "source_revision": "3.7.0.sonic.3",
+      "target": "@libnl3//:libnl-3-runtime_files"
     },
     "libnl-cli-3-200": {
-      "required_paths": [
-        "usr/lib/{multiarch}/libnl-cli-3.so.200"
+      "excluded_baseline_paths": [
+        "usr/lib/{multiarch}/libnl/cli/cls/basic.so",
+        "usr/lib/{multiarch}/libnl/cli/cls/cgroup.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/bfifo.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/blackhole.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/fq_codel.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/hfsc.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/htb.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/ingress.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/pfifo.so",
+        "usr/lib/{multiarch}/libnl/cli/qdisc/plug.so"
       ],
-      "source_revision": "3.7.0.sonic.4",
-      "target": "@libnl3//:libnl_cli_3_deb"
+      "required_paths": [
+        "usr/lib/{multiarch}/libnl-cli-3.so.200",
+        "usr/lib/{multiarch}/libnl-3/cli/cls/basic.so",
+        "usr/lib/{multiarch}/libnl-3/cli/cls/cgroup.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/bfifo.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/blackhole.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/fq_codel.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/hfsc.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/htb.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/ingress.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/pfifo.so",
+        "usr/lib/{multiarch}/libnl-3/cli/qdisc/plug.so"
+      ],
+      "source_revision": "3.7.0.sonic.3",
+      "target": "@libnl3//:libnl-cli-3-runtime_files"
     },
     "libnl-genl-3-200": {
       "required_paths": [
         "usr/lib/{multiarch}/libnl-genl-3.so.200"
       ],
-      "source_revision": "3.7.0.sonic.4",
-      "target": "@libnl3//:libnl_genl_3_deb"
+      "source_revision": "3.7.0.sonic.3",
+      "target": "@libnl3//:libnl-genl-3-runtime_files"
     },
     "libnl-nf-3-200": {
       "required_paths": [
         "usr/lib/{multiarch}/libnl-nf-3.so.200"
       ],
-      "source_revision": "3.7.0.sonic.4",
-      "target": "@libnl3//:libnl_nf_3_deb"
+      "source_revision": "3.7.0.sonic.3",
+      "target": "@libnl3//:libnl-nf-3-runtime_files"
     },
     "libnl-route-3-200": {
       "required_paths": [
         "usr/lib/{multiarch}/libnl-route-3.so.200"
       ],
-      "source_revision": "3.7.0.sonic.4",
-      "target": "@libnl3//:libnl_route_3_deb"
+      "source_revision": "3.7.0.sonic.3",
+      "target": "@libnl3//:libnl-route-3-runtime_files"
     },
     "libswsscommon": {
       "required_paths": [
@@ -50,8 +72,8 @@
       "required_paths": [
         "usr/lib/{multiarch}/libyang.so.3"
       ],
-      "source_revision": "3.12.2.sonic.2",
-      "target": "@libyang//:libyang3_deb"
+      "source_revision": "3.12.2.sonic.1",
+      "target": "@libyang//:libyang_pkg"
     },
     "python3-libyang": {
       "required_paths": [

@@ -89,9 +89,9 @@
       "package": "openssh-client",
       "source": {
         "module": "sonic-fips",
-        "version": "0.0.2-6740dae728087c173519fb15786c41baa1342bce",
-        "commit": "6740dae728087c173519fb15786c41baa1342bce",
-        "target": "@sonic_fips//openssh:openssh_client_deb",
+        "version": "0.0.2-9bedfc9bad82ae16f4f7b536661c3e997ea78a1b",
+        "commit": "9bedfc9bad82ae16f4f7b536661c3e997ea78a1b",
+        "target": "@sonic_fips//openssh:openssh_client_pkg",
         "module_version": "0.0.2"
       },
       "required_paths": {
@@ -99,34 +99,34 @@
         "usr/bin/ssh-agent": "elf",
         "usr/lib/systemd/user/ssh-agent.socket": "file"
       },
-      "deb_target": "@sonic_fips//openssh:openssh_client_deb"
+      "kind": "runtime-layer"
     },
     {
       "package": "libnl-3-dev",
       "source": {
         "module": "libnl3",
-        "version": "3.7.0.sonic.4",
+        "version": "3.7.0.sonic.3",
         "release": "3.7.0",
-        "target": "@libnl3//:libnl_3_dev_deb"
+        "target": "@libnl3//:libnl-3-dev_files"
       },
       "required_paths": {
         "usr/include/libnl3/netlink/netlink.h": "file",
         "usr/lib/x86_64-linux-gnu/libnl-3.a": "file"
       },
-      "deb_target": "@libnl3//:libnl_3_dev_deb"
+      "kind": "runtime-layer"
     },
     {
       "package": "libnl-route-3-dev",
       "source": {
         "module": "libnl3",
-        "version": "3.7.0.sonic.4",
+        "version": "3.7.0.sonic.3",
         "release": "3.7.0",
-        "target": "@libnl3//:libnl_route_3_dev_deb"
+        "target": "@libnl3//:libnl-route-3-dev_files"
       },
       "required_paths": {
         "usr/lib/x86_64-linux-gnu/libnl-route-3.a": "file"
       },
-      "deb_target": "@libnl3//:libnl_route_3_dev_deb"
+      "kind": "runtime-layer"
     }
   ]
 }

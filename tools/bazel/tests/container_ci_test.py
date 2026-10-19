@@ -60,6 +60,7 @@ elif command == "aquery":
     action = {"outputIds": [1], "environmentVariables": [
         {"key": "PRIVATE", "value": "private-action-data"}]}
     if mode == "wrapper": action["arguments"] = ["make", "package"]
+    if mode == "generated-packaging-script": action["fileContents"] = "#!/bin/sh\ndpkg-deb --build rootfs output\n"
     print(json.dumps({"actions": [action],
         "artifacts": [{"id": 1, "pathFragmentId": 1}],
         "pathFragments": [{"id": 1, "label": "unsafe.deb" if mode == "deb" else "safe.tar"}]}))
@@ -125,7 +126,7 @@ else:
             return result
         return self.original_execute(command, directory, receipt, name, **kwargs)
 
-    def run_ci(self, mode="pass", *, error=None, resolution_error=None, machine="x86_64", source_files=(), allow_deb=False):
+    def run_ci(self, mode="pass", *, error=None, resolution_error=None, machine="x86_64", source_files=()):
         (self.root / "mode").write_text(mode)
         console = io.StringIO()
         self.original_execute = command_log.execute
@@ -137,11 +138,11 @@ else:
              contextlib.redirect_stdout(console), contextlib.redirect_stderr(console):
             if error is None:
                 container.run(self.owner, workspace=self.root, artifacts=self.artifacts,
-                              bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files, allow_deb=allow_deb)
+                              bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files)
             else:
                 with self.assertRaises(error):
                     container.run(self.owner, workspace=self.root, artifacts=self.artifacts,
-                                  bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files, allow_deb=allow_deb)
+                                  bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files)
         self.assertFalse((self.artifacts / "actions.raw.json").exists())
         self.assertFalse((self.artifacts / "tests.raw.json").exists())
         self.assertNotIn("private-action-data", console.getvalue())
@@ -169,6 +170,7 @@ else:
         self.assertIn('tests("' + self.owner + ':ci_tests")', suite_query)
         self.assertIn("--output=label", suite_query)
         audit = next(command for command in commands if command[0] == "aquery")
+        self.assertIn("--include_file_write_contents", audit)
         self.assertIn("deps(set(" + " ".join([*self.tests, self.owner + ":ci_artifacts"]) + "))", audit)
         test = next(command for command in commands if command[0] == "test")
         self.assertEqual(test[-1], self.owner + ":ci_tests")
@@ -211,14 +213,8 @@ else:
         self.assert_failed_without_report(self.run_ci("deb", error=ValueError))
         self.assert_no_actions_executed()
 
-    def test_approved_deb_graph_runs_and_records_approval(self):
-        receipt = self.run_ci("deb", allow_deb=True)
-        self.assertEqual(receipt["status"], "passed")
-        self.assertTrue(receipt["action_audit"]["deb_generation_authorized"])
-        self.assertEqual(receipt["action_audit"]["deb_outputs"], ["unsafe.deb"])
-
-    def test_approval_does_not_allow_a_make_wrapper(self):
-        self.assert_failed_without_report(self.run_ci("wrapper", allow_deb=True, error=ValueError))
+    def test_generated_packaging_script_blocks_execution(self):
+        self.assert_failed_without_report(self.run_ci("generated-packaging-script", error=ValueError))
         self.assert_no_actions_executed()
 
     def test_packaging_wrapper_blocks_execution(self):

@@ -58,23 +58,23 @@ python3 tools/bazel/oci/native_build.py build --config=syncd-dash \
 | sairedis and SAI metadata | `@sonic_sairedis//lib:libsairedis_pkg` and `//meta:libsaimetadata_pkg` binary layers |
 | VS SAI | `@sonic_sairedis//vslib:libsaivs_pkg` binary layer |
 | Syncd and the DASH-enabled daemon | `@sonic_sairedis//syncd:syncd_pkg` binary layer |
-| FIPS OpenSSH client | `@sonic_fips//openssh:openssh_client_deb` |
+| FIPS OpenSSH client | `@sonic_fips//openssh:openssh_client_pkg` |
 | libnl development files | Source-owned headers, static libraries and link/pkg-config files matching the two Make development packages. |
 | PI, BMv2, P4C and DASH SAI | The four unchanged cached runtime DEBs from `tools/bazel/p4/packages.lock.json`. The fifth cached DEB supplies SDK headers. |
 
 [BUILD.bazel](../BUILD.bazel) lists the actual target bindings. The
 [source declarations](../config/source_packages.json) record resolved module
 versions, public runtime targets and required installed paths. Common, sairedis
-and Syncd keep their existing binary TAR layers. OpenSSH and libnl replace
-Debian packages, so their actual DEBs supply dependency controls and installation
-scripts. Ordinary source layers do not claim Debian package identities or
-satisfy APT dependencies. SONiC owners use their
+and Syncd keep their existing binary TAR layers. OpenSSH and libnl also supply
+runtime TARs directly. Genuine locked Debian baseline packages supply package
+controls and installation scripts; separate provenance identifies every source
+overlay. Source TARs do not invent package identities or satisfy APT dependencies. SONiC owners use their
 full source commit; foreign packages use the upstream release and SONiC patch
 version. Assembly checks the resolved module declarations and actual source ELF bytes.
 
 The debug image extends the exact runtime image. Its source symbols come from
 the original producer TAR dependencies, including the source-built base, while
-runtime file checks use the matching TAR or real DEB payload. The cached
+runtime file checks use the matching source TAR or existing imported DEB payload. The cached
 P4/DASH tuple has no matching debug artifacts in the reviewed release inventory;
 those gaps remain explicit. Static development libraries retain their own
 symbols. A successful build is not a FIPS certification claim.
@@ -92,9 +92,9 @@ Both containers use the common `apt_layer`, `sonic_layer`, `oci_image`,
 imports and TAR composition. The shared `apt_install` rule installs original
 Debian archives into a private root filesystem and executes their original
 maintainer scripts and triggers. Common, sairedis and Syncd remain binary layers;
-the inherited Python applications remain wheel layers. Only Debian replacements
-such as FIPS OpenSSH and libnl need real package identities. PI, BMv2, P4C and
-DASH SAI still use the approved pinned binary archives.
+the inherited Python applications remain wheel layers. FIPS OpenSSH and libnl
+consume public source runtime TARs; this graph creates no DEBs. PI, BMv2, P4C and
+DASH SAI still use the approved, existing pinned binary archives.
 
 The APT lock uses the same Debian snapshot as the source-built base. For example,
 `libc6-dev` must match the base's `libc6` version. The selector preserves
@@ -104,9 +104,15 @@ the final package requirements cannot be satisfied.
 APT and dpkg own the installed package database, configuration records,
 alternatives and service state. For example, OpenSSH's original installation
 script creates its `_ssh` group and gives `ssh-agent` that group's setgid mode;
+the normalizer preserves this installed metadata while copying source TAR bytes;
 Debian's Vim script registers and restores its editor alternatives. The image
 build no longer copies these effects from an earlier image or invents dpkg
 control records. Syncd's init scripts stay in its source-owner runtime layer.
+Source file overlays are accepted only for their same-named Debian baseline
+owners and exact source bytes. Generated APT preferences use priority -1 to prevent
+ordinary version selection from replacing those components. The supported APT
+contract adds unrelated packages; it does not manage source components through
+APT upgrades/removals, direct dpkg commands or administrator overrides.
 
 `syncd-packages.json` under `/usr/share/sonic/bazel` records the actual installed
 package state and source ELF identities. Runtime and debug each receive a report

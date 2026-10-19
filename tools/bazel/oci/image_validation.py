@@ -219,7 +219,7 @@ def configured_files(rootfs, receipt_path, architecture):
 
 
 def configured_runtime_payload(files, metadata_path, rootfs, installation, architecture, runtime_layer):
-    """Permit only the checked same-owner replacements in an existing Make base."""
+    """Permit only declared source replacements over a genuine Debian baseline."""
     if metadata_path is None:
         return files
     metadata = json.loads(metadata_path.read_bytes())

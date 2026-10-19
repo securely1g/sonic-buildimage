@@ -11,42 +11,49 @@ from tools.bazel.ci import validate_syncd_image as validation
 
 
 class ServiceDpkgValidationTest(unittest.TestCase):
-    def audit_build(self, program, reject=False):
+    def audit_build(self, program, reject=False, *, filename="runtime.tar", file_contents=""):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
-            artifact = output / "probe.deb"
-            artifact.write_bytes(b"declared package output")
+            artifact = output / filename
+            artifact.write_bytes(b"declared TAR output")
             graph = {
-                "pathFragments": [{"id": 1, "label": "probe.deb"}],
+                "pathFragments": [{"id": 1, "label": filename}],
                 "artifacts": [{"id": 1, "pathFragmentId": 1}],
-                "actions": [{"mnemonic": "DebAssemble", "arguments": program, "outputIds": [1]}],
+                "actions": [{"mnemonic": "Tar", "arguments": program, "fileContents": file_contents, "outputIds": [1]}],
             }
             commands = []
 
             def run(arguments, **kwargs):
                 commands.append(arguments)
                 if arguments[1] == "aquery":
+                    self.assertIn("--include_file_write_contents", arguments)
                     json.dump(graph, kwargs["stdout"])
                 return SimpleNamespace(stdout="//:probe\t" + repr([str(artifact)]) + "\n")
 
             with mock.patch.object(validation, "TARGETS", {"probe": "//:probe"}), \
                     mock.patch.object(validation.subprocess, "run", side_effect=run):
                 if reject:
-                    with self.assertRaisesRegex(ValueError, "Packaging wrapper"):
+                    with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                         validation.build_inputs(["bazel"], [], output)
                     self.assertEqual([command[1] for command in commands], ["aquery"])
                 else:
                     self.assertEqual(validation.build_inputs(["bazel"], [], output), {"probe": artifact})
                     self.assertEqual([command[1] for command in commands], ["aquery", "build", "cquery"])
             report = json.loads((output / "action-audit.json").read_text())
-            self.assertIs(report["deb_generation_authorized"], True)
+            self.assertIs(report["deb_generation_authorized"], False)
             self.assertEqual(report["targets"], ["//:probe"])
             return report
 
-    def test_approved_deb_assembly_runs_and_records_authorization(self):
-        report = self.audit_build(["dpkg-deb", "--build", "package", "probe.deb"])
-        self.assertEqual(len(report["deb_packaging_actions"]), 1)
+    def test_tar_assembly_runs_after_audit(self):
+        report = self.audit_build(["bsdtar", "-cf", "runtime.tar", "rootfs"])
+        self.assertFalse(report["deb_packaging_actions"])
         self.assertFalse(report["packaging_wrappers"])
+
+    def test_debian_outputs_and_commands_are_rejected_before_build(self):
+        self.audit_build(["packager"], reject=True, filename="package.deb")
+        self.audit_build(["dpkg-deb", "--build", "rootfs", "output"], reject=True)
+        self.audit_build([], reject=True, filename="packager.sh",
+                         file_contents="#!/bin/sh\ndpkg-deb --build rootfs output\n")
 
     def test_packaging_wrappers_are_rejected_before_build(self):
         for program in (["make", "all"], ["gmake", "all"], ["dpkg-buildpackage", "-b"]):

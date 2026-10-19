@@ -151,7 +151,7 @@ def main():
         layouts = ["//dockers/" + image + ":" + image for image in IMAGES]
         receipt["action_audit"] = bazel_commands.audit_targets(
             args.bazel, options, [*targets.values(), *tests, *layouts], workspace=ROOT,
-            output=directory / "action-audit.json", allow_deb=True)
+            output=directory / "action-audit.json")
         execute([args.bazel, "test", *options, "--test_output=errors", *tests], directory, receipt, "tests")
         paths = build.collect_archives(ROOT, directory, receipt, targets, bazel=args.bazel, options=options)
         # Cached archives need not materialize their intermediate OCI layouts.

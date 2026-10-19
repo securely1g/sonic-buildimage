@@ -13,6 +13,22 @@ from tools.bazel.ci import validate_dpkg_state as validation
 
 
 class PackageStateValidationTest(unittest.TestCase):
+    def test_apt_must_not_restore_excluded_baseline_plugins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            name = 'usr/lib/x86_64-linux-gnu/libnl/cli/cls/basic.so'
+            receipt = {'source_packages': [{'excluded_baseline_paths': [name]}]}
+            self.assertEqual(validation.source_file_inventory([receipt], root), {})
+            path = root / name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'unused Debian plugin')
+            with self.assertRaisesRegex(ValueError, 'Excluded baseline file'):
+                validation.source_file_inventory([receipt], root)
+            path.unlink()
+            path.symlink_to('missing.so')
+            with self.assertRaisesRegex(ValueError, 'Excluded baseline file'):
+                validation.source_file_inventory([receipt], root)
+
     def test_installed_records_ignore_removed_but_require_valid_identity(self):
         result = validation.parse_installed(
             "libexample:arm64\tinstall ok installed\t1.2-3\tarm64\n"
@@ -148,6 +164,23 @@ class PackageStateValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Cached Debian package differs"):
                     validation.prepare_repository(lock, "amd64", repository)
                 command.assert_not_called()
+
+    def test_source_soname_links_are_protected_after_apt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / 'usr/lib/libexample.so.1'
+            path.parent.mkdir(parents=True)
+            path.symlink_to('libexample.so.1.2.3')
+            metadata = path.lstat()
+            entry = {'path': str(path.relative_to(root)), 'kind': 'symlink',
+                     'linkname': 'libexample.so.1.2.3', 'mode': 0o777,
+                     'uid': metadata.st_uid, 'gid': metadata.st_gid}
+            receipt = {'source_packages': [{'package': 'example', 'runtime_links': [entry]}]}
+            self.assertIn(entry['path'], validation.source_file_inventory([receipt], root))
+            path.unlink()
+            path.symlink_to('libexample.so.1.9.9')
+            with self.assertRaisesRegex(ValueError, 'Source symlink differs'):
+                validation.source_file_inventory([receipt], root)
 
     def test_install_checks_new_dependencies_and_preserves_existing_packages(self):
         lock = validation.read_lock(Path(__file__).with_name("dpkg_transactions.lock.json"), "amd64")

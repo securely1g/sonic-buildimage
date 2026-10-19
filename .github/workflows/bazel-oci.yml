@@ -2,6 +2,7 @@ name: Bazel OCI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [master]
   workflow_dispatch:
@@ -383,7 +384,7 @@ jobs:
 
       - name: Test and collect declared SWSS CI artifacts
         run: |
-          python3 -B tools/bazel/ci/container.py --allow-deb \
+          python3 -B tools/bazel/ci/container.py \
             --container //dockers/docker-orchagent --source-file "$SONIC_CI_MANIFEST_METADATA" \
             --bazel "$BAZEL" --artifacts artifacts/swss
 
@@ -531,7 +532,7 @@ jobs:
 
       - name: Test and collect declared Syncd CI artifacts
         run: |
-          python3 -B tools/bazel/ci/container.py --allow-deb \
+          python3 -B tools/bazel/ci/container.py \
             --container //platform/vs/docker-syncd-vs --source-file "$SONIC_CI_MANIFEST_METADATA" \
             --bazel "$BAZEL" --artifacts artifacts/syncd-vs/bazel
           git diff --exit-code
@@ -564,10 +565,12 @@ jobs:
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: source
-    # Build full VS images for PR branches in this repository after source checks.
-    # Manual runs retain their skip option; external-fork PRs use hosted checks.
+    # Build full VS images for Ready PR branches after source checks. Drafts
+    # validate source TARs/OCI without starting the complete Make installer.
+    # Manual runs retain their explicit skip option.
     if: >-
       (github.event_name == 'pull_request' &&
+       !github.event.pull_request.draft &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     # Share the existing P330 pool; checkout still uses this event's ref and SHA.

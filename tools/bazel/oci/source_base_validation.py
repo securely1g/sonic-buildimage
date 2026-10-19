@@ -118,6 +118,12 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
         require(report.get("dependency_check", {}).get("status") == "satisfied",
                 "source metadata has unsatisfied package dependencies")
         for package in report["source_packages"]:
+            for path in package.get("excluded_baseline_paths", []):
+                require(validation.path_name(path) == path, "unsafe excluded baseline path: " + path)
+                for files in (runtime_files, debug_files):
+                    parent = resolve_path(str(Path(path).parent), files)
+                    require(parent is not None and str(Path(parent) / Path(path).name) not in files,
+                            "image retains an excluded baseline file: " + path)
             packaging = package.get("packaging", "deb")
             require(packaging in ("deb", "runtime-layer") and
                     (packaging == "runtime-layer" or
@@ -128,13 +134,20 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
                      FOREIGN_REVISION.fullmatch(package.get("source_revision", ""))) and
                     DIGEST.fullmatch(package.get("payload_sha256", "")),
                     "source package lacks exact revision/payload provenance")
+            for link in package.get("runtime_links", []):
+                path = link["path"]
+                require(validation.path_name(path) == path, "unsafe source symlink path: " + path)
+                for files in (runtime_files, debug_files):
+                    actual = files.get(path, {})
+                    require(all(actual.get(key) == link[key] for key in ('kind', 'linkname', 'mode', 'uid', 'gid')),
+                            "image changed declared source symlink: " + path)
             for item in package["native_files"]:
                 path = item["path"]
                 require(validation.path_name(path) == path and path not in native,
                         "unsafe or duplicate source ELF path: " + path)
                 require(DIGEST.fullmatch(item.get("sha256", "")), "invalid source ELF hash: " + path)
                 native[path] = {**item, "package": package["package"], "target": package["target"],
-                                "packaging": packaging, "version": package.get("version"),
+                                "packaging": packaging, "version": package.get("source_version", package.get("version")),
                                 "source_revision": package["source_revision"],
                                 "payload_sha256": package["payload_sha256"]}
         reports.append({"path": name, "sha256": digest})

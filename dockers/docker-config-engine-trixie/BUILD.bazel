@@ -35,12 +35,8 @@ _SOURCE_TARS = {
     "sonic-supervisord-utilities-rs": "//src/sonic-supervisord-utilities-rs:runtime",
 }
 
-# These application payloads keep their existing TAR packaging. APT manages
-# only the Debian packages and distro-library replacements below.
-_RUNTIME_TARS = {name: target for name, target in _SOURCE_TARS.items() if name in [
-    "libswsscommon", "sonic-db-cli", "python3-swsscommon", "python3-libyang",
-    "sonic-eventd", "sonic-supervisord-utilities-rs",
-]}
+# Every source owner supplies its public runtime TAR directly.
+_RUNTIME_TARS = _SOURCE_TARS
 
 sonic_layer(
     name = "source_runtime_original_paths",
@@ -192,10 +188,27 @@ apt_install_inputs(
     selection = ":debian_runtime_selection",
 )
 
+# Debian keeps the real CLI package controls; only its unused plugin location
+# is excluded. Source libnl supplies the complete CLI at its own PKGLIBDIR.
+tar(
+    name = "debian_install_configuration",
+    srcs = ["//dockers/docker-config-engine-trixie/bazel:dpkg_02_source_libnl"],
+    mtree = ["etc/dpkg/dpkg.cfg.d/02_source_libnl type=file mode=0644 uid=0 gid=0 time=0 content=$(location //dockers/docker-config-engine-trixie/bazel:dpkg_02_source_libnl)"],
+)
+
+flatten(
+    name = "debian_install_base",
+    deduplicate = True,
+    tars = [
+        "//dockers/docker-base-trixie:rootfs",
+        ":debian_install_configuration",
+    ],
+)
+
 apt_install(
     name = "configured_debian",
     architecture = _ARCH,
-    base = "//dockers/docker-base-trixie:rootfs",
+    base = ":debian_install_base",
     bwrap = "//tools/bazel/oci:bubblewrap",
     execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
     packages = select({
@@ -209,46 +222,38 @@ apt_install(
     tags = ["manual"],
 )
 
-_SOURCE_DEBS = {
-    "libyang3": "@libyang//:libyang3_deb",
-    "libnl-3-200": "@libnl3//:libnl_3_deb",
-    "libnl-cli-3-200": "@libnl3//:libnl_cli_3_deb",
-    "libnl-genl-3-200": "@libnl3//:libnl_genl_3_deb",
-    "libnl-nf-3-200": "@libnl3//:libnl_nf_3_deb",
-    "libnl-route-3-200": "@libnl3//:libnl_route_3_deb",
-}
-
-apt_install(
-    name = "configured_sources",
-    architecture = _ARCH,
-    base = ":configured_debian",
-    bwrap = "//tools/bazel/oci:bubblewrap",
-    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
-    packages = _SOURCE_DEBS.values(),
-    tags = ["manual"],
-)
-
 filegroup(
     name = "installation_receipt",
-    srcs = [":configured_sources"],
+    srcs = [":configured_debian"],
     output_group = "receipt",
 )
 
 installed_source_metadata(
     name = "runtime_package_metadata",
+    allow_same_owner_overlays = True,
     architecture = _ARCH,
     installation = ":installation_receipt",
-    packages = _SOURCE_DEBS,
     payloads = _RUNTIME_TARS,
+    rootfs = ":configured_debian",
     runtime_layer = ":source_runtime",
-    rootfs = ":configured_sources",
     spec = "//dockers/docker-config-engine-trixie/bazel:source_packages.json",
+)
+
+filegroup(
+    name = "source_apt_preferences",
+    srcs = [":runtime_package_metadata"],
+    output_group = "apt_preferences",
 )
 
 tar(
     name = "source_provenance",
-    srcs = [":runtime_package_metadata"],
+    srcs = [
+        ":runtime_package_metadata",
+        ":source_apt_preferences",
+    ],
     mtree = [
+        "etc/apt/preferences.d type=dir mode=0755 uid=0 gid=0 time=0",
+        "etc/apt/preferences.d/sonic-source-config-engine type=file mode=0644 uid=0 gid=0 time=0 content=$(location :source_apt_preferences)",
         "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
         "usr/share/sonic/bazel/config-engine-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :runtime_package_metadata)",
     ],
@@ -258,7 +263,7 @@ flatten(
     name = "complete_filesystem",
     deduplicate = True,
     tars = [
-        ":configured_sources",
+        ":configured_debian",
         ":source_runtime",
         ":python_and_models",
         ":config_files",

@@ -33,13 +33,13 @@ Runtime and debug package files use the shared `apt_layer` rule from
 packages already supplied by the actual base image. No separate list of missing
 transitive dependencies needs to be maintained in the image BUILD file.
 
-For example, the snapshot's tcpdump 4.99.5-2 pulls in Debian `libssl3t64`
-3.5.6-1~deb13u2, while the config-engine base already has
-`libssl3t64` 3.5.7-1~deb13u2+fips. The selector finds that installed package name
-in the base's `/var/lib/dpkg/status` and skips the Debian OpenSSL payload. It
-adds tcpdump and libpcap when missing, preserving the base's `libssl.so.3` and
-`libcrypto.so.3`. The retained OpenSSL satisfies tcpdump's >= 3.0.0 requirement
-in this tested image.
+For example, tcpdump needs OpenSSL libraries. The source-built base retains the
+actual locked Debian `libssl3t64` package record and overlays the checked FIPS
+library TAR. The selector finds the installed baseline package in
+`/var/lib/dpkg/status`, checks its declared version against tcpdump's dependency,
+and skips reinstalling its Debian files. Separate source provenance proves the
+installed `libssl.so.3` and `libcrypto.so.3` bytes come from the FIPS producer.
+The baseline is not relabelled with the source version.
 
 After selection, the shared helper checks every known package's `Depends` and
 `Pre-Depends` against the final package inventory. It uses Debian version order,
@@ -96,9 +96,9 @@ that profile, with no retained-package manifest, feature requirements or debug
 replacements. Runtime selection reads the checked config-engine
 base; debug selection reads the completed Orchagent runtime and receives its
 `runtime_package_metadata` receipt as the declared `base_package_metadata` input.
-Runtime installs the selected original Debian archives and the source-built
-Protobuf DEB, which replaces a Debian library. SWSS, Common, sairedis and DASH
-keep their ordinary binary layers; the Python runtime keeps its wheel layer.
+Runtime installs the selected original Debian archives, then overlays the
+source-owned runtime TARs for Protobuf, SWSS, Common, sairedis and DASH.
+The Python runtime keeps its wheel layer; no source component needs a DEB.
 Debug starts with that filesystem and installs its extra tools.
 APT and dpkg own the database, file lists, conffiles, scripts and triggers in
 both variants. Upstream `umoci repack` creates the resulting OCI delta, including
@@ -107,9 +107,10 @@ removed files, while preserving the base image's configuration.
 The [source declarations](source_packages.json) identify SWSS, Common, sairedis,
 SAI metadata, DASH API and Protobuf. Only actual Debian packages contribute to
 dpkg state. `installed_source_metadata.py` checks source ELF bytes and rejects
-binary layers that overwrite files owned by Debian packages on source-built
-bases. The existing Make-base path permits only verified replacements owned by
-the same source package. Neither path invents package records for SONiC programs. Each image
+binary layers that overwrite undeclared Debian owners. Source-built and retained
+Make bases permit only exact replacements over their same-named baseline owners.
+Generated APT preferences protect those source identities from normal version
+selection. Neither path invents package records for SONiC programs. Each image
 retains `orchagent-packages.json` under `/usr/share/sonic/bazel`, bound to its own
 configured filesystem and installation receipt. Matching source symbols remain
 a separate debug layer; source symbols are not fabricated Debian package entries.

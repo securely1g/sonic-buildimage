@@ -273,6 +273,11 @@ def source_file_inventory(receipts, root=Path("/")):
     expected = {}
     for receipt in receipts:
         for package in receipt.get("source_packages", []):
+            for name in package.get("excluded_baseline_paths", []):
+                require(isinstance(name, str) and name and not name.startswith("/") and
+                        ".." not in Path(name).parts and str(Path(name)) == name,
+                        "Invalid excluded baseline path")
+                require(not os.path.lexists(root / name), "Excluded baseline file is installed: " + name)
             for entry in package.get("runtime_files", package.get("native_files", [])):
                 name = entry["path"]
                 require(not name.startswith("/") and ".." not in Path(name).parts,
@@ -283,6 +288,19 @@ def source_file_inventory(receipts, root=Path("/")):
                 require(all(metadata[key] == entry[key] for key in metadata),
                         "Source payload differs from its build receipt: " + name)
                 require(name not in expected or expected[name] == metadata, "Conflicting source payload receipts")
+                expected[name] = metadata
+            for entry in package.get("runtime_links", []):
+                name = entry["path"]
+                require(not name.startswith("/") and ".." not in Path(name).parts,
+                        "Invalid source symlink path")
+                path = root / name
+                require(path.is_symlink(), "Source symlink is missing: " + name)
+                metadata = {"kind": "symlink", "linkname": os.readlink(path),
+                            "mode": stat.S_IMODE(path.lstat().st_mode),
+                            "uid": path.lstat().st_uid, "gid": path.lstat().st_gid}
+                require(all(metadata[key] == entry[key] for key in metadata),
+                        "Source symlink differs from its build receipt: " + name)
+                require(name not in expected or expected[name] == metadata, "Conflicting source symlink receipts")
                 expected[name] = metadata
     return expected
 

@@ -1123,13 +1123,14 @@ py_test(
     ],
 )
 
-# Approved DEB-producing test fixture; upstream BSD tar owns archive creation.
+# Source TAR and real package-state fixtures do not create Debian packages.
 py_test(
     name = "installed_source_metadata_test",
     srcs = ["installed_source_metadata_test.py"],
-    args = ["$(BSDTAR_BIN)"],
-    data = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    data = [
+        "//dockers/docker-config-engine-trixie/bazel:dpkg_02_source_libnl",
+        "//dockers/docker-config-engine-trixie/bazel:source_packages.json",
+    ],
     deps = ["//tools/bazel/oci:installed_source_metadata_lib"],
 )
 
@@ -1181,12 +1182,9 @@ py_test(
     ],
 )
 
-# Use upstream BSD tar to construct real Debian archive fixtures.
+# Source declaration validation needs no archive-producing fixtures.
 py_test(
     name = "source_package_contract_test",
     srcs = ["source_package_contract_test.py"],
-    args = ["$(BSDTAR_BIN)"],
-    data = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
     deps = ["//tools/bazel/oci:source_package_contract_lib"],
 )

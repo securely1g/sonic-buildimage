@@ -80,9 +80,18 @@ def normalized_member(member, *, directory_aliases=DIRECTORY_ALIASES, root_owned
     return output
 
 
+def base_layers(base, expected_platform):
+    """Read an OCI layout or the real installed filesystem used by apt_install."""
+    if base.is_dir():
+        descriptor, _, _, layers = validate_layout(base, expected_platform)
+        return descriptor['digest'], layers
+    require(base.is_file(), 'base is neither an OCI layout nor an installed rootfs TAR')
+    return 'sha256:' + sha(base), [base]
+
+
 def base_aliases(base, *, expected_platform, directory_aliases=DIRECTORY_ALIASES):
     """Require aliases and their target directories to exist in the final checked base."""
-    descriptor, _, _, layers = validate_layout(base, expected_platform)
+    digest, layers = base_layers(base, expected_platform)
     targets = set(directory_aliases) | {entry['target'] for entry in directory_aliases.values()}
     observed = {}
     for layer in layers:
@@ -110,15 +119,30 @@ def base_aliases(base, *, expected_platform, directory_aliases=DIRECTORY_ALIASES
         require(observed.get(name) == {'kind': 'symlink', 'linkname': entry['linkname'], 'uid': 0, 'gid': 0, 'mode': 0o777} and
                 observed.get(entry['target']) == {'kind': 'directory', 'linkname': '', 'uid': 0, 'gid': 0, 'mode': 0o755},
                 'OCI base has an unsupported directory alias: ' + name)
-    return descriptor['digest']
+    return digest
 
 
 def normalize(payload_path, base, output_path, *, expected_platform, directory_aliases=DIRECTORY_ALIASES,
-              root_owned=False, modes=None):
+              root_owned=False, modes=None, preserve_metadata=()):
     """Produce an ordinary TAR and a receipt for the exact source/base and requested changes."""
     for alias, entry in directory_aliases.items():
         require(path_name(alias) == alias and path_name(entry['target']) == entry['target'], 'invalid directory alias')
     base_digest = base_aliases(base, expected_platform=expected_platform, directory_aliases=directory_aliases)
+    inherited = {}
+    if preserve_metadata:
+        require(len(set(preserve_metadata)) == len(preserve_metadata), 'duplicate metadata preservation path')
+        require(not set(preserve_metadata).intersection(modes or {}), 'mode override conflicts with preserved metadata')
+        _, layers = base_layers(base, expected_platform)
+        from tools.bazel.oci.oci_inventory import apply_layer
+        files = {}
+        for layer in layers:
+            apply_layer(layer, files)
+        for path in preserve_metadata:
+            require(path_name(path) == path, 'unsafe metadata preservation path')
+            item = files.get(path, {})
+            require(item.get('kind') == 'file', 'baseline must supply a regular file for metadata preservation: ' + path)
+            inherited[path] = {key: item[key] for key in ('mode', 'uid', 'gid')}
+    retained = set()
     counts = {'input_members': 0, 'output_members': 0, 'rewritten_members': 0, 'skipped_alias_entries': 0}
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(payload_path, 'r:*') as source, tarfile.open(output_path, 'w', format=tarfile.PAX_FORMAT) as output:
@@ -128,11 +152,21 @@ def normalize(payload_path, base, output_path, *, expected_platform, directory_a
             if normalized is None:
                 counts['skipped_alias_entries'] += 1
                 continue
+            name = path_name(normalized.name)
+            if name in inherited:
+                require(normalized.isfile(), 'source must supply a regular file for metadata preservation: ' + name)
+                for key, value in inherited[name].items():
+                    setattr(normalized, key, value)
+                normalized.uname = normalized.gname = ''
+                for key in ('uid', 'gid', 'uname', 'gname', 'mode'):
+                    normalized.pax_headers.pop(key, None)
+                retained.add(name)
             counts['output_members'] += 1
             counts['rewritten_members'] += str(PurePosixPath(normalized.name)) != str(PurePosixPath(member.name))
             output.addfile(normalized, source.extractfile(member) if member.isfile() else None)
+    require(retained == set(preserve_metadata), 'source TAR lacks a metadata preservation path')
     return {'base_manifest_digest': base_digest, 'input_sha256': sha(payload_path), 'output_sha256': sha(output_path),
-            'directory_aliases': directory_aliases, 'root_owned': root_owned, 'modes': modes or {}, **counts}
+            'directory_aliases': directory_aliases, 'root_owned': root_owned, 'modes': modes or {}, 'preserved_metadata': inherited, **counts}
 
 
 def main():

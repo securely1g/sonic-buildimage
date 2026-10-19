@@ -16,10 +16,12 @@ runtime package and the config-engine image layer; unchanged Debian inputs remai
 | Either owner | `:runtime_package_metadata` | Installed package versions, source revisions and native file hashes |
 
 OCI means the standard container image layout consumed by `rules_oci`. A TAR is
-the filesystem archive produced by a component's packaging target. Ordinary SONiC binaries keep their runtime/debug TARs and Python packages keep
-their wheel layers. Debian packages are installed with their original metadata.
-Source-built replacements for Debian packages (for example FIPS OpenSSL) also
-retain real package ownership so APT can resolve dependencies correctly.
+the filesystem archive produced by a component's packaging target. All source
+components, including FIPS OpenSSL and the distro-library replacements, supply
+runtime/debug TARs directly. Python packages keep their wheel layers. Only
+existing, checksum-pinned Debian archives are installed by APT; this image graph
+creates no DEBs. Their genuine package records describe the installed Debian
+baseline, while separate provenance identifies the source TARs overlaid on it.
 
 ## Runtime component ownership
 
@@ -39,6 +41,12 @@ plugin package is not an input to this image in Make and is not added here.
 Libnl uses its original runtime package selections, preserving `/etc/libnl-3`
 configuration and CLI plugins while leaving development linker symlinks to the
 development packages.
+The real Debian `libnl-cli-3-200` baseline stays installed because packages such
+as `libteam5` depend on it. Its ten unused plugins under `libnl/cli` are excluded
+through standard dpkg path filters before installation. The source TAR provides
+all ten plugins under its compiled `libnl-3/cli` directory. Provenance and image
+checks require the source plugins and reject the excluded Debian copies,
+including after a later APT transaction.
 
 The shared image path normalizer places Common's database configuration under
 `/run/redis/sonic-db`, preserving Debian's `/var/run -> /run` link. The original
@@ -80,10 +88,11 @@ claim byte-for-byte equivalence to a later floating Make build.
 
 ## Building before the dependency PRs merge
 
-This draft selects the shared installer and real DEB outputs only for components
-that replace Debian-managed files or satisfy Debian package dependencies. The exact source commits, archive digests
-and registry recipes are recorded in `draft_sources.json`; review and refresh
-those inputs together when a prerequisite changes.
+This draft selects the shared installer for existing Debian inputs and the
+source owners' public runtime TAR targets. It does not depend on their DEB
+packaging branches. Exact source commits, archive digests and registry recipes
+are recorded in `draft_sources.json`; review and refresh those inputs together
+when a prerequisite changes.
 
 Normal registry URLs remain maintained `main` and BCR. `draft_sources.json`
 temporarily names the exact reviewed registration commits or source archives
@@ -143,29 +152,31 @@ input to Syncd.
 
 ## Package state and validation
 
-The shared `rules_distroless` `apt_install` rule installs the selected original
-Debian archives and source-owner DEBs in a private filesystem. APT and dpkg run
-the original configuration scripts and triggers. For example, the certificate
-package creates `/etc/ca-certificates.conf`, Vim registers its editor alternatives,
-and OpenSSH creates its `_ssh` group and sets `ssh-agent` ownership and permissions.
-The image does not copy these effects from an older container.
+The shared `rules_distroless` `apt_install` rule installs selected, original
+Debian archives in a private filesystem. APT and dpkg run their original
+configuration scripts and triggers. For example, the certificate package creates
+`/etc/ca-certificates.conf`, and Vim registers its editor alternatives. These
+real package records remain unchanged when source TARs replace selected files.
 
-`installed_source_metadata.py` reads the resulting package database and verifies
-that source ELF bytes match the declared input DEBs or runtime TARs. It records versions, source
-revisions, numeric ownership, modes and hashes of installed package metadata;
-it does not write dpkg records. The image retains `base-packages.json` or
-`config-engine-packages.json` under `/usr/share/sonic/bazel`, bound to the exact
-installation receipt and configured filesystem. Maintainer scripts run in the
-private build filesystem, without network access or a Docker socket.
+`installed_source_metadata.py` permits a source TAR to replace only files owned
+by its same-named Debian baseline package. It verifies the exact source bytes, symlink targets, modes
+and numeric ownership. Undeclared collisions and changes to package-manager
+state fail the build. The source declarations contain provenance and required
+paths, not copied package controls.
 
-Distro replacements retain their original control files, changelogs, configuration
-files and helper-generated installation scripts. Their declared build tools
-derive library dependencies from the actual binaries. Common, Eventd, the Rust
-listener, Python bindings and SymCrypt keep their existing runtime TARs.
-They are not falsely recorded as installed Debian packages. The source-layer
-check rejects overwriting files owned by dpkg. The image's
-source declarations contain provenance and required paths; they do not contain
-captured controls from earlier Make binaries.
+The image retains `base-packages.json` or `config-engine-packages.json` under
+`/usr/share/sonic/bazel`, bound to the exact installation receipt and filesystem.
+These receipts distinguish the actual Debian baseline version from the source
+revision/version. APT dependency resolution uses the genuine baseline records;
+it does not treat a newer source TAR as a fictitious installed package version.
+Ordinary SONiC programs without Debian packages remain outside dpkg's database.
+
+Each image generates standard APT preferences from the same declarations. A
+`Pin-Priority: -1` entry prevents normal APT version selection from replacing
+source-overlaid packages. It is not a guarantee against explicit removal,
+direct `dpkg` commands or administrator overrides. Supported transactions add
+unrelated packages while preserving source files. The build retains Debian's
+configuration effects and uses the source graph's matching debug TARs.
 
 Upstream `umoci repack` converts the configured filesystem into a delta against
 its actual OCI base, including deletions, while preserving inherited image
@@ -214,9 +225,8 @@ versions, and completed APT/dpkg checks.
 
 This manual target is a complete configured Debian filesystem TAR. It is an
 intermediate: it does not contain the source-built SONiC replacements, Python
-wheels, or SONiC configuration. The production target installs its source-owner
-Debian replacements in `configured_sources`, then adds ordinary runtime TARs,
-Python wheels and SONiC configuration.
+wheels, or SONiC configuration. The production target overlays the verified source-owned runtime TARs, then
+adds Python wheels, provenance, APT preferences and SONiC configuration.
 Config-engine repeats these stages on the completed source-built base.
 
 The input is the pinned official Debian image's one existing gzip layer, copied
@@ -233,7 +243,6 @@ DEB generation, checks initial configuration before any repair transaction, and
 runs the additional-package install probe using the same image validator. No source packages or test DEBs are created by this job.
 
 Common resolves from registry `main` at its existing source version; it no longer
-needs a temporary override. The APT installation work still uses the reviewed
-infrastructure and FIPS snapshots in `draft_sources.json`: these supply the
-installation tools and genuine Debian replacements required by this image.
-The root infrastructure override selects that snapshot for all consumers.
+needs a temporary override. The reviewed draft dependencies in `draft_sources.json` supply the upstream
+installer and source TAR producers. Shared infrastructure resolves from its
+landed registry version; source DEB production tools are not selected.

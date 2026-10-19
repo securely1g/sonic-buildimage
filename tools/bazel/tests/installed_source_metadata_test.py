@@ -1,6 +1,7 @@
 """Reject stale installation receipts and edited source files before OCI assembly."""
 import io
 import copy
+import fnmatch
 import json
 from pathlib import Path
 import tempfile
@@ -30,7 +31,7 @@ class InstalledSourceMetadataTest(unittest.TestCase):
                                           'rootfs_sha256': '0' * 64}))
             with patch.object(subject, 'apply_layer', side_effect=AssertionError('read stale input')):
                 with self.assertRaisesRegex(ValueError, 'receipt does not match'):
-                    subject.describe(filesystem, receipt, root / 'spec.json', {}, 'amd64', 'bsdtar')
+                    subject.describe(filesystem, receipt, root / 'spec.json', 'amd64')
 
     def test_wrong_architecture_is_rejected_even_with_matching_hash(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -41,201 +42,13 @@ class InstalledSourceMetadataTest(unittest.TestCase):
             receipt.write_text(json.dumps({'status': 'passed', 'architecture': 'arm64',
                                           'rootfs_sha256': subject.sha(filesystem)}))
             with self.assertRaisesRegex(ValueError, 'receipt does not match'):
-                subject.describe(filesystem, receipt, root / 'spec.json', {}, 'amd64', 'bsdtar')
+                subject.describe(filesystem, receipt, root / 'spec.json', 'amd64')
 
 
-
-# Each positive/negative case uses one original DEB made by the upstream
-# archive tool and an independently assembled installed-filesystem fixture.
-@unittest.skipIf(subject is None, 'Run the Bazel target with its declared sonic_apt dependency')
-class InstalledFilesTest(unittest.TestCase):
-    def setUp(self):
-        import sys
-        if not TAR:
-            self.skipTest("Run the Bazel target with its declared BSD tar tool")
-        tool = Path(TAR)
-        if not tool.exists() and str(tool).startswith("external/"):
-            tool = Path("..") / str(tool).removeprefix("external/")
-        self.tar = str(tool.absolute())
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
-        self.elf = bytearray(64)
-        self.elf[:6] = b'\x7fELF\x02\x01'
-        self.elf[18:20] = (62).to_bytes(2, 'little')
-        self.elf = bytes(self.elf)
-        self.control = b'Package: example\nVersion: 1.0\nArchitecture: amd64\nMaintainer: Test <test@example.invalid>\nDescription: Test program\n'
-        self.write_tar('control.tar', {'control': (self.control, 0o644)})
-        self.write_tar('data.tar', {'usr/bin/example': (self.elf, 0o755)})
-        (self.root / 'debian-binary').write_bytes(b'2.0\n')
-        import subprocess
-        subprocess.run([self.tar, '--format=ar', '-cf', str(self.root / 'example.deb'),
-                        '-C', str(self.root), 'debian-binary', 'control.tar', 'data.tar'], check=True)
-        self.spec = self.root / 'spec.json'
-        self.spec.write_text(json.dumps({'schema': 1, 'packages': {'example': {
-            'target': '//owner:package', 'source_revision': 'reviewed-source',
-            'required_paths': ['usr/bin/example']}}}))
-
-    def tearDown(self):
-        self.temporary.cleanup()
-
-    def write_tar(self, name, entries):
-        import tarfile
-        with tarfile.open(self.root / name, 'w') as stream:
-            for path, (data, mode) in entries.items():
-                info = tarfile.TarInfo(path)
-                info.mode, info.size = mode, len(data)
-                stream.addfile(info, io.BytesIO(data))
-
-    def inspect(self, installed_elf, *, receipt_package=True, inherited=None, embedded=None, selection=None):
-        status = self.control + b'Status: install ok installed\n\n'
-        entries = {'usr/bin/example': (installed_elf, 0o2755), 'var/lib/dpkg/status': (status, 0o644)}
-        if embedded is not None:
-            entries['usr/share/sonic/bazel/runtime.json'] = (embedded, 0o644)
-        self.write_tar('rootfs.tar', entries)
-        receipt = self.root / 'receipt.json'
-        receipt.write_text(json.dumps({'status': 'passed', 'architecture': 'amd64',
-            'rootfs_sha256': subject.sha(self.root / 'rootfs.tar'),
-            'input_packages': [{'sha256': subject.sha(self.root / 'example.deb')}] if receipt_package else []}))
-        selection_path = None
-        if selection is not None:
-            selection_path = self.root / 'selection.json'
-            selection_path.write_text(json.dumps(selection))
-        return subject.describe(self.root / 'rootfs.tar', receipt, self.spec,
-                                {'example': str(self.root / 'example.deb')}, 'amd64', self.tar,
-                                inherited, 'usr/share/sonic/bazel/runtime.json' if inherited else None,
-                                selection_path)
-
-    def selection(self):
-        check = self.inspect(self.elf)['dependency_check']
-        # The selection describes the earlier base; the installed receipt must
-        # keep its own current inventory hash rather than copy this one.
-        check['base_package_inventory_sha256'] = '0' * 64
-        # Match the actual selection receipt: architecture is in its controls.
-        return {'schema': 1, 'variant': 'runtime',
-                'make_manifest_sha256': 'a' * 64, 'source_receipt_sha256': 'b' * 64,
-                'dependency_check': check}
-
-    def test_runtime_selection_preserves_only_verified_provenance(self):
-        selection = self.selection()
-        result = self.inspect(self.elf, selection=selection)
-        for field in ('variant', 'make_manifest_sha256', 'source_receipt_sha256'):
-            self.assertEqual(result[field], selection[field])
-        self.assertEqual(result['selection_sha256'], subject.sha(self.root / 'selection.json'))
-        self.assertNotEqual(result['dependency_check']['base_package_inventory_sha256'], '0' * 64)
-
-    def test_runtime_selection_rejects_different_dependency_controls(self):
-        original = self.selection()
-        for field, value in (('Version', '2.0'), ('Depends', 'example (>= 2.0)'),
-                             ('Architecture', 'arm64'), ('Multi-Arch', 'foreign')):
-            with self.subTest(field=field):
-                selection = copy.deepcopy(original)
-                selection['dependency_check']['packages']['example'][field] = value
-                with self.assertRaisesRegex(ValueError, 'actual installed dependency controls'):
-                    self.inspect(self.elf, selection=selection)
-        for packages in ({}, {**original['dependency_check']['packages'], 'unexpected': {}}):
-            selection = copy.deepcopy(original)
-            selection['dependency_check']['packages'] = packages
-            with self.assertRaisesRegex(ValueError, 'actual installed dependency controls'):
-                self.inspect(self.elf, selection=selection)
-
-    def test_runtime_selection_rejects_invalid_identity_and_provenance(self):
-        original = self.selection()
-        for field, value in (('schema', 2), ('architecture', 'arm64'), ('variant', 'debug'),
-                             ('make_manifest_sha256', None), ('source_receipt_sha256', 'bad')):
-            with self.subTest(field=field):
-                selection = copy.deepcopy(original)
-                selection[field] = value
-                with self.assertRaisesRegex(ValueError, 'runtime package selection'):
-                    self.inspect(self.elf, selection=selection)
-        selection = copy.deepcopy(original)
-        selection['dependency_check']['status'] = 'failed'
-        with self.assertRaisesRegex(ValueError, 'actual installed dependency controls'):
-            self.inspect(self.elf, selection=selection)
-
-    def test_records_actual_configured_permissions_and_dpkg_status(self):
-        result = self.inspect(self.elf)
-        self.assertEqual(result['source_packages'][0]['native_files'][0]['mode'], 0o2755)
-        self.assertIn('var/lib/dpkg/status', result['info_files'])
-
-    def test_rejects_modified_source_elf(self):
-        with self.assertRaisesRegex(ValueError, 'changed a source ELF'):
-            self.inspect(self.elf + b'changed')
-
-    def test_rejects_package_absent_from_installation_inputs(self):
-        with self.assertRaisesRegex(ValueError, 'not an installation input'):
-            self.inspect(self.elf, receipt_package=False)
-
-    def test_debug_stage_rechecks_sources_from_embedded_runtime_proof(self):
-        inherited = self.root / 'inherited.json'
-        inherited.write_text(json.dumps(self.inspect(self.elf)))
-        result = self.inspect(self.elf, receipt_package=False, inherited=inherited, embedded=inherited.read_bytes())
-        self.assertEqual(result['inherited_metadata_sha256'], subject.sha(inherited))
-        with self.assertRaisesRegex(ValueError, 'changed a source ELF'):
-            self.inspect(self.elf + b'changed', receipt_package=False, inherited=inherited, embedded=inherited.read_bytes())
-
-    def test_debug_stage_rejects_unrelated_runtime_proof(self):
-        inherited = self.root / 'inherited.json'
-        inherited.write_text(json.dumps(self.inspect(self.elf)))
-        with self.assertRaisesRegex(ValueError, 'inherited source metadata differs'):
-            self.inspect(self.elf, receipt_package=False, inherited=inherited, embedded=b'other proof')
-
-
-    def test_runtime_layers_keep_source_provenance_without_debian_identity(self):
-        self.inspect(self.elf)
-        spec = json.loads(self.spec.read_text())
-        spec['packages']['listener'] = {'target': '//listener:runtime', 'source_revision': 'reviewed',
-                                        'required_paths': ['usr/bin/listener']}
-        self.spec.write_text(json.dumps(spec))
-        self.write_tar('listener.tar', {'usr/bin/listener': (self.elf, 0o755)})
-        result = subject.describe(self.root / 'rootfs.tar', self.root / 'receipt.json', self.spec,
-            {'example': str(self.root / 'example.deb')}, 'amd64', self.tar,
-            payloads={'listener': self.root / 'listener.tar'}, runtime_layer=self.root / 'listener.tar')
-        listener = next(item for item in result['source_packages'] if item['package'] == 'listener')
-        self.assertEqual(listener['packaging'], 'runtime-layer')
-        self.assertNotIn('deb_sha256', listener)
-        self.assertNotIn('listener', result['dependency_check']['packages'])
-        self.assertEqual(listener['runtime_files'][0]['path'], 'usr/bin/listener')
-
-    def test_runtime_layers_cannot_overwrite_debian_files_or_state(self):
-        self.inspect(self.elf)
-        status = self.control + b'Status: install ok installed\n\n'
-        self.write_tar('rootfs.tar', {'var/lib/dpkg/status': (status, 0o644),
-            'var/lib/dpkg/info/example.list': (b'/usr/bin/example\n', 0o644),
-            'usr/bin/example': (self.elf, 0o755)})
-        receipt = json.loads((self.root / 'receipt.json').read_text())
-        receipt['rootfs_sha256'] = subject.sha(self.root / 'rootfs.tar')
-        (self.root / 'receipt.json').write_text(json.dumps(receipt))
-        for name, message in [('usr/bin/example', 'Debian-owned'), ('var/lib/dpkg/status', 'package-manager state')]:
-            self.write_tar('layer.tar', {name: (b'override', 0o644)})
-            with self.subTest(path=name), self.assertRaisesRegex(ValueError, message):
-                subject.describe(self.root / 'rootfs.tar', self.root / 'receipt.json', self.spec,
-                    {'example': str(self.root / 'example.deb')}, 'amd64', self.tar,
-                    runtime_layer=self.root / 'layer.tar')
-
-    def test_runtime_layer_whiteouts_are_rejected(self):
-        self.inspect(self.elf)
-        self.write_tar('layer.tar', {'var/lib/dpkg/.wh.status': (b'', 0o644)})
-        with self.assertRaisesRegex(ValueError, 'must not contain OCI whiteouts'):
-            subject.describe(self.root / 'rootfs.tar', self.root / 'receipt.json', self.spec,
-                {'example': str(self.root / 'example.deb')}, 'amd64', self.tar,
-                runtime_layer=self.root / 'layer.tar')
-
-    def test_runtime_layer_source_bytes_must_match_the_composed_layer(self):
-        self.inspect(self.elf)
-        spec = json.loads(self.spec.read_text())
-        spec['packages']['listener'] = {'target': '//listener:runtime', 'source_revision': 'reviewed',
-                                        'required_paths': ['usr/bin/listener']}
-        self.spec.write_text(json.dumps(spec))
-        self.write_tar('listener.tar', {'usr/bin/listener': (self.elf, 0o755)})
-        self.write_tar('changed.tar', {'usr/bin/listener': (self.elf + b'changed', 0o755)})
-        with self.assertRaisesRegex(ValueError, 'changed a runtime-layer file'):
-            subject.describe(self.root / 'rootfs.tar', self.root / 'receipt.json', self.spec,
-                {'example': str(self.root / 'example.deb')}, 'amd64', self.tar,
-                payloads={'listener': self.root / 'listener.tar'}, runtime_layer=self.root / 'changed.tar')
 
 @unittest.skipIf(subject is None, 'Run with the declared sonic_apt dependency')
-class MakeBaseOverlayTest(unittest.TestCase):
-    """An existing Make-installed package keeps its controls during a TAR overlay."""
+class SourceOverlayTest(unittest.TestCase):
+    """Real installed Debian metadata is retained during checked source TAR overlays."""
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -280,7 +93,7 @@ class MakeBaseOverlayTest(unittest.TestCase):
         receipt = self.root / 'receipt.json'
         receipt.write_text(json.dumps({'status': 'passed', 'architecture': 'amd64',
                                       'rootfs_sha256': subject.sha(rootfs), 'input_packages': []}))
-        return subject.describe(rootfs, receipt, self.root / 'spec.json', {}, 'amd64', 'unused',
+        return subject.describe(rootfs, receipt, self.root / 'spec.json', 'amd64',
                                 payloads={'common': original}, runtime_layer=normalized, **options)
 
     def test_same_owner_overlay_requires_explicit_compatibility(self):
@@ -297,6 +110,49 @@ class MakeBaseOverlayTest(unittest.TestCase):
         self.assertEqual(proof['info_files']['var/lib/dpkg/status']['sha256'],
                          __import__('hashlib').sha256(self.status).hexdigest())
 
+    def test_excluded_baseline_file_must_be_absent_even_if_broken_symlink(self):
+        spec = self.root / 'spec.json'
+        document = json.loads(spec.read_text())
+        path = 'usr/lib/x86_64-linux-gnu/libnl/cli/cls/basic.so'
+        document['packages']['common']['excluded_baseline_paths'] = [path]
+        spec.write_text(json.dumps(document))
+        report = self.inspect(allow_same_owner_overlays=True)
+        self.assertEqual(report['source_packages'][0]['excluded_baseline_paths'], [path])
+        for value in (b'unused Debian plugin', 'missing.so'):
+            with self.subTest(symlink=isinstance(value, str)):
+                self.files[path] = (value, 0o644)
+                with self.assertRaisesRegex(ValueError, 'excluded baseline file'):
+                    self.inspect(allow_same_owner_overlays=True)
+
+    def test_required_source_plugin_cannot_disappear_from_payload(self):
+        spec = self.root / 'spec.json'
+        document = json.loads(spec.read_text())
+        path = 'usr/lib/x86_64-linux-gnu/libnl-3/cli/cls/basic.so'
+        document['packages']['common']['required_paths'].append(path)
+        spec.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, 'required runtime-layer path'):
+            self.inspect(allow_same_owner_overlays=True)
+        self.original[path] = self.normalized[path] = (b'source plugin', 0o644)
+        report = self.inspect(allow_same_owner_overlays=True)
+        self.assertIn(path, {entry['path'] for entry in report['source_packages'][0]['runtime_files']})
+
+    def test_libnl_filter_excludes_only_reviewed_baseline_plugin_files(self):
+        directory = Path(__file__).resolve().parents[3] / 'dockers/docker-config-engine-trixie/bazel'
+        spec = json.loads((directory / 'source_packages.json').read_text())['packages']['libnl-cli-3-200']
+        filters = [line.split()[1] for line in (directory / 'dpkg_02_source_libnl').read_text().splitlines()
+                   if line.startswith('path-exclude ')]
+        self.assertEqual(len(filters), 10)
+        self.assertEqual(len(spec['excluded_baseline_paths']), 10)
+        self.assertEqual(len(spec['required_paths']), 11)  # CLI library plus ten source plugins.
+        for triplet in ('x86_64-linux-gnu', 'aarch64-linux-gnu'):
+            for path in spec['excluded_baseline_paths']:
+                path = '/' + path.format(multiarch=triplet)
+                self.assertEqual(sum(fnmatch.fnmatchcase(path, pattern) for pattern in filters), 1)
+                self.assertFalse(any(fnmatch.fnmatchcase(path + '.unrelated', pattern) for pattern in filters))
+            for path in spec['required_paths']:
+                path = '/' + path.format(multiarch=triplet)
+                self.assertFalse(any(fnmatch.fnmatchcase(path, pattern) for pattern in filters))
+
     def test_other_owner_and_multiple_owners_are_rejected(self):
         common = self.files['var/lib/dpkg/info/common.list']
         for keep_common in (True, False):
@@ -306,6 +162,36 @@ class MakeBaseOverlayTest(unittest.TestCase):
                     del self.files['var/lib/dpkg/info/common.list']
                 with self.assertRaisesRegex(ValueError, 'Debian-owned'):
                     self.inspect(allow_same_owner_overlays=True)
+
+    def test_development_symlink_does_not_claim_its_runtime_referent(self):
+        # The development package owns libcommon.so. The runtime package owns
+        # its SONAME link and real library, matching Debian's split packages.
+        status = self.status + (b'Package: common-dev\nVersion: 1.0\nArchitecture: amd64\n'
+                               b'Status: install ok installed\nDepends: common (= 1.0)\n'
+                               b'Description: Development files\n\n')
+        self.files['var/lib/dpkg/status'] = (status, 0o644)
+        self.files['var/lib/dpkg/info/common-dev:amd64.list'] = (b'/lib/libcommon.so\n', 0o644)
+        self.files['lib'] = ('usr/lib', 0o777)
+        self.files['usr/lib/libcommon.so'] = ('libcommon.so.0', 0o777)
+        development = {'usr/lib/libcommon.so': ('libcommon.so.0', 0o777)}
+        specification = json.loads((self.root / 'spec.json').read_text())
+        specification['packages']['common-dev'] = {'target': '//common:development',
+            'source_revision': 'reviewed-source', 'required_paths': ['usr/lib/libcommon.so']}
+        (self.root / 'spec.json').write_text(json.dumps(specification))
+        rootfs = self.write_tar('rootfs.tar', self.files)
+        runtime = self.write_tar('source.tar', self.original)
+        devel = self.write_tar('devel.tar', development)
+        layer = self.write_tar('combined.tar', {**self.normalized, **development})
+        receipt = self.root / 'receipt.json'
+        receipt.write_text(json.dumps({'status': 'passed', 'architecture': 'amd64',
+                                      'rootfs_sha256': subject.sha(rootfs)}))
+        report = subject.describe(rootfs, receipt, self.root / 'spec.json', 'amd64',
+            payloads={'common': runtime, 'common-dev': devel}, runtime_layer=layer,
+            allow_same_owner_overlays=True)
+        overlays = report['verified_overlays']['paths']
+        self.assertEqual(overlays['usr/lib/libcommon.so']['owners'], ['common-dev'])
+        self.assertEqual(overlays['usr/lib/libcommon.so.0']['owners'], ['common'])
+        self.assertEqual(overlays['usr/lib/libcommon.so.0.0.0']['owners'], ['common'])
 
     def test_package_manager_state_is_never_an_overlay(self):
         for path in ('var/lib/dpkg/status', 'var/lib/dpkg/info/common.list', 'var/lib/apt/extended_states'):
@@ -331,7 +217,84 @@ class MakeBaseOverlayTest(unittest.TestCase):
         self.assertNotIn('verified_overlays', strict)
         self.assertEqual(strict, self.inspect(allow_same_owner_overlays=True))
 
+    def test_baseline_version_is_not_relabelled_as_the_source_version(self):
+        path = self.root / 'spec.json'
+        specification = json.loads(path.read_text())
+        specification['packages']['common']['source_version'] = '2.0-sonic'
+        path.write_text(json.dumps(specification))
+        report = self.inspect(allow_same_owner_overlays=True)
+        source = report['source_packages'][0]
+        self.assertEqual(source['source_version'], '2.0-sonic')
+        self.assertEqual(source['debian_baseline'], {'common': {'version': '1.0', 'architecture': 'amd64'}})
+        self.assertNotIn('version', source)
+        self.assertEqual(report['dependency_check']['packages']['common']['Version'], '1.0')
+        self.assertEqual(report['info_files']['var/lib/dpkg/status']['sha256'],
+                         __import__('hashlib').sha256(self.status).hexdigest())
+
+    def test_source_symlinks_and_configuration_are_included_in_provenance(self):
+        report = self.inspect(allow_same_owner_overlays=True)
+        source = report['source_packages'][0]
+        self.assertEqual(source['runtime_links'], [{'path': 'usr/lib/libcommon.so.0', 'kind': 'symlink',
+                         'linkname': 'libcommon.so.0.0.0', 'mode': 0o777, 'uid': 0, 'gid': 0}])
+        self.assertIn('run/common/config', {item['path'] for item in source['runtime_files']})
+
+    def test_unowned_payload_cannot_change_bytes_or_links(self):
+        del self.files['var/lib/dpkg/info/common.list']
+        for name, replacement, message in (
+            ('usr/lib/libcommon.so.0.0.0', (b'changed', 0o644), 'changed a runtime-layer file'),
+            ('usr/lib/libcommon.so.0', ('other.so', 0o777), 'changed a runtime-layer symlink'),
+        ):
+            original = self.normalized[name]
+            self.normalized[name] = replacement
+            with self.subTest(path=name), self.assertRaisesRegex(ValueError, message):
+                self.inspect()
+            self.normalized[name] = original
+
+    def test_preferences_protect_source_package_names(self):
+        specification = {'schema': 1, 'packages': {
+            'libssl3t64': {},
+            'ordinary': {},
+        }}
+        value = subject.apt_preferences(specification)
+        self.assertIn('Package: libssl3t64 ordinary\nPin: version *\nPin-Priority: -1\n', value)
+
+    def test_invalid_name_cannot_inject_an_apt_preferences_stanza(self):
+        path = self.root / 'spec.json'
+        specification = json.loads(path.read_text())
+        specification['packages']['common\nPackage: *'] = specification['packages'].pop('common')
+        path.write_text(json.dumps(specification))
+        with self.assertRaisesRegex(ValueError, 'invalid source package names'):
+            self.inspect(allow_same_owner_overlays=True)
+
+    def test_debug_stage_rechecks_inherited_source_and_overlay_proof(self):
+        report = self.inspect(allow_same_owner_overlays=True)
+        inherited = self.root / 'inherited.json'
+        inherited.write_text(json.dumps(report))
+        self.files.update(self.normalized)
+        self.files['usr/share/sonic/bazel/runtime.json'] = (inherited.read_bytes(), 0o644)
+        rootfs = self.write_tar('debug-rootfs.tar', self.files)
+        receipt = self.root / 'debug-installation.json'
+        receipt.write_text(json.dumps({'status': 'passed', 'architecture': 'amd64',
+                                      'rootfs_sha256': subject.sha(rootfs), 'input_packages': []}))
+        result = subject.describe(rootfs, receipt, self.root / 'spec.json', 'amd64',
+            inherited_metadata=inherited, inherited_metadata_path='usr/share/sonic/bazel/runtime.json',
+            payloads={'common': self.root / 'source.tar'})
+        self.assertEqual(result['verified_overlays'], report['verified_overlays'])
+        self.assertEqual(result['inherited_metadata_sha256'], subject.sha(inherited))
+
+    def test_receipt_selection_is_bound_to_real_dependency_controls(self):
+        report = self.inspect(allow_same_owner_overlays=True)
+        selection = {'schema': 1, 'variant': 'runtime', 'make_manifest_sha256': 'a' * 64,
+                     'source_receipt_sha256': 'b' * 64, 'dependency_check': report['dependency_check']}
+        path = self.root / 'selection.json'
+        path.write_text(json.dumps(selection))
+        result = self.inspect(allow_same_owner_overlays=True, selection=path)
+        self.assertEqual(result['selection_sha256'], subject.sha(path))
+        selection['dependency_check']['packages']['common']['Version'] = 'invented-source-version'
+        path.write_text(json.dumps(selection))
+        with self.assertRaisesRegex(ValueError, 'actual installed dependency controls'):
+            self.inspect(allow_same_owner_overlays=True, selection=path)
+
 
 if __name__ == '__main__':
-    TAR = __import__('sys').argv[1]
     unittest.main(argv=[__import__('sys').argv[0]])
