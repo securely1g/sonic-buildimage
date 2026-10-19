@@ -69,7 +69,7 @@ claim byte-for-byte equivalence to a later floating Make build.
 
 ## Building before the dependency PRs merge
 
-Distroless `0.9.4.sonic.5` resolves directly from the maintained registry.
+Distroless `0.9.4.sonic.6` resolves directly from the maintained registry.
 Its published fixes provide the package headers, pkg-config files and concrete
 package labels used by the source producers; no Distroless override is needed.
 
@@ -174,6 +174,6 @@ For Python changes, edit the owning `requirements.in` and regenerate the shared
 config-engine lock with the existing documented `uv pip compile` command. Keep
 base-specific declarations in `dockers/docker-base-trixie/requirements.in`.
 
-Shared sysroot and Kerberos tools use reviewed infrastructure `0.0.16-72d9705e37d0e83a072cad3eb73b75cd6cc1e4c6`, including the GNU linker runtime-library search fix. Draft CI selects the exact registry #80 source recipe from `draft_sources.json`; the normal registry default remains maintained `main`. The root override keeps older consumer declarations from selecting an obsolete infrastructure snapshot.
+Shared sysroot and Kerberos tools use landed infrastructure `0.0.17-8baf1ad829c5095297d85148b042145b87d623a3` from registry #81. Distroless #82 supplies the Debian library linking interface used by native shared libraries. Both resolve through maintained `main`; no infrastructure source override is needed. The root version selection keeps older consumer declarations from choosing an obsolete compiler snapshot.
 
-The FIPS runtime source is `dcd6a3a1ba873386b1f80d5b0b1f96a23728b399`. It declares the GNU tool runtime files required by SymCrypt, while OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
+The FIPS runtime source is `c363f13ce125b2bed9b228da77b60eb4441b8516`. It declares the GNU tool runtime files required by SymCrypt, while OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.

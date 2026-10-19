@@ -33,7 +33,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.2", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.5")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.6")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -49,7 +49,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.16-72d9705e37d0e83a072cad3eb73b75cd6cc1e4c6",
+    version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -71,7 +71,7 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-yang-models",
-    version = "1.0.1-6729b56da1241f4d1d5ecb633d625846dd7e39d0",
+    version = "1.0.1-4a2bf330ac2e99b989268066365103a80f5e5f61",
     repo_name = "sonic_yang_models",
 )
 
@@ -236,11 +236,11 @@ single_version_override(
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.2-dcd6a3a1ba873386b1f80d5b0b1f96a23728b399", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.2-c363f13ce125b2bed9b228da77b60eb4441b8516", repo_name = "sonic_fips")
 
-# Select the reviewed compiler runtime fix while older Draft consumers
-# retain their previous module declarations.
+# Select the landed Debian GCC toolchains while older consumers retain
+# their previous module declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.16-72d9705e37d0e83a072cad3eb73b75cd6cc1e4c6",
+    version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",
 )
