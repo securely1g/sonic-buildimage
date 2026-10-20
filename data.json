@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-20T13:04:11.271861Z",
+  "generated_at": "2026-10-20T13:41:47.990318Z",
   "pull_requests": [
     {
       "base_sha": "af35f605975215872e69dba5a291cb52fd5faafa",
@@ -419,7 +419,7 @@
       "number": 2,
       "state": "open",
       "title": "Build SWSS containers and virtual-switch installers with Bazel",
-      "updated_at": "2026-10-20T12:54:29Z",
+      "updated_at": "2026-10-20T13:16:27Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/2"
     },
     {
@@ -7949,8 +7949,8 @@
     {
       "attempt": 1,
       "branch": "codex/syncd-vs-oci-publication",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-20T13:40:56Z",
+      "conclusion": "failure",
       "event": "pull_request",
       "jobs": [
         {
@@ -8817,23 +8817,23 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-20T13:40:56Z",
+          "conclusion": "failure",
+          "duration_seconds": 4344.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 118530120567,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
+            "build": 3433.0,
+            "other": 5.0,
             "setup": 283.0,
-            "upload": null,
-            "validation": null
+            "upload": 2.0,
+            "validation": 617.0
           },
           "started_at": "2026-10-20T12:28:32Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-20T12:28:36Z",
@@ -8936,124 +8936,134 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:30:29Z",
+              "conclusion": "success",
+              "duration_seconds": 3433.0,
               "name": "Build the VS image and both OCI container variants",
               "number": 11,
               "phase": "build",
               "started_at": "2026-10-20T12:33:16Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:36:08Z",
+              "conclusion": "success",
+              "duration_seconds": 339.0,
               "name": "Verify cached P4 packages in the Syncd runtime and debug images",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:30:29Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:40:46Z",
+              "conclusion": "failure",
+              "duration_seconds": 278.0,
               "name": "Validate installed Syncd programs and all source debug symbols",
               "number": 13,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:36:08Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-20T13:40:46Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Require guest service evidence for this VS image",
               "number": 14,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-20T13:40:46Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify P4RT packaged split debug symbols",
               "number": 15,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:40:46Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Remove this job's remaining build containers",
               "number": 16,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:40:46Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Prepare public artifact list",
               "number": 17,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:40:48Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Upload public VS build summary",
               "number": 18,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:40:50Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Retain installed Syncd and source dependency evidence",
               "number": 19,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:48Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:40:52Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Retain strict VS guest validation receipt",
               "number": 20,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:50Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-20T13:40:52Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Upload VS image and OCI container archives",
               "number": 21,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:52Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T13:40:53Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Post Checkout repository",
               "number": 42,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T13:40:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T13:40:53Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 43,
+              "phase": "other",
+              "started_at": "2026-10-20T13:40:53Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39387984575/job/118530120567"
@@ -9067,8 +9077,8 @@
       "run_id": 39387984575,
       "source_sha": "dd07c3f380e12abf0331ad1171168e06a1bf2f29",
       "started_at": "2026-10-20T07:39:46Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-20T12:28:32Z",
+      "status": "completed",
+      "updated_at": "2026-10-20T13:40:57Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39387984575/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
