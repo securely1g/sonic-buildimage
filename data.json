@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-20T04:33:57.666992Z",
+  "generated_at": "2026-10-20T04:36:29.606248Z",
   "pull_requests": [
     {
       "base_sha": "af35f605975215872e69dba5a291cb52fd5faafa",
@@ -1662,8 +1662,8 @@
     {
       "attempt": 1,
       "branch": "codex/bazel-swss-image",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-20T04:35:49Z",
+      "conclusion": "failure",
       "event": "pull_request",
       "jobs": [
         {
@@ -2400,9 +2400,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-20T04:35:49Z",
+          "conclusion": "failure",
+          "duration_seconds": 88.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 118426388610,
@@ -2410,14 +2410,125 @@
           "name": "Bazel VS installer (AMD64)",
           "phases": {
             "build": null,
-            "other": null,
-            "setup": null,
-            "upload": null,
+            "other": 75.0,
+            "setup": 8.0,
+            "upload": 0.0,
             "validation": null
           },
-          "started_at": "2026-10-20T02:47:43Z",
-          "status": "queued",
-          "steps": [],
+          "started_at": "2026-10-20T04:34:21Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-20T04:34:24Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-20T04:34:22Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:34:30Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Checkout repository",
+              "number": 2,
+              "phase": "setup",
+              "started_at": "2026-10-20T04:34:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:34:31Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Move this checkout into the persistent build area",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-10-20T04:34:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:45Z",
+              "conclusion": "success",
+              "duration_seconds": 74.0,
+              "name": "Initialize every recorded native and Bazel source",
+              "number": 4,
+              "phase": "other",
+              "started_at": "2026-10-20T04:34:31Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:45Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Restore Bazel source-package and download caches",
+              "number": 5,
+              "phase": "other",
+              "started_at": "2026-10-20T04:35:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:45Z",
+              "conclusion": "failure",
+              "duration_seconds": 0.0,
+              "name": "Check source-build runner capacity",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-20T04:35:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:45Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Build and verify sonic-vs.bin with Bazel",
+              "number": 7,
+              "phase": "build",
+              "started_at": "2026-10-20T04:35:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:45Z",
+              "conclusion": "failure",
+              "duration_seconds": 0.0,
+              "name": "Upload VS installer and build evidence",
+              "number": 8,
+              "phase": "upload",
+              "started_at": "2026-10-20T04:35:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:46Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Post Restore Bazel source-package and download caches",
+              "number": 15,
+              "phase": "other",
+              "started_at": "2026-10-20T04:35:46Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:46Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Checkout repository",
+              "number": 16,
+              "phase": "other",
+              "started_at": "2026-10-20T04:35:46Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T04:35:46Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 17,
+              "phase": "other",
+              "started_at": "2026-10-20T04:35:46Z",
+              "status": "completed"
+            }
+          ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39356852938/job/118426388610"
         }
       ],
@@ -2429,8 +2540,8 @@
       "run_id": 39356852938,
       "source_sha": "13389013bd8cb03425cbdcb43a14d6a0b9b943b8",
       "started_at": "2026-10-20T02:03:43Z",
-      "status": "queued",
-      "updated_at": "2026-10-20T02:47:43Z",
+      "status": "completed",
+      "updated_at": "2026-10-20T04:35:50Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39356852938/attempts/1",
       "workflow_name": "Bazel",
       "workflow_path": ".github/workflows/bazel.yml"
