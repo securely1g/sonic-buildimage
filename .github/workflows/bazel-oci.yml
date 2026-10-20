@@ -525,10 +525,21 @@ jobs:
       - name: Prepare the registered Syncd manifests
         run: |
           make -f tools/bazel/prepare_manifests.mk \
-            MANIFEST_METADATA="$SONIC_CI_MANIFEST_METADATA" DEBS_PATH=target/debs/trixie \
+            MANIFEST_METADATA="rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk $SONIC_CI_MANIFEST_METADATA" \
+            DEBS_PATH=target/debs/trixie \
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
             INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n DBG_IMAGE_MARK=dbg \
             PLATFORM_PATH=platform/vs DOCKERS_PATH=dockers
+
+      - name: Analyze the complete P4 image verification graph
+        run: |
+          # Resolve the real post-build test before scheduling the full VS build.
+          # Analysis consumes declarations only; Make still supplies the P4 DEBs.
+          python3 -B tools/bazel/ci/bazel_commands.py \
+            --bazel "$BAZEL" --bazel-arg=--config=syncd-dash \
+            --output artifacts/syncd-vs/p4-image-test-analysis.json \
+            //tools/bazel/tests:syncd_p4_images_test
+          cat artifacts/syncd-vs/p4-image-test-analysis.json
 
       - name: Test and collect declared Syncd CI artifacts
         run: |
@@ -564,9 +575,9 @@ jobs:
 
   vs:
     name: Make VS with Bazel SWSS (AMD64)
-    needs: source
-    # Build full VS images for Ready PR branches after source checks. Drafts
-    # validate source TARs/OCI without starting the complete Make installer.
+    needs: [source, syncd-contracts]
+    # Build full VS images for Ready PR branches after source and test-graph checks.
+    # Drafts validate source TARs/OCI without starting the complete Make installer.
     # Manual runs retain their explicit skip option.
     if: >-
       (github.event_name == 'pull_request' &&

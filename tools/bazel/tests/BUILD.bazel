@@ -1099,6 +1099,9 @@ _SYNCD_P4_IMAGE_INPUTS = {
     "source_runtime_tar": _SYNCD_OWNER + ":source_runtime_payloads",
     "source_debug_tar": _SYNCD_OWNER + ":source_debug_payloads",
     "source_receipt": _SYNCD_OWNER + ":source_package_receipt",
+    "base_symbols": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
+    "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
+    "config_metadata": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
     "policy": _SYNCD_OWNER + ":package_policy",
     "p4_lock": "//tools/bazel/p4:packages.lock.json",
     "make_runtime_archive": "//:target/docker-syncd-vs.gz",
@@ -1139,6 +1142,7 @@ py_test(
     deps = [
         "//tools/bazel/ci:artifact_validation",
         "//tools/bazel/oci:container_validation",
+        "//tools/bazel/oci:source_base_validation",
     ],
 )
 
