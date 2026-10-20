@@ -27,6 +27,18 @@ retained area. It writes only its new job evidence. Uploaded evidence is separat
 from the historical allocation receipt; the old 380 GiB figure is not current
 admission evidence.
 
+Inspection also inventories the fixed old `native-cache`, `native-cache/bazel`,
+and `native-cache/vcache` paths. It reports ownership, modes, host access,
+immediate child names, and metadata counts and sizes without opening file
+contents. Each inventory is limited to 10,000 entries, three seconds, depth 32,
+and 100 reported immediate children. It does not follow symlinks or traverse
+another filesystem; permission errors and incomplete counts are explicit.
+Regular-file byte totals count hard-linked files once within each inventory.
+The three overlapping inventories are separate observations and must not be
+summed. Inspect neither runs Docker nor changes owners or permissions. These
+observations determine whether the derived caches can be reused before any
+change to the diagnostic's cache selection.
+
 Inspection run `39429628567` established runner UID/GID `1001:1003`. Its
 SHA256-verified receipt and artifact identities are pinned in the manifest.
 Resume requires that exact executing identity and observed mixed ownership:

@@ -149,11 +149,91 @@ class RecoveryTest(unittest.TestCase):
         records = {item["path"]: item for item in report["paths"]}
         self.assertIn("error", records[str(self.native / "docker-data")])
         self.assertEqual(records[str(self.parent)]["uid"], self.parent.stat().st_uid)
-        self.assertEqual(len(report["paths"]), 12)
+        self.assertEqual(len(report["paths"]), 14)
+        self.assertEqual(len(report["native_cache_inventory"]), 3)
         self.assertTrue(all(item["matches"] for item in report["evidence"].values()))
         after = {str(path): (path.stat().st_size, path.stat().st_mtime_ns)
                  for path in self.root.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
+
+    def test_cache_inventory_reads_metadata_without_following_links_or_double_counting_files(self):
+        cache = self.native / "native-cache"
+        (cache / "bazel").mkdir()
+        (cache / "bazel/object").write_bytes(b"cache")
+        os.link(cache / "bazel/object", cache / "bazel/hardlink")
+        outside = self.parent / "outside"
+        outside.mkdir()
+        (outside / "not-cache").write_bytes(b"not included")
+        (cache / "linked").symlink_to(outside, target_is_directory=True)
+        before = (cache / "bazel/object").stat()
+        with mock.patch.object(Path, "open", side_effect=AssertionError("file contents read")), \
+                mock.patch.object(os, "chmod", side_effect=AssertionError("permissions changed")), \
+                mock.patch.object(os, "chown", side_effect=AssertionError("owners changed")):
+            result = recovery.cache_inventory(cache)
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["immediate_child_names_complete"])
+        self.assertEqual(result["entries_observed"], 4)
+        self.assertEqual(result["regular_file_bytes"], 5)
+        self.assertEqual(result["files"], 2)
+        self.assertEqual(result["directories"], 1)
+        self.assertEqual(result["symlinks"], 1)
+        self.assertEqual([item["name"] for item in result["immediate_children"]], ["bazel", "linked"])
+        self.assertEqual((cache / "bazel/object").stat().st_mtime_ns, before.st_mtime_ns)
+        self.assertFalse(recovery.cache_inventory(cache / "linked")["complete"])
+
+    def test_cache_inventory_reports_limits_missing_and_inaccessible_paths_independently(self):
+        cache = self.native / "native-cache"
+        for number in range(5):
+            (cache / str(number)).touch()
+        limited = recovery.cache_inventory(cache, entry_limit=2, child_limit=1)
+        self.assertFalse(limited["complete"])
+        self.assertEqual(limited["entries_observed"], 2)
+        self.assertEqual(limited["immediate_children_observed"], 2)
+        self.assertEqual(len(limited["immediate_children"]), 1)
+        self.assertIn("entry limit", limited["limitations"])
+        self.assertIn("time limit", recovery.cache_inventory(cache, seconds=0)["limitations"])
+        self.assertEqual(recovery.cache_inventory(cache / "absent")["errors"][0]["error"],
+                         "FileNotFoundError")
+        with mock.patch.object(recovery.os, "scandir", side_effect=PermissionError):
+            inaccessible = recovery.cache_inventory(cache)
+        self.assertEqual(inaccessible["errors"][0]["error"], "PermissionError")
+        self.assertTrue(recovery.cache_inventory(cache)["complete"])
+
+    def test_cache_inventory_bounds_depth_and_does_not_cross_filesystems(self):
+        cache = self.native / "native-cache"
+        (cache / "bazel").mkdir()
+        (cache / "bazel/object").write_bytes(b"cache")
+        limited = recovery.cache_inventory(cache, depth_limit=0)
+        self.assertFalse(limited["complete"])
+        self.assertEqual(limited["files"], 0)
+        self.assertIn("depth limit", limited["limitations"])
+        real_fstat = os.fstat
+        def another_device(descriptor):
+            fields = list(real_fstat(descriptor))
+            fields[2] += 1
+            return os.stat_result(fields)
+        with mock.patch.object(recovery.os, "fstat", side_effect=another_device):
+            different = recovery.cache_inventory(cache)
+        self.assertIn("other filesystem", different["limitations"])
+        self.assertEqual(different["files"], 0)
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses Unix directory permissions")
+    def test_cache_inventory_keeps_sibling_metadata_after_permission_failure(self):
+        cache = self.native / "native-cache"
+        denied = cache / "bazel"
+        denied.mkdir(mode=0o700)
+        (denied / "unreadable").write_bytes(b"excluded")
+        (cache / "vcache").mkdir()
+        (cache / "vcache/visible").write_bytes(b"known")
+        denied.chmod(0)
+        try:
+            result = recovery.cache_inventory(cache)
+        finally:
+            denied.chmod(0o700)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["errors"], [{"path": "bazel", "error": "PermissionError"}])
+        self.assertEqual(result["regular_file_bytes"], 5)
+        self.assertEqual(result["immediate_children_observed"], 2)
 
     def test_evidence_validates_actual_graph_receipts_config_and_current_metadata(self):
         source, _ = recovery.evidence(self.manifest)

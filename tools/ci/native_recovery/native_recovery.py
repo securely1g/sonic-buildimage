@@ -86,11 +86,101 @@ def paths(manifest):
     return root, workspace, state, state / ("native-" + manifest["invocation"])
 
 
+def cache_inventory(path, *, entry_limit=10000, seconds=3, depth_limit=32, child_limit=100):
+    """Read metadata only, following neither symlinks nor other filesystems."""
+    result = {"path": str(path), "scope": "metadata only; no symlinks followed; one filesystem",
+              "limits": {"entries": entry_limit, "seconds": seconds, "depth": depth_limit,
+                         "reported_immediate_children": child_limit},
+              "entries_observed": 0, "files": 0, "directories": 0, "symlinks": 0, "other": 0,
+              "regular_file_bytes": 0, "regular_file_allocated_bytes": 0,
+              "immediate_children_observed": 0, "immediate_children": [],
+              "owner_counts": {}, "mode_counts": {}, "host_unwritable_entries": 0,
+              "errors": [], "complete": True}
+    deadline = time.monotonic() + seconds
+    seen_files = set()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    def limited(reason):
+        result["complete"] = False
+        if reason not in result.setdefault("limitations", []):
+            result["limitations"].append(reason)
+
+    def error(relative, exception):
+        limited("metadata errors")
+        if len(result["errors"]) < 16:
+            result["errors"].append({"path": relative, "error": type(exception).__name__})
+
+    def walk(descriptor, relative, depth, device):
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                if result["entries_observed"] >= entry_limit:
+                    limited("entry limit")
+                    return
+                if time.monotonic() >= deadline:
+                    limited("time limit")
+                    return
+                result["entries_observed"] += 1
+                name = relative + "/" + entry.name if relative else entry.name
+                if not relative:
+                    result["immediate_children_observed"] += 1
+                try:
+                    details = entry.stat(follow_symlinks=False)
+                    mode = details.st_mode
+                    kind = ("directories" if stat.S_ISDIR(mode) else "files" if stat.S_ISREG(mode)
+                            else "symlinks" if stat.S_ISLNK(mode) else "other")
+                    result[kind] += 1
+                    owner, permissions = f"{details.st_uid}:{details.st_gid}", oct(stat.S_IMODE(mode))
+                    result["owner_counts"][owner] = result["owner_counts"].get(owner, 0) + 1
+                    result["mode_counts"][permissions] = result["mode_counts"].get(permissions, 0) + 1
+                    access = os.access(entry.name, os.W_OK | (os.X_OK if kind == "directories" else 0),
+                                       dir_fd=descriptor, follow_symlinks=False)
+                    result["host_unwritable_entries"] += not access
+                    if not relative and len(result["immediate_children"]) < child_limit:
+                        result["immediate_children"].append({
+                            "name": entry.name, "kind": kind, "uid": details.st_uid,
+                            "gid": details.st_gid, "mode": permissions,
+                            "host_writable_and_searchable_if_directory": access})
+                    identity = (details.st_dev, details.st_ino)
+                    if kind == "files" and identity not in seen_files:
+                        seen_files.add(identity)
+                        result["regular_file_bytes"] += details.st_size
+                        result["regular_file_allocated_bytes"] += details.st_blocks * 512
+                    if kind == "directories":
+                        if details.st_dev != device:
+                            limited("other filesystem")
+                        elif depth >= depth_limit:
+                            limited("depth limit")
+                        else:
+                            child = os.open(entry.name, flags, dir_fd=descriptor)
+                            try:
+                                current = os.fstat(child)
+                                require((current.st_dev, current.st_ino) == identity,
+                                        "directory changed during inspection")
+                                walk(child, name, depth + 1, device)
+                            finally:
+                                os.close(child)
+                except (OSError, ValueError) as exception:
+                    error(name, exception)
+    try:
+        real(path, directory=True)
+        descriptor = os.open(path, flags)
+        try:
+            walk(descriptor, "", 0, os.fstat(descriptor).st_dev)
+        finally:
+            os.close(descriptor)
+    except (OSError, ValueError) as exception:
+        error(".", exception)
+    result["immediate_children"].sort(key=lambda item: item["name"])
+    result["immediate_child_names_complete"] = (
+        result["complete"] and result["immediate_children_observed"] <= child_limit)
+    return result
+
+
 def inspect(manifest):
     """Gather independent path results without lockfiles, Docker, or Make."""
     root, workspace, state, native = paths(manifest)
     names = (root.parent, root, workspace, state, native, workspace / "target", native / "docker-data",
-             native / "native-cache",
+             native / "native-cache", native / "native-cache/bazel", native / "native-cache/vcache",
              state / ("bazel-source-" + manifest["invocation"]), state / "native-diagnostic",
              Path("/data/sonic-runner/cache/sonic-buildimage/vs-installer/state/repository-cache"),
              Path("/data/sonic-runner/cache/sonic-buildimage/vs-installer/state/package-cache"))
@@ -114,6 +204,9 @@ def inspect(manifest):
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, KeyError) as error:
             record["error"] = type(error).__name__ + ": " + str(error)
         result["paths"].append(record)
+    result["native_cache_inventory"] = [
+        cache_inventory(path) for path in
+        (native / "native-cache", native / "native-cache/bazel", native / "native-cache/vcache")]
     # Hash only known public build evidence, not arbitrary host files.
     result["evidence"] = {}
     for name, expected in manifest["evidence"].items():
