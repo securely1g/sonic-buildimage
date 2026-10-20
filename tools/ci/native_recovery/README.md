@@ -1,0 +1,115 @@
+# Retained native diagnostic for run 39383813400
+
+This operational branch provides one opt-in continuation of the failed PR2
+native attempt. It does not change PR2, its normal workflow, or the normal
+native/package/installer identity contract. Dispatch the existing
+`runner-manager.yml` workflow on the reviewed operational branch; its
+`native_recovery` input defaults to `off`. Ordinary events still run the hosted
+runner lifecycle tests. Every dispatch has its own concurrency group and never
+cancels another build.
+
+The pinned attempt used PR2 head
+`2546efcc7702088a3f43fa82692002a21bc6d053`, but actually built merge
+`c475a443ab42d3a5f9e862f72b33303a9c2769e8` with epoch `1792479658`.
+The retained build is `/var/tmp/sonic-vs-installer-63_8m77r/build`.
+This is host temporary storage subject to host retention, not a new persistent
+cache. The existing `/data` repository/package caches are neither moved nor
+deleted. No automatic retained-workspace cleanup is provided.
+
+## Inspect before resume
+
+Dispatch `native_recovery=inspect` with `inspect_capacity=false`. This reports
+the actual executing UID/GID, private-parent and retained-directory ownership,
+live filesystem/free-space information, and hashes of known prior public
+evidence. Each unavailable path has its own error. Inspect creates no lock,
+does not start or query Docker, and does not repair permissions or write to the
+retained area. It writes only its new job evidence. Uploaded evidence is separate
+from the historical allocation receipt; the old 380 GiB figure is not current
+admission evidence.
+
+Review this evidence and the exact DASH owner CI before any resume. Resume
+currently requires the executing host UID and retained top-level directories
+to be UID 1000, a private runner-owned `0700` parent, and a live root-backed,
+writable ext4 filesystem with at least 300 GiB available. The original worker's
+UID does not prove the host UID. A mismatch rejects resume without ownership
+repair; inspection remains available.
+
+## One native continuation
+
+`native_recovery=resume-native` accepts only reviewed DASH owner commit
+`c11a83d7d56726d622a1e58594f34b13092e130d`, directly following
+`2a6e390b96a4fc17c191fa0da4b7ed1f40aed069`. The driver verifies the exact rename
+`bazel/python_test.py` to `bazel/python_test_runner.py`, unchanged launcher
+bytes/modes, and the three BUILD references. It records before/after hashes and
+backs up the original overlay files in new diagnostic evidence. This working
+tree overlay leaves the original Git HEADs, root merge identity, epoch, and all
+other pins in place.
+
+Admission acquires an exclusive lock on the existing build-directory inode,
+checks all six pinned prior evidence hashes, checks the immutable worker and
+configuration, and validates the complete original source graph and captured
+source status/metadata. The prior source audit contains no historical hashes
+for modified files; the diagnostic records current hashes and explicitly retains
+that limitation. It rejects any existing diagnostic operation rather than
+silently adopting or retrying it.
+
+The driver reuses the original `target` outputs and outer private
+`state/native-9b664952f22b4205/docker-data`. It repeats only the original logged
+`bazel-vs-native-inputs` Make command, with its original epoch/options, and skips
+`init` and `configure`. It supplies a new private inner `DOCKER_ROOT` under
+`state/native-diagnostic/inner-docker-data`: `Makefile.work` clears its selected
+inner Docker root while parsing, so selecting the old root would destroy
+retained state. The old inner Docker directory is preserved.
+
+The owned worker mounts only this build root and receives no host Docker
+socket. It retains the existing private cgroup and real Docker/BuildKit
+preflight. Native Make can transitively run the existing audited P4RT TAR bridge;
+this path does not enter the normal Bazel package or installer phases.
+
+## Cancellation and evidence
+
+The parent stops and removes only its own worker after checking its label,
+immutable image, private cgroup namespace, and exact single bind mount. Every
+host Docker client uses the same sanitized environment and explicit local
+socket. An independent `always()` cleanup step covers a parent killed during
+GitHub's short cancellation window. Before Docker creation, the driver
+atomically reserves the invocation in this job's external evidence. Cleanup
+requires matching repository, workflow, SHA, run, attempt, job, manifest, and
+retained plan; a rejected second attempt never adopts the first one's worker.
+Its Docker operations are bounded within the cleanup step's three-minute limit.
+No global Docker cleanup runs.
+
+New receipts are `diagnostic-running`, `diagnostic-passed`, `diagnostic-failed`,
+or `diagnostic-rejected`, with `clean_checkout_proof=false` for a reserved
+continuation. Original failed receipts and logs remain unchanged. A final source
+audit records the overlay and any subsequent native source transformations,
+including the existing FRR transformation when reached. Normal native
+verification rejects these diagnostic statuses.
+
+Even a successful continuation is incremental diagnostic evidence for the old
+merge plus the recorded overlay. It is not a clean build of the new owner
+gitlink or current PR2 head. Final clean-checkout package, installer, verification,
+and artifact proof remain separate work.
+
+## Local validation
+
+The hosted workflow checks out four support modules from exact PR2 `2546efcc`.
+Runtime verifies and imports `build_area.py`, `native_build.py`, and
+`source_workspace.py` by explicit file path. The tests additionally verify and
+import `image_inputs.py` to prove that normal verification rejects a diagnostic
+receipt. Script-directory modules and `PYTHONPATH` cannot select other helper
+revisions.
+
+Run the stdlib Git/filesystem tests with `SONIC_RECOVERY_SUPPORT` pointing to
+that checkout's `tools/bazel/ci`, then:
+
+```sh
+python3 -B -m unittest discover -s tools/ci/native_recovery -p '*_test.py' -v
+```
+
+The separate local Docker fixture uses a tiny Make producer with real worker
+creation, private dockerd/cgroups/BuildKit preflight, and owned cleanup. Its
+filesystem admission is substituted because the local fixture is not the
+ThinkStation allocation. It proves lifecycle, isolation, retained-marker and
+receipt preservation, and cancellation behavior, not a production package build
+or a cache hit.

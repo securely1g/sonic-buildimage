@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - tools/ci/runner/**
+      - tools/ci/native_recovery/**
       - .github/workflows/runner-manager.yml
   push:
     branches: [master]
     paths:
       - tools/ci/runner/**
+      - tools/ci/native_recovery/**
       - .github/workflows/runner-manager.yml
   workflow_dispatch:
     inputs:
@@ -16,13 +18,29 @@ on:
         description: Report self-hosted storage capacity without building
         type: boolean
         default: false
+      native_recovery:
+        description: "One-off retained run 39383813400 diagnostic; not clean CI proof"
+        type: choice
+        options: [off, inspect, resume-native]
+        default: off
+      dash_overlay_commit:
+        description: "Exact reviewed sonic-dash-api rename commit (resume only)"
+        type: string
+        required: false
 
 permissions:
   contents: read
 
+# Operational runs never cancel PR builds, each other, or runner turnover.
+concurrency:
+  group: runner-manager-${{ github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   tests:
-    if: github.event_name != 'workflow_dispatch' || !inputs.inspect_capacity
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (!inputs.inspect_capacity && inputs.native_recovery == 'off')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -35,9 +53,20 @@ jobs:
         run: |
           bash -n tools/ci/runner/bootstrap.sh
           python3 -B tools/ci/runner/install_manager.py --operator example --master --dry-run
+      - name: Checkout exact recovery support
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 2546efcc7702088a3f43fa82692002a21bc6d053
+          persist-credentials: false
+          sparse-checkout: tools/bazel/ci
+          path: recovery-support
+      - name: Test retained native diagnostics without compiling packages
+        env:
+          SONIC_RECOVERY_SUPPORT: ${{ github.workspace }}/recovery-support/tools/bazel/ci
+        run: python3 -B -m unittest discover -s tools/ci/native_recovery -p '*_test.py' -v
 
   capacity:
-    if: github.event_name == 'workflow_dispatch' && inputs.inspect_capacity
+    if: github.event_name == 'workflow_dispatch' && inputs.inspect_capacity && inputs.native_recovery == 'off'
     runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
     timeout-minutes: 10
     steps:
@@ -92,3 +121,92 @@ jobs:
               print(f"Directory sizes: {name}", flush=True)
               print(capture("du", "-x", "-B1", "--max-depth=1", name, timeout=120), flush=True)
           PY
+
+  native-diagnostic:
+    name: Retained native diagnostic (${{ inputs.native_recovery }})
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      !inputs.inspect_capacity &&
+      (inputs.native_recovery == 'inspect' || inputs.native_recovery == 'resume-native')
+    runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
+    timeout-minutes: ${{ inputs.native_recovery == 'inspect' && 10 || 720 }}
+    env:
+      SONIC_RECOVERY_SUPPORT: ${{ github.workspace }}/recovery-support-${{ github.run_id }}-${{ github.run_attempt }}/tools/bazel/ci
+      RECOVERY_MODE: ${{ inputs.native_recovery }}
+      OWNER_COMMIT: ${{ inputs.dash_overlay_commit }}
+    steps:
+      - name: Checkout diagnostic driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci/native_recovery
+          path: native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Checkout exact recovery support
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 2546efcc7702088a3f43fa82692002a21bc6d053
+          persist-credentials: false
+          sparse-checkout: tools/bazel/ci
+          path: recovery-support-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Select exact reviewed DASH owner
+        if: env.RECOVERY_MODE == 'resume-native'
+        id: owner
+        env:
+          DRIVER: native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, pathlib, re
+          manifest = pathlib.Path(os.environ["DRIVER"]) / "tools/ci/native_recovery/native_recovery.json"
+          commit = os.environ["OWNER_COMMIT"] or json.loads(manifest.read_text())["reviewed_overlay_commit"]
+          if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+              raise SystemExit("Resume needs an exact reviewed DASH owner commit.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("commit=" + commit + "\n")
+          PY
+
+      - name: Checkout reviewed DASH owner
+        if: env.RECOVERY_MODE == 'resume-native'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-dash-api
+          ref: ${{ steps.owner.outputs.commit }}
+          fetch-depth: 2
+          persist-credentials: false
+          path: native-diagnostic-owner-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Inspect retained state or resume native diagnostics
+        env:
+          DRIVER: native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          OWNER: native-diagnostic-owner-${{ github.run_id }}-${{ github.run_attempt }}
+          EXACT_OWNER_COMMIT: ${{ steps.owner.outputs.commit }}
+        run: |
+          python3 -B "$DRIVER/tools/ci/native_recovery/native_recovery.py" \
+            --mode "$RECOVERY_MODE" --owner-checkout "$GITHUB_WORKSPACE/$OWNER" \
+            --owner-commit "$EXACT_OWNER_COMMIT" \
+            --output "$GITHUB_WORKSPACE/native-diagnostic-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+
+      - name: Remove only this job's diagnostic worker after interruption
+        if: always() && env.RECOVERY_MODE == 'resume-native'
+        timeout-minutes: 3
+        env:
+          DRIVER: native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 -B "$DRIVER/tools/ci/native_recovery/native_recovery.py" \
+            --cleanup-job "$GITHUB_WORKSPACE/native-diagnostic-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+            --cleanup-output "$GITHUB_WORKSPACE/native-diagnostic-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-cleanup.json"
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: retained-native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}.json
+            native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}-cleanup.json
+            /var/tmp/sonic-vs-installer-63_8m77r/build/state/native-diagnostic/*.json
+            /var/tmp/sonic-vs-installer-63_8m77r/build/state/native-diagnostic/*.log
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
