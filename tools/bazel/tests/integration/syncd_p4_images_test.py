@@ -16,6 +16,7 @@ IMAGE_INPUTS = (
     "apt_lock_path", "dpkg_filter_path", "base_path",
     "configured_runtime_tar", "configured_debug_tar", "runtime_rootfs_tar",
     "runtime_installation", "debug_installation", "runtime_package_metadata",
+    "runtime_source_layer",
     "runtime_apt_selection", "debug_apt_selection",
     "runtime_archive", "debug_archive", "source_runtime_tar", "source_debug_tar",
     "source_receipt",
