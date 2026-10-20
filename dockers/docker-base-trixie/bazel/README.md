@@ -69,9 +69,16 @@ claim byte-for-byte equivalence to a later floating Make build.
 
 ## Building before the dependency PRs merge
 
-Distroless `0.9.4.sonic.6` resolves directly from the maintained registry.
+Distroless `0.9.4.sonic.7` resolves directly from the maintained registry,
+selected by the refreshed iproute2 dependency.
 Its published fixes provide the package headers, pkg-config files and concrete
 package labels used by the source producers; no Distroless override is needed.
+
+`iproute2` `6.15.0.sonic.1` resolves from maintained `main` after registry #64
+landed. It uses upstream configure/Make through declared
+Bazel actions, retaining Debian 6.15.0-1 and SONiC's bridge FDB protocol patch.
+The existing runtime/debug TAR targets and package version stay unchanged; no
+iproute2 draft override is needed.
 
 Sairedis `0.0.1-befd501a41549c9fedea9a116d081a6ad542cbe3` also resolves directly from
 maintained `main`, using its landed source commit without a draft override.
