@@ -103,6 +103,13 @@ bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
 bazel_dep(name = "sonic-sairedis", version = "0.0.0", repo_name = "sonic_sairedis")
 bazel_dep(name = "sonic-dash-api", version = "0.0.0", repo_name = "sonic_dash_api")
 
+# Root registrations take precedence over rules_cc's auto-detected host tools.
+# Select the declared Debian compiler and linker for SONiC target platforms.
+gcc = use_extension("@sonic_build_infra//toolchains/gcc:extensions.bzl", "gcc")
+use_repo(gcc, "gcc_toolchains")
+
+register_toolchains("@gcc_toolchains//:all")
+
 # Select the reusable registry module instead of the former in-tree libnl overlay.
 single_version_override(
     module_name = "libnl3",
