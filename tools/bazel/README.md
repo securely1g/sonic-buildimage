@@ -13,7 +13,6 @@ declares the Make-generated manifests, config-engine OCI files and Scapy wheel.
 | `manifests.mk` | Register manifest outputs and render them with Make's existing generator before Bazel runs |
 | `prepare_manifests.mk` | Prepare only the registered manifests from explicitly selected Make metadata and configuration |
 | `build_helpers.py` | Persistent cache options and atomic archive publication, shared by Make recipes and cache checks |
-| `cargo-config.toml` | Empty repository-wide Cargo configuration required by the root `rules_rs` configuration |
 | [oci/](oci/README.md) | Manifest labels, Make OCI base publication and validation, and Docker archive export |
 | [tests/](tests/README.md) | Unit tests and fixture-based integration checks for the Bazel helpers and container build integration |
 | [ci/](ci/README.md) | Dependency evidence, command logs, archive/ELF inspection and cache verification |
