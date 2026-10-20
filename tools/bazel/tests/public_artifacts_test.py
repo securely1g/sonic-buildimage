@@ -82,9 +82,13 @@ def receipt(kind, architecture="amd64"):
                     "test.log": {"path": SENTINEL}}
                     for number in range(artifacts.RECEIPT_TEST_COUNTS["archive"][1])}}
     if kind == "source":
-        return {"status": "passed", "revision": REVISION, **unsafe,
-                "tests": {"//tests:source_" + str(number): "passed"
-                          for number in range(artifacts.RECEIPT_TEST_COUNTS["source"][1])},
+        return {"status": "passed", "revision": REVISION, "architecture": architecture, **unsafe,
+                "tests": {"//tests:source_" + str(number): "passed" for number in range(artifacts.RECEIPT_TEST_COUNTS["source"][1])},
+                "shared_rust_graph": {
+                    "serde": "@@rules_rs++crate+sonic_rust_crates__serde-1.0.228//:serde",
+                    "serde_core": "@@rules_rs++crate+sonic_rust_crates__serde_core-1.0.228//:serde_core",
+                    "swss_common": "@@sonic-swss-common+//crates/swss-common:swss_common",
+                },
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST}}}
     if kind == "syncd":
@@ -243,6 +247,33 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
+
+    def test_source_supports_native_arm64_metadata(self):
+        seed(self.root, "source", "arm64")
+        summary, paths, ready = self.prepare("source", architecture="arm64")
+        self.assertTrue(ready)
+        self.assertEqual(summary["architecture"], "arm64")
+        self.assertEqual(summary["receipts"]["source"]["architecture"], "arm64")
+        self.assertEqual(summary["receipts"]["source"]["shared_rust_graph"],
+                         receipt("source", "arm64")["shared_rust_graph"])
+        self.assertIn("artifacts/swss/swss.tar", paths)
+
+    def test_source_rejects_mismatched_architecture(self):
+        seed(self.root, "source", "amd64")
+        summary, paths, ready = self.prepare("source", architecture="arm64")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "source-receipt", "reason": "architecture-mismatch"}, summary["blocked"])
+
+    def test_source_requires_shared_rust_graph_evidence(self):
+        seed(self.root, "source")
+        value = receipt("source")
+        del value["shared_rust_graph"]["serde_core"]
+        write_json(self.root, "artifacts/swss/receipt.json", value)
+        summary, paths, ready = self.prepare("source")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "source-receipt", "reason": "invalid-receipt-summary"}, summary["blocked"])
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")

@@ -335,17 +335,25 @@ checks cache hits and identical bytes, then changes a source input and requires
 a rebuild. Its public result retains action names, cache status and archive
 hashes. See the [archive guide](../../../tools/bazel/oci/README.md#reproducible-docker-archives).
 
-The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
+The `SWSS source layers (AMD64)` and `SWSS source layers (ARM64)` PR checks run
+on matching native Debian Trixie hosts. Each check selects the declared Trixie
+toolchain for both source compilation and build-time tools. It checks
 the Make handoff, OCI base publication, configuration rendering and package
 validator. A native Make regression also checks package-cache reuse across fresh
 checkouts and invalidation when source or architecture changes. The job then builds SWSS, its runtime dependencies, configuration and matching
 debug-symbol tar layers. It also runs SWSS's Common Rust API and Serde consumer
-test and checks the Debian path-filter rules. CI prepares manifests with Make
+test, Common's C++ runtime/CLI and installed Python binding package tests,
+and checks the Debian path-filter rules. A configured dependency query also
+requires a single shared `serde` and `serde_core` source target for Common and
+SWSS; the public summary retains those target labels. CI prepares manifests with Make
 before running the shared label actions and orchagent contract tests under Bazel.
 It verifies the source install
-inventory, installed bytes and modes, AMD64 ELF files, build IDs, DWARF and debug links. Its artifact
+inventory, installed bytes and modes, ELF files for the selected architecture,
+Common and Sairedis library names and SONAME links, build IDs, DWARF and debug links. Its artifact
 includes the five tar files, hashes, summarized test and debug validation,
-generated module lock and resolved module graph. CI starts without a module lock
+generated module lock and resolved module graph. Separate
+`swss-source-layers-amd64` and `swss-source-layers-arm64` artifacts retain each
+native result. CI starts without a module lock
 and rejects tracked input changes.
 
 The shared [`public_artifacts.py`](../../../tools/bazel/ci/public_artifacts.py)
@@ -359,9 +367,9 @@ summary retains P4RT package/debug hashes, lookup counts and output sizes; the
 separate VS image and SWSS archive upload keeps its existing files.
 
 The `Make VS with Bazel SWSS (AMD64)` job builds the complete OCI
-archives and final VS image after the source-layer check succeeds. It runs
-automatically for pull requests and pushes to `master`, and on manual workflow
-dispatch. It requires a disposable runner with the labels `self-hosted`, `linux`,
+archives and final VS image after the source-layer checks succeed. It requires
+manual workflow dispatch with `skip_vs` cleared; native PR checks do not trigger
+this package-producing build. It requires a disposable runner with the labels `self-hosted`, `linux`,
 `x64` and `sonic-vs-source-pr-NUMBER` for a pull request, or
 `sonic-vs-source-master` for push/manual runs. The host needs Docker, KVM, `j2`
 and at least 100 GiB free for the workspace plus room for Docker storage.
@@ -380,7 +388,7 @@ boot, forwarding, ARM64 images and cross builds remain unvalidated. ASAN uses
 the existing Make path. Listing SWSS in `SONIC_PACKAGES_LOCAL` is rejected when
 its Bazel path is selected.
 
-To reproduce the source-layer check in native AMD64 Trixie, install the execution
+To reproduce the source-layer check in native AMD64 or ARM64 Trixie, install the execution
 tools listed in `.github/workflows/bazel-swss-oci.yml`, make the pinned Bazel
 version available, and run from a clean checkout:
 
@@ -388,8 +396,13 @@ version available, and run from a clean checkout:
 for tests in tools/bazel/tests tools/ci/tests tools/ci/runner; do
   python3 -B -m unittest discover -s "$tests" -p '*_test.py' || exit 1
 done
-python3 -B dockers/docker-orchagent/bazel/ci.py --bazel bazel --artifacts artifacts/swss
+python3 -B dockers/docker-orchagent/bazel/ci.py --bazel bazel \
+  --architecture amd64 --artifacts artifacts/swss
 ```
+
+Use `--architecture arm64` on an ARM64 host. The command rejects a mismatched
+host instead of treating a cross build as native validation. Source-layer
+validation does not build or boot complete ARM64 OCI images or a VS installer.
 
 ## Change the build
 
@@ -404,7 +417,7 @@ integrates it with the normal Docker and installer target lists. The same includ
 prepares registered OCI bases and manifests from each owner's declarations.
 The container image and debug-symbol targets live in
 [the container BUILD file](../BUILD.bazel).
-Shared cache/publication helpers, Cargo configuration and validation
+Shared cache/publication helpers and validation
 code are described in the [Bazel support guide](../../../tools/bazel/README.md). OCI preparation
 lives under `tools/bazel/oci`; runner setup and native Make cache tests live under
 `tools/ci`.

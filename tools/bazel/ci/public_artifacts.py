@@ -74,11 +74,11 @@ BEP = {
         ("archive-tests", "artifacts/archive/test-events.jsonl", 5),
         ("python-tests", "artifacts/config-engine/test-events.jsonl", 16),
     ],
-    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 16)],
+    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 18)],
     "syncd": [],
     "vs": [],
 }
-RECEIPT_TEST_COUNTS = {"archive": ("python", 11), "source": ("source", 16), "syncd": ("syncd", 7)}
+RECEIPT_TEST_COUNTS = {"archive": ("python", 11), "source": ("source", 18), "syncd": ("syncd", 7)}
 SUMMARY = {
     "archive": "artifacts/archive/public-summary.json",
     "source": "artifacts/swss/public-summary.json",
@@ -266,6 +266,7 @@ def receipt_summary(value, kind):
         return {"status": value["status"], "architecture": value["architecture"], "tests": tests}
     if kind == "source":
         require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
+        require(value.get("architecture") in {"amd64", "arm64"}, "invalid-architecture")
         revision = value.get("revision")
         require(revision is None or isinstance(revision, str) and REVISION.fullmatch(revision), "invalid-revision")
         require(isinstance(value.get("tests", {}), dict), "invalid-tests")
@@ -278,9 +279,16 @@ def receipt_summary(value, kind):
         require(isinstance(validation.get("programs", []), list) and isinstance(validation.get("debug_pairs", []), list), "invalid-validation-lists")
         require(isinstance(validation.get("source_contract", {}), dict), "invalid-source-contract")
         contract = {relative_name(name): digest(item) for name, item in validation.get("source_contract", {}).items()}
-        return {"status": value["status"], "revision": revision, "tests": tests,
+        rust_graph = value.get("shared_rust_graph", {})
+        require(isinstance(rust_graph, dict), "invalid-rust-graph")
+        require(set(rust_graph) <= {"serde", "serde_core", "swss_common"}, "unknown-rust-crate")
+        if value["status"] == "passed":
+            require(set(rust_graph) == {"serde", "serde_core", "swss_common"}, "incomplete-rust-graph")
+        rust_graph = {name: label(target) for name, target in rust_graph.items()}
+        return {"status": value["status"], "revision": revision, "architecture": value["architecture"], "tests": tests,
                 "program_count": len(validation.get("programs", [])),
-                "debug_pair_count": len(validation.get("debug_pairs", [])), "source_contract": contract}
+                "debug_pair_count": len(validation.get("debug_pairs", [])), "source_contract": contract,
+                "shared_rust_graph": rust_graph}
     if kind == "syncd":
         require(isinstance(value.get("targets", []), list) and isinstance(value.get("source_hashes", {}), dict), "invalid-syncd-receipt")
         targets = [label(item) for item in value.get("targets", [])]
@@ -304,7 +312,7 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
     workspace, upload_root = Path(workspace).resolve(), Path(upload_root).resolve()
     require(workspace.is_relative_to(upload_root), "workspace-outside-upload-root")
     require(kind in FILES and job_status in {"success", "failure", "cancelled"}, "invalid-mode")
-    require(architecture in {"amd64", "arm64"} and (kind == "archive" or architecture == "amd64"), "invalid-architecture")
+    require(architecture in {"amd64", "arm64"} and (kind in {"archive", "source"} or architecture == "amd64"), "invalid-architecture")
     require(isinstance(revision, str) and REVISION.fullmatch(revision), "invalid-revision")
     for value in (head_sha, base_sha):
         require(value in (None, "") or isinstance(value, str) and REVISION.fullmatch(value), "invalid-revision")
@@ -428,6 +436,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             blocked.append({"input": "python-receipt", "reason": "architecture-mismatch"})
         if kind == "source" and receipts.get("source", {}).get("revision") != revision:
             blocked.append({"input": "source-receipt", "reason": "revision-mismatch"})
+        if kind == "source" and receipts.get("source", {}).get("architecture") != architecture:
+            blocked.append({"input": "source-receipt", "reason": "architecture-mismatch"})
         if kind == "syncd" and receipts.get("syncd", {}).get("module_lock_sha256") != selected.get("module-lock", {}).get("sha256"):
             blocked.append({"input": "syncd-receipt", "reason": "module-lock-mismatch"})
         if kind == "vs" and not receipts.get("p4rt", {}).get("source_found"):

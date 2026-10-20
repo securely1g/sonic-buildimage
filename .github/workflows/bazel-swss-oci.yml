@@ -278,9 +278,21 @@ jobs:
           compression-level: 1
 
   source:
-    name: SWSS source layers (AMD64)
-    runs-on: ubuntu-24.04
+    name: SWSS source layers (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AMD64
+            architecture: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - name: ARM64
+            architecture: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:
@@ -298,8 +310,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check generated dependency state
+      - name: Check native architecture and generated dependency state
         run: |
+          test "$(uname -m)" = "${{ matrix.machine }}"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test ! -e MODULE.bazel.lock
           test -z "$(git ls-files -- MODULE.bazel.lock)"
@@ -311,7 +324,7 @@ jobs:
           bazelisk-version: 1.29.0
           bazelisk-cache: true
           repository-cache: true
-          disk-cache: buildimage-swss-oci-amd64
+          disk-cache: buildimage-swss-oci-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
       - name: Check Make handoff and archive validation
@@ -321,9 +334,12 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
 
       - name: Build and inspect SWSS runtime and debug layers
-        run: python3 -B dockers/docker-orchagent/bazel/ci.py --bazel "$BAZEL" --artifacts artifacts/swss
+        run: |
+          python3 -B dockers/docker-orchagent/bazel/ci.py --bazel "$BAZEL" \
+            --architecture "${{ matrix.architecture }}" --artifacts artifacts/swss
 
       - name: Retain the verified GitLab source downloads
+        if: matrix.architecture == 'amd64'
         run: |
           mkdir -p artifacts/repository-inputs
           "$BAZEL" fetch --repo=@@ape+ --repo=@@download_utils+ \
@@ -335,6 +351,7 @@ jobs:
             > artifacts/repository-inputs/receipt.json
 
       - name: Upload the source downloads for the VS job
+        if: matrix.architecture == 'amd64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bazel-repository-inputs
@@ -360,7 +377,7 @@ jobs:
           python3 -B tools/bazel/ci/public_artifacts.py source \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
             --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
-            --architecture "amd64" \
+            --architecture "${{ matrix.architecture }}" \
             --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
 
@@ -368,7 +385,7 @@ jobs:
         if: always() && steps.public_artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: swss-source-layers-amd64
+          name: swss-source-layers-${{ matrix.architecture }}
           path: ${{ steps.public_artifacts.outputs.paths }}
           if-no-files-found: error
           retention-days: 14

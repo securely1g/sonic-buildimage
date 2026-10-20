@@ -1,4 +1,4 @@
-"""Validate SWSS install inventory and its source-built protobuf runtime."""
+"""Validate SWSS install inventory and source-built runtime libraries."""
 
 import ast
 from pathlib import Path, PurePosixPath
@@ -8,22 +8,50 @@ from tools.bazel.ci.artifact_validation import path_name, require, sha
 
 # DASH and SWSS link this source-built shared library. Keep the matching runtime
 # and symbols in the final layer instead of installing a second Debian build.
-PROTOBUF_RUNTIME = "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12"
+MULTIARCH = {62: "x86_64-linux-gnu", 183: "aarch64-linux-gnu"}
 
 
-def source_protobuf_contract(combined, protobuf):
-    require(protobuf.get(PROTOBUF_RUNTIME, {}).get("elf_machine") == 62,
-            "missing source-built AMD64 protobuf runtime")
+def library_directory(expected_machine):
+    require(expected_machine in MULTIARCH, "unsupported runtime ELF architecture")
+    return "usr/lib/" + MULTIARCH[expected_machine]
+
+
+def protobuf_runtime(expected_machine):
+    return library_directory(expected_machine) + "/libprotobuf.so.32.0.12"
+
+
+def source_protobuf_contract(combined, protobuf, expected_machine=62):
+    runtime = protobuf_runtime(expected_machine)
+    soname = library_directory(expected_machine) + "/libprotobuf.so.32"
+    require(protobuf.get(runtime, {}).get("elf_machine") == expected_machine,
+            "missing source-built protobuf runtime for the selected architecture")
     for name, item in protobuf.items():
         if item["kind"] != "directory":
             require(combined.get(name) == dict(item, uid=0, gid=0),
                     "runtime layer changes source protobuf bytes or modes: " + name)
-    require(combined.get("usr/lib/x86_64-linux-gnu/libprotobuf.so.32", {}).get("linkname") ==
+    require(combined.get(soname, {}).get("linkname") ==
             "libprotobuf.so.32.0.12", "incorrect source protobuf SONAME link")
     require({name for name, item in combined.items()
              if "/libprotobuf.so" in name and item["kind"] != "directory"} ==
-            {PROTOBUF_RUNTIME, "usr/lib/x86_64-linux-gnu/libprotobuf.so.32"},
+            {runtime, soname},
             "conflicting full protobuf runtime in declared layer")
+
+
+def shared_library_contract(combined, expected_machine):
+    """Keep Common's CLI library and Sairedis libraries with their SONAME links."""
+    directory = library_directory(expected_machine)
+    binaries = set()
+    for library in ("libswsscommon", "libsonicdbcli", "libsairedis", "libsaimeta", "libsaimetadata"):
+        filename = library + ".so.0.0.0"
+        path = directory + "/" + filename
+        item = combined.get(path, {})
+        require(item.get("kind") == "file" and item.get("elf_machine") == expected_machine,
+                "missing runtime library for the selected architecture: " + path)
+        link = combined.get(directory + "/" + library + ".so.0", {})
+        require(link.get("kind") == "symlink" and link.get("linkname") == filename,
+                "incorrect runtime SONAME link: " + library)
+        binaries.add(path)
+    return binaries
 
 
 SWSS_CONTRACT_INPUTS = ("dist/BUILD.bazel", "debian/swss.install")
