@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -37,11 +38,11 @@ class RecoveryTest(unittest.TestCase):
         self.state = self.root / "state"
         self.state.mkdir()
         self.invocation = "1" * 16
+        (self.state / ("bazel-source-" + self.invocation)).mkdir()
         self.native = self.state / ("native-" + self.invocation)
         (self.native / "docker-data").mkdir(parents=True)
+        (self.native / "native-cache").mkdir()
         (self.native / "docker-data/keep").write_text("old outer Docker state")
-        (self.workspace / "fsroot.docker.trixie").mkdir()
-        (self.workspace / "fsroot.docker.trixie/keep").write_text("old inner Docker state")
         (self.workspace / "target").mkdir()
         (self.workspace / "target/keep").write_text("completed prerequisite")
         self.dash = self.workspace / "src/sonic-dash-api"
@@ -63,6 +64,8 @@ class RecoveryTest(unittest.TestCase):
         (self.workspace / ".platform").write_text("vs\n")
         (self.workspace / ".arch").write_text("amd64\n")
         self.source_commit = self.commit(self.workspace)
+        (self.workspace / "fsroot.docker.trixie").mkdir()
+        (self.workspace / "fsroot.docker.trixie/keep").write_text("old inner Docker state")
         self.owner = self.parent / "owner"
         self.run_git(self.parent, "clone", "--quiet", "--no-hardlinks", str(self.dash), str(self.owner))
         self.run_git(self.owner, "config", "user.name", "Guohan Lu")
@@ -77,6 +80,8 @@ class RecoveryTest(unittest.TestCase):
         self.manifest = {"build_root": str(self.root), "source_commit": self.source_commit,
                          "source_date_epoch": self.run_git(self.workspace, "show", "-s", "--format=%ct", "HEAD"),
                          "invocation": self.invocation, "run_id": 123, "job_id": 456,
+                         "inspected_ownership": {
+                             name: [os.getuid(), os.getgid()] for name in ("runner", "native", "docker")},
                          "dash_commit": self.dash_old, "reviewed_overlay_commit": self.owner_commit,
                          "worker_image": "sha256:" + "a" * 64, "evidence": {}}
         spec = self.state / ("worker-" + self.invocation)
@@ -144,7 +149,7 @@ class RecoveryTest(unittest.TestCase):
         records = {item["path"]: item for item in report["paths"]}
         self.assertIn("error", records[str(self.native / "docker-data")])
         self.assertEqual(records[str(self.parent)]["uid"], self.parent.stat().st_uid)
-        self.assertEqual(len(report["paths"]), 11)
+        self.assertEqual(len(report["paths"]), 12)
         self.assertTrue(all(item["matches"] for item in report["evidence"].values()))
         after = {str(path): (path.stat().st_size, path.stat().st_mtime_ns)
                  for path in self.root.rglob("*") if path.is_file()}
@@ -168,6 +173,33 @@ class RecoveryTest(unittest.TestCase):
             recovery.evidence(self.manifest)
         self.commit(self.dash)
         with self.assertRaisesRegex(ValueError, "HEAD differs"):
+            recovery.evidence(self.manifest)
+
+    def test_old_docker_exclusion_rejects_index_head_captured_entries_and_gitlinks(self):
+        path = recovery.OLD_INNER + "/keep"
+        self.run_git(self.workspace, "add", path)
+        with self.assertRaisesRegex(ValueError, "staged"):
+            recovery.audit_support(self.manifest)
+        self.run_git(self.workspace, "commit", "--quiet", "-m", "tracked cache entry")
+        with self.assertRaisesRegex(ValueError, "tracked entries"):
+            recovery.audit_support(self.manifest)
+        changed = dict(self.manifest, source_commit=self.run_git(self.workspace, "rev-parse", "HEAD"))
+        self.run_git(self.workspace, "reset", "--quiet", self.source_commit)
+        with self.assertRaisesRegex(ValueError, "tracked entries"):
+            recovery.audit_support(changed)
+        self.run_git(self.workspace, "update-index", "--add", "--cacheinfo",
+                     "160000," + self.dash_old + "," + recovery.OLD_INNER)
+        with self.assertRaisesRegex(ValueError, "staged"):
+            recovery.audit_support(self.manifest)
+
+    def test_old_docker_exclusion_is_exact_and_preserves_other_source_checks(self):
+        cache = self.workspace / recovery.OLD_INNER / "keep"
+        cache.write_text("changed cache metadata, intentionally not validated")
+        recovery.evidence(self.manifest)
+        self.assertEqual(recovery.audit_exclusion(self.manifest)["prior_untracked_metadata_count"], 1)
+        sibling = self.workspace / (recovery.OLD_INNER + "-sibling")
+        sibling.write_text("new source metadata")
+        with self.assertRaisesRegex(ValueError, "source status/metadata changed"):
             recovery.evidence(self.manifest)
 
     def test_owner_rename_applies_exact_bytes_without_moving_head_or_old_products(self):
@@ -242,7 +274,9 @@ class RecoveryTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(recovery.subprocess, "Popen", side_effect=
                 lambda argv, **kwargs: process if argv[0] == "docker" else real_popen(argv, **kwargs)))
             if audit_failure:
-                stack.enter_context(mock.patch.object(source_workspace, "audit", side_effect=OSError("audit")))
+                support = recovery.audit_support(self.manifest)
+                stack.enter_context(mock.patch.object(recovery, "audit_support",
+                                                     side_effect=[support, OSError("audit")]))
             result = recovery.resume(self.manifest, self.owner, self.owner_commit, output)
         cleanup.assert_called_once()
         self.assertEqual(original, {name: recovery.digest(self.workspace / "artifacts" / name)
@@ -257,6 +291,8 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(report["status"], "diagnostic-passed")
         self.assertFalse(report["clean_checkout_proof"])
+        self.assertEqual(report["execution_identity"]["uid"], os.getuid())
+        self.assertFalse(report["execution_identity"]["retained_ownership_changed"])
         with self.assertRaisesRegex(ValueError, "did not pass"):
             image_inputs.verify_native(output, self.workspace, self.image, report["invocation"])
 
@@ -322,6 +358,82 @@ class RecoveryTest(unittest.TestCase):
             environment = recovery.docker_environment()
         self.assertEqual({key: value for key, value in environment.items() if key.startswith("DOCKER_")},
                          {"DOCKER_HOST": "unix:///var/run/docker.sock"})
+
+    def test_inspected_mixed_owners_are_required_before_docker(self):
+        self.manifest["inspected_ownership"] = {
+            "runner": [1001, 1003], "native": [1000, 1000], "docker": [0, 0]}
+        actual_stat = Path.stat
+        def inspected(path, *args, **kwargs):
+            details = list(actual_stat(path, *args, **kwargs))
+            owners = [1001, 1003]
+            if path in (self.native, self.state / ("bazel-source-" + self.invocation)):
+                owners = [1000, 1000]
+            elif path == self.native / "docker-data":
+                owners = [0, 0]
+            details[4:6] = owners
+            return os.stat_result(details)
+        image = {"Id": self.manifest["worker_image"], "Architecture": "amd64", "Os": "linux"}
+        with mock.patch.object(Path, "stat", inspected), \
+                mock.patch.object(os, "getuid", return_value=1001), \
+                mock.patch.object(os, "getgid", return_value=1003), \
+                mock.patch.object(recovery.build_area, "check_filesystem", return_value=301 * 1024**3), \
+                mock.patch.object(recovery, "docker", side_effect=[
+                    mock.Mock(stdout=""), mock.Mock(stdout=json.dumps([image]))]) as docker:
+            self.assertEqual(recovery.validate_host(self.manifest), 301 * 1024**3)
+            self.assertEqual(docker.call_count, 2)
+        with mock.patch.object(recovery, "docker") as docker:
+            with self.assertRaisesRegex(ValueError, "executing identity"):
+                recovery.validate_host(self.manifest)
+        docker.assert_not_called()
+        self.manifest["inspected_ownership"]["runner"] = [os.getuid(), os.getgid()]
+        with mock.patch.object(recovery, "docker") as docker:
+            with self.assertRaisesRegex(ValueError, "retained owner"):
+                recovery.validate_host(self.manifest)
+        docker.assert_not_called()
+
+    def test_worker_account_uses_inspected_identity_without_chown(self):
+        self.manifest["inspected_ownership"]["runner"] = [1001, 1003]
+        identity = recovery.execution_identity(self.manifest)
+        account = SimpleNamespace(pw_name=recovery.native_build.USER, pw_uid=1001, pw_gid=1003)
+        with mock.patch.object(recovery.grp, "getgrgid", side_effect=KeyError), \
+                mock.patch.object(recovery.pwd, "getpwuid", side_effect=KeyError), \
+                mock.patch.object(recovery.pwd, "getpwnam", return_value=account), \
+                mock.patch.object(recovery.native_build, "command") as command, \
+                mock.patch.object(os, "chown", side_effect=AssertionError("retained owner changed")):
+            recovery.worker_account(identity)
+        self.assertEqual(command.call_args_list, [
+            mock.call(["groupadd", "--gid", "1003", recovery.native_build.USER]),
+            mock.call(["useradd", "--uid", "1001", "--gid", "1003", "--create-home",
+                       "--shell", "/bin/bash", recovery.native_build.USER])])
+        account.pw_gid = 1000
+        with mock.patch.object(recovery.grp, "getgrgid",
+                               return_value=SimpleNamespace(gr_name=recovery.native_build.USER)), \
+                mock.patch.object(recovery.pwd, "getpwuid", return_value=account), \
+                mock.patch.object(recovery.native_build, "command") as command:
+            with self.assertRaisesRegex(ValueError, "unexpected diagnostic worker account"):
+                recovery.worker_account(identity)
+        command.assert_not_called()
+
+    def test_native_cache_permission_repair_is_rejected_before_worker_start(self):
+        with mock.patch.object(os, "access", return_value=False), \
+                mock.patch.object(recovery, "docker") as docker, \
+                mock.patch.object(os, "chmod", side_effect=AssertionError("cache permissions changed")):
+            with self.assertRaisesRegex(ValueError, "cache is not already writable/searchable"):
+                recovery.validate_host(self.manifest)
+        docker.assert_not_called()
+
+    def test_worker_cache_check_uses_actual_account_and_propagates_denial(self):
+        identity = recovery.execution_identity(self.manifest)
+        with mock.patch.object(recovery.native_build, "command",
+                               side_effect=subprocess.CalledProcessError(1, ["test"])) as command, \
+                mock.patch.object(os, "access", return_value=True), \
+                mock.patch.object(os, "chmod", side_effect=AssertionError("cache permissions changed")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                recovery.worker_cache_access(self.manifest, identity)
+        command.assert_called_once_with([
+            "runuser", "--user", recovery.native_build.USER, "--", "sh", "-c",
+            'test -w "$1" && test -x "$1"', "native-cache-permission-check",
+            str(self.native / "native-cache")])
 
     def test_separate_cleanup_uses_only_this_job_reserved_invocation(self):
         _, output, report = self.lifecycle()

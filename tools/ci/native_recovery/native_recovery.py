@@ -10,6 +10,7 @@ Inspect writes only its requested job evidence, never the inspected build area.
 import argparse
 from contextlib import contextmanager
 import fcntl
+import grp
 import hashlib
 import importlib.util
 import json
@@ -53,6 +54,7 @@ CONFIG = ("SONIC_CONFIG_MAKE_JOBS = 2\n"
 OLD_HELPER = "bazel/python_test.py"
 NEW_HELPER = "bazel/python_test_runner.py"
 REFERENCES = {"bazel/BUILD.bazel": 1, "misc/BUILD.bazel": 2}
+OLD_INNER = "fsroot.docker.trixie"
 require = native_build.require
 git = source_workspace._git
 
@@ -88,6 +90,7 @@ def inspect(manifest):
     """Gather independent path results without lockfiles, Docker, or Make."""
     root, workspace, state, native = paths(manifest)
     names = (root.parent, root, workspace, state, native, workspace / "target", native / "docker-data",
+             native / "native-cache",
              state / ("bazel-source-" + manifest["invocation"]), state / "native-diagnostic",
              Path("/data/sonic-runner/cache/sonic-buildimage/vs-installer/state/repository-cache"),
              Path("/data/sonic-runner/cache/sonic-buildimage/vs-installer/state/package-cache"))
@@ -101,6 +104,7 @@ def inspect(manifest):
             details = path.stat()
             record.update(uid=details.st_uid, gid=details.st_gid,
                           mode=oct(stat.S_IMODE(details.st_mode)), device=details.st_dev)
+            record["writable_and_searchable"] = os.access(path, os.W_OK | os.X_OK)
             record["available_bytes"] = shutil.disk_usage(path).free
             mount = subprocess.run(["findmnt", "--json", "--output", "SOURCE,FSTYPE,TARGET,OPTIONS",
                                     "--target", str(path)], check=True, capture_output=True,
@@ -137,6 +141,27 @@ def exclusive(root):
         os.close(descriptor)
 
 
+def audit_support(manifest):
+    """Keep only the proven untracked old Docker tree outside source status."""
+    _, workspace, _, _ = paths(manifest)
+    real(workspace / OLD_INNER, directory=True)
+    for revision in (manifest["source_commit"], "HEAD"):
+        require(not git(workspace, "ls-tree", "-r", revision, "--", OLD_INNER).strip(),
+                "old Docker subtree contains captured or current tracked entries")
+    require(not git(workspace, "ls-files", "--stage", "--", OLD_INNER).strip(),
+            "old Docker subtree contains staged entries")
+    # A separate pinned module instance retains the original status parser and
+    # metadata checks without globally changing normal source_workspace helpers.
+    support = load_support("source_workspace")
+    original_git = support._git
+    def scoped_git(directory, *arguments, **kwargs):
+        if directory == workspace and arguments[0] == "status":
+            arguments += ("--", ".", ":(top,exclude,literal)" + OLD_INNER)
+        return original_git(directory, *arguments, **kwargs)
+    support._git = scoped_git
+    return support
+
+
 def evidence(manifest):
     root, workspace, state, native = paths(manifest)
     for name, expected in manifest["evidence"].items():
@@ -164,12 +189,15 @@ def evidence(manifest):
             manifest["source_date_epoch"], "original epoch changed")
     directories = source_workspace._check_graph(workspace, source_workspace._expected(source))
     old = json.loads((workspace / "artifacts/image/native-source-audit.json").read_text())
+    support = audit_support(manifest)
     modifications = {}
     for name, directory in directories.items():
         # Ignore uploaded evidence itself; it was finalized after the old audit.
         def relevant(changes):
-            return [item for item in changes if not (name == "." and item["path"].startswith("artifacts/"))]
-        current = relevant(source_workspace._changes(directory, ignored=False))
+            return [item for item in changes if not (name == "." and
+                    (item["path"].startswith("artifacts/") or
+                     item["path"] == OLD_INNER or item["path"].startswith(OLD_INNER + "/")))]
+        current = relevant(support._changes(directory, ignored=False))
         require(current == relevant(old["repositories"][name]["changes"]),
                 "retained source status/metadata changed: " + name)
         # The old audit lacks content hashes. Capture today's modified files
@@ -178,6 +206,18 @@ def evidence(manifest):
                                for item in current if item["kind"] == "file" and
                                item["index_status"] != "?"}
     return source, modifications
+
+
+def audit_exclusion(manifest):
+    _, workspace, _, _ = paths(manifest)
+    old = json.loads((workspace / "artifacts/image/native-source-audit.json").read_text())
+    entries = [item for item in old["repositories"]["."]["changes"]
+               if item["path"] == OLD_INNER or item["path"].startswith(OLD_INNER + "/")]
+    require(all(item["index_status"] == item["worktree_status"] == "?" for item in entries),
+            "prior Docker subtree audit contains source changes")
+    return {"path": OLD_INNER, "prior_untracked_metadata_count": len(entries),
+            "limit": "Preserved Docker data is excluded from source status; original checkout ownership "
+                     "restoration could clear its setuid/setgid modes. No cache content validation claimed."}
 
 
 def owner_overlay(checkout, commit, manifest):
@@ -330,14 +370,28 @@ def cleanup_job(output, cleanup_output, manifest):
 
 def validate_host(manifest):
     root, workspace, state, native = paths(manifest)
-    for path in (root.parent, root, workspace, state, native, native / "docker-data", workspace / "target"):
+    owners = manifest["inspected_ownership"]
+    runner = owners["runner"]
+    require([os.getuid(), os.getgid()] == runner, "executing identity differs from inspected runner")
+    for path in (root.parent, root, workspace, state, native, native / "docker-data", workspace / "target",
+                 state / ("bazel-source-" + manifest["invocation"])):
         real(path, directory=True)
     require(root.parent.stat().st_uid == os.getuid() and stat.S_IMODE(root.parent.stat().st_mode) == 0o700,
             "retained attempt must have its private runner-owned parent")
-    # Resume is restricted to UID 1000 pending live inspect evidence; the old
-    # worker UID does not establish the host UID. Never repair old-tree ownership.
-    require(os.getuid() == 1000 and all(path.stat().st_uid == 1000 for path in (root, workspace, state, native)),
-            "diagnostic resume currently requires host and retained tree UID 1000")
+    # Compare the observed mixed layout; never repair retained ownership.
+    for expected, directories in (
+            (runner, (root.parent, root, workspace, state, workspace / "target")),
+            (owners["native"], (native, state / ("bazel-source-" + manifest["invocation"]))),
+            (owners["docker"], (native / "docker-data",))):
+        for path in directories:
+            details = path.stat()
+            require([details.st_uid, details.st_gid] == expected,
+                    "retained owner differs from inspection: " + str(path))
+    # Makefile.cache may chmod /dpkg_cache despite method=none. Never let this
+    # changed account trigger permission repair of the old native cache.
+    cache = real(native / "native-cache", directory=True)
+    require(os.access(cache, os.W_OK | os.X_OK),
+            "retained native cache is not already writable/searchable by the diagnostic account")
     free = build_area.check_filesystem(root)
     require(not (state / "native-diagnostic").exists() and not (state / "native-diagnostic").is_symlink(),
             "this retained attempt already has a diagnostic operation")
@@ -369,6 +423,8 @@ def resume(manifest, checkout, commit, output, admission=None):
                   "modified_file_hashes_before": modified, "invocation": invocation,
                   "available_bytes_before_resume": free,
                   "admission": admission,
+                  "execution_identity": execution_identity(manifest),
+                  "source_audit_exclusion": audit_exclusion(manifest),
                   "source_audit_limit": "Prior native audit has metadata, not modified-file content hashes.",
                   "inner_docker_root": str(operation / "inner-docker-data")}
         plan = operation / "plan.json"
@@ -425,7 +481,8 @@ def resume(manifest, checkout, commit, output, admission=None):
             except Exception as error:
                 report.update(status="diagnostic-failed", cleanup_error=str(error))
             try:
-                after = source_workspace.audit(workspace, source)
+                after = audit_support(manifest).audit(workspace, source)
+                after["diagnostic_exclusion"] = report["source_audit_exclusion"]
                 (operation / "source-audit-after.json").write_text(json.dumps(after, indent=2) + "\n")
             except Exception as error:
                 report.update(status="diagnostic-failed", audit_error=str(error))
@@ -439,6 +496,41 @@ def resume(manifest, checkout, commit, output, admission=None):
                 for sig, handler in previous.items():
                     signal.signal(sig, handler)
         return 0 if report["status"] == "diagnostic-passed" else 1
+
+
+def execution_identity(manifest):
+    uid, gid = manifest["inspected_ownership"]["runner"]
+    require(type(uid) is int and type(gid) is int and uid > 0 and gid > 0,
+            "diagnostic worker must use a nonroot inspected runner identity")
+    return {"account": native_build.USER, "uid": uid, "gid": gid,
+            "previous_worker_uid": 1000, "previous_worker_gid": 1000,
+            "retained_ownership_changed": False}
+
+
+def worker_account(identity):
+    """Create only the fresh container account; retain every host path owner."""
+    name, uid, gid = identity["account"], identity["uid"], identity["gid"]
+    try:
+        require(grp.getgrgid(gid).gr_name == name, "unexpected diagnostic worker group")
+    except KeyError:
+        native_build.command(["groupadd", "--gid", str(gid), name])
+    try:
+        account = pwd.getpwuid(uid)
+        require(account.pw_name == name and account.pw_gid == gid, "unexpected diagnostic worker account")
+    except KeyError:
+        native_build.command(["useradd", "--uid", str(uid), "--gid", str(gid), "--create-home",
+                              "--shell", "/bin/bash", name])
+    require(pwd.getpwnam(name).pw_uid == uid and pwd.getpwnam(name).pw_gid == gid,
+            "diagnostic account name selects another identity")
+
+
+def worker_cache_access(manifest, identity):
+    # Host supplementary groups/ACL access do not transfer to the fresh account.
+    # Test as that actual account before dockerd or Make can repair permissions.
+    _, _, _, native = paths(manifest)
+    native_build.command(["runuser", "--user", identity["account"], "--",
+                          "sh", "-c", 'test -w "$1" && test -x "$1"',
+                          "native-cache-permission-check", str(native / "native-cache")])
 
 
 def inside(plan):
@@ -457,12 +549,10 @@ def inside(plan):
     for item in record["accepted_overlay"]["files"].values():
         require(digest(real(workspace / "src/sonic-dash-api" / item["new_path"])) == item["after"],
                 "accepted DASH overlay changed before execution")
-    try:
-        require(pwd.getpwuid(1000).pw_name == native_build.USER, "unexpected native worker account")
-    except KeyError:
-        native_build.command(["groupadd", "--gid", "1000", native_build.USER])
-        native_build.command(["useradd", "--uid", "1000", "--gid", "1000", "--create-home",
-                              "--shell", "/bin/bash", native_build.USER])
+    require(record["execution_identity"] == execution_identity(manifest),
+            "diagnostic execution identity changed")
+    worker_account(record["execution_identity"])
+    worker_cache_access(manifest, record["execution_identity"])
     sudoers = Path("/etc/sudoers.d/sonic-native-ci")
     sudoers.write_text(native_build.USER + " ALL=(ALL) NOPASSWD:ALL\n")
     sudoers.chmod(0o440)

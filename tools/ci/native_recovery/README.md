@@ -27,12 +27,22 @@ retained area. It writes only its new job evidence. Uploaded evidence is separat
 from the historical allocation receipt; the old 380 GiB figure is not current
 admission evidence.
 
-Review this evidence and the exact DASH owner CI before any resume. Resume
-currently requires the executing host UID and retained top-level directories
-to be UID 1000, a private runner-owned `0700` parent, and a live root-backed,
-writable ext4 filesystem with at least 300 GiB available. The original worker's
-UID does not prove the host UID. A mismatch rejects resume without ownership
-repair; inspection remains available.
+Inspection run `39429628567` established runner UID/GID `1001:1003`. Its
+SHA256-verified receipt and artifact identities are pinned in the manifest.
+Resume requires that exact executing identity and observed mixed ownership:
+the private `0700` parent, build root, checkout, state, and target belong to
+`1001:1003`; the native and Bazel-source directories remain `1000:1000`; the
+outer Docker data root remains `0:0`. A mismatch rejects without repair.
+The old native `native-cache` must already be writable and searchable by this
+identity: Make checks `/dpkg_cache` permissions even with cache method `none`,
+so an inaccessible cache rejects admission before it can trigger chmod.
+After creating the account, the worker repeats that read-only check as the
+actual account before starting dockerd or Make. Host supplementary-group or ACL
+access cannot incorrectly authorize a worker that lacks those permissions.
+Resume also rechecks a live root-backed, writable ext4 filesystem with at
+least 300 GiB available. Inspection measured 303.13 GiB, only 3.13 GiB above
+that threshold on the filesystem shared with host Docker; this historical
+measurement does not replace admission.
 
 ## One native continuation
 
@@ -53,6 +63,15 @@ for modified files; the diagnostic records current hashes and explicitly retains
 that limitation. It rejects any existing diagnostic operation rather than
 silently adopting or retrying it.
 
+The preserved `fsroot.docker.trixie` is excluded from source-status traversal
+only after proving it contains no tracked entry or gitlink in the captured
+commit, current HEAD, or current index. Its original audit contains 77,936
+untracked Docker-cache entries, including special modes which the original
+checkout ownership restoration could clear. The new diagnostic records the
+excluded metadata count and this limitation, while retaining the original
+audit/hash unchanged. Other source checks, including similarly named siblings,
+remain active. No validation of those cache contents is claimed.
+
 The driver reuses the original `target` outputs and outer private
 `state/native-9b664952f22b4205/docker-data`. It repeats only the original logged
 `bazel-vs-native-inputs` Make command, with its original epoch/options, and skips
@@ -60,6 +79,21 @@ The driver reuses the original `target` outputs and outer private
 `state/native-diagnostic/inner-docker-data`: `Makefile.work` clears its selected
 inner Docker root while parsing, so selecting the old root would destroy
 retained state. The old inner Docker directory is preserved.
+
+The fresh worker creates the original `sonicnative` account at `1001:1003`,
+matching the inspected checkout owner. This is an explicitly recorded change
+from the original worker's `1000:1000` execution identity. The Make argv,
+account name, epoch, immutable image, and options stay the same apart from the
+already declared fresh inner `DOCKER_ROOT`. `Makefile.work` creates its slave
+account using the invoking `id -u`/`id -g`; numeric IDs do not change the cached
+base/slave image tags. The root-owned private daemon accesses its existing
+Docker data and grants the new account socket access through its group.
+
+No retained ownership transition or restoration is needed on success, failure,
+repeated cancellation, or parent kill. The original cache directories, Docker
+trees, checkout and prior outputs are never chowned by the diagnostic. The
+pinned Docker preflight still assigns UID/GID `1000:1000` to its newly created
+scratch only. New native outputs use the diagnostic account's `1001:1003`.
 
 The owned worker mounts only this build root and receives no host Docker
 socket. It retains the existing private cgroup and real Docker/BuildKit
