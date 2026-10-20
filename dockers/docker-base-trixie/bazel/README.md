@@ -94,6 +94,12 @@ packaging branches. Exact source commits, archive digests and registry recipes
 are recorded in `draft_sources.json`; review and refresh those inputs together
 when a prerequisite changes.
 
+`iproute2` `6.15.0.sonic.1` resolves from maintained `main` after registry #64
+landed. It uses upstream configure/Make through declared Bazel actions, retaining
+Debian 6.15.0-1 and SONiC's bridge FDB protocol patch. The existing runtime/debug
+TAR targets and package version stay unchanged; no iproute2 draft override is
+needed.
+
 Normal registry URLs remain maintained `main` and BCR. `draft_sources.json`
 temporarily names the exact reviewed registration commits or source archives
 needed by this stacked image change. The preparation helper verifies each source
