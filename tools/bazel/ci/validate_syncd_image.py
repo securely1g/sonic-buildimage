@@ -31,6 +31,10 @@ TARGETS = {
     "policy": OWNER + ":package_policy",
     "runtime_handoff": OWNER + ":runtime_import_manifest",
     "debug_handoff": OWNER + ":debug_import_manifest",
+    # The validators read payload.tar beside each manifest. Request those TARs
+    # explicitly so top-level cache downloads materialize them in a fresh slave.
+    "runtime_payload": OWNER + ":runtime_debs",
+    "debug_payload": OWNER + ":debug_debs",
     "source_runtime": OWNER + ":source_runtime_payloads",
     "source_debug": OWNER + ":rdeps_debug_symbols",
     "source_receipt": OWNER + ":source_package_receipt",
@@ -89,7 +93,12 @@ def build_inputs(bazel, options, output):
         paths[label] = path
     if set(paths) != set(targets):
         raise ValueError("Bazel did not return every requested image input")
-    return {key: paths[label] for key, label in TARGETS.items()}
+    inputs = {key: paths[label] for key, label in TARGETS.items()}
+    for variant in ("runtime", "debug"):
+        sibling = inputs[variant + "_handoff"].with_name("payload.tar")
+        require(inputs[variant + "_payload"].resolve() == sibling.resolve(),
+                "Declared package payload is not beside its manifest: " + variant)
+    return inputs
 
 
 def group_records(layout):
