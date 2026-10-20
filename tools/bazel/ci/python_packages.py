@@ -16,6 +16,7 @@ from tools.bazel.ci import artifact_validation, build
 
 
 WHEELS = {
+    "sonic_yang_mgmt-1.0-py3-none-any.whl": "//src/sonic-yang-mgmt:sonic_yang_mgmt_wheel",
     "sonic_containercfgd-1.0-py3-none-any.whl": "//src/sonic-containercfgd:sonic_containercfgd_wheel",
     "sonic_py_common-1.0-py3-none-any.whl": "//src/sonic-py-common:sonic_py_common_wheel",
     "sonic_config_engine-1.0-py3-none-any.whl": "//src/sonic-config-engine:sonic_config_engine_wheel",
@@ -25,6 +26,8 @@ TESTS = [
     "//tools/bazel/tests:wheel_contract_test",
     "//tools/bazel/tests:containercfgd_full_test",
     "//tools/bazel/tests:containercfgd_wheel_test",
+    "//tools/bazel/tests:sonic_yang_mgmt_full_test",
+    "//tools/bazel/tests:sonic_yang_mgmt_wheel_test",
     "//tools/bazel/tests:sonic_py_common_test",
     "//tools/bazel/tests:sonic_py_common_full_test",
     "//tools/bazel/tests:sonic_config_engine_full_test",
@@ -32,6 +35,9 @@ TESTS = [
     "//src/sonic-config-engine:sonic_cfggen_cli_test",
 ]
 WHEEL_CHECKS = [
+    ("sonic_yang_mgmt_wheel_test", "yang-mgmt-wheels.json", "installed_yang_mgmt", [
+        "sonic_yang_mgmt-1.0-py3-none-any.whl",
+    ]),
     ("sonic_python_wheels_test", "wheels.json", "installed_wheels", [
         "sonic_py_common-1.0-py3-none-any.whl", "sonic_config_engine-1.0-py3-none-any.whl",
     ]),
