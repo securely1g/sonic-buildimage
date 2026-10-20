@@ -1,0 +1,49 @@
+name: P4 source recovery
+
+on:
+  pull_request:
+    paths:
+      - src/p4lang/**
+      - rules/p4lang.mk
+      - rules/p4lang.dep
+      - .github/workflows/p4-source-recovery.yml
+  push:
+    branches: [master]
+    paths:
+      - src/p4lang/**
+      - rules/p4lang.mk
+      - rules/p4lang.dep
+      - .github/workflows/p4-source-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4-source-recovery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-recovery:
+    name: P4 source recovery (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AMD64
+            runner: ubuntu-24.04
+            machine: x86_64
+          - name: ARM64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check native architecture
+        run: test "$(uname -m)" = "${{ matrix.machine }}"
+      - name: Test source recovery and cache inputs
+        run: python3 -B -m unittest discover -s src/p4lang/tests -p 'test_*.py' -v
