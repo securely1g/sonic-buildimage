@@ -32,6 +32,23 @@ include platform/vs/docker-syncd-vs.mk
 
 
 class MakeIntegrationTest(unittest.TestCase):
+    def test_syncd_source_contract_matches_selected_module_pins(self):
+        """Catch stale reviewed identities before building their source payloads."""
+        modules = {}
+        for declaration in re.findall(r"(?m)^bazel_dep\s*\((.*?)\)",
+                                      (ROOT / "MODULE.bazel").read_text(), re.DOTALL):
+            fields = dict(re.findall(r'\b(name|version)\s*=\s*"([^"\n]+)"', declaration))
+            self.assertEqual(set(fields), {"name", "version"})
+            self.assertNotIn(fields["name"], modules)
+            modules[fields["name"]] = fields["version"]
+        contract = ROOT / "platform/vs/docker-syncd-vs/config/source_packages.json"
+        for package in json.loads(contract.read_text())["packages"]:
+            source = package["source"]
+            with self.subTest(package=package["package"]):
+                self.assertEqual(source["version"], modules[source["module"]])
+                if "commit" in source:
+                    self.assertTrue(source["version"].endswith("-" + source["commit"]))
+
     def makefile(self):
         expansion = next(line for line in (ROOT / "rules/functions").read_text().splitlines()
                          if line.startswith("expand ="))
