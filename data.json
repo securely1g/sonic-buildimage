@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-20T20:30:13.932578Z",
+  "generated_at": "2026-10-20T20:31:16.620010Z",
   "pull_requests": [
     {
       "base_sha": "af35f605975215872e69dba5a291cb52fd5faafa",
@@ -155,7 +155,7 @@
       "number": 27,
       "state": "open",
       "title": "Build and test the YANG management Python wheel with Bazel",
-      "updated_at": "2026-10-20T20:20:33Z",
+      "updated_at": "2026-10-20T20:30:58Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/27"
     },
     {
@@ -227,7 +227,7 @@
       "number": 21,
       "state": "open",
       "title": "Build the Python supervisor listener wheel with Bazel",
-      "updated_at": "2026-10-20T20:20:30Z",
+      "updated_at": "2026-10-20T20:30:08Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/21"
     },
     {
@@ -1195,15 +1195,15 @@
     {
       "attempt": 1,
       "branch": "codex/containercfgd-wheel",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-20T20:30:57Z",
+      "conclusion": "success",
       "event": "pull_request",
       "jobs": [
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-20T20:30:56Z",
+          "conclusion": "success",
+          "duration_seconds": 777.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 118863026856,
@@ -1211,13 +1211,13 @@
           "name": "SWSS source layers (AMD64)",
           "phases": {
             "build": 586.0,
-            "other": 6.0,
+            "other": 50.0,
             "setup": 89.0,
             "upload": 16.0,
             "validation": 21.0
           },
           "started_at": "2026-10-20T20:17:59Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-20T20:18:02Z",
@@ -1340,34 +1340,44 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T20:30:40Z",
+              "conclusion": "success",
+              "duration_seconds": 42.0,
               "name": "Post Set up Bazel",
               "number": 22,
               "phase": "other",
               "started_at": "2026-10-20T20:29:58Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T20:30:40Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository",
               "number": 23,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T20:30:40Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T20:30:42Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Stop containers",
               "number": 24,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T20:30:40Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T20:30:42Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 25,
+              "phase": "other",
+              "started_at": "2026-10-20T20:30:42Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490766764/job/118863026856"
@@ -1777,6 +1787,28 @@
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490766764/job/118863027393"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-20T20:30:57Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 118869452266,
+          "kind": "make-vs",
+          "name": "Make VS with Bazel SWSS (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-20T20:30:57Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490766764/job/118869452266"
         }
       ],
       "pr_association": "github",
@@ -1787,8 +1819,8 @@
       "run_id": 39490766764,
       "source_sha": "0ba9bdd9bfd25fc1a001abdbfabbb51db93337a0",
       "started_at": "2026-10-20T20:17:56Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-20T20:18:02Z",
+      "status": "completed",
+      "updated_at": "2026-10-20T20:30:57Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490766764/attempts/1",
       "workflow_name": "Bazel SWSS OCI",
       "workflow_path": ".github/workflows/bazel-swss-oci.yml"
