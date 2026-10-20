@@ -16,6 +16,16 @@ class ServiceDpkgValidationTest(unittest.TestCase):
             output = Path(temporary)
             artifact = output / filename
             artifact.write_bytes(b"declared TAR output")
+            targets = {"probe": "//:probe"}
+            paths = {"probe": artifact}
+            for variant in ("runtime", "debug"):
+                directory = output / variant
+                directory.mkdir()
+                for kind, name in (("handoff", "manifest.json"), ("payload", "payload.tar")):
+                    key = variant + "_" + kind
+                    targets[key] = "//:" + key
+                    paths[key] = directory / name
+                    paths[key].write_bytes(b"declared handoff fixture")
             graph = {
                 "pathFragments": [{"id": 1, "label": filename}],
                 "artifacts": [{"id": 1, "pathFragmentId": 1}],
@@ -28,20 +38,22 @@ class ServiceDpkgValidationTest(unittest.TestCase):
                 if arguments[1] == "aquery":
                     self.assertIn("--include_file_write_contents", arguments)
                     json.dump(graph, kwargs["stdout"])
-                return SimpleNamespace(stdout="//:probe\t" + repr([str(artifact)]) + "\n")
+                return SimpleNamespace(stdout="".join(
+                    label + "\t" + repr([str(paths[key])]) + "\n"
+                    for key, label in targets.items()))
 
-            with mock.patch.object(validation, "TARGETS", {"probe": "//:probe"}), \
+            with mock.patch.object(validation, "TARGETS", targets), \
                     mock.patch.object(validation.subprocess, "run", side_effect=run):
                 if reject:
                     with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                         validation.build_inputs(["bazel"], [], output)
                     self.assertEqual([command[1] for command in commands], ["aquery"])
                 else:
-                    self.assertEqual(validation.build_inputs(["bazel"], [], output), {"probe": artifact})
+                    self.assertEqual(validation.build_inputs(["bazel"], [], output), paths)
                     self.assertEqual([command[1] for command in commands], ["aquery", "build", "cquery"])
             report = json.loads((output / "action-audit.json").read_text())
             self.assertIs(report["deb_generation_authorized"], False)
-            self.assertEqual(report["targets"], ["//:probe"])
+            self.assertEqual(report["targets"], sorted(targets.values()))
             return report
 
     def test_tar_assembly_runs_after_audit(self):
