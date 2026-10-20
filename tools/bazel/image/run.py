@@ -174,6 +174,15 @@ def build_plan(args):
             raise ValueError("repository cache must name an explicit directory other than /")
         docker += ["--mount", "type=bind,source=" + str(cache) + ",target=/repository-cache"]
         cache_arg = ["--repository_cache=/repository-cache"]
+    package_cache = getattr(args, "package_cache", None)
+    if package_cache:
+        requested_cache = Path(package_cache).absolute()
+        package_cache = requested_cache.resolve(strict=True)
+        if (requested_cache != package_cache or not package_cache.is_dir()
+                or package_cache == Path("/") or "," in str(package_cache) or "\n" in str(package_cache)
+                or package_cache.is_relative_to(root) or root.is_relative_to(package_cache)):
+            raise ValueError("package cache must be a separate explicit directory without symlinks")
+        docker += ["--mount", "type=bind,source=" + str(package_cache) + ",target=/package-cache"]
     # Cache and resource flags apply to build/test, not query. Keep caller's
     # startup flags before the command and command-specific flags after it.
     verbs = {
@@ -216,6 +225,8 @@ def build_plan(args):
         "cpu_count": cpus,
         "memory_bytes": memory_gib * 1024 ** 3,
     }
+    if package_cache:
+        identity["package_cache"] = str(package_cache)
     if bazel.exists() and bazel.is_relative_to(root):
         identity["bazel_sha256"] = hashlib.sha256(bazel.read_bytes()).hexdigest()
     if git_config:
@@ -226,6 +237,8 @@ def build_plan(args):
               (str(worker_spec), "/run/sonic-image-worker.json", False)]
     if cache:
         mounts.append((str(cache), "/repository-cache", True))
+    if package_cache:
+        mounts.append((str(package_cache), "/package-cache", True))
     if git_config:
         mounts.append((str(git_config), "/run/sonic-source.gitconfig", False))
     common = docker[3:]
@@ -478,6 +491,8 @@ def main():
     parser.add_argument("--git-config", help="explicit Git system config visible to source fetches")
     parser.add_argument("--output-user-root", required=True)
     parser.add_argument("--repository-cache")
+    parser.add_argument("--package-cache",
+                        help="mount a separate persistent action cache at /package-cache")
     parser.add_argument("--persistent-worker", help="retain and reuse this named worker and its Bazel server")
     parser.add_argument("--worker-user", help="explicit UID 1000 account for a persistent worker")
     parser.add_argument("--worker-home", help="home for --worker-user; both options are required together")

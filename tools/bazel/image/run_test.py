@@ -91,6 +91,30 @@ class WorkerTest(unittest.TestCase):
         self.assertNotIn('--batch', plan['bazel_command'])
         self.assertEqual(image_run.validate_worker(self.worker(plan), plan), 'b' * 64)
 
+    def test_external_package_cache_is_mounted_and_in_worker_identity(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cache = Path(temp.name) / "package-cache"
+        cache.mkdir()
+        original = self.plan()
+        self.assertNotIn("package_cache", original["identity"])
+        self.args.package_cache = str(cache)
+        self.args.command += ["--disk_cache="]
+        plan = self.plan()
+        self.assertNotEqual(plan["digest"], original["digest"])
+        self.assertEqual(plan["identity"]["package_cache"], str(cache))
+        self.assertIn((str(cache), "/package-cache", True), plan["mounts"])
+        self.assertIn("--disk_cache=", plan["bazel_command"])
+        self.assertNotIn("--disk_cache=/package-cache", plan["bazel_command"])
+        worker = self.worker(plan)
+        self.assertEqual(image_run.validate_worker(worker, plan), "b" * 64)
+        worker["Mounts"][-1]["Source"] = str(cache.parent)
+        with self.assertRaises(ValueError):
+            image_run.validate_worker(worker, plan)
+        self.args.package_cache = str(self.workspace)
+        with self.assertRaisesRegex(ValueError, "separate explicit"):
+            self.plan()
+
     def test_trust_comes_from_declared_worker_not_ambient_host_mount(self):
         plan = self.plan()
         self.assertEqual(plan['mounts'], [

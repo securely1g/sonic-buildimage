@@ -41,11 +41,11 @@ def relocate_checkout(source, destination):
     return digest.hexdigest()
 
 
-def restore_caches(state, owner):
+def restore_caches(state, owner, cache_root=None):
     """Restore runner access without visiting retained native Docker trees."""
     os.chown(state, *owner, follow_symlinks=False)
     for name in ("package-cache", "repository-cache"):
-        path = state / name
+        path = (cache_root or state) / name
         image.require(not path.is_symlink(), "shared cache must not be a symlink: " + str(path))
         if path.exists():
             image.chown_tree(path, *owner)
@@ -57,12 +57,19 @@ def inside(args):
     image.require(args.runner_uid is not None and args.runner_gid is not None,
                   "controller requires the runner UID and GID")
     # Validate before restoration can touch any state, including on failure.
-    _, state, _, _ = image.validate_paths(args.workspace, args.state, args.artifacts)
+    workspace, state, _, _ = image.validate_paths(args.workspace, args.state, args.artifacts)
+    cache_root = getattr(args, "cache_root", None)
+    caches = image.cache_paths(workspace, state, cache_root)
+    if cache_root is not None:
+        args.cache_root = cache_root = caches[0].parent
     state.mkdir(parents=True, exist_ok=True)
     try:
         return image.build(args)
     finally:
-        restore_caches(state, (args.runner_uid, args.runner_gid))
+        if cache_root is None:
+            restore_caches(state, (args.runner_uid, args.runner_gid))
+        else:
+            restore_caches(state, (args.runner_uid, args.runner_gid), cache_root)
 
 
 def inspect_owned(container, invocation, missing_ok=False):
@@ -107,6 +114,10 @@ def create_command(args, mount_root, worker_image, invocation, ca_bundle):
                "--mount", "type=bind,src=" + str(mount_root) + ",dst=" + str(mount_root),
                "--mount", "type=bind,src=" + str(SOCKET) + ",dst=" + str(SOCKET),
                "--workdir", str(args.workspace)]
+    cache_root = getattr(args, "cache_root", None)
+    if cache_root is not None and cache_root != args.state:
+        for path in image.cache_paths(args.workspace, args.state, cache_root):
+            command += ["--mount", "type=bind,src=" + str(path) + ",dst=" + str(path)]
     if args.git_config:
         command += ["--env", "GIT_CONFIG_NOSYSTEM=0",
                     "--env", "GIT_CONFIG_SYSTEM=" + str(args.git_config)]
@@ -115,6 +126,8 @@ def create_command(args, mount_root, worker_image, invocation, ca_bundle):
                 "--workspace", str(args.workspace), "--state", str(args.state),
                 "--artifacts", str(args.artifacts),
                 "--runner-uid", str(os.getuid()), "--runner-gid", str(os.getgid())]
+    if cache_root is not None:
+        command += ["--cache-root", str(cache_root)]
     if args.git_config:
         command += ["--git-config", str(args.git_config)]
     if ca_bundle:
@@ -125,6 +138,10 @@ def create_command(args, mount_root, worker_image, invocation, ca_bundle):
 def run(args):
     args.workspace, args.state, args.artifacts, mount_root = image.validate_paths(
         args.workspace, args.state, args.artifacts)
+    cache_root = getattr(args, "cache_root", None)
+    caches = image.cache_paths(args.workspace, args.state, cache_root)
+    if cache_root is not None:
+        args.cache_root = cache_root = caches[0].parent
     image.require(SOCKET.is_socket(), "image CI requires the runner's local Docker socket")
     if args.git_config:
         args.git_config = args.git_config.resolve(strict=True)
@@ -135,11 +152,17 @@ def run(args):
     os.environ.pop("DOCKER_CONTEXT", None)
     os.environ["DOCKER_HOST"] = "unix://" + str(SOCKET)
     args.state.mkdir(parents=True, exist_ok=True)
+    if cache_root is not None:
+        for path in caches:
+            path.mkdir(parents=True, exist_ok=True)
     invocation = uuid.uuid4().hex
     # Bootstrap logs must not become untracked files in the fresh source tree
     # before image.build captures its provenance. Publish them only afterward.
     artifacts = args.state / ("controller-" + invocation)
     artifacts.mkdir(exist_ok=False)
+    allocation = args.state / "build-area.json"
+    if allocation.is_file() and not allocation.is_symlink():
+        shutil.copyfile(allocation, artifacts / "build-area.json")
     published = args.artifacts.with_name("controller")
     image.require(not published.exists(), "controller evidence already exists")
     receipt = {"schema": 1, "status": "running", "commands": [], "invocation": invocation}
@@ -199,7 +222,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("workspace", "state", "artifacts"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("ca-bundle", "git-config"):
+    for name in ("ca-bundle", "git-config", "cache-root"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--relocate-from", type=Path,
                         help="move only this staged checkout into the stable build area")

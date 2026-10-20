@@ -45,6 +45,7 @@ TEST_TARGETS = [
     "//tools/bazel/image/native:source_identity_test",
     "//tools/bazel/image/native:ca_hook_test",
     "//tools/bazel/ci:image_test",
+    "//tools/bazel/ci:build_area_test",
     "//tools/bazel/ci:image_docker_test",
     "//tools/bazel/ci:source_workspace_test",
     "//tools/bazel/ci:verify_image_test",

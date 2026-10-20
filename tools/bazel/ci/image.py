@@ -70,6 +70,24 @@ def chown_tree(root, uid, gid):
             os.chown(Path(directory) / name, uid, gid, follow_symlinks=False)
 
 
+def cache_paths(workspace, state, cache_root=None):
+    """Keep explicit reusable caches separate from invocation scratch."""
+    root = state if cache_root is None else Path(cache_root).absolute()
+    require(not root.is_symlink() and root.resolve() == root,
+            "cache root must not contain symlinks or parent traversal")
+    require(root != Path("/"), "cache root must be a dedicated directory")
+    require("," not in str(root) and "\n" not in str(root), "invalid cache root")
+    if root != state:
+        build_area = workspace.parent
+        require(not root.is_relative_to(build_area) and not build_area.is_relative_to(root),
+                "external cache root must be separate from the build area")
+    paths = tuple(root / name for name in ("repository-cache", "package-cache"))
+    for path in paths:
+        require(not path.is_symlink(), "shared cache must not be a symlink: " + str(path))
+        require(not path.exists() or path.is_dir(), "shared cache must be a directory: " + str(path))
+    return paths
+
+
 def source_provenance(workspace):
     def git(directory, *arguments):
         return subprocess.check_output([
@@ -278,6 +296,10 @@ def publish(source, artifacts, name):
 
 def build(args):
     workspace, state, artifacts, mount_root = validate_paths(args.workspace, args.state, args.artifacts)
+    cache_root = getattr(args, "cache_root", None)
+    cache_root = state if cache_root is None else Path(cache_root).absolute()
+    repository_cache, package_cache = cache_root / "repository-cache", cache_root / "package-cache"
+    external_caches = repository_cache.parent != state
     require(os.geteuid() in (0, 1000), "run image CI as root or worker UID 1000")
     original_owner = (workspace.stat().st_uid, workspace.stat().st_gid)
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -295,10 +317,14 @@ def build(args):
                "worker": worker_name, "output_user_root": str(output_root),
                "output_cleanup": {"path": str(output_root), "status": "not_created"},
                "cache_policy": "Package disk cache and repository cache persist; full image disk cache disabled.",
+               "storage": {"workspace": str(workspace), "state": str(state),
+                           "repository_cache": str(repository_cache), "package_cache": str(package_cache),
+                           "external_caches": external_caches},
                "scope": "Native prerequisites built from this checkout, then Bazel SWSS and VS image assembly "
                         "from a separate pristine checkout of the same recorded revisions; "
                         "installer byte-chain verification. No boot or forwarding test."}
     try:
+        caches = cache_paths(workspace, state, cache_root)
         require(not artifacts.is_relative_to(output_root), "artifacts cannot be inside the invocation output root")
         require(not output_root.is_symlink(), "invocation output root must not be a symlink")
         require(not (workspace / "target").exists() and not (workspace / "target").is_symlink(),
@@ -319,9 +345,7 @@ def build(args):
         created = output_root.lstat()
         output_identity = (created.st_dev, created.st_ino)
         receipt["output_cleanup"]["status"] = "retained"
-        caches = (state / "repository-cache", state / "package-cache")
         for path in caches:
-            require(not path.is_symlink(), "shared cache must not be a symlink: " + str(path))
             path.mkdir(parents=True, exist_ok=True)
         # Native package recipes legitimately create or rewrite source files.
         # Freeze independent Git checkouts before Make starts; never pass its
@@ -385,9 +409,11 @@ def build(args):
         launcher = [sys.executable, str(bazel_workspace / "tools/bazel/image/run.py"),
                     "--workspace", str(bazel_workspace), "--mount-root", str(mount_root),
                     "--worker-spec", str(spec), "--bazel", "/usr/local/bin/bazel",
-                    "--output-user-root", str(output_root), "--repository-cache", str(state / "repository-cache"),
+                    "--output-user-root", str(output_root), "--repository-cache", str(repository_cache),
                     "--worker-cpus", "4", "--worker-memory-gib", "12",
                     "--persistent-worker", worker_name, *git_args]
+        if external_caches:
+            launcher += ["--package-cache", str(package_cache)]
 
         def bazel(name, targets, cache):
             return launcher + ["--", "build", *OPTIONS, "--disk_cache=" + cache,
@@ -398,7 +424,8 @@ def build(args):
         execute(launcher + ["--worker-action", "prepare-rust", "--rust-artifacts", str(artifacts / "rust")],
                 bazel_workspace, artifacts, receipt, "rust-inputs")
         receipt["rust_inputs"] = "rust/receipt.json"
-        execute(bazel("package", ["@sonic_swss//dist:swss_pkg"], str(state / "package-cache")),
+        execute(bazel("package", ["@sonic_swss//dist:swss_pkg"],
+                      "/package-cache" if external_caches else str(package_cache)),
                 bazel_workspace, artifacts, receipt, "package")
         execute(bazel("image", TARGETS, ""), bazel_workspace, artifacts, receipt, "image")
         receipt["resolution"] = resolution.collect(
@@ -482,6 +509,8 @@ def main(argv=None):
                         help="optional PEM certificate bundle for execution workers only")
     parser.add_argument("--git-config", type=Path,
                         help="explicit Git system config for native and Bazel source fetches")
+    parser.add_argument("--cache-root", type=Path,
+                        help="separate persistent repository/package caches; defaults to state")
     args = parser.parse_args(argv)
 
     def interrupted(signum, _frame):

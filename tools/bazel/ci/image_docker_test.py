@@ -98,6 +98,40 @@ class DockerControllerTest(unittest.TestCase):
             controller.restore_caches(self.state, (1234, 1235))
         tree.assert_not_called()
 
+    def test_external_cache_mounts_and_restoration_never_include_old_native_state(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.args.cache_root = Path(temp.name) / "private/state"
+        for name in ("package-cache", "repository-cache", "native-old/docker-data"):
+            path = self.args.cache_root / name
+            path.mkdir(parents=True)
+            (path / "entry").write_text("retained")
+        self.args.cache_root.parent.chmod(0o700)
+        command = controller.create_command(self.args, self.root, self.worker, self.invocation, None)
+        mounts = [command[i + 1] for i, flag in enumerate(command) if flag == "--mount"]
+        self.assertEqual(len(mounts), 4)
+        for name in ("package-cache", "repository-cache"):
+            path = str(self.args.cache_root / name)
+            self.assertIn("type=bind,src=" + path + ",dst=" + path, mounts)
+        self.assertNotIn("type=bind,src=" + str(self.args.cache_root) + ",dst=" + str(self.args.cache_root), mounts)
+        with mock.patch.object(controller.os, "chown") as chown, \
+                mock.patch.object(controller.image, "chown_tree") as tree:
+            controller.restore_caches(self.state, (1234, 1235), self.args.cache_root)
+        chown.assert_called_once_with(self.state, 1234, 1235, follow_symlinks=False)
+        self.assertEqual(tree.call_args_list, [
+            mock.call(self.args.cache_root / "package-cache", 1234, 1235),
+            mock.call(self.args.cache_root / "repository-cache", 1234, 1235)])
+        self.assertEqual((self.args.cache_root / "native-old/docker-data/entry").read_text(), "retained")
+
+    def test_external_cache_root_cannot_overlap_build_area_or_follow_symlinks(self):
+        for path in (Path("/"), self.root, self.workspace, self.state / "nested"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                controller.image.cache_paths(self.workspace, self.state, path)
+        alias = self.root / "alias"
+        alias.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            controller.image.cache_paths(self.workspace, self.state, alias)
+
     def test_inside_restores_runner_cache_access_on_build_failure_or_cancellation(self):
         exists = Path.exists
         for failure in (RuntimeError("build failed"), InterruptedError("cancelled")):
@@ -182,6 +216,12 @@ class DockerControllerTest(unittest.TestCase):
 
     def test_failed_container_status_is_returned_and_receipt_is_retained(self):
         self.assertEqual(self.run_fixture(exit_code=23)["returncode"], 23)
+
+    def test_allocation_provenance_is_published_with_controller_evidence_on_failure(self):
+        record = '{"scratch_retention":"host temporary-directory retention"}\n'
+        (self.state / "build-area.json").write_text(record)
+        self.run_fixture(exit_code=23)
+        self.assertEqual((self.workspace / "artifacts/controller/build-area.json").read_text(), record)
 
     def test_auto_removed_container_preserves_attached_failure_exit_code(self):
         self.assertEqual(self.run_fixture(exit_code=23, removed=True)["returncode"], 23)

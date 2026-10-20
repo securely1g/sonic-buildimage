@@ -286,11 +286,26 @@ job requires 300 GiB free after restoring caches. Provision Docker, Git, Python
 3 and access to its local Docker daemon on the runner; 32 GiB RAM is recommended.
 The controller runs as root inside the public worker image, without host sudo.
 The job accepts same-repository PRs and pushes or manual runs on `master`.
-Each run stages a unique checkout, then moves it to
-`/data/sonic-runner/cache/sonic-buildimage/vs-installer/checkout-RUN-ATTEMPT`.
-The sibling `state` directory preserves package and repository caches when the
-one-job runner is replaced. The dedicated bind root permits traversal by worker
-UID1000 while the runner's private host-side cache ancestors stay unchanged. Native
+Each run stages a unique checkout, then allocates fresh sibling checkout/state
+directories on the root ext4 filesystem. The allocator checks ownership,
+writability, mount options and at least 300 GiB free before moving the checkout;
+the existing 300 GiB check after cache restoration still applies. It prefers a
+runner-owned `.local/share/sonic-vs-installer` under the account home or service
+`HOME`. A home on `/data` is ineligible. If neither home qualifies, it creates a
+unique private directory under root-owned sticky `/var/tmp`. That fallback
+follows the host's temporary-directory retention policy; this workflow does not
+automatically clean it. `build-area.json` records the selected path, filesystem,
+initial free bytes and retention. Root scratch shares space with host Docker and
+the OS, so their growth can reduce available headroom during a build.
+
+Only the fresh checkout, invocation outputs and private native Docker state move
+to this filesystem. The exact existing
+`/data/sonic-runner/cache/sonic-buildimage/vs-installer/state/{package-cache,repository-cache}`
+directories stay in place, as do all previous checkouts and native state.
+The optional `--cache-root` mounts only these two cache children; omitting it
+retains the controller's existing sibling-state cache layout. Installer action
+disk caching stays disabled. The dedicated bind root permits traversal by worker
+UID1000 while the runner's private host-side ancestors stay unchanged. Native
 preparation uses one package job, two compiler jobs per package and a 16-GiB
 worker limit. The later Bazel worker uses four CPUs, 12 GiB and four jobs.
 

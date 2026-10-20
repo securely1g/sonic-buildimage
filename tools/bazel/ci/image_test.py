@@ -398,12 +398,12 @@ class ImageControllerTest(unittest.TestCase):
         self.verify_source.assert_not_called()
         self.assertTrue((self.artifacts / "native-source-audit.json").is_file())
 
-    def run_build_fixture(self, failure=None, stop_hook=None, git_config=None):
+    def run_build_fixture(self, failure=None, stop_hook=None, git_config=None, cache_root=None):
         arguments = argparse.Namespace(workspace=self.workspace, state=self.state,
-                                       artifacts=self.artifacts, git_config=git_config)
+                                       artifacts=self.artifacts, git_config=git_config, cache_root=cache_root)
         for cache in ("package-cache", "repository-cache"):
-            (self.state / cache).mkdir(parents=True, exist_ok=True)
-            (self.state / cache / "retained-entry").write_bytes(b"keep cache")
+            ((cache_root or self.state) / cache).mkdir(parents=True, exist_ok=True)
+            ((cache_root or self.state) / cache / "retained-entry").write_bytes(b"keep cache")
 
         def prepare(*_args):
             self.lifecycle.append("prepare")
@@ -523,6 +523,26 @@ class ImageControllerTest(unittest.TestCase):
             self.assertEqual(image.image_inputs.sha256(self.artifacts / output["file"]), output["sha256"])
         for cache in ("package-cache", "repository-cache"):
             self.assertEqual((self.state / cache / "retained-entry").read_bytes(), b"keep cache")
+
+    def test_external_caches_preserve_package_hits_without_caching_installer_outputs(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cache_root = Path(temp.name)
+        result, commands, receipt = self.run_build_fixture(cache_root=cache_root)
+        self.assertEqual(result, 0)
+        self.assertNotIn("--cache-root", commands[0])  # Native private state is unchanged.
+        for command in commands[1:]:
+            if "--repository-cache" in command:
+                self.assertEqual(command[command.index("--repository-cache") + 1],
+                                 str(cache_root / "repository-cache"))
+                self.assertEqual(command[command.index("--package-cache") + 1],
+                                 str(cache_root / "package-cache"))
+        self.assertIn("--disk_cache=/package-cache", commands[2])
+        self.assertIn("--disk_cache=", commands[3])
+        self.assertTrue(receipt["storage"]["external_caches"])
+        for cache in ("package-cache", "repository-cache"):
+            self.assertFalse((self.state / cache).exists())
+            self.assertEqual((cache_root / cache / "retained-entry").read_bytes(), b"keep cache")
 
     def test_explicit_git_policy_crosses_native_and_bazel_worker_boundaries(self):
         config = self.workspace / "source.gitconfig"
