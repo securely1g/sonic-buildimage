@@ -45,16 +45,39 @@ Resume requires that exact executing identity and observed mixed ownership:
 the private `0700` parent, build root, checkout, state, and target belong to
 `1001:1003`; the native and Bazel-source directories remain `1000:1000`; the
 outer Docker data root remains `0:0`. A mismatch rejects without repair.
-The old native `native-cache` must already be writable and searchable by this
-identity: Make checks `/dpkg_cache` permissions even with cache method `none`,
-so an inaccessible cache rejects admission before it can trigger chmod.
-After creating the account, the worker repeats that read-only check as the
-actual account before starting dockerd or Make. Host supplementary-group or ACL
-access cannot incorrectly authorize a worker that lacks those permissions.
+The old native `native-cache` remains owned by `1000:1000`; it is not mounted
+as the new `/dpkg_cache`. Make checks that mount's permissions even with cache
+method `none`, so the diagnostic supplies a fresh runner-owned cache instead.
+After creating the account, the worker checks the fresh cache and its derived
+Bazel/version-cache directories as that actual account before starting dockerd
+or Make. Host supplementary-group or ACL access cannot incorrectly authorize a
+worker that lacks those permissions.
 Resume also rechecks a live root-backed, writable ext4 filesystem with at
 least 300 GiB available. Inspection measured 303.13 GiB, only 3.13 GiB above
 that threshold on the filesystem shared with host Docker; this historical
 measurement does not replace admission.
+
+Read-only inspection `39440015581`, artifact `12272974580`, found no file data
+in the old derived caches: Bazel was completely empty; vcache contained two
+directories and zero files/bytes. All inventories completed without errors or
+limits. The artifact and receipt hashes are pinned in the manifest. Before
+continuation, bounded inventories must again prove each old derived cache is
+missing or complete with no file, symlink, or other data. Populated or incomplete
+inventories reject before source changes or worker creation. Disabled DPKG-cache
+markers outside those derived directories are preserved without treating them
+as Bazel data.
+
+The diagnostic creates `state/native-diagnostic/native-cache` and its `bazel`
+and `vcache` children as private runner-owned directories. It replaces exactly
+one recorded `SONIC_DPKG_CACHE_SOURCE` argument; both `SONIC_DPKG_CACHE_METHOD=none`
+and `SONIC_DPKG_CACHE_METHOD_OVERRIDE=none` must occur exactly once and remain
+unchanged. Missing, duplicated, malformed, or changed options reject. The old
+directories and metadata remain untouched, and no prior Bazel result hits are
+available to lose. New Bazel work may populate the fresh cache. The changed
+derived version-cache path also changes generated
+`src/sonic-build-hooks/buildinfo/config/buildinfo.config`; receipts record that
+file's before/after hashes and the final source audit captures the native
+generated change. Version caching retains its recorded disabled setting.
 
 ## One native continuation
 
@@ -96,7 +119,7 @@ The fresh worker creates the original `sonicnative` account at `1001:1003`,
 matching the inspected checkout owner. This is an explicitly recorded change
 from the original worker's `1000:1000` execution identity. The Make argv,
 account name, epoch, immutable image, and options stay the same apart from the
-already declared fresh inner `DOCKER_ROOT`. `Makefile.work` creates its slave
+declared fresh cache source and inner `DOCKER_ROOT`. `Makefile.work` creates its slave
 account using the invoking `id -u`/`id -g`; numeric IDs do not change the cached
 base/slave image tags. The root-owned private daemon accesses its existing
 Docker data and grants the new account socket access through its group.

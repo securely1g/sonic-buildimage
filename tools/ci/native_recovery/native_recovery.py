@@ -358,8 +358,52 @@ def apply_overlay(workspace, contents, overlay):
         (dash / name).write_bytes(contents[name])
 
 
+def cache_selection(manifest):
+    _, _, state, native = paths(manifest)
+    fresh = state / "native-diagnostic/native-cache"
+    return {"original": str(native / "native-cache"),
+            "diagnostic": str(fresh),
+            "method": "none", "method_override": "none",
+            "original_cache_modified": False,
+            "derived_bazel_cache": str(fresh / "bazel"),
+            "derived_version_cache": str(fresh / "vcache"),
+            "prior_empty_data_evidence": manifest["cache_inspection"],
+            "cache_scope": "Fresh diagnostic caches; original derived caches contain no file data. "
+                           "No prior Bazel result hits are available to reuse.",
+            "generated_config_change": "The derived version-cache path changes "
+                                       "src/sonic-build-hooks/buildinfo/config/buildinfo.config; "
+                                       "the final source audit records that native-generated change."}
+
+
+def derived_cache_inventories(manifest):
+    _, _, _, native = paths(manifest)
+    real(native / "native-cache", directory=True)
+    result = []
+    for name in ("bazel", "vcache"):
+        path = native / "native-cache" / name
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            result.append({"path": str(path), "missing": True})
+            continue
+        inventory = cache_inventory(path)
+        require(inventory["complete"] and not any(
+            inventory[key] for key in ("files", "symlinks", "other")),
+            "old derived cache has data or an incomplete inventory: " + name)
+        result.append(inventory)
+    return result
+
+
+def generated_config_snapshot(workspace):
+    relative = "src/sonic-build-hooks/buildinfo/config/buildinfo.config"
+    path = workspace / relative
+    return {"path": relative, "sha256": digest(real(path)) if path.exists() or path.is_symlink() else None}
+
+
 def recorded_command(manifest, inner_root):
-    _, workspace, _, _ = paths(manifest)
+    _, workspace, state, _ = paths(manifest)
+    require(inner_root == state / "native-diagnostic/inner-docker-data",
+            "unexpected diagnostic inner Docker root")
     log = real(workspace / "artifacts/image/native-build.log")
     require(digest(log) == manifest["evidence"]["image/native-build.log"], "native command log changed")
     records = [json.loads(line) for line in log.read_text().splitlines()
@@ -371,9 +415,19 @@ def recorded_command(manifest, inner_root):
                          "make", "-f", "Makefile.work"] and argv[-1] == "bazel-vs-native-inputs",
             "unexpected original native command")
     require("SOURCE_DATE_EPOCH=" + manifest["source_date_epoch"] in argv and
-            "SONIC_DPKG_CACHE_METHOD=none" in argv and
             not any(value.startswith("DOCKER_ROOT=") for value in argv), "native options changed")
-    return argv[:-1] + ["DOCKER_ROOT=" + str(inner_root), argv[-1]]
+    cache = cache_selection(manifest)
+    for key, value in (("SONIC_DPKG_CACHE_SOURCE", cache["original"]),
+                       ("SONIC_DPKG_CACHE_METHOD", "none"),
+                       ("SONIC_DPKG_CACHE_METHOD_OVERRIDE", "none")):
+        matches = [item for item in argv if re.match(re.escape(key) + r"(?:[^A-Za-z0-9_]|$)", item)]
+        require(matches == [key + "=" + value], "recorded native cache option changed: " + key)
+    require(not any(re.match(r"SONIC_(?:BAZEL_CACHE_SOURCE|VERSION_CACHE(?:_METHOD|_SOURCE)?)(?:[^A-Za-z0-9_]|$)",
+                             item) for item in argv), "recorded derived cache options changed")
+    old = "SONIC_DPKG_CACHE_SOURCE=" + cache["original"]
+    changed = ["SONIC_DPKG_CACHE_SOURCE=" + cache["diagnostic"] if item == old else item
+               for item in argv[:-1]]
+    return changed + ["DOCKER_ROOT=" + str(inner_root), argv[-1]]
 
 
 def docker_environment():
@@ -474,17 +528,13 @@ def validate_host(manifest):
     # Compare the observed mixed layout; never repair retained ownership.
     for expected, directories in (
             (runner, (root.parent, root, workspace, state, workspace / "target")),
-            (owners["native"], (native, state / ("bazel-source-" + manifest["invocation"]))),
+            (owners["native"], (native, real(native / "native-cache", directory=True),
+                               state / ("bazel-source-" + manifest["invocation"]))),
             (owners["docker"], (native / "docker-data",))):
         for path in directories:
             details = path.stat()
             require([details.st_uid, details.st_gid] == expected,
                     "retained owner differs from inspection: " + str(path))
-    # Makefile.cache may chmod /dpkg_cache despite method=none. Never let this
-    # changed account trigger permission repair of the old native cache.
-    cache = real(native / "native-cache", directory=True)
-    require(os.access(cache, os.W_OK | os.X_OK),
-            "retained native cache is not already writable/searchable by the diagnostic account")
     free = build_area.check_filesystem(root)
     require(not (state / "native-diagnostic").exists() and not (state / "native-diagnostic").is_symlink(),
             "this retained attempt already has a diagnostic operation")
@@ -506,9 +556,16 @@ def resume(manifest, checkout, commit, output, admission=None):
         free = validate_host(manifest)
         source, modified = evidence(manifest)
         contents, overlay = owner_overlay(checkout, commit, manifest)
+        cache_before = derived_cache_inventories(manifest)
         invocation = uuid.uuid4().hex[:16]
         operation = state / "native-diagnostic"
+        # Reject unexpected cache/Make options before reserving or changing sources.
+        recorded_command(manifest, operation / "inner-docker-data")
         operation.mkdir(mode=0o755)  # One-shot, exclusive; never adopt old evidence.
+        cache = Path(cache_selection(manifest)["diagnostic"])
+        cache.mkdir(mode=0o700)
+        for child in ("bazel", "vcache"):
+            (cache / child).mkdir(mode=0o700)
         report = {"schema": 1, "diagnostic_only": True, "clean_checkout_proof": False,
                   "status": "diagnostic-running", "mode": "resume-native",
                   "job_identity": identity,
@@ -517,6 +574,9 @@ def resume(manifest, checkout, commit, output, admission=None):
                   "available_bytes_before_resume": free,
                   "admission": admission,
                   "execution_identity": execution_identity(manifest),
+                  "native_cache": cache_selection(manifest),
+                  "preserved_cache_inventory_before": cache_before,
+                  "generated_config_before": generated_config_snapshot(workspace),
                   "source_audit_exclusion": audit_exclusion(manifest),
                   "source_audit_limit": "Prior native audit has metadata, not modified-file content hashes.",
                   "inner_docker_root": str(operation / "inner-docker-data")}
@@ -574,6 +634,10 @@ def resume(manifest, checkout, commit, output, admission=None):
             except Exception as error:
                 report.update(status="diagnostic-failed", cleanup_error=str(error))
             try:
+                cache_after = derived_cache_inventories(manifest)
+                report["preserved_cache_inventory_after"] = cache_after
+                require(cache_after == cache_before, "old native cache metadata changed")
+                report["generated_config_after"] = generated_config_snapshot(workspace)
                 after = audit_support(manifest).audit(workspace, source)
                 after["diagnostic_exclusion"] = report["source_audit_exclusion"]
                 (operation / "source-audit-after.json").write_text(json.dumps(after, indent=2) + "\n")
@@ -620,10 +684,11 @@ def worker_account(identity):
 def worker_cache_access(manifest, identity):
     # Host supplementary groups/ACL access do not transfer to the fresh account.
     # Test as that actual account before dockerd or Make can repair permissions.
-    _, _, _, native = paths(manifest)
+    cache = real(Path(cache_selection(manifest)["diagnostic"]), directory=True)
+    directories = [real(path, directory=True) for path in (cache, cache / "bazel", cache / "vcache")]
     native_build.command(["runuser", "--user", identity["account"], "--",
-                          "sh", "-c", 'test -w "$1" && test -x "$1"',
-                          "native-cache-permission-check", str(native / "native-cache")])
+                          "sh", "-c", 'for path do test -w "$path" && test -x "$path" || exit 1; done',
+                          "native-cache-permission-check", *map(str, directories)])
 
 
 def inside(plan):
@@ -644,6 +709,7 @@ def inside(plan):
                 "accepted DASH overlay changed before execution")
     require(record["execution_identity"] == execution_identity(manifest),
             "diagnostic execution identity changed")
+    require(record["native_cache"] == cache_selection(manifest), "diagnostic cache selection changed")
     worker_account(record["execution_identity"])
     worker_cache_access(manifest, record["execution_identity"])
     sudoers = Path("/etc/sudoers.d/sonic-native-ci")

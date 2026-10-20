@@ -83,6 +83,7 @@ class RecoveryTest(unittest.TestCase):
                          "inspected_ownership": {
                              name: [os.getuid(), os.getgid()] for name in ("runner", "native", "docker")},
                          "dash_commit": self.dash_old, "reviewed_overlay_commit": self.owner_commit,
+                         "cache_inspection": copy.deepcopy(recovery.MANIFEST["cache_inspection"]),
                          "worker_image": "sha256:" + "a" * 64, "evidence": {}}
         spec = self.state / ("worker-" + self.invocation)
         spec.mkdir()
@@ -96,7 +97,8 @@ class RecoveryTest(unittest.TestCase):
         (artifacts / "image-receipt.json").write_text(json.dumps(self.image))
         prefix = ["runuser", "--preserve-environment", "--user", "sonicnative", "--", "make", "-f",
                   "Makefile.work", "SOURCE_DATE_EPOCH=" + self.manifest["source_date_epoch"],
-                  "SONIC_DPKG_CACHE_METHOD=none"]
+                  "SONIC_DPKG_CACHE_SOURCE=" + str(self.native / "native-cache"),
+                  "SONIC_DPKG_CACHE_METHOD=none", "SONIC_DPKG_CACHE_METHOD_OVERRIDE=none"]
         self.original_command = prefix + ["bazel-vs-native-inputs"]
         (artifacts / "native-build.log").write_text("".join(
             json.dumps({"native_stage": stage, "argv": prefix + [stage]}) + "\n"
@@ -326,13 +328,85 @@ class RecoveryTest(unittest.TestCase):
     def test_exact_logged_command_preserves_epoch_and_skips_init_configure(self):
         inner = self.state / "native-diagnostic/inner-docker-data"
         command = recovery.recorded_command(self.manifest, inner)
-        self.assertEqual(command[:-2], self.original_command[:-1])
+        expected = [item.replace(str(self.native / "native-cache"),
+                                 str(inner.parent / "native-cache")) for item in self.original_command[:-1]]
+        self.assertEqual(command[:-2], expected)
         self.assertEqual(command[-2:], ["DOCKER_ROOT=" + str(inner), "bazel-vs-native-inputs"])
         self.assertNotIn("init", command)
         self.assertNotIn("configure", command)
         (self.workspace / "artifacts/image/native-build.log").write_text("replacement")
         with self.assertRaisesRegex(ValueError, "log changed"):
             recovery.recorded_command(self.manifest, inner)
+
+    def test_cache_option_replacement_rejects_missing_duplicate_malformed_and_changed_options(self):
+        log = self.workspace / "artifacts/image/native-build.log"
+        original = log.read_text()
+        for key in ("SONIC_DPKG_CACHE_SOURCE", "SONIC_DPKG_CACHE_METHOD", "SONIC_DPKG_CACHE_METHOD_OVERRIDE"):
+            for mutation in ("missing", "duplicate", "malformed", "changed"):
+                with self.subTest(key=key, mutation=mutation):
+                    records = [json.loads(line) for line in original.splitlines()]
+                    argv = records[-1]["argv"]
+                    item = next(item for item in argv if item.startswith(key + "="))
+                    argv.remove(item)
+                    if mutation == "duplicate":
+                        argv[-1:-1] = [item, item]
+                    elif mutation == "malformed":
+                        argv.insert(-1, item.replace("=", "+=", 1))
+                    elif mutation == "changed":
+                        argv.insert(-1, key + "=unreviewed")
+                    log.write_text("".join(json.dumps(record) + "\n" for record in records))
+                    self.manifest["evidence"]["image/native-build.log"] = recovery.digest(log)
+                    with self.assertRaisesRegex(ValueError, "cache option changed"):
+                        recovery.recorded_command(self.manifest, self.state / "native-diagnostic/inner-docker-data")
+        log.write_text(original)
+        self.manifest["evidence"]["image/native-build.log"] = recovery.digest(log)
+        records = [json.loads(line) for line in original.splitlines()]
+        records[-1]["argv"].insert(-1, "SONIC_BAZEL_CACHE_SOURCE=/unreviewed")
+        log.write_text("".join(json.dumps(record) + "\n" for record in records))
+        self.manifest["evidence"]["image/native-build.log"] = recovery.digest(log)
+        with self.assertRaisesRegex(ValueError, "derived cache options"):
+            recovery.recorded_command(self.manifest, self.state / "native-diagnostic/inner-docker-data")
+
+    def test_live_derived_caches_allow_missing_or_empty_but_reject_data_links_and_incomplete_scan(self):
+        cache = self.native / "native-cache"
+        (cache / "disabled-dpkg-marker").write_bytes(b"preserved")
+        self.assertTrue(all(item["missing"] for item in recovery.derived_cache_inventories(self.manifest)))
+        (cache / "bazel").mkdir()
+        (cache / "vcache").mkdir()
+        self.assertTrue(all(item["complete"] for item in recovery.derived_cache_inventories(self.manifest)))
+        for name in ("bazel", "vcache"):
+            for kind in ("file", "symlink", "fifo"):
+                with self.subTest(name=name, kind=kind):
+                    path = cache / name / "data"
+                    if kind == "file":
+                        path.write_bytes(b"cache hit")
+                    elif kind == "symlink":
+                        path.symlink_to(self.parent)
+                    else:
+                        os.mkfifo(path)
+                    try:
+                        with self.assertRaisesRegex(ValueError, "data or an incomplete inventory"):
+                            recovery.derived_cache_inventories(self.manifest)
+                    finally:
+                        path.unlink()
+        with mock.patch.object(recovery, "cache_inventory", return_value={"complete": False}):
+            with self.assertRaisesRegex(ValueError, "incomplete inventory"):
+                recovery.derived_cache_inventories(self.manifest)
+        self.assertEqual((cache / "disabled-dpkg-marker").read_bytes(), b"preserved")
+
+    def test_populated_derived_cache_rejects_before_reservation_worker_or_overlay(self):
+        cache = self.native / "native-cache/bazel"
+        cache.mkdir()
+        (cache / "result").write_bytes(b"later cache result")
+        with mock.patch.object(recovery, "validate_host", return_value=301 * 1024**3), \
+                mock.patch.object(recovery, "docker") as docker, \
+                mock.patch.object(recovery, "apply_overlay") as overlay:
+            with self.assertRaisesRegex(ValueError, "old derived cache has data"):
+                recovery.resume(self.manifest, self.owner, self.owner_commit, self.parent / "job-result.json")
+        docker.assert_not_called()
+        overlay.assert_not_called()
+        self.assertFalse((self.state / "native-diagnostic").exists())
+        self.assertEqual((cache / "result").read_bytes(), b"later cache result")
 
     def lifecycle(self, failure=None, cleanup_failure=False, audit_failure=False):
         output = self.parent / "job-result.json"
@@ -364,6 +438,12 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual((self.workspace / "target/keep").read_text(), "completed prerequisite")
         self.assertEqual((self.native / "docker-data/keep").read_text(), "old outer Docker state")
         self.assertEqual((self.workspace / "fsroot.docker.trixie/keep").read_text(), "old inner Docker state")
+        report_cache = json.loads(output.read_text())["native_cache"]
+        self.assertEqual(report_cache, recovery.cache_selection(self.manifest))
+        for name in ("diagnostic", "derived_bazel_cache", "derived_version_cache"):
+            cache = Path(report_cache[name])
+            self.assertEqual(cache.stat().st_uid, os.getuid())
+            self.assertEqual(cache.stat().st_mode & 0o777, 0o700)
         return result, output, json.loads(output.read_text())
 
     def test_diagnostic_success_cannot_be_consumed_as_normal_native_proof(self):
@@ -435,7 +515,8 @@ class RecoveryTest(unittest.TestCase):
         def inspected(path, *args, **kwargs):
             details = list(actual_stat(path, *args, **kwargs))
             owners = [1001, 1003]
-            if path in (self.native, self.state / ("bazel-source-" + self.invocation)):
+            if path in (self.native, self.native / "native-cache",
+                        self.state / ("bazel-source-" + self.invocation)):
                 owners = [1000, 1000]
             elif path == self.native / "docker-data":
                 owners = [0, 0]
@@ -484,16 +565,21 @@ class RecoveryTest(unittest.TestCase):
                 recovery.worker_account(identity)
         command.assert_not_called()
 
-    def test_native_cache_permission_repair_is_rejected_before_worker_start(self):
+    def test_old_native_cache_requires_no_write_access_or_permission_repair(self):
+        image = {"Id": self.manifest["worker_image"], "Architecture": "amd64", "Os": "linux"}
         with mock.patch.object(os, "access", return_value=False), \
-                mock.patch.object(recovery, "docker") as docker, \
-                mock.patch.object(os, "chmod", side_effect=AssertionError("cache permissions changed")):
-            with self.assertRaisesRegex(ValueError, "cache is not already writable/searchable"):
-                recovery.validate_host(self.manifest)
-        docker.assert_not_called()
+                mock.patch.object(recovery.build_area, "check_filesystem", return_value=301 * 1024**3), \
+                mock.patch.object(recovery, "docker", side_effect=[
+                    mock.Mock(stdout=""), mock.Mock(stdout=json.dumps([image]))]), \
+                mock.patch.object(os, "chmod", side_effect=AssertionError("cache permissions changed")), \
+                mock.patch.object(os, "chown", side_effect=AssertionError("cache ownership changed")):
+            self.assertEqual(recovery.validate_host(self.manifest), 301 * 1024**3)
 
     def test_worker_cache_check_uses_actual_account_and_propagates_denial(self):
         identity = recovery.execution_identity(self.manifest)
+        cache = self.state / "native-diagnostic/native-cache"
+        (cache / "bazel").mkdir(parents=True)
+        (cache / "vcache").mkdir()
         with mock.patch.object(recovery.native_build, "command",
                                side_effect=subprocess.CalledProcessError(1, ["test"])) as command, \
                 mock.patch.object(os, "access", return_value=True), \
@@ -502,8 +588,8 @@ class RecoveryTest(unittest.TestCase):
                 recovery.worker_cache_access(self.manifest, identity)
         command.assert_called_once_with([
             "runuser", "--user", recovery.native_build.USER, "--", "sh", "-c",
-            'test -w "$1" && test -x "$1"', "native-cache-permission-check",
-            str(self.native / "native-cache")])
+            'for path do test -w "$path" && test -x "$path" || exit 1; done', "native-cache-permission-check",
+            str(cache), str(cache / "bazel"), str(cache / "vcache")])
 
     def test_separate_cleanup_uses_only_this_job_reserved_invocation(self):
         _, output, report = self.lifecycle()
