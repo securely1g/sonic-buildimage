@@ -332,18 +332,7 @@ class RecoveryTest(unittest.TestCase):
                 recovery.load_support("build_area")
 
     def test_live_capacity_rejection_cannot_start_docker(self):
-        actual_stat = Path.stat
-        owners = {self.parent, self.root, self.workspace, self.state, self.native}
-        def uid1000(path, *args, **kwargs):
-            result = actual_stat(path, *args, **kwargs)
-            if path in owners:
-                values = list(result)
-                values[4] = 1000
-                return os.stat_result(values)
-            return result
-        with mock.patch.object(Path, "stat", uid1000), \
-                mock.patch.object(os, "getuid", return_value=1000), \
-                mock.patch.object(recovery.build_area, "check_filesystem",
+        with mock.patch.object(recovery.build_area, "check_filesystem",
                                   side_effect=ValueError("current free space below 300 GiB")) as capacity, \
                 mock.patch.object(recovery, "docker") as docker:
             with self.assertRaisesRegex(ValueError, "below 300 GiB"):
@@ -381,7 +370,8 @@ class RecoveryTest(unittest.TestCase):
                     mock.Mock(stdout=""), mock.Mock(stdout=json.dumps([image]))]) as docker:
             self.assertEqual(recovery.validate_host(self.manifest), 301 * 1024**3)
             self.assertEqual(docker.call_count, 2)
-        with mock.patch.object(recovery, "docker") as docker:
+        with mock.patch.object(os, "getuid", return_value=1009), \
+                mock.patch.object(recovery, "docker") as docker:
             with self.assertRaisesRegex(ValueError, "executing identity"):
                 recovery.validate_host(self.manifest)
         docker.assert_not_called()
