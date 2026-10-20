@@ -1089,9 +1089,9 @@ _SYNCD_P4_IMAGE_INPUTS = {
     "source_runtime_tar": _SYNCD_OWNER + ":source_runtime_payloads",
     "source_debug_tar": _SYNCD_OWNER + ":source_debug_payloads",
     "source_receipt": _SYNCD_OWNER + ":source_package_receipt",
-    "base_debug_symbols": _SYNCD_OWNER + ":base_debug_symbols",
-    "base_debug_receipt": _SYNCD_OWNER + ":base_debug_symbols_receipt",
-    "base_debug_package_manifest": _SYNCD_OWNER + ":base_debug_package_manifest",
+    "base_symbols": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
+    "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
+    "config_metadata": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
     "policy": _SYNCD_OWNER + ":package_policy",
     "p4_lock": "//tools/bazel/p4:packages.lock.json",
     "make_runtime_archive": "//:target/docker-syncd-vs.gz",
@@ -1119,7 +1119,6 @@ py_test(
     data = _SYNCD_P4_IMAGE_INPUTS.values() + _SYNCD_P4_DEBS + [
         _SYNCD_OWNER + ":runtime_debs",
         _SYNCD_OWNER + ":debug_debs",
-        _SYNCD_OWNER + ":base_debug_package",
         _SYNCD_OWNER + ":start.sh",
         _SYNCD_OWNER + ":supervisord.conf",
         _SYNCD_OWNER + ":critical_processes",
@@ -1134,5 +1133,6 @@ py_test(
     deps = [
         "//tools/bazel/ci:artifact_validation",
         "//tools/bazel/oci:container_validation",
+        "//tools/bazel/oci:source_base_validation",
     ],
 )
