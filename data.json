@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-20T09:52:17.424296Z",
+  "generated_at": "2026-10-20T12:28:08.278272Z",
   "pull_requests": [
     {
       "base_sha": "af35f605975215872e69dba5a291cb52fd5faafa",
@@ -395,7 +395,7 @@
       "number": 6,
       "state": "open",
       "title": "Consume source-built kernel TARs in the Make VS image",
-      "updated_at": "2026-10-20T09:23:15Z",
+      "updated_at": "2026-10-20T11:01:26Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/6"
     },
     {
@@ -11360,8 +11360,8 @@
     {
       "attempt": 1,
       "branch": "codex/bazel-swss-image",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-20T12:27:21Z",
+      "conclusion": "failure",
       "event": "pull_request",
       "jobs": [
         {
@@ -12098,23 +12098,23 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
+          "completed_at": "2026-10-20T12:27:21Z",
+          "conclusion": "failure",
+          "duration_seconds": 18051.0,
+          "image_build_elapsed_seconds": 17947.0,
           "image_build_seconds": null,
           "job_id": 118507550747,
           "kind": "bazel-vs",
           "name": "Bazel VS installer (AMD64)",
           "phases": {
-            "build": null,
+            "build": 17947.0,
             "other": 74.0,
             "setup": 8.0,
-            "upload": null,
+            "upload": 16.0,
             "validation": null
           },
           "started_at": "2026-10-20T07:26:30Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-20T07:26:33Z",
@@ -12187,44 +12187,54 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T12:27:00Z",
+              "conclusion": "failure",
+              "duration_seconds": 17947.0,
               "name": "Build and verify sonic-vs.bin with Bazel",
               "number": 8,
               "phase": "build",
               "started_at": "2026-10-20T07:27:53Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T12:27:16Z",
+              "conclusion": "success",
+              "duration_seconds": 16.0,
               "name": "Upload VS installer and build evidence",
               "number": 9,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T12:27:00Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-20T12:27:16Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Post Restore Bazel source-package and download caches",
               "number": 17,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T12:27:16Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-20T12:27:16Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository",
               "number": 18,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-20T12:27:16Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-20T12:27:16Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 19,
+              "phase": "other",
+              "started_at": "2026-10-20T12:27:16Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39383813400/job/118507550747"
@@ -12238,8 +12248,8 @@
       "run_id": 39383813400,
       "source_sha": "2546efcc7702088a3f43fa82692002a21bc6d053",
       "started_at": "2026-10-20T07:01:00Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-20T07:26:30Z",
+      "status": "completed",
+      "updated_at": "2026-10-20T12:27:22Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39383813400/attempts/1",
       "workflow_name": "Bazel",
       "workflow_path": ".github/workflows/bazel.yml"
