@@ -120,6 +120,29 @@ class ActionAuditTest(unittest.TestCase):
                                   recipe=bad_recipe), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                     self.audit(bad_script, [], file_contents=bad_recipe, owner=bad_owner, executable=True)
 
+    def test_nested_socat_source_requires_exact_owner_path_and_native_recipe(self):
+        owner = "@@socat++_repo_rules+socat_source//:socat_build"
+        script = "bazel-out/k8-fastbuild-ST-7e42167d27dc/bin/external/socat++_repo_rules+socat_source/socat_build_foreign_cc/build_script.sh"
+        for architecture in ("amd64", "arm64"):
+            make = ("$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/"
+                    "tools/build_tools/configure_runtime_" + architecture + "/bin/make")
+            recipe = ("symlink_to_dir " + make + " $EXT_BUILD_DEPS/bin/ False\n" +
+                      make + " -j4\n" + make + " install DESTDIR=$BUILD_TMPDIR/$INSTALL_PREFIX -j4\n")
+            with self.subTest(architecture=architecture):
+                result = self.audit(script, [], file_contents=recipe, owner=owner, executable=True)
+                self.assertEqual(result["packaging_wrappers"], [])
+                self.assertEqual(result["foreign_source_builds"][0]["owner"], owner)
+            for bad_owner, bad_script, bad_recipe in (
+                    ("@@socat+//:socat_build", script, recipe),
+                    (owner.replace("socat_source", "unreviewed_source"), script, recipe),
+                    (owner, script.replace("socat_source", "unreviewed_source"), recipe),
+                    (owner, script, recipe + make + " package\n"),
+                    (owner, script, recipe + "dpkg-deb --build tree output\n"),
+                    (owner, script, recipe + "dpkg-buildpackage -b\n")):
+                with self.subTest(architecture=architecture, owner=bad_owner, script=bad_script,
+                                  recipe=bad_recipe), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                    self.audit(bad_script, [], file_contents=bad_recipe, owner=bad_owner, executable=True)
+
 
 if __name__ == "__main__":
     unittest.main()

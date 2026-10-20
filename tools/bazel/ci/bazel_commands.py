@@ -12,7 +12,7 @@ FOREIGN_SOURCE_SCRIPTS = {
     "@@sonic-fips+//krb5:build": "sonic-fips+/krb5/build_foreign_cc/build_script.sh",
     "@@sonic-fips+//symcrypt:core_": "sonic-fips+/symcrypt/symcrypt_foreign_cc/build_script.sh",
     "@@sonic-fips+//symcrypt:provider": "sonic-fips+/symcrypt/symcrypt_openssl_foreign_cc/build_script.sh",
-    "@@socat+//:socat_build": "socat+/socat_build_foreign_cc/build_script.sh",
+    "@@socat++_repo_rules+socat_source//:socat_build": "socat++_repo_rules+socat_source/socat_build_foreign_cc/build_script.sh",
     "@@iproute2++_repo_rules+iproute2_source//:iproute2_build": "iproute2++_repo_rules+iproute2_source/iproute2_build_foreign_cc/build_script.sh",
 }
 MAKE = re.compile(r"(?:^|[/\s])(?:make|gmake)(?:\s|$)")
