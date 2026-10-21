@@ -1105,8 +1105,6 @@ _SYNCD_OWNER = "//platform/vs/docker-syncd-vs"
 _SYNCD_P4_IMAGE_INPUTS = {
     "runtime_path": _SYNCD_OWNER + ":docker-syncd-vs",
     "debug_path": _SYNCD_OWNER + ":docker-syncd-vs-dbg",
-    "runtime_handoff": _SYNCD_OWNER + ":runtime_import_manifest",
-    "debug_handoff": _SYNCD_OWNER + ":debug_import_manifest",
     "runtime_manifest_path": "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
     "debug_manifest_path": "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
     "source_contract_path": _SYNCD_OWNER + "/config:source_packages.json",
@@ -1127,32 +1125,18 @@ _SYNCD_P4_IMAGE_INPUTS = {
     "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
     "config_metadata": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
     "policy": _SYNCD_OWNER + ":package_policy",
-    "p4_lock": "//tools/bazel/p4:packages.lock.json",
     "make_runtime_archive": "//:target/docker-syncd-vs.gz",
     "make_debug_archive": "//:target/docker-syncd-vs-dbg.gz",
     "readelf": "@sonic_build_infra//toolchains/binutils:readelf",
     "objcopy": "@sonic_build_infra//toolchains/binutils:objcopy",
 }
 
-_SYNCD_P4_DEBS = [
-    "//:target/debs/trixie/" + name
-    for name in [
-        "p4lang-pi_0.1.3-2_amd64.deb",
-        "p4lang-bmv2_1.15.0-9_amd64.deb",
-        "p4lang-p4c_1.2.4.2-3_amd64.deb",
-        "libsai_1.0.0_amd64.deb",
-    ]
-]
-
 py_test(
     name = "syncd_p4_images_test",
     size = "large",
     srcs = ["integration/syncd_p4_images_test.py"],
-    args = ["--" + name.replace("_", "-") + "=$(rootpath " + label + ")" for name, label in _SYNCD_P4_IMAGE_INPUTS.items()] +
-           ["--p4-deb=$(rootpath " + label + ")" for label in _SYNCD_P4_DEBS],
-    data = _SYNCD_P4_IMAGE_INPUTS.values() + _SYNCD_P4_DEBS + [
-        _SYNCD_OWNER + ":runtime_debs",
-        _SYNCD_OWNER + ":debug_debs",
+    args = ["--" + name.replace("_", "-") + "=$(rootpath " + label + ")" for name, label in _SYNCD_P4_IMAGE_INPUTS.items()],
+    data = _SYNCD_P4_IMAGE_INPUTS.values() + [
         _SYNCD_OWNER + ":start.sh",
         _SYNCD_OWNER + ":supervisord.conf",
         _SYNCD_OWNER + ":critical_processes",

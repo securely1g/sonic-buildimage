@@ -11,7 +11,7 @@ from sonic_apt import dependencies, selection
 from tools.bazel.ci.artifact_validation import require
 from tools.bazel.oci.oci_inventory import apply_layer, assert_overlay_paths
 from tools.bazel.oci.oci_layout import validate_layout
-from tools.bazel.oci.package_contract import source_identity
+from tools.bazel.oci.package_contract import identity, receipt_records, source_identity
 
 
 def read_policy(path):
@@ -23,7 +23,7 @@ def read_policy(path):
     require(type(policy["schema"]) is int and policy["schema"] == 1 and
             all(isinstance(policy[key], str) and policy[key]
                 for key in ("image", "architecture", "distribution")) and
-            policy["retained_source"] in ("none", "make"), "invalid APT policy identity")
+            policy["retained_source"] in ("none", "make", "source"), "invalid APT policy identity")
     require(isinstance(policy["features"], dict) and
             all(isinstance(key, str) and isinstance(value, str)
                 for key, value in policy["features"].items()), "invalid APT policy features")
@@ -82,6 +82,20 @@ def retained_packages(path, *, policy, variant):
     return retained, make, manifest_digest
 
 
+def source_packages(path, *, policy):
+    """Read the actual source TAR receipt without an imported-package envelope."""
+    raw = path.read_bytes()
+    receipt = json.loads(raw)
+    records = receipt_records(receipt)
+    require(identity(receipt) == identity(policy), "source receipt differs from APT image policy")
+    retained = {item["package"]: {
+        "control": dependencies.control_fields(dependencies.package_from_fields(
+            item["control_fields"], origin="Bazel source " + item["package"])),
+        "source_sha256": item["input_tar_sha256"],
+    } for item in records}
+    return retained, receipt, hashlib.sha256(raw).hexdigest()
+
+
 def check_runtime_manifest(metadata_path, *, variant, make):
     """Bind the debug package inventory to its exact runtime Make handoff."""
     if variant == "runtime":
@@ -108,10 +122,23 @@ def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
         retained, make, manifest_digest = retained_packages(
             retained_manifest, policy=policy, variant=variant)
         check_runtime_manifest(base_package_metadata, variant=variant, make=make)
+    elif policy["retained_source"] == "source":
+        require(retained_manifest is not None, "source policy requires a source receipt")
+        retained, source, source_digest = source_packages(retained_manifest, policy=policy)
+        if variant == "debug":
+            require(base_package_metadata is not None, "debug selection requires matching runtime source metadata")
+            metadata = json.loads(base_package_metadata.read_bytes())
+            require(metadata.get("variant") == "runtime" and
+                    metadata.get("source_receipt_sha256") == source_digest,
+                    "debug selection requires matching runtime source metadata")
+        else:
+            require(base_package_metadata is None, "runtime cannot consume inherited package metadata")
     else:
         require(retained_manifest is None, "APT policy does not permit a retained manifest")
 
     layout = validate_layout(base, "linux/" + policy["architecture"])
+    if policy["retained_source"] == "source" and variant == "runtime":
+        require(source["base_manifest_digest"] == layout.descriptor["digest"], "source receipt uses a different OCI base")
     files = {}
     for layer in layout.layers:
         apply_layer(layer, files)
@@ -143,6 +170,16 @@ def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
             receipt["source_packages"] = [{key: item[key] for key in
                 ("package", "version", "architecture", "source", "input_tar_sha256")}
                 for item in make["source_packages"]]
+    elif policy["retained_source"] == "source":
+        receipt["variant"] = receipt.pop("group")
+        receipt["skipped_source"] = receipt.pop("skipped_retained")
+        receipt["skipped_make"] = []
+        receipt["make_manifest_sha256"] = None
+        receipt["source_receipt_sha256"] = source_digest
+        receipt["source_packages"] = [{key: item[key] for key in
+            ("package", "version", "architecture", "source", "input_tar_sha256")}
+            for item in source["packages"]]
+        receipt["provided_package_replacements"] = []
     else:
         receipt.update(image=policy["image"], policy_sha256=hashlib.sha256(policy_path.read_bytes()).hexdigest())
     return selected, receipt
