@@ -1,5 +1,6 @@
 """Check inherited source ELFs and their collected symbols in actual OCI layers."""
 
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -20,10 +21,43 @@ MACHINES = {"amd64": (62, "x86_64-linux-gnu"), "arm64": (183, "aarch64-linux-gnu
 DIGEST = re.compile(r"[0-9a-f]{64}")
 SOURCE_REVISION = re.compile(r"[0-9a-f]{40}")
 FOREIGN_REVISION = re.compile(r"[0-9][A-Za-z0-9.+-]*\.sonic\.[0-9]+")
+ROOT_TARGET = re.compile(r"@@//[A-Za-z0-9_./+-]*:[A-Za-z0-9_.+-]+")
 
 
 def require(value, message):
     validation.require(value, message)
+
+
+def workspace_identity(package, report, module_path):
+    """Bind root-workspace provenance to its declared MODULE and actual TAR.
+
+    The producer deliberately leaves an unversioned root module unstamped.
+    Its payload digest and the consumer CI checkout identify those sources;
+    an external repository must still have an immutable revision/version.
+    """
+    target = package.get("target", "")
+    require(ROOT_TARGET.fullmatch(target), "workspace source must have a canonical root target")
+    package_path = target.removeprefix("@@//").split(":", 1)[0]
+    require(not package_path or all(part not in ("", ".", "..") for part in package_path.split("/")),
+            "workspace source must have a canonical root target")
+    require(module_path is not None, "workspace source requires the declared root MODULE")
+    module_path = Path(module_path)
+    calls = [node.value for node in ast.parse(module_path.read_text()).body
+             if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+             and isinstance(node.value.func, ast.Name) and node.value.func.id == "module"]
+    require(len(calls) == 1, "workspace source requires one root module declaration")
+    fields = {item.arg: ast.literal_eval(item.value) for item in calls[0].keywords
+              if item.arg in ("name", "version")}
+    require(fields.get("name") == "sonic-buildimage" and not fields.get("version"),
+            "workspace source requires the unversioned sonic-buildimage root module")
+    identity = report.get("source_modules", {}).get("sonic-buildimage", {})
+    require(identity.get("version") == "workspace" and
+            identity.get("module_sha256") == validation.sha(module_path),
+            "workspace source MODULE identity differs from the declared input")
+    return {"package": package["package"], "target": target,
+            "module_sha256": identity["module_sha256"],
+            "payload_sha256": package["payload_sha256"],
+            "checkout_identity": "consumer CI revision recorded separately"}
 
 
 def inventory(layout):
@@ -88,7 +122,8 @@ def elf(path, readelf):
 
 
 def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_debug_tar,
-                         architecture, replacing_runtime_tar=None, readelf="readelf", objcopy="objcopy"):
+                         architecture, replacing_runtime_tar=None, workspace_module=None,
+                         readelf="readelf", objcopy="objcopy"):
     """Validate declared base/config metadata and source symbols in final images.
 
     Metadata paths are ordered base then config-engine. A replacing TAR may
@@ -105,7 +140,7 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
             "debug image does not extend this runtime image")
     runtime_files, runtime_origins = inventory(runtime)
     debug_files, debug_origins = inventory(debug)
-    native, reports = {}, []
+    native, reports, workspace_sources = {}, [], []
     for name, path in zip(METADATA_NAMES, metadata_paths):
         raw = Path(path).read_bytes()
         digest = hashlib.sha256(raw).hexdigest()
@@ -120,11 +155,14 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
         require(report.get("dependency_check", {}).get("status") == "satisfied",
                 "source metadata has unsatisfied package dependencies")
         for package in report["source_packages"]:
+            revision = package.get("source_revision", "")
             require(package.get("package") and package.get("target") and
-                    (SOURCE_REVISION.fullmatch(package.get("source_revision", "")) or
-                     FOREIGN_REVISION.fullmatch(package.get("source_revision", ""))) and
+                    (SOURCE_REVISION.fullmatch(revision) or FOREIGN_REVISION.fullmatch(revision) or
+                     revision == "workspace") and
                     DIGEST.fullmatch(package.get("payload_sha256", "")),
-                    "source package lacks exact revision/payload provenance")
+                    "source package lacks declared revision/payload provenance")
+            if revision == "workspace":
+                workspace_sources.append(workspace_identity(package, report, workspace_module))
             for item in package["native_files"]:
                 path = item["path"]
                 require(validation.path_name(path) == path and path not in native,
@@ -197,7 +235,7 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
             sealed = name == "usr/lib/" + triplet + "/libsymcrypt.so.103.13.0"
             if sealed:
                 require(source["package"] == "symcrypt-openssl" and source["version"] == "1.11.0" and
-                        source["target"] == "@sonic_fips//symcrypt:runtime" and
+                        source["target"] in ("@sonic_fips//symcrypt:runtime", "@@sonic-fips+//symcrypt:runtime") and
                         SOURCE_REVISION.fullmatch(source["source_revision"]),
                         "sealed core lacks the reviewed source identity")
                 require(not info["has_debuglink"], "sealed core was modified with a debuglink")
@@ -219,7 +257,8 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
                            "generator": "tools/bazel/oci/source_base_validation.py"},
             "schema": 1, "status": "passed", "architecture": architecture,
             "runtime_manifest_digest": runtime.descriptor["digest"], "debug_manifest_digest": debug.descriptor["digest"],
-            "metadata": reports, "collected_debug_tar_sha256": validation.sha(Path(source_debug_tar)),
+            "metadata": reports, "workspace_sources": workspace_sources,
+            "collected_debug_tar_sha256": validation.sha(Path(source_debug_tar)),
             "source_elf_count": len(native), "elf_count": len(checked), "paired_symbols": pairs,
             "external_needed": sorted({library for pair in pairs for library in pair["needed"]}),
             "replaced_source_files": replaced}
