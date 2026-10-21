@@ -91,7 +91,7 @@ def gdb_lookup(binary, directory, debug_directory, symbol=None):
                       '-iex', 'set auto-load off', '-iex', 'set debuginfod enabled off',
                       '-iex', 'set pagination off',
                       '-iex', 'set debug-file-directory ' + debug_directory,
-                      '-ex', 'file ' + json.dumps(str(binary)), '-x', str(script)], timeout=120)
+                      '-ex', 'file ' + json.dumps(str(binary)), '-x', str(script)], timeout=300)
     records = [line.removeprefix('SONIC_DEBUG_LOOKUP=') for line in result['stdout'].splitlines()
                if line.startswith('SONIC_DEBUG_LOOKUP=')]
     if result['returncode'] != 0 or len(records) != 1:
