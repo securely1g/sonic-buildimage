@@ -79,6 +79,11 @@ P4/DASH producers. The package policy requires their runtime/debug ELF pairs;
 there is no exemption for missing P4 symbols. Static development libraries
 retain their own symbols. A successful build is not a FIPS certification claim.
 
+On AMD64, `p4testgen` also links the producer's declared retained Z3 static
+library. Those Z3 objects have no DWARF; matching symbols cover the rebuilt
+P4C/testgen code. The other shipped P4C programs do not link Z3, and ARM64
+disables testgen.
+
 PI's `pi_CLI_dummy` launcher imports `main` from `libpicli.so.0`; it has no
 source objects of its own. Validation checks the launcher's build ID and
 debug link, its imported function and required library, and the provider's
@@ -138,6 +143,10 @@ not establish an ARM64 DASH image.
 
 Full validation must use the resulting runtime/debug images: resolve installed
 libraries, run the CLI and startup checks, and verify matching debug symbols.
+The P4 smoke check compiles a small program through the installed `p4c` driver
+and its installed configuration, starts `simple_switch_grpc` with the resulting
+JSON, and checks that its local gRPC listener opens. This checks installation
+and startup; it does not exercise P4Runtime requests or packet forwarding.
 The full VS workflow also boots the installed disk and checks database, SWSS,
 Syncd and BGP service/container health, critical processes and Redis. Its guest
 receipt is bound to the uploaded disk image.
