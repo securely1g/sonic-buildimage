@@ -14,7 +14,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/fetch_obs_original_v3.py" <<'OBS_ORIGINAL_SOURCE_PYTHON'
+          cat > "$RUNNER_TEMP/fetch_obs_original_v4.py" <<'OBS_ORIGINAL_SOURCE_PYTHON'
           #!/usr/bin/env python3
           """Acquire public immutable OBS source bytes only; never extract, execute or build them."""
           import argparse
@@ -198,7 +198,7 @@ jobs:
                       dirpath = original / 'directory.xml'
                       package['directory_file'] = fetch.fetch(API + '?rev=' + REVISION, dirpath, 2 * MIB, metadata=True)
                       listing = directory(dirpath.read_bytes(), REVISION)
-                      require(listing['rev'] == '12' and all(listing['entries'].get(name) == expected for name, expected in PINNED_DIRECTORY.items()),
+                      require(listing['rev'] in ('12', REVISION) and all(listing['entries'].get(name) == expected for name, expected in PINNED_DIRECTORY.items()),
                               'immutable revision 12 directory differs from the observed exact source package')
                       package['directory'] = listing
                       package['files'] = {}
@@ -237,7 +237,7 @@ jobs:
           if __name__ == '__main__':
               main()
           OBS_ORIGINAL_SOURCE_PYTHON
-          python3 -I -S -B "$RUNNER_TEMP/fetch_obs_original_v3.py" --output "$GITHUB_WORKSPACE/source-fetch-artifact"
+          python3 -I -S -B "$RUNNER_TEMP/fetch_obs_original_v4.py" --output "$GITHUB_WORKSPACE/source-fetch-artifact"
       - name: Retain separate original sources and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
