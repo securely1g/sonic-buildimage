@@ -300,14 +300,16 @@ print:
         self.assertNotIn('sonic-p4rt_0.0.1_amd64.deb', selected)
 
     def render(self, tars=None):
-        from jinja2 import Environment, StrictUndefined
+        from jinja2 import Environment, FileSystemLoader, StrictUndefined
         arguments = ['bash', str(ROOT / 'build_debug_docker_j2.sh'), 'p4rt:latest', 'debug_debs', 'image_debs']
         values = {'debug_debs': 'libswsscommon-dbg.deb', 'image_debs': 'libc6-dbg'}
         if tars is not None:
             arguments.append('debug_tars')
             values['debug_tars'] = tars
         template = subprocess.check_output(arguments, text=True)
-        return Environment(undefined=StrictUndefined).from_string(template).render(**values)
+        return Environment(
+            loader=FileSystemLoader(str(ROOT)), undefined=StrictUndefined,
+        ).from_string(template).render(**values)
 
     def test_optional_tar_keeps_existing_debug_debs_and_final_stage(self):
         rendered = self.render('sonic-p4rt-dbgsym.tar.bz2')

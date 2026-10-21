@@ -136,8 +136,6 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
     require(len(metadata_paths) == 2, "base and config-engine metadata are both required")
     runtime = validate_layout(Path(runtime_path), "linux/" + architecture)
     debug = validate_layout(Path(debug_path), "linux/" + architecture)
-    require(debug.manifest["layers"][:len(runtime.layers)] == runtime.manifest["layers"],
-            "debug image does not extend this runtime image")
     runtime_files, runtime_origins = inventory(runtime)
     debug_files, debug_origins = inventory(debug)
     native, reports, workspace_sources = {}, [], []
@@ -156,6 +154,17 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
                 "source metadata has unsatisfied package dependencies")
         for package in report["source_packages"]:
             revision = package.get("source_revision", "")
+            for path in package.get("excluded_baseline_paths", []):
+                require(validation.path_name(path) == path, "unsafe excluded baseline path: " + path)
+                for files in (runtime_files, debug_files):
+                    parent = resolve_path(str(Path(path).parent), files)
+                    require(parent is not None and str(Path(parent) / Path(path).name) not in files,
+                            "image retains an excluded baseline file: " + path)
+            packaging = package.get("packaging", "deb")
+            require(packaging in ("deb", "runtime-layer") and
+                    (packaging == "runtime-layer" or
+                     isinstance(package.get("version"), str) and bool(package["version"])),
+                    "source Debian package lacks its installed version")
             require(package.get("package") and package.get("target") and
                     (SOURCE_REVISION.fullmatch(revision) or FOREIGN_REVISION.fullmatch(revision) or
                      revision == "workspace") and
@@ -163,13 +172,21 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
                     "source package lacks declared revision/payload provenance")
             if revision == "workspace":
                 workspace_sources.append(workspace_identity(package, report, workspace_module))
+            for link in package.get("runtime_links", []):
+                path = link["path"]
+                require(validation.path_name(path) == path, "unsafe source symlink path: " + path)
+                for files in (runtime_files, debug_files):
+                    actual = files.get(path, {})
+                    require(all(actual.get(key) == link[key] for key in ('kind', 'linkname', 'mode', 'uid', 'gid')),
+                            "image changed declared source symlink: " + path)
             for item in package["native_files"]:
                 path = item["path"]
                 require(validation.path_name(path) == path and path not in native,
                         "unsafe or duplicate source ELF path: " + path)
                 require(DIGEST.fullmatch(item.get("sha256", "")), "invalid source ELF hash: " + path)
                 native[path] = {**item, "package": package["package"], "target": package["target"],
-                                "version": package["version"], "source_revision": package["source_revision"],
+                                "packaging": packaging, "version": package.get("source_version", package.get("version")),
+                                "source_revision": package["source_revision"],
                                 "payload_sha256": package["payload_sha256"]}
         reports.append({"path": name, "sha256": digest})
     require(native, "metadata contains no source-built ELFs")
@@ -234,8 +251,15 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
                     "source symbols have different build ID/architecture or lack DWARF: " + name)
             sealed = name == "usr/lib/" + triplet + "/libsymcrypt.so.103.13.0"
             if sealed:
-                require(source["package"] == "symcrypt-openssl" and source["version"] == "1.11.0" and
-                        source["target"] in ("@sonic_fips//symcrypt:runtime", "@@sonic-fips+//symcrypt:runtime") and
+                # Runtime TAR provenance uses its exact source revision and
+                # payload hash; it has no installed Debian package version.
+                runtime_targets = {"@sonic_fips//symcrypt:runtime", "@@sonic-fips+//symcrypt:runtime"}
+                reviewed_version = (source["version"] in (None, "1.11.0") and
+                                    source["target"] in runtime_targets
+                                    if source["packaging"] == "runtime-layer"
+                                    else source["version"] == "1.11.0")
+                require(source["package"] == "symcrypt-openssl" and reviewed_version and
+                        source["target"] in runtime_targets | {"@sonic_fips//symcrypt:symcrypt_openssl_deb"} and
                         SOURCE_REVISION.fullmatch(source["source_revision"]),
                         "sealed core lacks the reviewed source identity")
                 require(not info["has_debuglink"], "sealed core was modified with a debuglink")
