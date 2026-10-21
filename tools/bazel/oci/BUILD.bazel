@@ -2,6 +2,51 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# apt_install transitions this executable and its original DEB to the native
+# execution platform. Its libc comes from the digest-pinned Trixie worker.
+alias(
+    name = "bubblewrap_archive",
+    actual = select({
+        "@platforms//cpu:x86_64": "@apt_install_bwrap_amd64//file",
+        "@platforms//cpu:arm64": "@apt_install_bwrap_arm64//file",
+    }),
+)
+
+genrule(
+    name = "bubblewrap",
+    srcs = [":bubblewrap_archive"],
+    outs = ["bwrap"],
+    cmd = "set -euo pipefail\n" +
+          '"$(BSDTAR_BIN)" -xOf "$(location :bubblewrap_archive)" data.tar.xz | ' +
+          '"$(BSDTAR_BIN)" -xOf - ./usr/bin/bwrap > "$@"\nchmod 0755 "$@"',
+    executable = True,
+    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
+)
+
+py_library(
+    name = "single_layer_rootfs_lib",
+    srcs = ["single_layer_rootfs.py"],
+    deps = [":oci_layout"],
+)
+
+py_binary(
+    name = "single_layer_rootfs",
+    srcs = ["single_layer_rootfs.py"],
+    deps = [":single_layer_rootfs_lib"],
+)
+
+py_library(
+    name = "apt_install_inputs_lib",
+    srcs = ["apt_install_inputs.py"],
+)
+
+py_binary(
+    name = "apt_install_inputs",
+    srcs = ["apt_install_inputs.py"],
+    deps = [":apt_install_inputs_lib"],
+)
+
 py_library(
     name = "source_base_validation",
     srcs = ["source_base_validation.py"],
@@ -61,24 +106,6 @@ py_binary(
     deps = [":package_receipts_lib"],
 )
 
-py_library(
-    name = "package_state_lib",
-    srcs = ["package_state.py"],
-    deps = [
-        ":oci_inventory",
-        ":oci_layout",
-        ":package_contract_lib",
-        "//tools/bazel/ci:artifact_validation",
-    ],
-)
-
-py_binary(
-    name = "package_state",
-    srcs = ["package_state.py"],
-    main = "package_state.py",
-    deps = [":package_state_lib"],
-)
-
 # SONiC image helpers share this repository's authoritative OCI layout reader.
 # ELF matching is separate from the lightweight inventory used by APT selection.
 py_library(
@@ -108,6 +135,7 @@ py_library(
     name = "normalize_layer_lib",
     srcs = ["normalize_layer.py"],
     deps = [
+        ":oci_inventory",
         ":oci_layout",
         "//tools/bazel/ci:artifact_validation",
     ],
@@ -175,6 +203,68 @@ py_binary(
     name = "prepare_oci_base",
     srcs = ["prepare_oci_base.py"],
     deps = [":oci_layout"],
+)
+
+py_binary(
+    name = "installed_source_metadata",
+    srcs = ["installed_source_metadata.py"],
+    deps = [
+        ":oci_inventory",
+        "@sonic_build_infra//apt:lib",
+    ],
+)
+
+alias(
+    name = "umoci",
+    actual = select({
+        "@platforms//cpu:x86_64": "@umoci_amd64//file",
+        "@platforms//cpu:arm64": "@umoci_arm64//file",
+    }),
+)
+
+py_binary(
+    name = "unpack_oci",
+    srcs = ["unpack_oci.py"],
+    deps = [":oci_layout"],
+)
+
+py_library(
+    name = "source_package_contract_lib",
+    srcs = ["source_package_contract.py"],
+    deps = ["//tools/bazel/ci:artifact_validation"],
+)
+
+py_binary(
+    name = "source_package_contract",
+    srcs = ["source_package_contract.py"],
+    deps = [":source_package_contract_lib"],
+)
+
+py_library(
+    name = "installed_source_metadata_lib",
+    srcs = ["installed_source_metadata.py"],
+    deps = [
+        ":oci_inventory",
+        "@sonic_build_infra//apt:lib",
+    ],
+)
+
+py_library(
+    name = "unpack_oci_lib",
+    srcs = ["unpack_oci.py"],
+    deps = [":oci_layout"],
+)
+
+py_library(
+    name = "repack_oci_lib",
+    srcs = ["repack_oci.py"],
+    deps = [":oci_layout"],
+)
+
+py_binary(
+    name = "repack_oci",
+    srcs = ["repack_oci.py"],
+    deps = [":repack_oci_lib"],
 )
 
 py_library(
