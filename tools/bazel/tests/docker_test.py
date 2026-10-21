@@ -93,6 +93,8 @@ else:
 .SECONDEXPANSION:
 TARGET_PATH = target
 CONFIGURED_ARCH = amd64
+# This bridge test supplies a fake Bazel; native_build has its own tests.
+BAZEL_IMAGE_RUNNER = "$${BAZEL:-bazel}"
 .PHONY: .platform
 """ + f"PROJECT_ROOT = {self.root}\n" + log_setting + "\n" + r"""
 sbom_emit_fragment = printf 'sbom %s %s %s\n' '$(1)' '$(2)' '$(3)' >> publication-markers

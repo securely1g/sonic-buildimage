@@ -1,5 +1,8 @@
 include tools/bazel/manifests.mk
 
+# Native image installation requires the dedicated root build environment.
+BAZEL_IMAGE_RUNNER ?= python3 tools/bazel/oci/native_build.py
+
 # Owners register archive names in SONIC_BAZEL_DOCKER_IMAGES or
 # SONIC_BAZEL_DBG_DOCKER_IMAGES and declare each archive's explicit Bazel target,
 # complete Make prerequisite paths, and source path for its SBOM fragment.
@@ -63,8 +66,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCK
 		if [ -n "$$bazel_option_lines" ]; then mapfile -t bazel_options <<< "$$bazel_option_lines"; fi
 		bazel_options+=("--platforms=@sonic_build_infra//platforms:$$bazel_platform"
 			"--host_platform=@sonic_build_infra//platforms:$$bazel_platform")
-		"$${BAZEL:-bazel}" build "$${bazel_options[@]}" "$($(@F)_BAZEL_TARGET)"
-		bazel_output="$$("$${BAZEL:-bazel}" cquery "$${bazel_options[@]}" --output=files "$($(@F)_BAZEL_TARGET)")"
+		$(BAZEL_IMAGE_RUNNER) build "$${bazel_options[@]}" "$($(@F)_BAZEL_TARGET)"
+		bazel_output="$$($(BAZEL_IMAGE_RUNNER) cquery "$${bazel_options[@]}" --output=files "$($(@F)_BAZEL_TARGET)")"
 		python3 tools/bazel/build_helpers.py export --query-output="$$bazel_output" --output="$@"
 	} $(LOG)
 	$(call sbom_emit_fragment,$@,DOCKER_IMAGE,$($(@F)_PATH),,,,)

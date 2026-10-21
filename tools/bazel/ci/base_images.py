@@ -80,8 +80,8 @@ def verify_editor_commands(files):
                                "base image changed the vim-tiny command alternative: " + path)
 
 
-def verify_symbols(native, runtimes, debug_tar, directory):
-    """Use the shared verifier, with the source owner's sealed-core exception."""
+def verify_symbols(native, installed_rootfs, debug_tar, directory):
+    """Verify installed ELF paths, including names changed by Debian helpers."""
     symbols = validation.payload(debug_tar)
     machines = {item["elf_machine"] for item in native.values()}
     validation.require(len(machines) == 1 and all(
@@ -89,7 +89,7 @@ def verify_symbols(native, runtimes, debug_tar, directory):
         "source debug ELF architecture differs from the runtime")
     with tempfile.TemporaryDirectory(prefix="base-symbols-", dir=directory) as temporary:
         root = Path(temporary)
-        for archive in [*runtimes, debug_tar]:
+        for archive in (installed_rootfs, debug_tar):
             # This is verification-only extraction with the standard archive tool.
             subprocess.run(["bsdtar", "-xf", str(archive), "-C", str(root)], check=True)
         sealed = [name for name, item in native.items()
@@ -152,15 +152,19 @@ def main():
             owner = "//dockers/" + image + ":"
             targets.update({image + ".gz": owner + image + ".gz",
                             image + ".debug.tar": owner + image + ".debug_symbols",
-                            image + ".source.tar": owner + "source_runtime",
+                            image + ".installed.tar": owner + "rootfs",
                             image + ".packages.json": owner + "runtime_package_metadata"})
         targets["config-engine.path-normalization.json"] = "//dockers/docker-config-engine-trixie:runtime_path_normalization"
         tests = ["@sonic_build_infra//oci/tests:runtime_packages_test",
                  "@sonic_build_infra//oci/tests:runtime_packages_rule_test",
-                 "@sonic_build_infra//oci/tests:installed_packages_test",
                  "@sonic_build_infra//oci/tests:owner_metadata_test",
-                 "@sonic_build_infra//oci/tests:installed_packages_rule_test",
                  "@sonic_build_infra//oci/tests:account_layer_test",
+                 "//tools/bazel/tests:source_contract_test",
+                 "//tools/bazel/tests:installed_source_metadata_test",
+                 "//tools/bazel/tests:source_package_contract_test",
+                 "//tools/bazel/tests:unpack_oci_test",
+                 "//tools/bazel/tests:repack_oci_test",
+                 "//tools/bazel/tests:dpkg_state_validation_test",
                  "//src/sonic-config-engine:sonic_cfggen_cli_test"]
         layouts = ["//dockers/" + image + ":" + image for image in IMAGES]
         receipt["action_audit"] = bazel_commands.audit_targets(
@@ -173,7 +177,7 @@ def main():
         execute([args.bazel, "build", *options,
                  "--build_event_json_file=" + str(directory / "layout-build-events.jsonl"),
                  *layouts], directory, receipt, "layouts")
-        reports, runtimes = [], []
+        reports = []
         receipt["images"] = {}
         for image in IMAGES:
             label = "//dockers/" + image + ":" + image
@@ -181,7 +185,6 @@ def main():
                              directory, receipt, image + ".layout").strip()
             layout = oci_layout.validate_layout(ROOT / output, "linux/" + args.architecture)
             reports.append(json.loads(paths[image + ".packages.json"].read_text()))
-            runtimes.append(paths[image + ".source.tar"])
             verify_unique_layer_paths(layout)
             files = installed_inventory(layout)
             verify_directory_aliases(files)
@@ -195,7 +198,10 @@ def main():
                     validation.require(files.get("etc/libnl-3/" + name, {}).get("kind") == "file",
                                        "libnl runtime configuration is absent: " + name)
             native = verify_source_files(files, reports, elf_machine)
-            pairs = verify_symbols(native, runtimes, paths[image + ".debug.tar"], directory)
+            # Inspect the final filesystem, including ordinary source TAR layers
+            # installed after APT. Debug symbols still come from owner targets.
+            pairs = verify_symbols(native, paths[image + ".installed.tar"],
+                                   paths[image + ".debug.tar"], directory)
             config = layout.config
             result = {"_generated": GENERATED_NOTICE, "manifest_digest": layout.descriptor["digest"],
                       "config_digest": layout.manifest["config"]["digest"],

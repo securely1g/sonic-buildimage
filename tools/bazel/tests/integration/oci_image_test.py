@@ -313,11 +313,12 @@ class ValidateImageTest(unittest.TestCase):
                                     self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root, policy=self.policy,
                                     source_contract_path=self.source_contract_path, dpkg_filter_path=self.filter_path, **complete)
 
-    def complete_make_only_inputs(self):
+    def complete_make_only_inputs(self, *, startup=False):
         """Supply real OCI descriptors, overlay receipts and save archives for the production path."""
         self.policy["native"].update(require_source=False, require_imported_symbols=False)
-        self.policy["image_validation"].update(startup_files={}, debug_alternatives=[],
-                                               required_elf_paths=["usr/bin/ssh"], package_state=False)
+        self.policy["image_validation"].update(
+            startup_files={"usr/bin/start.sh": {"source": "start.sh", "mode": 0o755}} if startup else {},
+            debug_alternatives=[], required_elf_paths=["usr/bin/ssh"], package_state=False)
         base_stream = io.BytesIO()
         with tarfile.open(fileobj=base_stream, mode="w") as archive:
             directories = {".", "usr", "var", *[item["target"] for item in validate_payloads.DIRECTORY_ALIASES.values()]}
@@ -336,6 +337,8 @@ class ValidateImageTest(unittest.TestCase):
         tools = self.root / "tools.tar"
         tools.write_bytes(layer([("usr/share/example/debug-tool", b"debug addition", 0o644)]))
         self.runtime_layers = [base_stream.getvalue(), self.runtime_payload.read_bytes(), apt.read_bytes()]
+        if startup:
+            self.runtime_layers.append(layer([("usr/bin/start.sh", (self.root / "start.sh").read_bytes(), 0o755)]))
         self.debug_layers = self.runtime_layers + [tools.read_bytes(), self.debug_payload.read_bytes()]
         self.write_images()
         lock = self.root / "apt-lock.json"
@@ -365,6 +368,144 @@ class ValidateImageTest(unittest.TestCase):
             archives[variant + "_archive"] = archive
         return {"base_path": base, "apt_layer": apt, "debug_tools_layer": tools,
                 "apt_lock_path": lock, **selections, **archives}
+
+    def test_startup_file_does_not_select_configured_filesystem_validation(self):
+        inputs = self.complete_make_only_inputs(startup=True)
+        result = self.validate(**inputs)
+        self.assertNotIn("assembly", result["overlay_checks"])
+        self.assertEqual(result["archives"]["runtime"]["tag"], "docker-example:latest")
+
+    def configured_inputs(self):
+        """Build independent complete rootfs images with bound APT receipts."""
+        inputs = self.complete_make_only_inputs()
+        inputs.pop("apt_layer")
+        inputs.pop("debug_tools_layer")
+        self.policy["image_validation"]["package_state"] = True
+
+        def flatten(layers):
+            members = {}
+            for raw in layers:
+                with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                    for entry in archive:
+                        members[entry.name] = (entry, archive.extractfile(entry).read() if entry.isfile() else None)
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w") as archive:
+                for entry, raw in members.values():
+                    archive.addfile(entry, io.BytesIO(raw) if raw is not None else None)
+            return stream.getvalue()
+
+        status = layer([("var/lib/dpkg/status", b"Package: example-runtime\nStatus: install ok installed\n", 0o644)])
+        self.runtime_layers = [flatten([*self.runtime_layers, status])]
+        self.debug_layers = [flatten([*self.debug_layers, status])]
+        self.write_images()
+        for variant in ("runtime", "debug"):
+            raw = (self.runtime_layers if variant == "runtime" else self.debug_layers)[0]
+            rootfs = self.root / (variant + "-configured.tar")
+            rootfs.write_bytes(raw)
+            receipt = self.root / (variant + "-installed.json")
+            receipt.write_text(json.dumps({"operation": "apt_install", "status": "passed", "architecture": "amd64",
+                "requested_execution_environment": "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+                "rootfs_sha256": subject.sha(rootfs), "base_sha256": subject.sha(self.root / "runtime-configured.tar"),
+                "installed_packages": {"example-runtime": "1.0"}}))
+            inputs["configured_" + variant + "_tar"] = rootfs
+            inputs[variant + "_installation"] = receipt
+            descriptor, manifest, _, _ = subject.image(self.root / (variant + ".oci"))
+            config = (self.root / (variant + ".oci/blobs/sha256") / manifest["config"]["digest"][7:]).read_bytes()
+            saved = [{"Config": "config.json", "RepoTags": [self.policy["image_validation"][variant + "_tag"]],
+                      "Layers": ["layer.tar"]}]
+            inputs[variant + "_archive"].write_bytes(gzip.compress(layer([
+                ("config.json", config, 0o644), ("manifest.json", json.dumps(saved).encode(), 0o644),
+                ("layer.tar", raw, 0o644)]), mtime=0))
+            if variant == "runtime":
+                selection = inputs["debug_apt_selection"]
+                value = json.loads(selection.read_text()); value["base_manifest_digest"] = descriptor["digest"]
+                selection.write_text(json.dumps(value))
+        inputs["runtime_rootfs_tar"] = inputs["configured_runtime_tar"]
+        return inputs
+
+    def test_configured_filesystems_preserve_real_state_without_shared_layers(self):
+        inputs = self.configured_inputs()
+        result = subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
+            self.runtime_handoff, self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root,
+            policy=self.policy, dpkg_filter_path=self.filter_path, **inputs)
+        self.assertEqual(result["overlay_checks"]["assembly"], "configured_filesystems")
+        self.assertEqual(result["archives"]["debug"]["tag"], "docker-example-dbg:latest")
+
+    def test_configured_receipt_rejects_other_filesystem_or_runtime_base(self):
+        inputs = self.configured_inputs()
+        for key, expected in (("rootfs_sha256", "configured filesystem"), ("base_sha256", "this runtime filesystem")):
+            with self.subTest(key=key):
+                path = inputs["debug_installation"]; value = json.loads(path.read_text()); original = value[key]
+                value[key] = "0" * 64; path.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, expected):
+                    self.validate(**inputs)
+                value[key] = original; path.write_text(json.dumps(value))
+
+    def test_original_elf_bytes_survive_installer_group_and_setgid_changes(self):
+        inputs = self.configured_inputs()
+        metadata = self.root / "installed-source.json"
+        original = {"kind": "file", "uid": 0, "gid": 0, "mode": 0o755,
+                    "sha256": "a" * 64, "elf_machine": 62}
+        final = {"path": "usr/bin/ssh-agent", "uid": 0, "gid": 109, "mode": 0o2755,
+                 "sha256": original["sha256"]}
+        value = {"schema": 1, "architecture": "amd64",
+                 "rootfs_sha256": subject.sha(inputs["configured_runtime_tar"]),
+                 "installation_sha256": subject.sha(inputs["runtime_installation"]),
+                 "source_packages": [{"native_files": [final]}]}
+        metadata.write_text(json.dumps(value))
+        payload = {final["path"]: dict(original)}
+        changes = subject.configured_source_payload(payload, metadata, inputs["configured_runtime_tar"],
+                                                    inputs["runtime_installation"], "amd64")
+        self.assertEqual(changes, [{"path": final["path"], "gid": 109, "mode": 0o2755}])
+        self.assertEqual(payload[final["path"]]["sha256"], original["sha256"])
+        final["sha256"] = "b" * 64
+        metadata.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "original bytes"):
+            subject.configured_source_payload({final["path"]: dict(original)}, metadata,
+                inputs["configured_runtime_tar"], inputs["runtime_installation"], "amd64")
+        value["rootfs_sha256"] = "0" * 64
+        metadata.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "differs from its APT installation"):
+            subject.configured_source_payload({final["path"]: dict(original)}, metadata,
+                inputs["configured_runtime_tar"], inputs["runtime_installation"], "amd64")
+
+    def test_ordinary_source_layer_is_checked_separately_from_apt_rootfs(self):
+        inputs = self.configured_inputs()
+        runtime_layer = self.root / "ordinary-source.tar"
+        runtime_layer.write_bytes(layer([("usr/bin/sonic-service", self.ssh_elf, 0o755)]))
+        expected = {}
+        subject.apply_layer(runtime_layer, expected)
+        entry = {"path": "usr/bin/sonic-service", **{key: expected["usr/bin/sonic-service"][key]
+                 for key in ("sha256", "mode", "uid", "gid")}}
+        value = {"schema": 1, "architecture": "amd64",
+                 "rootfs_sha256": subject.sha(inputs["configured_runtime_tar"]),
+                 "installation_sha256": subject.sha(inputs["runtime_installation"]),
+                 "runtime_layer_sha256": subject.sha(runtime_layer),
+                 "source_packages": [{"packaging": "runtime-layer", "runtime_files": [entry],
+                                      "native_files": [entry]}]}
+        metadata = self.root / "installed-source.json"
+        metadata.write_text(json.dumps(value))
+        self.assertEqual(subject.configured_source_payload(expected, metadata,
+            inputs["configured_runtime_tar"], inputs["runtime_installation"], "amd64", runtime_layer), [])
+        with self.assertRaisesRegex(ValueError, "differs from its ordinary binary layer"):
+            subject.configured_source_payload(expected, metadata,
+                inputs["configured_runtime_tar"], inputs["runtime_installation"], "amd64")
+        runtime_layer.write_bytes(layer([("usr/bin/sonic-service", b"replacement", 0o755)]))
+        with self.assertRaisesRegex(ValueError, "differs from its ordinary binary layer"):
+            subject.configured_source_payload(expected, metadata,
+                inputs["configured_runtime_tar"], inputs["runtime_installation"], "amd64", runtime_layer)
+        value["runtime_layer_sha256"] = subject.sha(runtime_layer)
+        metadata.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "ordinary binary layer differs from source metadata"):
+            subject.configured_source_payload(expected, metadata,
+                inputs["configured_runtime_tar"], inputs["runtime_installation"], "amd64", runtime_layer)
+
+    def test_configured_state_cannot_be_changed_after_installation(self):
+        inputs = self.configured_inputs()
+        self.debug_layers.append(layer([("var/lib/dpkg/status", b"invented package state", 0o644)]))
+        self.write_images()
+        with self.assertRaisesRegex(ValueError, "changes the configured package filesystem"):
+            self.validate(**inputs)
 
     def test_complete_make_only_image_needs_no_source_contract(self):
         """The production image validator accepts complete Make-only evidence without source receipts."""
@@ -538,6 +679,24 @@ class ValidateImageTest(unittest.TestCase):
                 self.write_images()
                 with self.assertRaisesRegex(ValueError, variant + " installation link layer differs"):
                     self.validate(runtime_links_layer=path)
+    def test_dpkg_filter_keeps_source_permissions_and_rejects_missing_kept_files(self):
+        """The declared documentation filter cannot excuse a changed source payload."""
+        lua = {"kind": "file", "mode": 0o755, "uid": 0, "gid": 0, "sha256": "a" * 64}
+        files = {"usr/share/example.lua": lua,
+                 "usr/share/doc/example/changelog.gz": {"kind": "file"},
+                 "usr/share/doc/example/copyright": {"kind": "file", "sha256": "b" * 64}}
+        selected = subject.dpkg_filtered(files, self.filter_path)
+        self.assertEqual(selected["usr/share/example.lua"], lua)
+        self.assertNotIn("usr/share/doc/example/changelog.gz", selected)
+        for path in selected:
+            changed = dict(selected)
+            changed.pop(path)
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "source package payload differs"):
+                subject.assert_payload(selected, changed, "source package payload")
+        changed = copy.deepcopy(selected)
+        changed["usr/share/example.lua"]["mode"] = 0o644
+        with self.assertRaisesRegex(ValueError, "source package payload differs"):
+            subject.assert_payload(selected, changed, "source package payload")
 
     def vim_tools(self, *, target="/usr/bin/vim.basic", uid=0, replace_binary=False, whiteout=False):
         header = bytearray(64)
@@ -601,6 +760,79 @@ class ValidateImageTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     subject.apply_debug_tools_layer(path, files, alternatives=DEBUG_ALTERNATIVES)
                 self.assertEqual(files, before)
+
+
+class ConfiguredOverlayTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.rootfs = self.root / "configured.tar"
+        self.rootfs.write_bytes(b"configured filesystem fixture")
+        self.installation = self.root / "installation.json"
+        self.installation.write_text("installation fixture")
+        self.layer = self.root / "normalized.tar"
+        with tarfile.open(self.layer, "w") as output:
+            binary = tarfile.TarInfo("usr/lib/libcommon.so.0.0.0")
+            binary.mode, binary.size = 0o644, len(b"Bazel library")
+            output.addfile(binary, io.BytesIO(b"Bazel library"))
+            link = tarfile.TarInfo("usr/lib/libcommon.so.0")
+            link.type, link.mode, link.linkname = tarfile.SYMTYPE, 0o777, "libcommon.so.0.0.0"
+            output.addfile(link)
+        self.additions = {}
+        subject.apply_layer(self.layer, self.additions)
+        self.files = {name: dict(entry) for name, entry in self.additions.items()}
+        self.files["usr/lib/libcommon.so.0.0.0"]["sha256"] = "0" * 64
+        self.files["var/lib/dpkg/status"] = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0,
+                                             "size": 10, "sha256": "a" * 64}
+        self.document = {"schema": 1, "architecture": "amd64", "rootfs_sha256": subject.sha(self.rootfs),
+            "installation_sha256": subject.sha(self.installation), "runtime_layer_sha256": subject.sha(self.layer),
+            "source_packages": [{"package": "common", "packaging": "runtime-layer", "payload_sha256": "b" * 64}],
+            "verified_overlays": {"runtime_layer_sha256": subject.sha(self.layer), "payload_sha256": {"common": "b" * 64},
+                "paths": {name: {"owners": ["common"], "file": entry} for name, entry in self.additions.items()}}}
+        self.metadata = self.root / "metadata.json"
+
+    def expected(self, **kwargs):
+        self.metadata.write_text(json.dumps(self.document))
+        return subject.configured_runtime_payload(self.files, self.metadata, self.rootfs, self.installation,
+                                                   "amd64", kwargs.get("layer", self.layer))
+
+    def test_verified_overlay_preserves_every_other_configured_file(self):
+        expected = self.expected()
+        self.assertEqual(expected, {**self.files, **self.additions})
+        self.assertEqual(expected["var/lib/dpkg/status"], self.files["var/lib/dpkg/status"])
+        self.assertNotEqual(self.files["usr/lib/libcommon.so.0.0.0"], self.additions["usr/lib/libcommon.so.0.0.0"])
+
+    def test_final_image_must_keep_bytes_links_modes_and_numeric_ownership(self):
+        expected = self.expected()
+        for path, key, changed in [("usr/lib/libcommon.so.0.0.0", "sha256", "c" * 64),
+                                  ("usr/lib/libcommon.so.0", "linkname", "another.so"),
+                                  ("usr/lib/libcommon.so.0.0.0", "mode", 0o666),
+                                  ("usr/lib/libcommon.so.0.0.0", "uid", 1000),
+                                  ("usr/lib/libcommon.so.0.0.0", "gid", 1000),
+                                  ("var/lib/dpkg/status", "sha256", "d" * 64)]:
+            with self.subTest(path=path, field=key):
+                actual = copy.deepcopy(expected)
+                actual[path][key] = changed
+                with self.assertRaisesRegex(ValueError, "differs at"):
+                    subject.assert_payload(expected, actual, "configured filesystem")
+
+    def test_proof_requires_its_exact_normalized_tar_and_source_hashes(self):
+        with self.assertRaisesRegex(ValueError, "normalized TAR"):
+            self.expected(layer=None)
+        self.document["verified_overlays"]["payload_sha256"]["common"] = "c" * 64
+        with self.assertRaisesRegex(ValueError, "source payloads"):
+            self.expected()
+        self.document["verified_overlays"]["payload_sha256"]["common"] = "b" * 64
+        self.document["verified_overlays"]["paths"]["usr/lib/libcommon.so.0"]["file"]["linkname"] = "other.so"
+        with self.assertRaisesRegex(ValueError, "normalized TAR"):
+            self.expected()
+
+    def test_proof_cannot_exempt_package_manager_state(self):
+        self.document["verified_overlays"]["paths"]["var/lib/dpkg/status"] = {
+            "owners": ["common"], "file": self.files["var/lib/dpkg/status"]}
+        with self.assertRaisesRegex(ValueError, "package-manager state"):
+            self.expected()
 
 
 if __name__ == "__main__":

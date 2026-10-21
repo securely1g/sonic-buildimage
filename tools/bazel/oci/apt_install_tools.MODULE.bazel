@@ -1,0 +1,35 @@
+# Pinned execution-side isolation tool. These are original Debian archives;
+# BSD tar extracts the executable without installing packages on the worker.
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "apt_install_bwrap_amd64",
+    downloaded_file_path = "bubblewrap.deb",
+    sha256 = "70aca4fa8daeacb677ec00e8063eb586f08ae3d94b1f11e684370b5524c43431",
+    urls = ["https://deb.debian.org/debian/pool/main/b/bubblewrap/bubblewrap_0.12.0-1~deb13u1_amd64.deb"],
+)
+
+http_file(
+    name = "apt_install_bwrap_arm64",
+    downloaded_file_path = "bubblewrap.deb",
+    sha256 = "d1ac1d0d81c815fc15842b9f04fdf414830ed14a0a602bf6344740f90bb36c00",
+    urls = ["https://deb.debian.org/debian/pool/main/b/bubblewrap/bubblewrap_0.12.0-1~deb13u1_arm64.deb"],
+)
+
+# Upstream OCI unpacking preserves whiteouts, links and numeric ownership when
+# the compatibility path starts from a Make-produced multi-layer OCI image.
+http_file(
+    name = "umoci_amd64",
+    downloaded_file_path = "umoci",
+    executable = True,
+    sha256 = "b51c267ec394499e42c6fde47f240b7b7dba57ea49df0b5acd304378b82a3b71",
+    urls = ["https://github.com/opencontainers/umoci/releases/download/v0.6.0/umoci.linux.amd64"],
+)
+
+http_file(
+    name = "umoci_arm64",
+    downloaded_file_path = "umoci",
+    executable = True,
+    sha256 = "5cfd17f2e7a4bcf9ed67ea1b955ca893d200349b9ce6a3d3707dba415f458a1f",
+    urls = ["https://github.com/opencontainers/umoci/releases/download/v0.6.0/umoci.linux.arm64"],
+)

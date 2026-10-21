@@ -2,12 +2,21 @@ load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
+load("@rules_distroless//apt:defs.bzl", "apt_install")
+load("@rules_distroless//distroless:defs.bzl", "flatten")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+load("@tar.bzl", "tar")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_install_inputs.bzl", "apt_install_inputs")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:installed_source_metadata.bzl", "installed_source_metadata")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
+load("//tools/bazel/oci:repack_oci.bzl", "repack_oci")
+load("//tools/bazel/oci:rootfs_metadata.bzl", "rootfs_metadata")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+load("//tools/bazel/oci:source_contract.bzl", "source_contract")
+load("//tools/bazel/oci:unpack_oci.bzl", "unpack_oci")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -61,7 +70,7 @@ _PACKAGE_POLICY = dict(
         "debug_alternatives": [],
         "runtime_tag": "docker-orchagent:latest",
         "debug_tag": "docker-orchagent-dbg:latest",
-        "package_state": False,
+        "package_state": True,
     },
     install_inventory = {
         "architecture": _APT_POLICY["architecture"],
@@ -150,6 +159,23 @@ oci_base_layout(
     root = "target/docker-config-engine-trixie.oci",
 )
 
+# The source image already exposes its complete root filesystem. For the
+# existing multi-layer Make input, upstream umoci applies its OCI whiteouts.
+unpack_oci(
+    name = "make_config_engine_rootfs",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    image = ":make_config_engine_base_layout",
+    platform = "linux/amd64",
+)
+
+alias(
+    name = "config_engine_rootfs",
+    actual = select({
+        ":source_config_engine_enabled": "//dockers/docker-config-engine-trixie:rootfs",
+        "//conditions:default": ":make_config_engine_rootfs",
+    }),
+)
+
 # Select checked Debian contents before filtering the final layer. Packages
 # already supplied by the config-engine base retain their existing versions.
 apt_layer(
@@ -168,22 +194,46 @@ filegroup(
     output_group = "selection",
 )
 
-sonic_layer(
-    name = "apt_deps",
-    tars = [":runtime_layer"],
+_SOURCE_PACKAGES = {
+    "swss": "@sonic_swss//dist:swss_pkg",
+    "libswsscommon": "@sonic_swss_common//dist:libswsscommon_pkg",
+    "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
+    "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
+    "libdashapi": "@sonic_dash_api//:libdashapi_pkg",
+    "libprotobuf32t64": "@sonic_dash_api//:protobuf_runtime_pkg",
+}
+
+# Source identities come from selected module declarations, including SWSS's
+# root git_override. The JSON retains only installed-path expectations.
+source_contract(
+    name = "source_contract",
+    architecture = "amd64",
+    expectations = "//dockers/docker-orchagent/bazel:source_paths.json",
+    mode = "provenance",
+    module_sources = {
+        "libdashapi": "sonic-dash-api",
+        "libprotobuf32t64": "protobuf-legacy",
+        "swss": "sonic-swss",
+    },
+    owner_metadata = [
+        "@sonic_swss_common//:runtime_packages.json",
+        "@sonic_sairedis//:runtime_packages.json",
+    ],
+    root_module = "@orchagent_source_modules//:sonic-buildimage.MODULE.bazel",
+    source_modules = {
+        "sonic-swss-common": "@orchagent_source_modules//:sonic-swss-common.MODULE.bazel",
+        "sonic-sairedis": "@orchagent_source_modules//:sonic-sairedis.MODULE.bazel",
+        "sonic-dash-api": "@orchagent_source_modules//:sonic-dash-api.MODULE.bazel",
+        "protobuf-legacy": "@orchagent_source_modules//:protobuf-legacy.MODULE.bazel",
+        "sonic-swss": "@orchagent_source_modules//:sonic-swss.MODULE.bazel",
+    },
+    sources = _SOURCE_PACKAGES,
 )
 
 sonic_layer(
     name = "rdeps",
     root_owned = True,
-    tars = [
-        "@sonic_swss//dist:swss_pkg",
-        "@sonic_swss_common//:libswsscommon_pkg",
-        "@sonic_sairedis//lib:libsairedis_pkg",
-        "@sonic_sairedis//meta:libsaimetadata_pkg",
-        "@sonic_dash_api//:libdashapi_pkg",
-        "@sonic_dash_api//:protobuf_runtime_pkg",
-    ],
+    tars = _SOURCE_PACKAGES.values(),
 )
 
 # Check the runtime dependencies' transitive symbols without requiring the
@@ -193,19 +243,102 @@ debug_symbols_layer(
     image = ":rdeps",
 )
 
+apt_install_inputs(
+    name = "runtime_install_inputs",
+    packages = {key: label + ":deb" for key, label in APT_INPUTS["orchagent_debian"]["amd64"].items()},
+    selection = ":runtime_apt_selection",
+)
+
+apt_install(
+    name = "configured_debian",
+    architecture = "amd64",
+    base = ":config_engine_rootfs",
+    bwrap = "//tools/bazel/oci:bubblewrap",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    packages = [label + ":deb" for label in APT_INPUTS["orchagent_debian"]["amd64"].values()],
+    packages_manifest = ":runtime_install_inputs",
+    tags = ["manual"],
+)
+
+# Source producers supply their installed paths and permissions.
+alias(
+    name = "source_runtime_layer",
+    actual = ":rdeps",
+)
+
+filegroup(
+    name = "installation_receipt",
+    srcs = [":configured_debian"],
+    output_group = "receipt",
+)
+
+installed_source_metadata(
+    name = "runtime_package_metadata",
+    allow_same_owner_overlays = True,
+    architecture = "amd64",
+    installation = ":installation_receipt",
+    payloads = _SOURCE_PACKAGES,
+    rootfs = ":configured_debian",
+    runtime_layer = ":source_runtime_layer",
+    spec = ":source_contract",
+)
+
+filegroup(
+    name = "source_apt_preferences",
+    srcs = [":runtime_package_metadata"],
+    output_group = "apt_preferences",
+)
+
+tar(
+    name = "source_provenance",
+    srcs = [
+        ":runtime_package_metadata",
+        ":source_apt_preferences",
+    ],
+    mtree = [
+        "etc/apt/preferences.d type=dir mode=0755 uid=0 gid=0 time=0",
+        "etc/apt/preferences.d/sonic-source-orchagent type=file mode=0644 uid=0 gid=0 time=0 content=$(location :source_apt_preferences)",
+        "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
+        "usr/share/sonic/bazel/orchagent-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :runtime_package_metadata)",
+    ],
+)
+
+flatten(
+    name = "complete_filesystem",
+    deduplicate = True,
+    tars = [
+        ":configured_debian",
+        ":source_runtime_layer",
+        "//dockers/docker-orchagent/config:python_runtime",
+        "//dockers/docker-orchagent/config:files",
+        ":source_provenance",
+    ],
+)
+
+rootfs_metadata(
+    name = "rootfs",
+    src = ":complete_filesystem",
+    tars = [
+        ":config_engine_rootfs",
+        ":rdeps",
+    ],
+)
+
+repack_oci(
+    name = "configured_image",
+    base = ":config_engine_base_layout",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    platform = "linux/amd64",
+    tars = [":rootfs"],
+)
+
 oci_image(
     name = "docker-orchagent",
-    base = ":config_engine_base_layout",
+    base = ":configured_image",
     entrypoint = ["/usr/bin/docker-init.sh"],
     env = {"DEBIAN_FRONTEND": "noninteractive"},
     labels = "//dockers/docker-orchagent/config:labels",
     target_compatible_with = _COMPATIBLE_WITH,
-    tars = [
-        ":apt_deps",
-        ":rdeps",
-        "//dockers/docker-orchagent/config:python_runtime",
-        "//dockers/docker-orchagent/config:files",
-    ],
 )
 
 sonic_docker_archive(
@@ -224,7 +357,7 @@ debug_symbols_layer(
 apt_layer(
     name = "debug_layer",
     base = ":docker-orchagent",
-    base_package_metadata = ":runtime_apt_selection",
+    base_package_metadata = ":runtime_package_metadata",
     dependency_set = "orchagent_debug_debian",
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
     packages = APT_INPUTS["orchagent_debug_debian"]["amd64"],
@@ -238,20 +371,74 @@ filegroup(
     output_group = "selection",
 )
 
-sonic_layer(
-    name = "debug_tools",
-    tars = [":debug_layer"],
+apt_install_inputs(
+    name = "debug_install_inputs",
+    packages = {key: label + ":deb" for key, label in APT_INPUTS["orchagent_debug_debian"]["amd64"].items()},
+    selection = ":debug_apt_selection",
+)
+
+apt_install(
+    name = "configured_debug",
+    architecture = "amd64",
+    base = ":rootfs",
+    bwrap = "//tools/bazel/oci:bubblewrap",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    packages = [label + ":deb" for label in APT_INPUTS["orchagent_debug_debian"]["amd64"].values()],
+    packages_manifest = ":debug_install_inputs",
+    tags = ["manual"],
+)
+
+filegroup(
+    name = "debug_installation_receipt",
+    srcs = [":configured_debug"],
+    output_group = "receipt",
+)
+
+installed_source_metadata(
+    name = "debug_package_metadata",
+    architecture = "amd64",
+    inherited_metadata = ":runtime_package_metadata",
+    inherited_metadata_path = "usr/share/sonic/bazel/orchagent-packages.json",
+    installation = ":debug_installation_receipt",
+    payloads = _SOURCE_PACKAGES,
+    rootfs = ":configured_debug",
+    spec = ":source_contract",
+)
+
+tar(
+    name = "debug_provenance",
+    srcs = [":debug_package_metadata"],
+    mtree = [
+        "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
+        "usr/share/sonic/bazel/orchagent-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :debug_package_metadata)",
+    ],
+)
+
+flatten(
+    name = "debug_rootfs",
+    deduplicate = True,
+    tars = [
+        ":configured_debug",
+        ":debug_provenance",
+        ":docker-orchagent.debug_symbols",
+    ],
+)
+
+repack_oci(
+    name = "configured_debug_image",
+    base = ":docker-orchagent",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    platform = "linux/amd64",
+    tars = [":debug_rootfs"],
 )
 
 oci_image(
     name = "docker-orchagent-dbg",
-    base = ":docker-orchagent",
+    base = ":configured_debug_image",
+    entrypoint = ["/usr/bin/docker-init.sh"],
+    env = {"DEBIAN_FRONTEND": "noninteractive"},
     labels = "//dockers/docker-orchagent/config:debug_labels",
     target_compatible_with = _COMPATIBLE_WITH,
-    tars = [
-        ":debug_tools",
-        ":docker-orchagent.debug_symbols",
-    ],
 )
 
 sonic_docker_archive(
@@ -279,7 +466,6 @@ test_suite(
         "//tools/bazel/tests:oci_package_contract_test",
         "//tools/bazel/tests:oci_package_payloads_test",
         "//tools/bazel/tests:oci_package_receipts_test",
-        "//tools/bazel/tests:oci_package_state_layer_test",
         "//tools/bazel/tests:select_apt_payloads_test",
         "//tools/bazel/tests:sonic_config_engine_full_test",
         "//tools/bazel/tests:sonic_py_common_full_test",

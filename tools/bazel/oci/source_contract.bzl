@@ -3,11 +3,22 @@
 def _impl(ctx):
     output = ctx.actions.declare_file(ctx.attr.out)
     args = ctx.actions.args()
-    args.add("--image", ctx.attr.image)
+    if ctx.attr.image:
+        args.add("--image", ctx.attr.image)
     args.add("--architecture", ctx.attr.architecture)
-    args.add("--distribution", ctx.attr.distribution)
+    if ctx.attr.distribution:
+        args.add("--distribution", ctx.attr.distribution)
     args.add("--output", output)
+    args.add("--mode", ctx.attr.mode)
     inputs = []
+    if ctx.file.expectations:
+        inputs.append(ctx.file.expectations)
+        args.add("--expectations", ctx.file.expectations)
+    if ctx.file.root_module:
+        inputs.append(ctx.file.root_module)
+        args.add("--root-module", ctx.file.root_module)
+    for name, module in ctx.attr.module_sources.items():
+        args.add("--module-source", name + "=" + module)
     for target in ctx.attr.owner_metadata:
         files = target[DefaultInfo].files.to_list()
         if len(files) != 1:
@@ -40,11 +51,15 @@ def _impl(ctx):
 _contract = rule(
     implementation = _impl,
     attrs = {
-        "image": attr.string(mandatory = True),
+        "image": attr.string(),
         "architecture": attr.string(mandatory = True, values = ["amd64", "arm64"]),
-        "distribution": attr.string(mandatory = True),
+        "distribution": attr.string(),
+        "mode": attr.string(default = "contract", values = ["contract", "provenance"]),
+        "expectations": attr.label(allow_single_file = [".json"]),
         "owner_metadata": attr.label_list(allow_files = [".json"]),
         "source_modules": attr.string_keyed_label_dict(allow_files = True),
+        "module_sources": attr.string_dict(doc = "Package-to-module identities for provenance-only owners without package metadata."),
+        "root_module": attr.label(allow_single_file = True, doc = "Actual root MODULE.bazel containing pinned git_override selections."),
         "sources": attr.string_keyed_label_dict(allow_files = True),
         "public_sources": attr.string_dict(),
         "declared_sources": attr.string_dict(),

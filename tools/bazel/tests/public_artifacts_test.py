@@ -273,6 +273,47 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertNotIn(SENTINEL, json.dumps(summary))
                 self.assertEqual(summary["architecture"], "amd64")
 
+    def test_old_deb_authorization_cannot_bypass_tar_only_publication(self):
+        seed(self.root, "syncd")
+        write_json(self.root, "artifacts/syncd-vs/bazel/execution-gate-audit.json", {
+            "action_count": 12, "output_count": 24,
+            "deb_outputs": ["swss.deb"],
+            "deb_packaging_actions": [{"mnemonic": "DebAssemble", "command": SENTINEL}],
+            "deb_generation_authorized": True, "packaging_wrappers": [],
+        })
+        summary, _paths, ready = self.prepare("syncd")
+        self.assertFalse(ready)
+        audit = summary["receipts"]["execution_audit"]
+        self.assertEqual(audit["deb_output_count"], 1)
+        self.assertEqual(audit["deb_packaging_action_count"], 1)
+        self.assertIs(audit["deb_generation_authorized"], True)
+        self.assertEqual(audit["packaging_wrapper_count"], 0)
+        self.assertNotIn(SENTINEL, json.dumps(summary))
+
+    def test_deb_actions_are_rejected_regardless_of_old_authorization(self):
+        for authorized in (None, False, True, "true", 1):
+            for key in ("deb_outputs", "deb_packaging_actions"):
+                with self.subTest(authorized=authorized, key=key):
+                    seed(self.root, "syncd")
+                    write_json(self.root, "artifacts/syncd-vs/bazel/execution-gate-audit.json", {
+                        "action_count": 12, "output_count": 24, key: [SENTINEL],
+                        "deb_generation_authorized": authorized, "packaging_wrappers": [],
+                    })
+                    summary, _paths, ready = self.prepare("syncd")
+                    self.assertFalse(ready)
+                    self.assertFalse(summary["complete"])
+
+    def test_deb_authorization_does_not_allow_make_packaging_wrappers(self):
+        seed(self.root, "syncd")
+        write_json(self.root, "artifacts/syncd-vs/bazel/execution-gate-audit.json", {
+            "action_count": 12, "output_count": 24,
+            "deb_outputs": ["swss.deb"], "deb_packaging_actions": [],
+            "deb_generation_authorized": True, "packaging_wrappers": ["dpkg-buildpackage"],
+        })
+        summary, _paths, ready = self.prepare("syncd")
+        self.assertFalse(ready)
+        self.assertFalse(summary["complete"])
+
     def test_vs_success_reports_both_container_variants_and_the_installer(self):
         """A passing VS publication must account for runtime/debug archives from both OCI owners."""
         seed(self.root, "vs")
@@ -583,23 +624,31 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(ready, summary)
                 self.assertEqual(paths, [])
 
-    def test_archive_requires_all_twelve_native_workflow_tests(self):
+    def test_archive_requires_all_fifteen_native_workflow_tests(self):
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture):
                 seed(self.root, "archive", architecture)
                 event_path = "artifacts/archive/test-events.jsonl"
-                write(self.root, event_path, events(12))
+                write(self.root, event_path, events(15))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertTrue(ready)
-                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 12)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 15)
                 self.assertTrue(paths)
 
-                write(self.root, event_path, events(11))
+                write(self.root, event_path, events(14))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])
                 self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
                               summary["blocked"])
+
+    def test_archive_result_count_matches_workflow_test_targets(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        command = workflow.split('"$BAZEL" test ', 1)[1].split("2>&1", 1)[0]
+        targets = [line.strip().removesuffix("\\").strip() for line in command.splitlines()
+                   if line.strip().startswith("//")]
+        self.assertEqual(len(targets), len(set(targets)))
+        self.assertEqual(artifacts.BEP["archive"][0][2], len(targets))
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")

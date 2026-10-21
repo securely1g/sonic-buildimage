@@ -60,6 +60,7 @@ elif command == "aquery":
     action = {"outputIds": [1], "environmentVariables": [
         {"key": "PRIVATE", "value": "private-action-data"}]}
     if mode == "wrapper": action["arguments"] = ["make", "package"]
+    if mode == "generated-packaging-script": action["fileContents"] = "#!/bin/sh\ndpkg-deb --build rootfs output\n"
     print(json.dumps({"actions": [action],
         "artifacts": [{"id": 1, "pathFragmentId": 1}],
         "pathFragments": [{"id": 1, "label": "unsafe.deb" if mode == "deb" else "safe.tar"}]}))
@@ -204,6 +205,7 @@ else:
         self.assertIn('tests("' + self.owner + ':ci_tests")', suite_query)
         self.assertIn("--output=label", suite_query)
         audit = next(command for command in commands if command[0] == "aquery")
+        self.assertIn("--include_file_write_contents", audit)
         self.assertIn("deps(set(" + " ".join([*self.tests, self.owner + ":ci_artifacts"]) + "))", audit)
         test = next(command for command in commands if command[0] == "test")
         self.assertEqual(test[-1], self.owner + ":ci_tests")
@@ -246,6 +248,10 @@ else:
     def test_deb_output_blocks_execution(self):
         """A DEB-producing graph must fail before any selected test or archive runs."""
         self.assert_failed_without_report(self.run_ci("deb", error=ValueError))
+        self.assert_no_actions_executed()
+
+    def test_generated_packaging_script_blocks_execution(self):
+        self.assert_failed_without_report(self.run_ci("generated-packaging-script", error=ValueError))
         self.assert_no_actions_executed()
 
     def test_packaging_wrapper_blocks_execution(self):

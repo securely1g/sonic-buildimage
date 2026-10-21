@@ -49,22 +49,11 @@ _APT_CONFIGS = [
     "no-check-valid-until",
 ]
 
-# The Dockerfile uses a hard link, not an empty mtree file or a symlink.
-# Extract the pinned payload with upstream BSD tar and let the same tool record
-# the two names of the inode. No Debian package is built or installed here.
-genrule(
+# Keep the vim command without retaining an old executable after vim-tiny is
+# upgraded. Debian's vi alternative selects the currently installed editor.
+tar(
     name = "vim_command",
-    srcs = ["@base_debian//vim-tiny:data"],
-    outs = ["vim-command.tar"],
-    cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8 TZ=UTC\n" +
-          'mkdir -p "$(@D)/vim-command/usr/bin"\n' +
-          '"$(BSDTAR_BIN)" -xOf "$(execpath @base_debian//vim-tiny:data)" ./usr/bin/vim.tiny > "$(@D)/vim-command/usr/bin/vim.tiny"\n' +
-          'chmod 0755 "$(@D)/vim-command/usr/bin/vim.tiny"\n' +
-          'ln "$(@D)/vim-command/usr/bin/vim.tiny" "$(@D)/vim-command/usr/bin/vim"\n' +
-          'touch -t 197001010000 "$(@D)/vim-command/usr/bin/vim.tiny"\n' +
-          '"$(BSDTAR_BIN)" --format=gnutar --uid 0 --gid 0 --uname root --gname root -cf "$@" -C "$(@D)/vim-command" usr/bin/vim.tiny usr/bin/vim',
-    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    mtree = ["./usr/bin/vim uid=0 gid=0 mode=0777 time=0 type=link link=vi"],
 )
 
 [
@@ -98,26 +87,6 @@ genrule(
             for name in _APT_CONFIGS
         ] + [
             "./etc/apt/sources.list uid=0 gid=0 mode=0644 time=0 type=file content=$(location :apt_sources_" + arch + ")",
-        ] + [
-            # vim-tiny's reviewed postinst selects these commands at priority15.
-            # Manual-page alternatives are omitted by the base dpkg file policy.
-            "./usr/bin/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/" + name
-            for name in [
-                "editor",
-                "ex",
-                "rview",
-                "vi",
-                "view",
-            ]
-        ] + [
-            "./etc/alternatives/" + name + " uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/vim.tiny"
-            for name in [
-                "editor",
-                "ex",
-                "rview",
-                "vi",
-                "view",
-            ]
         ],
     )
     for arch in [

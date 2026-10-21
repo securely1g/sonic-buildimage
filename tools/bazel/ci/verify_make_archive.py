@@ -79,7 +79,11 @@ def main():
                   f"{archive}_BAZEL_DEPENDS = $(TARGET_PATH)/{base}"]
     lines.append("include tools/bazel/docker.mk")
     makefile.write_text("\n".join(lines) + "\n")
+    # These sample targets only assemble archives. They do not run APT or
+    # maintainer scripts, so use the supplied Bazel directly even when the
+    # production Make rule defaults to the native installation environment.
     environment = dict(os.environ, BAZEL=args.bazel,
+                       BAZEL_IMAGE_RUNNER=shlex.quote(args.bazel),
                        BAZEL_CONTAINER_ARGS=shlex.join(args.bazel_arg),
                        BAZEL_CONTAINER_CACHE_DIR="")
     command = ["make", "--no-print-directory", "-f", str(makefile),
