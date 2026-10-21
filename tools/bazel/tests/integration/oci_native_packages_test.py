@@ -45,9 +45,9 @@ class ValidateNativePackagesTest(unittest.TestCase):
         self.debug_path = "usr/lib/debug/.build-id/" + self.identifier[:2] + "/" + self.identifier[2:] + ".debug"
         self.runtime_manifest, self.debug_manifest = self.handoffs()
 
-    def compile(self, value, stem, *, executable=False, soname="libsample.so.0"):
+    def compile(self, value, stem, *, executable=False, soname="libsample.so.0", function=None):
         source = self.root / (stem + ".c")
-        function = "main" if executable else "sample"
+        function = function or ("main" if executable else "sample")
         source.write_text(f"int {function}(void) {{ return {value}; }}\n")
         original = self.root / (stem + ".unstripped")
         flags = [] if executable else ["-shared", "-fPIC", "-Wl,-soname," + soname]
@@ -122,6 +122,79 @@ class ValidateNativePackagesTest(unittest.TestCase):
         return subject.validate_native(self.runtime_manifest, self.debug_manifest,
                                        policy=self.policy, required_packages=required, required_sonames=sonames,
                                        gap_packages=gaps | {"openssh-client"}, fixture=True, **kwargs)
+
+    def forwarding_fixture(self, *, corrupt_stub=False, wrong_provider=False, no_provider_dwarf=False, missing_needed=False):
+        """Link an empty executable whose actual main lives in a shared library."""
+        original, provider, provider_symbols, provider_id = self.compile(0, "forward_main", function="main")
+        launcher = self.root / "launcher"
+        subprocess.run(["cc", "-Wl,--build-id=sha1", "-Wl,--no-as-needed", str(original), "-o", str(launcher)],
+                       check=True, capture_output=True)
+        launcher_id = re.search(r"Build ID: ([0-9a-f]+)", subprocess.check_output(
+            ["readelf", "-n", str(launcher)], text=True))[1]
+        launcher_symbols = self.root / (launcher_id[2:] + ".debug")
+        subprocess.run(["objcopy", "--only-keep-debug", str(launcher), str(launcher_symbols)], check=True, capture_output=True)
+        subprocess.run(["objcopy", "--strip-debug", "--add-gnu-debuglink=" + str(launcher_symbols), str(launcher)],
+                       check=True, capture_output=True)
+        if missing_needed:
+            subprocess.run(["objcopy", "--remove-section=.dynamic", str(launcher)], check=True, capture_output=True)
+        if corrupt_stub:
+            launcher_symbols.write_bytes(launcher_symbols.read_bytes() + b"corrupt")
+        if wrong_provider:
+            provider, provider_symbols, provider_id = self.runtime, self.symbols, self.identifier
+        if no_provider_dwarf:
+            subprocess.run(["objcopy", "--strip-debug", str(provider_symbols)], check=True, capture_output=True)
+        provider_debug = "usr/lib/debug/.build-id/" + provider_id[:2] + "/" + provider_id[2:] + ".debug"
+        self.runtime_manifest = self.handoff("runtime", "libsample", [
+            (self.library_path, provider.read_bytes(), None),
+            (self.soname_path, None, "libsample.so.0.0.0"),
+            ("usr/bin/launcher", launcher.read_bytes(), None)])
+        self.debug_manifest = self.handoff("debug", "libsample-dbgsym", [
+            (provider_debug, provider_symbols.read_bytes(), None),
+            ("usr/lib/debug/.build-id/" + launcher_id[:2] + "/" + launcher_id[2:] + ".debug",
+             launcher_symbols.read_bytes(), None)], self.runtime_manifest)
+        self.policy["native"]["debug_forwarding"] = {"usr/bin/launcher": {
+            "provider": self.soname_path, "symbol": "main", "source": "forward_main.c"}}
+
+    def test_source_free_launcher_has_explicit_matching_provider_symbols(self):
+        self.forwarding_fixture()
+        pairs = self.validate()["paired_symbols"]
+        launcher = next(item for item in pairs if item["path"] == "usr/bin/launcher")
+        self.assertTrue(launcher["has_debuglink"])
+        self.assertEqual(launcher["debug_forwarding"]["symbol"], "main")
+        self.assertEqual(launcher["debug_forwarding"]["provider"], self.soname_path)
+        self.assertEqual(len(pairs), 2)
+
+    def test_source_free_launcher_requires_the_explicit_contract(self):
+        self.forwarding_fixture()
+        self.policy["native"].pop("debug_forwarding")
+        with self.assertRaisesRegex(ValueError, "lacks DWARF"):
+            self.validate()
+
+    def test_forwarding_keeps_launcher_crc_validation(self):
+        self.forwarding_fixture(corrupt_stub=True)
+        with self.assertRaisesRegex(ValueError, "debuglink CRC differs"):
+            self.validate()
+
+    def test_forwarding_requires_a_real_definition_in_the_provider(self):
+        self.forwarding_fixture(wrong_provider=True)
+        with self.assertRaisesRegex(ValueError, "provider does not define"):
+            self.validate()
+
+    def test_forwarding_requires_source_dwarf_in_the_provider(self):
+        self.forwarding_fixture(no_provider_dwarf=True)
+        with self.assertRaisesRegex(ValueError, "provider symbols.*lack DWARF"):
+            self.validate()
+
+    def test_forwarding_requires_the_imported_function(self):
+        self.forwarding_fixture()
+        self.policy["native"]["debug_forwarding"]["usr/bin/launcher"]["symbol"] = "missing"
+        with self.assertRaisesRegex(ValueError, "launcher does not import"):
+            self.validate()
+
+    def test_forwarding_requires_a_linker_declared_provider_dependency(self):
+        self.forwarding_fixture(missing_needed=True)
+        with self.assertRaisesRegex(ValueError, "not a declared DT_NEEDED SONAME"):
+            self.validate()
 
     def source_archives(self, *, symbols_mutation=None, overlap=False):
         """Build the declared owner tar and receipt around a real compiled sample ELF."""
