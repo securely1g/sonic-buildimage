@@ -2,12 +2,17 @@
 
 These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
 runner for one full VS image job. The default repository is
-`securely1g/sonic-buildimage`; select a job explicitly with `--pr NUMBER` or
-`--master`, and pass `--repo owner/name` to select another repository.
+`securely1g/sonic-buildimage`; use `--master` for the current shared VS pool,
+and pass `--repo owner/name` to select another repository. Same-repository PR
+builds and enabled manual builds use its existing `sonic-vs-source-master`
+label. The workflow's event selects the source revision; the pool name does not
+force PR builds onto master. GitHub assigns an eligible queued job when the
+single runner becomes available.
+
+`--pr NUMBER` remains available for older or separately configured workflows
+that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected custom
+label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
 The optional manager below registers replacements automatically after each job.
-The workflow routes PR jobs to `sonic-vs-source-pr-NUMBER` and push/manual jobs
-to `sonic-vs-source-master`. A runner gets only its selected custom label plus
-GitHub's default `self-hosted`, `linux`, `x64` labels.
 
 ## Prepare a host once
 
@@ -187,17 +192,17 @@ does not clear it. The marker contains configuration and time, never tokens.
 
 Run these as the normal operator who is already authenticated to GitHub with
 repository runner administration access. Keep that login out of `sonic-runner`.
-Inspect the queued runs and cancel obsolete attempts before arming; a PR label
-selects the PR, not an individual commit or run.
+Inspect the queued runs and cancel obsolete attempts before arming. The shared
+label selects the pool, not an individual PR, commit or run.
 
 ```sh
 gh auth status
-gh run list --repo securely1g/sonic-buildimage --workflow bazel-swss-oci.yml --limit 10
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9 --dry-run
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+gh run list --repo securely1g/sonic-buildimage --workflow bazel-oci.yml --limit 10
+python3 /opt/sonic-runner-tools/runner/rearm.py --master --dry-run
+python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
-Use `--master` for a push/manual job. Arm only after reviewing the PR code and
+Use `--master` for the shared PR/manual pool. Arm only after reviewing the PR code and
 workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
@@ -256,7 +261,7 @@ the reviewed checkout, then recheck capacity and arm the desired queued run:
 ```sh
 sudo install -m 0755 -o root -g root tools/ci/runner/preflight.py tools/ci/runner/rearm.py /opt/sonic-runner-tools/runner/
 sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.py
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
 The additional check prevents registration when extraction uses the remaining

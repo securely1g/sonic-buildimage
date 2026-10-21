@@ -72,17 +72,27 @@ RUN post_run_cleanup '${IMAGENAME}'
 
 # Add the auto-generate code if it is not added in the target Dockerfile
 if [ ! -f $DOCKERFILE_TARGET ] || ! grep -q "Auto-Generated for buildinfo" $DOCKERFILE_TARGET; then
-    # Insert the docker build script before the RUN command
-    LINE_NUMBER=$(grep -Fn -m 1 'RUN' $DOCKERFILE | cut -d: -f1)
+    # Each stage starts with its own filesystem. Install hooks before that
+    # stage's first RUN, including runtime stages following a compiler stage.
+    # The final rsync/scratch stage only copies the cleaned image contents.
     COPY_BASE_LINE_NUMBER=$(grep -n -m 1 'FROM \$BASE$' $DOCKERFILE | cut -d: -f1)
     if [ -z "$COPY_BASE_LINE_NUMBER" ]; then
         COPY_BASE_LINE_NUMBER=$(grep -n -m 1 'FROM scratch$' $DOCKERFILE | cut -d: -f1)
     fi
     TEMP_FILE=$(mktemp)
     if [ -n "$COPY_BASE_LINE_NUMBER" ]; then
-        awk -v prescript="${DOCKERFILE_PRE_SCRIPT}" -v linenumber=$LINE_NUMBER -v postscript="${DOCKERFILE_POST_SCRIPT}" -v copybaselinenumber=$COPY_BASE_LINE_NUMBER 'NR==copybaselinenumber{print postscript} NR==linenumber{print prescript}1' $DOCKERFILE > $TEMP_FILE
+        awk -v prescript="${DOCKERFILE_PRE_SCRIPT}" -v postscript="${DOCKERFILE_POST_SCRIPT}" -v copybaselinenumber=$COPY_BASE_LINE_NUMBER '
+            /^FROM / { prepared = 0 }
+            NR == copybaselinenumber { print postscript }
+            /^RUN / && !prepared && NR < copybaselinenumber { print prescript; prepared = 1 }
+            { print }
+        ' $DOCKERFILE > $TEMP_FILE
     else
-        awk -v prescript="${DOCKERFILE_PRE_SCRIPT}" -v linenumber=$LINE_NUMBER 'NR==linenumber{print prescript}1' $DOCKERFILE > $TEMP_FILE
+        awk -v prescript="${DOCKERFILE_PRE_SCRIPT}" '
+            /^FROM / { prepared = 0 }
+            /^RUN / && !prepared { print prescript; prepared = 1 }
+            { print }
+        ' $DOCKERFILE > $TEMP_FILE
 
         # Append the docker build script at the end of the docker file
         echo -e "\nRUN post_run_buildinfo ${IMAGENAME} " >> $TEMP_FILE
