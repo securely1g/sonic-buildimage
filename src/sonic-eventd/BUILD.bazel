@@ -127,3 +127,6 @@ cc_binary(name = "rsyslog_plugin_tests_bin", testonly = True, srcs = ["rsyslog_p
     )
     for name in ["eventd", "eventdb", "rsyslog_plugin"]
 ]
+
+# Package identity belongs to this runtime producer.
+exports_files(["bazel/runtime_packages.json"], visibility = ["//visibility:public"])

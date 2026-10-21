@@ -119,3 +119,6 @@ py_test(
     )
     for name in ["unit_tests", "integration_tests", "listener_tests"]
 ]
+
+# Package identity belongs to this runtime producer.
+exports_files(["bazel/runtime_packages.json"], visibility = ["//visibility:public"])
