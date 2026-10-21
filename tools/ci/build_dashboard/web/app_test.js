@@ -2,7 +2,29 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
+const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows} = require("./app.js");
+
+test("PR coverage follows the latest image attempt, with unmeasured PRs last", () => {
+  const image = {kind: "make-vs", conclusion: "failure", image_build_seconds: null};
+  const run = (number, started_at, jobs = [image], completed_at = null) => ({pr_numbers: [number], started_at, completed_at, jobs});
+  const data = {
+    pull_requests: [1, 2, 3, 4, 5, 6, 7].map(number => ({number})),
+    runs: [
+      run(1, "2026-10-21T02:00:00Z"),
+      run(2, "2026-10-21T01:00:00Z"),
+      run(2, "2026-10-21T03:00:00Z", [{kind: "source"}]),
+      run(3, "2026-10-21T02:00:00Z"),
+      run(4, null, [image], "2026-10-21T04:00:00Z"),
+      run(5, "2026-10-21T05:00:00Z", [{kind: "checks"}]),
+      run(6, null),
+    ],
+  };
+  const rows = coverageRows(data);
+  assert.deepEqual(rows.map(row => row.pr.number), [4, 3, 1, 2, 6, 7, 5]);
+  assert.equal(rows.find(row => row.pr.number === 2).latestImageRun.started_at, "2026-10-21T01:00:00Z");
+  assert.equal(rows.find(row => row.pr.number === 5).latestImageRun, null);
+  assert.deepEqual(data.pull_requests.map(pr => pr.number), [1, 2, 3, 4, 5, 6, 7]);
+});
 
 test("unmeasured and invalid durations never look like fast builds", () => {
   for (const value of [null, undefined, "12", -1, NaN, Infinity]) assert.equal(duration(value), "—");

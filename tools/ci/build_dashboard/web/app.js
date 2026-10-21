@@ -306,8 +306,13 @@ function renderTrend() {
   container.append(svg);
 }
 
+function coverageRows(data) {
+  return prCoverage(data).sort((a, b) => Number(!!b.latestImageRun) - Number(!!a.latestImageRun)
+    || (b.latestImageRun ? runTime(b.latestImageRun) : 0) - (a.latestImageRun ? runTime(a.latestImageRun) : 0)
+    || b.pr.number - a.pr.number);
+}
 function renderCoverage() {
-  const coverage = prCoverage(state.data);
+  const coverage = coverageRows(state.data);
   const counts = summarizePrCoverage(coverage);
   byId("coverage-summary").replaceChildren(...[["success", "Success"], ["failure", "Failed"], ["cancelled", "Cancelled"], ["skipped", "Skipped"]].map(([outcome, label]) => {
     const item = el("div", `coverage-stat ${outcome}`);
@@ -543,4 +548,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows};

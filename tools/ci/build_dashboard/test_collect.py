@@ -134,6 +134,14 @@ class TimingTests(unittest.TestCase):
         value = job()
         value["steps"][0]["name"] = "Build the VS image and both OCI container variants"
         self.assertEqual(collector.normalize_job(value, REPO, 10)["image_build_seconds"], 600)
+    def test_current_vs_and_oci_step_preserves_image_outcomes(self):
+        for conclusion in ("success", "failure", "cancelled", "skipped"):
+            with self.subTest(conclusion=conclusion):
+                value = job(conclusion)
+                value["steps"][0]["name"] = "Build the VS image and both OCI container variants"
+                normalized = collector.normalize_job(value, REPO, 10)
+                self.assertEqual(normalized["image_build_seconds"], 600 if conclusion == "success" else None)
+                self.assertEqual(normalized["image_build_elapsed_seconds"], None if conclusion == "skipped" else 600)
 
     def test_fields_and_urls_are_allowlisted(self):
         value = job()
