@@ -186,12 +186,23 @@ class ActionAuditTest(unittest.TestCase):
                            'CXX="$EXT_BUILD_ROOT/bin/g++" LD="$EXT_BUILD_ROOT/bin/ld" '
                            'RANLIB="" CPPFLAGS="-I$EXT_BUILD_DEPS/sdk/include" ')
             recipe = "symlink_to_dir " + make + " $EXT_BUILD_DEPS/bin/ False\n"
-            recipe += "\n".join(environment + make + " " + target + " -j4 PREFIX=$INSTALLDIR"
+            recipe += "\n".join(environment + make + " " + target +
+                                " -f generated_sources/Makefile -j4 PREFIX=$INSTALLDIR"
                                 for target in ("all", "install"))
             with self.subTest(architecture=architecture):
                 self.assertEqual(self.audit(output, [], file_contents=recipe, owner=owner,
                                             executable=True)["foreign_source_builds"][0]["owner"], owner)
             for bad in (recipe.replace(" all ", " package "),
+                        recipe.replace(" all ", " binary "),
+                        recipe.replace("-f generated_sources/Makefile", "-f packaging.mk"),
+                        recipe.replace("-f generated_sources/Makefile", "-f ../generated_sources/Makefile"),
+                        recipe.replace("-f generated_sources/Makefile", "-f /generated_sources/Makefile"),
+                        recipe.replace("-f generated_sources/Makefile", "-f"),
+                        recipe.replace("-f generated_sources/Makefile",
+                                       "-f generated_sources/Makefile -f generated_sources/Makefile"),
+                        recipe.replace("-f generated_sources/Makefile",
+                                       "-f generated_sources/Makefile; make package"),
+                        recipe.replace("-f generated_sources/Makefile", '-f "$(touch bad)"'),
                         recipe.replace("PREFIX=$INSTALLDIR", "PREFIX=/unreviewed"),
                         recipe.replace('CFLAGS="-g -O2"', 'MAKEFLAGS="-f packaging.mk"'),
                         recipe.replace('CFLAGS="-g -O2"', 'CFLAGS="$(touch bad)"'),
@@ -204,6 +215,12 @@ class ActionAuditTest(unittest.TestCase):
                                           (owner, output.replace("/dash_build_foreign_cc/", "/other/"))):
                 with self.assertRaises(ValueError):
                     self.audit(bad_output, [], file_contents=recipe, owner=bad_owner, executable=True)
+
+    def test_other_foreign_producers_cannot_select_the_dash_makefile(self):
+        make = ("$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/"
+                "tools/build_tools/configure_runtime_amd64/bin/make")
+        with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+            self.foreign(make + " all -f generated_sources/Makefile")
 
     def test_foreign_owner_does_not_allow_direct_make_or_other_make_tools(self):
         for command, arguments in (("make all", ()), ("echo test", ("make", "all"))):
