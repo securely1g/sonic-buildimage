@@ -115,6 +115,52 @@ class ActionAuditTest(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                 self.foreign(make, **kwargs)
 
+    def test_p4c_uses_its_actual_foreign_output_directory(self):
+        owner = "@@p4c++_repo_rules+p4c_source//:build"
+        output = "bazel-out/k8-fastbuild/bin/external/p4c++_repo_rules+p4c_source/p4c_foreign_cc/build_script.sh"
+        for architecture in ("amd64", "arm64"):
+            make = ("$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/"
+                    "tools/build_tools/configure_runtime_" + architecture + "/bin/make")
+            recipe = "symlink_to_dir " + make + " $EXT_BUILD_DEPS/bin/ False\n"
+            recipe += "$EXT_BUILD_ROOT/external/cmake/bin/cmake -DCMAKE_MAKE_PROGRAM=" + make
+            with self.subTest(architecture=architecture):
+                self.assertEqual(self.audit(output, [], file_contents=recipe, owner=owner,
+                                            executable=True)["packaging_wrappers"], [])
+                with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                    self.audit(output.replace("/p4c_foreign_cc/", "/build_foreign_cc/"), [],
+                               file_contents=recipe, owner=owner, executable=True)
+
+    def test_dash_declared_compiler_environment_and_install_prefix(self):
+        owner = "@@sonic-dash+//dash-pipeline/SAI:dash_build"
+        output = "bazel-out/k8-fastbuild/bin/external/sonic-dash+/dash-pipeline/SAI/dash_build_foreign_cc/build_script.sh"
+        for architecture in ("amd64", "arm64"):
+            make = ("$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/"
+                    "tools/build_tools/configure_runtime_" + architecture + "/bin/make")
+            environment = ('ARFLAGS="" AR_FLAGS="" ASFLAGS="" CFLAGS="-g -O2" '
+                           'CXXFLAGS="-g -O2" LDFLAGS="-L$EXT_BUILD_DEPS/sdk/lib" '
+                           'AR="$EXT_BUILD_ROOT/bin/ar" CC="$EXT_BUILD_ROOT/bin/gcc" '
+                           'CXX="$EXT_BUILD_ROOT/bin/g++" LD="$EXT_BUILD_ROOT/bin/ld" '
+                           'RANLIB="" CPPFLAGS="-I$EXT_BUILD_DEPS/sdk/include" ')
+            recipe = "symlink_to_dir " + make + " $EXT_BUILD_DEPS/bin/ False\n"
+            recipe += "\n".join(environment + make + " " + target + " -j4 PREFIX=$INSTALLDIR"
+                                for target in ("all", "install"))
+            with self.subTest(architecture=architecture):
+                self.assertEqual(self.audit(output, [], file_contents=recipe, owner=owner,
+                                            executable=True)["foreign_source_builds"][0]["owner"], owner)
+            for bad in (recipe.replace(" all ", " package "),
+                        recipe.replace("PREFIX=$INSTALLDIR", "PREFIX=/unreviewed"),
+                        recipe.replace('CFLAGS="-g -O2"', 'MAKEFLAGS="-f packaging.mk"'),
+                        recipe.replace('CFLAGS="-g -O2"', 'CFLAGS="$(touch bad)"'),
+                        recipe.replace('CFLAGS="-g -O2"', 'CFLAGS="`touch bad`"'),
+                        recipe + "\ndpkg-deb --build tree output", recipe + "\ndpkg-buildpackage -b",
+                        "make install PREFIX=$INSTALLDIR"):
+                with self.subTest(architecture=architecture, recipe=bad), self.assertRaises(ValueError):
+                    self.audit(output, [], file_contents=bad, owner=owner, executable=True)
+            for bad_owner, bad_output in (("@@unreviewed+//:dash_build", output),
+                                          (owner, output.replace("/dash_build_foreign_cc/", "/other/"))):
+                with self.assertRaises(ValueError):
+                    self.audit(bad_output, [], file_contents=recipe, owner=bad_owner, executable=True)
+
     def test_foreign_owner_does_not_allow_direct_make_or_other_make_tools(self):
         for command, arguments in (("make all", ()), ("echo test", ("make", "all"))):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
