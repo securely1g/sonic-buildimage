@@ -1,14 +1,20 @@
 load("@base_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("@config_engine_pip//:requirements.bzl", "whl_requirement")
+load("@rules_distroless//apt:defs.bzl", "apt_install")
+load("@rules_distroless//distroless:defs.bzl", "flatten")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
-load("@sonic_build_infra//oci:installed_packages.bzl", "installed_packages")
 load("@sonic_build_infra//python:wheel_layer.bzl", "wheel_layer")
 load("@tar.bzl", "tar")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_install_inputs.bzl", "apt_install_inputs")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:installed_source_metadata.bzl", "installed_source_metadata")
 load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
+load("//tools/bazel/oci:repack_oci.bzl", "repack_oci")
+load("//tools/bazel/oci:rootfs_metadata.bzl", "rootfs_metadata")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+load("//tools/bazel/oci:source_contract.bzl", "source_contract")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -29,9 +35,12 @@ _SOURCE_TARS = {
     "sonic-supervisord-utilities-rs": "//src/sonic-supervisord-utilities-rs:runtime",
 }
 
+# Every source owner supplies its public runtime TAR directly.
+_RUNTIME_TARS = _SOURCE_TARS
+
 sonic_layer(
     name = "source_runtime_original_paths",
-    tars = _SOURCE_TARS.values(),
+    tars = _RUNTIME_TARS.values(),
 )
 
 # Common's package installs its default database configuration under /var/run.
@@ -47,7 +56,7 @@ normalize_layer(
     }),
     modes = {"run/redis/sonic-db/database_config.json": "0644"},
     root_owned = True,
-    tars = _SOURCE_TARS.values(),
+    tars = _RUNTIME_TARS.values(),
 )
 
 filegroup(
@@ -143,27 +152,68 @@ filegroup(
     output_group = "selection",
 )
 
-sonic_layer(
-    name = "debian_runtime_filtered",
-    tars = [":debian_runtime"],
-)
+_ARCH = select({
+    "@platforms//cpu:x86_64": "amd64",
+    "@platforms//cpu:arm64": "arm64",
+})
 
-installed_packages(
-    name = "installed_packages",
-    apt_receipt = ":debian_runtime_selection",
-    architecture = select({
-        "@platforms//cpu:x86_64": "amd64",
-        "@platforms//cpu:arm64": "arm64",
-    }),
-    base = "//dockers/docker-base-trixie:docker-base-trixie",
-    controls = select({
-        "@platforms//cpu:" + cpu: [label + ":control" for label in APT_INPUTS["config_engine_debian"][arch].values()]
+apt_install_inputs(
+    name = "debian_install_inputs",
+    packages = select({
+        "@platforms//cpu:" + cpu: {key: label + ":deb" for key, label in APT_INPUTS["config_engine_debian"][arch].items()}
         for cpu, arch in [
             ("x86_64", "amd64"),
             ("arm64", "arm64"),
         ]
     }),
-    normalization_receipt = ":runtime_path_normalization",
+    selection = ":debian_runtime_selection",
+)
+
+# Debian keeps the real CLI package controls; only its unused plugin location
+# is excluded. Source libnl supplies the complete CLI at its own PKGLIBDIR.
+tar(
+    name = "debian_install_configuration",
+    srcs = ["//dockers/docker-config-engine-trixie/bazel:dpkg_02_source_libnl"],
+    mtree = ["etc/dpkg/dpkg.cfg.d/02_source_libnl type=file mode=0644 uid=0 gid=0 time=0 content=$(location //dockers/docker-config-engine-trixie/bazel:dpkg_02_source_libnl)"],
+)
+
+flatten(
+    name = "debian_install_base",
+    deduplicate = True,
+    tars = [
+        "//dockers/docker-base-trixie:rootfs",
+        ":debian_install_configuration",
+    ],
+)
+
+apt_install(
+    name = "configured_debian",
+    architecture = _ARCH,
+    base = ":debian_install_base",
+    bwrap = "//tools/bazel/oci:bubblewrap",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    packages = select({
+        "@platforms//cpu:" + cpu: [label + ":deb" for label in APT_INPUTS["config_engine_debian"][arch].values()]
+        for cpu, arch in [
+            ("x86_64", "amd64"),
+            ("arm64", "arm64"),
+        ]
+    }),
+    packages_manifest = ":debian_install_inputs",
+    tags = ["manual"],
+)
+
+filegroup(
+    name = "installation_receipt",
+    srcs = [":configured_debian"],
+    output_group = "receipt",
+)
+
+source_contract(
+    name = "source_contract",
+    architecture = _ARCH,
+    expectations = "//dockers/docker-config-engine-trixie/bazel:source_paths.json",
+    mode = "provenance",
     owner_metadata = [
         "@sonic_swss_common//:runtime_packages.json",
         "@libyang//:runtime_packages.json",
@@ -179,26 +229,56 @@ installed_packages(
         "libnl3": "@image_source_modules//:libnl3.MODULE.bazel",
         "sonic-buildimage": "@image_source_modules//:sonic-buildimage.MODULE.bazel",
     },
-    source_spec = "//dockers/docker-config-engine-trixie/bazel:source_paths.json",
-    sources = _SOURCE_TARS,
+    sources = _RUNTIME_TARS,
+)
+
+installed_source_metadata(
+    name = "runtime_package_metadata",
+    allow_same_owner_overlays = True,
+    architecture = _ARCH,
+    installation = ":installation_receipt",
+    payloads = _RUNTIME_TARS,
+    rootfs = ":configured_debian",
+    runtime_layer = ":source_runtime",
+    spec = ":source_contract",
 )
 
 filegroup(
-    name = "runtime_package_metadata",
-    srcs = [":installed_packages"],
-    output_group = "metadata",
+    name = "source_apt_preferences",
+    srcs = [":runtime_package_metadata"],
+    output_group = "apt_preferences",
 )
 
 tar(
-    name = "installed_package_state",
+    name = "source_provenance",
     srcs = [
-        ":installed_packages",
         ":runtime_package_metadata",
+        ":source_apt_preferences",
     ],
     mtree = [
-        "var/lib/dpkg/status uid=0 gid=0 mode=0644 time=0 type=file content=$(location :installed_packages)",
-        "usr/share/sonic/bazel/config-engine-packages.json uid=0 gid=0 mode=0644 time=0 type=file content=$(location :runtime_package_metadata)",
+        "etc/apt/preferences.d type=dir mode=0755 uid=0 gid=0 time=0",
+        "etc/apt/preferences.d/sonic-source-config-engine type=file mode=0644 uid=0 gid=0 time=0 content=$(location :source_apt_preferences)",
+        "usr/share/sonic/bazel type=dir mode=0755 uid=0 gid=0 time=0",
+        "usr/share/sonic/bazel/config-engine-packages.json type=file mode=0644 uid=0 gid=0 time=0 content=$(location :runtime_package_metadata)",
     ],
+)
+
+flatten(
+    name = "complete_filesystem",
+    deduplicate = True,
+    tars = [
+        ":configured_debian",
+        ":source_runtime",
+        ":python_and_models",
+        ":config_files",
+        ":source_provenance",
+    ],
+)
+
+rootfs_metadata(
+    name = "rootfs",
+    src = ":complete_filesystem",
+    tars = ["//dockers/docker-base-trixie:rootfs"] + _SOURCE_TARS.values(),
 )
 
 alias(
@@ -206,17 +286,24 @@ alias(
     actual = "//dockers/docker-config-engine-trixie/config:labels",
 )
 
+repack_oci(
+    name = "configured_image",
+    base = "//dockers/docker-base-trixie:docker-base-trixie",
+    execution_environment = "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c",
+    platform = select({
+        "@platforms//cpu:x86_64": "linux/amd64",
+        "@platforms//cpu:arm64": "linux/arm64",
+    }),
+    tars = [":rootfs"],
+)
+
 oci_image(
     name = "docker-config-engine-trixie",
-    base = "//dockers/docker-base-trixie:docker-base-trixie",
-    labels = "//dockers/docker-config-engine-trixie/config:labels",
-    tars = [
-        ":debian_runtime_filtered",
-        ":source_runtime",
-        ":python_and_models",
-        "//dockers/docker-config-engine-trixie/config:files",
-        ":installed_package_state",
-    ],
+    base = ":configured_image",
+    cmd = [],
+    entrypoint = [],
+    labels = ":labels",
+    workdir = "/",
 )
 
 debug_symbols_layer(

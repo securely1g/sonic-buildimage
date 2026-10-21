@@ -5,6 +5,9 @@ def _impl(ctx):
     args = ctx.actions.args()
     args.add("--expectations", ctx.file.expectations)
     args.add("--output", output)
+    args.add("--mode", ctx.attr.mode)
+    if ctx.attr.architecture:
+        args.add("--architecture", ctx.attr.architecture)
     inputs = [ctx.file.expectations]
     for target in ctx.attr.owner_metadata:
         files = target[DefaultInfo].files.to_list()
@@ -33,6 +36,8 @@ def _impl(ctx):
 _contract = rule(
     implementation = _impl,
     attrs = {
+        "mode": attr.string(default = "contract", values = ["contract", "provenance"]),
+        "architecture": attr.string(),
         "expectations": attr.label(allow_single_file = [".json"], mandatory = True),
         "owner_metadata": attr.label_list(allow_files = [".json"]),
         "source_modules": attr.string_keyed_label_dict(allow_files = True),
