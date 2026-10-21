@@ -124,6 +124,53 @@ class AptSelectionTest(unittest.TestCase):
         fixture.manifest.write_text(json.dumps(manifest))
         return manifest
 
+    def source_receipt(self, fixture):
+        """A source-only receipt supplies the driver without a synthetic Make import."""
+        policy = json.loads(fixture.policy.read_bytes())
+        policy["retained_source"] = "source"
+        fixture.policy.write_text(json.dumps(policy))
+        control = {key: "" for key in ("Depends", "Pre-Depends", "Provides", "Multi-Arch")}
+        control.update(fixture.retained["local-driver"]["control"])
+        control["Multi-Arch"] = "no"
+        receipt = {"schema": 2, "kind": "bazel_source", "image": policy["image"],
+            "architecture": fixture.architecture, "distribution": "trixie", "contract_sha256": "b" * 64,
+            "base_manifest_digest": fixture.manifest_digest, "module_file_sha256": {"driver": "c" * 64},
+            "packages": [{"package": "local-driver", "version": "2.0", "architecture": fixture.architecture,
+                "control_fields": control, "input_tar_sha256": "a" * 64,
+                "source": {"module": "driver", "version": "1.0-" + "d" * 40,
+                           "commit": "d" * 40, "target": "@driver//:runtime"},
+                "files": {"usr/lib/driver.so": {"kind": "file"}}}]}
+        fixture.manifest.write_text(json.dumps(receipt))
+        return receipt
+
+    def test_source_receipt_satisfies_dependencies_without_imported_packages(self):
+        fixture = Fixture(self.root)
+        self.source_receipt(fixture)
+        paths, receipt = fixture.select()
+        self.assertEqual(paths, [fixture.paths[fixture.addition]])
+        self.assertEqual(receipt["skipped_make"], [])
+        self.assertIsNone(receipt["make_manifest_sha256"])
+        self.assertEqual(receipt["skipped_source"][0]["package"], "local-driver")
+        self.assertEqual(receipt["source_receipt_sha256"], hashlib.sha256(fixture.manifest.read_bytes()).hexdigest())
+        self.assertEqual(receipt["dependency_check"]["status"], "satisfied")
+        self.assertEqual(receipt["source_packages"][0]["source"]["target"], "@driver//:runtime")
+
+    def test_source_receipt_is_bound_to_base_architecture_and_runtime_metadata(self):
+        fixture = Fixture(self.root)
+        original = self.source_receipt(fixture)
+        for key, value in (("base_manifest_digest", "sha256:" + "0" * 64), ("architecture", "arm64")):
+            with self.subTest(key=key):
+                fixture.manifest.write_text(json.dumps({**original, key: value}))
+                with self.assertRaises(ValueError):
+                    fixture.select()
+        fixture.manifest.write_text(json.dumps(original))
+        _, runtime = fixture.select()
+        metadata = fixture.root / "runtime-receipt.json"
+        for value in ({**runtime, "source_receipt_sha256": "e" * 64}, {**runtime, "variant": "debug"}):
+            metadata.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "matching runtime source metadata"):
+                fixture.select(variant="debug", base_package_metadata=metadata)
+
     def test_source_controls_satisfy_imports_without_claiming_make_payloads(self):
         """A source target satisfies a Make dependency and keeps its own TAR provenance."""
         fixture = Fixture(self.root)

@@ -3,7 +3,7 @@
   "image": "docker-syncd-vs",
   "architecture": "amd64",
   "distribution": "trixie",
-  "description": "Reviewed source-owner targets and installed paths for the Syncd image. The source-built config-engine base supplies the other project libraries, Python packages and service tools. Only PI, BMv2, P4C and DASH SAI retain their cached package inputs.",
+  "description": "Reviewed source-owner TAR targets and installed paths for Syncd, including source-built PI, BMv2, P4C and DASH SAI. The source config-engine base supplies the other project libraries, Python packages and service tools.",
   "packages": [
     {
       "package": "libswsscommon",
@@ -221,6 +221,109 @@
       },
       "required_paths": {
         "usr/lib/x86_64-linux-gnu/libnl-route-3.a": "file"
+      }
+    },
+    {
+      "package": "p4lang-pi",
+      "version": "0.1.3-2",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "p4lang-pi",
+        "Version": "0.1.3-2",
+        "Architecture": "amd64",
+        "Depends": "libabsl20240722 (>= 20240722.0-1), libc6 (>= 2.34), libgcc-s1 (>= 3.0), libgrpc++1.51t64 (>= 1.51.1), libgrpc29t64 (>= 1.51.1), libprotobuf32t64 (>= 3.21.12), libreadline8t64 (>= 6.0), libstdc++6 (>= 14), python3:any, libboost1.83-dev, libboost-system1.83-dev, libboost-thread1.83-dev, libprotobuf-dev, libprotoc-dev, protobuf-compiler, libgrpc++-dev, libgrpc-dev, protobuf-compiler-grpc",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "p4lang-pi",
+        "version": "0.1.3.sonic.1",
+        "target": "@p4lang_pi//:runtime",
+        "release": "0.1.3"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libpi.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libpigrpcserver.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libpi.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libpigrpcserver.so.0.0.0": "elf"
+      }
+    },
+    {
+      "package": "p4lang-bmv2",
+      "version": "1.15.0-9",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "p4lang-bmv2",
+        "Version": "1.15.0-9",
+        "Architecture": "amd64",
+        "Depends": "libboost-filesystem1.83.0 (>= 1.83.0), libboost-program-options1.83.0 (>= 1.83.0), libboost-thread1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libgmp10 (>= 2:6.3.0+dfsg), libgrpc++1.51t64 (>= 1.51.1), libgrpc29t64 (>= 1.51.1), libnanomsg5 (>= 1.1.5), libpcap0.8t64 (>= 1.5.1), libprotobuf32t64 (>= 3.21.12), libstdc++6 (>= 14), libthrift-0.19.0t64 (>= 0.19.0-1~), p4lang-pi (>= 0.1.3), python3:any, libtool, pkg-config, protobuf-compiler, protobuf-compiler-grpc, python-thrift | python3-thrift | python3-thriftpy, thrift-compiler",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "p4lang-bmv2",
+        "version": "1.15.0.sonic.1",
+        "target": "@p4lang_bmv2//:runtime",
+        "release": "1.15.0"
+      },
+      "required_paths": {
+        "usr/bin/simple_switch": "elf",
+        "usr/bin/simple_switch_grpc": "elf",
+        "usr/lib/x86_64-linux-gnu/libbmpi.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libbmpi.so.0.0.0": "elf"
+      }
+    },
+    {
+      "package": "p4lang-p4c",
+      "version": "1.2.4.2-3",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "p4lang-p4c",
+        "Version": "1.2.4.2-3",
+        "Architecture": "amd64",
+        "Depends": "libboost-iostreams1.83.0 (>= 1.83.0), libc6 (>= 2.38), libgc1 (>= 1:8.0), libgcc-s1 (>= 3.4), libstdc++6 (>= 14), python3:any, cpp, libboost1.83-all-dev | libboost-all-dev (>= 1.83), libfl-dev, libgc-dev, libgmp-dev, libbpf-dev, pkg-config, tcpdump, libelf-dev, llvm, clang, iproute2, net-tools, python3-pyroute2, python3-ply, python3-setuptools, python3-thrift, libprotobuf-dev, libprotoc-dev, protobuf-compiler, libgrpc-dev, libgrpc++-dev, protobuf-compiler-grpc, libthrift-dev, thrift-compiler, p4lang-bmv2",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "p4c",
+        "version": "1.2.4.2.sonic.1",
+        "target": "@p4c//:p4c_pkg",
+        "release": "1.2.4.2"
+      },
+      "required_paths": {
+        "usr/bin/p4c-bm2-ss": "elf"
+      }
+    },
+    {
+      "package": "libsai",
+      "version": "1.0.0",
+      "architecture": "amd64",
+      "control_fields": {
+        "Package": "libsai",
+        "Version": "1.0.0",
+        "Architecture": "amd64",
+        "Depends": "",
+        "Pre-Depends": "",
+        "Provides": "",
+        "Multi-Arch": "no"
+      },
+      "source": {
+        "module": "sonic-dash",
+        "version": "0.0.1-3585538feac35aa64632ee9af7551fbf0be58f01",
+        "target": "@sonic_dash//:runtime",
+        "commit": "3585538feac35aa64632ee9af7551fbf0be58f01"
+      },
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsai.so": "elf",
+        "usr/lib/x86_64-linux-gnu/libdashsaimetadata.so": "elf",
+        "etc/dash/dash_pipeline.json": "file",
+        "etc/dash/dash_pipeline_p4rt.json": "file",
+        "etc/dash/dash_pipeline_p4rt.txt": "file",
+        "etc/dash/dash_pipeline_ir.json": "file"
       }
     }
   ]
