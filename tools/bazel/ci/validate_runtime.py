@@ -116,10 +116,13 @@ def probe_input(report, policy):
             'debug_pairs': pairs, 'policy': policy}
 
 
-def container_arguments(image, name, probe, writable, redis_server=None):
+def container_arguments(image, name, probe, writable, redis_server=None, *, variant='runtime'):
+    require(variant in ('runtime', 'debug'), 'Unknown installed-image variant')
+    # GDB expands large P4 compiler symbol tables beyond the runtime probe budget.
+    memory = '8g' if variant == 'debug' else '4g'
     args = ['run', '--rm', '--name', name, '--interactive', '--network=none',
             '--cap-drop=ALL', '--security-opt=no-new-privileges', '--read-only',
-            '--pids-limit=128', '--memory=4g', '--cpus=2',
+            '--pids-limit=128', '--memory=' + memory, '--cpus=2',
             '--mount', 'type=bind,src=' + str(probe.resolve()) + ',dst=/probe/runtime_smoke.py,readonly']
     if redis_server is not None:
         args += ['--mount', 'type=bind,src=' + str(redis_server.resolve()) + ',dst=/probe/redis-server,readonly',
@@ -175,7 +178,7 @@ def validate(runtime, debug, report_path, policy_path, output, redis_server=None
                 image, config, diagnostics = load_archive(archive, tag, expected['config_digest'])
                 verify_loaded_image(image, config, expected['config_digest'])
                 require(image['Architecture'] == policy['architecture'] and image['Os'] == 'linux', 'Loaded platform differs')
-                args = container_arguments(image['Id'], name, script, policy.get('writable_paths', []), redis_copy) + ['--variant', variant]
+                args = container_arguments(image['Id'], name, script, policy.get('writable_paths', []), redis_copy, variant=variant) + ['--variant', variant]
                 result = subprocess.run(['docker', *args], input=json.dumps(inputs), text=True,
                                         capture_output=True, timeout=1800)
                 try:
