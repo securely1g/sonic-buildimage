@@ -15,6 +15,7 @@ import tarfile
 from debian.deb822 import Deb822
 from sonic_apt import dependencies, selection
 from tools.bazel.oci.oci_layout import validate_layout
+from tools.bazel.oci.package_contract import receipt_records
 from tools.bazel.oci.normalize_layer import normalized_member, normalized_path
 
 
@@ -40,7 +41,7 @@ def inventory_digest(records):
     return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def build(base, apt_receipt, controls, source_spec, sources, architecture, normalization_receipt=None, *, retained_manifest=None):
+def build(base, apt_receipt, controls, source_spec, sources, architecture, normalization_receipt=None, *, retained_manifest=None, source_receipt=None):
     layout = validate_layout(base, "linux/" + architecture)
     baseline = selection.base_packages(layout.layers, architecture=architecture)
     original = None
@@ -82,6 +83,7 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture, norma
     for name, fields in available.items():
         records[name] = dict(fields, Status="install ok installed")
     spec = json.loads(source_spec.read_text())
+    contract_document = dict(spec)
     # Mixed source/imported images already have a checked package contract.
     # Reuse it instead of asking the image to maintain a second source list.
     if isinstance(spec.get("packages"), list):
@@ -94,6 +96,7 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture, norma
         } for item in items}
     require(spec.get("schema") == 1 and set(spec["packages"]) == set(sources),
             "source package contract and declared payloads differ")
+    require(retained_manifest is None or source_receipt is None, "ambiguous source receipt inputs")
     retained_sources = {}
     if retained_manifest is not None:
         retained = json.loads(retained_manifest.read_text())
@@ -115,6 +118,14 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture, norma
         retained_sources = {item["package"]: item for item in retained["source_packages"]}
         require(len(retained_sources) == len(retained["source_packages"]) and set(retained_sources) == set(sources),
                 "retained source inventory differs from the declared payloads")
+    if source_receipt is not None:
+        receipt = json.loads(source_receipt.read_bytes())
+        require(receipt.get("contract_sha256") == sha(source_spec) and
+                receipt.get("base_manifest_digest") == layout.descriptor["digest"] and
+                apt.get("source_receipt_sha256") == sha(source_receipt),
+                "source receipt differs from the declared contract, base or APT selection")
+        retained_sources = {item["package"]: item for item in receipt_records(receipt, contract_document)}
+    if retained_sources:
         pending = dict(records)
         for name, item in retained_sources.items():
             expected = spec["packages"][name]
@@ -232,6 +243,7 @@ def main():
     parser.add_argument("--control", action="append", type=Path, default=[])
     parser.add_argument("--source", action="append", default=[])
     parser.add_argument("--retained-manifest", type=Path)
+    parser.add_argument("--source-receipt", type=Path)
     parser.add_argument("--status", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
     args = parser.parse_args()
@@ -239,7 +251,7 @@ def main():
     require(len(sources) == len(args.source), "duplicate source package")
     status, receipt = build(args.base, args.apt_receipt, args.control, args.source_spec,
                             {name: Path(path) for name, path in sources.items()}, args.architecture,
-                            retained_manifest=args.retained_manifest,
+                            retained_manifest=args.retained_manifest, source_receipt=args.source_receipt,
                             normalization_receipt=args.normalization_receipt)
     args.status.write_text(status)
     args.receipt.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")

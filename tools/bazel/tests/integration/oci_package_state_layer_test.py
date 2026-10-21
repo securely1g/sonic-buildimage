@@ -60,13 +60,14 @@ class CommittedPackageStateTest(unittest.TestCase):
                                 "mode": 0o777, "uid": 0, "gid": 0}])
         self.assertEqual((OWNER / "config/openssh-client.conf").read_bytes(), b"x /tmp/ssh-*\n")
 
-    def test_only_cached_p4_packages_are_imported_and_source_syncd_owns_its_init_file(self):
+    def test_all_p4_packages_are_source_owned_and_syncd_owns_its_init_file(self):
         """The service links stay bound to the same init bytes after its producer changes."""
         contract = json.loads((OWNER / "config/runtime_package_state.json").read_bytes())
         make = contract["make_package_state_inputs"]
-        self.assertEqual(set(make), {
-            "libsai", "p4lang-bmv2", "p4lang-p4c", "p4lang-pi",
-        })
+        self.assertEqual(make, {})
+        sources = json.loads((OWNER / "config/source_packages.json").read_bytes())
+        self.assertTrue({"libsai", "p4lang-bmv2", "p4lang-p4c", "p4lang-pi"}.issubset(
+            {record["package"] for record in sources["packages"]}))
         self.assertEqual(contract["source_package_files"]["etc/init.d/syncd"]["package"], "syncd-vs")
 
     def test_historical_reference_matches_legacy_dockerfile(self):
@@ -187,6 +188,20 @@ class PackageStateLayerTest(unittest.TestCase):
         self.assertEqual(files["usr/share/doc/tool-old/copyright"]["sha256"], hashlib.sha256(self.license).hexdigest())
         with tarfile.open(self.output, "r:") as archive:
             self.assertTrue(all(member.mtime == 0 for member in archive))
+
+    def test_source_owned_state_needs_no_make_manifest_and_rejects_changed_bytes(self):
+        self.policy.update(retained_source="source", features={})
+        state = json.loads(self.contract.read_bytes())
+        state["make_package_state_inputs"] = {}
+        state["source_package_files"] = state.pop("make_package_files")
+        state["source_package_files"]["etc/init.d/tool"]["package"] = "libexample"
+        self.contract.write_text(json.dumps(state))
+        self.make_manifest = None
+        self.mutate(self.selection, lambda value: value.update(make_manifest_sha256=None))
+        self.assertEqual(self.build()["links_checked"], 3)
+        self.runtime_layer.write_bytes(tar_bytes([("etc/init.d/tool", b"changed init", 0o755)]))
+        with self.assertRaisesRegex(ValueError, "package state file changed"):
+            self.build()
 
     def test_changed_owner_control_is_rejected(self):
         """Require review when a package supplying generated state changes its control metadata."""

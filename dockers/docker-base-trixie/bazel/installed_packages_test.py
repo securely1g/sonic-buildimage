@@ -3,12 +3,14 @@
 import hashlib
 import io
 import json
+import struct
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
 
 from installed_packages import build, inventory_digest
+from tools.bazel.oci import package_contract
 
 
 class InstalledPackagesTest(unittest.TestCase):
@@ -177,6 +179,77 @@ class InstalledPackagesTest(unittest.TestCase):
             libexample=source["control_fields"], **{"cached-runtime": imported})
         self.receipt.write_text(json.dumps(apt))
         return path
+
+    def source_receipt(self):
+        """Assemble a real source receipt with normalized installed ELF ownership."""
+        contents = bytearray(64)
+        contents[:6] = b"\x7fELF\x02\x01"
+        struct.pack_into("<HH", contents, 16, 3, 62)
+        self.payload = self.tar("native-source.tar", {"usr/lib/libexample.so": bytes(contents)})
+        fields = {key: "" for key in package_contract.CONTROL_FIELDS}
+        fields.update(Package="libexample", Version="2.0", Architecture="amd64")
+        fields["Multi-Arch"] = "no"
+        commit = "a" * 40
+        version = "1.0-" + commit
+        record = {"package": "libexample", "version": "2.0", "architecture": "amd64",
+            "control_fields": fields,
+            "source": {"module": "example", "version": version, "commit": commit, "target": "@example//:runtime"},
+            "required_paths": {"usr/lib/libexample.so": "elf"},
+            "path_modes": {"usr/lib/libexample.so": 0o2755},
+            "path_owners": {"usr/lib/libexample.so": {"uid": 0, "gid": 104}}}
+        self.spec.write_text(json.dumps({"schema": 1, "image": "example", "architecture": "amd64",
+                                        "distribution": "trixie", "packages": [record]}))
+        module = self.root / "MODULE.bazel"
+        module.write_text('module(name="example", version="' + version + '")\n')
+        aliases = self.root / "aliases.tar"
+        with tarfile.open(aliases, "w") as archive:
+            for name, entry in package_contract.normalization.DIRECTORY_ALIASES.items():
+                directory = tarfile.TarInfo(entry["target"])
+                directory.type, directory.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(directory)
+                link = tarfile.TarInfo(name)
+                link.type, link.mode, link.linkname = tarfile.SYMTYPE, 0o777, entry["linkname"]
+                archive.addfile(link)
+        index = json.loads((self.base / "index.json").read_bytes())
+        manifest = json.loads((self.blobs / index["manifests"][0]["digest"].removeprefix("sha256:")).read_bytes())
+        config = json.loads((self.blobs / manifest["config"]["digest"].removeprefix("sha256:")).read_bytes())
+        layer = self.blob(aliases.read_bytes())
+        manifest["layers"].append(layer)
+        config["rootfs"]["diff_ids"].append(layer["digest"])
+        manifest["config"] = self.blob(json.dumps(config).encode())
+        index["manifests"] = [self.blob(json.dumps(manifest).encode())]
+        (self.base / "index.json").write_text(json.dumps(index))
+        receipt = package_contract.assemble(self.spec, {"libexample": self.payload}, {"example": module},
+            self.base, self.root / "normalized.tar", package_targets={"libexample": "@example//:runtime"})
+        path = self.root / "source-receipt.json"
+        path.write_bytes(package_contract.json_bytes(receipt))
+        apt = json.loads(self.receipt.read_bytes())
+        apt.update(variant="runtime", make_manifest_sha256=None,
+                   base_manifest_digest=receipt["base_manifest_digest"],
+                   source_receipt_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        apt["dependency_check"]["packages"]["libexample"] = fields
+        self.receipt.write_text(json.dumps(apt))
+        return path, bytes(contents)
+
+    def test_source_only_receipt_preserves_normalized_elf_permissions(self):
+        path, contents = self.source_receipt()
+        status, receipt = self.build(source_receipt=path)
+        self.assertNotIn("X-Sonic-Imported-Deb", status)
+        self.assertEqual(receipt["source_receipt_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(receipt["source_packages"][0]["native_files"], [{
+            "path": "usr/lib/libexample.so", "mode": 0o2755, "uid": 0, "gid": 104,
+            "sha256": hashlib.sha256(contents).hexdigest()}])
+
+    def test_source_only_receipt_rejects_changed_tar_and_contract(self):
+        path, contents = self.source_receipt()
+        original_payload = self.payload
+        self.payload = self.tar("changed.tar", {"usr/lib/libexample.so": contents, "extra": b"unreviewed"})
+        with self.assertRaisesRegex(ValueError, "source TAR differs"):
+            self.build(source_receipt=path)
+        self.payload = original_payload
+        self.spec.write_text(self.spec.read_text() + "\n")
+        with self.assertRaisesRegex(ValueError, "declared contract, base or APT selection"):
+            self.build(source_receipt=path)
 
     def test_mixed_image_records_source_and_cached_package_identities(self):
         path = self.retained()
