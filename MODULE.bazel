@@ -19,7 +19,7 @@ bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "p4lang-pi", version = "0.1.3.sonic.1", repo_name = "p4lang_pi")
 bazel_dep(name = "p4lang-bmv2", version = "1.15.0.sonic.1", repo_name = "p4lang_bmv2")
 bazel_dep(name = "p4c", version = "1.2.4.2.sonic.1")
-bazel_dep(name = "sonic-dash", version = "0.0.1-d753e7a9965428bb499975296bac437d86554978", repo_name = "sonic_dash")
+bazel_dep(name = "sonic-dash", version = "0.0.1-fa2bd5aa1b8afbd742f17b9734a87d9de58d4454", repo_name = "sonic_dash")
 
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.4", repo_name = "libyang_python")
@@ -282,7 +282,8 @@ single_version_override(
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.
-include("//platform/vs/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")
+apt.import_lock(lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json")
+use_repo(apt, "syncd_vs_debian", "syncd_vs_debug_debian")
 
 apt_inputs(
     name = "syncd_apt_inputs",
@@ -291,7 +292,6 @@ apt_inputs(
 
 # Bind the shared library payload receipts to the modules actually resolved by
 # Bazel, even when the owners do not export MODULE.bazel as a public target.
-source_modules = use_repo_rule("//tools/bazel/oci:source_modules.bzl", "source_modules")
 
 source_modules(
     name = "syncd_source_modules",
@@ -309,7 +309,7 @@ source_modules(
 
 # The source owner keeps its install declarations in BUILD/Debian metadata.
 # Expose those exact resolved files to the sandboxed package-contract test.
-source_files = use_repo_rule("//tools/bazel/oci:source_modules.bzl", "source_files")
+source_files = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "source_files")
 
 source_files(
     name = "swss_install_contract",
