@@ -28,7 +28,7 @@ bazel_dep(name = "pigz", version = "2.8.bcr.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # Use the already-published Python binding required by sonic-yang-mgmt.
-bazel_dep(name = "libyang-python", version = "3.1.0-sonic.1", repo_name = "libyang_python")
+bazel_dep(name = "libyang-python", version = "3.1.0.sonic.2", repo_name = "libyang_python")
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
@@ -71,7 +71,7 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-yang-models",
-    version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
+    version = "1.0.1-4a2bf330ac2e99b989268066365103a80f5e5f61",
     repo_name = "sonic_yang_models",
 )
 
@@ -194,12 +194,52 @@ use_repo(apt, "trixie")
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
-    packages = ["liblua5.1-0-dev", "redis-server"],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+    packages = [
+        "liblua5.1-0-dev",
+        "redis-server",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
 use_repo(apt, "eventd_deps")
 
-# Commit suffixes do not sort by source date; keep the selected compiler revision.
+# The source-built base starts with an immutable upstream Debian filesystem.
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+oci.pull(
+    name = "debian_trixie",
+    digest = "sha256:fac46bff2e02f51425b6e33b0e1169f55dfb053d83511ca28aa50c09fd5ed7a4",
+    image = "docker.io/library/debian",
+    platforms = [
+        "linux/amd64",
+        "linux/arm64/v8",
+    ],
+)
+use_repo(oci, "debian_trixie", "debian_trixie_linux_amd64", "debian_trixie_linux_arm64_v8")
+
+include("//dockers/docker-base-trixie/bazel:apt_inputs.MODULE.bazel")
+
+apt_inputs(
+    name = "base_apt_inputs",
+    lock = "//dockers/docker-base-trixie/bazel:apt.lock.json",
+)
+
+bazel_dep(name = "socat", version = "1.8.0.2.sonic.1")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.1")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.3")
+bazel_dep(name = "libyang", version = "3.12.2.sonic.1")
+
+single_version_override(
+    module_name = "sonic-rust-deps",
+    version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
+)
+
+bazel_dep(name = "sonic-fips", version = "0.0.2-da444a14aea8483fcb8df84d0a049bf9db0fb15a", repo_name = "sonic_fips")
+
+# Select the landed Debian GCC toolchains while older consumers retain
+# their previous module declarations.
 single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.17-8baf1ad829c5095297d85148b042145b87d623a3",

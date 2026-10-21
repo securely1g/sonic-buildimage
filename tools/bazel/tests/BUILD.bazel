@@ -1,4 +1,3 @@
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
@@ -6,6 +5,7 @@ load("@config_engine_pip//:requirements.bzl", "requirement")
 load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//src/sonic-config-engine:template.bzl", "sonic_cfggen_template")
 load("//tools/bazel/dpkg:defs.bzl", "PATH_INCLUDES")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
@@ -280,6 +280,7 @@ py_test(
     args = [
         "--common-wheel=$(rootpath //src/sonic-py-common:sonic_py_common_wheel)",
         "--config-wheel=$(rootpath //src/sonic-config-engine:sonic_config_engine_wheel)",
+        "--yang-wheel=$(rootpath //src/sonic-yang-mgmt:sonic_yang_mgmt_wheel)",
         "--common-setup=$(rootpath //src/sonic-py-common:setup.py)",
         "--config-setup=$(rootpath //src/sonic-config-engine:setup.py)",
     ],
@@ -290,6 +291,7 @@ py_test(
         "//src/sonic-py-common:setup.py",
         "//src/sonic-py-common:sonic_py_common_wheel",
         "//src/sonic-py-common:wheel_sources",
+        "//src/sonic-yang-mgmt:sonic_yang_mgmt_wheel",
     ],
     legacy_create_init = False,
     main = "integration/sonic_python_wheels_test.py",
