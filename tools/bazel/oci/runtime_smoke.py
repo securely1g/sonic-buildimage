@@ -47,8 +47,9 @@ GDB_SCRIPT = r'''python
 import gdb, json, re
 result = {"found": False}
 try:
-    candidates = []
-    for line in gdb.execute("info functions", to_string=True).splitlines():
+    requested_symbol = __SONIC_DEBUG_SYMBOL__
+    candidates = [requested_symbol] if requested_symbol else []
+    for line in ([] if requested_symbol else gdb.execute("info functions", to_string=True).splitlines()):
         match = re.match(r"^\s*\d+:\s+(.+);\s*$", line)
         if not match:
             continue
@@ -83,9 +84,9 @@ end
 '''
 
 
-def gdb_lookup(binary, directory, debug_directory):
+def gdb_lookup(binary, directory, debug_directory, symbol=None):
     script = directory / 'lookup.gdb'
-    script.write_text(GDB_SCRIPT)
+    script.write_text(GDB_SCRIPT.replace('__SONIC_DEBUG_SYMBOL__', repr(symbol)))
     result = command(['gdb', '-nx', '-nh', '--batch',
                       '-iex', 'set auto-load off', '-iex', 'set debuginfod enabled off',
                       '-iex', 'set pagination off',
@@ -102,19 +103,29 @@ def debug_pair(record):
     binary, symbols = Path(absolute_path(record['path'])), Path(absolute_path(record['debug_path']))
     if not binary.is_file() or not symbols.is_file():
         raise ValueError('Missing installed runtime/symbol pair: ' + str(binary))
+    forwarding = record.get('debug_forwarding')
+    implementation = Path(absolute_path(forwarding['provider'])) if forwarding else binary
+    requested_symbol = forwarding['symbol'] if forwarding else None
+    if forwarding and (not implementation.is_file() or
+                       not Path(absolute_path(forwarding['debug_path'])).is_file()):
+        raise ValueError('Missing installed forwarding implementation/symbols: ' + str(implementation))
     with tempfile.TemporaryDirectory(prefix='sonic-gdb-') as name:
         directory = Path(name)
-        isolated = directory / binary.name
-        shutil.copyfile(binary, isolated)
+        isolated = directory / implementation.name
+        shutil.copyfile(implementation, isolated)
         empty = directory / 'empty'
         empty.mkdir()
-        without = gdb_lookup(isolated, directory, str(empty))
+        without = gdb_lookup(isolated, directory, str(empty), requested_symbol)
         if without.get('found'):
             raise ValueError('Debug lookup succeeded with packaged symbols unavailable: ' + str(binary))
-        with_symbols = gdb_lookup(binary, directory, '/usr/lib/debug')
+        with_symbols = gdb_lookup(implementation, directory, '/usr/lib/debug', requested_symbol)
         if not with_symbols.get('found'):
             raise ValueError('Packaged symbols do not provide source/line/type lookup: ' + str(binary))
+        if forwarding and (with_symbols.get('function') != requested_symbol or
+                           PurePosixPath(with_symbols.get('source', '')).name != forwarding['source']):
+            raise ValueError('Forwarded function does not resolve its declared source: ' + str(binary))
         return {'path': str(binary), 'debug_path': str(symbols), 'without_symbols': without,
+                'debug_forwarding': forwarding,
                 'with_symbols': with_symbols, 'scope': 'Source filename, line and type metadata; source text is not supplied.'}
 
 
