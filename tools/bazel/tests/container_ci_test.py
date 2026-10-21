@@ -253,7 +253,7 @@ else:
         report = json.loads((self.artifacts / "report.json").read_text())
         self.assertEqual(report["source_hashes"]["preparation.mk"], container.sha(self.root / "preparation.mk"))
         self.assertIn("checked-input.json", report["source_hashes"])
-        self.assertIn("tools/bazel/oci/source_modules.bzl", report["source_hashes"])
+        self.assertIn("tools/bazel/oci/source_contract.bzl", report["source_hashes"])
 
     def test_changed_preparation_metadata_invalidates_the_run(self):
         """Passing tests cannot publish a receipt for different Make preparation metadata."""

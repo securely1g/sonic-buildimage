@@ -16,7 +16,7 @@ import tarfile
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path(__file__).absolute().parents[4]
 OWNER = ROOT / "platform/vs/docker-syncd-vs"
 sys.path.insert(0, str(ROOT))
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, write_layout
@@ -66,7 +66,7 @@ class SourcePackageFixture:
         self.root = Path(temporary.name)
         self.contract = self.root / "source_packages.json"
         self.value = (copy.deepcopy(self.contract_document) if self.contract_document is not None else
-                      json.loads((OWNER / "config/source_packages.json").read_bytes()))
+                      json.loads((OWNER / "source_packages.json").read_bytes()))
         self.policy = copy.deepcopy(OWNER_POLICIES.get("syncd", package_policy(image=self.value["image"])))
         # Mixed-input fixtures retain their explicit Make adapter even when the
         # production owner has moved every package to a source TAR.
