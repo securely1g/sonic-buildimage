@@ -207,7 +207,8 @@ def validate_inputs(paths, *, output, redis_server):
     inherited = validate_source_base(
         paths["runtime"], paths["debug"],
         metadata_paths=[paths["base_metadata"], paths["config_metadata"]],
-        source_debug_tar=paths["base_symbols"], architecture=policy["architecture"])
+        source_debug_tar=paths["base_symbols"], architecture=policy["architecture"],
+        workspace_module=workspace / "MODULE.bazel")
     save(output / "source-base.json", inherited)
     # Common is used by both source graphs. Require its identity to agree before
     # deduplicating it in the installed loader/GDB probes.
