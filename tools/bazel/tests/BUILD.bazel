@@ -8,7 +8,7 @@ load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//src/sonic-config-engine:template.bzl", "sonic_cfggen_template")
-load("//tools/bazel/dpkg:defs.bzl", "PATH_INCLUDES")
+load("//tools/bazel/dpkg:defs.bzl", "PATH_INCLUDES", "dpkg_filter", "sonic_layer")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
@@ -952,6 +952,41 @@ diff_test(
     size = "small",
     file1 = "declared_includes.txt",
     file2 = "//tools/bazel/dpkg:dpkg_includes.txt",
+)
+
+# Exercise the real source-TAR filter twice, as an OCI image's runtime layers do.
+py_binary(
+    name = "oci_license_fixture",
+    srcs = ["integration/oci_license_filter_test.py"],
+    main = "integration/oci_license_filter_test.py",
+)
+
+run_binary(
+    name = "oci_license_fixture_tar",
+    tool = ":oci_license_fixture",
+    args = ["--write", "$(location oci-license-fixture.tar)"],
+    outs = ["oci-license-fixture.tar"],
+)
+
+dpkg_filter(
+    name = "oci_license_filtered",
+    src = ":oci_license_fixture_tar",
+)
+
+sonic_layer(
+    name = "oci_license_refiltered",
+    tars = [":oci_license_filtered"],
+)
+
+py_test(
+    name = "oci_license_filter_test",
+    srcs = ["integration/oci_license_filter_test.py"],
+    main = "integration/oci_license_filter_test.py",
+    args = [
+        "$(rootpath :oci_license_filtered)",
+        "$(rootpath :oci_license_refiltered)",
+    ],
+    data = [":oci_license_filtered", ":oci_license_refiltered"],
 )
 
 # Rust links Common's shared library; its indirect runtime imports need the
