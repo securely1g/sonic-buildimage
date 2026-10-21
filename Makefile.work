@@ -716,6 +716,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 			   CHANGE_DEFAULT_PASSWORD=$(CHANGE_DEFAULT_PASSWORD) \
                            SONIC_BUILD_JOBS=$(SONIC_BUILD_JOBS) \
                            VS_PREPARE_MEM=$(VS_PREPARE_MEM) \
+                           VS_VALIDATE_SERVICES=$(VS_VALIDATE_SERVICES) \
                            KERNEL_PROCURE_METHOD=$(KERNEL_PROCURE_METHOD) \
                            SONIC_DPKG_CACHE_METHOD=$(SONIC_DPKG_CACHE_METHOD) \
                            SONIC_DPKG_CACHE_SOURCE=$(SONIC_DPKG_CACHE_SOURCE) \
@@ -786,6 +787,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 						   SBOM_STRICT=$(SBOM_STRICT) \
 						   SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 						   BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(BUILD_WITH_BAZEL_WHEN_AVAILABLE) \
+						   P4RT_BUILD_WITH_BAZEL_TARS=$(P4RT_BUILD_WITH_BAZEL_TARS) \
                            $(SONIC_OVERRIDE_BUILD_VARS)
 
 .PHONY: sonic-slave-build sonic-slave-bash sonic-slave-run init reset
