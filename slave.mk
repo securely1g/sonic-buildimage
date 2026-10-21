@@ -333,7 +333,6 @@ endif
 include $(PLATFORM_PATH)/rules.mk
 endif
 
-include tools/bazel/p4/inputs.mk
 
 ifeq ($(USERNAME),)
 override USERNAME := $(DEFAULT_USERNAME)
@@ -893,7 +892,6 @@ SONIC_TARGET_LIST += $(addprefix $(PHONY_PATH)/, $(SONIC_PHONIES))
 ## Debian package related targets
 ###############################################################################
 
-include tools/bazel/p4/debs.mk
 
 # Build project using build.sh script
 # They are essentially a one-time build projects that get sources from some URL

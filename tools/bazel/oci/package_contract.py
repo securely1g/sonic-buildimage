@@ -70,7 +70,7 @@ def validate_policy(policy):
             "invalid package policy fields")
     require(type(policy["schema"]) is int and policy["schema"] == 1, "unsupported package policy schema")
     identity(policy)
-    require(policy["retained_source"] in ("none", "make"), "invalid retained package source")
+    require(policy["retained_source"] in ("none", "make", "source"), "invalid retained package source")
     require(isinstance(policy["features"], dict) and all(isinstance(k, str) and isinstance(v, str)
                 for k, v in policy["features"].items()), "invalid package policy features")
     tools = policy["debug_tools"]
@@ -159,7 +159,7 @@ def source_identity(source, *, name):
         # Foreign packages retain their upstream release and SONiC patch number.
         # Bazel verifies the registry archive/patch integrity; verify_modules
         # below binds this contract to the module actually selected by Bazel.
-        pinned = (re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", source["release"]) and
+        pinned = (re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", source["release"]) and
                   re.fullmatch(re.escape(source["release"]) + r"\.sonic\.[1-9][0-9]*", source["version"]))
     require(re.fullmatch(r"@{1,2}[A-Za-z0-9_.+~-]+//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+", source["target"]) and pinned,
             "source package does not identify its public owner target: " + name)
