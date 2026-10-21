@@ -22,11 +22,7 @@ class ImageInputsTest(unittest.TestCase):
             label: self.root / "outputs" / key
             for key, label in validate_syncd_image.TARGETS.items()
         }
-        owner = validate_syncd_image.OWNER
-        for variant in ("runtime", "debug"):
-            directory = self.root / "outputs" / (variant + "_debs")
-            self.paths[owner + ":" + variant + "_import_manifest"] = directory / "manifest.json"
-            self.paths[owner + ":" + variant + "_debs"] = directory / "payload.tar"
+        self.missing = None
         self.commands = []
         self.unsafe = False
 
@@ -49,9 +45,7 @@ class ImageInputsTest(unittest.TestCase):
             for label in command[2:]:
                 path = self.paths[label]
                 path.parent.mkdir(parents=True, exist_ok=True)
-                if label.endswith(":debug_debs"):
-                    path.symlink_to(self.paths[validate_syncd_image.OWNER + ":runtime_debs"])
-                else:
+                if label != self.missing:
                     path.write_bytes(b"cached output")
         elif action == "cquery":
             labels = command[2].removeprefix("set(").removesuffix(")").split()
@@ -66,18 +60,17 @@ class ImageInputsTest(unittest.TestCase):
         with mock.patch.object(validate_syncd_image.subprocess, "run", side_effect=self.bazel):
             return validate_syncd_image.build_inputs(["bazel"], [], self.root)
 
-    def test_cached_manifests_materialize_both_payloads(self):
+    def test_cached_build_materializes_source_runtime_symbols_and_receipt(self):
         inputs = self.build()
-        for variant in ("runtime", "debug"):
-            manifest = inputs[variant + "_handoff"]
-            self.assertTrue(manifest.is_file())
-            self.assertEqual(manifest.with_name("payload.tar").read_bytes(), b"cached output")
-        self.assertTrue(inputs["debug_payload"].is_symlink())
+        for key in ("source_runtime", "source_debug", "source_receipt"):
+            self.assertEqual(inputs[key].read_bytes(), b"cached output")
+        self.assertNotIn("runtime_handoff", inputs)
+        self.assertNotIn("debug_handoff", inputs)
         self.assertEqual([command[1] for command in self.commands], ["aquery", "build", "cquery"])
 
-    def test_payload_target_must_match_the_manifest_sibling(self):
-        self.paths[validate_syncd_image.OWNER + ":runtime_debs"] = self.root / "unrelated/payload.tar"
-        with self.assertRaisesRegex(ValueError, "not beside its manifest: runtime"):
+    def test_missing_source_tar_is_rejected_before_image_probes(self):
+        self.missing = validate_syncd_image.OWNER + ":source_runtime_payloads"
+        with self.assertRaisesRegex(ValueError, "Bazel output is missing"):
             self.build()
 
     def test_deb_producer_stops_before_cache_download(self):
