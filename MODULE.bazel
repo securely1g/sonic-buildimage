@@ -26,7 +26,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.2", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.9")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.10")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -43,7 +43,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.18-c5d4139a9ec621858f0ffd65c11dab05a87f5e6c",
+    version = "0.0.19-c7b335b04b5234c5de6b108b46294de0a962db8d",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -243,7 +243,7 @@ bazel_dep(name = "sonic-fips", version = "0.0.2-da444a14aea8483fcb8df84d0a049bf9
 # older consumers retain their previous module declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.18-c5d4139a9ec621858f0ffd65c11dab05a87f5e6c",
+    version = "0.0.19-c7b335b04b5234c5de6b108b46294de0a962db8d",
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.
