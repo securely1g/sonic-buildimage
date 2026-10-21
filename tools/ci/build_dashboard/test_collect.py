@@ -23,7 +23,7 @@ END = "2026-10-10T00:10:00Z"
 def pr(number=1, branch="feature", sha=SHA, repo=REPO):
     return {"number": number, "title": "A public change", "state": "open", "draft": True,
             "head": {"ref": branch, "sha": sha, "repo": {"full_name": repo}},
-            "base": {"sha": OTHER_SHA}, "updated_at": END, "merged_at": None}
+            "base": {"ref": "master", "sha": OTHER_SHA}, "updated_at": END, "merged_at": None}
 
 
 def run(attempt=1, run_id=10, status="completed", conclusion="success", **extra):
@@ -66,6 +66,8 @@ class FakeAPI:
         self.calls.append(endpoint)
         if endpoint == f"repos/{REPO}":
             return {"full_name": REPO, "private": False, "default_branch": "master"}
+        if endpoint == f"repos/{REPO}/git/ref/heads/master":
+            return {"ref": "refs/heads/master", "object": {"type": "commit", "sha": "c" * 40}}
         if endpoint in self.attempts:
             return self.attempts[endpoint]
         if endpoint.startswith(f"repos/{REPO}/actions/runs/"):
@@ -218,6 +220,39 @@ class AssociationTests(unittest.TestCase):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_selected_base_is_separate_from_historical_and_event_bases(self):
+        event_pr = {"number": 1, "base": {"ref": "master", "sha": "d" * 40}}
+        api = FakeAPI(latest=[run(pull_requests=[event_pr])], pulls=[pr(), pr(number=2)])
+        result = collector.collect(api, REPO, empty())
+        self.assertEqual(result["pull_requests"][0]["base_sha"], OTHER_SHA)
+        self.assertEqual(result["pull_requests"][0]["base_target_sha"], "c" * 40)
+        self.assertEqual(api.calls.count(f"repos/{REPO}/git/ref/heads/master"), 1)
+        self.assertEqual(result["runs"][0]["event_bases"], [{"number": 1, "ref": "master", "sha": "d" * 40}])
+        # A matching source head still provides no independently verified checkout base.
+        self.assertNotIn("checkout_base_sha", result["runs"][0])
+
+    def test_selected_base_ref_is_encoded_and_missing_is_not_historical_fallback(self):
+        value = pr()
+        value["base"]["ref"] = "stack/feature"
+        api = FakeAPI(pulls=[value])
+        with mock.patch.object(api, "get", side_effect=collector.CollectionError("Gone", http_status=404)) as get:
+            self.assertEqual(collector.selected_bases(api, REPO, [value]), {"stack/feature": None})
+        get.assert_called_once_with(f"repos/{REPO}/git/ref/heads/stack%2Ffeature")
+        normalized = collector.normalize_pr(value, REPO, {"stack/feature": None}, END)
+        self.assertIsNone(normalized["base_target_sha"])
+        self.assertEqual(normalized["base_sha"], OTHER_SHA)
+        with mock.patch.object(api, "get", side_effect=collector.CollectionError("Unavailable", http_status=503)):
+            with self.assertRaises(collector.CollectionError):
+                collector.selected_bases(api, REPO, [value])
+
+    def test_cached_history_gets_event_metadata_without_current_base_substitution(self):
+        initial = collector.collect(FakeAPI(), REPO, empty())
+        del initial["runs"][0]["event_bases"]
+        api = FakeAPI(latest=[run(pull_requests=[{"number": 1, "base": {"ref": "old-base", "sha": "d" * 40}}])])
+        result = collector.collect(api, REPO, initial)
+        self.assertEqual(result["runs"][0]["event_bases"][0]["sha"], "d" * 40)
+        self.assertFalse(any(endpoint.endswith("/jobs") for endpoint in api.calls))
+
     def test_new_attempt_preserves_prior_and_collects_all(self):
         api = FakeAPI(latest=[run(attempt=3)])
         api.attempts[f"repos/{REPO}/actions/runs/10/attempts/1"] = run(conclusion="failure")

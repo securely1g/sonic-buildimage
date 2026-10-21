@@ -90,6 +90,13 @@ function summarizePrCoverage(coverage) {
 function kindLabel(job) { return KIND_LABELS[job.kind] || "Other"; }
 function architecture(job) { return job.architecture ? String(job.architecture).toUpperCase() : "Unknown architecture"; }
 function runTime(run) { return timestamp(run.started_at) || timestamp(run.completed_at) || 0; }
+function baseSummary(pr, run) {
+  const selected = pr.base_branch ? `${pr.base_branch}@${String(pr.base_target_sha || "unavailable").slice(0, 12)}` : "unavailable";
+  const event = (run?.event_bases || []).find(base => base.number === pr.number);
+  return {selected: `Selected base: ${selected}`, attempt: event?.sha
+    ? `Recorded event base: ${event.ref || "unknown ref"}@${event.sha.slice(0, 12)}. Attempt checkout base is unverified.`
+    : "Attempt checkout base is unverified; no recorded event base is available."};
+}
 function safeGithubUrl(value, repository) {
   try {
     const url = new URL(value);
@@ -338,6 +345,7 @@ function renderCoverage() {
       renderFiltered();
     });
     title.append(button, el("span", "subtext", pr.merged_at ? "Merged" : pr.draft ? "Draft" : resultLabel(pr.state)));
+    title.append(el("span", "subtext sha", baseSummary(pr, latestImageRun).selected));
     const status = el("td"), timings = el("td", "nowrap");
     const stack = el("div", "status-stack");
     for (const job of jobs) {
@@ -352,6 +360,7 @@ function renderCoverage() {
     const current = !!pr.head_sha && latestImageRun.source_sha === pr.head_sha;
     title.append(el("span", "subtext sha", String(latestImageRun.source_sha || "unknown").slice(0, 10)), badge(current ? "current" : "historical", current ? "Current PR head" : "Different revision"));
     title.append(el("span", "subtext", dateTime(latestImageRun.started_at)));
+    title.append(el("span", "subtext", "Attempt base unverified"));
     row.append(title, status, timings); rows.push(row);
   }
   byId("coverage-body").replaceChildren(...rows);
@@ -473,6 +482,9 @@ function renderDetails() {
     const note = el("p", "detail-meta");
     note.append(link(`PR #${pr.number}`, pr.url), document.createTextNode(` · association: ${run.pr_association || "unknown"}`));
     box.append(note);
+    const base = baseSummary(pr, run);
+    box.append(el("p", "detail-meta", `${base.selected} · observed ${dateTime(pr.base_target_observed_at)}`), el("p", "source-warning", base.attempt));
+    box.append(el("p", "stage-note", "Successful step timings do not establish that an image artifact was published or that this attempt tested the selected base."));
     if (pr.head_sha !== run.source_sha) box.append(el("p", "source-warning", "The recorded source revision differs from the current PR head. This may be a historical revision or a merge build; it is not proof that the current PR head was measured."));
   }
   if (!run.jobs.length) { box.append(el("p", "empty", "No job details are available for this workflow yet.")); return; }
@@ -548,4 +560,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary};

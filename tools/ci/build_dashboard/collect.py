@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote
 
 # Load the reviewed sibling directly. PYTHONSAFEPATH deliberately excludes the
 # script directory, and falling back to a module from the working directory
@@ -258,7 +259,26 @@ class GitHub:
             page += 1
 
 
-def normalize_pr(raw, repo):
+def selected_bases(api, repo, pulls):
+    """Resolve selected refs independently of historical pull-request base.sha."""
+    bases = {}
+    for branch in sorted({pr.get("base", {}).get("ref") for pr in pulls} - {None, ""}):
+        try:
+            ref = api.get(f"repos/{repo}/git/ref/heads/{quote(branch, safe='')}")
+        except CollectionError as error:
+            if error.http_status != 404:
+                raise
+            bases[branch] = None  # A closed PR's selected branch may be gone.
+            continue
+        target = ref.get("object", {})
+        if (ref.get("ref") != f"refs/heads/{branch}" or target.get("type") != "commit"
+                or not SHA_RE.fullmatch(str(target.get("sha", "")))):
+            raise CollectionError("Selected base ref response does not match the requested branch")
+        bases[branch] = target["sha"]
+    return bases
+
+
+def normalize_pr(raw, repo, bases=None, observed_at=None):
     number = integer(raw.get("number"))
     if not number:
         raise CollectionError("Pull-request response is missing a positive integer number")
@@ -267,6 +287,9 @@ def normalize_pr(raw, repo):
         "state": raw.get("state"), "draft": bool(raw.get("draft")),
         "url": f"https://github.com/{repo}/pull/{number}",
         "head_sha": raw.get("head", {}).get("sha"), "base_sha": raw.get("base", {}).get("sha"),
+        "base_branch": raw.get("base", {}).get("ref"),
+        "base_target_sha": (bases or {}).get(raw.get("base", {}).get("ref")),
+        "base_target_observed_at": observed_at,
         "head_branch": raw.get("head", {}).get("ref"),
         "updated_at": timestamp(raw.get("updated_at")), "merged_at": timestamp(raw.get("merged_at")),
     }
@@ -321,6 +344,13 @@ class Associations:
         return [], "none"
 
 
+def event_bases(raw):
+    # Event metadata is evidence of the recorded PR base, not a job checkout.
+    return [{"number": pr["number"], "ref": pr.get("base", {}).get("ref"),
+             "sha": pr.get("base", {}).get("sha")}
+            for pr in raw.get("pull_requests", []) if integer(pr.get("number"))]
+
+
 def normalize_run(raw, workflow, repo, jobs, association, association_note=None):
     run_id, attempt = integer(raw.get("id")), integer(raw.get("run_attempt"))
     if not run_id or not attempt:
@@ -334,6 +364,7 @@ def normalize_run(raw, workflow, repo, jobs, association, association_note=None)
         "source_sha": raw.get("head_sha"), "branch": raw.get("head_branch"),
         "event": raw.get("event"), "status": raw.get("status"), "conclusion": raw.get("conclusion"),
         "pr_numbers": pr_numbers, "pr_association": method, "pr_association_note": association_note,
+        "event_bases": event_bases(raw),
         "started_at": timestamp(raw.get("run_started_at") or raw.get("created_at")),
         "completed_at": max(completed) if raw.get("status") == "completed" and completed else None,
         "updated_at": timestamp(raw.get("updated_at")),
@@ -354,8 +385,9 @@ def load_history(path, repo):
         raise CollectionError("Dashboard history schema or repository does not match")
     allowed = {
         "document": {"schema_version", "repository", "generated_at", "pull_requests", "runs", "comparisons"},
-        "pr": {"number", "title", "state", "draft", "url", "head_sha", "base_sha", "head_branch", "updated_at", "merged_at"},
-        "run": {"run_id", "attempt", "workflow_name", "workflow_path", "source_sha", "branch", "event", "status", "conclusion", "pr_numbers", "pr_association", "pr_association_note", "started_at", "completed_at", "updated_at", "url", "jobs"},
+        "pr": {"number", "title", "state", "draft", "url", "head_sha", "base_sha", "base_branch", "base_target_sha", "base_target_observed_at", "head_branch", "updated_at", "merged_at"},
+        "run": {"run_id", "attempt", "workflow_name", "workflow_path", "source_sha", "branch", "event", "status", "conclusion", "pr_numbers", "pr_association", "pr_association_note", "event_bases", "started_at", "completed_at", "updated_at", "url", "jobs"},
+        "event_base": {"number", "ref", "sha"},
         "job": {"job_id", "name", "kind", "architecture", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "image_build_seconds", "image_build_elapsed_seconds", "phases", "steps", "url"},
         "step": {"number", "name", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "phase", "breakdown"},
     }
@@ -371,6 +403,12 @@ def load_history(path, repo):
     keys = set()
     for run in history["runs"]:
         check_fields(run, "run")
+        if not isinstance(run.get("event_bases", []), list):
+            raise CollectionError("Dashboard history contains invalid event base metadata")
+        for base in run.get("event_bases", []):
+            check_fields(base, "event_base")
+            if not integer(base.get("number")):
+                raise CollectionError("Dashboard history has an invalid event base PR number")
         if not isinstance(run.get("jobs"), list) or not isinstance(run.get("pr_numbers"), list):
             raise CollectionError("Dashboard history is missing its job or PR list")
         for job in run["jobs"]:
@@ -440,9 +478,11 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs
     if repository.get("private") is not False or repository.get("full_name", "").lower() != repo.lower():
         raise CollectionError("Dashboard collection requires the requested public repository")
     pulls = api.pages(f"repos/{repo}/pulls?state=all&sort=updated&direction=desc")
+    bases = selected_bases(api, repo, pulls)
+    base_observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     associations = Associations(api, repo, repository.get("default_branch"), pulls)
     historical_prs = {pr["number"]: pr for pr in history["pull_requests"]}
-    historical_prs.update({pr["number"]: normalize_pr(pr, repo) for pr in pulls})
+    historical_prs.update({pr["number"]: normalize_pr(pr, repo, bases, base_observed_at) for pr in pulls})
     retained = {(run["run_id"], run["attempt"]): copy.deepcopy(run) for run in history["runs"]}
     # Recompute derived image totals from cached public steps as recognition
     # evolves; keep precise measurements even when old logs have expired.
@@ -474,6 +514,9 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs
                     and old.get("conclusion") == latest_raw.get("conclusion")
                     and latest_raw.get("status") == "completed"
                 ):
+                    if attempt == current_attempt and "event_bases" not in old:
+                        old = dict(old, event_bases=event_bases(latest_raw))
+                        retained[(current_id, attempt)] = old
                     if str(old.get("pr_association_note") or "").startswith("PR association temporarily unavailable:"):
                         retry_raw = {"head_branch": old.get("branch"), "head_sha": old.get("source_sha"),
                                      "head_repository": {"full_name": repo}, "pull_requests": []}

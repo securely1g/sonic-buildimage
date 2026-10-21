@@ -2,7 +2,18 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows} = require("./app.js");
+const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary} = require("./app.js");
+
+test("current selected base and recorded event base never imply tested-base validation", () => {
+  const pr = {number: 13, base_branch: "stack/base", base_target_sha: "a".repeat(40), base_sha: "b".repeat(40)};
+  const summary = baseSummary(pr, {event_bases: [{number: 13, ref: "old/base", sha: "c".repeat(40)}]});
+  assert.equal(summary.selected, "Selected base: stack/base@aaaaaaaaaaaa");
+  assert.match(summary.attempt, /old\/base@cccccccccccc/);
+  assert.match(summary.attempt, /checkout base is unverified/);
+  assert.match(baseSummary({...pr, base_target_sha: null}, {}).selected, /unavailable/);
+  assert.match(baseSummary(pr, {}).attempt, /no recorded event base/);
+  assert.equal(baseSummary({number: 13, base_sha: "b".repeat(40)}, {}).selected, "Selected base: unavailable");
+});
 
 test("PR coverage follows the latest image attempt, with unmeasured PRs last", () => {
   const image = {kind: "make-vs", conclusion: "failure", image_build_seconds: null};
