@@ -106,6 +106,10 @@ def recipe_attributes(name, registration):
         },
         "remote_file_integrity": recipe.get("overlay", {}),
     }
+    # Registry URLs may end in a commit rather than an archive suffix (for
+    # example GitHub codeload). Preserve their explicit extraction format.
+    if "archive_type" in recipe:
+        attributes["type"] = recipe["archive_type"]
     receipt = {"_generated": GENERATED_NOTICE, "module": name, "version": version, **origin,
                "source_json_sha256": hashlib.sha256(recipe_data).hexdigest(),
                "http_archive": attributes}
