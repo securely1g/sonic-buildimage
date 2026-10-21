@@ -22,7 +22,7 @@ NATIVE_INPUTS = (
     "source_contract_path", "source_runtime_tar", "source_debug_tar", "source_receipt",
     "base_path",
 )
-SOURCE_BASE_INPUTS = ("base_symbols", "base_metadata", "config_metadata")
+SOURCE_BASE_INPUTS = ("base_symbols", "base_metadata", "config_metadata", "workspace_module")
 P4_RUNTIME_PACKAGES = {"p4lang-pi", "p4lang-bmv2", "p4lang-p4c", "libsai"}
 
 
@@ -64,6 +64,7 @@ def main():
         inputs["runtime_path"], inputs["debug_path"],
         metadata_paths=[inputs["base_metadata"], inputs["config_metadata"]],
         source_debug_tar=inputs["base_symbols"], architecture=policy["architecture"],
+        workspace_module=inputs["workspace_module"],
         readelf=str(inputs["readelf"].resolve()), objcopy=str(inputs["objcopy"].resolve()))
     report = {"_generated": {"notice": "AUTO-GENERATED. DO NOT EDIT MANUALLY.",
                              "generator": "tools/bazel/tests/integration/syncd_p4_images_test.py"},
