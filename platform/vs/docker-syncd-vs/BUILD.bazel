@@ -1,5 +1,4 @@
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
-load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
@@ -8,7 +7,6 @@ load("@tar.bzl", "tar")
 load("//dockers/docker-base-trixie/bazel:installed_packages.bzl", "installed_packages")
 load("//tools/bazel/dpkg:defs.bzl", "dpkg_filter", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
-load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
@@ -29,7 +27,7 @@ exports_files(
 )
 
 # Supported configuration: native AMD64 Trixie VS, DASH/FIPS, no ASAN/RPC.
-# The Make selector and checked package manifests enforce the feature boundary.
+# The Make selector and source configuration enforce the feature boundary.
 _COMPATIBLE_WITH = [
     "@platforms//cpu:x86_64",
     "@platforms//os:linux",
@@ -38,19 +36,14 @@ _COMPATIBLE_WITH = [
     "//conditions:default": ["@platforms//:incompatible"],
 })
 
-# FIPS is selected in the runtime handoff; debug inherits those package records.
+# FIPS comes from source targets; debug inherits their checked runtime records.
 _APT_POLICY = {
     "schema": 1,
     "image": "docker-syncd-vs",
     "architecture": "amd64",
     "distribution": "trixie",
-    "retained_source": "make",
-    "features": {
-        "include_vs_dash_sai": "y",
-        "include_fips": "y",
-        "enable_asan": "n",
-        "enable_syncd_rpc": "n",
-    },
+    "retained_source": "source",
+    "features": {},
 }
 
 _DEBUG_APT_PACKAGES = [
@@ -105,6 +98,13 @@ _PACKAGE_POLICY = dict(
         "package_state": True,
     },
     native = {
+        "debug_forwarding": {
+            "usr/bin/pi_CLI_dummy": {
+                "provider": "usr/lib/x86_64-linux-gnu/libpicli.so.0",
+                "symbol": "main",
+                "source": "main.c",
+            },
+        },
         "required_packages": [
             "syncd-vs",
             "libsairedis",
@@ -112,6 +112,10 @@ _PACKAGE_POLICY = dict(
             "libsaivs",
             "libswsscommon",
             "openssh-client",
+            "p4lang-pi",
+            "p4lang-bmv2",
+            "p4lang-p4c",
+            "libsai",
         ],
         "required_sonames": {
             "libsairedis": "libsairedis.so.0",
@@ -119,13 +123,7 @@ _PACKAGE_POLICY = dict(
             "libsaivs": "libsaivs.so.0",
             "libswsscommon": "libswsscommon.so.0",
         },
-        # Existing Make packages without a supplied matching symbol package.
-        "gap_packages": [
-            "libsai",
-            "p4lang-pi",
-            "p4lang-bmv2",
-            "p4lang-p4c",
-        ],
+        "gap_packages": [],
         "local_dependency_pattern": "lib(?:sai|swsscommon|MdioIpcClient|pi)",
         "require_source": True,
         "require_imported_symbols": False,
@@ -160,9 +158,13 @@ config_setting(
     },
 )
 
-# These are the exact owner targets also consumed by Orchagent. The source
-# libraries and their symbols share Bazel's normal dependency and cache graph.
+# These public owner targets provide all project runtime payloads. Their
+# matching symbols follow the same dependency and cache graph.
 _SOURCE_PACKAGES = {
+    "p4lang-pi": "@p4lang_pi//:runtime",
+    "p4lang-bmv2": "@p4lang_bmv2//:runtime",
+    "p4lang-p4c": "@p4c//:p4c_pkg",
+    "libsai": "@sonic_dash//:runtime",
     "libswsscommon": "@sonic_swss_common//:libswsscommon_pkg",
     "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
     "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
@@ -179,6 +181,10 @@ run_binary(
         "//platform/vs/docker-syncd-vs:config_engine_base_layout",
         "//platform/vs/docker-syncd-vs/config:source_packages.json",
         "@syncd_source_modules//:libnl3.MODULE.bazel",
+        "@syncd_source_modules//:p4c.MODULE.bazel",
+        "@syncd_source_modules//:p4lang-bmv2.MODULE.bazel",
+        "@syncd_source_modules//:p4lang-pi.MODULE.bazel",
+        "@syncd_source_modules//:sonic-dash.MODULE.bazel",
         "@syncd_source_modules//:sonic-fips.MODULE.bazel",
         "@syncd_source_modules//:sonic-sairedis.MODULE.bazel",
         "@syncd_source_modules//:sonic-swss-common.MODULE.bazel",
@@ -194,6 +200,10 @@ run_binary(
                "--module=sonic-sairedis=$(execpath @syncd_source_modules//:sonic-sairedis.MODULE.bazel)",
                "--module=sonic-fips=$(execpath @syncd_source_modules//:sonic-fips.MODULE.bazel)",
                "--module=libnl3=$(execpath @syncd_source_modules//:libnl3.MODULE.bazel)",
+               "--module=p4lang-pi=$(execpath @syncd_source_modules//:p4lang-pi.MODULE.bazel)",
+               "--module=p4lang-bmv2=$(execpath @syncd_source_modules//:p4lang-bmv2.MODULE.bazel)",
+               "--module=p4c=$(execpath @syncd_source_modules//:p4c.MODULE.bazel)",
+               "--module=sonic-dash=$(execpath @syncd_source_modules//:sonic-dash.MODULE.bazel)",
                "--out-tar=$(execpath source_runtime.tar)",
                "--receipt=$(execpath source_packages.receipt.json)",
            ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _SOURCE_PACKAGES.items()] +
@@ -208,34 +218,6 @@ run_binary(
     }),
     tool = "//tools/bazel/oci:package_contract",
 )
-
-# Keep runtime independent of Make's debug handoff. Each selection input binds
-# its own original manifest to the same checked source outputs.
-[
-    run_binary(
-        name = variant + "_retained_packages",
-        srcs = [
-            "source_packages.receipt.json",
-            ":" + variant + "_import_manifest",
-            ":package_policy",
-            "//platform/vs/docker-syncd-vs/config:source_packages.json",
-        ],
-        outs = [variant + "_retained_packages.json"],
-        args = [
-            "--contract=$(execpath //platform/vs/docker-syncd-vs/config:source_packages.json)",
-            "--policy=$(execpath :package_policy)",
-            "--merge-manifest=$(execpath :" + variant + "_import_manifest)",
-            "--source-receipt=$(execpath source_packages.receipt.json)",
-            "--out-manifest=$@",
-        ],
-        mnemonic = "SyncdRetainedPackages",
-        tool = "//tools/bazel/oci:package_contract",
-    )
-    for variant in [
-        "runtime",
-        "debug",
-    ]
-]
 
 [
     filegroup(
@@ -254,179 +236,7 @@ alias(
     actual = "//platform/vs/docker-syncd-vs:rdeps_debug_symbols",
 )
 
-# Imported package bytes are declared inputs to Bazel. Make only builds these
-# prerequisite files; extraction, hashing and assembly are ordinary cached actions.
-# Each existing DEB is extracted directly by the declared upstream BSD tar
-# toolchain. Order belongs to this image; Make remains the package producer.
-
-# These four producer migrations are explicitly deferred. All other project
-# runtime and debug inputs come from their source-owner targets or the base.
-_RUNTIME_DEBS = [
-    "//:target/debs/trixie/p4lang-pi_0.1.3-2_amd64.deb",
-    "//:target/debs/trixie/p4lang-bmv2_1.15.0-9_amd64.deb",
-    "//:target/debs/trixie/p4lang-p4c_1.2.4.2-3_amd64.deb",
-    "//:target/debs/trixie/libsai_1.0.0_amd64.deb",
-]
-
-# A package shared by runtime and debug is extracted once. These public
-# toolchain variables are provided by tar.bzl; no local extraction rule wraps it.
-_DEB_ARCHIVES = {
-    source: "extracted_debs/" + source.split("/")[-1]
-    for source in _RUNTIME_DEBS
-}
-
-[
-    genrule(
-        name = "extract_" + source.split("/")[-1],
-        srcs = [source],
-        outs = [directory + "/" + filename for filename in [
-            "members.txt",
-            "debian-binary",
-            "control.archive",
-            "data.archive",
-        ]],
-        cmd = """set -euo pipefail
-export LC_ALL=C.UTF-8
-"$(BSDTAR_BIN)" -tf "$(execpath {source})" > "$(RULEDIR)/{directory}/members.txt"
-mapfile -t members < "$(RULEDIR)/{directory}/members.txt"
-[[ "$${{#members[@]}}" == 3 && "$${{members[0]}}" == debian-binary ]]
-case "$${{members[1]}}" in control.tar|control.tar.gz|control.tar.xz|control.tar.bz2) ;; *) exit 1 ;; esac
-case "$${{members[2]}}" in data.tar|data.tar.gz|data.tar.xz|data.tar.bz2) ;; *) exit 1 ;; esac
-"$(BSDTAR_BIN)" -xOf "$(execpath {source})" debian-binary > "$(RULEDIR)/{directory}/debian-binary"
-"$(BSDTAR_BIN)" -xOf "$(execpath {source})" "$${{members[1]}}" > "$(RULEDIR)/{directory}/control.archive"
-"$(BSDTAR_BIN)" -xOf "$(execpath {source})" "$${{members[2]}}" > "$(RULEDIR)/{directory}/data.archive"
-""".format(
-            directory = directory,
-            source = source,
-        ),
-        toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
-        tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
-        visibility = ["//visibility:private"],
-    )
-    for source, directory in _DEB_ARCHIVES.items()
-]
-
-# Assemble the inherited P4 payload once. BSD tar preserves extended metadata
-# with PAX headers; Distroless flatten writes GNU headers instead.
-genrule(
-    name = "runtime_debs_payload",
-    srcs = [_DEB_ARCHIVES[source] + "/data.archive" for source in _RUNTIME_DEBS],
-    outs = ["runtime_debs/payload.tar"],
-    cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
-          "\"$(BSDTAR_BIN)\" --format=pax -cf \"$@\" " +
-          " ".join(["\"@$(execpath " + _DEB_ARCHIVES[source] + "/data.archive)\"" for source in _RUNTIME_DEBS]),
-    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    tools = ["@bsd_tar_toolchains//:resolved_toolchain"],
-    visibility = ["//visibility:private"],
-)
-
-# Receipts resolve payload.tar beside manifest.json. Preserve that public file
-# layout with a declared symlink, without assembling or storing a second TAR.
-copy_file(
-    name = "debug_debs_payload",
-    src = "runtime_debs/payload.tar",
-    out = "debug_debs/payload.tar",
-    allow_symlink = True,
-    visibility = ["//visibility:private"],
-)
-
-# Validate policy and provenance separately for each image variant. Debug
-# inherits the same package bytes and binds its receipt to the runtime receipt.
-_PACKAGE_SETS = {
-    "runtime_debs": {
-        "srcs": _RUNTIME_DEBS,
-        "context": {
-            "image": _APT_POLICY["image"],
-            "variant": "runtime",
-            "distribution": _APT_POLICY["distribution"],
-            "features": _APT_POLICY["features"],
-            "required_packages": [
-                "libsai",
-                "p4lang-bmv2",
-                "p4lang-p4c",
-                "p4lang-pi",
-            ],
-            "debug_apt_packages": [],
-        },
-        "parent": "",
-    },
-    "debug_debs": {
-        "srcs": _RUNTIME_DEBS,
-        "context": {
-            "image": _APT_POLICY["image"],
-            "variant": "debug",
-            "distribution": _APT_POLICY["distribution"],
-            "features": _APT_POLICY["features"],
-            "required_packages": [
-                "libsai",
-                "p4lang-bmv2",
-                "p4lang-p4c",
-                "p4lang-pi",
-            ],
-            "debug_apt_packages": _DEBUG_APT_PACKAGES,
-        },
-        "parent": ":runtime_import_manifest",
-    },
-}
-
-[
-    genrule(
-        name = name + "_receipt",
-        srcs = inputs["srcs"] + [name + "/payload.tar"] + [
-            _DEB_ARCHIVES[source] + "/" + filename
-            for source in inputs["srcs"]
-            for filename in [
-                "members.txt",
-                "debian-binary",
-                "control.archive",
-                "data.archive",
-            ]
-        ] + ([inputs["parent"]] if inputs["parent"] else []),
-        outs = [name + "/manifest.json"],
-        cmd = "set -euo pipefail\nexport LC_ALL=C.UTF-8\n" +
-              "\"$(execpath //tools/bazel/oci:package_receipts)\"" +
-              " --payload='$(execpath " + name + "/payload.tar)'" +
-              " --out='$(RULEDIR)/" + name + "/manifest.json'" +
-              " --architecture=" + _APT_POLICY["architecture"] +
-              " --context='" + json.encode(inputs["context"]) + "'" +
-              (" --runtime-manifest='$(execpath " + inputs["parent"] + ")'" if inputs["parent"] else "") +
-              " ".join([" --package='" + json.encode({
-                  "source_label": source,
-                  "source": "$(execpath " + source + ")",
-                  "members": "$(execpath " + _DEB_ARCHIVES[source] + "/members.txt)",
-                  "version": "$(execpath " + _DEB_ARCHIVES[source] + "/debian-binary)",
-                  "control": "$(execpath " + _DEB_ARCHIVES[source] + "/control.archive)",
-                  "data": "$(execpath " + _DEB_ARCHIVES[source] + "/data.archive)",
-              }) + "'" for source in inputs["srcs"]]),
-        tools = ["//tools/bazel/oci:package_receipts"],
-        visibility = ["//visibility:private"],
-    )
-    for name, inputs in _PACKAGE_SETS.items()
-]
-
-[
-    filegroup(
-        name = name,
-        srcs = [name + "/payload.tar"],
-    )
-    for name in _PACKAGE_SETS
-]
-
-filegroup(
-    name = "runtime_import_manifest",
-    srcs = ["runtime_debs/manifest.json"],
-)
-
-normalize_layer(
-    name = "checked_runtime_payloads",
-    src = ":runtime_debs",
-    base = ":config_engine_base_layout",
-    expected_platform = "linux/amd64",
-)
-
-# Runtime inputs. Common, sairedis and metadata reuse SWSS's source targets.
-# Only the cached PI/BMv2/p4c and DASH SAI packages remain imported.
-# Both input adapters preserve the base's merged-usr directory aliases.
+# Source receipts bind owner TARs to the same APT dependency check.
 apt_layer(
     name = "runtime_layer",
     base = ":config_engine_base_layout",
@@ -434,7 +244,7 @@ apt_layer(
     lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
     packages = APT_INPUTS["syncd_vs_debian"]["amd64"],
     policy = _APT_POLICY,
-    retained_manifest = ":runtime_retained_packages",
+    source_receipt = ":source_package_receipt",
     variant = "runtime",
 )
 
@@ -466,7 +276,6 @@ debug_symbols_layer(
 sonic_layer(
     name = "runtime_packages",
     tars = [
-        ":checked_runtime_payloads",
         ":rdeps",
     ],
 )
@@ -477,7 +286,7 @@ installed_packages(
     architecture = "amd64",
     base = ":config_engine_base_layout",
     controls = [label + ":control" for label in APT_INPUTS["syncd_vs_debian"]["amd64"].values()],
-    retained_manifest = ":runtime_retained_packages",
+    source_receipt = ":source_package_receipt",
     source_spec = "//platform/vs/docker-syncd-vs/config:source_packages.json",
     sources = _SOURCE_PACKAGES,
 )
@@ -528,18 +337,6 @@ sonic_docker_archive(
     image = ":docker-syncd-vs",
 )
 
-filegroup(
-    name = "debug_import_manifest",
-    srcs = ["debug_debs/manifest.json"],
-)
-
-normalize_layer(
-    name = "checked_debug_payloads",
-    src = ":debug_debs",
-    base = ":docker-syncd-vs",
-    expected_platform = "linux/amd64",
-)
-
 # The base's source graph supplies its exact companion symbols. The installed
 # image validator checks every source ELF against the declared base receipts.
 sonic_layer(
@@ -558,7 +355,7 @@ apt_layer(
     lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
     packages = APT_INPUTS["syncd_vs_debug_debian"]["amd64"],
     policy = _APT_POLICY,
-    retained_manifest = ":debug_retained_packages",
+    source_receipt = ":source_package_receipt",
     variant = "debug",
 )
 
@@ -579,7 +376,7 @@ sonic_layer(
 )
 
 # Record exactly the packages added by this locked debug selection. The runtime
-# base already contains the source and deferred-package identities.
+# base already contains the source-package identities.
 write_file(
     name = "debug_source_packages",
     out = "debug-source-packages.json",
@@ -620,7 +417,7 @@ tar(
     ],
 )
 
-# Debug extends the exact runtime layers; only the deferred P4 inputs have symbol gaps.
+# Debug extends the exact runtime layers with matching symbols for every source ELF.
 oci_image(
     name = "docker-syncd-vs-dbg",
     base = ":docker-syncd-vs",
@@ -639,7 +436,7 @@ sonic_docker_archive(
 )
 
 # These contract tests need no production Make package inputs. The full VS job
-# separately validates the real imported packages and complete OCI images.
+# separately validates all source payloads and complete OCI images.
 test_suite(
     name = "ci_tests",
     tests = [
