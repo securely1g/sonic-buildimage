@@ -132,7 +132,9 @@
     }
   ],
   "p4_service": {
-    "compiler": "/usr/bin/p4c-bm2-ss",
+    "compiler": "/usr/bin/p4c",
+    "compiler_args": ["--target", "bmv2"],
+    "compiler_output_mode": "directory",
     "switch": "/usr/bin/simple_switch_grpc"
   },
   "redis_database_config": "/var/run/redis/sonic-db/database_config.json"
