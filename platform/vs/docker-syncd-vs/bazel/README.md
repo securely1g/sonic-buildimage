@@ -9,6 +9,12 @@ DASH SAI use their existing Autotools or CMake builds under Bazel and
 produce runtime/debug TARs directly. Existing Make package recipes remain
 available and unchanged.
 
+Autoconf, Automake, Libtool, Make, M4 and pkg-config are pinned Debian execution
+tools supplied by `sonic-build-infra`. The foreign builds use its declared GCC
+toolchain and tool runtimes. The selected `rules_foreign_cc` patch preserves
+ordinary, system and quote header search paths when invoking Make/configure;
+vendor headers therefore retain their intended warning and lookup behavior.
+
 ## Build
 
 During review, first prepare the exact source dependencies listed in the
@@ -26,6 +32,10 @@ prepare it inside the Trixie SONiC builder before a full Make build. The generat
 `.bazelrc.user` points to those private source directories. Registry settings
 remain `main` and the Bazel Central Registry; archive and patch integrity are
 verified by the preparation helper and Bazel.
+
+The manifest records the reviewed shared tool-runtime, foreign-rule and DASH
+source registrations together. Update their versions in `MODULE.bazel` and
+their source receipts together before regenerating the private overrides.
 
 Use the existing Make interface after configuring native VS:
 
