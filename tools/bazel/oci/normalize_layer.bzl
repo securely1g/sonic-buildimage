@@ -11,8 +11,6 @@ _DIRECTORY_ALIASES = {
 }
 
 def _normalize_layer_impl(ctx):
-    if not ctx.file.base.is_directory:
-        fail("normalize_layer requires one OCI layout directory as base")
     output = ctx.actions.declare_file(ctx.label.name + ".tar")
     receipt = ctx.actions.declare_file(ctx.label.name + ".normalization.json")
     policy = ctx.actions.declare_file(ctx.label.name + ".policy.json")
@@ -21,6 +19,7 @@ def _normalize_layer_impl(ctx):
         "directory_aliases": {name: {"linkname": target, "target": paths.normalize(paths.join(paths.dirname(name), target)).lstrip("/")} for name, target in ctx.attr.directory_aliases.items()},
         "root_owned": ctx.attr.root_owned,
         "modes": ctx.attr.modes,
+        "preserve_metadata": ctx.attr.preserve_metadata,
     }))
     args = ctx.actions.args()
     args.add("--src", ctx.file.src)
@@ -43,11 +42,12 @@ normalize_layer = rule(
     doc = "Normalize one TAR while retaining imported ownership unless root_owned is selected.",
     attrs = {
         "src": attr.label(allow_single_file = True, mandatory = True),
-        "base": attr.label(allow_single_file = True, mandatory = True),
+        "base": attr.label(allow_single_file = True, mandatory = True, doc = "Checked OCI layout or installed rootfs TAR."),
         "expected_platform": attr.string(mandatory = True),
         "directory_aliases": attr.string_dict(default = _DIRECTORY_ALIASES),
         "root_owned": attr.bool(default = False),
         "modes": attr.string_dict(),
+        "preserve_metadata": attr.string_list(doc = "Paths whose installed mode/uid/gid must be retained from the real Debian baseline."),
         "tars": attr.label_list(doc = "Original owner TAR edges retained for debug_symbols_layer's aspect."),
         "_tool": attr.label(default = Label("//tools/bazel/oci:normalize_layer_tool"), executable = True, cfg = "exec"),
     },

@@ -74,7 +74,7 @@ FILES = {
 }
 BEP = {
     "archive": [
-        ("archive-tests", "artifacts/archive/test-events.jsonl", 12),
+        ("archive-tests", "artifacts/archive/test-events.jsonl", 15),
         ("python-tests", "artifacts/config-engine/test-events.jsonl", 18),
     ],
     "source": [("source-tests", "artifacts/swss/test-events.jsonl", None)],
@@ -492,9 +492,14 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                 receipts["execution_audit"] = {"action_count": integer(value.get("action_count")),
                     "output_count": integer(value.get("output_count")),
                     "deb_output_count": len(value.get("deb_outputs", [])),
+                    "deb_packaging_action_count": len(value.get("deb_packaging_actions", [])),
+                    "deb_generation_authorized": value.get("deb_generation_authorized") is True,
                     "packaging_wrapper_count": len(value.get("packaging_wrappers", []))}
                 if job_status == "success":
-                    require(not receipts["execution_audit"]["deb_output_count"] and not receipts["execution_audit"]["packaging_wrapper_count"], "unsafe-execution-audit")
+                    audit = receipts["execution_audit"]
+                    require(not audit["packaging_wrapper_count"], "unsafe-execution-audit")
+                    require(not (audit["deb_output_count"] or audit["deb_packaging_action_count"]),
+                            "unexpected-deb-generation")
             except (ValueError, TypeError):
                 blocked.append({"input": "execution-audit", "reason": "invalid-execution-audit"})
     if kind == "vs" and job_status == "success":

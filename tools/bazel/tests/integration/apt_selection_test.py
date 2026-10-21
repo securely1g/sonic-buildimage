@@ -155,6 +155,24 @@ class AptSelectionTest(unittest.TestCase):
         self.assertEqual(receipt["dependency_check"]["status"], "satisfied")
         self.assertEqual(receipt["source_packages"][0]["source"]["target"], "@driver//:runtime")
 
+    def test_source_only_runtime_layers_do_not_supply_debian_controls(self):
+        fixture = Fixture(self.root)
+        receipt = self.source_receipt(fixture)
+        record = receipt["packages"][0]
+        record.pop("control_fields")
+        record.update(kind="runtime-layer", version=record["source"]["version"])
+        fixture.manifest.write_text(json.dumps(receipt))
+        retained, _, digest = subject.source_packages(fixture.manifest, policy=json.loads(fixture.policy.read_bytes()))
+        self.assertEqual(retained, {})
+        self.assertEqual(digest, hashlib.sha256(fixture.manifest.read_bytes()).hexdigest())
+        # The source TAR cannot satisfy the addon's >= 2.0 Debian dependency.
+        with self.assertRaises(ValueError):
+            fixture.select()
+        record["control_fields"] = {"Package": "local-driver"}
+        fixture.manifest.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, "must not claim Debian package controls"):
+            subject.source_packages(fixture.manifest, policy=json.loads(fixture.policy.read_bytes()))
+
     def test_source_receipt_is_bound_to_base_architecture_and_runtime_metadata(self):
         fixture = Fixture(self.root)
         original = self.source_receipt(fixture)
@@ -184,6 +202,40 @@ class AptSelectionTest(unittest.TestCase):
         self.assertEqual(receipt["source_receipt_sha256"], "c" * 64)
         self.assertEqual(receipt["retained_manifest_sha256"], hashlib.sha256(fixture.manifest.read_bytes()).hexdigest())
         self.assertEqual(receipt["dependency_check"]["packages"]["local-driver"]["Version"], "2.0")
+
+    def test_runtime_layer_does_not_satisfy_apt_dependencies(self):
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        source = manifest["source_packages"][0]
+        source.pop("control_fields")
+        source["kind"] = "runtime-layer"
+        fixture.manifest.write_text(json.dumps(manifest))
+        retained, _, _ = subject.retained_packages(fixture.manifest,
+            policy=subject.read_policy(fixture.policy), variant="runtime")
+        self.assertNotIn("local-driver", retained)
+        # The requested APT package really depends on local-driver >= 2.0.
+        # Having that name in a SONiC TAR cannot make the dependency valid.
+        with self.assertRaises(ValueError):
+            fixture.select()
+
+    def test_duplicate_runtime_layer_identity_is_rejected(self):
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        source = manifest["source_packages"][0]
+        source.pop("control_fields")
+        source["kind"] = "runtime-layer"
+        manifest["source_packages"].append(dict(source))
+        fixture.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "duplicate imported/source package identity"):
+            fixture.select()
+
+    def test_runtime_layer_cannot_inject_package_controls(self):
+        fixture = Fixture(self.root)
+        manifest = self.source_manifest(fixture)
+        manifest["source_packages"][0]["kind"] = "runtime-layer"
+        fixture.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "must not satisfy Debian dependencies"):
+            fixture.select()
 
     def test_source_inventory_rejects_missing_provenance_and_duplicate_owners(self):
         """A package cannot be supplied by both Make and source or lack a built TAR identity."""

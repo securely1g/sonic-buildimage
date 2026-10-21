@@ -14,7 +14,36 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci.base_images import verify_directory_aliases, verify_editor_commands, verify_source_files
 from tools.bazel.ci import base_images
+from tools.bazel.oci import base_runtime_smoke
 from tools.bazel.tests.oci_base_fixture import image_fixture, oci_files, write_layout
+
+
+class InstalledDirectoryAliasTest(unittest.TestCase):
+    def test_same_relative_target_accepts_umoci_prefix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            alias = Path(temporary) / "bin"
+            for target in ("usr/bin", "./usr/bin", "././usr/bin"):
+                with self.subTest(target=target):
+                    alias.symlink_to(target)
+                    base_runtime_smoke.verify_directory_alias(alias, "usr/bin")
+                    alias.unlink()
+            alias.symlink_to("/run")
+            base_runtime_smoke.verify_directory_alias(alias, "/run")
+
+    def test_changed_absolute_and_parent_targets_remain_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            alias = Path(temporary) / "bin"
+            for expected, target in [("usr/bin", value) for value in (
+                "usr/sbin", "../usr/bin", "./../usr/bin", "usr/../usr/bin", "/usr/bin", ".//usr/bin",
+            )] + [("/run", value) for value in ("run", "./run", ".//run")]:
+                with self.subTest(expected=expected, target=target):
+                    alias.symlink_to(target)
+                    with self.assertRaises(AssertionError):
+                        base_runtime_smoke.verify_directory_alias(alias, expected)
+                    alias.unlink()
+            alias.mkdir()
+            with self.assertRaises(AssertionError):
+                base_runtime_smoke.verify_directory_alias(alias, "usr/bin")
 
 
 class CachedImageLayoutTest(unittest.TestCase):
@@ -25,6 +54,7 @@ class CachedImageLayoutTest(unittest.TestCase):
             root = Path(temporary)
             artifacts = root / "artifacts"
             queries = []
+            collected_targets = {}
 
             def execute(command, directory, receipt, name, **kwargs):
                 if command[0] == "git":
@@ -46,6 +76,7 @@ class CachedImageLayoutTest(unittest.TestCase):
                 self.fail("unexpected command: " + repr(command))
 
             def cached_archives(workspace, directory, receipt, targets, **kwargs):
+                collected_targets.update(targets)
                 paths = {}
                 for name in targets:
                     paths[name] = directory / name
@@ -81,13 +112,13 @@ class CachedImageLayoutTest(unittest.TestCase):
                 mock.patch.object(base_images, "verify_directory_aliases"),
                 mock.patch.object(base_images, "verify_editor_commands"),
                 mock.patch.object(base_images, "verify_source_files", return_value={}),
-                mock.patch.object(base_images, "verify_symbols", return_value=[]),
                 mock.patch.object(base_images.image_validation, "installed_images_policy",
                                   return_value={"architecture": architecture, "images": []}),
             ]
             for patch in patches:
                 stack.enter_context(patch)
             audit = stack.enter_context(mock.patch.object(base_images.bazel_commands, "audit_targets", return_value={}))
+            symbols = stack.enter_context(mock.patch.object(base_images, "verify_symbols", return_value=[]))
             if fail_layout_build:
                 with self.assertRaises(subprocess.CalledProcessError):
                     base_images.main()
@@ -112,6 +143,20 @@ class CachedImageLayoutTest(unittest.TestCase):
                     self.assertNotIn(selection_target, audit.call_args.args[2])
                     self.assertNotIn("orchagent_base_selection", receipt)
                     self.assertFalse((artifacts / "docker-orchagent.runtime-apt-selection.json").exists())
+                self.assertIn("//tools/bazel/tests:installed_source_metadata_test", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:source_package_contract_test", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:unpack_oci_test", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:repack_oci_test", audit.call_args.args[2])
+                self.assertIn("//tools/bazel/tests:dpkg_state_validation_test", audit.call_args.args[2])
+                self.assertNotIn("allow_deb", audit.call_args.kwargs)
+                # Symbol checks use each complete installed filesystem, while
+                # source TARs remain inputs to the shared installed-image policy.
+                for image in base_images.IMAGES:
+                    installed = image + ".installed.tar"
+                    self.assertEqual(collected_targets[installed], "//dockers/" + image + ":rootfs")
+                    self.assertEqual(collected_targets[image + ".source.tar"],
+                                     "//dockers/" + image + ":source_runtime")
+                    self.assertIn(artifacts / installed, [call.args[1] for call in symbols.call_args_list])
 
     def test_cached_archives_materialize_layout_for_each_native_architecture(self):
         for architecture in ("amd64", "arm64"):

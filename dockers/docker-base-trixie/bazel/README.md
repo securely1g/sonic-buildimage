@@ -3,7 +3,7 @@
 These targets build `docker-base-trixie` and `docker-config-engine-trixie` from a
 pinned Debian seed, reviewed Debian packages, and the public source-build targets
 owned by SONiC components. For example, changing Common's C++ source rebuilds its
-runtime TAR and the config-engine image layer; it does not rebuild Debian.
+runtime package and the config-engine image layer; unchanged Debian inputs remain cached.
 
 ## Public targets
 
@@ -16,8 +16,12 @@ runtime TAR and the config-engine image layer; it does not rebuild Debian.
 | Either owner | `:runtime_package_metadata` | Installed package versions, source revisions and native file hashes |
 
 OCI means the standard container image layout consumed by `rules_oci`. A TAR is
-the filesystem archive produced by a component's packaging target. These builds
-create TARs, wheels and container images; they do not create DEB packages.
+the filesystem archive produced by a component's packaging target. All source
+components, including FIPS OpenSSL and the distro-library replacements, supply
+runtime/debug TARs directly. Python packages keep their wheel layers. Only
+existing, checksum-pinned Debian archives are installed by APT; this image graph
+creates no DEBs. Their genuine package records describe the installed Debian
+baseline, while separate provenance identifies the source TARs overlaid on it.
 
 ## Image assembly structure
 
@@ -61,8 +65,15 @@ its Python distribution metadata and both Python and CVL model directories, so
 pip in Make-built child containers can satisfy config-engine's model dependency.
 Eventd's separate rsyslog
 plugin package is not an input to this image in Make and is not added here.
-Libnl uses its precise runtime TARs, preserving `/etc/libnl-3` configuration and
-CLI plugins while leaving development linker symlinks to the development TARs.
+Libnl uses its original runtime package selections, preserving `/etc/libnl-3`
+configuration and CLI plugins while leaving development linker symlinks to the
+development packages.
+The real Debian `libnl-cli-3-200` baseline stays installed because packages such
+as `libteam5` depend on it. Its ten unused plugins under `libnl/cli` are excluded
+through standard dpkg path filters before installation. The source TAR provides
+all ten plugins under its compiled `libnl-3/cli` directory. Provenance and image
+checks require the source plugins and reject the excluded Debian copies,
+including after a later APT transaction.
 
 The shared image path normalizer places Common's database configuration under
 `/run/redis/sonic-db`, preserving Debian's `/var/run -> /run` link. The original
@@ -71,10 +82,18 @@ CI rejects payload paths that traverse the preserved directory aliases.
 Source-owned paths receive root ownership, and the database configuration uses
 mode `0644`, so a developer checkout's uid or umask cannot leak into the image.
 
-The base keeps Make's `vim-tiny` selection and hard link at `/usr/bin/vim`.
-It declares the `editor`, `ex`, `rview`, `vi`, and `view` alternatives from the
-pinned package's installation script, with each command resolving to
-`/usr/bin/vim.tiny`. Debug images may replace these alternatives with full Vim.
+The base keeps Make's `vim-tiny` selection. Its original installation script
+registers the editor commands, and Less registers `pager`, preserving the
+inherited `more` fallback. Debian owns those alternative records and updates
+them when packages are installed or removed.
+
+The image also provides `/usr/bin/vim -> vi`. This compatibility link follows
+Debian's selected editor instead of retaining an old executable through Make's
+hard link after an upgrade. It is image configuration, not a fabricated Vim Tiny
+package entry. Removing Vim Tiny leaves no executable behind through that link.
+Syncd debug installs full Vim, which manages its own `vim` command; removing it
+normally removes that command and restores `vi` to Vim Tiny. Orchagent debug
+retains Vim Tiny.
 
 Each native producer keeps its own runtime/debug split. The image's debug target
 collects those providers through the base chain. SymCrypt's integrity-sealed core
@@ -102,13 +121,17 @@ source archives, patches and overlays are verified by Bazel using the published
 registry recipes; no source-preparation step or temporary module override is
 needed.
 
+Existing Debian inputs use the shared installer; the SONiC source owners keep
+their runtime TAR interfaces. This does not add dependencies on source-DEB
+packaging branches.
+
 ```sh
 make -f tools/bazel/prepare_manifests.mk \
   'MANIFEST_METADATA=rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk' \
   BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 INCLUDE_FIPS=y \
   BUILD_WITH_BAZEL_WHEN_AVAILABLE=y DOCKERS_PATH=dockers
 
-bazel build //dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz
+python3 tools/bazel/oci/native_build.py build //dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz
 ```
 
 If this checkout previously used the draft source preparation helper, remove
@@ -119,6 +142,11 @@ resolved module graph and generated lock as build evidence.
 
 Sairedis, FIPS, socat and iproute2 also use published registrations. The images
 consume runtime and debug TARs without producing DEBs.
+
+The native launcher runs installation actions in the digest-pinned Trixie build
+container and mounts declared source overrides read-only. It requires a usable
+local Docker daemon. CI uses the same environment directly on native workers;
+package scripts run in a separate filesystem and network namespace.
 
 ## Make selection and direct ARM64 validation
 
@@ -131,7 +159,7 @@ unsupported-architecture error before building or publishing an archive. Direct
 native ARM64 validation selects both target and host platform:
 
 ```sh
-bazel build \
+python3 tools/bazel/oci/native_build.py build \
   --platforms=@sonic_build_infra//platforms:aarch64_trixie \
   --host_platform=@sonic_build_infra//platforms:aarch64_trixie \
   //dockers/docker-config-engine-trixie:docker-config-engine-trixie
@@ -144,41 +172,67 @@ remains downstream of these base-image targets.
 
 ## Package state and validation
 
-The shared `@sonic_build_infra//oci:installed_packages.bzl` rule preserves
-Debian control fields from the selected APT packages and reads source package
-identity from each producer's generated `runtime_packages.json` target. Its
-existing Debian control and changelog supply package fields and versions; the
-shared rule derives library dependencies from the actual runtime TARs and
-declared target libraries. `BUILD.bazel` maps Debian package names to those TARs.
+The shared `rules_distroless` `apt_install` rule installs selected, original
+Debian archives in a private filesystem. APT and dpkg run their original
+configuration scripts and triggers. For example, the certificate package creates
+`/etc/ca-certificates.conf`, and Vim registers its editor alternatives. These
+real package records remain unchanged when source TARs replace selected files.
+
+Source owners generate their metadata from existing Debian controls, changelogs
+and actual runtime TARs. The image checks each generated TAR digest against the
+selected payload before deriving its source provenance. The same generated
+metadata interface covers in-tree eventd and Rust supervisor utilities; package
+facts have no second handwritten JSON copy.
+
 Config-engine's producers validate their required package files before emitting
 metadata. For example, Common requires `libswsscommon.so.0` and its raw
 `var/run/redis/sonic-db/database_config.json`; a missing file fails the producer
-metadata action even during an ordinary image build. The in-tree eventd and
-Rust supervisor targets use the same rule.
+metadata action even during an ordinary image build. Eventd and the Rust
+supervisor use the same rule. The image retains its `/run` configuration
+location and libnl CLI plugin locations as additional checks, including the
+exclusion of Debian's unused plugin paths. Common's configuration is normalized
+to root ownership and mode `0644` while retaining `/var/run -> /run`.
 
-Config-engine adds only `run/redis/sonic-db/database_config.json` in its
-`source_paths.json`: this image must normalize the producer's `/var/run` path to
-`/run`, retain root ownership and mode `0644`, and preserve Debian's
-`/var/run -> /run` link. Final-image and installed-runtime checks still verify
-those properties and libnl's configuration files after assembly. The base
-image retains its existing path policy for the separate base-package producers.
+`installed_source_metadata.py` permits a source TAR to replace only files owned
+by its same-named Debian baseline package. It verifies the exact source bytes, symlink targets, modes
+and numeric ownership. Undeclared collisions and changes to package-manager
+state fail the build. The source declarations contain provenance and required
+paths, not copied package controls.
 
-The helper binds each record to its actual TAR label and selected owner module,
-checks required files and records native file hashes and ownership. It validates
-the final Debian dependency relationships before writing `/var/lib/dpkg/status`
-and the receipt under `/usr/share/sonic/bazel`. Architecture comes from the build.
-For sources in this workspace, the receipt says `workspace`; CI records the exact
-checkout separately. No frozen image-side SHA claims to identify current source.
+The image retains `base-packages.json` or `config-engine-packages.json` under
+`/usr/share/sonic/bazel`, bound to the exact installation receipt and filesystem.
+These receipts distinguish the actual Debian baseline version from the source
+revision/version. APT dependency resolution uses the genuine baseline records;
+it does not treat a newer source TAR as a fictitious installed package version.
+Ordinary SONiC programs without Debian packages remain outside dpkg's database.
 
-No package maintainer script runs on the build host. These records describe the
-image inventory; they do not create a DEB or perform a package-manager transaction.
+Each image generates standard APT preferences from the same declarations. A
+`Pin-Priority: -1` entry prevents normal APT version selection from replacing
+source-overlaid packages. It is not a guarantee against explicit removal,
+direct `dpkg` commands or administrator overrides. Supported transactions add
+unrelated packages while preserving source files. The build retains Debian's
+configuration effects and uses the source graph's matching debug TARs.
 
-`Bazel source base images` builds both architectures, verifies source hashes in
-the assembled image, checks all source ELF/debug pairs, and runs the installed
-config-engine image in a network-isolated container. It exercises cfggen
+Upstream `umoci repack` converts the configured filesystem into a delta against
+its actual OCI base, including deletions, while preserving inherited image
+settings. Matching source debug symbols remain separate TAR outputs. See
+[the shared installation workflow](../../../tools/bazel/oci/README.md#keep-dpkg-state-with-the-installed-files).
+
+`Bazel source base images` is configured to build both architectures, verify
+source hashes in the assembled image, check all source ELF/debug pairs, and run
+the installed config-engine image in a network-isolated container. It exercises cfggen
 rendering, valid and invalid YANG data, Python imports, command scripts, dynamic
 library loading, the legacy provider, and actual SymCrypt provider/engine hashes.
 The owner's original suites remain in their separate producer workflows.
+
+The workflow checks initial configuration, `dpkg --audit`, and `apt-get check`
+on native AMD64 and ARM64. It then installs `qrencode` and its `libqrencode4`
+dependency with APT, executes the new command, and checks that existing package
+versions and source files did not change. Config-engine's commands, Python
+imports, YANG validation and FIPS provider checks run again in that same container.
+The goal is to let users install extra packages; managing every SONiC component
+with `apt remove` or `apt upgrade` is outside this change.
+This native base/config-engine coverage does not enable ARM64 Orchagent or Syncd.
 
 ## Refreshing APT and Python inputs
 
@@ -210,3 +264,30 @@ and `sonic-fips@0.0.3-0565bc0426dde6a1e7c495de17707c9557f843a9` from
 registry `main`. The root retains the targeted
 `kernel_runtime_(amd64|arm64)` remote-download policy in
 `tools/bazel/common.bazelrc` because dependency `.bazelrc` files are not inherited.
+
+## Configure the foreign Debian packages first
+
+`//dockers/docker-base-trixie:configured_debian` now installs the existing
+`base_debian` lock selection with `rules_distroless`'s `apt_install`. For example,
+CA configuration and editor alternatives come from the actual Debian installation
+scripts. `configured_debian_receipt` records the original archive hashes, installed
+versions, and completed APT/dpkg checks.
+
+This manual target is a complete configured Debian filesystem TAR. It is an
+intermediate: it does not contain the source-built SONiC replacements, Python
+wheels, or SONiC configuration. The production target overlays the verified source-owned runtime TARs, then
+adds Python wheels, provenance, APT preferences and SONiC configuration.
+Config-engine repeats these stages on the completed source-built base.
+
+The input is the pinned official Debian image's one existing gzip layer, copied
+verbatim after OCI digest and platform validation. Multiple-layer bases are
+rejected; they must first be materialized with their whiteouts applied. The new
+stage's complete output replaces the private filesystem before `umoci repack`
+computes the OCI delta; this preserves removed package files as OCI whiteouts.
+
+The `Configure Debian packages` CI job runs on native AMD64 and ARM64 in the
+same digest-pinned Trixie build container as the shared rule's integration test.
+It grants Bubblewrap `SYS_ADMIN` and `NET_ADMIN` for namespace setup, then drops
+those capabilities before package scripts run. It audits the action graph for
+DEB generation, checks initial configuration before any repair transaction, and
+runs the additional-package install probe using the same image validator. No source packages or test DEBs are created by this job.

@@ -138,6 +138,13 @@ def package_identity(record, *, architecture):
     require(isinstance(name, str) and re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", name) and
             isinstance(record.get("version"), str) and record["version"] and
             record.get("architecture") == architecture, "unsupported source package identity")
+    source = record.get("source")
+    source_identity(source, name=name)
+    if record.get("kind") == "runtime-layer":
+        require(not {"control_fields", "deb", "deb_target"}.intersection(record),
+                "ordinary source layers must not claim Debian package controls: " + name)
+        require(record["version"] == source["version"], "runtime layer differs from source version: " + name)
+        return
     fields = record.get("control_fields")
     require(isinstance(fields, dict) and CONTROL_FIELDS <= fields.keys() and
             all(isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", key) for key in fields) and
@@ -145,16 +152,26 @@ def package_identity(record, *, architecture):
             (fields["Package"], fields["Version"], fields["Architecture"]) ==
             (name, record["version"], record["architecture"]),
             "invalid source package dependency controls: " + name)
-    source = record.get("source")
-    source_identity(source, name=name)
+    if "deb" in record:
+        deb = record["deb"]
+        require(isinstance(deb, dict) and set(deb) == {"target", "sha256", "data_sha256"} and
+                deb["target"] == source["target"] and all(
+                    isinstance(deb[key], str) and re.fullmatch(r"[0-9a-f]{64}", deb[key])
+                    for key in ("sha256", "data_sha256")),
+                "invalid source DEB provenance: " + name)
+        require(not record.get("path_modes") and not record.get("path_owners"),
+                "source DEB metadata must not be overridden: " + name)
 
 
 def source_identity(source, *, name):
     """Check SONiC commit and foreign release identities through one contract."""
-    require(isinstance(source, dict) and set(source) in
+    require(isinstance(source, dict) and (set(source) - {"module_version"}) in
             (SOURCE_FIELDS | {"commit"}, SOURCE_FIELDS | {"release"}) and
             all(isinstance(value, str) and value for value in source.values()),
             "invalid source package provenance: " + name)
+    if "module_version" in source:
+        require(source["module_version"] == source["version"].rsplit("-", 1)[0] and "commit" in source,
+                "declared source module version differs from its pinned version: " + name)
     if "commit" in source:
         pinned = (re.fullmatch(r"[0-9a-f]{40}", source["commit"]) and
                   source["version"].endswith("-" + source["commit"]))
@@ -198,8 +215,8 @@ def read_contract(path):
 
 def verify_modules(contract, module_files):
     """Bind provenance to the resolved registry modules, including their versions."""
-    expected = {record["source"]["module"]: record["source"]["version"] for record in contract["packages"]}
-    require(all(expected[record["source"]["module"]] == record["source"]["version"]
+    expected = {record["source"]["module"]: record["source"].get("module_version", record["source"]["version"]) for record in contract["packages"]}
+    require(all(expected[record["source"]["module"]] == record["source"].get("module_version", record["source"]["version"])
                 for record in contract["packages"]), "source packages disagree on their owner module version")
     require(set(module_files) == set(expected), "missing or unexpected source module files")
     digests = {}
@@ -254,12 +271,24 @@ def combine_tars(contract, paths, output_path, base_files):
         for record in contract["packages"]:
             name = record["package"]
             before = sha(paths[name])
+            if "deb" in record:
+                require(before == record["deb"]["data_sha256"],
+                        "source payload differs from its actual DEB: " + name)
             package_files = {}
             with tarfile.open(paths[name], "r:*") as source:
                 for member in source:
                     normalized = normalized_source_member(member)
                     if normalized is None:
                         continue
+                    if "deb" in record:
+                        if member.issym():
+                            normalized.mode = 0o777
+                        # Linux/dpkg ignores stored symlink permissions and
+                        # creates mode 0777 links. Preserve every ordinary mode
+                        # and numeric owner; no other permission change is valid.
+                        require((normalized.uid, normalized.gid) == (member.uid, member.gid) and
+                                (member.issym() or normalized.mode == member.mode),
+                                "source DEB metadata changed during normalization: " + name + ":" + member.name)
                     path = path_name(normalized.name)
                     item = metadata(normalized)
                     if member.isfile():
@@ -325,8 +354,9 @@ def assemble(contract_path, packages, module_files, base, runtime_tar, *, packag
         for record in contract["packages"]:
             name = record["package"]
             records.append({key: copy.deepcopy(record[key]) for key in
-                            ("package", "version", "architecture", "control_fields", "source")} |
-                           runtime_records[name])
+                            ("package", "version", "architecture", "control_fields", "source", "kind") if key in record} |
+                           runtime_records[name] |
+                           ({"deb": copy.deepcopy(record["deb"])} if "deb" in record else {}))
         result = {**identity(contract), "schema": RECEIPT_SCHEMA, "kind": "bazel_source", "contract_sha256": sha(contract_path),
                   "base_manifest_digest": base_digest, "module_file_sha256": modules,
                   "packages": records, "payload": payload,
@@ -352,6 +382,9 @@ def receipt_records(value, contract=None):
         require(record["package"] not in names, "duplicate source receipt package: " + record["package"])
         names.add(record["package"])
         require("debug" not in record, "runtime source receipt must not contain debug inputs")
+        if "deb" in record:
+            require(record.get("input_tar_sha256") == record["deb"]["data_sha256"],
+                    "source receipt payload differs from its actual DEB: " + record["package"])
         require(re.fullmatch(r"[0-9a-f]{64}", record.get("input_tar_sha256", "")) and
                 isinstance(record.get("files"), dict) and record["files"],
                 "source receipt lacks a package tar identity and inventory")
@@ -366,8 +399,10 @@ def receipt_records(value, contract=None):
         require(names == set(expected_records), "source receipt differs from the declared package owners")
         for record in records:
             expected = expected_records[record["package"]]
-            require(all(record[key] == expected[key] for key in
-                        ("package", "version", "architecture", "control_fields", "source")),
+            require(record.get("deb") == expected.get("deb"),
+                    "source receipt DEB differs from the reviewed contract: " + record["package"])
+            require(all(record.get(key) == expected.get(key) for key in
+                        ("package", "version", "architecture", "control_fields", "source", "kind")),
                     "source receipt package differs from the reviewed contract: " + record["package"])
     return records
 
