@@ -8,7 +8,7 @@ It does not build an image or package.
 
 ## Build and validate the source-based Syncd images
 
-After preparing the source dependencies, Make manifests and cached P4 inputs
+After preparing the source dependencies, source-built P4/DASH producers and Make manifests
 described in the [Syncd build instructions](../../../platform/vs/docker-syncd-vs/bazel/README.md),
 run this command in the native AMD64 build environment with Docker available:
 
@@ -92,11 +92,13 @@ is started, stopped or reconfigured.
 These checks establish installed-container behavior for the recorded bytes.
 They do not establish guest boot, SAI switch initialization, forwarding,
 package-manager equivalence, FIPS certification or complete debug coverage.
-Missing symbols remain explicit gaps. They also do not prove that the image's
-components were built from Bazel source actions.
+The Syncd package policy requires matching source symbols for PI, BMv2, P4C
+and DASH SAI as well as its other native source packages. Runtime probes alone
+do not prove source provenance; the source receipts and action audit establish
+that separate property.
 
 The `Installed-image validator` workflow tests the validator on native AMD64 and
 ARM64, including compiling a tiny C library and checking its split symbols with
 GDB. It does not build or run a SONiC image, compile P4/DASH producers, or create
-DEB packages. The current Syncd policy and cached P4 packages are AMD64-only;
+DEB packages. The current Syncd image policy is AMD64-only;
 ARM64 validator CI must not be reported as ARM64 image support.

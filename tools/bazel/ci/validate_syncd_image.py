@@ -29,12 +29,6 @@ TARGETS = {
     "debug_archive": OWNER + ":docker-syncd-vs-dbg.gz",
     "base": CONFIG_ENGINE + ":docker-config-engine-trixie",
     "policy": OWNER + ":package_policy",
-    "runtime_handoff": OWNER + ":runtime_import_manifest",
-    "debug_handoff": OWNER + ":debug_import_manifest",
-    # The validators read payload.tar beside each manifest. Request those TARs
-    # explicitly so top-level cache downloads materialize them in a fresh slave.
-    "runtime_payload": OWNER + ":runtime_debs",
-    "debug_payload": OWNER + ":debug_debs",
     "source_runtime": OWNER + ":source_runtime_payloads",
     "source_debug": OWNER + ":rdeps_debug_symbols",
     "source_receipt": OWNER + ":source_package_receipt",
@@ -94,10 +88,6 @@ def build_inputs(bazel, options, output):
     if set(paths) != set(targets):
         raise ValueError("Bazel did not return every requested image input")
     inputs = {key: paths[label] for key, label in TARGETS.items()}
-    for variant in ("runtime", "debug"):
-        sibling = inputs[variant + "_handoff"].with_name("payload.tar")
-        require(inputs[variant + "_payload"].resolve() == sibling.resolve(),
-                "Declared package payload is not beside its manifest: " + variant)
     return inputs
 
 
@@ -196,11 +186,11 @@ def validate_inputs(paths, *, output, redis_server):
         "source_receipt": paths["source_receipt"],
         "base_path": paths["base"],
     }
-    native = validate_native(paths["runtime_handoff"], paths["debug_handoff"],
+    native = validate_native(None, None,
                              policy=policy, **source_arguments)
     save(output / "native-packages.json", native)
     images = validate_images(
-        paths["runtime"], paths["debug"], paths["runtime_handoff"], paths["debug_handoff"],
+        paths["runtime"], paths["debug"], None, None,
         workspace / "target/bazel-manifests/docker-syncd-vs/manifest.json",
         workspace / "target/bazel-manifests/docker-syncd-vs-dbg/manifest.json", workspace,
         policy=policy, apt_lock_path=owner / "bazel/apt.lock.json",
