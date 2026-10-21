@@ -1,7 +1,19 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-21T06:35:10.133043Z",
+  "generated_at": "2026-10-21T06:48:58.210899Z",
   "pull_requests": [
+    {
+      "base_sha": "0ba9684b8379c68d4b349c3999cc6b3d2cfa2a37",
+      "draft": true,
+      "head_branch": "babysitter/image-dashboard-cycle1631",
+      "head_sha": "d47a0673dbbbc3ecf0d2050e54748706d94821bc",
+      "merged_at": null,
+      "number": 41,
+      "state": "open",
+      "title": "Fix image build timings and order PRs by latest build",
+      "updated_at": "2026-10-21T06:42:39Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/pull/41"
+    },
     {
       "base_sha": "0ba9684b8379c68d4b349c3999cc6b3d2cfa2a37",
       "draft": false,
@@ -461,6 +473,587 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "babysitter/image-dashboard-cycle1631",
+      "completed_at": null,
+      "conclusion": null,
+      "event": "pull_request",
+      "jobs": [
+        {
+          "architecture": "arm64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 119079367300,
+          "kind": "container",
+          "name": "Container archive (ARM64)",
+          "phases": {
+            "build": null,
+            "other": 5.0,
+            "setup": 31.0,
+            "upload": null,
+            "validation": 93.0
+          },
+          "started_at": "2026-10-21T06:42:47Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-21T06:42:50Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:42:48Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:42:55Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-21T06:42:50Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:13Z",
+              "conclusion": "success",
+              "duration_seconds": 18.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:42:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:18Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:43:13Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:18Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:43:18Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:24Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:43:18Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:44:36Z",
+              "conclusion": "success",
+              "duration_seconds": 72.0,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:43:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:44:57Z",
+              "conclusion": "success",
+              "duration_seconds": 21.0,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:44:36Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:44:57Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39557117450/job/119079367300"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 119079367500,
+          "kind": "container",
+          "name": "Container archive (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 3.0,
+            "setup": 32.0,
+            "upload": null,
+            "validation": 118.0
+          },
+          "started_at": "2026-10-21T06:42:45Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-21T06:42:46Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:42:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:42:49Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-21T06:42:46Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:09Z",
+              "conclusion": "success",
+              "duration_seconds": 20.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:42:49Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:14Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:43:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:14Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:43:14Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:20Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:43:14Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:44:53Z",
+              "conclusion": "success",
+              "duration_seconds": 93.0,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:43:20Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:45:18Z",
+              "conclusion": "success",
+              "duration_seconds": 25.0,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:44:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:45:18Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39557117450/job/119079367500"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 119079367640,
+          "kind": "source",
+          "name": "SWSS source layers (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 4.0,
+            "setup": 33.0,
+            "upload": null,
+            "validation": 21.0
+          },
+          "started_at": "2026-10-21T06:42:45Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-21T06:42:47Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:42:46Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:42:51Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-21T06:42:47Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:11Z",
+              "conclusion": "success",
+              "duration_seconds": 20.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:42:51Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:17Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:43:11Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:17Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:43:17Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:23Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-21T06:43:17Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:43:44Z",
+              "conclusion": "success",
+              "duration_seconds": 21.0,
+              "name": "Check Make handoff and archive validation",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-21T06:43:23Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Build and inspect SWSS runtime and debug layers",
+              "number": 8,
+              "phase": "build",
+              "started_at": "2026-10-21T06:43:44Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain the verified GitLab source downloads",
+              "number": 9,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload the source downloads for the VS job",
+              "number": 10,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public source layers and evidence",
+              "number": 12,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 22,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 23,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 24,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39557117450/job/119079367640"
+        }
+      ],
+      "pr_association": "github",
+      "pr_association_note": null,
+      "pr_numbers": [
+        41
+      ],
+      "run_id": 39557117450,
+      "source_sha": "d47a0673dbbbc3ecf0d2050e54748706d94821bc",
+      "started_at": "2026-10-21T06:42:42Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-21T06:42:48Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39557117450/attempts/1",
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/p4rt-cache-schema",
@@ -1479,9 +2072,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-21T06:37:40Z",
+          "conclusion": "success",
+          "duration_seconds": 992.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 119056829548,
@@ -1489,13 +2082,13 @@
           "name": "Container archive (AMD64)",
           "phases": {
             "build": null,
-            "other": 7.0,
-            "setup": 38.0,
-            "upload": null,
+            "other": 48.0,
+            "setup": 204.0,
+            "upload": 1.0,
             "validation": 731.0
           },
           "started_at": "2026-10-21T06:21:08Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-21T06:21:10Z",
@@ -1598,74 +2191,84 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-21T06:36:49Z",
+              "conclusion": "success",
+              "duration_seconds": 164.0,
               "name": "Check local cache reuse across fresh checkouts",
               "number": 11,
               "phase": "setup",
               "started_at": "2026-10-21T06:34:05Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-21T06:37:16Z",
+              "conclusion": "success",
+              "duration_seconds": 27.0,
               "name": "Retain generated module lock and graph",
               "number": 12,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-21T06:36:49Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-21T06:37:18Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Prepare public artifact list",
               "number": 13,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-21T06:37:16Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-21T06:37:19Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Upload public archive evidence",
               "number": 14,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-21T06:37:18Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-21T06:37:32Z",
+              "conclusion": "success",
+              "duration_seconds": 13.0,
               "name": "Post Set up Bazel",
               "number": 26,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-21T06:37:19Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-21T06:37:32Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository",
               "number": 27,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-21T06:37:32Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-21T06:37:33Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Stop containers",
               "number": 28,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-21T06:37:32Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-21T06:37:33Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 29,
+              "phase": "other",
+              "started_at": "2026-10-21T06:37:33Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39550019170/job/119056829548"
@@ -5610,9 +6213,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-21T05:27:25Z",
+          "conclusion": "cancelled",
+          "duration_seconds": 0.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 119055687086,
@@ -5626,7 +6229,7 @@
             "validation": null
           },
           "started_at": "2026-10-21T05:27:25Z",
-          "status": "queued",
+          "status": "completed",
           "steps": [],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39549650794/job/119055687086"
         },
@@ -11078,7 +11681,7 @@
           "completed_at": "2026-10-21T05:40:37Z",
           "conclusion": "failure",
           "duration_seconds": 406.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 104.0,
           "image_build_seconds": null,
           "job_id": 119010702966,
           "kind": "make-vs",
@@ -14387,8 +14990,8 @@
           "completed_at": "2026-10-21T05:33:32Z",
           "conclusion": "success",
           "duration_seconds": 5051.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2840.0,
+          "image_build_seconds": 2840.0,
           "job_id": 119004478385,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
@@ -19022,8 +19625,8 @@
           "completed_at": "2026-10-21T04:09:00Z",
           "conclusion": "success",
           "duration_seconds": 8340.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 6108.0,
+          "image_build_seconds": 6108.0,
           "job_id": 118992097034,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
@@ -24505,7 +25108,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39520644487/job/118974245536"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         27
@@ -26404,11 +27007,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39520468403/job/118966875626"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 39520468403,
       "source_sha": "d6cd3702a6fa73b67c06072eea11880a208886bf",
       "started_at": "2026-10-21T00:17:57Z",
@@ -29115,7 +29716,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39511909846/job/118938814391"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         23
@@ -30564,7 +31165,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39507813006/job/118936527342"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         21
@@ -32461,7 +33062,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39497610157/job/118903007523"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         25
@@ -34541,11 +35142,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490771811/job/118868888256"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39490771811,
       "source_sha": "e7e27b775e3dcbdcb9c4f9f474d5ac44173950b0",
       "started_at": "2026-10-20T20:17:58Z",
@@ -34651,11 +35250,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490771345/job/118863051815"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39490771345,
       "source_sha": "e7e27b775e3dcbdcb9c4f9f474d5ac44173950b0",
       "started_at": "2026-10-20T20:17:57Z",
@@ -35284,7 +35881,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490766764/job/118869452266"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         19
@@ -35917,11 +36514,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39490766434/job/118868713509"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39490766434,
       "source_sha": "c51cb8785e764729ae1e2877d9bc37bbab8f0c0b",
       "started_at": "2026-10-20T20:17:56Z",
@@ -36550,11 +37145,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39479411327/job/118843959964"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39479411327,
       "source_sha": "4dacfcfc932482c804c3754cadf18402dfa085ef",
       "started_at": "2026-10-20T18:58:25Z",
@@ -37183,11 +37776,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39479194151/job/118839868055"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39479194151,
       "source_sha": "8b3202ecfd1a462da988cd1623e3fdd737dbeec2",
       "started_at": "2026-10-20T18:56:55Z",
@@ -37816,11 +38407,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39478761640/job/118839079979"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39478761640,
       "source_sha": "2a1fabcccdf149e47cff13f623558fdfe945b981",
       "started_at": "2026-10-20T18:53:57Z",
@@ -39610,8 +40199,8 @@
           "completed_at": "2026-10-20T17:40:04Z",
           "conclusion": "failure",
           "duration_seconds": 4003.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2768.0,
+          "image_build_seconds": 2768.0,
           "job_id": 118751378555,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
@@ -40492,7 +41081,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39443064763/job/118717306929"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         39
@@ -43192,8 +43781,8 @@
           "completed_at": "2026-10-20T15:40:53Z",
           "conclusion": "failure",
           "duration_seconds": 3849.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2792.0,
+          "image_build_seconds": 2792.0,
           "job_id": 118689797782,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
@@ -46879,11 +47468,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39390253245/job/118546228528"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39390253245,
       "source_sha": "223c6ad7612f5d1032d5f6a303d8470472ca7175",
       "started_at": "2026-10-20T07:59:54Z",
@@ -48145,11 +48732,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39390251138/job/118548280655"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39390251138,
       "source_sha": "844fa57cf2f94d0795a6d8ae3917d38b708f4de5",
       "started_at": "2026-10-20T07:59:53Z",
@@ -48778,11 +49363,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39390250452/job/118540269659"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39390250452,
       "source_sha": "d81665bf1ccea7471ff9d0906abbff46b7b363df",
       "started_at": "2026-10-20T07:59:53Z",
@@ -49411,11 +49994,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39390250330/job/118538008249"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39390250330,
       "source_sha": "5fc47e5f6a9092845acc05baccbb4cf595962af5",
       "started_at": "2026-10-20T07:59:52Z",
@@ -51838,8 +52419,8 @@
           "completed_at": "2026-10-20T13:40:56Z",
           "conclusion": "failure",
           "duration_seconds": 4344.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 3433.0,
+          "image_build_seconds": 3433.0,
           "job_id": 118530120567,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
@@ -62554,8 +63135,8 @@
           "completed_at": "2026-10-20T04:33:14Z",
           "conclusion": "failure",
           "duration_seconds": 7627.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 7342.0,
+          "image_build_seconds": 7342.0,
           "job_id": 118420055538,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
@@ -63568,7 +64149,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346466577/job/118425384429"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         34
@@ -67426,11 +68007,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346228750/job/118413573440"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39346228750,
       "source_sha": "2e84e50877e8bea70c78a4257e8fade88af8f7dc",
       "started_at": "2026-10-20T00:12:10Z",
@@ -68059,11 +68638,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346204760/job/118397530007"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39346204760,
       "source_sha": "0ac901796f225e6473d24d23ebf54137be8f9833",
       "started_at": "2026-10-20T00:11:56Z",
@@ -68692,11 +69269,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346185596/job/118405349290"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 39346185596,
       "source_sha": "b660dd8e8aa69382ac721f200a7f14686b5e3d88",
       "started_at": "2026-10-20T00:11:45Z",
@@ -69325,11 +69900,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346165716/job/118414894326"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39346165716,
       "source_sha": "56a562ff8646c3ff02c0c9b8f21e1e77756f84cd",
       "started_at": "2026-10-20T00:11:32Z",
@@ -70591,7 +71164,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346080273/job/118411043253"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         35
@@ -71224,11 +71797,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346053681/job/118406413173"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39346053681,
       "source_sha": "9653d0afdf991d026ee7bd7caa5161154dac2a7c",
       "started_at": "2026-10-20T00:10:28Z",
@@ -72490,11 +73061,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39346006911/job/118393069715"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 39346006911,
       "source_sha": "e68faf4061a43952108232828fe1e16d98bbf1a1",
       "started_at": "2026-10-20T00:10:01Z",
@@ -75588,11 +76157,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39342278267/job/118380460678"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39342278267,
       "source_sha": "30e1fcbfdc42b244e8681fdfe59f319eedd12704",
       "started_at": "2026-10-19T23:33:14Z",
@@ -77161,7 +77728,7 @@
           "completed_at": "2026-10-20T01:06:49Z",
           "conclusion": "failure",
           "duration_seconds": 1268.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 988.0,
           "image_build_seconds": null,
           "job_id": 118390216194,
           "kind": "make-vs",
@@ -78775,11 +79342,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39341726561/job/118380268364"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39341726561,
       "source_sha": "d1b96b8c43b25300aff682ba99aac10c352a1bc4",
       "started_at": "2026-10-19T23:27:55Z",
@@ -79388,11 +79953,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39341707090/job/118380512359"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39341707090,
       "source_sha": "69efb3c66c26ddbe3c06f9146809684454fbdeec",
       "started_at": "2026-10-19T23:27:44Z",
@@ -81057,11 +81620,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39341495991/job/118390322003"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39341495991,
       "source_sha": "2e74454ed983aaf74f483851f94e09f54c0c482c",
       "started_at": "2026-10-19T23:25:40Z",
@@ -82446,11 +83007,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39341290818/job/118375383423"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39341290818,
       "source_sha": "d5eea58af2eb23d36e86f6c5b72d2059dd466142",
       "started_at": "2026-10-19T23:23:44Z",
@@ -82898,11 +83457,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39341123093/job/118373673468"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 39341123093,
       "source_sha": "813f3329d422ff3928c298c419b6c506d966c7fc",
       "started_at": "2026-10-19T23:22:05Z",
@@ -85158,11 +85715,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39341060888/job/118378958496"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39341060888,
       "source_sha": "8c95a3e7cb4ded2b7e00dc360d17d87db3aab105",
       "started_at": "2026-10-19T23:21:28Z",
@@ -85791,11 +86346,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39341045118/job/118378625135"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 39341045118,
       "source_sha": "931e471a87b85c1605e2d88410c9da9e4fadcd9f",
       "started_at": "2026-10-19T23:21:18Z",
@@ -88238,11 +88791,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39336909321/job/118364222912"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39336909321,
       "source_sha": "5e79998f3d2f87af9838c0b4de91520b588a12fa",
       "started_at": "2026-10-19T22:43:16Z",
@@ -88871,11 +89422,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39336901988/job/118359494781"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39336901988,
       "source_sha": "c43d07ed3809f4873994f67819ca7c0f15277b06",
       "started_at": "2026-10-19T22:43:12Z",
@@ -92770,11 +93319,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39335774668/job/118365691163"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39335774668,
       "source_sha": "4865f0feaf4e37016e867ee36b2052a168f59b68",
       "started_at": "2026-10-19T22:33:22Z",
@@ -93242,11 +93789,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39335756829/job/118365596425"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39335756829,
       "source_sha": "1dbcd919d73567a43b988553810453690ee7db3b",
       "started_at": "2026-10-19T22:33:13Z",
@@ -94327,11 +94872,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39335720149/job/118365967829"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39335720149,
       "source_sha": "6e4620598b0bcdc87017ce8d57efe6911631ce2e",
       "started_at": "2026-10-19T22:32:53Z",
@@ -94960,11 +95503,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39335702753/job/118364139740"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 39335702753,
       "source_sha": "4b93b9d4f7bf79be5a62fd196f2b907676107603",
       "started_at": "2026-10-19T22:32:44Z",
@@ -96678,11 +97219,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39335526727/job/118356777275"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 39335526727,
       "source_sha": "634f3be722748de18139b61a45452c76e006ca31",
       "started_at": "2026-10-19T22:31:13Z",
@@ -97311,11 +97850,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39335509504/job/118357376503"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39335509504,
       "source_sha": "781b2db9e2a3dc173ea2e74a7b49831c7c8327a9",
       "started_at": "2026-10-19T22:31:04Z",
@@ -105357,11 +105894,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192697514/job/117902276387"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39192697514,
       "source_sha": "5f1f2ba229025c9f1a7cbc93ee93a5f5a5df9d9b",
       "started_at": "2026-10-19T03:01:34Z",
@@ -106020,11 +106555,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192684212/job/117896627646"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39192684212,
       "source_sha": "eead52a438c7c42d91f1332c913a9ce8f527615e",
       "started_at": "2026-10-19T03:01:24Z",
@@ -109730,11 +110263,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192142305/job/117899305514"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39192142305,
       "source_sha": "2e4782e9e6120c0d88673ba202af3c4bbae8866b",
       "started_at": "2026-10-19T02:54:25Z",
@@ -110393,11 +110924,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192129590/job/117891854173"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39192129590,
       "source_sha": "9b965a9af01088d67547409a18bf1a4f25fdb3bf",
       "started_at": "2026-10-19T02:54:16Z",
@@ -111056,11 +111585,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192120680/job/117882277815"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 39192120680,
       "source_sha": "1699b8b11c67c99657d065e790ac4fd9a399290b",
       "started_at": "2026-10-19T02:54:10Z",
@@ -111719,11 +112246,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192113365/job/117902003295"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39192113365,
       "source_sha": "ed7596275d9c009f10df7a44700048a23155c2a7",
       "started_at": "2026-10-19T02:54:04Z",
@@ -113045,11 +113570,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192099037/job/117890666591"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39192099037,
       "source_sha": "64ebf9d8cd3e97351eabba80bfd080a13f610e5e",
       "started_at": "2026-10-19T02:53:53Z",
@@ -114371,11 +114894,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39192084783/job/117881634250"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 39192084783,
       "source_sha": "15d26f053410b23919dd996cb695b9841a9dfa6b",
       "started_at": "2026-10-19T02:53:42Z",
@@ -118422,11 +118943,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39191298964/job/117878020954"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39191298964,
       "source_sha": "2f00e63ed4adce42064f5bf549ec144483b63165",
       "started_at": "2026-10-19T02:43:28Z",
@@ -121569,11 +122088,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39189676815/job/117867241031"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 39189676815,
       "source_sha": "d9456d0369339c8a433973c3a4f5dbee09cb873e",
       "started_at": "2026-10-19T02:22:47Z",
@@ -122232,11 +122749,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39189662984/job/117866941218"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39189662984,
       "source_sha": "0b2bf1351d6beaf3c1e903689b65909c9d1d9f18",
       "started_at": "2026-10-19T02:22:36Z",
@@ -123176,11 +123691,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39189634823/job/117867902045"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39189634823,
       "source_sha": "65189c7fd6e55e928c1543a05c26c207625a8f35",
       "started_at": "2026-10-19T02:22:13Z",
@@ -123457,11 +123970,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39189548608/job/117867616601"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 39189548608,
       "source_sha": "43e263e2f62ee93a2731b202d63d000508b2a63c",
       "started_at": "2026-10-19T02:21:04Z",
@@ -123929,11 +124440,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39189539975/job/117869118027"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39189539975,
       "source_sha": "e162cc820042a1e6fbc4e774c8d88581231ea48d",
       "started_at": "2026-10-19T02:20:58Z",
@@ -124592,11 +125101,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39189530002/job/117867647395"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39189530002,
       "source_sha": "5d32c36edfb21dad33b3daf59e93eb0de1ff2632",
       "started_at": "2026-10-19T02:20:50Z",
@@ -128299,11 +128806,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39188488923/job/117859880343"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 39188488923,
       "source_sha": "44a8f7804b80641fd3cf539de7a10c5725c7d2ea",
       "started_at": "2026-10-19T02:07:45Z",
@@ -128409,11 +128914,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39188466083/job/117859893015"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 39188466083,
       "source_sha": "5b457b7b6c4aa86171faa56c8f579837d8884bfc",
       "started_at": "2026-10-19T02:07:27Z",
@@ -128820,11 +129323,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39188424318/job/117859909514"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 39188424318,
       "source_sha": "c7a6a723afe2a712a47592294a2f6be5ebae983f",
       "started_at": "2026-10-19T02:06:58Z",
@@ -129573,11 +130074,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39188378258/job/117858252392"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 39188378258,
       "source_sha": "ede344c9bf92e9462d6d6581542c158a8f637834",
       "started_at": "2026-10-19T02:06:21Z",
@@ -129854,11 +130353,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39188363087/job/117859843579"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39188363087,
       "source_sha": "04b12d033dd6fb3d5146ba98348080b19bda4223",
       "started_at": "2026-10-19T02:06:09Z",
@@ -130155,11 +130652,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39188354189/job/117860229412"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 39188354189,
       "source_sha": "2d8f408344d1a223f8e05011d5706aef68829833",
       "started_at": "2026-10-19T02:06:02Z",
@@ -139966,11 +140461,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39181191815/job/117844262864"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39181191815,
       "source_sha": "f1175e90a2d8198fd5f6daf94ddd1eea794265e6",
       "started_at": "2026-10-19T00:31:54Z",
@@ -140599,11 +141092,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39181168857/job/117843313125"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39181168857,
       "source_sha": "d6ba518c8cb01363e38bef56876f24cfb5ba14d0",
       "started_at": "2026-10-19T00:31:38Z",
@@ -141232,11 +141723,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39176122224/job/117827748991"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39176122224,
       "source_sha": "e70dc4bcf0c247077b4c36334ba1a658d74d575b",
       "started_at": "2026-10-18T23:20:45Z",
@@ -147934,11 +148423,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39100500885/job/117602997277"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39100500885,
       "source_sha": "0236891de4c7e01c6fdecdecdacbf07647c79123",
       "started_at": "2026-10-18T05:25:34Z",
@@ -148567,11 +149054,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39100496579/job/117603711129"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39100496579,
       "source_sha": "2041bcab1fa47e90026fc86b1f50ef2eaa9e0ced",
       "started_at": "2026-10-18T05:25:30Z",
@@ -149200,11 +149685,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39099568119/job/117596966683"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39099568119,
       "source_sha": "ab6d6c8d9b5747323fa472c7c6d224ebb8865b81",
       "started_at": "2026-10-18T05:09:14Z",
@@ -149833,11 +150316,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39099564702/job/117596971414"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39099564702,
       "source_sha": "c2adf182ad61bfd55c2c5b79c064fc0c43d4b8fa",
       "started_at": "2026-10-18T05:09:11Z",
@@ -151362,11 +151843,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39099132483/job/117593201084"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39099132483,
       "source_sha": "c11bea8851d8ca9c9820c9583a44ae8379a98d3d",
       "started_at": "2026-10-18T05:01:54Z",
@@ -151995,11 +152474,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39099103737/job/117591745556"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39099103737,
       "source_sha": "844760efc369e6f84e34d895c061d217a74510fe",
       "started_at": "2026-10-18T05:01:23Z",
@@ -152628,11 +153105,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39098596706/job/117591755869"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39098596706,
       "source_sha": "33b1e86572c09b5a718e6f92e26385a3491a1632",
       "started_at": "2026-10-18T04:52:21Z",
@@ -153261,11 +153736,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39095472139/job/117587235244"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39095472139,
       "source_sha": "614abb12614226e613af72dd253047957679691b",
       "started_at": "2026-10-18T03:58:26Z",
@@ -153894,11 +154367,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39095381938/job/117582301455"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39095381938,
       "source_sha": "6a5365bb9e90ae655a80bf7461adcdbafd7b6f20",
       "started_at": "2026-10-18T03:56:44Z",
@@ -154527,11 +154998,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39093636795/job/117582897075"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        35
-      ],
+      "pr_numbers": [],
       "run_id": 39093636795,
       "source_sha": "d2c0d30682288114a5b34ae5fdf09a631ffede7c",
       "started_at": "2026-10-18T03:26:38Z",
@@ -155160,11 +155629,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39091662740/job/117571418711"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39091662740,
       "source_sha": "0efd9a9b1e55161054ed07d6f6ea01f806952d3f",
       "started_at": "2026-10-18T02:53:12Z",
@@ -157585,11 +158052,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39086472156/job/117561554877"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        34
-      ],
+      "pr_numbers": [],
       "run_id": 39086472156,
       "source_sha": "da63d41be277ba678b45cf4b93990052bd02c5b5",
       "started_at": "2026-10-18T01:26:06Z",
@@ -161802,11 +162267,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39083884231/job/117553049241"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 39083884231,
       "source_sha": "27e0ccaa8baadbafdfd935b7948f1176acc76dc3",
       "started_at": "2026-10-18T00:44:33Z",
@@ -166641,11 +167104,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38533058243/job/115752826015"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 38533058243,
       "source_sha": "2c854af0cca70c449300b2cdb3af62cc7628148e",
       "started_at": "2026-10-14T08:08:42Z",
@@ -167907,11 +168368,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38530613872/job/115757201170"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 38530613872,
       "source_sha": "a9f52d7fb1a6ac75ed3e467bb9fbc2058028c8e1",
       "started_at": "2026-10-14T07:47:10Z",
@@ -169173,7 +169632,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38530417555/job/115752613381"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         24
@@ -169806,11 +170265,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38331172213/job/115087400590"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38331172213,
       "source_sha": "a52c2dbf519d638542d42605f1c26ce87dc5fc42",
       "started_at": "2026-10-13T01:14:26Z",
@@ -170439,11 +170896,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38331107324/job/115091133517"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 38331107324,
       "source_sha": "4edbbf32a102263e6595b1cd42520d299b6cb967",
       "started_at": "2026-10-13T01:13:36Z",
@@ -171072,11 +171527,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38331106632/job/115092750965"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 38331106632,
       "source_sha": "078b69096993c5fce6cd913d7b1dd4b440cb3b29",
       "started_at": "2026-10-13T01:13:36Z",
@@ -171705,11 +172158,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38331101251/job/115094361622"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 38331101251,
       "source_sha": "92cc2f6e05526cd252f6b15a7ac2d3240c86f745",
       "started_at": "2026-10-13T01:13:32Z",
@@ -173234,11 +173685,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38330905803/job/115089558020"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 38330905803,
       "source_sha": "25270244455b1038624115e863f3a05e910fb629",
       "started_at": "2026-10-13T01:11:03Z",
@@ -173867,11 +174316,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38330900926/job/115080441818"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 38330900926,
       "source_sha": "8116969d06e11c34a72e3b2f17ab7497e95c41b8",
       "started_at": "2026-10-13T01:10:59Z",
@@ -174500,11 +174947,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38330898148/job/115080423274"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 38330898148,
       "source_sha": "c671b5c8edca0c27da0f78b4f80ca318f1f055d9",
       "started_at": "2026-10-13T01:10:57Z",
@@ -175133,11 +175578,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38330790778/job/115082517604"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38330790778,
       "source_sha": "a4e6362a3760a4d979853ae846df0951614d6449",
       "started_at": "2026-10-13T01:09:41Z",
@@ -176794,11 +177237,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38292866266/job/114973281879"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38292866266,
       "source_sha": "d4ebd614d25b73fd4e3cd90680108bd063a8915d",
       "started_at": "2026-10-12T18:43:43Z",
@@ -181615,7 +182056,7 @@
           "completed_at": "2026-10-12T00:38:49Z",
           "conclusion": "failure",
           "duration_seconds": 1894.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 1628.0,
           "image_build_seconds": null,
           "job_id": 114610743277,
           "kind": "make-vs",
@@ -182742,7 +183183,7 @@
           "completed_at": "2026-10-11T23:51:06Z",
           "conclusion": "failure",
           "duration_seconds": 1329.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 1079.0,
           "image_build_seconds": null,
           "job_id": 114598806371,
           "kind": "make-vs",
@@ -184317,11 +184758,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38179201082/job/114596889193"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38179201082,
       "source_sha": "2713de0560f48d4e54b8b8c89ef9e14585676e4b",
       "started_at": "2026-10-11T22:08:15Z",
@@ -185583,11 +186022,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38177489022/job/114591496241"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38177489022,
       "source_sha": "ec0fdbe816bc6bbbeef4edd10fa93c187002ae2b",
       "started_at": "2026-10-11T21:42:39Z",
@@ -187727,7 +188164,7 @@
           "completed_at": "2026-10-11T23:27:57Z",
           "conclusion": "failure",
           "duration_seconds": 5169.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 4897.0,
           "image_build_seconds": null,
           "job_id": 114586639431,
           "kind": "make-vs",
@@ -192077,7 +192514,7 @@
           "completed_at": "2026-10-11T20:24:34Z",
           "conclusion": "failure",
           "duration_seconds": 913.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 666.0,
           "image_build_seconds": null,
           "job_id": 114553805988,
           "kind": "make-vs",
@@ -192959,7 +193396,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38164252292/job/114552897967"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         31
@@ -194530,7 +194967,7 @@
           "completed_at": "2026-10-11T20:09:03Z",
           "conclusion": "failure",
           "duration_seconds": 4805.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 4522.0,
           "image_build_seconds": null,
           "job_id": 114546768013,
           "kind": "make-vs",
@@ -195657,7 +196094,7 @@
           "completed_at": "2026-10-11T17:48:05Z",
           "conclusion": "failure",
           "duration_seconds": 787.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 500.0,
           "image_build_seconds": null,
           "job_id": 114531461034,
           "kind": "make-vs",
@@ -197477,7 +197914,7 @@
           "completed_at": "2026-10-11T17:25:44Z",
           "conclusion": "failure",
           "duration_seconds": 804.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 541.0,
           "image_build_seconds": null,
           "job_id": 114526777758,
           "kind": "make-vs",
@@ -198604,7 +199041,7 @@
           "completed_at": "2026-10-11T16:47:44Z",
           "conclusion": "failure",
           "duration_seconds": 1505.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 1226.0,
           "image_build_seconds": null,
           "job_id": 114516624202,
           "kind": "make-vs",
@@ -205173,11 +205610,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38142041870/job/114486471918"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 38142041870,
       "source_sha": "b9f2aee739e3d437e648a9405ed6ae0061c61683",
       "started_at": "2026-10-11T13:09:14Z",
@@ -206439,11 +206874,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38140893793/job/114478100923"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        27
-      ],
+      "pr_numbers": [],
       "run_id": 38140893793,
       "source_sha": "3af2cb12b62e5baab2e162b375bc8bbdc8460017",
       "started_at": "2026-10-11T12:51:52Z",
@@ -207072,11 +207505,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38134641471/job/114457885792"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 38134641471,
       "source_sha": "0605a6bf7b5d79573a4e30f593f72a54acf239d1",
       "started_at": "2026-10-11T11:11:17Z",
@@ -207705,11 +208136,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38132726031/job/114459073119"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 38132726031,
       "source_sha": "c6fc118e4644c4baee872c73efc0db9e12054acd",
       "started_at": "2026-10-11T10:39:25Z",
@@ -208338,11 +208767,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38132693798/job/114457810682"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        24
-      ],
+      "pr_numbers": [],
       "run_id": 38132693798,
       "source_sha": "8584262b5db50837ecfef7c31ba383f24d5e7de8",
       "started_at": "2026-10-11T10:38:54Z",
@@ -208971,7 +209398,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38132633423/job/114458882764"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         26
@@ -209604,11 +210031,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38132255649/job/114456243443"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38132255649,
       "source_sha": "8bcff4db8b2271f14870b85780e22063c208891f",
       "started_at": "2026-10-11T10:31:29Z",
@@ -210217,11 +210642,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38132243799/job/114449378650"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38132243799,
       "source_sha": "a48137ae160a7eebac60b06cf37c942cff959f5b",
       "started_at": "2026-10-11T10:31:18Z",
@@ -211483,11 +211906,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38131662494/job/114449407399"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38131662494,
       "source_sha": "f2c1f65f5a93e1470c3444cc9a7b8ec0a12268e5",
       "started_at": "2026-10-11T10:21:30Z",
@@ -212116,11 +212537,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38131509311/job/114452723604"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        25
-      ],
+      "pr_numbers": [],
       "run_id": 38131509311,
       "source_sha": "edef67e213a280c70e2340ec5582951395197b49",
       "started_at": "2026-10-11T10:19:00Z",
@@ -212749,7 +213168,7 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38130663776/job/114451904882"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "commit",
       "pr_association_note": null,
       "pr_numbers": [
         24
@@ -213382,11 +213801,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38129966127/job/114447159722"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38129966127,
       "source_sha": "43bef8fa5c74efe67e01e99cbede03864a914599",
       "started_at": "2026-10-11T09:53:18Z",
@@ -214015,11 +214432,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38129638154/job/114449836002"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 38129638154,
       "source_sha": "7770f7e2410d2453be3d5ebcc898095c9027bc20",
       "started_at": "2026-10-11T09:47:41Z",
@@ -214648,11 +215063,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38129637857/job/114449700237"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 38129637857,
       "source_sha": "f98e01533566a39487b901216b7bdd424359b5ad",
       "started_at": "2026-10-11T09:47:41Z",
@@ -215281,11 +215694,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38129547599/job/114442919685"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        23
-      ],
+      "pr_numbers": [],
       "run_id": 38129547599,
       "source_sha": "347e0c228ef03fbe95219e8b7abcf0669cd5b89e",
       "started_at": "2026-10-11T09:46:09Z",
@@ -217180,11 +217591,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38128967074/job/114441878738"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        21
-      ],
+      "pr_numbers": [],
       "run_id": 38128967074,
       "source_sha": "42175f6907416916070756d0de27db438c1d47f0",
       "started_at": "2026-10-11T09:36:21Z",
@@ -217813,11 +218222,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38128759910/job/114441874565"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 38128759910,
       "source_sha": "ea6122e4e95115dc13876f96322f3ded421627c6",
       "started_at": "2026-10-11T09:32:54Z",
@@ -219079,11 +219486,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38128523385/job/114441877445"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        19
-      ],
+      "pr_numbers": [],
       "run_id": 38128523385,
       "source_sha": "b88958212c3105c24d07d13a8a5b247510bf1a66",
       "started_at": "2026-10-11T09:29:03Z",
@@ -219877,8 +220282,8 @@
           "completed_at": "2026-10-11T10:24:44Z",
           "conclusion": "success",
           "duration_seconds": 3514.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2168.0,
+          "image_build_seconds": 2168.0,
           "job_id": 114434724993,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
@@ -220709,11 +221114,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38126366909/job/114439326508"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 38126366909,
       "source_sha": "8891c39ef456d1d7efdc05cae2652b6f2678fbce",
       "started_at": "2026-10-11T08:52:46Z",
@@ -244495,11 +244898,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38026830631/job/114145665091"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 38026830631,
       "source_sha": "a1c15a67311d088ea864ee80516cf4181d59e929",
       "started_at": "2026-10-10T05:14:30Z",
@@ -257786,11 +258187,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/38004815828/job/114081962897"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 38004815828,
       "source_sha": "3f7bf2506c412d2dde7bf316b02ab8b6e2aa3664",
       "started_at": "2026-10-09T23:31:07Z",
@@ -263013,11 +263412,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/37827719873/job/113505700919"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 37827719873,
       "source_sha": "35f3ef3ed8289a3e914e91ee31558a9aad5dc626",
       "started_at": "2026-10-08T18:53:09Z",
@@ -274896,11 +275293,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/37592125779/job/112699293972"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 37592125779,
       "source_sha": "e5e47e872f6463aedce69f4f3a884cf0bcdbd33d",
       "started_at": "2026-10-07T08:11:30Z",
@@ -275660,11 +276055,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/37589753539/job/112691955404"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 37589753539,
       "source_sha": "300629202d86df96cfb6a8ef802c7c3b3519a370",
       "started_at": "2026-10-07T07:49:41Z",
@@ -276263,11 +276656,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/37589086109/job/112688198494"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        14
-      ],
+      "pr_numbers": [],
       "run_id": 37589086109,
       "source_sha": "a317bdd192cc16a2ab10816ac07bf80b210f8f57",
       "started_at": "2026-10-07T07:43:23Z",
