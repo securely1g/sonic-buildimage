@@ -30,7 +30,7 @@ SOURCE_FILES = (
     "tools/bazel/ci/artifact_validation.py", "tools/bazel/ci/resolution.py",
     "tools/bazel/gzip/source_archive.py", "tools/bazel/ci/public_artifacts.py",
     "tools/bazel/prepare_manifests.mk", "rules/functions", ".github/workflows/bazel-oci.yml",
-    "tools/bazel/oci/source_modules.bzl",
+    "tools/bazel/oci/source_contract.bzl",
 )
 
 

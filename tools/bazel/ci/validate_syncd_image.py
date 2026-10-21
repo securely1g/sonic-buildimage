@@ -32,6 +32,7 @@ TARGETS = {
     "source_runtime": OWNER + ":source_runtime_payloads",
     "source_debug": OWNER + ":rdeps_debug_symbols",
     "source_receipt": OWNER + ":source_package_receipt",
+    "source_contract": OWNER + ":source_contract",
     "runtime_apt": OWNER + ":apt_deps",
     "debug_tools": OWNER + ":debug_tools",
     "runtime_selection": OWNER + ":runtime_apt_selection",
@@ -177,7 +178,7 @@ def validate_inputs(paths, *, output, redis_server):
     """Validate the declared outputs of the audited source-image build."""
     workspace = Path.cwd()
     owner = workspace / "platform/vs/docker-syncd-vs"
-    contract = owner / "config/source_packages.json"
+    contract = paths["source_contract"]
     policy = read_policy(paths["policy"])
     source_arguments = {
         "source_contract_path": contract,
