@@ -9,7 +9,7 @@ ARG git_commit
 ## Make apt-get non-interactive
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update
+RUN apt-get update{% if P4RT_BUILD_WITH_BAZEL_TARS | default("n") == "y" %} && apt-get install -y --no-install-recommends libgmpxx4ldbl{% endif %}
 
 {% if docker_sonic_p4rt_debs.strip() -%}
 # Copy locally-built Debian package dependencies
@@ -19,6 +19,11 @@ RUN apt-get update
 {{ install_debian_packages(docker_sonic_p4rt_debs.split(' ')) }}
 {%- endif %}
 
+{% if P4RT_BUILD_WITH_BAZEL_TARS | default("n") == "y" -%}
+# Use the source owner's runtime TAR without producing a DEB.
+ADD files/{{ SONIC_P4RT }} /
+
+{% endif -%}
 COPY ["start.sh", "p4rt.sh", "/usr/bin/"]
 COPY ["p4rt_vars.j2", "/usr/share/sonic/templates/"]
 COPY ["supervisord.conf", "/etc/supervisor/conf.d/"]
