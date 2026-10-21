@@ -54,13 +54,27 @@ jobs:
       - name: Test package import and Make selection
         run: python3 -B -m unittest discover -s tools/bazel/p4/tests -p '*_test.py' -v
 
+      - name: Prepare the reviewed dependency sources
+        run: |
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$RUNNER_TEMP/base-source-dependencies" \
+            --receipt artifacts/dependencies/draft-sources.json
+
       - name: Verify fresh checkouts and offline repository-cache reuse
         run: |
           test "$(bazel --version)" = "bazel $(cat .bazelversion)"
-          python3 -B tools/bazel/p4/verify_cache.py \
-            --artifacts artifacts/p4-repository-cache \
-            --work-directory "$RUNNER_TEMP" \
-            --bazel bazel
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          overrides = json.loads(Path("artifacts/dependencies/draft-sources.json").read_text())["overrides"]
+          subprocess.run(["python3", "-B", "tools/bazel/p4/verify_cache.py",
+                          "--artifacts", "artifacts/p4-repository-cache",
+                          "--work-directory", os.environ["RUNNER_TEMP"], "--bazel", "bazel",
+                          *["--bazel-arg=" + value for value in overrides]], check=True)
+          PY
           git diff --exit-code
 
       - name: Retain validated public cache verification summary
@@ -68,6 +82,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: p4-package-import-amd64
-          path: artifacts/p4-repository-cache/public-summary.json
+          path: |
+            artifacts/p4-repository-cache/public-summary.json
+            artifacts/dependencies/draft-sources.json
           if-no-files-found: error
           retention-days: 14

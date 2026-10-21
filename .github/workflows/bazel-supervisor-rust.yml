@@ -5,6 +5,8 @@ on:
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
+      - dockers/docker-base-trixie/bazel/draft_sources.json
+      - tools/bazel/ci/prepare_draft_sources.py
       - tools/bazel/common.bazelrc
       - src/sonic-supervisord-utilities-rs/**
   push:
@@ -12,6 +14,8 @@ on:
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
+      - dockers/docker-base-trixie/bazel/draft_sources.json
+      - tools/bazel/ci/prepare_draft_sources.py
       - tools/bazel/common.bazelrc
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
@@ -61,6 +65,23 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
+
+      - name: Prepare the reviewed dependency sources
+        run: |
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$RUNNER_TEMP/base-source-dependencies" \
+            --receipt artifacts/dependencies/draft-sources.json \
+            --bazelrc-output .bazelrc.user
+
+      - name: Retain reviewed source provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.job }}-draft-sources-${{ strategy.job-index }}
+          path: artifacts/dependencies/draft-sources.json
+          if-no-files-found: error
+          retention-days: 14
+
 
       - name: Verify native architecture and clean dependency inputs
         env:
