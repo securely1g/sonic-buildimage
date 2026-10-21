@@ -9,7 +9,8 @@ import shlex
 FOREIGN_SOURCE_SCRIPTS = {
     "@@p4lang-pi++_repo_rules+pi_source//:sdk": "p4lang-pi++_repo_rules+pi_source/sdk_foreign_cc/build_script.sh",
     "@@p4lang-bmv2++_repo_rules+bmv2_source//:bmv2_build": "p4lang-bmv2++_repo_rules+bmv2_source/bmv2_build_foreign_cc/build_script.sh",
-    "@@p4c++_repo_rules+p4c_source//:build": "p4c++_repo_rules+p4c_source/build_foreign_cc/build_script.sh",
+    "@@p4c++_repo_rules+p4c_source//:build": "p4c++_repo_rules+p4c_source/p4c_foreign_cc/build_script.sh",
+    "@@sonic-dash+//dash-pipeline/SAI:dash_build": "sonic-dash+/dash-pipeline/SAI/dash_build_foreign_cc/build_script.sh",
     "@@sonic-fips+//openssl:build": "sonic-fips+/openssl/build_foreign_cc/build_script.sh",
     "@@sonic-fips+//openssh:build": "sonic-fips+/openssh/build_foreign_cc/build_script.sh",
     "@@sonic-fips+//krb5:build": "sonic-fips+/krb5/build_foreign_cc/build_script.sh",
@@ -20,6 +21,9 @@ FOREIGN_SOURCE_SCRIPTS = {
 }
 MAKE = re.compile(r"(?:^|[/\s])(?:make|gmake)(?:\s|$)")
 DECLARED_MAKE = re.compile(r"\$EXT_BUILD_ROOT/bazel-out/[^/]+/bin/external/sonic-build-infra\+/tools/build_tools/configure_runtime_(?:amd64|arm64)/bin/make")
+DASH_SOURCE = "@@sonic-dash+//dash-pipeline/SAI:dash_build"
+DASH_COMPILER_ENV = {"ARFLAGS", "AR_FLAGS", "ASFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS",
+                     "AR", "CC", "CXX", "LD", "RANLIB", "CPPFLAGS"}
 
 
 def foreign_source_script(action, owner, outputs, lines):
@@ -42,9 +46,21 @@ def foreign_source_script(action, owner, outputs, lines):
                 word.startswith("-DCMAKE_MAKE_PROGRAM=") and DECLARED_MAKE.fullmatch(word.split("=", 1)[1])
                 for word in words):
             continue
+        # rules_foreign_cc's Make rule prefixes DASH's reviewed all/install
+        # commands with compiler settings. Keep this specific to that producer;
+        # neither arbitrary environment wrappers nor shell commands are allowed.
+        if owner == DASH_SOURCE:
+            while words and "=" in words[0]:
+                key, value = words.pop(0).split("=", 1)
+                if key not in DASH_COMPILER_ENV or re.search(r"[;|&`\n]|\$\(", value):
+                    return False
+        if not words:
+            return False
         if not DECLARED_MAKE.fullmatch(words[0]):
             return False
         for word in words[1:]:
+            if owner == DASH_SOURCE and word == "PREFIX=$INSTALLDIR":
+                continue
             if word in {"all", "build_sw", "install", "install_sw", "install_ssldirs", "install-nokeys"}:
                 continue
             if (owner in {"@@p4lang-pi++_repo_rules+pi_source//:sdk",
