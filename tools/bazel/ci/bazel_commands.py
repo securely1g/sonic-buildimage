@@ -58,7 +58,16 @@ def foreign_source_script(action, owner, outputs, lines):
             return False
         if not DECLARED_MAKE.fullmatch(words[0]):
             return False
-        for word in words[1:]:
+        make_args = iter(words[1:])
+        dash_makefile_seen = False
+        for word in make_args:
+            if owner == DASH_SOURCE and word == "-f":
+                # DASH builds from the adapter's private generated source tree.
+                # Permit only its declared Makefile, once per command.
+                if dash_makefile_seen or next(make_args, None) != "generated_sources/Makefile":
+                    return False
+                dash_makefile_seen = True
+                continue
             if owner == DASH_SOURCE and word == "PREFIX=$INSTALLDIR":
                 continue
             if word in {"all", "build_sw", "install", "install_sw", "install_ssldirs", "install-nokeys"}:
