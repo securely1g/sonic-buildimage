@@ -59,6 +59,37 @@ class LoaderTests(unittest.TestCase):
                 runtime_smoke.service_checks(policy)
 
 
+class P4CompilerTests(unittest.TestCase):
+    def test_driver_directory_and_direct_backend_file_outputs(self):
+        for directory_output in (True, False):
+            with self.subTest(directory_output=directory_output):
+                config = {'compiler': '/usr/bin/p4c-bm2-ss', 'switch': '/usr/bin/simple_switch_grpc'}
+                if directory_output:
+                    config.update(compiler='/usr/bin/p4c', compiler_args=['--target', 'bmv2'],
+                                  compiler_output_mode='directory')
+
+                def compile_program(argv, timeout):
+                    # Model the external CLI contracts: p4c writes <source>.json
+                    # inside -o; its direct BMv2 backend writes the -o file.
+                    source = next(Path(arg) for arg in argv if arg.endswith('.p4'))
+                    output = Path(argv[argv.index('-o') + 1])
+                    if directory_output:
+                        self.assertEqual(argv[1:3], ['--target', 'bmv2'])
+                        output.mkdir(exist_ok=True)
+                        output = output / (source.stem + '.json')
+                    output.write_text(json.dumps({'pipelines': [{'name': 'ingress'}]}))
+                    return {'returncode': 0, 'stdout': '', 'stderr': ''}
+
+                with patch.object(runtime_smoke, 'command', side_effect=compile_program), \
+                     patch.object(runtime_smoke.subprocess, 'Popen') as launch, \
+                     patch.object(runtime_smoke.socket, 'create_connection'):
+                    launch.return_value.poll.return_value = None
+                    result = runtime_smoke.p4_service_check(config)
+                self.assertTrue(result['grpc_listener_ready'])
+                self.assertEqual(result['compiler_output_mode'], 'directory' if directory_output else 'file')
+                launch.return_value.terminate.assert_called_once()
+
+
 class RedisFixtureTests(unittest.TestCase):
     def test_wrong_helper_bytes_fail_before_starting_a_process(self):
         with tempfile.TemporaryDirectory() as temp:
