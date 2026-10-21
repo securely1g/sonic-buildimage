@@ -1,9 +1,8 @@
 """Syncd startup files and Make-owned image labels."""
 
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
-load("@rules_distroless//distroless:defs.bzl", "group")
+load("@sonic_build_infra//oci:accounts.bzl", "account_layer")
 load("@tar.bzl", "tar")
-load("//dockers/docker-base-trixie/bazel:accounts.bzl", "GROUP")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 
 package(default_visibility = [
@@ -21,13 +20,12 @@ manifest_labels(
     manifest = "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
 )
 
-# openssh-client postinst creates _ssh and installs ssh-agent setgid to it.
-# Retain every reviewed base group and the native Syncd reference's GID 104
-# (OCI sha256:7508faf7a33bc1203a89031c0b5005a8e1c43034b70bc71c6536aacbdcd74a99).
-# The matching ELF metadata override is explicit in source_packages.json.
-group(
+# OpenSSH's ssh-agent uses the added _ssh group. Inherit all base accounts.
+account_layer(
     name = "groups",
-    entries = GROUP + [{
+    architecture = "amd64",
+    base = "//platform/vs/docker-syncd-vs:config_engine_base_layout",
+    groups = [{
         "name": "_ssh",
         "password": "x",
         "gid": 104,
@@ -64,7 +62,7 @@ exports_files(
         # openssh-client_10.0p1-7+fips package and native reference above.
         "openssh-client.conf",
         "runtime_package_state.json",
-        "source_packages.json",
+        "source_paths.json",
     ],
     visibility = ["//visibility:public"],
 )
@@ -73,12 +71,12 @@ run_binary(
     name = "runtime_package_state",
     srcs = [
         "runtime_package_state.json",
-        "source_packages.json",
         "//platform/vs/docker-syncd-vs:apt_deps",
         "//platform/vs/docker-syncd-vs:config_engine_base_layout",
         "//platform/vs/docker-syncd-vs:package_policy",
         "//platform/vs/docker-syncd-vs:runtime_apt_selection",
         "//platform/vs/docker-syncd-vs:runtime_packages",
+        "//platform/vs/docker-syncd-vs:source_contract",
         "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
     ],
     outs = ["runtime_package_state.tar"],
@@ -86,7 +84,7 @@ run_binary(
         "--policy",
         "$(execpath //platform/vs/docker-syncd-vs:package_policy)",
         "--source-contract",
-        "$(execpath source_packages.json)",
+        "$(execpath //platform/vs/docker-syncd-vs:source_contract)",
         "--contract",
         "$(execpath runtime_package_state.json)",
         "--apt-lock",

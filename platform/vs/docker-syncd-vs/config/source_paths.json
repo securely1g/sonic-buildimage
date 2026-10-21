@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "image": "docker-syncd-vs",
+  "architecture": "amd64",
+  "distribution": "trixie",
+  "description": "Image-specific installed paths, modes and ownership. Package identity comes from source owners.",
+  "packages": {
+    "libswsscommon": {
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libswsscommon.so.0": "symlink",
+        "usr/bin/swssloglevel": "elf",
+        "run/redis/sonic-db/database_config.json": "file",
+        "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0": "symlink"
+      },
+      "path_modes": {
+        "run/redis/sonic-db/database_config.json": 420,
+        "usr/share/swss/consumer_state_table_pops.lua": 420,
+        "usr/share/swss/consumer_table_pops.lua": 420,
+        "usr/share/swss/fdb_flush.lua": 420,
+        "usr/share/swss/fdb_flush.v2.lua": 420,
+        "usr/share/swss/portcounter.lua": 420,
+        "usr/share/swss/producer_state_table_apply_view.lua": 420,
+        "usr/share/swss/table_dump.lua": 420
+      }
+    },
+    "libsairedis": {
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsairedis.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsairedis.so.0": "symlink"
+      }
+    },
+    "libsaimetadata": {
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsaimeta.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaimeta.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libsaimetadata.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaimetadata.so.0": "symlink"
+      }
+    },
+    "libsaivs": {
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsaivs.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libsaivs.so.0": "symlink"
+      }
+    },
+    "syncd-vs": {
+      "required_paths": {
+        "usr/bin/syncd": "elf",
+        "usr/bin/syncd_dash": "elf",
+        "etc/init.d/syncd": "file"
+      }
+    },
+    "openssh-client": {
+      "required_paths": {
+        "usr/bin/ssh": "elf",
+        "usr/bin/ssh-agent": "elf",
+        "usr/lib/systemd/user/ssh-agent.socket": "file"
+      },
+      "path_modes": {
+        "usr/bin/ssh-agent": 1517
+      },
+      "path_owners": {
+        "usr/bin/ssh-agent": {
+          "uid": 0,
+          "gid": 104
+        }
+      }
+    },
+    "libnl-3-dev": {
+      "required_paths": {
+        "usr/include/libnl3/netlink/netlink.h": "file",
+        "usr/lib/x86_64-linux-gnu/libnl-3.a": "file"
+      }
+    },
+    "libnl-route-3-dev": {
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libnl-route-3.a": "file"
+      }
+    },
+    "p4lang-pi": {
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libpi.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libpigrpcserver.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libpi.so.0.0.0": "elf",
+        "usr/lib/x86_64-linux-gnu/libpigrpcserver.so.0.0.0": "elf"
+      }
+    },
+    "p4lang-bmv2": {
+      "required_paths": {
+        "usr/bin/simple_switch": "elf",
+        "usr/bin/simple_switch_grpc": "elf",
+        "usr/lib/x86_64-linux-gnu/libbmpi.so.0": "symlink",
+        "usr/lib/x86_64-linux-gnu/libbmpi.so.0.0.0": "elf"
+      }
+    },
+    "p4lang-p4c": {
+      "required_paths": {
+        "usr/bin/p4c-bm2-ss": "elf"
+      }
+    },
+    "libsai": {
+      "required_paths": {
+        "usr/lib/x86_64-linux-gnu/libsai.so": "elf",
+        "usr/lib/x86_64-linux-gnu/libdashsaimetadata.so": "elf",
+        "etc/dash/dash_pipeline.json": "file",
+        "etc/dash/dash_pipeline_p4rt.json": "file",
+        "etc/dash/dash_pipeline_p4rt.txt": "file",
+        "etc/dash/dash_pipeline_ir.json": "file"
+      }
+    }
+  }
+}
