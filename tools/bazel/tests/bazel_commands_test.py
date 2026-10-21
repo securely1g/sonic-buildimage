@@ -1,6 +1,7 @@
 """Reject Debian package actions before CI builds or runs tests."""
 
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import sys
@@ -37,6 +38,7 @@ class ActionAuditTest(unittest.TestCase):
                 finally:
                     summary = (root / "audit.json").read_text()
                     self.assertNotIn("private-value", summary)
+                    self.last_summary = json.loads(summary)
 
     def test_accepts_tar_assembly_and_debian_extraction(self):
         result = self.audit("runtime.tar", ["dpkg-deb", "--fsys-tarfile", "input.deb"])
@@ -67,6 +69,21 @@ class ActionAuditTest(unittest.TestCase):
         for command in ("dpkg-deb --build tree output", "make package", "dpkg-buildpackage -b"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                 self.audit("package-script.sh", [], file_contents="#!/bin/sh\n" + command + "\n")
+
+    def test_rejected_actions_retain_identity_without_command_contents(self):
+        for command, category in (("make package", "packaging_wrappers"),
+                                  ("dpkg-deb --build tree output", "deb_packaging_actions")):
+            script = "#!/bin/sh\n" + command + "\n"
+            with self.subTest(category=category), self.assertRaises(ValueError):
+                self.audit("bazel-out/k8-fastbuild/bin/package-script.sh", [],
+                           file_contents=script, owner="@@producer+//:build", executable=True)
+            self.assertEqual(self.last_summary[category], [{
+                "owner": "@@producer+//:build",
+                "outputs": ["bazel-out/k8-fastbuild/bin/package-script.sh"],
+                "mnemonic": "FileWrite",
+                "arguments_sha256": hashlib.sha256(script.encode()).hexdigest(),
+            }])
+            self.assertNotIn(command, json.dumps(self.last_summary))
 
     def test_rejects_wrapped_packaging_with_hidden_output(self):
         for command in (["dpkg-deb", "--build", "tree", "output"],

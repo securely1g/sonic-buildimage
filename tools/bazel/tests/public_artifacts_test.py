@@ -137,8 +137,9 @@ def seed(root, kind, architecture="amd64"):
     if kind == "syncd":
         value["module_lock_sha256"] = hashlib.sha256((root / "artifacts/syncd-vs/bazel/MODULE.bazel.lock").read_bytes()).hexdigest()
     write_json(root, name, value)
-    if kind == "syncd":
-        write_json(root, "artifacts/syncd-vs/bazel/execution-gate-audit.json",
+    if kind in {"source", "syncd"}:
+        directory = "artifacts/swss" if kind == "source" else "artifacts/syncd-vs/bazel"
+        write_json(root, directory + "/execution-gate-audit.json",
                    {"action_count": 12, "output_count": 24, "deb_outputs": [], "packaging_wrappers": [], "raw": SENTINEL})
     if kind == "vs":
         for source_kind in ("source", "syncd"):
@@ -313,6 +314,72 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, _paths, ready = self.prepare("syncd")
         self.assertFalse(ready)
         self.assertFalse(summary["complete"])
+
+    def test_both_container_summaries_retain_only_rejected_action_identities(self):
+        identity = {"owner": "@@producer++source+repo//:build", "mnemonic": "FileWrite",
+                    "outputs": ["bazel-out/k8-fastbuild/bin/external/producer+/build_script.sh"],
+                    "arguments_sha256": DIGEST}
+        action = {**identity, "arguments": [SENTINEL], "fileContents": SENTINEL,
+                  "environmentVariables": [{"key": "PRIVATE", "value": SENTINEL}]}
+        expected = {key: value for key, value in identity.items() if key != "arguments_sha256"}
+        expected["sha256"] = DIGEST
+        for kind, directory in (("source", "artifacts/swss"), ("syncd", "artifacts/syncd-vs/bazel")):
+            seed(self.root, kind)
+            write_json(self.root, directory + "/execution-gate-audit.json", {
+                "action_count": 12, "output_count": 24, "deb_outputs": [],
+                "packaging_wrappers": [action], "deb_packaging_actions": [action],
+                "deb_generation_authorized": False,
+            })
+            with self.subTest(kind=kind):
+                summary, paths, ready = self.prepare(kind, status="failure")
+                self.assertTrue(ready)
+                self.assertFalse(summary["complete"])
+                self.assertIn(artifacts.SUMMARY[kind], paths)
+                audit = summary["receipts"]["execution_audit"]
+                self.assertEqual(audit["packaging_wrappers"], [expected])
+                self.assertEqual(audit["deb_packaging_actions"], [expected])
+                self.assertEqual(audit["packaging_wrapper_count"], 1)
+                self.assertNotIn(SENTINEL, json.dumps(summary))
+                self.assertNotIn("environmentVariables", json.dumps(summary))
+                self.assertFalse(self.prepare(kind, status="success")[2])
+
+    def test_unsafe_rejected_action_identities_block_publication(self):
+        action = {"owner": "@@producer+//:build", "mnemonic": "FileWrite",
+                  "outputs": ["bazel-out/k8-fastbuild/bin/script.sh"], "arguments_sha256": DIGEST}
+        bad_fields = [
+            {"owner": "/home/runner/code/private"},
+            {"owner": "//package/../private:build"},
+            {"owner": "//:" + SYNTHETIC_JOB_TOKEN},
+            {"owner": "//:" + "a" * 1024},
+            {"mnemonic": "FileWrite\n" + SENTINEL},
+            {"mnemonic": SYNTHETIC_JOB_TOKEN},
+            {"outputs": ["/home/runner/code/private.sh"]},
+            {"outputs": ["bazel-out/../../private.sh"]},
+            {"outputs": ["bazel-out/./script.sh"]},
+            {"outputs": ["bazel-out//script.sh"]},
+            {"outputs": ["bazel-out/" + SYNTHETIC_JOB_TOKEN]},
+            {"outputs": ["a" * 4097]},
+            {"outputs": ["script.sh"] * 65},
+            {"outputs": "script.sh"},
+            {"arguments_sha256": "not-a-digest"},
+        ]
+        for kind, directory in (("source", "artifacts/swss"), ("syncd", "artifacts/syncd-vs/bazel")):
+            seed(self.root, kind)
+            for change in bad_fields:
+                with self.subTest(kind=kind, change=change):
+                    write_json(self.root, directory + "/execution-gate-audit.json", {
+                        "action_count": 12, "output_count": 24, "deb_outputs": [],
+                        "packaging_wrappers": [action | change], "deb_packaging_actions": [],
+                    })
+                    summary, paths, ready = self.prepare(kind, status="failure")
+                    self.assertFalse(ready)
+                    self.assertEqual(paths, [])
+                    self.assertIn({"input": "execution-audit", "reason": "invalid-execution-audit"},
+                                  summary["blocked"])
+                    self.assertNotIn("packaging_wrappers", summary["receipts"]["execution_audit"])
+                    self.assertNotIn(SYNTHETIC_JOB_TOKEN, json.dumps(summary))
+        with self.assertRaises(artifacts.PublicArtifactError):
+            artifacts.rejected_action_identities([action] * 65)
 
     def test_vs_success_reports_both_container_variants_and_the_installer(self):
         """A passing VS publication must account for runtime/debug archives from both OCI owners."""

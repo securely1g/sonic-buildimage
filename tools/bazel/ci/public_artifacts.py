@@ -258,6 +258,31 @@ def relative_name(value):
     return value
 
 
+def rejected_action_identities(value):
+    """Publish bounded action identities without commands, scripts or environments."""
+    require(isinstance(value, list) and len(value) <= 64, "invalid-action-identities")
+    result = []
+    for action in value:
+        require(isinstance(action, dict), "invalid-action-identity")
+        mnemonic = action.get("mnemonic")
+        require(isinstance(mnemonic, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", mnemonic),
+                "invalid-action-mnemonic")
+        owner = label(action.get("owner"))
+        require(len(owner) <= 1024 and all(part not in (".", "..") for part in owner.split("/")),
+                "invalid-action-owner")
+        outputs = action.get("outputs")
+        require(isinstance(outputs, list) and len(outputs) <= 64, "invalid-action-outputs")
+        for output in outputs:
+            relative_name(output)
+            require(len(output) <= 4096 and all(part not in ("", ".", "..") for part in output.split("/")),
+                    "invalid-action-output")
+        identity = {"owner": owner, "mnemonic": mnemonic, "outputs": outputs,
+                    "sha256": digest(action.get("arguments_sha256"))}
+        safe_json(identity)
+        result.append(identity)
+    return result
+
+
 def artifact_hashes(value):
     """Accept only public archive basenames and full SHA256 validation bindings."""
     require(isinstance(value, dict), "invalid-artifact-bindings")
@@ -485,8 +510,9 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             receipts[logical] = receipt_summary(value, receipt_kind)
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
             blocked.append({"input": logical + "-receipt", "reason": "invalid-receipt-summary"})
-    if kind == "syncd":
-        value = read_json("execution-audit", "artifacts/syncd-vs/bazel/execution-gate-audit.json")
+    if kind in {"source", "syncd"}:
+        directory = "artifacts/swss" if kind == "source" else "artifacts/syncd-vs/bazel"
+        value = read_json("execution-audit", directory + "/execution-gate-audit.json")
         if value is not None:
             try:
                 receipts["execution_audit"] = {"action_count": integer(value.get("action_count")),
@@ -495,6 +521,10 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                     "deb_packaging_action_count": len(value.get("deb_packaging_actions", [])),
                     "deb_generation_authorized": value.get("deb_generation_authorized") is True,
                     "packaging_wrapper_count": len(value.get("packaging_wrappers", []))}
+                receipts["execution_audit"].update({
+                    key: rejected_action_identities(value.get(key, []))
+                    for key in ("packaging_wrappers", "deb_packaging_actions")
+                })
                 if job_status == "success":
                     audit = receipts["execution_audit"]
                     require(not audit["packaging_wrapper_count"], "unsafe-execution-audit")
