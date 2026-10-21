@@ -12,9 +12,9 @@ build --@rules_rust//rust/settings:experimental_use_allocator_libraries_with_man
 build:release --compilation_mode=opt
 test --test_output=errors
 
-# The Syncd image explicitly selects its cached DASH SDK and source-built daemon.
+# The Syncd image explicitly selects its source-built DASH SDK and daemon.
 build:syncd-dash --@sonic_sairedis//:enable_dashsai=true
-build:syncd-dash --@sonic_sairedis//:dash_sai=//tools/bazel/p4/sdk:dash_sai
+build:syncd-dash --@sonic_sairedis//:dash_sai=@sonic_dash//:sdk
 
 try-import %workspace%/.bazelrc.user
 

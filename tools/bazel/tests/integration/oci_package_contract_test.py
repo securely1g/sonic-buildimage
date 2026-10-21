@@ -47,6 +47,15 @@ def archive(path, entries):
             output.addfile(member, io.BytesIO(contents) if kind == "file" else None)
 
 
+class SourceIdentityTest(unittest.TestCase):
+    def test_four_component_release_is_checked_against_module_version(self):
+        source = {"module": "p4c", "version": "1.2.4.2.sonic.1", "release": "1.2.4.2", "target": "@p4c//:p4c_pkg"}
+        subject.source_identity(source, name="p4lang-p4c")
+        for release in ("1.2.4", "1.2.4.2.3", "1.2.4.2rc1"):
+            with self.subTest(release=release), self.assertRaises(ValueError):
+                subject.source_identity({**source, "release": release}, name="p4lang-p4c")
+
+
 class SourcePackageFixture:
     """Generate archives from a declared contract; package count and names are inputs."""
 
@@ -58,7 +67,11 @@ class SourcePackageFixture:
         self.contract = self.root / "source_packages.json"
         self.value = (copy.deepcopy(self.contract_document) if self.contract_document is not None else
                       json.loads((OWNER / "config/source_packages.json").read_bytes()))
-        self.policy = OWNER_POLICIES.get("syncd", package_policy(image=self.value["image"]))
+        self.policy = copy.deepcopy(OWNER_POLICIES.get("syncd", package_policy(image=self.value["image"])))
+        # Mixed-input fixtures retain their explicit Make adapter even when the
+        # production owner has moved every package to a source TAR.
+        self.policy["retained_source"] = "make"
+        self.policy["retained_requirements"] = []
         for record in self.value["packages"]:
             for item in record.get("required_inherited_files", {}).values():
                 if item["kind"] == "file":
@@ -315,8 +328,8 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
         """APT sees source dependencies while the original Make input and debug binding remain exact."""
         result = self.build()
         value = {**identity(self.value), "schema": 1, "variant": "debug", "features": dict(self.policy["features"]),
-                 "packages": [{"package": "libsai", "source_deb": "libsai_1.0.0_amd64.deb"}],
-                 "runtime_manifest_sha256": "1" * 64, "required_packages": ["libsai"],
+                 "packages": [{"package": "retained-example", "source_deb": "retained-example_1.0.0_amd64.deb"}],
+                 "runtime_manifest_sha256": "1" * 64, "required_packages": ["retained-example"],
                  "debug_apt_packages": sorted(self.policy["debug_tools"])}
         path = self.root / "make.json"
         path.write_bytes(subject.json_bytes(value))
