@@ -4,6 +4,21 @@ import json
 import re
 
 
+def invoked_command(arguments):
+    """Inspect executable commands, without treating declared tool inputs as calls.
+
+    Ordinary action arguments can name tools for a reviewed source generator.
+    Shell bodies and standard command launchers still need the broader scan;
+    declared outputs are checked independently for every action.
+    """
+    if not arguments:
+        return ""
+    program = arguments[0].rsplit("/", 1)[-1]
+    if program in {"sh", "bash", "dash", "zsh", "ksh", "env", "timeout", "nice"}:
+        return " ".join(arguments)
+    return arguments[0]
+
+
 def inspect_actions(path):
     value = json.loads(path.read_bytes())
     fragments = {item["id"]: item for item in value.get("pathFragments", [])}
@@ -17,10 +32,13 @@ def inspect_actions(path):
     outputs, suspicious = [], []
     for action in value.get("actions", []):
         outputs.extend(artifacts[identifier] for identifier in action.get("outputIds", []))
-        command = " ".join(action.get("arguments", []))
-        wrapper = re.search(r"(?:^|[/\s])(?:make|gmake|dpkg-buildpackage)(?:\s|$)", command)
+        arguments = action.get("arguments", [])
+        command = " ".join(arguments)
+        wrapper = re.search(r"(?:^|[/\s])(?:make|gmake)(?:\s|$)",
+                            invoked_command(arguments))
+        deb_wrapper = re.search(r"(?:^|[/\s])dpkg-buildpackage(?:\s|$)", command)
         deb_build = "dpkg-deb" in command and re.search(r"(?:--build|(?:^|\s)-b(?:\s|$))", command)
-        if wrapper or deb_build:
+        if wrapper or deb_wrapper or deb_build:
             suspicious.append({"mnemonic": action.get("mnemonic"), "arguments_sha256": hashlib.sha256(command.encode()).hexdigest()})
     deb_outputs = sorted(path for path in outputs if path.endswith(".deb"))
     result = {"schema": 1, "action_count": len(value.get("actions", [])), "output_count": len(outputs),
