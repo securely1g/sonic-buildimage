@@ -23,6 +23,10 @@ generate a package, modify a runner, or clear a cache.
   from the image-build duration.
 - Record the run's source commit separately from the current PR head. Historical
   evidence does not establish that the latest PR revision passed.
+- Resolve each PR's selected base branch independently of historical PR metadata.
+  Display that target separately from the run's recorded event base. Neither
+  proves which base a job checked out; the dashboard labels attempt bases as
+  unverified and does not infer image artifact publication from successful timings.
 
 Trend lines also separate exact measured step names. **Build the VS installer
 (.bin)** has its own series. The earlier **Build the VS image** step included

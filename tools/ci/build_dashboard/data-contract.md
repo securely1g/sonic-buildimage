@@ -11,17 +11,27 @@ does not execute a build or execute any content from a log.
 - `generated_at`: UTC collection timestamp.
 - `pull_requests`: current metadata, including closed and unmeasured PRs:
   `number`, `title`, `state`, `draft`, `url`, `head_sha`, `base_sha`,
-  `head_branch`, `updated_at`, `merged_at`. These SHAs describe the **current PR
-  metadata**, never the base/head that an old workflow tested.
+  `head_branch`, `updated_at`, `merged_at`, `base_branch`, `base_target_sha`,
+  `base_target_observed_at`. `base_sha` is GitHub's PR metadata and may be
+  historical even for an open PR. `base_target_sha` is independently read from
+  the selected branch ref, or `null` when that ref no longer exists. Other ref
+  lookup failures abort collection. These fields never establish the base/head
+  that an old workflow tested.
 - `runs`: one entry per `(run_id, attempt)`, retained after Actions history expires:
   `run_id`, `attempt`, `workflow_name`, `workflow_path`, `source_sha`, `branch`,
   `event`, `status`, `conclusion`, `pr_numbers`, `pr_association`, `pr_association_note`, `started_at`,
-  `completed_at`, `updated_at`, `url`, `jobs`.
+  `completed_at`, `updated_at`, `url`, `jobs`, `event_bases`.
   `source_sha` is GitHub's run `head_sha`; it is not replaced by the current PR
   head. `pr_association` is `github` (run's explicit PR links), `commit` (exact
   current same-repository PR head), `branch` (unique same-repository feature
   branch, additionally verified through GitHub's commit-to-PR endpoint), or
   `none`. Multiple/ambiguous inferred matches are left unassociated.
+  `event_bases` contains only `{number, ref, sha}` from the workflow run's
+  recorded PR metadata. It is never filled from current PR base targets. These
+  event records do not independently verify job checkout bases; absent older
+  records remain unknown. A normal refresh adds event metadata to the latest
+  retained attempt without refetching completed jobs. Successful image timings
+  do not establish that an image artifact was published.
   `pr_association_note` is normally `null`; it discloses HTTP 404/422 when an old
   commit cannot be resolved for optional PR inference. The run stays visible.
   Other optional commit-lookup failures are disclosed as temporarily unavailable
