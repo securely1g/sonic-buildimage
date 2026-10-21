@@ -5,7 +5,15 @@ def _impl(ctx):
     args = ctx.actions.args()
     args.add("--expectations", ctx.file.expectations)
     args.add("--output", output)
+    args.add("--mode", ctx.attr.mode)
+    if ctx.attr.architecture:
+        args.add("--architecture", ctx.attr.architecture)
     inputs = [ctx.file.expectations]
+    if ctx.file.root_module:
+        inputs.append(ctx.file.root_module)
+        args.add("--root-module", ctx.file.root_module)
+    for name, module in ctx.attr.module_sources.items():
+        args.add("--module-source", name + "=" + module)
     for target in ctx.attr.owner_metadata:
         files = target[DefaultInfo].files.to_list()
         if len(files) != 1:
@@ -38,9 +46,13 @@ def _impl(ctx):
 _contract = rule(
     implementation = _impl,
     attrs = {
+        "mode": attr.string(default = "contract", values = ["contract", "provenance"]),
+        "architecture": attr.string(),
         "expectations": attr.label(allow_single_file = [".json"], mandatory = True),
         "owner_metadata": attr.label_list(allow_files = [".json"]),
         "source_modules": attr.string_keyed_label_dict(allow_files = True),
+        "module_sources": attr.string_dict(doc = "Package-to-module identities for provenance-only owners without package metadata."),
+        "root_module": attr.label(allow_single_file = True, doc = "Actual root MODULE.bazel containing pinned git_override selections."),
         "sources": attr.string_keyed_label_dict(allow_files = True),
         "public_sources": attr.string_dict(),
         "declared_sources": attr.string_dict(),

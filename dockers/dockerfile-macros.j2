@@ -45,6 +45,7 @@ COPY \
     {%- endfor %}
 {%- endmacro %}
 
+{# netbase can generate /etc/hosts, but Docker owns the mounted network files. #}
 {% macro rsync_from_builder_stage() -%}
-RUN --mount=type=bind,from=base,target=/changes-to-image rsync -axAX --omit-dir-times --no-D --exclude=/sys --exclude=/proc --exclude=/dev --exclude=resolv.conf /changes-to-image/ /
+RUN --mount=type=bind,from=base,target=/changes-to-image rsync -axAX --omit-dir-times --no-D --exclude=/sys --exclude=/proc --exclude=/dev --exclude=/etc/hosts --exclude=/etc/hostname --exclude=resolv.conf /changes-to-image/ /
 {%- endmacro %}
