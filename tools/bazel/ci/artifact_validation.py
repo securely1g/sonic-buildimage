@@ -109,9 +109,13 @@ def elf_debug(extracted, expected, prebuilt):
         symbols = extracted / debug_name
         require("Build ID: " + identifier in command(["readelf", "-n", str(symbols)]), "debug build ID differs: " + name)
         require(".debug_info" in command(["readelf", "-SW", str(symbols)]), "debug file lacks DWARF: " + name)
-        link = extracted / "debuglink"
-        command(["objcopy", "--dump-section", ".gnu_debuglink=" + str(link), str(binary)])
-        raw = link.read_bytes()
+        # With no output argument objcopy rewrites its input, even for a section
+        # dump. Read-only installed libraries must stay byte-for-byte untouched.
+        with tempfile.TemporaryDirectory(prefix="sonic-debuglink-") as temporary:
+            link = Path(temporary) / "debuglink"
+            command(["objcopy", "--dump-section", ".gnu_debuglink=" + str(link),
+                     str(binary), str(Path(temporary) / "elf-copy")])
+            raw = link.read_bytes()
         end = raw.index(0)
         require(raw[:end].decode() == symbols.name, "debuglink filename differs: " + name)
         offset = (end + 4) & ~3
