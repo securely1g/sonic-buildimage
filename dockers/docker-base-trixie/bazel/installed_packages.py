@@ -6,6 +6,7 @@ be the declared public source-build TARs used by the image.
 """
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -39,7 +40,7 @@ def inventory_digest(records):
     return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def build(base, apt_receipt, controls, source_spec, sources, architecture, normalization_receipt=None):
+def build(base, apt_receipt, controls, source_spec, sources, architecture, normalization_receipt=None, *, retained_manifest=None):
     layout = validate_layout(base, "linux/" + architecture)
     baseline = selection.base_packages(layout.layers, architecture=architecture)
     original = None
@@ -80,12 +81,53 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture, norma
     require(set(available) == set(selected), "missing selected APT package controls")
     for name, fields in available.items():
         records[name] = dict(fields, Status="install ok installed")
-    require(inventory_digest(records) == inventory_digest(inherited["packages"]),
-            "APT receipt and reconstructed package inventory differ")
-
     spec = json.loads(source_spec.read_text())
+    # Mixed source/imported images already have a checked package contract.
+    # Reuse it instead of asking the image to maintain a second source list.
+    if isinstance(spec.get("packages"), list):
+        items = spec["packages"]
+        require(len({item["package"] for item in items}) == len(items), "duplicate source package")
+        spec["packages"] = {item["package"]: {
+            "control_fields": item["control_fields"], "target": item["source"]["target"],
+            "source_revision": item["source"].get("commit", item["source"].get("version")),
+            "required_paths": list(item["required_paths"]),
+        } for item in items}
     require(spec.get("schema") == 1 and set(spec["packages"]) == set(sources),
             "source package contract and declared payloads differ")
+    retained_sources = {}
+    if retained_manifest is not None:
+        retained = json.loads(retained_manifest.read_text())
+        require(apt.get("retained_manifest_sha256") == sha(retained_manifest) and
+                retained.get("variant") == "runtime" and retained.get("architecture") == architecture,
+                "retained manifest differs from the APT selection")
+        imported = retained["packages"]
+        names = {item["package"] for item in imported}
+        require(len(names) == len(imported) and not names.intersection(sources),
+                "ambiguous imported/source package ownership")
+        for item in imported:
+            fields = dict(item["control_fields"])
+            require((fields["Package"], fields["Version"], fields["Architecture"]) ==
+                    (item["package"], item["version"], item["architecture"]),
+                    "imported package control identity differs")
+            fields["Status"] = "install ok installed"
+            fields["X-Sonic-Imported-Deb-Sha256"] = item["source_sha256"]
+            records[item["package"]] = fields
+        retained_sources = {item["package"]: item for item in retained["source_packages"]}
+        require(len(retained_sources) == len(retained["source_packages"]) and set(retained_sources) == set(sources),
+                "retained source inventory differs from the declared payloads")
+        pending = dict(records)
+        for name, item in retained_sources.items():
+            expected = spec["packages"][name]
+            require(inventory_digest({name: item["control_fields"]}) ==
+                    inventory_digest({name: expected["control_fields"]}) and
+                    item["source"]["target"] == expected["target"] and
+                    item["source"].get("commit", item["source"].get("version")) == expected["source_revision"],
+                    "retained source identity differs from the source contract: " + name)
+            pending[name] = item["control_fields"]
+    else:
+        pending = records
+    require(inventory_digest(pending) == inventory_digest(inherited["packages"]),
+            "APT receipt and reconstructed package inventory differ")
     normalization = None
     if normalization_receipt is not None:
         declared = json.loads(normalization_receipt.read_text())
@@ -118,6 +160,19 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture, norma
                         native_files.append({"path": path, "sha256": digest.hexdigest(),
                                              "mode": installed.mode, "uid": installed.uid, "gid": installed.gid})
         multiarch = {"amd64": "x86_64-linux-gnu", "arm64": "aarch64-linux-gnu"}[architecture]
+        if retained_sources:
+            # The checked source receipt describes the normalized TAR actually
+            # installed by this image. Keep the raw input hash as provenance,
+            # but report canonical paths and installed ownership from it.
+            files = retained_sources[name].get("files")
+            require(isinstance(files, dict) and files, "source receipt lacks its installed inventory: " + name)
+            installed_native = [{"path": path, **{key: entry[key] for key in ("sha256", "mode", "uid", "gid")}}
+                                for path, entry in files.items() if "elf_machine" in entry]
+            require(Counter(item["sha256"] for item in installed_native) ==
+                    Counter(item["sha256"] for item in native_files),
+                    "normalized source inventory changes native bytes: " + name)
+            native_files = installed_native
+            paths = set(files)
         expected_paths = {path.format(multiarch=multiarch) for path in item["required_paths"]}
         if normalization is not None:
             expected_paths = {normalized_path(path, directory_aliases=normalization["directory_aliases"])
@@ -125,6 +180,8 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture, norma
         require(expected_paths and expected_paths <= paths,
                 "source package lacks reviewed installed paths: " + name)
         digest = sha(payload)
+        require(not retained_sources or digest == retained_sources[name]["input_tar_sha256"],
+                "source TAR differs from the retained inventory: " + name)
         for key in ("Installed-Size", "Conffiles", "MD5sum", "SHA256"):
             fields.pop(key, None)
         fields.update({
@@ -154,6 +211,11 @@ def build(base, apt_receipt, controls, source_spec, sources, architecture, norma
         "apt_selection_sha256": sha(apt_receipt), "source_contract_sha256": sha(source_spec),
         "base_manifest_digest": layout.descriptor["digest"], "dependency_check": check,
     }
+    # The debug selector binds to this runtime's exact imported/source handoff,
+    # while checking the updated dpkg inventory installed in the runtime image.
+    for key in ("variant", "make_manifest_sha256", "source_receipt_sha256", "retained_manifest_sha256"):
+        if key in apt:
+            receipt[key] = apt[key]
     if normalization_receipt is not None:
         receipt["source_normalization_sha256"] = sha(normalization_receipt)
         receipt["source_normalization"] = normalization
@@ -169,6 +231,7 @@ def main():
     parser.add_argument("--architecture", required=True, choices=("amd64", "arm64"))
     parser.add_argument("--control", action="append", type=Path, default=[])
     parser.add_argument("--source", action="append", default=[])
+    parser.add_argument("--retained-manifest", type=Path)
     parser.add_argument("--status", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
     args = parser.parse_args()
@@ -176,6 +239,7 @@ def main():
     require(len(sources) == len(args.source), "duplicate source package")
     status, receipt = build(args.base, args.apt_receipt, args.control, args.source_spec,
                             {name: Path(path) for name, path in sources.items()}, args.architecture,
+                            retained_manifest=args.retained_manifest,
                             normalization_receipt=args.normalization_receipt)
     args.status.write_text(status)
     args.receipt.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
