@@ -60,6 +60,12 @@ function dateTime(value, short = false) {
 }
 function result(item) { return item.conclusion || item.status || "unknown"; }
 function resultLabel(value) { return String(value || "unknown").replaceAll("_", " "); }
+function prStateLabel(pr) {
+  if (pr.merged_at) return "Merged";
+  if (pr.state === "closed") return "Closed";
+  if (pr.state === "open" && pr.draft) return "Draft";
+  return resultLabel(pr.state);
+}
 function runKey(run) { return `${run.run_id}:${run.attempt}`; }
 function imageJob(job) { return IMAGE_KINDS.has(job.kind); }
 function measured(job) { return imageJob(job) && job.conclusion === "success" && seconds(job.image_build_seconds) !== null; }
@@ -344,7 +350,7 @@ function renderCoverage() {
       state.selectedJob = jobs[0]?.job_id || null;
       renderFiltered();
     });
-    title.append(button, el("span", "subtext", pr.merged_at ? "Merged" : pr.draft ? "Draft" : resultLabel(pr.state)));
+    title.append(button, el("span", "subtext", prStateLabel(pr)));
     title.append(el("span", "subtext sha", baseSummary(pr, latestImageRun).selected));
     const status = el("td"), timings = el("td", "nowrap");
     const stack = el("div", "status-stack");
@@ -560,4 +566,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary, prStateLabel};

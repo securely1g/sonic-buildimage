@@ -2,7 +2,16 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary} = require("./app.js");
+const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary, prStateLabel} = require("./app.js");
+
+test("closed draft PRs remain closed while open drafts and merged PRs keep their states", () => {
+  assert.equal(prStateLabel({state: "closed", draft: true}), "Closed");
+  assert.equal(prStateLabel({state: "closed", draft: false}), "Closed");
+  assert.equal(prStateLabel({state: "closed", draft: true, merged_at: "2026-10-21T00:00:00Z"}), "Merged");
+  assert.equal(prStateLabel({state: "open", draft: true}), "Draft");
+  assert.equal(prStateLabel({state: "open", draft: false}), "open");
+  assert.equal(prStateLabel({draft: true}), "unknown");
+});
 
 test("current selected base and recorded event base never imply tested-base validation", () => {
   const pr = {number: 13, base_branch: "stack/base", base_target_sha: "a".repeat(40), base_sha: "b".repeat(40)};
