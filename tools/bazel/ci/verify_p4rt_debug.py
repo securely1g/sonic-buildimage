@@ -63,6 +63,30 @@ def elf_sections(path):
         return sections
 
 
+def extract_deb_member(package, member_name, destination):
+    """Copy one regular member; never install a package or extract its links."""
+    found = False
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(["dpkg-deb", "--fsys-tarfile", str(package)],
+                                   stdout=subprocess.PIPE, stderr=errors)
+        try:
+            with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+                for member in archive:
+                    if str(PurePosixPath(member.name)) != member_name:
+                        continue
+                    require(not found and member.isfile(), "Duplicate or non-regular " + member_name)
+                    with archive.extractfile(member) as source, destination.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                    found = True
+            process.stdout.close()
+            require(process.wait(timeout=60) == 0, "Cannot decode DEB: " + str(package))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    require(found, "Package is missing " + member_name)
+
+
 def extract_member(package, member_name, destination):
     """Copy one regular TAR member without installing or following archive links."""
     found = False
@@ -184,25 +208,37 @@ def verify_pair(binary, symbols, source):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime-tar", required=True, type=Path)
-    parser.add_argument("--debug-tar", required=True, type=Path)
+    runtime = parser.add_mutually_exclusive_group(required=True)
+    runtime.add_argument("--runtime-tar", type=Path)
+    runtime.add_argument("--runtime-deb", type=Path)
+    debug = parser.add_mutually_exclusive_group(required=True)
+    debug.add_argument("--debug-tar", type=Path)
+    debug.add_argument("--debug-deb", type=Path)
     parser.add_argument("--source-root", required=True, type=Path,
                         help="Matching sonic-pins checkout containing p4rt_app/p4rt.cc")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    payloads = {
-        "runtime": verify_inventory(args.runtime_tar, RUNTIME_FILES),
-        "debug": verify_inventory(args.debug_tar, DEBUG_FILES),
-    }
+    if bool(args.runtime_tar) != bool(args.debug_tar):
+        parser.error("runtime and debug inputs must use the same archive format")
+    runtime_path = args.runtime_tar or args.runtime_deb
+    debug_path = args.debug_tar or args.debug_deb
+    payloads = None
+    if args.runtime_tar:
+        payloads = {
+            "runtime": verify_inventory(runtime_path, RUNTIME_FILES),
+            "debug": verify_inventory(debug_path, DEBUG_FILES),
+        }
+    extract = extract_member if args.runtime_tar else extract_deb_member
     with tempfile.TemporaryDirectory(prefix="p4rt-debug-packages-") as temporary:
         directory = Path(temporary)
         binary, symbols = directory / "p4rt", directory / "p4rt.dwp"
-        extract_member(args.runtime_tar, "usr/local/bin/p4rt", binary)
-        extract_member(args.debug_tar, "usr/local/bin/p4rt.dwp", symbols)
+        extract(runtime_path, "usr/local/bin/p4rt", binary)
+        extract(debug_path, "usr/local/bin/p4rt.dwp", symbols)
         receipt = verify_pair(binary, symbols, args.source_root / "p4rt_app/p4rt.cc")
-    receipt["packages"] = {"runtime_sha256": sha256(args.runtime_tar),
-                           "debug_sha256": sha256(args.debug_tar)}
-    receipt["payloads"] = payloads
+    receipt["packages"] = {"runtime_sha256": sha256(runtime_path),
+                           "debug_sha256": sha256(debug_path)}
+    if payloads is not None:
+        receipt["payloads"] = payloads
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps(receipt, indent=2))
