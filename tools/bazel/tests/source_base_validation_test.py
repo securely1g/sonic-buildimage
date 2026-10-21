@@ -86,6 +86,7 @@ class SourceBaseTest(unittest.TestCase):
         self.runtime_tail = []
         self.debug_tail = []
         self.replacing = None
+        self.workspace_module = None
 
     def run_validation(self):
         metadata = []
@@ -110,7 +111,17 @@ class SourceBaseTest(unittest.TestCase):
             replacing.write_bytes(layer(self.replacing))
         return check.validate_source_base(self.root / "runtime", self.root / "debug",
                                           metadata_paths=metadata, source_debug_tar=symbols,
-                                          architecture=self.native, replacing_runtime_tar=replacing)
+                                          architecture=self.native, replacing_runtime_tar=replacing,
+                                          workspace_module=self.workspace_module)
+
+    def root_workspace_package(self):
+        self.workspace_module = self.root / "MODULE.bazel"
+        self.workspace_module.write_text('module(name = "sonic-buildimage")\n')
+        package = self.reports[0]["source_packages"][0]
+        package.update(source_revision="workspace", target="@@//src/example:runtime")
+        self.reports[0]["source_modules"] = {"sonic-buildimage": {
+            "version": "workspace", "module_sha256": sha(self.workspace_module.read_bytes())}}
+        return package
 
     def test_native_pairs_and_declared_dependencies(self):
         result = self.run_validation()
@@ -128,6 +139,87 @@ class SourceBaseTest(unittest.TestCase):
     def test_foreign_registry_revision(self):
         self.reports[0]["source_packages"][0]["source_revision"] = "3.7.0.sonic.3"
         self.assertEqual(self.run_validation()["status"], "passed")
+
+    def test_root_workspace_binds_module_payload_and_native_pairs(self):
+        package = self.root_workspace_package()
+        result = self.run_validation()
+        self.assertEqual(result["elf_count"], 2)
+        self.assertEqual(result["workspace_sources"], [{
+            "package": package["package"], "target": package["target"],
+            "module_sha256": sha(self.workspace_module.read_bytes()),
+            "payload_sha256": package["payload_sha256"],
+            "checkout_identity": "consumer CI revision recorded separately"}])
+
+    def test_workspace_requires_declared_module(self):
+        self.root_workspace_package()
+        self.workspace_module = None
+        with self.assertRaisesRegex(ValueError, "requires the declared root MODULE"):
+            self.run_validation()
+
+    def test_root_level_workspace_target(self):
+        self.root_workspace_package()["target"] = "@@//:runtime"
+        self.assertEqual(self.run_validation()["status"], "passed")
+
+    def test_workspace_requires_matching_module_receipt(self):
+        self.root_workspace_package()
+        for identity in ({}, {"version": "workspace", "module_sha256": "c" * 64},
+                         {"version": "external", "module_sha256": sha(self.workspace_module.read_bytes())}):
+            with self.subTest(identity=identity):
+                self.reports[0]["source_modules"]["sonic-buildimage"] = identity
+                with self.assertRaisesRegex(ValueError, "MODULE identity differs"):
+                    self.run_validation()
+
+    def test_workspace_cannot_claim_external_or_unsafe_targets(self):
+        package = self.root_workspace_package()
+        for target in ("@common//:runtime", "@@common+//:runtime", "@@sonic-buildimage+//:runtime",
+                       "@@//src/../other:runtime", "@@//src/example", "@@//src//x:runtime",
+                       "@@//./src:runtime", "@@///src:runtime", "@@//src/:runtime"):
+            with self.subTest(target=target):
+                package["target"] = target
+                with self.assertRaisesRegex(ValueError, "canonical root target"):
+                    self.run_validation()
+
+    def test_workspace_requires_unversioned_named_root_module(self):
+        self.root_workspace_package()
+        for declaration in ('module(name="other")\n',
+                            'module(name="sonic-buildimage", version="1.0")\n',
+                            'module(name="sonic-buildimage")\nmodule(name="other")\n'):
+            with self.subTest(declaration=declaration):
+                self.workspace_module.write_text(declaration)
+                self.reports[0]["source_modules"]["sonic-buildimage"]["module_sha256"] = sha(self.workspace_module.read_bytes())
+                with self.assertRaisesRegex(ValueError, "root module"):
+                    self.run_validation()
+
+    def test_workspace_does_not_relax_payload_or_native_integrity(self):
+        package = self.root_workspace_package()
+        package["payload_sha256"] = "missing"
+        with self.assertRaisesRegex(ValueError, "revision/payload provenance"):
+            self.run_validation()
+        package["payload_sha256"] = "b" * 64
+        self.runtime_tail = [layer({self.ordinary: self.pairs["ordinary"][0] + b"tamper"})]
+        with self.assertRaisesRegex(ValueError, "changed declared source"):
+            self.run_validation()
+
+    def test_workspace_does_not_accept_arbitrary_revisions(self):
+        package = self.root_workspace_package()
+        for revision in ("HEAD", "main", "workspace-branch"):
+            with self.subTest(revision=revision):
+                package["source_revision"] = revision
+                with self.assertRaisesRegex(ValueError, "revision/payload provenance"):
+                    self.run_validation()
+
+    def test_canonical_symcrypt_owner(self):
+        self.reports[1]["source_packages"][0]["target"] = "@@sonic-fips+//symcrypt:runtime"
+        self.assertEqual(self.run_validation()["status"], "passed")
+
+    def test_sealed_exception_rejects_other_canonical_owners(self):
+        package = self.reports[1]["source_packages"][0]
+        for target in ("@@other+//symcrypt:runtime", "@@sonic-fips+//other:runtime",
+                       "@@sonic-fips+//symcrypt:other"):
+            with self.subTest(target=target):
+                package["target"] = target
+                with self.assertRaisesRegex(ValueError, "sealed core lacks"):
+                    self.run_validation()
 
     def test_runtime_hash_and_metadata_changes(self):
         for attrs in ({"mode": 0o755}, {"uid": 123}, {"gid": 456}):
