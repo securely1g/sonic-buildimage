@@ -52,13 +52,40 @@
         0
       ],
       "output_pattern": "OpenSSH_10\\.0"
+    },
+    {
+      "argv": [
+        "/usr/bin/bm_CLI",
+        "--help"
+      ],
+      "exit_codes": [
+        0
+      ],
+      "output_pattern": "[Uu]sage|[Oo]ptions"
+    },
+    {
+      "argv": [
+        "/usr/bin/simple_switch_CLI",
+        "--help"
+      ],
+      "exit_codes": [
+        0
+      ],
+      "output_pattern": "[Uu]sage|[Oo]ptions"
     }
   ],
   "python_imports": [
     "swsscommon.swsscommon",
     "sonic_py_common",
     "sonic_yang",
-    "supervisord_dependent_startup"
+    "supervisord_dependent_startup",
+    "six",
+    "thrift",
+    "google.protobuf",
+    "bm_runtime.standard.Standard",
+    "sswitch_runtime.SimpleSwitch",
+    "p4.bm.dataplane_interface_pb2",
+    "runtime_CLI"
   ],
   "startup_profile": {
     "script": "/usr/bin/start.sh",

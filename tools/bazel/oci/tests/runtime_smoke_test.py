@@ -144,6 +144,48 @@ class DockerIdentityTests(unittest.TestCase):
 
 @unittest.skipUnless(all(shutil.which(x) for x in ['cc','objcopy','readelf','gdb']), 'native C/binutils/GDB required')
 class NativeDebugTests(unittest.TestCase):
+    def test_forwarded_main_resolves_its_exact_installed_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            provider, launcher = root / 'libforward.so.0', root / 'launcher'
+            source = root / 'implementation.c'
+            source.write_text('int unrelated(void) { return 42; }\nint main(void) { return 0; }\n')
+            subprocess.run(['cc', '-shared', '-fPIC', '-g', '-Wl,--build-id=sha1',
+                            '-Wl,-soname,libforward.so.0', str(source), '-o', str(provider)],
+                           check=True, capture_output=True)
+            subprocess.run(['cc', '-Wl,--build-id=sha1', '-Wl,--no-as-needed', str(provider), '-o', str(launcher)],
+                           check=True, capture_output=True)
+            debug = root / 'symbols'
+            symbol_files = {}
+            for binary in (provider, launcher):
+                notes = subprocess.check_output(['readelf', '-n', str(binary)], text=True)
+                identifier = notes.split('Build ID: ', 1)[1].split()[0]
+                symbols = debug / '.build-id' / identifier[:2] / (identifier[2:] + '.debug')
+                symbols.parent.mkdir(parents=True)
+                subprocess.run(['objcopy', '--only-keep-debug', str(binary), str(symbols)], check=True, capture_output=True)
+                subprocess.run(['objcopy', '--strip-debug', '--add-gnu-debuglink=' + str(symbols), str(binary)],
+                               check=True, capture_output=True)
+                symbol_files[binary] = symbols
+            record = {'path': str(launcher), 'debug_path': str(symbol_files[launcher]),
+                      'debug_forwarding': {'provider': str(provider), 'debug_path': str(symbol_files[provider]),
+                                           'symbol': 'main', 'source': 'implementation.c'}}
+            actual_lookup = runtime_smoke.gdb_lookup
+            def lookup(binary, directory, debug_directory, symbol=None):
+                return actual_lookup(binary, directory, str(debug) if debug_directory == '/usr/lib/debug'
+                                     else debug_directory, symbol)
+            with patch.object(runtime_smoke, 'gdb_lookup', side_effect=lookup):
+                result = runtime_smoke.debug_pair(record)
+                self.assertFalse(result['without_symbols']['found'])
+                self.assertEqual(result['with_symbols']['function'], 'main')
+                self.assertEqual(result['with_symbols']['line'], 2)
+                record['debug_forwarding']['source'] = 'wrong.c'
+                with self.assertRaisesRegex(ValueError, 'declared source'):
+                    runtime_smoke.debug_pair(record)
+                record['debug_forwarding']['source'] = 'implementation.c'
+                record['debug_forwarding']['symbol'] = 'absent_function'
+                with self.assertRaisesRegex(ValueError, 'do not provide source'):
+                    runtime_smoke.debug_pair(record)
+
     def test_installed_symbol_lookup_fails_without_the_matching_debug_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); binary=root/'libanswer.so'; debug=root/'symbols'; empty=root/'empty'
