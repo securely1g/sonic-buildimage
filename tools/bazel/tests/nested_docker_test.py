@@ -109,7 +109,9 @@ class NestedDockerTest(unittest.TestCase):
 
     def test_workflow_prepares_private_namespace_before_daemon(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
-        step = workflow.split("      - name: Validate installed Syncd programs and all source debug symbols\n", 1)[1].split("\n      - name:", 1)[0]
+        anchor = "          cat > artifacts/vs/validate-syncd-image.sh"
+        self.assertEqual(workflow.count(anchor), 1)
+        step = workflow.split(anchor, 1)[1].split("\n      - name:", 1)[0]
         self.assertLess(step.index("sudo python3 -B tools/bazel/ci/prepare_nested_docker.py"),
                         step.index("make -f slave.mk docker-start"))
         self.assertIn('--cgroupns=private', step)

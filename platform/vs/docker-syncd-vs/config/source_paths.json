@@ -56,10 +56,12 @@
       "required_paths": {
         "usr/bin/ssh": "elf",
         "usr/bin/ssh-agent": "elf",
-        "usr/lib/systemd/user/ssh-agent.socket": "file"
+        "usr/lib/systemd/user/ssh-agent.socket": "file",
+        "usr/lib/tmpfiles.d/openssh-client.conf": "file"
       },
       "path_modes": {
-        "usr/bin/ssh-agent": 1517
+        "usr/bin/ssh-agent": 1517,
+        "usr/lib/tmpfiles.d/openssh-client.conf": 420
       },
       "path_owners": {
         "usr/bin/ssh-agent": {
