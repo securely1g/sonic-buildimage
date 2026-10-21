@@ -158,6 +158,17 @@ class PublicArtifactsTest(unittest.TestCase):
                               for target in node.targets))
             self.assertEqual(artifacts.RECEIPT_TEST_COUNTS[kind][1], len(suites), filename)
 
+    def test_archive_test_counts_match_the_native_workflow(self):
+        """New contract tests must not prevent successful CI artifact uploads."""
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        for logical, event_path, count in artifacts.BEP["archive"]:
+            with self.subTest(logical=logical):
+                command = workflow.split(event_path, 1)[1].split("2>&1 | tee", 1)[0]
+                labels = [line.strip().rstrip("\\").strip()
+                          for line in command.splitlines() if line.strip().startswith("//")]
+                self.assertEqual(len(labels), len(set(labels)))
+                self.assertEqual(count, len(labels))
+
     def test_bep_summary_omits_environment_paths_and_raw_events(self):
         summary = artifacts.bep_summary(events(2).splitlines())
         self.assertEqual(len(summary["tests"]), 2)
@@ -397,18 +408,18 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(ready, summary)
                 self.assertEqual(paths, [])
 
-    def test_archive_requires_all_nine_native_workflow_tests(self):
+    def test_archive_requires_all_ten_native_workflow_tests(self):
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture):
                 seed(self.root, "archive", architecture)
                 event_path = "artifacts/archive/test-events.jsonl"
-                write(self.root, event_path, events(9))
+                write(self.root, event_path, events(10))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertTrue(ready)
-                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 9)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 10)
                 self.assertTrue(paths)
 
-                write(self.root, event_path, events(8))
+                write(self.root, event_path, events(9))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])

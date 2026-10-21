@@ -40,7 +40,7 @@ def write_oci(path, entries, *, symlinks=()):
 class CommittedPackageStateTest(unittest.TestCase):
     def test_openssh_installation_state_is_bound_to_its_source_owner(self):
         """Keep the Make group, mode, socket enablement and tmpfiles exclusion together."""
-        source = json.loads((OWNER / "config/source_packages.json").read_bytes())
+        source = json.loads((OWNER / "source_packages.json").read_bytes())
         ssh = next(record for record in source["packages"] if record["package"] == "openssh-client")
         self.assertEqual(ssh["version"], "1:10.0p1-7+fips")
         self.assertEqual(ssh["source"]["target"], "@sonic_fips//openssh:openssh_client_pkg")
@@ -65,7 +65,7 @@ class CommittedPackageStateTest(unittest.TestCase):
         contract = json.loads((OWNER / "config/runtime_package_state.json").read_bytes())
         make = contract["make_package_state_inputs"]
         self.assertEqual(make, {})
-        sources = json.loads((OWNER / "config/source_packages.json").read_bytes())
+        sources = json.loads((OWNER / "source_packages.json").read_bytes())
         self.assertTrue({"libsai", "p4lang-bmv2", "p4lang-p4c", "p4lang-pi"}.issubset(
             {record["package"] for record in sources["packages"]}))
         self.assertEqual(contract["source_package_files"]["etc/init.d/syncd"]["package"], "syncd-vs")
