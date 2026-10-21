@@ -14,6 +14,8 @@ tools supplied by `sonic-build-infra`. The foreign builds use its declared GCC
 toolchain and tool runtimes. The selected `rules_foreign_cc` patch preserves
 ordinary, system and quote header search paths when invoking Make/configure;
 vendor headers therefore retain their intended warning and lookup behavior.
+The shared tool launcher stays a static C binary under GCC and Clang. DASH
+metadata generation uses the declared spelling tool from the pinned runtime.
 
 ## Build
 
