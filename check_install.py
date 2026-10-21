@@ -6,6 +6,8 @@ import pexpect
 import sys
 import time
 
+from tools.ci.guest_validation import validate
+
 
 def main():
 
@@ -15,7 +17,12 @@ def main():
     parser.add_argument('-N', default="Test@2022", help='new password')
     parser.add_argument('-p', type=int, default=9000, help='local port')
 
+    parser.add_argument('--guest-report', help='Require core services and write a JSON validation receipt')
+    parser.add_argument('--guest-image', help='QCOW2 disk whose checksum is recorded in the receipt')
+    parser.add_argument('--guest-timeout', type=int, default=600)
     args = parser.parse_args()
+    if bool(args.guest_report) != bool(args.guest_image):
+        parser.error('--guest-report and --guest-image must be supplied together')
 
     login_prompt = 'sonic login:'
     passwd_prompt = 'Password:'
@@ -88,6 +95,8 @@ def main():
     p.expect([cmd_prompt])
     p.sendline('show ip bgp sum')
     p.expect([cmd_prompt])
+    if args.guest_report:
+        validate(p, cmd_prompt, args.guest_report, args.guest_image, args.guest_timeout)
     p.sendline('sync')
     p.expect([cmd_prompt])
 
