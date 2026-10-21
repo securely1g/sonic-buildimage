@@ -1,0 +1,14 @@
+# Keep libnl-cli-3-200 installed for Debian dependencies such as libteam5.
+# Its stock plugins use libnl/cli; the source-built CLI and all ten matching
+# plugins use the compiled PKGLIBDIR, libnl-3/cli. Exclude only the unused
+# Debian plugin files, including during later APT transactions.
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/cls/basic.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/cls/cgroup.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/bfifo.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/blackhole.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/fq_codel.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/hfsc.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/htb.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/ingress.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/pfifo.so
+path-exclude /usr/lib/*-linux-gnu/libnl/cli/qdisc/plug.so

@@ -2,6 +2,7 @@ name: Bazel OCI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [master]
   workflow_dispatch:
@@ -50,7 +51,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libtool pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git init-system-helpers j2cli jq libtool pkg-config python3 python3-debian python3-jinja2 tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -131,6 +132,9 @@ jobs:
             //tools/bazel/tests:source_contract_test \
             //tools/bazel/tests:oci_license_filter_test \
             //tools/bazel/tests:test_dpkg_patterns_up_to_date \
+            //tools/bazel/tests:apt_install_inputs_test \
+            //tools/bazel/tests:dpkg_state_validation_test \
+            //tools/bazel/tests:service_dpkg_validation_test \
             //tools/bazel/oci/tests:imported_symbols_test \
             //tools/bazel/oci/tests:native_symbols_test \
             //tools/bazel/oci/tests:normalize_layer_test \
@@ -150,6 +154,9 @@ jobs:
             //tools/bazel/tests:source_contract_test \
             //tools/bazel/tests:oci_license_filter_test \
             //tools/bazel/tests:test_dpkg_patterns_up_to_date \
+            //tools/bazel/tests:apt_install_inputs_test \
+            //tools/bazel/tests:dpkg_state_validation_test \
+            //tools/bazel/tests:service_dpkg_validation_test \
             //tools/bazel/oci/tests:imported_symbols_test \
             //tools/bazel/oci/tests:native_symbols_test \
             //tools/bazel/oci/tests:normalize_layer_test \
@@ -319,8 +326,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
+      APT_INSTALL_BUILD_CONTAINER: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       SONIC_CI_MANIFEST_METADATA: rules/docker-orchagent.mk
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     defaults:
       run:
         shell: bash
@@ -330,7 +340,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates \
-            gdb git j2cli jq libtool make pigz pkg-config python3 python3-jinja2 redis-server tar unzip zstd
+            gdb git j2cli jq libtool make pigz pkg-config python3 python3-debian python3-jinja2 redis-server tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -467,8 +477,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      APT_INSTALL_BUILD_CONTAINER: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       SONIC_CI_MANIFEST_METADATA: platform/vs/docker-syncd-vs.mk
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     defaults:
       run:
         shell: bash
@@ -477,7 +490,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            binutils build-essential ca-certificates git j2cli jq make python3 python3-jinja2 tar unzip zstd
+            binutils build-essential ca-certificates git j2cli jq make python3 python3-debian python3-jinja2 tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -494,7 +507,6 @@ jobs:
           mkdir -p artifacts/syncd-vs
           git rev-parse HEAD > artifacts/syncd-vs/revision.txt
           sha256sum platform/vs/docker-syncd-vs/bazel/apt.lock.json \
-            platform/vs/docker-syncd-vs/config/runtime_package_state.json \
             platform/vs/docker-syncd-vs/config/source_paths.json > artifacts/syncd-vs/input-locks.sha256
 
       - name: Set up Bazel
@@ -575,10 +587,12 @@ jobs:
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: [source, syncd-contracts]
-    # Build full VS images after source and production test-graph checks.
-    # Manual runs retain their skip option; external-fork PRs use hosted checks.
+    # Build full VS images for Ready PR branches after source and test-graph checks.
+    # Drafts validate source TARs/OCI without starting the complete Make installer.
+    # Manual runs retain their explicit skip option.
     if: >-
       (github.event_name == 'pull_request' &&
+       !github.event.pull_request.draft &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     # Share the existing P330 pool; checkout still uses this event's ref and SHA.
@@ -711,7 +725,7 @@ jobs:
           # AUTO-GENERATED by .github/workflows/bazel-oci.yml. DO NOT EDIT MANUALLY.
           set -euo pipefail
           test_status=0
-          "$BAZEL" test --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
+          python3 -B tools/bazel/oci/native_build.py test --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
             --nocache_test_results --nozip_undeclared_test_outputs || test_status=$?
           mkdir -p artifacts/vs/syncd-p4-images
           for file in test.log test.xml test.outputs/validation.json; do
@@ -727,7 +741,7 @@ jobs:
             SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-p4-images.sh" \
             2>&1 | tee artifacts/vs/syncd-p4-images.log
 
-      - name: Validate installed Syncd programs and all source debug symbols
+      - name: Validate installed Syncd programs and APT transactions in both service images
         run: |
           cat > artifacts/vs/validate-syncd-image.sh <<'SH'
           # AUTO-GENERATED by .github/workflows/bazel-oci.yml. DO NOT EDIT MANUALLY.
@@ -819,7 +833,7 @@ jobs:
           retention-days: 14
           compression-level: 1
 
-      - name: Retain installed Syncd and source dependency evidence
+      - name: Retain installed image and APT transaction evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -833,6 +847,9 @@ jobs:
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/source-base.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/static-validation.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/installed-validation.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/dpkg-images.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/dpkg-*/*.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/dpkg-*/*.log
           if-no-files-found: warn
           retention-days: 14
 
