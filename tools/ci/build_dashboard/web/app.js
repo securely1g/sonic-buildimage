@@ -243,14 +243,21 @@ function renderTrend() {
   container.append(svg);
 }
 
-function renderCoverage() {
-  const rows = [];
-  const selected = state.data.runs.find(run => runKey(run) === state.selectedRun);
-  for (const pr of [...state.data.pull_requests].sort((a, b) => b.number - a.number)) {
-    const associated = state.data.runs.filter(run => prNumbers(run).includes(pr.number)).sort((a, b) => runTime(b) - runTime(a));
+function coverageRows(data) {
+  return data.pull_requests.map(pr => {
+    const associated = data.runs.filter(run => prNumbers(run).includes(pr.number)).sort((a, b) => runTime(b) - runTime(a));
     const latestImageRun = associated.find(run => run.jobs.some(imageJob));
     const latest = latestImageRun || associated[0];
     const jobs = latestImageRun ? latestImageRun.jobs.filter(imageJob) : [];
+    return {pr, latestImageRun, latest, jobs};
+  }).sort((a, b) => Number(!!b.latestImageRun) - Number(!!a.latestImageRun)
+    || (b.latestImageRun ? runTime(b.latestImageRun) : 0) - (a.latestImageRun ? runTime(a.latestImageRun) : 0)
+    || b.pr.number - a.pr.number);
+}
+function renderCoverage() {
+  const rows = [];
+  const selected = state.data.runs.find(run => runKey(run) === state.selectedRun);
+  for (const {pr, latestImageRun, latest, jobs} of coverageRows(state.data)) {
     const row = el("tr", selected && prNumbers(selected).includes(pr.number) ? "selected" : "");
     const title = el("td");
     const button = el("button", "table-button");
@@ -449,4 +456,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, normalizeBreakdown, renderStep};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, normalizeBreakdown, renderStep, coverageRows};
