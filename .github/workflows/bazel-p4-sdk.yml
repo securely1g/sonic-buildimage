@@ -6,6 +6,8 @@ on:
       - .github/workflows/bazel-p4-sdk.yml
       - .bazelrc
       - MODULE.bazel
+      - dockers/docker-base-trixie/bazel/draft_sources.json
+      - tools/bazel/ci/prepare_draft_sources.py
       - tools/bazel/p4/**
       - tools/bazel/ci/**
   push:
@@ -14,6 +16,8 @@ on:
       - .github/workflows/bazel-p4-sdk.yml
       - .bazelrc
       - MODULE.bazel
+      - dockers/docker-base-trixie/bazel/draft_sources.json
+      - tools/bazel/ci/prepare_draft_sources.py
       - tools/bazel/p4/**
       - tools/bazel/ci/**
   workflow_dispatch:
@@ -44,37 +48,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Keep registry resolution on main while the owner PRs are Draft.
-      - name: Check out the landed sairedis source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: securely1g/sonic-sairedis
-          ref: befd501a41549c9fedea9a116d081a6ad542cbe3
-          path: _sdk_dependencies/sairedis
-          persist-credentials: false
-
-      - name: Check out the exact shared parser patch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: securely1g/sonic-build-infra
-          ref: 0b76749e7297476c5bfde0f0b3572ddf96052d01
-          path: _sdk_dependencies/infra
-          persist-credentials: false
-
-      - name: Prepare the pinned Distroless source candidate
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/distroless.tar.gz" \
-            https://github.com/bazel-contrib/rules_distroless/releases/download/v0.9.4/rules_distroless-v0.9.4.tar.gz
-          echo "5d43f4f44f0f0fb614194a07a6dcf7b29338cfc8ab7f6129ad1e4403c1ad1c73  $RUNNER_TEMP/distroless.tar.gz" | sha256sum --check --strict
-          mkdir -p "$RUNNER_TEMP/distroless-sdk"
-          tar -xzf "$RUNNER_TEMP/distroless.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/distroless-sdk"
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/protobuf-headers.patch" \
-            https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/19f060dda00ce7140eae3af4e9a637f9cfeb5034/modules/rules_distroless/0.9.4.sonic.1/patches/0002-include-fragments.patch
-          echo "88da687bfa7ecef1de6c0a309dc1abb8712d10f48caec22e9c74df30d64e639a  $RUNNER_TEMP/protobuf-headers.patch" | sha256sum --check --strict
-          patch -d "$RUNNER_TEMP/distroless-sdk" -p1 < "$RUNNER_TEMP/protobuf-headers.patch"
-          patch -d "$RUNNER_TEMP/distroless-sdk" -p1 < _sdk_dependencies/infra/third_party/rules_distroless/0002-pkgconfig-whitespace.patch
-
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -82,6 +55,23 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-AMD64
           cache-version: "8.5.1"
+
+      - name: Prepare the reviewed dependency sources
+        run: |
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$RUNNER_TEMP/base-source-dependencies" \
+            --receipt artifacts/dependencies/draft-sources.json \
+            --bazelrc-output .bazelrc.user
+
+      - name: Retain reviewed source provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.job }}-draft-sources-${{ strategy.job-index }}
+          path: artifacts/dependencies/draft-sources.json
+          if-no-files-found: error
+          retention-days: 14
+
 
       - name: Verify native Trixie and clean dependency state
         run: |
@@ -99,8 +89,6 @@ jobs:
           set -euo pipefail
           python3 -B tools/bazel/tests/artifact_validation_test.py
           flags=(--jobs=4
-            "--override_module=sonic-sairedis=$GITHUB_WORKSPACE/_sdk_dependencies/sairedis"
-            "--override_module=rules_distroless=$RUNNER_TEMP/distroless-sdk"
             --@sonic_sairedis//:enable_dashsai=true
             --@sonic_sairedis//:dash_sai=//tools/bazel/p4/sdk:dash_sai)
           targets=(//tools/bazel/p4/sdk:sdk_runtime_test //tools/bazel/p4/sdk:packages_test)
