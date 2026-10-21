@@ -123,9 +123,13 @@ def inspect_actions(path):
                             "sha256": hashlib.sha256(action["fileContents"].encode()).hexdigest()})
             wrapper = False
         if wrapper:
-            suspicious.append({"mnemonic": action.get("mnemonic"), "arguments_sha256": hashlib.sha256(command.encode()).hexdigest()})
+            suspicious.append({"owner": owner, "outputs": action_outputs,
+                               "mnemonic": action.get("mnemonic"),
+                               "arguments_sha256": hashlib.sha256(command.encode()).hexdigest()})
         if deb_build:
-            deb_actions.append({"mnemonic": action.get("mnemonic"), "arguments_sha256": hashlib.sha256(command.encode()).hexdigest()})
+            deb_actions.append({"owner": owner, "outputs": action_outputs,
+                                "mnemonic": action.get("mnemonic"),
+                                "arguments_sha256": hashlib.sha256(command.encode()).hexdigest()})
     deb_outputs = sorted(path for path in outputs if path.endswith(".deb"))
     result = {"schema": 1, "action_count": len(value.get("actions", [])), "output_count": len(outputs),
               "deb_outputs": deb_outputs, "deb_packaging_actions": deb_actions, "packaging_wrappers": suspicious,
