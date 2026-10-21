@@ -13,12 +13,13 @@ from tools.bazel.ci import bazel_commands
 
 
 class ActionAuditTest(unittest.TestCase):
-    def audit(self, output_name, arguments, *, file_contents="", owner="//:checked", executable=False):
+    def audit(self, output_name, arguments, *, file_contents="", owner="//:checked", executable=False,
+              mnemonic="FileWrite"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             graph = {
                 "actions": [{"outputIds": [1], "arguments": arguments, "fileContents": file_contents,
-                             "targetId": 1, "mnemonic": "FileWrite", "isExecutable": executable,
+                             "targetId": 1, "mnemonic": mnemonic, "isExecutable": executable,
                              "environmentVariables": [{"key": "PRIVATE", "value": "private-value"}]}],
                 "targets": [{"id": 1, "label": owner}],
                 "artifacts": [{"id": 1, "pathFragmentId": 1}],
@@ -84,6 +85,32 @@ class ActionAuditTest(unittest.TestCase):
                 "arguments_sha256": hashlib.sha256(script.encode()).hexdigest(),
             }])
             self.assertNotIn(command, json.dumps(self.last_summary))
+
+    def test_make_runfiles_manifest_contains_data_not_commands(self):
+        owner = "@@sonic-build-infra+//tools/build_tools:make"
+        output = "bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/tools/build_tools/make.runfiles_manifest"
+        mappings = "sonic-build-infra+/tools/build_tools/make /declared/tools/make\n"
+        for executable in (None, False):
+            with self.subTest(executable=executable):
+                result = self.audit(output, [], file_contents=mappings, owner=owner,
+                                    mnemonic="SourceSymlinkManifest", executable=executable)
+                self.assertEqual(result["packaging_wrappers"], [])
+                self.assertEqual(result["deb_packaging_actions"], [])
+                self.assertEqual(result["foreign_source_builds"], [])
+                self.assertFalse(result["deb_generation_authorized"])
+        for mnemonic, executable, arguments, name in (
+                ("FileWrite", False, [], output),
+                ("Symlink", False, [], output),
+                ("UnreviewedManifest", False, [], output),
+                ("SourceSymlinkManifest", True, [], output),
+                ("SourceSymlinkManifest", False, ["make", "package"], output),
+                ("SourceSymlinkManifest", False, ["bash", "-c", "make package"], output),
+                ("SourceSymlinkManifest", False, [], output.replace(".runfiles_manifest", ".sh")),
+                ("SourceSymlinkManifest", False, [], output.replace(".runfiles_manifest", ".deb"))):
+            with self.subTest(mnemonic=mnemonic, executable=executable, arguments=arguments, output=name):
+                with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                    self.audit(name, arguments, file_contents=mappings, owner=owner,
+                               mnemonic=mnemonic, executable=executable)
 
     def test_rejects_wrapped_packaging_with_hidden_output(self):
         for command in (["dpkg-deb", "--build", "tree", "output"],
