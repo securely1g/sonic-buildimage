@@ -54,7 +54,7 @@ bazel build --config=syncd-dash \
 | Input | Producer |
 | --- | --- |
 | Base filesystem, FIPS libraries, Python runtime and common service tools | The source-built `docker-config-engine-trixie` graph; ordinary Debian packages remain pinned APT inputs. |
-| Common and its Rust CLI library | `@sonic_swss_common//:libswsscommon_pkg` |
+| Common and its Rust CLI library | `@sonic_swss_common//dist:libswsscommon_pkg` |
 | sairedis and SAI metadata | `@sonic_sairedis//lib:libsairedis_pkg` and `//meta:libsaimetadata_pkg` |
 | VS SAI | `@sonic_sairedis//vslib:libsaivs_pkg` |
 | Syncd and the DASH-enabled daemon | `@sonic_sairedis//syncd:syncd_pkg` |
@@ -66,8 +66,10 @@ bazel build --config=syncd-dash \
 | DASH SAI | `@sonic_dash//:runtime` |
 
 [BUILD.bazel](../BUILD.bazel) lists the actual target bindings. The
-[source contract](../config/source_packages.json) records dependency controls,
-resolved module versions and required installed paths. SONiC owners use their
+[path policy](../config/source_paths.json) records only installed paths, file modes
+and ownership. The `source_contract` target combines it with each producer's
+`runtime_packages.json` and the selected `MODULE.bazel`. Package names, versions
+and dependency controls therefore stay with the source owner. SONiC owners use their
 full source commit; foreign packages use the upstream release and SONiC patch
 version. Assembly checks the resolved module declarations and actual TAR bytes.
 
@@ -119,10 +121,12 @@ the source-built package. The original `Dockerfile.j2`, `start.sh`,
 `supervisord.conf`, `critical_processes` and Make image manifest remain the
 behavioral reference.
 
-To refresh APT, use `apt-resolve.MODULE.bazel` in a private preparation checkout,
-review its package versions against the base, and regenerate
-`apt_inputs.MODULE.bazel` with `sonic-build-infra/apt/export_inputs.py`. Generated
-files identify their generator and must not be edited by hand.
+The checked-in `apt.lock.json` is the only APT package list consumed by a build.
+`apt.import_lock` reads its package URLs, checksums, architectures and dependency
+edges during repository setup and exposes the standard Distroless package targets.
+To refresh it, use `apt-resolve.MODULE.bazel` in a private preparation checkout
+and review the resulting lock against the base. No expanded import file needs
+to be checked in or regenerated.
 
 ## Validation
 
