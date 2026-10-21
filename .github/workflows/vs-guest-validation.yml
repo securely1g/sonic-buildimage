@@ -1,0 +1,32 @@
+name: VS guest validation helpers
+on:
+  pull_request:
+    paths:
+      - check_install.py
+      - scripts/build_kvm_image.sh
+      - tools/ci/guest_probe.py
+      - tools/ci/guest_validation.py
+      - tools/ci/tests/guest_validation_test.py
+      - .github/workflows/vs-guest-validation.yml
+  push:
+    branches: [master]
+    paths:
+      - check_install.py
+      - scripts/build_kvm_image.sh
+      - tools/ci/guest_probe.py
+      - tools/ci/guest_validation.py
+      - tools/ci/tests/guest_validation_test.py
+      - .github/workflows/vs-guest-validation.yml
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test guest failures, retry handling and evidence
+        run: |
+          python3 -B -m unittest discover -s tools/ci/tests -p guest_validation_test.py -v
+          bash -n scripts/build_kvm_image.sh
