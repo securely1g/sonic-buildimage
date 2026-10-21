@@ -102,7 +102,7 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
     selection = json.loads(selection_path.read_bytes())
     require(selection.get("schema") == 1 and selection.get("variant") == "runtime" and
             selection.get("apt_lock_sha256") == sha(lock_path) and
-            selection.get("make_manifest_sha256") == sha(make_manifest_path), "APT selection does not match the package state inputs")
+            selection.get("make_manifest_sha256") == (sha(make_manifest_path) if make_manifest_path else None), "APT selection does not match the package state inputs")
     selected = {item["package"]: item for item in selection.get("selected", [])}
     require(len(selected) == len(selection.get("selected", [])), "APT selection repeats a package")
     # Bind the explicitly checked package owners to their reviewed content
@@ -124,32 +124,38 @@ def build(contract_path, lock_path, selection_path, base, apt_layer, runtime_lay
             require(identity == {"version": package["version"], field: package[field]} and
                     current.get("version") == identity["version"] and current.get(field) == identity[field],
                     "package state owner changed: " + name)
-    make = json.loads(make_manifest_path.read_bytes())
-    require(make.get("schema") == 1 and all(make.get(key) == value for key, value in policy_identity(policy).items()) and
-            make.get("variant") == "runtime" and make.get("features") == policy["features"], "invalid Make package state input")
-    if source_contract is not None:
-        reject_source_packages(make.get("packages", []), source_contract)
-    make_packages = {item["package"]: item for item in make.get("packages", [])}
-    expected_make = contract.get("make_package_state_inputs", {})
-    require(expected_make and len(make_packages) == len(make.get("packages", [])) and set(make_packages) == set(expected_make),
-            "Make package set changed; review package state")
-    for name, item in make_packages.items():
-        actual = {"version": item["version"], "architecture": item["architecture"],
-                  "control_fields": item.get("control_fields", {}),
-                  "maintainer_scripts": {key: value for key, value in item.get("control_files", {}).items() if key in SCRIPTS}}
-        # Some state inputs also pin the reviewed archive, such as the FIPS
-        # OpenSSH package moved from the debug handoff into runtime.
-        for field in ("source_sha256", "control_sha256"):
-            if field in expected_make[name]:
-                actual[field] = item.get(field)
-        expected = dict(expected_make[name])
-        # A rebuilt binary's size does not change alternatives or installation
-        # scripts. Preserve all other control fields, including future fields.
-        for record in (actual, expected):
-            record["control_fields"] = {key: value for key, value in record["control_fields"].items()
-                                        if key != "Installed-Size"}
-        require(actual == expected, "Make package relationships or scripts changed; review package state: " + name +
-                " (" + ", ".join(differing_fields(expected, actual)) + ")")
+    if policy["retained_source"] == "make":
+        require(make_manifest_path is not None, "Make package state requires its imported manifest")
+        make = json.loads(make_manifest_path.read_bytes())
+        require(make.get("schema") == 1 and all(make.get(key) == value for key, value in policy_identity(policy).items()) and
+                make.get("variant") == "runtime" and make.get("features") == policy["features"], "invalid Make package state input")
+        if source_contract is not None:
+            reject_source_packages(make.get("packages", []), source_contract)
+        make_packages = {item["package"]: item for item in make.get("packages", [])}
+        expected_make = contract.get("make_package_state_inputs", {})
+        require(expected_make and len(make_packages) == len(make.get("packages", [])) and set(make_packages) == set(expected_make),
+                "Make package set changed; review package state")
+        for name, item in make_packages.items():
+            actual = {"version": item["version"], "architecture": item["architecture"],
+                      "control_fields": item.get("control_fields", {}),
+                      "maintainer_scripts": {key: value for key, value in item.get("control_files", {}).items() if key in SCRIPTS}}
+            # Some state inputs also pin the reviewed archive, such as the FIPS
+            # OpenSSH package moved from the debug handoff into runtime.
+            for field in ("source_sha256", "control_sha256"):
+                if field in expected_make[name]:
+                    actual[field] = item.get(field)
+            expected = dict(expected_make[name])
+            # A rebuilt binary's size does not change alternatives or installation
+            # scripts. Preserve all other control fields, including future fields.
+            for record in (actual, expected):
+                record["control_fields"] = {key: value for key, value in record["control_fields"].items()
+                                            if key != "Installed-Size"}
+            require(actual == expected, "Make package relationships or scripts changed; review package state: " + name +
+                    " (" + ", ".join(differing_fields(expected, actual)) + ")")
+    else:
+        require(make_manifest_path is None and not contract.get("make_package_state_inputs"),
+                "source package state cannot consume imported Make packages")
+        make_packages = {}
     descriptor, _, _, base_layers = validate_layout(base, "linux/" + policy["architecture"])
     require(selection.get("base_manifest_digest") == descriptor["digest"], "package state uses a different OCI base")
     base_files = {}
@@ -253,7 +259,7 @@ def main():
     parser.add_argument("--base", required=True, type=Path)
     parser.add_argument("--apt-layer", required=True, type=Path)
     parser.add_argument("--runtime-layer", required=True, type=Path)
-    parser.add_argument("--make-manifest", required=True, type=Path)
+    parser.add_argument("--make-manifest", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     try:

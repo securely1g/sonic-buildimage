@@ -40,14 +40,3 @@ exports_files([
     "target/docker-syncd-vs.gz",
     "target/docker-syncd-vs-dbg.gz",
 ])
-
-# Syncd extracts existing packages with the upstream BSD tar toolchain. P4/DASH
-# packages come from the reviewed release cache; project packages use source targets.
-# Keep filenames explicit: adding another file under target/debs must not change
-# the image. Installation order belongs in platform/vs/docker-syncd-vs/BUILD.bazel.
-exports_files([
-    "target/debs/trixie/p4lang-pi_0.1.3-2_amd64.deb",
-    "target/debs/trixie/p4lang-bmv2_1.15.0-9_amd64.deb",
-    "target/debs/trixie/p4lang-p4c_1.2.4.2-3_amd64.deb",
-    "target/debs/trixie/libsai_1.0.0_amd64.deb",
-])
