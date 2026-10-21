@@ -288,6 +288,8 @@ def inside(args):
         timestamp = datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).strftime("%Y%m%d.%H%M%S")
         options = ["BLDENV=trixie", "PLATFORM_ARCH=amd64", "USERNAME=admin",
                    "BAZEL_MIN_READINESS=bazel_disabled", "ENABLE_DOCKER_BASE_PULL=n",
+                   # This source-installer profile consumes the P4RT owner TARs.
+                   "P4RT_BUILD_WITH_BAZEL_TARS=y",
                    # Use the upstream public registry; native version control
                    # still applies the recorded Debian image digest.
                    "DEFAULT_CONTAINER_REGISTRY=docker.io",

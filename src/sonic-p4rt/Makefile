@@ -2,6 +2,8 @@
 SHELL = /bin/bash
 .SHELLFLAGS += -e
 
+P4RT_BUILD_WITH_BAZEL_TARS ?= n
+
 # Let Bazel collect split debug symbols into the .dwp for optimized builds.
 # Explicit -g overrides the toolchain's optimized-build default of -g0.
 # GNU dwp 2.44 cannot package GCC 14's default DWARF 5 debug information.
@@ -22,7 +24,7 @@ BAZEL_BUILD_OPTS += --@sonic_swss_common//tools/bazel:cfg_schema=@swss_cfg_schem
 BAZEL_BUILD_OPTS += --copt=-Wno-array-bounds
 BAZEL_BUILD_OPTS += --copt=-Wno-stringop-overflow
 
-# Build optimized, stripped binaries.
+# Keep optimized binaries with the skeleton debug information for the .dwp.
 BAZEL_BUILD_OPTS += -c opt
 
 # Use a host directory to store Bazel download and action caches, to speed up
@@ -42,13 +44,8 @@ BAZEL_BUILD_OPTS += --repository_cache=$(BAZEL_CACHE)/repository_cache
 BAZEL_BUILD_OPTS += --disk_cache=$(BAZEL_CACHE)/disk_cache
 endif
 
-BAZEL_ACTION_AUDIT ?= $(CURDIR)/../../tools/bazel/ci/bazel_commands.py
-
-# The source owner already publishes these payloads as TARs. Keep the runtime
-# and symbols as separate real Make outputs; never request its pkg_deb wrappers.
-$(DEST)/$(SONIC_P4RT): P4RT_BAZEL_TARGET = p4rt_binaries
-$(DEST)/$(SONIC_P4RT_DBG): P4RT_BAZEL_TARGET = p4rt_debug
-$(DEST)/$(SONIC_P4RT_DBG): $(DEST)/$(SONIC_P4RT)
+MAIN_TARGET = $(SONIC_P4RT)
+DERIVED_TARGETS = $(SONIC_P4RT_DBG)
 
 # TODO: Remove this Makefile workaround once Bazel supports generating cfg_schema.h.
 #
@@ -63,6 +60,15 @@ $(CFG_SCHEMA_REPO)/BUILD: $(CFG_SCHEMA_H)
 $(CFG_SCHEMA_H):
 	echo "$@ not found: is libswsscommon-dev installed?" >&2
 	exit 1
+
+ifeq ($(P4RT_BUILD_WITH_BAZEL_TARS),y)
+BAZEL_ACTION_AUDIT ?= $(CURDIR)/../../tools/bazel/ci/bazel_commands.py
+
+# The source owner already publishes these payloads as TARs. Keep the runtime
+# and symbols as separate real Make outputs; never request its pkg_deb wrappers.
+$(DEST)/$(SONIC_P4RT): P4RT_BAZEL_TARGET = p4rt_binaries
+$(DEST)/$(SONIC_P4RT_DBG): P4RT_BAZEL_TARGET = p4rt_debug
+$(DEST)/$(SONIC_P4RT_DBG): $(DEST)/$(SONIC_P4RT)
 
 $(addprefix $(DEST)/, $(SONIC_P4RT) $(SONIC_P4RT_DBG)): $(CFG_SCHEMA_REPO)/BUILD
 	function cleanup {
@@ -96,3 +102,24 @@ $(addprefix $(DEST)/, $(SONIC_P4RT) $(SONIC_P4RT_DBG)): $(CFG_SCHEMA_REPO)/BUILD
 	install -m 0644 bazel-bin/p4rt_app/$(P4RT_BAZEL_TARGET).tar.bz2 "$@.tmp"
 	mv -f "$@.tmp" "$@"
 	popd
+
+else
+BAZEL_TARGET_PATH = p4rt_app
+BAZEL_BUILD_TARGETS = //p4rt_app:p4rt_deb //p4rt_app:p4rt_dbg_deb
+
+$(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% : $(CFG_SCHEMA_REPO)/BUILD
+	function cleanup {
+		# Note: make seems to hang if Bazel is still running
+		cd $(CURDIR)/sonic-pins && (bazel $(BAZEL_OPTS) shutdown; rm -rf bazel-*)
+	}
+	trap cleanup EXIT
+
+	pushd ./sonic-pins
+	bazel $(BAZEL_OPTS) build $(BAZEL_BUILD_OPTS) $(BAZEL_BUILD_TARGETS)
+	bazel $(BAZEL_OPTS) test $(BAZEL_BUILD_OPTS) //$(BAZEL_TARGET_PATH)/...
+	cd ./bazel-bin/$(BAZEL_TARGET_PATH)
+	mv $* $(DERIVED_TARGETS) $(DEST)/
+	popd
+
+$(addprefix $(DEST)/, $(DERIVED_TARGETS)): $(DEST)/% : $(DEST)/$(MAIN_TARGET)
+endif
