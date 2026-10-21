@@ -28,7 +28,7 @@ def inspect_actions(path):
     return result
 
 
-def audit_targets(bazel, options, targets, *, workspace, output):
+def audit_targets(bazel, options, targets, *, workspace, output, startup_options=()):
     """Reject package-producing actions before executing the selected targets."""
     import subprocess
     import tempfile
@@ -38,7 +38,7 @@ def audit_targets(bazel, options, targets, *, workspace, output):
     output.parent.mkdir(parents=True, exist_ok=True)
     # Action graphs may contain command environments; retain only this summary.
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as graph:
-        subprocess.run([bazel, "aquery", *options, "--output=jsonproto",
+        subprocess.run([bazel, *startup_options, "aquery", *options, "--output=jsonproto",
                         "deps(set(" + " ".join(targets) + "))"],
                        cwd=workspace, stdout=graph, check=True)
         graph.flush()
@@ -56,12 +56,14 @@ def main():
 
     parser = argparse.ArgumentParser(description="Audit targets before no-DEB Bazel execution")
     parser.add_argument("--bazel", default="bazel")
+    parser.add_argument("--bazel-startup-arg", action="append", default=[])
     parser.add_argument("--bazel-arg", action="append", default=[])
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("targets", nargs="+")
     args = parser.parse_args()
     audit_targets(args.bazel, args.bazel_arg, args.targets,
-                  workspace=Path.cwd(), output=args.output)
+                  workspace=Path.cwd(), output=args.output,
+                  startup_options=args.bazel_startup_arg)
 
 
 if __name__ == "__main__":
