@@ -106,14 +106,22 @@ def inspect_actions(path):
         outputs.extend(action_outputs)
         # Packaging commands can be in a generated script rather than the
         # action's command line. Request and inspect FileWrite contents too.
-        arguments = [*action.get("arguments", []), action.get("fileContents", "")]
+        file_contents = action.get("fileContents", "")
+        if (action.get("mnemonic") == "SourceSymlinkManifest" and not action.get("arguments") and
+                action.get("isExecutable") is not True and len(action_outputs) == 1 and
+                action_outputs[0].endswith(".runfiles_manifest")):
+            # Bazel's native manifest action writes runfile-to-source mappings.
+            # A mapping for tools/build_tools/make is data, not a command.
+            # Spawn arguments, executable scripts and other actions still scan.
+            file_contents = ""
+        arguments = [*action.get("arguments", []), file_contents]
         command = " ".join(arguments)
         lines = [line for argument in arguments for line in argument.splitlines()
                  if not line.lstrip().startswith("#")]
         wrapper_text = "\n".join(lines)
         packaging = re.search(r"(?:^|[/\s])dpkg-buildpackage(?:\s|$)", wrapper_text)
         wrapper = MAKE.search(invoked_command(action.get("arguments", []))) or MAKE.search("\n".join(
-            line for line in action.get("fileContents", "").splitlines() if not line.lstrip().startswith("#"))) or packaging
+            line for line in file_contents.splitlines() if not line.lstrip().startswith("#"))) or packaging
         deb_build = "dpkg-deb" in command and re.search(r"(?:--build|(?:^|\s)-b(?:\s|$))", command)
         owner = owners.get(action.get("targetId"))
         if (wrapper and not packaging and not deb_build and
