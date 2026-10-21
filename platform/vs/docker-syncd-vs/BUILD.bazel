@@ -2,12 +2,13 @@ load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+load("@sonic_build_infra//oci:installed_packages.bzl", "installed_packages")
 load("@syncd_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("@tar.bzl", "tar")
-load("//dockers/docker-base-trixie/bazel:installed_packages.bzl", "installed_packages")
 load("//tools/bazel/dpkg:defs.bzl", "dpkg_filter", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+load("//tools/bazel/oci:source_contract.bzl", "source_contract")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -55,7 +56,7 @@ _DEBUG_APT_PACKAGES = [
 ]
 
 # The shared validators consume these expectations as data. Source identities,
-# dependency controls and installed paths remain in config/source_packages.json.
+# dependency controls come from source owners; config/source_paths.json keeps installed-path policy.
 _PACKAGE_POLICY = dict(
     _APT_POLICY,
     debug_tools = _DEBUG_APT_PACKAGES,
@@ -165,7 +166,7 @@ _SOURCE_PACKAGES = {
     "p4lang-bmv2": "@p4lang_bmv2//:runtime",
     "p4lang-p4c": "@p4c//:p4c_pkg",
     "libsai": "@sonic_dash//:runtime",
-    "libswsscommon": "@sonic_swss_common//:libswsscommon_pkg",
+    "libswsscommon": "@sonic_swss_common//dist:libswsscommon_pkg",
     "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
     "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
     "libsaivs": "@sonic_sairedis//vslib:libsaivs_pkg",
@@ -175,11 +176,39 @@ _SOURCE_PACKAGES = {
     "libnl-route-3-dev": "@libnl3//:libnl-route-3-dev_files",
 }
 
+# Build the complete validation contract from producer metadata and this image's
+# path policy. No image-side copy of source versions or dependency fields.
+source_contract(
+    name = "source_contract",
+    expectations = "//platform/vs/docker-syncd-vs/config:source_paths.json",
+    owner_metadata = [
+        "@sonic_swss_common//:runtime_packages.json",
+        "@sonic_sairedis//:runtime_packages.json",
+        "@sonic_fips//:runtime_packages.json",
+        "@libnl3//:runtime_packages.json",
+        "@p4lang_pi//:runtime_packages.json",
+        "@p4lang_bmv2//:runtime_packages.json",
+        "@p4c//:runtime_packages.json",
+        "@sonic_dash//:runtime_packages.json",
+    ],
+    source_modules = {
+        "sonic-swss-common": "@syncd_source_modules//:sonic-swss-common.MODULE.bazel",
+        "sonic-sairedis": "@syncd_source_modules//:sonic-sairedis.MODULE.bazel",
+        "sonic-fips": "@syncd_source_modules//:sonic-fips.MODULE.bazel",
+        "libnl3": "@syncd_source_modules//:libnl3.MODULE.bazel",
+        "p4lang-pi": "@syncd_source_modules//:p4lang-pi.MODULE.bazel",
+        "p4lang-bmv2": "@syncd_source_modules//:p4lang-bmv2.MODULE.bazel",
+        "p4c": "@syncd_source_modules//:p4c.MODULE.bazel",
+        "sonic-dash": "@syncd_source_modules//:sonic-dash.MODULE.bazel",
+    },
+    sources = _SOURCE_PACKAGES,
+)
+
 run_binary(
     name = "checked_source_runtime",
     srcs = [
         "//platform/vs/docker-syncd-vs:config_engine_base_layout",
-        "//platform/vs/docker-syncd-vs/config:source_packages.json",
+        "//platform/vs/docker-syncd-vs:source_contract",
         "@syncd_source_modules//:libnl3.MODULE.bazel",
         "@syncd_source_modules//:p4c.MODULE.bazel",
         "@syncd_source_modules//:p4lang-bmv2.MODULE.bazel",
@@ -194,7 +223,7 @@ run_binary(
         "source_runtime.tar",
     ],
     args = [
-               "--contract=$(execpath //platform/vs/docker-syncd-vs/config:source_packages.json)",
+               "--contract=$(execpath //platform/vs/docker-syncd-vs:source_contract)",
                "--base=$(execpath //platform/vs/docker-syncd-vs:config_engine_base_layout)",
                "--module=sonic-swss-common=$(execpath @syncd_source_modules//:sonic-swss-common.MODULE.bazel)",
                "--module=sonic-sairedis=$(execpath @syncd_source_modules//:sonic-sairedis.MODULE.bazel)",
@@ -287,7 +316,7 @@ installed_packages(
     base = ":config_engine_base_layout",
     controls = [label + ":control" for label in APT_INPUTS["syncd_vs_debian"]["amd64"].values()],
     source_receipt = ":source_package_receipt",
-    source_spec = "//platform/vs/docker-syncd-vs/config:source_packages.json",
+    source_spec = "//platform/vs/docker-syncd-vs:source_contract",
     sources = _SOURCE_PACKAGES,
 )
 
@@ -450,6 +479,7 @@ test_suite(
         "//tools/bazel/tests:oci_package_receipts_test",
         "//tools/bazel/tests:oci_package_state_layer_test",
         "//tools/bazel/tests:source_base_validation_test",
+        "//tools/bazel/tests:source_contract_test",
         "//tools/bazel/tests:syncd_manifest_labels_test",
     ],
 )

@@ -31,23 +31,6 @@ include platform/vs/docker-syncd-vs.mk
 
 
 class MakeIntegrationTest(unittest.TestCase):
-    def test_syncd_source_contract_matches_selected_module_pins(self):
-        """Catch stale reviewed identities before building their source payloads."""
-        modules = {}
-        for declaration in re.findall(r"(?m)^bazel_dep\s*\((.*?)\)",
-                                      (ROOT / "MODULE.bazel").read_text(), re.DOTALL):
-            fields = dict(re.findall(r'\b(name|version)\s*=\s*"([^"\n]+)"', declaration))
-            self.assertEqual(set(fields), {"name", "version"})
-            self.assertNotIn(fields["name"], modules)
-            modules[fields["name"]] = fields["version"]
-        contract = ROOT / "platform/vs/docker-syncd-vs/config/source_packages.json"
-        for package in json.loads(contract.read_text())["packages"]:
-            source = package["source"]
-            with self.subTest(package=package["package"]):
-                self.assertEqual(source["version"], modules[source["module"]])
-                if "commit" in source:
-                    self.assertTrue(source["version"].endswith("-" + source["commit"]))
-
     def makefile(self):
         expansion = next(line for line in (ROOT / "rules/functions").read_text().splitlines()
                          if line.startswith("expand ="))
@@ -256,11 +239,9 @@ selected:
         concrete = {"libgrpc++1.51": "libgrpc++1.51t64", "libgrpc29": "libgrpc29t64",
                     "libprotobuf32": "libprotobuf32t64", "libpcap0.8": "libpcap0.8t64"}
         packages = {concrete.get(name, name) for name in packages}
-        module = (ROOT / "MODULE.bazel").read_text()
-        self.assertIn('include("//platform/vs/docker-syncd-vs/bazel:apt_inputs.MODULE.bazel")', module)
-        declarations = (ROOT / "platform/vs/docker-syncd-vs/bazel/apt_inputs.MODULE.bazel").read_text()
-        block = declarations.split('dependency_set = "syncd_vs_debian"', 1)[1].split("suites =", 1)[0]
-        declared = set(re.findall(r'"([^" ]+) \(= [^\)]+\) \[amd64\]"', block))
+        lock = json.loads((ROOT / "platform/vs/docker-syncd-vs/bazel/apt.lock.json").read_text())
+        declared = {item["name"] for item in lock["packages"].values()
+                    if item["architecture"] in ("amd64", "all")}
         providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
         packages = {providers.get(name, name) for name in packages}
         self.assertTrue(packages.issubset(declared), "Dockerfile APT packages missing from OCI inputs: " +

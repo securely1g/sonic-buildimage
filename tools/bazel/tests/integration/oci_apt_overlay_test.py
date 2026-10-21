@@ -41,8 +41,13 @@ class SelectAptPayloadsTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="syncd-apt-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.policy = self.policy_path
-        self.policy_value = json.loads(self.policy.read_text())
+        self.policy = self.root / "policy.json"
+        self.policy_value = json.loads(self.policy_path.read_text())
+        # These fixtures exercise the retained Make-package adapter. Keep that
+        # coverage after the real Syncd image moves to source TAR receipts.
+        self.policy_value["retained_source"] = "make"
+        self.policy_value["features"]["include_fips"] = "y"
+        self.policy.write_text(json.dumps(self.policy_value))
         header = bytearray(64)
         header[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<HH", header, 16, 3, 62)
@@ -122,12 +127,11 @@ class SelectAptPayloadsTest(unittest.TestCase):
         return subject.select(self.base, self.lock, self.policy, self.mapping,
                               retained_manifest=self.runtime, variant="runtime")[1]
 
-    def test_apt_declarations_match_reviewed_locks_for_both_containers(self):
-        """Each container's declarations must still match its canonical lock after sharing the engine."""
-        for image, owner in OWNER_LOCATIONS.items():
-            with self.subTest(image=image):
-                module, _ = declarations(json.loads((owner / "bazel/apt.lock.json").read_bytes()))
-                self.assertEqual((owner / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
+    def test_legacy_orchagent_declarations_match_its_lock(self):
+        """Orchagent still uses expanded declarations; Syncd imports its lock directly."""
+        owner = OWNER_LOCATIONS["docker-orchagent"]
+        module, _ = declarations(json.loads((owner / "bazel/apt.lock.json").read_bytes()))
+        self.assertEqual((owner / "bazel/apt_inputs.MODULE.bazel").read_text(), module)
 
     def test_base_openssl_satisfies_new_package_without_being_added(self):
         """Use an installed base dependency when it satisfies the new package without adding duplicate bytes."""
@@ -183,8 +187,8 @@ class SelectAptPayloadsTest(unittest.TestCase):
 
     def test_declared_policy_has_no_debug_replacement_exception(self):
         """The actual BUILD policy cannot authorize an ordinary-to-FIPS debug swap."""
-        policy = json.loads(self.policy.read_bytes())
-        self.assertEqual(policy["features"]["include_fips"], "y")
+        policy = json.loads(self.policy_path.read_bytes())
+        self.assertEqual(policy["retained_source"], "source")
         self.assertNotIn("debug_replacements", policy)
 
     def test_runtime_retains_fips_instead_of_locked_debian_openssh(self):
