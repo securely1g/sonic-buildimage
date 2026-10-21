@@ -1,4 +1,4 @@
-name: Fetch exact upstream P4 source packages
+name: Acquire immutable OBS source package diagnostics
 "on":
   push:
     branches:
@@ -10,40 +10,41 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Verify repository metadata and fetch source packages only
+      - name: Acquire checksum-verified original source package without extraction
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/fetch_obs_sources.py" <<'OBS_SOURCE_FETCH_PYTHON'
+          cat > "$RUNNER_TEMP/fetch_obs_original_v3.py" <<'OBS_ORIGINAL_SOURCE_PYTHON'
           #!/usr/bin/env python3
-          """Fetch authenticated OBS source packages only. Never execute or extract their contents."""
+          """Acquire public immutable OBS source bytes only; never extract, execute or build them."""
           import argparse
           from datetime import datetime, timezone
           import hashlib
           import json
           import os
-          from pathlib import Path, PurePosixPath
+          from pathlib import Path
           import re
           import resource
           import subprocess
           import tempfile
           import time
           from urllib.parse import quote, urlsplit
+          import xml.etree.ElementTree as ET
           
-          BASES = (
-              'https://download.opensuse.org/repositories/home:/p4lang/Debian_11/',
-              'https://downloadcontent.opensuse.org/repositories/home:/p4lang/Debian_11/',
-          )
-          SOURCE_FALLBACK_BASES = (
-              'https://ftp.gwdg.de/pub/opensuse/repositories/home:/p4lang/Debian_11/',
-              *('https://download.opensuse.org/repositories/home:/p4lang/' + repository + '/'
-                for repository in ('Debian_10', 'Debian_12', 'xUbuntu_20.04', 'xUbuntu_22.04')),
-          )
-          PACKAGES = {'p4lang-pi': '0.1.3-2', 'p4lang-bmv2': '1.15.0-9', 'p4lang-p4c': '1.2.4.2-3'}
-          MIB = 1024 * 1024
-          SOURCE_LIMIT = 256 * MIB
-          TOTAL_LIMIT = 512 * MIB
-          SHA256 = re.compile(r'[0-9a-f]{64}\Z')
+          API = 'https://api.opensuse.org/public/source/home:p4lang/p4lang-p4c'
+          REVISION = '7e6643c47b3eaf7b403cc3988d80d12c'
+          PACKAGE, VERSION = 'p4lang-p4c', '1.2.4.2-3'
+          ORIG = 'p4lang-p4c_1.2.4.2.orig.tar.gz'
+          DSC = 'p4lang-p4c_1.2.4.2-3.dsc'
+          DEBIAN = 'p4lang-p4c_1.2.4.2-3.debian.tar.xz'
+          PINNED_DIRECTORY = {
+              ORIG: {'md5': '98b03592b7a6cf4ed2150463fd757e0e', 'size': 173758549},
+              DSC: {'md5': 'fc74d6c8fa31a35e603411b6f813c75e', 'size': 2463},
+              DEBIAN: {'md5': '8784e34246857089e2e0137f2e59acca', 'size': 2804},
+          }
+          PUBLISHED_ORIG = {'md5': 'fdcae6fb4befe90f75d531301f73248c', 'size': 173765465,
+                            'sha256': '61251b9cf6dc4025e5bd7ec66c3387850962afad91f21754ec0e583f23c1953a'}
+          MIB, BUDGET = 1024 * 1024, 512 * 1024 * 1024
           
           
           def require(condition, message):
@@ -51,182 +52,110 @@ jobs:
                   raise ValueError(message)
           
           
-          def digest(path):
+          def hashes(path):
+              sha, md5 = hashlib.sha256(), hashlib.md5()
               with path.open('rb') as stream:
-                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+                  for chunk in iter(lambda: stream.read(MIB), b''):
+                      sha.update(chunk)
+                      md5.update(chunk)
+              return {'size': path.stat().st_size, 'sha256': sha.hexdigest(), 'md5': md5.hexdigest()}
           
           
-          def paragraphs(text):
-              result, fields, current = [], {}, None
-              for line in text.splitlines() + ['']:
-                  if not line:
-                      if fields:
-                          result.append(fields)
-                      fields, current = {}, None
-                  elif line[:1].isspace():
-                      require(current is not None, 'orphan metadata continuation')
+          def directory(data, expected_revision=None):
+              require(len(data) <= 2 * MIB and b'<!DOCTYPE' not in data.upper() and b'<!ENTITY' not in data.upper(),
+                      'unsupported or oversized directory XML')
+              tree = ET.fromstring(data)
+              require(tree.tag == 'directory' and tree.get('name') == PACKAGE and
+                      re.fullmatch(r'[0-9a-f]{32}', tree.get('srcmd5', '')), 'unexpected OBS directory identity')
+              if expected_revision is not None:
+                  require(tree.get('srcmd5') == expected_revision, 'OBS immutable source revision differs')
+              entries = {}
+              for child in tree:
+                  name, md5, size = child.get('name', ''), child.get('md5', ''), child.get('size', '')
+                  require(child.tag == 'entry' and re.fullmatch(r'[A-Za-z0-9_.+-]+', name) and name not in entries and
+                          name not in ('.', '..') and re.fullmatch(r'[0-9a-f]{32}', md5) and size.isdigit(),
+                          'invalid or duplicate OBS directory entry')
+                  entries[name] = {'md5': md5, 'size': int(size)}
+              return {'srcmd5': tree.get('srcmd5'), 'rev': tree.get('rev'), 'entries': entries}
+          
+          
+          def descriptor(data):
+              text = data.decode('utf-8').replace('\r\n', '\n')
+              if text.startswith('-----BEGIN PGP SIGNED MESSAGE-----\n'):
+                  _, sep, text = text.partition('\n\n')
+                  require(sep, 'invalid signed descriptor header')
+                  text, sep, _ = text.partition('\n-----BEGIN PGP SIGNATURE-----')
+                  require(sep, 'invalid signed descriptor body')
+                  text = '\n'.join(line[2:] if line.startswith('- ') else line for line in text.splitlines())
+              fields, current = {}, None
+              for line in text.strip().splitlines():
+                  if line[:1].isspace():
+                      require(current is not None, 'orphan descriptor continuation')
                       fields[current] += '\n' + line.strip()
                   else:
-                      key, separator, value = line.partition(':')
-                      require(separator and re.fullmatch(r'[A-Za-z][A-Za-z0-9-]*', key) and key not in fields,
-                              'invalid or duplicate metadata field')
-                      fields[key] = value.strip()
-                      current = key
-              return result
+                      key, sep, value = line.partition(':')
+                      require(sep and re.fullmatch(r'[A-Za-z][A-Za-z0-9-]*', key) and key not in fields,
+                              'invalid descriptor field')
+                      fields[key], current = value.strip(), key
+              require(fields.get('Source') == PACKAGE and fields.get('Version') == VERSION, 'immutable DSC package/version differs')
+              sums = {}
+              for line in fields.get('Checksums-Sha256', '').strip().splitlines():
+                  pieces = line.split()
+                  require(len(pieces) == 3 and re.fullmatch(r'[0-9a-f]{64}', pieces[0]) and pieces[1].isdigit(),
+                          'invalid descriptor SHA256 entry')
+                  sha, size, name = pieces
+                  require(name in (ORIG, DEBIAN) and name not in sums and 0 < int(size) <= 256 * MIB,
+                          'unexpected, duplicate or oversized source archive')
+                  sums[name] = {'sha256': sha, 'size': int(size)}
+              require(set(sums) == {ORIG, DEBIAN}, 'DSC must reference exactly the original and Debian source archives')
+              return sums
           
           
-          def checksums(value):
-              result = {}
-              for line in value.strip().splitlines():
-                  parts = line.split()
-                  require(len(parts) == 3 and SHA256.fullmatch(parts[0]) and parts[1].isdigit(), 'invalid SHA256 record')
-                  sha, size, name = parts
-                  require(name not in result, 'duplicate checksum record')
-                  result[name] = {'sha256': sha, 'size': int(size)}
-              require(result, 'empty SHA256 list')
-              return result
+          class Fetcher:
+              def __init__(self, scratch, diagnostic, requests):
+                  self.scratch, self.diagnostic, self.requests = scratch, diagnostic, requests
+                  self.deadline, self.bytes_used = time.monotonic() + 600, 0
+          
+              def fetch(self, url, output, limit, *, expected=None, metadata=False):
+                  require(url.startswith(API + '?') or url.startswith(API + '/'), 'request is outside the exact public OBS source API')
+                  require(limit > 0 and limit <= BUDGET - self.bytes_used, '512 MiB transfer budget exhausted')
+                  remaining = int(self.deadline - time.monotonic())
+                  require(remaining > 0, '10 minute acquisition budget exhausted')
+                  seconds = min(10 if metadata else 180, remaining)
+                  partial = self.scratch / f'payload-{len(self.requests)}'
+                  def limits():
+                      resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+                      resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+                  argv = ['curl', '--disable', '--fail', '--silent', '--show-error', '--location', '--max-redirs', '3',
+                          '--proto', '=https', '--proto-redir', '=https', '--tlsv1.2', '--connect-timeout', '8', '--max-time', str(seconds),
+                          '--max-filesize', str(limit), '--output', str(partial), '--write-out', '%{json}', url]
+                  row = {'url': url, 'limit_bytes': limit, 'timeout_seconds': seconds}
+                  self.requests.append(row)
+                  try:
+                      result = subprocess.run(argv, capture_output=True, text=True, timeout=seconds + 5, preexec_fn=limits)
+                      detail = json.loads(result.stdout) if result.stdout.startswith('{') else {}
+                      row.update(exit_code=result.returncode, effective_url=detail.get('url_effective'),
+                                 http_code=detail.get('http_code'), ssl_verify_result=detail.get('ssl_verify_result'))
+                      (self.diagnostic / f'curl-{len(self.requests)}.stderr.txt').write_text(result.stderr)
+                      require(result.returncode == 0 and detail.get('http_code') == 200 and detail.get('ssl_verify_result') == 0 and
+                              urlsplit(detail.get('url_effective', '')).scheme == 'https', 'verified HTTPS fetch failed')
+                      actual = hashes(partial)
+                      require(0 < actual['size'] <= limit, 'empty or oversized response')
+                      row.update(actual)
+                      if expected:
+                          require(all(actual[key] == value for key, value in expected.items()), 'source digest or size mismatch')
+                      output.parent.mkdir(parents=True, exist_ok=True)
+                      partial.replace(output)
+                      return {'path': str(output), 'url': url, **actual}
+                  finally:
+                      self.bytes_used += partial.stat().st_size if partial.exists() else row.get('size', 0)
+                      partial.unlink(missing_ok=True)
+                      row['cumulative_bytes'] = self.bytes_used
           
           
-          def safe_directory(value):
-              path = PurePosixPath(value)
-              require(value and not path.is_absolute() and '..' not in path.parts and
-                      re.fullmatch(r'[A-Za-z0-9_./+:-]+', value), 'unsafe source directory')
-              return path
-          
-          
-          def source_records(text):
-              selected = {}
-              for entry in paragraphs(text):
-                  package = entry.get('Package')
-                  if package not in PACKAGES or entry.get('Version') != PACKAGES[package]:
-                      continue
-                  require(package not in selected, 'duplicate exact source package')
-                  version = PACKAGES[package]
-                  upstream = version.rsplit('-', 1)[0]
-                  files = checksums(entry.get('Checksums-Sha256', ''))
-                  descriptor = package + '_' + version + '.dsc'
-                  orig = re.compile(re.escape(package + '_' + upstream) + r'\.orig(?:-[A-Za-z0-9+.-]+)?\.tar\.(?:gz|xz|bz2|zst)\Z')
-                  debian = re.compile(re.escape(package + '_' + version) + r'\.debian\.tar\.(?:gz|xz|bz2|zst)\Z')
-                  require(3 <= len(files) <= 12 and descriptor in files and
-                          sum(bool(debian.fullmatch(name)) for name in files) == 1 and
-                          any(orig.fullmatch(name) for name in files), 'incomplete source archive set')
-                  require(all(name == descriptor or orig.fullmatch(name) or debian.fullmatch(name) for name in files),
-                          'non-source or unexpected file in selected package')
-                  require(files[descriptor]['size'] <= MIB and all(0 < v['size'] <= SOURCE_LIMIT for v in files.values()),
-                          'source package exceeds per-file limits')
-                  selected[package] = {'version': version, 'directory': str(safe_directory(entry.get('Directory', '.'))),
-                                       'descriptor': descriptor, 'files': files}
-              require(set(selected) == set(PACKAGES), 'signed Sources lacks one or more exact requested versions')
-              require(sum(v['size'] for p in selected.values() for v in p['files'].values()) <= TOTAL_LIMIT,
-                      'source selection exceeds total download limit')
-              return selected
-          
-          
-          def descriptor_fields(text):
-              if text.startswith('-----BEGIN PGP SIGNED MESSAGE-----\n'):
-                  _, separator, text = text.partition('\n\n')
-                  require(separator, 'malformed clearsigned descriptor')
-                  text, separator, _ = text.partition('\n-----BEGIN PGP SIGNATURE-----')
-                  require(separator, 'malformed clearsigned descriptor signature')
-                  text = '\n'.join(line[2:] if line.startswith('- ') else line for line in text.splitlines())
-              entries = paragraphs(text)
-              require(len(entries) == 1, 'descriptor must contain exactly one paragraph')
-              return entries[0]
-          
-          
-          def verify_descriptor(path, package, record):
-              fields = descriptor_fields(path.read_text())
-              require(fields.get('Source') == package and fields.get('Version') == record['version'], 'descriptor identity differs')
-              expected = {name: value for name, value in record['files'].items() if name != record['descriptor']}
-              require(checksums(fields.get('Checksums-Sha256', '')) == expected,
-                      'descriptor archive checksums differ from signed Sources')
-          
-          
-          def verify_release(key, inrelease, scratch, metadata):
-              keyring = scratch / 'obs-keyring.gpg'
-              home = scratch / 'gpg-home'
-              home.mkdir(mode=0o700)
-              commands = [
-                  ['gpg', '--batch', '--no-options', '--homedir', str(home), '--dearmor', '--output', str(keyring), str(key)],
-                  ['gpg', '--batch', '--no-options', '--homedir', str(home), '--with-colons', '--show-keys', str(key)],
-                  ['gpgv', '--homedir', str(home), '--keyring', str(keyring), '--status-fd', '1',
-                   '--output', str(metadata / 'Release'), str(inrelease)],
-              ]
-              output = []
-              for index, argv in enumerate(commands):
-                  result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-                  (metadata / f'gpg-{index}.stdout.txt').write_text(result.stdout)
-                  (metadata / f'gpg-{index}.stderr.txt').write_text(result.stderr)
-                  require(result.returncode == 0, 'repository signing-key or Release signature verification failed')
-                  output.append(result.stdout)
-              keys = [line.split(':')[9] for line in output[1].splitlines() if line.startswith('fpr:')]
-              statuses = [line.split() for line in output[2].splitlines() if line.startswith('[GNUPG:] ')]
-              forbidden = {'BADSIG', 'ERRSIG', 'NO_PUBKEY', 'REVKEYSIG', 'EXPSIG', 'EXPKEYSIG'}
-              valid = [line[2] for line in statuses if line[1] == 'VALIDSIG']
-              require(valid and all(key in keys for key in valid) and not any(line[1] in forbidden for line in statuses),
-                      'no acceptable Release signature')
-              fields = paragraphs((metadata / 'Release').read_text())
-              require(len(fields) == 1, 'signed Release must contain one paragraph')
-              entries = checksums(fields[0].get('SHA256', ''))
-              require('Sources' in entries and 0 < entries['Sources']['size'] <= 8 * MIB, 'signed Release lacks bounded plain Sources')
-              return {'signing_fingerprints': valid, 'key_fingerprints': keys, 'sources': entries['Sources'],
-                      'release_fields': {key: fields[0].get(key) for key in ('Origin', 'Label', 'Date', 'Suite', 'Codename')}}
-          
-          
-          class Downloader:
-              def __init__(self, scratch, diagnostics, receipt):
-                  self.scratch, self.diagnostics, self.receipt = scratch, diagnostics, receipt
-                  self.deadline = time.monotonic() + 600
-          
-              def fetch(self, relative, destination, limit, expected=None, *, source_archive=False):
-                  safe_directory(relative)
-                  if source_archive:
-                      require(expected is not None and limit == expected['size'] and
-                              re.fullmatch(r'p4lang-(?:pi|bmv2|p4c)_[A-Za-z0-9.+-]+\.(?:dsc|(?:orig|debian)\.tar\.(?:gz|xz|bz2|zst))',
-                                           PurePosixPath(relative).name),
-                              'source-only fallbacks require a selected descriptor/archive and fixed authenticated size')
-                  candidates = BASES + SOURCE_FALLBACK_BASES if source_archive else BASES
-                  for base in candidates:
-                      remaining = int(self.deadline - time.monotonic())
-                      require(remaining > 0, 'source-fetch time budget exhausted')
-                      number = len(self.receipt['requests'])
-                      partial = self.scratch / f'download-{number}.partial'
-                      url = base + quote(relative, safe='/+:.-_')
-                      timeout = min(120 if expected else 45, remaining)
-                      argv = ['curl', '--disable', '--fail', '--silent', '--show-error', '--location', '--max-redirs', '4',
-                              '--proto', '=https', '--proto-redir', '=https', '--tlsv1.2', '--connect-timeout', '8',
-                              '--max-time', str(timeout), '--max-filesize', str(limit), '--output', str(partial),
-                              '--write-out', '%{json}', url]
-                      start = time.monotonic()
-                      # Also bound chunked responses independently of curl's Content-Length checks.
-                      def file_limit():
-                          resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
-                          resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                      result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout + 5, preexec_fn=file_limit)
-                      detail = json.loads(result.stdout) if result.stdout.strip().startswith('{') else {}
-                      attempt = {'url': url, 'effective_url': detail.get('url_effective'), 'exit_code': result.returncode,
-                                 'http_code': detail.get('http_code'), 'ssl_verify_result': detail.get('ssl_verify_result'),
-                                 'elapsed_seconds': time.monotonic() - start, 'limit_bytes': limit}
-                      self.receipt['requests'].append(attempt)
-                      (self.diagnostics / f'curl-{number}.stderr.txt').write_text(result.stderr)
-                      if result.returncode != 0:
-                          partial.unlink(missing_ok=True)
-                          continue
-                      require(detail.get('http_code') == 200 and detail.get('ssl_verify_result') == 0 and
-                              urlsplit(detail.get('url_effective', '')).scheme == 'https', 'download transport was not verified HTTPS')
-                      size = partial.stat().st_size
-                      sha = digest(partial)
-                      require(0 < size <= limit, 'download exceeds its size bound or is empty')
-                      attempt.update(size=size, sha256=sha)
-                      if expected and (size != expected['size'] or sha != expected['sha256']):
-                          attempt['verification_error'] = 'size or SHA256 differs from authenticated metadata'
-                          partial.unlink()
-                          continue
-                      destination.parent.mkdir(parents=True, exist_ok=True)
-                      partial.replace(destination)
-                      return {'path': str(destination), 'size': size, 'sha256': sha, 'url': url,
-                              'effective_url': attempt['effective_url']}
-                  raise ValueError('all permitted endpoints failed: ' + relative)
+          def file_url(name, revision):
+              require(name in PINNED_DIRECTORY and re.fullmatch(r'[0-9a-f]{32}', revision), 'invalid source file request')
+              return API + '/' + quote(name, safe='._-') + '?rev=' + revision
           
           
           def main():
@@ -235,101 +164,81 @@ jobs:
               args = parser.parse_args()
               require(not args.output.exists(), 'refusing to reuse an artifact directory')
               output = args.output.resolve()
-              metadata, diagnostics = output / 'metadata', output / 'diagnostics'
-              metadata.mkdir(parents=True)
-              diagnostics.mkdir()
-              receipt = {'schema': 1, 'started_at': datetime.now(timezone.utc).isoformat(), 'status': 'running',
-                         'purpose': 'Exact official OBS source acquisition; no extraction, compilation or binary package downloads',
-                         'requested_packages': PACKAGES, 'requests': [], 'sources': {},
-                         'metadata_bases': BASES, 'source_fallback_bases': SOURCE_FALLBACK_BASES,
-                         'trust_bootstrap': 'OBS Release.key downloaded via verified HTTPS from the official repository URL; key fingerprints recorded',
-                         'workflow_commit': os.environ.get('GITHUB_SHA'), 'workflow_ref': os.environ.get('GITHUB_REF'),
-                         'workflow_run_id': os.environ.get('GITHUB_RUN_ID'), 'script_sha256': digest(Path(__file__)),
-                         'binary_packages_downloaded': False, 'source_code_executed': False}
-              exit_code = 0
+              diagnostic = output / 'diagnostics'
+              diagnostic.mkdir(parents=True)
+              original = output / 'original-obs-source'
+              original.mkdir()
+              report = {'schema': 3, 'status': 'running', 'started_at': datetime.now(timezone.utc).isoformat(),
+                        'script_sha256': hashes(Path(__file__))['sha256'], 'workflow_commit': os.environ.get('GITHUB_SHA'),
+                        'workflow_run_id': os.environ.get('GITHUB_RUN_ID'), 'workflow_ref': os.environ.get('GITHUB_REF'),
+                        'scope': 'Source acquisition and diagnostics only; no extraction, source execution or package build',
+                        'requests': [], 'historical_directories': [], 'published_orig': {'status': 'not_found', 'expected': PUBLISHED_ORIG},
+                        'immutable_package': {'status': 'pending', 'revision': REVISION, 'package': PACKAGE, 'version': VERSION,
+                            'published_sources_equivalence': False,
+                            'trust_basis': 'Verified HTTPS official OBS API, immutable srcmd5 identifier, directory MD5/size and DSC SHA256 references; distinct from the signed published repository'}}
+              code = 1
               try:
-                  with tempfile.TemporaryDirectory(prefix='obs-source-fetch-') as temporary:
-                      scratch = Path(temporary)
-                      download = Downloader(scratch, diagnostics, receipt)
-                      receipt['release_key'] = download.fetch('Release.key', metadata / 'Release.key', 128 * 1024)
-                      receipt['inrelease'] = download.fetch('InRelease', metadata / 'InRelease', 512 * 1024)
-                      receipt['signature'] = verify_release(metadata / 'Release.key', metadata / 'InRelease', scratch, metadata)
-                      expected = receipt['signature']['sources']
-                      receipt['sources_index'] = download.fetch('Sources', metadata / 'Sources', expected['size'], expected)
-                      selected = source_records((metadata / 'Sources').read_text())
-                      receipt['selected_records'] = selected
-                      for package in PACKAGES:  # Preserve PI/BMV2 success even if the final P4C fetch fails.
-                          record = selected[package]
-                          folder = output / 'sources' / package
-                          descriptor = record['descriptor']
-                          order = [descriptor, *sorted(name for name in record['files'] if name != descriptor)]
-                          receipt['sources'][package] = {}
-                          for name in order:
-                              expected = record['files'][name]
-                              relative = str(PurePosixPath(record['directory']) / name)
-                              info = download.fetch(relative, folder / name, expected['size'], expected, source_archive=True)
-                              receipt['sources'][package][name] = info
-                              if name == descriptor:
-                                  verify_descriptor(folder / name, package, record)
-                      receipt['status'] = 'verified_exact_official_sources'
+                  with tempfile.TemporaryDirectory(prefix='obs-original-source-') as temporary:
+                      fetch = Fetcher(Path(temporary), diagnostic, report['requests'])
+                      matches = []
+                      for rev in (11, 10, 9):
+                          observation = {'requested_rev': rev}
+                          report['historical_directories'].append(observation)
+                          try:
+                              path = diagnostic / f'revision-{rev}.xml'
+                              observation['file'] = fetch.fetch(API + '?rev=' + str(rev), path, 2 * MIB, metadata=True)
+                              value = directory(path.read_bytes())
+                              require(value['rev'] == str(rev), 'OBS returned a different historical revision')
+                              observation['directory'] = value
+                              if value['entries'].get(ORIG) == {key: PUBLISHED_ORIG[key] for key in ('md5', 'size')}:
+                                  matches.append(value['srcmd5'])
+                          except Exception as error:
+                              observation['error'] = str(error)
+                      package = report['immutable_package']
+                      dirpath = original / 'directory.xml'
+                      package['directory_file'] = fetch.fetch(API + '?rev=' + REVISION, dirpath, 2 * MIB, metadata=True)
+                      listing = directory(dirpath.read_bytes(), REVISION)
+                      require(listing['rev'] == '12' and all(listing['entries'].get(name) == expected for name, expected in PINNED_DIRECTORY.items()),
+                              'immutable revision 12 directory differs from the observed exact source package')
+                      package['directory'] = listing
+                      package['files'] = {}
+                      package['files'][DSC] = fetch.fetch(file_url(DSC, REVISION), original / DSC,
+                                                           PINNED_DIRECTORY[DSC]['size'], expected=PINNED_DIRECTORY[DSC])
+                      sums = descriptor((original / DSC).read_bytes())
+                      require(all(sums[name]['size'] == PINNED_DIRECTORY[name]['size'] for name in sums), 'DSC and directory sizes differ')
+                      package['dsc_checksums_sha256'] = sums
+                      for name in (DEBIAN, ORIG):
+                          expected = {**PINNED_DIRECTORY[name], **sums[name]}
+                          package['files'][name] = fetch.fetch(file_url(name, REVISION), original / name, expected['size'], expected=expected)
+                      package['status'] = 'verified_immutable_obs_source_package'
+                      (original / 'receipt.json').write_text(json.dumps(package, indent=2) + '\n')
+                      # Optional search result remains separate and cannot replace the complete original package.
+                      if matches:
+                          revision = matches[0]
+                          report['published_orig'].update(status='candidate_found', revision=revision)
+                          try:
+                              info = fetch.fetch(file_url(ORIG, revision), output / 'published-sources-match' / ORIG,
+                                                 PUBLISHED_ORIG['size'], expected=PUBLISHED_ORIG)
+                              report['published_orig'].update(status='matches_previously_authenticated_published_sha256', file=info)
+                          except Exception as error:
+                              report['published_orig'].update(status='candidate_rejected', error=str(error))
+                      report['status'] = 'verified_immutable_obs_source_package'
+                      code = 0
               except Exception as error:
-                  receipt['status'] = 'failed'
-                  receipt['error'] = str(error)
-                  exit_code = 1
+                  report.update(status='failed', error=str(error))
               finally:
-                  receipt['finished_at'] = datetime.now(timezone.utc).isoformat()
-                  (output / 'receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
-                  print(json.dumps({'status': receipt['status'], 'error': receipt.get('error'), 'artifact_directory': str(output)}))
-              raise SystemExit(exit_code)
+                  report['finished_at'] = datetime.now(timezone.utc).isoformat()
+                  (output / 'receipt.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+                  print(json.dumps({'status': report['status'], 'error': report.get('error'),
+                                    'published_orig': report['published_orig']['status']}))
+              raise SystemExit(code)
           
           
           if __name__ == '__main__':
               main()
-          OBS_SOURCE_FETCH_PYTHON
-          python3 -I -S -B "$RUNNER_TEMP/fetch_obs_sources.py" --output "$GITHUB_WORKSPACE/source-fetch-artifact"
-      - name: Probe public OBS source history for diagnostics only
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/diagnose_obs_api.py" <<'OBS_API_DIAGNOSTIC_PYTHON'
-          #!/usr/bin/env python3
-          """Bounded public XML probes only; these bytes never authorize source acceptance."""
-          import json
-          import os
-          from pathlib import Path
-          import resource
-          import subprocess
-          
-          root = Path(os.environ['GITHUB_WORKSPACE']) / 'source-fetch-artifact/diagnostics/obs-api'
-          root.mkdir(parents=True, exist_ok=True)
-          base = 'https://api.opensuse.org/public/source/home:p4lang'
-          probes = [('project', base), ('p4lang-p4c', base + '/p4lang-p4c'), ('p4lang-p4c-history', base + '/p4lang-p4c/_history')]
-          results = []
-          for name, url in probes:
-              output = root / (name + '.xml')
-              def limits():
-                  resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 * 1024, 2 * 1024 * 1024))
-                  resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-              argv = ['curl', '--disable', '--fail', '--silent', '--show-error', '--location', '--max-redirs', '2',
-                      '--proto', '=https', '--proto-redir', '=https', '--tlsv1.2', '--connect-timeout', '5', '--max-time', '10',
-                      '--max-filesize', str(2 * 1024 * 1024), '--output', str(output), '--write-out', '%{json}', url]
-              try:
-                  result = subprocess.run(argv, capture_output=True, text=True, timeout=12, preexec_fn=limits)
-                  detail = json.loads(result.stdout) if result.stdout.startswith('{') else {}
-                  results.append({'requested_url': url, 'exit_code': result.returncode,
-                                  'effective_url': detail.get('url_effective'), 'http_code': detail.get('http_code'),
-                                  'ssl_verify_result': detail.get('ssl_verify_result'), 'bytes': output.stat().st_size if output.exists() else 0})
-                  (root / (name + '.stderr.txt')).write_text(result.stderr)
-                  if result.returncode:
-                      output.unlink(missing_ok=True)
-              except Exception as error:
-                  output.unlink(missing_ok=True)
-                  results.append({'requested_url': url, 'error': str(error)})
-          (root / 'receipt.json').write_text(json.dumps({'scope': 'Untrusted diagnostic XML only; no source acceptance', 'probes': results}, indent=2) + '\n')
-          OBS_API_DIAGNOSTIC_PYTHON
-          python3 -I -S -B "$RUNNER_TEMP/diagnose_obs_api.py"
-      - name: Retain verified sources and diagnostic receipt
+          OBS_ORIGINAL_SOURCE_PYTHON
+          python3 -I -S -B "$RUNNER_TEMP/fetch_obs_original_v3.py" --output "$GITHUB_WORKSPACE/source-fetch-artifact"
+      - name: Retain separate original sources and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
