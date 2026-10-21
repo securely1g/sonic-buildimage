@@ -31,13 +31,13 @@ class ImageInputsTest(unittest.TestCase):
         action = command[1]
         if action == "aquery":
             # The audit must reject package producers before any build occurs.
-            graph = {"actions": []}
-            if self.unsafe:
-                graph = {
-                    "actions": [{"outputIds": [1]}],
-                    "artifacts": [{"id": 1, "pathFragmentId": 1}],
-                    "pathFragments": [{"id": 1, "label": "unexpected.deb"}],
-                }
+            graph = {
+                "actions": [{"outputIds": [1]}],
+                "artifacts": [{"id": 1, "pathFragmentId": 1}],
+                "pathFragments": [{
+                    "id": 1, "label": "unexpected.deb" if self.unsafe else "cached.tar",
+                }],
+            }
             json.dump(graph, kwargs["stdout"])
         elif action == "build":
             # Model a fresh output base with cache hits: only requested top-level
@@ -75,7 +75,7 @@ class ImageInputsTest(unittest.TestCase):
 
     def test_deb_producer_stops_before_cache_download(self):
         self.unsafe = True
-        with self.assertRaisesRegex(ValueError, "would produce a Debian package"):
+        with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
             self.build()
         self.assertEqual([command[1] for command in self.commands], ["aquery"])
 
