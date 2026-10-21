@@ -1,0 +1,48 @@
+{
+  "packages": {
+    "libdashapi": {
+      "required_paths": [
+        "usr/lib/libdashapi.so",
+        "usr/lib/python3/dist-packages/dash_api/_utils.so"
+      ],
+      "source_revision": "2a6e390b96a4fc17c191fa0da4b7ed1f40aed069",
+      "target": "@sonic_dash_api//:libdashapi_pkg"
+    },
+    "libprotobuf32t64": {
+      "required_paths": [
+        "usr/lib/{multiarch}/libprotobuf.so.32"
+      ],
+      "source_revision": "3.21.12-sonic.1",
+      "target": "@sonic_dash_api//:protobuf_runtime_pkg"
+    },
+    "libsaimetadata": {
+      "required_paths": [
+        "usr/lib/{multiarch}/libsaimetadata.so.0"
+      ],
+      "source_revision": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+      "target": "@sonic_sairedis//meta:libsaimetadata_pkg"
+    },
+    "libsairedis": {
+      "required_paths": [
+        "usr/lib/{multiarch}/libsairedis.so.0"
+      ],
+      "source_revision": "befd501a41549c9fedea9a116d081a6ad542cbe3",
+      "target": "@sonic_sairedis//lib:libsairedis_pkg"
+    },
+    "libswsscommon": {
+      "required_paths": [
+        "usr/lib/{multiarch}/libswsscommon.so.0"
+      ],
+      "source_revision": "db8f451c76fdc1135cd40f585c218e7d589a7223",
+      "target": "@sonic_swss_common//:libswsscommon_pkg"
+    },
+    "swss": {
+      "required_paths": [
+        "usr/bin/orchagent"
+      ],
+      "source_revision": "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
+      "target": "@sonic_swss//dist:swss_pkg"
+    }
+  },
+  "schema": 1
+}

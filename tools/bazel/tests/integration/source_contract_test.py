@@ -38,9 +38,10 @@ class SourceContractTest(unittest.TestCase):
         self.owner.write_text(json.dumps(self.metadata))
         self.module.write_text('module(name = "example", version = "2.4.0.sonic.2")\n')
         second = self.run_contract()["packages"][0]
-        self.assertEqual(first["version"], "2.4.0-1")
-        self.assertEqual(second["version"], "2.4.0-2")
-        self.assertEqual(second["control_fields"]["Depends"], "libc6 (>= 2.40)")
+        self.assertEqual(first["version"], "2.4.0.sonic.1")
+        self.assertEqual(second["version"], "2.4.0.sonic.2")
+        self.assertNotIn("control_fields", second)
+        self.assertEqual(second["kind"], "runtime-layer")
         self.assertEqual(second["source"], {"module": "example", "version": "2.4.0.sonic.2",
                                            "release": "2.4.0", "target": "@example//:runtime"})
         self.assertEqual(second["required_paths"], first["required_paths"])
@@ -53,8 +54,23 @@ class SourceContractTest(unittest.TestCase):
         self.module.write_text('module(name = "example", version = "0.0.1-' + revision + '")\n')
         package = self.run_contract()["packages"][0]
         self.assertEqual(package["architecture"], "arm64")
-        self.assertEqual(package["control_fields"]["Architecture"], "arm64")
+        self.assertNotIn("control_fields", package)
         self.assertEqual(package["source"]["commit"], revision)
+
+    def test_base_provenance_preserves_paths_without_inventing_package_state(self):
+        self.policy.pop("architecture")
+        self.policy.pop("image")
+        self.policy["packages"]["libexample"]["excluded_baseline_paths"] = ["usr/lib/obsolete.so"]
+        self.expectations.write_text(json.dumps(self.policy))
+        result = generate(self.expectations, {"@@example+//:runtime_packages.json": self.owner},
+                          {"example": self.module}, {"libexample": "@@example+//:runtime"},
+                          {"libexample": "@example//:runtime"}, self.output, "arm64", "provenance")
+        package = result["packages"]["libexample"]
+        self.assertEqual(package["source_version"], "2.4.0.sonic.1")
+        self.assertEqual(package["target"], "@example//:runtime")
+        self.assertEqual(package["excluded_baseline_paths"], ["usr/lib/obsolete.so"])
+        self.assertNotIn("control_fields", package)
+        self.assertNotIn("version", package)
 
     def test_image_cannot_override_owner_dependency_fields(self):
         self.policy["packages"]["libexample"]["control_fields"] = {"Depends": ""}
