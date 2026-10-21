@@ -159,9 +159,9 @@ bazel build \
 ```
 
 Prepare Make manifests with `CONFIGURED_ARCH=arm64` for that build. This does not
-enable a new ARM64 Make integration profile or turn the approved AMD64 cached
-P4/DASH SDK into an ARM64 source build. That SDK remains a separate downstream
-input to Syncd.
+enable a new ARM64 Make integration profile. Syncd's DASH profile and its full
+image validation remain AMD64-only; its source producers have their own native
+architecture checks.
 
 ## Package state and validation
 
@@ -217,3 +217,9 @@ files required by SymCrypt and the OpenSSL, OpenSSH, Kerberos and SymCrypt
 runtime/debug TAR contracts.
 
 The source-base roots select published `sonic-build-infra@0.0.22-a12bc826d6f811a157db5c7c02a2fe033896cc14` from `main` and retain the targeted `kernel_runtime_(amd64|arm64)` remote-download policy in `tools/bazel/common.bazelrc`. FIPS runtime and debug TARs select `sonic-fips@0.0.3-fb8f59927c45b642f1e3e90344d96de92b20d0ac`. The remaining producer candidates are prepared from reviewed commits and verified `source.json` digests in `draft_sources.json`. Their source and registry prerequisite PRs must land before this stack is ready.
+
+During review, `draft_sources.json` records every selected registration still
+awaiting landing, including producer package metadata.
+Its integrity-checked overrides apply to all build, test and query commands.
+Remove each override only after that exact compatible registration is available
+from the maintained registry `main` endpoint.
