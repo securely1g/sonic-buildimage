@@ -4,9 +4,13 @@ p4_sdk_apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
 p4_sdk_apt.install(
     dependency_set = "p4_sdk_debian",
     packages = [
-        "libprotobuf-dev (= 3.21.12-11+deb13u1) [amd64]",
         "libgrpc++-dev (= 1.51.1-6) [amd64]",
+        "libprotobuf-dev (= 3.21.12-11+deb13u1) [amd64]",
     ],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
 use_repo(p4_sdk_apt, "p4_sdk_debian")

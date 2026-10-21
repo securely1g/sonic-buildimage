@@ -44,7 +44,7 @@ own settings. Both the build and output query use the same configuration.
 After those inputs exist, the direct targets are:
 
 ```sh
-bazel build --config=syncd-dash \
+python3 tools/bazel/oci/native_build.py build --config=syncd-dash \
   //platform/vs/docker-syncd-vs:docker-syncd-vs.gz \
   //platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz
 ```
@@ -54,22 +54,27 @@ bazel build --config=syncd-dash \
 | Input | Producer |
 | --- | --- |
 | Base filesystem, FIPS libraries, Python runtime and common service tools | The source-built `docker-config-engine-trixie` graph; ordinary Debian packages remain pinned APT inputs. |
-| Common and its Rust CLI library | `@sonic_swss_common//:libswsscommon_pkg` |
-| sairedis and SAI metadata | `@sonic_sairedis//lib:libsairedis_pkg` and `//meta:libsaimetadata_pkg` |
-| VS SAI | `@sonic_sairedis//vslib:libsaivs_pkg` |
-| Syncd and the DASH-enabled daemon | `@sonic_sairedis//syncd:syncd_pkg` |
+| Common and its Rust CLI library | `@sonic_swss_common//:libswsscommon_pkg` binary layer |
+| sairedis and SAI metadata | `@sonic_sairedis//lib:libsairedis_pkg` and `//meta:libsaimetadata_pkg` binary layers |
+| VS SAI | `@sonic_sairedis//vslib:libsaivs_pkg` binary layer |
+| Syncd and the DASH-enabled daemon | `@sonic_sairedis//syncd:syncd_pkg` binary layer |
 | FIPS OpenSSH client | `@sonic_fips//openssh:openssh_client_pkg` |
 | libnl development files | Source-owned headers, static libraries and link/pkg-config files matching the two Make development packages. |
 | PI, BMv2, P4C and DASH SAI | The four unchanged cached runtime DEBs from `tools/bazel/p4/packages.lock.json`. The fifth cached DEB supplies SDK headers. |
 
 [BUILD.bazel](../BUILD.bazel) lists the actual target bindings. The
-[source contract](../config/source_packages.json) records dependency controls,
-resolved module versions and required installed paths. SONiC owners use their
+[source declarations](../config/source_packages.json) record resolved module
+versions, public runtime targets and required installed paths. Common, sairedis
+and Syncd keep their existing binary TAR layers. OpenSSH and libnl also supply
+runtime TARs directly. Genuine locked Debian baseline packages supply package
+controls and installation scripts; separate provenance identifies every source
+overlay. Source TARs do not invent package identities or satisfy APT dependencies. SONiC owners use their
 full source commit; foreign packages use the upstream release and SONiC patch
-version. Assembly checks the resolved module declarations and actual TAR bytes.
+version. Assembly checks the resolved module declarations and actual source ELF bytes.
 
 The debug image extends the exact runtime image. Its source symbols come from
-the same Bazel dependency graph, including the source-built base. The cached
+the original producer TAR dependencies, including the source-built base, while
+runtime file checks use the matching source TAR or existing imported DEB payload. The cached
 P4/DASH tuple has no matching debug artifacts in the reviewed release inventory;
 those gaps remain explicit. Static development libraries retain their own
 symbols. A successful build is not a FIPS certification claim.
@@ -84,31 +89,40 @@ inherits this payload through its runtime base.
 
 Both containers use the common `apt_layer`, `sonic_layer`, `oci_image`,
 `debug_symbols_layer` and `sonic_docker_archive` rules. Distroless provides package
-imports and TAR composition. Upstream BSD tar extracts the existing P4 DEBs;
-Bazel does not produce Debian packages or execute their maintainer scripts.
+imports and TAR composition. The shared `apt_install` rule installs original
+Debian archives into a private root filesystem and executes their original
+maintainer scripts and triggers. Common, sairedis and Syncd remain binary layers;
+the inherited Python applications remain wheel layers. FIPS OpenSSH and libnl
+consume public source runtime TARs; this graph creates no DEBs. PI, BMv2, P4C and
+DASH SAI still use the approved, existing pinned binary archives.
 
 The APT lock uses the same Debian snapshot as the source-built base. For example,
-`libc6-dev` must match the base's `libc6` version. The selector also preserves
+`libc6-dev` must match the base's `libc6` version. The selector preserves
 source-built FIPS libraries when they already satisfy a dependency. It fails if
 the final package requirements cannot be satisfied.
 
-The installed package metadata helper combines the base, selected APT controls,
-verified P4 controls and source-package receipts. It checks dependencies again
-and writes the final `/var/lib/dpkg/status` with source/archive provenance.
-The debug selector checks that exact runtime inventory.
+APT and dpkg own the installed package database, configuration records,
+alternatives and service state. For example, OpenSSH's original installation
+script creates its `_ssh` group and gives `ssh-agent` that group's setgid mode;
+the normalizer preserves this installed metadata while copying source TAR bytes;
+Debian's Vim script registers and restores its editor alternatives. The image
+build no longer copies these effects from an earlier image or invents dpkg
+control records. Syncd's init scripts stay in its source-owner runtime layer.
+Source file overlays are accepted only for their same-named Debian baseline
+owners and exact source bytes. Generated APT preferences use priority -1 to prevent
+ordinary version selection from replacing those components. The supported APT
+contract adds unrelated packages; it does not manage source components through
+APT upgrades/removals, direct dpkg commands or administrator overrides.
 
-OpenSSH installation preserves the reviewed base groups and adds `_ssh` with
-GID 104, matching the retained Make image. The source contract installs
-`ssh-agent` as root:`_ssh` with mode `2755` by changing TAR metadata only; the
-source-built ELF bytes and debug linkage remain unchanged. The image also
-retains the Make user socket enablement link and `x /tmp/ssh-*` tmpfiles
-exclusion. These explicit entries do not claim every maintainer-script effect.
+`syncd-packages.json` under `/usr/share/sonic/bazel` records the actual installed
+package state and source ELF identities. Runtime and debug each receive a report
+bound to their own APT installation receipt and configured filesystem. The
+validator checks package-state hashes, dependencies, startup files and source
+ELF/debug pairs against the final image. The complete filesystems are converted
+to OCI layers with upstream tools while preserving inherited image settings.
 
-[The installation-state contract](../config/runtime_package_state.json) preserves
-reviewed alternatives and service links. Its Syncd init-file hash now binds to
-the source-built package. The original `Dockerfile.j2`, `start.sh`,
-`supervisord.conf`, `critical_processes` and Make image manifest remain the
-behavioral reference.
+The original `Dockerfile.j2`, `start.sh`, `supervisord.conf`, `critical_processes`
+and Make image manifest remain the behavioral reference.
 
 To refresh APT, use `apt-resolve.MODULE.bazel` in a private preparation checkout,
 review its package versions against the base, and regenerate
@@ -122,6 +136,13 @@ package state and Make fallback behavior. Source-owner and base-image workflows
 validate their supported native AMD64 and ARM64 configurations separately.
 The cached DASH tuple supports only AMD64; these checks do not establish an
 ARM64 DASH image.
+
+[Real package-manager validation](../../../../tools/bazel/oci/README.md#validate-real-package-transactions)
+runs `apt-get update` and installs additional Debian packages in disposable
+containers, then checks that the original SONiC programs and source files remain
+intact. Base/config-engine cover native AMD64 and ARM64; Syncd runtime/debug
+remain AMD64. Retained image receipts and transaction
+logs must demonstrate success for this revision; helper tests alone do not.
 
 Full validation must use the resulting runtime/debug images: resolve installed
 libraries, run the CLI and startup checks, and verify matching debug symbols.
