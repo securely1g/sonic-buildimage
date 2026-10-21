@@ -56,8 +56,23 @@ class SourcePackageFixture:
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.contract = self.root / "source_packages.json"
-        self.value = (copy.deepcopy(self.contract_document) if self.contract_document is not None else
-                      json.loads((OWNER / "config/source_packages.json").read_bytes()))
+        if self.contract_document is not None:
+            self.value = copy.deepcopy(self.contract_document)
+        else:
+            self.value = json.loads((OWNER / "config/source_packages.json").read_bytes())
+            # Owner declarations contain provenance and paths only. Real package
+            # controls are supplied by producer DEBs in image validation. These
+            # small TAR tests intentionally use unrelated synthetic controls.
+            for record in self.value["packages"]:
+                self.assertNotIn("control_fields", record)
+                self.assertNotIn("version", record)
+                if record.get("kind") == "runtime-layer":
+                    record.update(version=record["source"]["version"], architecture=self.value["architecture"])
+                    continue
+                record.update(version="9.8.7-test", architecture=self.value["architecture"],
+                    control_fields={name: "" for name in subject.CONTROL_FIELDS})
+                record["control_fields"].update(Package=record["package"], Version=record["version"],
+                                                Architecture=record["architecture"], Depends="libc6 (>= 2.36)")
         self.policy = OWNER_POLICIES.get("syncd", package_policy(image=self.value["image"]))
         for record in self.value["packages"]:
             for item in record.get("required_inherited_files", {}).values():
@@ -80,7 +95,7 @@ class SourcePackageFixture:
                                   and Path(name).name.startswith(Path(path).name + ".")]
                     contents = Path(candidates[0]).name
                 entries.append((source_path, contents, 0 if kind == "symlink" else 0o555 if kind == "elf" else
-                                0o755 if path.endswith(".lua") else 0o664,
+                                0o755 if path.endswith(".lua") else 0o644,
                                 "symlink" if kind == "symlink" else "file", 123))
             self.entries[name] = entries
             path = self.root / (name + ".tar")
@@ -93,7 +108,7 @@ class SourcePackageFixture:
             self.debug_packages[name] = path
             source = record["source"]
             path = self.root / (source["module"] + ".MODULE.bazel")
-            path.write_text('module(name = "' + source["module"] + '", version = "' + source["version"] + '")\n')
+            path.write_text('module(name = "' + source["module"] + '", version = "' + source.get("module_version", source["version"]) + '")\n')
             self.modules[source["module"]] = path
         base_layer = self.root / "base.tar"
         entries = []
@@ -122,6 +137,91 @@ class SourcePackageFixture:
         return result
 
 
+class RuntimeLayerContractTest(SourcePackageFixture, unittest.TestCase):
+    """Ordinary SONiC payloads remain TARs without invented Debian identities."""
+
+    contract_document = source_contract()
+
+    def setUp(self):
+        super().setUp()
+        for record in self.value["packages"]:
+            record.pop("control_fields")
+            record["kind"] = "runtime-layer"
+            record["version"] = record["source"]["version"]
+        self.contract.write_bytes(subject.json_bytes(self.value))
+
+    def test_runtime_layer_receipt_preserves_source_without_debian_controls(self):
+        result = self.build()
+        self.assertTrue(all(record["kind"] == "runtime-layer" and "control_fields" not in record
+                            for record in result["packages"]))
+        subject.validate_receipt(self.receipt, self.runtime_tar, contract_path=self.contract)
+
+    def test_runtime_layer_cannot_claim_debian_dependency_controls(self):
+        self.value["packages"][0]["control_fields"] = {}
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        with self.assertRaisesRegex(ValueError, "must not claim Debian package controls"):
+            self.build()
+
+
+class SourceDebPayloadTest(SourcePackageFixture, unittest.TestCase):
+    """Use actual Debian-selected paths and permissions rather than the broad TAR."""
+
+    contract_document = source_contract()
+
+    def setUp(self):
+        super().setUp()
+        record = self.value["packages"][0]
+        name = record["package"]
+        record["source"]["target"] = "@example_owner//debian:package"
+        entries = [(path, contents, 0o777 if kind == "symlink" else mode, kind, 0)
+                   for path, contents, mode, kind, owner in self.entries[name]]
+        entries.append(("usr/share/example.lua", b"#!/usr/bin/lua\n", 0o755, "file", 0))
+        archive(self.packages[name], entries)
+        record["deb"] = {"target": record["source"]["target"], "sha256": "b" * 64,
+                         "data_sha256": subject.sha(self.packages[name])}
+        self.contract.write_bytes(subject.json_bytes(self.value))
+
+    def test_keeps_selected_permissions_and_excludes_developer_link(self):
+        result = self.build()
+        record = result["packages"][0]
+        self.assertEqual(record["files"]["usr/share/example.lua"]["mode"], 0o755)
+        self.assertNotIn("usr/lib/libexample.so", record["files"])
+        self.assertEqual(record["deb"], self.value["packages"][0]["deb"])
+        self.assertEqual(subject.validate_receipt(self.receipt, self.runtime_tar,
+                         contract_path=self.contract), result)
+
+    def test_deb_symlink_mode_uses_linux_permissions_without_changing_target(self):
+        name = self.value["packages"][0]["package"]
+        entries = [(path, contents, 0 if kind == "symlink" else mode, kind, 0)
+                   for path, contents, mode, kind, owner in self.entries[name]]
+        archive(self.packages[name], entries)
+        self.value["packages"][0]["deb"]["data_sha256"] = subject.sha(self.packages[name])
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        files = self.build()["packages"][0]["files"]
+        self.assertEqual(files["usr/lib/libexample.so.2"], {
+            "kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0,
+            "linkname": "libexample.so.2.4.0"})
+
+    def test_rejects_data_from_another_deb(self):
+        self.value["packages"][0]["deb"]["data_sha256"] = "c" * 64
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        with self.assertRaisesRegex(ValueError, "payload differs from its actual DEB"):
+            self.build()
+
+    def test_rejects_changed_deb_identity_in_receipt(self):
+        result = self.build()
+        result["packages"][0]["deb"]["sha256"] = "c" * 64
+        self.receipt.write_bytes(subject.json_bytes(result))
+        with self.assertRaisesRegex(ValueError, "DEB differs from the reviewed contract"):
+            subject.validate_receipt(self.receipt, self.runtime_tar, contract_path=self.contract)
+
+    def test_rejects_manual_mode_override(self):
+        self.value["packages"][0]["path_modes"] = {"usr/share/example.lua": 0o644}
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        with self.assertRaisesRegex(ValueError, "metadata must not be overridden"):
+            self.build()
+
+
 class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
     """Preserve the actual shared-library migration policy as explicit input data."""
 
@@ -131,6 +231,8 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
             "module": "libnl3", "version": "3.7.0.sonic.3", "release": "3.7.0",
             "target": "@libnl3//:libnl-3-dev_pkg",
         }
+        if record.get("kind") == "runtime-layer":
+            record["version"] = record["source"]["version"]
         subject.package_identity(record, architecture="amd64")
         module = self.root / "foreign.MODULE.bazel"
         module.write_text('module(name = "libnl3", version = "3.7.0.sonic.2")\n')
@@ -188,6 +290,24 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
         archive(self.packages["libswsscommon"], entries)
         with self.assertRaisesRegex(ValueError, "required installed path"):
             self.build()
+
+    def test_unregistered_source_declares_module_version_without_losing_commit_pin(self):
+        record = copy.deepcopy(self.value["packages"][0])
+        source = record["source"]
+        source["module_version"] = "0.0.4"
+        subject.package_identity(record, architecture="amd64")
+        module = self.root / "unregistered.MODULE.bazel"
+        module.write_text('module(name="' + source["module"] + '", version="0.0.4")\n')
+        subject.verify_modules({"packages": [record]}, {source["module"]: module})
+        module.write_text('module(name="' + source["module"] + '", version="0.0.5")\n')
+        with self.assertRaisesRegex(ValueError, "resolved source module differs"):
+            subject.verify_modules({"packages": [record]}, {source["module"]: module})
+        module.write_text('module(name="' + source["module"] + '")\n')
+        with self.assertRaisesRegex(ValueError, "resolved source module differs"):
+            subject.verify_modules({"packages": [record]}, {source["module"]: module})
+        source["version"] = "0.0.4"
+        with self.assertRaisesRegex(ValueError, "public owner target"):
+            subject.package_identity(record, architecture="amd64")
 
     def test_resolved_module_drift_fails_before_publishing_archives(self):
         """A newer transitive module cannot be described as the reviewed old source commit."""
@@ -281,35 +401,28 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "archive inventory differs"):
             subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
 
-    def test_contract_rejects_invalid_owner_label_and_incomplete_dependency_metadata(self):
-        """Source provenance and dependency checks cannot be weakened by changing one contract field."""
-        variants = []
+    def test_contract_rejects_invalid_owner_label(self):
+        """Source provenance cannot be weakened by changing the owner's target."""
         value = copy.deepcopy(self.value)
         value["packages"][0]["source"]["target"] = "not-a-bazel-label"
-        variants.append(value)
-        value = copy.deepcopy(self.value)
-        del value["packages"][0]["control_fields"]["Depends"]
-        variants.append(value)
-        for value in variants:
-            with self.subTest(value=value["packages"][0]):
-                self.contract.write_bytes(subject.json_bytes(value))
-                with self.assertRaises(ValueError):
-                    subject.read_contract(self.contract)
+        self.contract.write_bytes(subject.json_bytes(value))
+        with self.assertRaises(ValueError):
+            subject.read_contract(self.contract)
 
-    def test_receipt_cannot_claim_contract_hash_with_different_source_or_dependencies(self):
-        """The contract digest also binds its actual source and dependency records, not just JSON syntax."""
+    def test_receipt_cannot_claim_contract_hash_with_different_source(self):
+        """The contract digest binds its actual source records, not just JSON syntax."""
         value = self.build()
         subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
-        for field in ("source", "control_fields"):
-            with self.subTest(field=field):
-                altered = copy.deepcopy(value)
-                if field == "source":
-                    altered["packages"][0][field].update(commit="a" * 40, version="0.0.1-" + "a" * 40)
-                else:
-                    altered["packages"][0][field]["Depends"] = "libc6"
-                self.receipt.write_bytes(subject.json_bytes(altered))
-                with self.assertRaisesRegex(ValueError, "differs from the reviewed contract"):
-                    subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
+        altered = copy.deepcopy(value)
+        source = altered["packages"][0]["source"]
+        source.update(commit="a" * 40, version="0.0.1-" + "a" * 40)
+        if "module_version" in source:
+            source["module_version"] = "0.0.1"
+        if altered["packages"][0].get("kind") == "runtime-layer":
+            altered["packages"][0]["version"] = source["version"]
+        self.receipt.write_bytes(subject.json_bytes(altered))
+        with self.assertRaisesRegex(ValueError, "differs from the reviewed contract"):
+            subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
 
     def test_retained_manifest_keeps_make_and_source_provenance_separate(self):
         """APT sees source dependencies while the original Make input and debug binding remain exact."""
@@ -348,6 +461,22 @@ class UnrelatedSourceContractTest(SourcePackageFixture, unittest.TestCase):
     """Prove source handling is independent of Syncd and the three SONiC libraries."""
 
     contract_document = source_contract()
+
+    def test_contract_rejects_incomplete_dependency_metadata(self):
+        """Debian controls use a package fixture even when the image consumes only runtime TARs."""
+        del self.value["packages"][0]["control_fields"]["Depends"]
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        with self.assertRaises(ValueError):
+            subject.read_contract(self.contract)
+
+    def test_receipt_cannot_claim_contract_hash_with_different_dependencies(self):
+        """A receipt cannot change Debian dependencies while retaining the contract digest."""
+        value = self.build()
+        subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
+        value["packages"][0]["control_fields"]["Depends"] = "libc6 (>= 9.9)"
+        self.receipt.write_bytes(subject.json_bytes(value))
+        with self.assertRaisesRegex(ValueError, "differs from the reviewed contract"):
+            subject.validate_receipt(self.receipt, self.runtime_tar, self.debug_tar, contract_path=self.contract)
 
     def test_installation_owner_and_setgid_change_metadata_only(self):
         """Image-local group assignment preserves the owner's exact executable bytes."""
