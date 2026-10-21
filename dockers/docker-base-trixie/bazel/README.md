@@ -147,9 +147,9 @@ bazel build \
 ```
 
 Prepare Make manifests with `CONFIGURED_ARCH=arm64` for that build. This does not
-enable a new ARM64 Make integration profile or turn the approved AMD64 cached
-P4/DASH SDK into an ARM64 source build. That SDK remains a separate downstream
-input to Syncd.
+enable a new ARM64 Make integration profile. Syncd's DASH profile and its full
+image validation remain AMD64-only; its source producers have their own native
+architecture checks.
 
 ## Package state and validation
 
@@ -194,8 +194,14 @@ For Python changes, edit the owning `requirements.in` and regenerate the shared
 config-engine lock with the existing documented `uv pip compile` command. Keep
 base-specific declarations in `dockers/docker-base-trixie/requirements.in`.
 
-Shared sysroot and Kerberos tools use landed infrastructure `0.0.17-8baf1ad829c5095297d85148b042145b87d623a3` from registry #81. Distroless #82 supplies the Debian library linking interface used by native shared libraries. Both resolve through maintained `main`; no infrastructure source override is needed. The root version selection keeps older consumer declarations from choosing an obsolete compiler snapshot.
+`MODULE.bazel` records the selected infrastructure, Distroless and FIPS versions.
+The root infrastructure selection keeps older consumer declarations from choosing
+an obsolete compiler or execution-tool runtime. FIPS owns the GNU tool runtime
+files required by SymCrypt and the OpenSSL, OpenSSH, Kerberos and SymCrypt
+runtime/debug TAR contracts.
 
-The FIPS runtime source is `da444a14aea8483fcb8df84d0a049bf9db0fb15a`. It declares the GNU tool runtime files required by SymCrypt, while OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
-
-FIPS runtime and debug TARs resolve as `sonic-fips@0.0.2-da444a14aea8483fcb8df84d0a049bf9db0fb15a` from the maintained registry `main` endpoint. The source is the landed FIPS revision; no FIPS source override is prepared. The remaining entries in `draft_sources.json` still require their own prerequisite PRs.
+During review, `draft_sources.json` records every selected registration still
+awaiting landing, including shared infrastructure and producer package metadata.
+Its integrity-checked overrides apply to all build, test and query commands.
+Remove each override only after that exact compatible registration is available
+from the maintained registry `main` endpoint.
