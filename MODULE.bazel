@@ -195,8 +195,15 @@ use_repo(apt, "trixie")
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
-    packages = ["liblua5.1-0-dev", "redis-server"],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+    packages = [
+        "liblua5.1-0-dev",
+        "redis-server",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
 use_repo(apt, "eventd_deps")
 
