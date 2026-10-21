@@ -176,3 +176,18 @@ py_binary(
     srcs = ["prepare_oci_base.py"],
     deps = [":oci_layout"],
 )
+
+py_library(
+    name = "source_contract_lib",
+    srcs = ["source_contract.py"],
+    deps = [
+        ":package_contract_lib",
+        "@sonic_build_infra//oci:metadata_lib",
+    ],
+)
+
+py_binary(
+    name = "source_contract",
+    srcs = ["source_contract.py"],
+    deps = [":source_contract_lib"],
+)

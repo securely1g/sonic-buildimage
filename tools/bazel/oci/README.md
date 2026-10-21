@@ -26,7 +26,7 @@ and test input, not another checked-in copy of those values.
 | `image_validation` | Expected startup/configuration, archive tags, and explicitly permitted installed-state changes. |
 
 Syncd's
-[`config/source_packages.json`](../../../platform/vs/docker-syncd-vs/config/source_packages.json)
+[`config/source_paths.json`](../../../platform/vs/docker-syncd-vs/config/source_paths.json)
 remains the declaration of source package identities, dependency controls,
 module revisions and required paths.
 The shared source adapter compares it with the actual public target bindings,
