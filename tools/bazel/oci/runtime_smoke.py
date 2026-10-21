@@ -182,12 +182,16 @@ V1Switch(ParserImpl(), VerifyChecksumImpl(), IngressImpl(), EgressImpl(),
 def p4_service_check(config):
     # Compile only a small data-plane test program with the installed compiler.
     # This does not build PI, BMv2, p4c or the DASH SAI producer.
+    output_mode = config.get('compiler_output_mode', 'file')
+    if output_mode not in ('file', 'directory'):
+        raise ValueError('Unknown P4 compiler output mode: ' + str(output_mode))
     with tempfile.TemporaryDirectory(prefix='sonic-p4-smoke-') as name:
         directory = Path(name)
         source, output = directory / 'drop.p4', directory / 'drop.json'
         source.write_text(P4_PROGRAM)
-        compiler = command([config['compiler'], '--arch', 'v1model', '--std', 'p4-16',
-                            str(source), '-o', str(output)], timeout=60)
+        compiler = command([config['compiler'], *config.get('compiler_args', []),
+                            '--arch', 'v1model', '--std', 'p4-16',
+                            str(source), '-o', str(directory if output_mode == 'directory' else output)], timeout=60)
         if compiler['returncode'] != 0 or not output.is_file():
             raise ValueError('Installed P4 compiler failed: ' + json.dumps(compiler))
         program = json.loads(output.read_text())
@@ -225,7 +229,9 @@ def p4_service_check(config):
                         process.kill(); process.wait()
             log.flush(); log.seek(0)
             diagnostics = log.read()[-4000:]
-        return {'compiler': config['compiler'], 'switch': config['switch'],
+        return {'compiler': config['compiler'], 'compiler_args': config.get('compiler_args', []),
+                'compiler_output_mode': output_mode,
+                'switch': config['switch'],
                 'program_sha256': hashlib.sha256(P4_PROGRAM.encode()).hexdigest(),
                 'compiled_json_sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
                 'grpc_listener_ready': ready, 'log': diagnostics,
