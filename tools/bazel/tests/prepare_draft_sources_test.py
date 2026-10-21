@@ -79,6 +79,19 @@ class PrepareDraftSourcesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "integrity"):
             self.attributes()
 
+    def test_suffixless_archive_preserves_explicit_extraction_format(self):
+        self.recipe.update(url="https://codeload.github.com/example/source/tar.gz/" + "b" * 40,
+                           archive_type="tar.gz")
+        data = json.dumps(self.recipe).encode()
+        self.files["source.json"] = data
+        manifest = json.loads(self.manifest.read_text())
+        manifest["modules"]["example"]["source_json_integrity"] = integrity(data)
+        self.manifest.write_text(json.dumps(manifest))
+        attributes, _ = self.attributes()
+        self.assertEqual(attributes["type"], "tar.gz")
+        self.assertEqual(attributes["urls"], [self.recipe["url"]])
+        self.assertEqual(attributes["integrity"], integrity(self.archive))
+
     def test_overlay_path_cannot_escape_module(self):
         self.recipe["overlay"] = {"../outside": integrity(b"outside")}
         data = json.dumps(self.recipe).encode()

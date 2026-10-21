@@ -17,6 +17,51 @@ from tools.bazel.oci.package_contract import identity, read_contract, read_polic
 
 ELF_MACHINES = {"amd64": 62, "arm64": 183, "armhf": 40}
 
+
+def dynamic_function(path, symbol, *, undefined, readelf):
+    """Check an actual exported/imported function, ignoring symbol version suffixes."""
+    output = subprocess.check_output([readelf, "--dyn-syms", "--wide", str(path)],
+                                     text=True, stderr=subprocess.PIPE, timeout=120)
+    for line in output.splitlines():
+        fields = line.split()
+        if (len(fields) >= 8 and fields[3] == "FUNC" and fields[4] in ("GLOBAL", "WEAK") and
+                fields[7].split("@", 1)[0] == symbol and (fields[6] == "UND") == undefined):
+            return True
+    return False
+
+
+def debug_forwarding(name, spec, runtime, debug, info, *, readelf, objcopy):
+    """Prove a source-free launcher imports its implementation from a packaged DSO."""
+    require(isinstance(spec, dict) and set(spec) == {"provider", "symbol", "source"},
+            "invalid debug forwarding contract: " + name)
+    provider_name, symbol, source = spec["provider"], spec["symbol"], spec["source"]
+    require(isinstance(provider_name, str) and path_name(provider_name) == provider_name and
+            provider_name != name and isinstance(symbol, str) and re.fullmatch(r"[A-Za-z_]\w*", symbol) and
+            isinstance(source, str) and source and PurePosixPath(source).name == source,
+            "invalid debug forwarding provider, symbol or source: " + name)
+    require(dynamic_function(runtime[name]["file"], symbol, undefined=True, readelf=readelf),
+            "forwarding launcher does not import its declared function: " + name)
+    provider = resolve(runtime, provider_name)
+    require(provider.get("file") is not None, "forwarding provider is not a packaged ELF: " + provider_name)
+    provider_info = elf_info(provider["file"], readelf=readelf, dynamic=True, timeout=120)
+    require(provider_info["soname"] == PurePosixPath(provider_name).name and
+            provider_info["soname"] in info["needed"],
+            "forwarding provider is not a declared DT_NEEDED SONAME: " + name)
+    require(dynamic_function(provider["file"], symbol, undefined=False, readelf=readelf),
+            "forwarding provider does not define its declared function: " + provider_name)
+    identifier = provider_info["build_id"]
+    require(identifier and provider_info["has_debuglink"], "forwarding provider lacks debug identity: " + provider_name)
+    debug_name = "usr/lib/debug/.build-id/" + identifier[:2] + "/" + identifier[2:] + ".debug"
+    symbols = resolve(debug, debug_name)
+    require(symbols.get("file") is not None, "forwarding provider has no matching symbols: " + provider_name)
+    symbol_info = elf_info(symbols["file"], readelf=readelf, timeout=120)
+    require(symbol_info["build_id"] == identifier and symbol_info["has_dwarf"],
+            "forwarding provider symbols do not match its build ID or lack DWARF: " + provider_name)
+    verify_debuglink(provider["file"], symbols["file"], provider_name,
+                     expected_name=PurePosixPath(debug_name).name, objcopy=objcopy, timeout=120)
+    return {**spec, "debug_path": debug_name, "build_id": identifier}
+
+
 def collect(manifest_path, temporary, prefix):
     manifest = json.loads(manifest_path.read_bytes())
     files = {}
@@ -314,6 +359,9 @@ def validate_native(runtime_manifest, debug_manifest, *, policy, source_contract
             merge_source(debug, source_debug)
         require(runtime, "native validation received an empty runtime inventory")
         elfs = {name: item for name, item in runtime.items() if "file" in item}
+        forwarding = expectations.get("debug_forwarding", {})
+        require(isinstance(forwarding, dict) and set(forwarding).issubset(elfs),
+                "debug forwarding contract names an absent runtime ELF")
         require(required_packages.issubset({item["package"] for item in elfs.values()}),
                 "a required native runtime package has no ELF")
         basenames = {PurePosixPath(name).name for name in runtime}
@@ -356,12 +404,17 @@ def validate_native(runtime_manifest, debug_manifest, *, policy, source_contract
                     require(symbols.get("origin") == "bazel_source",
                             "source runtime requires symbols from its source collector: " + name)
                 symbol_info = elf_info(symbols["file"], readelf=readelf, timeout=120)
-                require(symbol_info["build_id"] == identifier and symbol_info["has_dwarf"],
+                require(symbol_info["build_id"] == identifier and (symbol_info["has_dwarf"] or name in forwarding),
                         "debug ELF does not match runtime build ID or lacks DWARF: " + name)
                 if info["has_debuglink"]:
                     verify_debuglink(item["file"], symbols["file"], name,
                                      expected_name=PurePosixPath(debug_name).name, objcopy=objcopy, timeout=120)
                 record["debug_path"] = debug_name
+                if name in forwarding:
+                    require(info["has_debuglink"] and not info["has_dwarf"] and not symbol_info["has_dwarf"],
+                            "debug forwarding requires a stripped source-free launcher: " + name)
+                    record["debug_forwarding"] = debug_forwarding(
+                        name, forwarding[name], runtime, debug, info, readelf=readelf, objcopy=objcopy)
                 paired.append(record)
             elif info["has_dwarf"]:
                 embedded.append(record)
@@ -370,6 +423,8 @@ def validate_native(runtime_manifest, debug_manifest, *, policy, source_contract
                 record["reason"] = "the existing Make debug list supplies no matching symbol package"
                 gaps.append(record)
             checked.append(record)
+        require(set(forwarding) == {record["path"] for record in paired if "debug_forwarding" in record},
+                "debug forwarding requires matching launcher symbols")
         for package, soname in required_sonames.items():
             require(soname in observed_sonames.get(package, set()), "required SONAME is absent: " + package + ":" + soname)
         inherited_pairs = validate_inherited_base(runtime_path, base_debug_symbols, base_debug_receipt, temporary,
