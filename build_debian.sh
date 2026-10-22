@@ -64,6 +64,22 @@ TRUSTED_GPG_DIR=$BUILD_TOOL_PATH/trusted.gpg.d
     exit 1
 }
 
+# The Bazel host action has already restored and validated a declared host
+# snapshot. It resumes at the service-configuration boundary below.
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y ]]; then
+    [[ "$CONFIGURED_ARCH" == amd64 && "$CONFIGURED_PLATFORM" == vs &&
+       "$TARGET_MACHINE" == vs && "$IMAGE_DISTRO" == trixie &&
+       "$IMAGE_TYPE" == onie && "$RFS_SPLIT_LAST_STAGE" == y ]] || die "Unsupported Bazel host-finalization configuration"
+    [[ -d "$FILESYSTEM_ROOT" && -f "$FILESYSTEM_ROOT/etc/sonic/sonic_version.yml" ]] || die "Bazel host action must restore its snapshot first"
+    [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "Bazel host action requires SOURCE_DATE_EPOCH"
+fi
+
+case "${SONIC_BAZEL_BUILD_STAGE:-}" in
+    "") ;;
+    host) . tools/bazel/image/native/host.sh ;;
+    *) die "Unsupported Bazel native host stage" ;;
+esac
+
 if [ "$IMAGE_TYPE" = "aboot" ]; then
     TARGET_BOOTLOADER="aboot"
 fi
@@ -663,20 +679,25 @@ if [[ $RFS_SPLIT_LAST_STAGE == y ]]; then
     ## ensure proc is mounted
     sudo mount proc /proc -t proc || true
 
-    sudo fuser -vm $FILESYSTEM_ROOT || true
-    sudo rm -rf $FILESYSTEM_ROOT
-    sudo unsquashfs -d $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME
+    if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} != y ]]; then
+        sudo fuser -vm $FILESYSTEM_ROOT || true
+        sudo rm -rf $FILESYSTEM_ROOT
+        sudo unsquashfs -d $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME
+    fi
 
-    ## make / as a mountpoint in chroot env, needed by dockerd
-    pushd $FILESYSTEM_ROOT
-    sudo mount --bind . .
-    popd
+    if [[ ${SONIC_BAZEL_BUILD_STAGE:-} != host ]]; then
+        ## make / as a mountpoint in chroot env, needed by dockerd
+        pushd $FILESYSTEM_ROOT
+        sudo mount --bind . .
+        popd
+    fi
 
     trap_push 'sudo LANG=C chroot $FILESYSTEM_ROOT umount /proc || true'
     sudo LANG=C chroot $FILESYSTEM_ROOT mount proc /proc -t proc
 fi
 
 ## Version file part 2
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} != y ]]; then
 export build_version="${SONIC_IMAGE_VERSION}"
 export debian_version="$(cat $FILESYSTEM_ROOT/etc/debian_version)"
 export kernel_version="${kversion}"
@@ -686,13 +707,27 @@ export commit_id="$(git rev-parse --short HEAD)"
 export branch="$(git rev-parse --abbrev-ref HEAD)"
 export release="$(if [ -f $FILESYSTEM_ROOT/etc/sonic/sonic_release ]; then cat $FILESYSTEM_ROOT/etc/sonic/sonic_release; fi)"
 export build_date="$(date -u)"
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    export commit_id="$SONIC_BAZEL_SOURCE_COMMIT"
+    export branch="$SONIC_BAZEL_SOURCE_BRANCH"
+    export build_date="$(LC_ALL=C date -u -d "@$SOURCE_DATE_EPOCH")"
+fi
 export build_number="${BUILD_NUMBER:-0}"
 export built_by="$USER@$BUILD_HOSTNAME"
 export sonic_os_version="${SONIC_OS_VERSION}"
 j2 files/build_templates/sonic_version.yml.j2 | sudo tee $FILESYSTEM_ROOT/etc/sonic/sonic_version.yml
+fi
 
 if [ -f sonic_debian_extension.sh ]; then
     ./sonic_debian_extension.sh $FILESYSTEM_ROOT $PLATFORM_DIR $IMAGE_DISTRO
+fi
+
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    sonic_bazel_write_host_snapshot
+    # Capture generated services and the evaluated environment before Make
+    # removes its templates. This never includes password/signing material.
+    python3 tools/bazel/image/native/producer.py finish
+    exit 0
 fi
 
 ## Organization specific extensions such as Configuration & Scripts for features like AAA, ZTP...
@@ -885,6 +920,17 @@ sudo LANG=C chroot $FILESYSTEM_ROOT pip3 cache purge
 
 run_organization_build_hook pre-finalization
 
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y ]]; then
+    temporary_ca="$FILESYSTEM_ROOT/usr/local/share/ca-certificates/sonic-build-temporary-ca.crt"
+    cleanup_marker="$FILESYSTEM_ROOT/usr/local/share/ca-certificates/sonic-build-temporary-ca.cleanup"
+    if [[ -e "$temporary_ca" || -e "$cleanup_marker" ]]; then
+        sudo rm -f -- "$temporary_ca"
+        sudo LANG=C chroot "$FILESYSTEM_ROOT" update-ca-certificates --fresh
+        sudo rm -f -- "$cleanup_marker"
+    fi
+    sudo rm -f -- "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-ca"
+fi
+
 ## Umount all
 echo '[INFO] Umount all'
 ## Display all process details access /proc
@@ -957,6 +1003,14 @@ if [[ $MULTIARCH_QEMU_ENVIRON == y || $CROSS_BUILD_ENVIRON == y ]]; then
     # Remove qemu arm bin executable used for cross-building
     sudo rm -f $FILESYSTEM_ROOT/usr/bin/qemu*static || true
     DOCKERFS_PATH=../dockerfs/
+fi
+
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y ]]; then
+    # Only host payloads leave this action. The temporary Docker daemon held
+    # metadata projections and local package images, never a shippable store.
+    sudo tar --dereference --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner -cf "$SONIC_BAZEL_BOOT_TAR" -C "$FILESYSTEM_ROOT" boot
+    (set -o pipefail; sudo tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner -cf - -C "$FILESYSTEM_ROOT/$PLATFORM_DIR" . | pigz -n > "$SONIC_BAZEL_PLATFORM_TAR")
+    exit 0
 fi
 
 ## Compress docker files

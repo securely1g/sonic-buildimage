@@ -1,0 +1,214 @@
+name: Bazel
+
+on:
+  # Include draft PRs and stacked bases, such as codex/sysmgr-pr1-base.
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Git's system config survives native user setup without making its global
+# user.name/user.email writes target the source transport policy.
+env:
+  GIT_CONFIG_NOSYSTEM: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+concurrency:
+  group: bazel-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: test
+            name: Bazel checks (AMD64)
+            timeout: 30
+            runner: ubuntu-24.04
+            architecture: amd64
+          - mode: build
+            name: Bazel SWSS packages (AMD64)
+            timeout: 90
+            runner: ubuntu-24.04
+            architecture: amd64
+          - mode: headers
+            name: Bazel protobuf headers (AMD64)
+            timeout: 30
+            runner: ubuntu-24.04
+            architecture: amd64
+          - mode: headers
+            name: Bazel protobuf headers (ARM64)
+            timeout: 30
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+    # Match the execution ABI of the pinned Trixie compiler and Rust tools.
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates \
+            gdb git libtool make pigz pkg-config python3 python3-jinja2 tar unzip zstd
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize the recorded Bazel component sources
+        run: |
+          export GIT_CONFIG_SYSTEM="$GITHUB_WORKSPACE/tools/bazel/ci/fork-source.gitconfig"
+          echo "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM" >> "$GITHUB_ENV"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --depth 1 --jobs 4 -- \
+            src/sonic-build-infra src/sonic-dash-api src/sonic-sairedis \
+            src/sonic-swss src/sonic-swss-common
+
+      - name: Verify gNOI is supplied by Bazel Central Registry
+        run: test ! -f src/sonic-sysmgr/gnoi/types/types.proto
+
+      - name: Verify fresh generated dependency state
+        run: |
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: buildimage-${{ matrix.mode }}-${{ matrix.architecture }}
+          cache-version: "8.5.1"
+
+      - name: Check P4RT TAR handoff and isolated debug symbols
+        if: matrix.mode == 'test'
+        run: python3 -B -m unittest discover -s tools/bazel/tests -p 'p4rt*_test.py'
+
+      - name: Run Bazel checks and validate outputs
+        run: python3 tools/bazel/ci/run.py "${{ matrix.mode }}" --artifacts "artifacts/${{ matrix.mode }}"
+
+      - name: Validate sysmgr runtime and matching debug tars
+        if: matrix.mode == 'build'
+        run: python3 tools/bazel/ci/sysmgr/run.py build --artifacts artifacts/sysmgr
+
+      - name: Upload build evidence and packages
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: buildimage-bazel-${{ matrix.mode }}-${{ matrix.architecture }}
+          path: |
+            artifacts/
+            bazel-testlogs/**/test.log
+            bazel-testlogs/**/test.xml
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  image:
+    name: Bazel VS installer (AMD64)
+    needs: ci
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+       github.ref == 'refs/heads/master')
+    # Full native prerequisites need substantially more disk than a standard
+    # hosted runner. Register this label on a disposable source-build runner.
+    runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
+    timeout-minutes: 720
+    env:
+      VS_CACHE_ROOT: /data/sonic-runner/cache/sonic-buildimage/vs-installer/state
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Never let checkout's cleanup erase another retained source attempt.
+          path: vs-installer-ci/checkout-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Allocate fresh installer scratch on the root filesystem
+        id: build_area
+        run: |
+          staged="$GITHUB_WORKSPACE/vs-installer-ci/checkout-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          /usr/bin/python3 -B "$staged/tools/bazel/ci/build_area.py" --github-env "$GITHUB_ENV"
+
+      - name: Move this checkout into the fresh build area
+        id: relocate
+        run: |
+          staged="$GITHUB_WORKSPACE/vs-installer-ci/checkout-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          /usr/bin/python3 -B "$staged/tools/bazel/ci/image_docker.py" \
+            --relocate-from "$staged" --workspace "$VS_WORKSPACE" \
+            --state "$VS_STATE" --artifacts "$VS_WORKSPACE/artifacts/image"
+
+      - name: Initialize every recorded native and Bazel source
+        working-directory: ${{ env.VS_WORKSPACE }}
+        run: |
+          export GIT_CONFIG_SYSTEM="$VS_WORKSPACE/tools/bazel/ci/fork-source.gitconfig"
+          echo "GIT_CONFIG_SYSTEM=$GIT_CONFIG_SYSTEM" >> "$GITHUB_ENV"
+          git submodule update --init --recursive --jobs 4
+
+      - name: Restore Bazel source-package and download caches
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.VS_CACHE_ROOT }}/package-cache
+            ${{ env.VS_CACHE_ROOT }}/repository-cache
+          key: sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ steps.relocate.outputs.source-cache-key }}-${{ github.sha }}
+          restore-keys: |
+            sonic-vs-bazel-8.5.1-${{ runner.os }}-${{ steps.relocate.outputs.source-cache-key }}-
+            sonic-vs-bazel-8.5.1-${{ runner.os }}-
+
+      - name: Check source-build runner capacity
+        run: |
+          df -h "$VS_WORKSPACE"
+          /usr/bin/python3 - <<'PY'
+          import os, shutil
+          free = shutil.disk_usage(os.environ["VS_WORKSPACE"]).free
+          if free < 300 * 1024**3:
+              raise SystemExit("VS native source build needs at least 300 GiB of free disk after cache restore")
+          PY
+          docker info > /dev/null
+
+      - name: Build and verify sonic-vs.bin with Bazel
+        working-directory: ${{ env.VS_WORKSPACE }}
+        run: |
+          ca_args=()
+          if [[ -n "${SONIC_BUILD_CA_BUNDLE:-}" ]]; then
+            ca_args=(--ca-bundle "$SONIC_BUILD_CA_BUNDLE")
+          fi
+          /usr/bin/python3 -B tools/bazel/ci/image_docker.py \
+            --workspace "$VS_WORKSPACE" \
+            --git-config "$GIT_CONFIG_SYSTEM" \
+            --state "$VS_STATE" \
+            --cache-root "$VS_CACHE_ROOT" \
+            --artifacts "$VS_WORKSPACE/artifacts/image" \
+            "${ca_args[@]}"
+
+      - name: Upload VS installer and build evidence
+        if: always() && steps.build_area.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-bazel-amd64
+          path: |
+            ${{ env.VS_WORKSPACE }}/artifacts/image/
+            ${{ env.VS_WORKSPACE }}/artifacts/controller/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

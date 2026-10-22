@@ -56,50 +56,117 @@ To avoid drift, the script refuses to run on a dirty tree. You can override that
 ## Interaction With the Make-based Build System
 
 Even when building with Bazel, Docker images for SONiC services are driven by the Make build system.
-There are two mechanisms for this:
+`BAZEL_MIN_READINESS` selects eligible containers by their declared readiness:
+`bazel_disabled` (the default) uses Make throughout, `experimental` selects both
+experimental and stable containers, and `stable` selects only stable containers.
+The old `BUILD_WITH_BAZEL_WHEN_AVAILABLE` toggle is replaced by this selector.
 
-- The `BUILD_WITH_BAZEL_WHEN_AVAILABLE` Flag: A global flag that toggles whether every container that could be built with Bazel should be built with Bazel.
-- The `SONIC_BAZEL_DOCKER_IMAGES` Make Target: A new target type that will use `bazel build` to build the containers, instead of Make. [Documentation](/README.buildsystem.md#bazel-docker-images).
-
-To mark a container as buildable with Bazel, add it to `SONIC_BAZEL_DOCKER_IMAGES` only if `BUILD_WITH_BAZEL_WHEN_AVAILABLE` is enabled:
+Register candidates in `SONIC_BAZEL_DOCKER_IMAGES` unconditionally, while retaining
+their legacy dependencies for configurations that do not select Bazel:
 
 ```makefile
 # rules/docker-sysmgr.mk
-
-# Image identity and metadata are the same no matter the build system
 $(DOCKER_SYSMGR)_PATH = $(DOCKERS_PATH)/$(DOCKER_SYSMGR_STEM)
 $(DOCKER_SYSMGR)_VERSION = 1.0.0
 $(DOCKER_SYSMGR)_PACKAGE_NAME = sysmgr
 
-ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),n)
+$(DOCKER_SYSMGR)_DEPENDS += $(SYSMGR)
+$(DOCKER_SYSMGR)_LOAD_DOCKERS += $(DOCKER_CONFIG_ENGINE_TRIXIE)
 
-# Usual Make-based build
-...
-
-else
-
-# When BUILD_WITH_BAZEL_WHEN_AVAILABLE is enabled, build this docker with Bazel.
+$(DOCKER_SYSMGR)_BAZEL_READINESS = experimental
 $(DOCKER_SYSMGR)_BAZEL_BASE += $(DOCKER_CONFIG_ENGINE_TRIXIE)
 SONIC_BAZEL_DOCKER_IMAGES += $(DOCKER_SYSMGR)
-SONIC_BAZEL_DBG_DOCKER_IMAGES += $(DOCKER_SYSMGR_DBG)
-
-endif
 
 SONIC_DOCKER_IMAGES += $(DOCKER_SYSMGR)
 SONIC_INSTALL_DOCKER_IMAGES += $(DOCKER_SYSMGR)
-
 SONIC_DOCKER_DBG_IMAGES += $(DOCKER_SYSMGR_DBG)
 SONIC_INSTALL_DOCKER_DBG_IMAGES += $(DOCKER_SYSMGR_DBG)
 ```
 
-`_BAZEL_BASE` lists the Make-built images the Bazel build consumes as a base layer; `slave.mk` turns those into prerequisites of the Bazel target.
+Debug images inherit their runtime image's readiness. `_BAZEL_BASE` lists the
+Make-built archives the graph imports; `slave.mk` makes those prerequisites for
+both normal and debug archives. Make always invokes Bazel to check source changes,
+then atomically copies only changed outputs while preserving unchanged timestamps.
+See [the image contract](/README.buildsystem.md#bazel-docker-images).
+
+Sysmgr and SWSS/orchagent are experimental Trixie candidates. For a configured VS
+checkout, the same archive interface feeds the existing Make installer:
+
+```sh
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/docker-orchagent.gz
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/docker-orchagent-dbg.gz
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/sonic-vs.bin
+```
+
+The final installer remains Make-built. Building a container alone does not
+validate the installed SONiC image or its boot behavior.
+
+The root selects `rules_distroless 0.9.4-sonic.1` from registry PR #28. Its
+version override keeps historical component pins from selecting the older
+dotted version. Native AMD64 and ARM64 header checks compile the registered
+protobuf consumer through this root module graph and retain the resolved graph,
+fetched module declaration, generated lockfile and test events.
+
+Every source CI job starts without `MODULE.bazel.lock`, uses
+`--lockfile_mode=update`, and uploads the generated lock and module graph with
+SHA-256 hashes in its receipt. The lock stays ignored; CI rejects changes to
+tracked source files. The sysmgr check within the SWSS package job uses the same
+job's generated state. Image CI retains the lock from its pristine Bazel checkout,
+separately from the native Make checkout.
+
+The SWSS container graph currently targets native AMD64 on Trixie with ASAN
+disabled. ARM and ASAN configurations retain the legacy SWSS Make recipes even
+with `BAZEL_MIN_READINESS=experimental`. Initialize the component submodules at the revisions recorded by this
+checkout. Phase 1 imports two Make outputs rather than rebuilding them in Bazel:
+
+```sh
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=bazel_disabled \
+    target/docker-config-engine-trixie.gz \
+    target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl
+bazel build //dockers/docker-orchagent:docker-orchagent.gz \
+    //dockers/docker-orchagent:docker-orchagent-dbg.gz
+```
+
+The Make archive recipes also declare both imported artifacts as prerequisites.
+When reusing retained outputs, record their source revision and checksum. The
+uncompressed Docker archive is `//dockers/docker-orchagent:docker-orchagent.tar`.
+The `write_docker-orchagent.gz` and `write_docker-orchagent-dbg.gz` run targets copy
+Bazel archives into `target/`; Make performs that publication itself when invoked
+through the readiness interface.
+
+For post-build validation, `tools/bazel/tests/swss_container_test.py --help`
+lists the archive, package-layer, and manifest inputs. It requires an explicit
+private Docker daemon endpoint, checks the deployed payload and native/Python
+runtime dependencies, exercises startup branches with database/configuration
+stubs, and verifies matching symbols and GDB source lookup in the debug image.
+Its output directory must be visible at the same path to that daemon for the
+startup probe's bind mounts. These probes do not run a live SONiC database or
+validate forwarding.
+
+The debug image extends its exact runtime image and collects detached symbols
+from the SWSS, SWSS-common and sairedis deployment graph. Imported config-engine
+libraries retain their existing binaries; this build does not supply matching
+symbols for every imported library. The DASH runtime package is stripped and
+currently has no detached symbol layer. The SWSS debug toolbox is limited to
+`gdb`, `gdbserver` and `strace`; it does not implement the complete legacy debug
+toolbox. ARM, ASAN, installer boot and switch functionality need separate
+validation. These are implementation scope limits, not evidence that either
+container or the full installer has passed validation.
 
 ## Bazel Rules Dependencies
 
-SONiC maintains its own Bazel registry, `blorente/sonic-bazel-registry` (soon to be `sonic-net/sonic-bazel-registry`). Everything that isn't a plain upstream BCR dependency lives in that external registry:
+CI and local root builds use the maintained `main` branch of
+`securely1g/sonic-bazel-registry`, followed by Bazel Central Registry. The selected
+SAI registration uses the shared infrastructure Aspell and Doxygen execution
+tools. Root module overrides still select the recorded component sources under
+`src/`; they do not require historical registry entries. Module versions, source
+checksums and package locks remain pinned independently of the registry URL.
+CI does not need a registry commit pin.
+
+Everything that isn't a plain upstream BCR dependency lives in that external registry:
 
 - First-party component modules (e.g. `sonic-build-infra`, `sonic-swss-common`, `sonic-sysmgr`), discovered automatically from `src/`.
-- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `com_github_openconfig_gnoi` is published this way because upstream hasn't migrated to bzlmod yet, and `libnl3` carries our own patch on top of the real upstream archive.
+- Modules we can't get from an upstream registry as-is, via the `OVERLAY_MODULES` list in that script. For instance, `libnl3` carries our own patch on top of the real upstream archive. gNOI uses the central registry's `openconfig_gnoi` 0.6.2 module.
 - Rulesets we need to patch from the Bazel Central Registry (e.g. `rules_go`). These are maintained directly in `sonic-bazel-registry` (there's no `sonic-buildimage`-side tooling for them), and are often temporary until the patches have been merged and released upstream.
 
 Please see [Depending on Other Modules](/tools/bazel/docs/patterns-detail.md#depending-on-other-modules) for instructions on how to maintain this registry.
@@ -121,9 +188,9 @@ You can find further documentation on how we handle Bazel dependencies in [Depen
 
 We manage Debian dependencies through [`rules_distroless`](https://github.com/bazel-contrib/rules_distroless).
 
-All dependencies are declared in [`sonic-build-infra`](/src/sonic-build-infra/MODULE.bazel), under the `apt.install` dependency sets. This is to ensure a centralized resolution we can query.
+Shared build dependencies are declared in [`sonic-build-infra`](/src/sonic-build-infra/MODULE.bazel), under the `apt.install` dependency sets. Container-specific runtime packages can use a separate set in the consuming root's [`MODULE.bazel`](/MODULE.bazel); SWSS uses `orchagent_debian` for its command-line tools, Python extensions, and native library closure.
 
-There are two sets:
+The shared infrastructure exports two sets:
 
 - `sysroot`: the C/C++ toolchain's sysroot (`libc6-dev`, `libgcc-14-dev`, `libstdc++-14-dev`, `linux-libc-dev`). Kept separate so the toolchain can resolve without fetching the entire package closure.
 - `trixie`: everything else, both runtime and build-time dependencies.
@@ -232,7 +299,7 @@ Call it once per image, including the debug image. See [Packaging images into `t
 
 ### Debug Containers
 
-Every Bazel-built container has a paired debug image (registered via `SONIC_BAZEL_DBG_DOCKER_IMAGES`, alongside `SONIC_BAZEL_DOCKER_IMAGES` in [Interaction With the Make-based Build System](#interaction-with-the-make-based-build-system)) that layers the binaries' stripped debug symbols, plus tools like `gdb`, on top of the regular image.
+Every Bazel-built container has a paired debug image (selected into `SONIC_BAZEL_DBG_DOCKER_IMAGES` by its runtime image's readiness in [Interaction With the Make-based Build System](#interaction-with-the-make-based-build-system)) that layers the binaries' stripped debug symbols, plus tools like `gdb`, on top of the regular image.
 
 Packaging binaries with `sonic_deploy_tar`, instead of a plain `tar`, bundles their debug symbols automatically, which is what lets `sonic-build-infra` recover them later to build the debug image.
 
@@ -305,7 +372,7 @@ See [Debug Builds](/tools/bazel/docs/patterns-detail.md#debug-builds) for an exa
 ## Python
 
 We use `rules_python` to handle Python targets, and `aspect_rules_py`'s `uv` extension to resolve pip dependencies.
-As with [C/C++](#cc), we use a hermetic toolchain for Python, registered in the root [`MODULE.bazel`](/MODULE.bazel) (`python.toolchain(python_version = "3.11.6")`).
+As with [C/C++](#cc), we use a hermetic toolchain for Python, registered in the root [`MODULE.bazel`](/MODULE.bazel) (`python.toolchain(python_version = "3.13")`).
 We never depend on the system's Python installation.
 
 ### Python Dependencies
@@ -379,24 +446,21 @@ Usually, we'll use it one of two ways:
 - `mutate`: useful to bulk-relocate a group of files into a specific directory layout, by stripping and re-rooting a path prefix. See [`libnl3-dev_headers`](/src/libnl3/libnl3.BUILD) for an example: it strips `include/` off every public header and re-roots them under `./usr/include/libnl3`.
 - `mtree`: explicitly list, per file, where it lands and with what permissions. Useful when assembling complex layers, or when dealing with loose files like binaries or configuration files. See [Creating Component Containers](/tools/bazel/docs/patterns-detail.md#creating-component-containers) for examples.
 
-## Generating `.deb` Packages
+## Runtime and debug archives
 
-`sonic-build-infra` defines a [`sonic_deb`](/src/sonic-build-infra/deb/sonic_deb.bzl) macro that assembles a `.deb` from a pre-packaged data `tar`, deriving the target architecture from the target platform. It only supports the dpkg-required control fields plus `Depends`. We should extend the macro if a migrated package needs more (e.g. `Homepage`).
+Build component runtime and matching debug tars directly. Sysmgr's
+`sonic_deploy_tar` target derives both outputs from the same linked binaries;
+the debug target normalizes archive ownership before delivery:
 
-```starlark
-# src/sonic-sysmgr/BUILD.bazel
-
-sonic_deb(
-    name = "sysmgr_deb",
-    data = ":sysmgr_pkg",
-    depends = ["libswsscommon"],
-    description = "This package contains sysmgr service.",
-    maintainer = "Runming Wu <runmingwu@google.com>",
-    package = "sysmgr",
-    version = "1.0.0",
-    visibility = ["//visibility:public"],
-)
+```sh
+bazel build @sonic_sysmgr//:sysmgr_pkg @sonic_sysmgr//:sysmgr_debug_pkg
 ```
+
+The archives contain their installed paths under `usr/`. Container layers consume
+these payloads directly. Source CI verifies ownership, modes, SONAME links, native
+ELF architecture, matching build IDs, debug-link checksums and GDB source lookup.
+External Debian packages remain pinned build/runtime inputs; the existing Make
+path retains its own Debian packaging.
 
 ## Adapting Bazel To Your Internal Environment
 
@@ -434,3 +498,11 @@ See more details [here](/tools/bazel/docs/patterns-detail.md#remote-caching).
 > This section will detail how to apply patches to SONiC Components.
 > However, it is under construction until we settle on an approach to versioning components like `sonic-swss-common`.
 > Please email the SONiC Build Working Group if you'd like specific guidance.
+
+The orchagent layer uses DASH and SWSS with the same source-built protobuf
+3.21.12 shared library. Its runtime tar is included in `rdeps`, and the debug
+layer collects the matching symbols. The AMD64 package check retains the
+protobuf tar and verifies that the combined layer preserves its bytes, modes,
+SONAME symlink, build ID and debuglink; it rejects a second full protobuf
+runtime. Debian's distinct protobuf-lite library remains available for other
+runtime consumers.

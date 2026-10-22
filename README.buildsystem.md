@@ -193,7 +193,9 @@ SONIC_DOCKER_IMAGES += $(SOME_DOCKER) # add docker to this group
 
 The `SONIC_BAZEL_DOCKER_IMAGES` target group contains docker images built with [Bazel](https://bazel.build/).
 Whenever Make requests an image in this group, it runs `bazel build //dockers/<name>:<name>.gz` so Bazel can check its declared inputs. Make atomically publishes changed archives to `target/<name>.gz` and preserves the file timestamp when the archive is unchanged.
-This is opt-in: a recipe only registers the image here when `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` (see **rules/config**).
+Recipes register images supported by the configured architecture and features, and declare `_BAZEL_READINESS=experimental` or `stable`.
+`BAZEL_MIN_READINESS` selects which candidates use Bazel; its default `bazel_disabled` keeps every image on Make.
+Debug images inherit the readiness of their corresponding runtime image. A `stable` selection leaves experimental images on the legacy path.
 
 The image is still registered in `SONIC_DOCKER_IMAGES` / `SONIC_INSTALL_DOCKER_IMAGES`, and still carries `_PATH`, `_VERSION` and `_PACKAGE_NAME`, so it is installed and listed in the sonic-package-manager catalog exactly as a Make-built one.
 
@@ -202,7 +204,7 @@ Bazel currently only supports trixie-based images.
 For example, build the sysmgr image with Bazel while disabling the default Bookworm build:
 
 ```sh
-make NOBOOKWORM=1 BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/docker-sysmgr.gz
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/docker-sysmgr.gz
 ```
 
 For a direct Bazel build on AMD64, initialize the required submodules and provide
@@ -213,15 +215,15 @@ build the full SONiC installer.
 ```sh
 git submodule update --init src/sonic-build-infra src/sonic-swss-common src/sonic-sysmgr/gnoi
 bazel build //dockers/docker-sysmgr:docker-sysmgr.gz \
-    @sonic_sysmgr//:sysmgr_deb @sonic_sysmgr//:sysmgr-dbg_deb
+    @sonic_sysmgr//:sysmgr_pkg @sonic_sysmgr//:sysmgr_debug_pkg
 bazel run //dockers/docker-sysmgr:write_docker-sysmgr.gz
 bazel test //dockers/docker-sysmgr:debug_symbols_test
 ```
 
 The debug container is `//dockers/docker-sysmgr:docker-sysmgr-dbg.gz`. It also
 needs the prebuilt FIPS packages pinned in `src/sonic-fips/MODULE.bazel`; these
-are separate from the split symbols in `sysmgr-dbg_deb`. The root Bazel build
-currently disables YANG. See [the Bazel guide](tools/bazel/docs/README.bazel.md)
+are separate from the split symbols in `sysmgr_debug_pkg`. The root Bazel build
+enables YANG through the pinned SWSS-common dependency graph. See [the Bazel guide](tools/bazel/docs/README.bazel.md)
 for the build graph and component workflow.
 
 Define:
@@ -231,15 +233,55 @@ SOME_DOCKER = some_docker.gz # name of your docker (must match dockers/<name>/BU
 $(SOME_DOCKER)_PATH = path/to/your/docker # path to the docker's directory
 $(SOME_DOCKER)_VERSION = 1.0.0 # version recorded in the package catalog
 $(SOME_DOCKER)_PACKAGE_NAME = some_package # sonic-package-manager package name
+$(SOME_DOCKER)_BAZEL_READINESS = experimental # declare support maturity
 $(SOME_DOCKER)_BAZEL_BASE += $(SOME_BASE_DOCKER) # base docker(s) the Bazel build depends on
-SONIC_BAZEL_DOCKER_IMAGES += $(SOME_DOCKER) # build this docker with Bazel
+$(SOME_DOCKER)_BAZEL_DEPENDS += $(PYTHON_WHEELS_PATH)/$(SOME_WHEEL) # other imported Make artifacts
+SONIC_BAZEL_DOCKER_IMAGES += $(SOME_DOCKER) # register as a Bazel candidate
 SONIC_DOCKER_IMAGES += $(SOME_DOCKER) # still a regular docker image downstream of the .gz
 SONIC_INSTALL_DOCKER_IMAGES += $(SOME_DOCKER) # install it into the final image
 ```
 
+The experimental SWSS container currently targets native AMD64 on Trixie with
+ASAN disabled. ARM and ASAN builds retain the legacy SWSS Make recipes even when
+experimental Bazel images are selected. It imports the Make-built `target/docker-config-engine-trixie.gz`
+and `target/python-wheels/trixie/scapy-2.6.1.dev0-py3-none-any.whl`; the Make bridge
+builds these prerequisites when needed. Initialize the component submodules at
+the recorded revisions and retain provenance for any reused inputs. Make keeps
+the SWSS service/package metadata, installation lists and host `swssloglevel` wrapper:
+
+```sh
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/docker-orchagent.gz
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/docker-orchagent-dbg.gz
+```
+
+For a configured VS checkout, the existing Make installer consumes these standard
+archive paths. This remains Phase 1 integration; final installer assembly uses Make:
+
+```sh
+make NOBOOKWORM=1 BAZEL_MIN_READINESS=experimental target/sonic-vs.bin
+```
+
+The SWSS debug image extends the exact runtime image and adds collected
+SWSS/SWSS-common/sairedis symbols plus `gdb`, `gdbserver` and `strace`. Matching
+symbols for all imported config-engine libraries are not included; the DASH
+runtime package is stripped and has no detached symbol layer. This scope does
+not establish ARM, ASAN, boot or functional validation. See the
+[Bazel guide](tools/bazel/docs/README.bazel.md#interaction-with-the-make-based-build-system)
+for direct Bazel targets and Phase 1 input requirements.
+
+`SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=y` together with a Bazel-selected
+`SONIC_PACKAGES_LOCAL` image is rejected: the archive supplies `:latest` and that
+loading path requires a versioned tag.
+
+Run the Make bridge regressions without Docker or Bazel:
+
+```sh
+python3 -m unittest discover -s tools/bazel/tests -p '*_test.py' -v
+```
+
 Two configuration knobs in **rules/config** control this flow:
 
-* **BUILD_WITH_BAZEL_WHEN_AVAILABLE** (default `n`): When set to `y`, eligible dockers are built with Bazel rather than the legacy `docker build` flow.
+* **BAZEL_MIN_READINESS** (default `bazel_disabled`): `experimental` selects experimental and stable candidates; `stable` selects only stable candidates. Unselected images retain their Make recipes and dependencies. This replaces the earlier `BUILD_WITH_BAZEL_WHEN_AVAILABLE` flag.
 * **SONIC_BAZEL_CACHE_SOURCE** (default `$(SONIC_DPKG_CACHE_SOURCE)/bazel`): Host directory used to persist Bazel's disk and repository caches across slave container runs. It is mounted into the slave as a volume. Existing directory permissions are preserved; choose a directory writable by the build user. Bazel server and output state stay in the default per-user directory inside each container.
 
 ## Tips & Tricks

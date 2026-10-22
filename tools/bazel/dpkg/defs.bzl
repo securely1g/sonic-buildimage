@@ -60,12 +60,21 @@ def _dpkg_filter_impl(ctx):
     )
 
     output = ctx.actions.declare_file(ctx.attr.name + ".tar")
-    _copy(ctx, "DpkgMerge", bsdtar, output, [excluded, included])
+    merged = ctx.actions.declare_file(ctx.attr.name + "_merged.tar") if ctx.attr.root_owned else output
+    _copy(ctx, "DpkgMerge", bsdtar, merged, [excluded, included])
+    if ctx.attr.root_owned:
+        ctx.actions.run(
+            executable = ctx.executable._root_owned_tar,
+            arguments = [merged.path, output.path],
+            inputs = [merged],
+            outputs = [output],
+            mnemonic = "RootOwnedLayer",
+        )
 
     # flatten and this filter must not hide the original archives' debug trees.
     # The image collector traverses base/tars edges, so it stops at our src edge
     # and relies on this provider to retain the corresponding deployed symbols.
-    debug_deps = [ctx.attr.src] + ctx.attr.debug_symbol_deps
+    debug_deps = [ctx.attr.src] + ctx.attr.debug_symbol_deps + ctx.attr.tars
     return [
         DefaultInfo(files = depset([output])),
         DebugSymbolsInfo(symbols = depset(transitive = [
@@ -88,6 +97,18 @@ So we need to build the excluded first, then the included, and then merge them.
             doc = "The layer to filter.",
             allow_single_file = tar_lib.common.accepted_tar_extensions,
             mandatory = True,
+        ),
+        # Retain the original tars edge for debug_symbols_layer's transitive
+        # traversal, including dependency packages assembled with flatten().
+        "tars": attr.label_list(allow_files = True),
+        "root_owned": attr.bool(
+            default = False,
+            doc = "Normalize component runtime ownership; preserve Debian package ownership by default.",
+        ),
+        "_root_owned_tar": attr.label(
+            default = Label("@sonic_build_infra//tar:root_owned_tar"),
+            executable = True,
+            cfg = "exec",
         ),
         "debug_symbol_deps": attr.label_list(
             doc = "Original archives whose debug metadata must survive flattening and filtering.",
@@ -128,6 +149,6 @@ def sonic_layer(name, tars, deduplicate = True, **kwargs):
     dpkg_filter(
         name = name,
         src = name + "_unfiltered",
-        debug_symbol_deps = tars,
+        tars = tars,
         **kwargs
     )

@@ -6,13 +6,13 @@ load(
     "protoc_genrule",
 )
 
-# The gnoi protos rebootbackend needs, as paths under @gnoi_protos,
-# which mirrors the vendored //gnoi submodule.
-_GNOI_PROTOS = [
-    "types/types.proto",
-    "common/common.proto",
-    "system/system.proto",
-]
+# Use the upstream schema targets from Bazel Central Registry. Keep Debian's
+# compiler below so generated code matches the protobuf runtime in SONiC.
+_GNOI_PROTOS = {
+    "types/types.proto": Label("@openconfig_gnoi//types:types.proto"),
+    "common/common.proto": Label("@openconfig_gnoi//common:common.proto"),
+    "system/system.proto": Label("@openconfig_gnoi//system:system.proto"),
+}
 
 # The generated sources import each other as "github.com/openconfig/gnoi/types/types.pb.h".
 _GNOI_IMPORT_PREFIX = "github.com/openconfig/gnoi"
@@ -42,10 +42,10 @@ def gnoi_cc_protos(name):
     sources = [_generated(proto, "cc") for proto in _GNOI_PROTOS]
     headers = [_generated(proto, "h") for proto in _GNOI_PROTOS]
 
-    # @gnoi_protos' root.
-    # We need to derive it from a file, because a repository's own path is not accessible in a genrule.
-    gnoi_root = "$$(dirname $$(dirname $(execpath @gnoi_protos//:{proto})))".format(
-        proto = _GNOI_PROTOS[0],
+    # Derive the upstream include root from a declared source file. Label()
+    # above resolves the repository from this module even in an image build.
+    gnoi_root = "$$(dirname $$(dirname $(execpath {proto})))".format(
+        proto = _GNOI_PROTOS["types/types.proto"],
     )
     protoc_args = " ".join([
         "--cpp_out=$(RULEDIR)/{root}".format(root = _GEN_ROOT),
@@ -55,7 +55,7 @@ def gnoi_cc_protos(name):
 
     protoc_genrule(
         name = name + "_gen",
-        srcs = ["@gnoi_protos//:" + proto for proto in _GNOI_PROTOS],
+        srcs = _GNOI_PROTOS.values(),
         outs = sources + headers,
         setup = "GNOI_ROOT={gnoi_root}; ".format(gnoi_root = gnoi_root),
         args = protoc_args,

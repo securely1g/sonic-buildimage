@@ -66,11 +66,15 @@ clean_sys() {
 trap_push clean_sys
 sudo LANG=C chroot $FILESYSTEM_ROOT mount sysfs /sys -t sysfs
 
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} != y ]]; then
 sudo bash -c "echo \"DOCKER_OPTS=\"--storage-driver=overlay2\"\" >> $FILESYSTEM_ROOT/etc/default/docker"
 # Copy docker start script to be able to start docker in chroot
 sudo mkdir -p "$FILESYSTEM_ROOT/$DOCKER_CTL_DIR"
 sudo cp $DOCKER_SCRIPTS_DIR/docker "$FILESYSTEM_ROOT/$DOCKER_CTL_SCRIPT"
-if [[ $MULTIARCH_QEMU_ENVIRON == y  || $CROSS_BUILD_ENVIRON == y ]]; then
+fi
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    : # Snapshot contains host packages only; do not start a container daemon.
+elif [[ $MULTIARCH_QEMU_ENVIRON == y  || $CROSS_BUILD_ENVIRON == y ]]; then
     DOCKER_HOST="unix:///dockerfs/var/run/docker.sock"
     SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID="cat `pwd`/dockerfs/var/run/docker.pid"
 else
@@ -111,6 +115,9 @@ install_deb_package_lazy() {
         sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f --download-only
     ( cd $FILESYSTEM_ROOT; sudo rm -f $basename_deb_packages )
 }
+
+# Pre-boundary host packages already exist in the declared Bazel snapshot.
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} != y ]]; then
 
 # Update apt's snapshot of its repos
 sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get update
@@ -976,6 +983,13 @@ mpls_router
 EOF
 {% endif %}
 
+fi  # Pre-boundary host work
+
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    echo '[INFO] Native host reached the Bazel pre-container boundary'
+    exit 0
+fi
+
 ## Bind docker path
 if [[ $MULTIARCH_QEMU_ENVIRON == y || $CROSS_BUILD_ENVIRON == y ]]; then
     sudo mkdir -p $FILESYSTEM_ROOT/dockerfs
@@ -992,6 +1006,9 @@ fi
 
 sudo mkdir $FILESYSTEM_ROOT/target
 sudo mount --bind target $FILESYSTEM_ROOT/target
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y ]]; then
+    sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot "$FILESYSTEM_ROOT" /bin/bash -s -- 60 < scripts/wait_for_docker.sh
+fi
 sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT docker info
 
 {% for docker_installation_target in installer_images.strip().split() -%}

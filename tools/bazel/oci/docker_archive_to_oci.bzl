@@ -12,6 +12,8 @@ def _docker_archive_to_oci_layout_impl(ctx):
     args = ctx.actions.args()
     args.add("--src", ctx.file.src)
     args.add("--out", layout.path)
+    if ctx.attr.expected_platform:
+        args.add("--expected-platform", ctx.attr.expected_platform)
     ctx.actions.run(
         inputs = [ctx.file.src],
         outputs = [layout],
@@ -26,6 +28,9 @@ docker_archive_to_oci_layout = rule(
     implementation = _docker_archive_to_oci_layout_impl,
     doc = "Convert a docker-archive tarball into an OCI image layout directory.",
     attrs = {
+        "expected_platform": attr.string(
+            doc = "Require a single imported image for this os/architecture, such as linux/amd64.",
+        ),
         "src": attr.label(
             allow_single_file = True,
             mandatory = True,

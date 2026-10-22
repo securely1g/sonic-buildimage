@@ -25,17 +25,23 @@
 #
 # For instance, if we had `sonic-swss-common` in a unified list, Bazel would crash if we were building in `soinc-swss-common`.
 
-# Override libnl3 with a local checkout of src/libnl3.
-common:unpinned-libnl3 --override_module=libnl3=%workspace%/../../src/libnl3
-
 # Override sonic-protobuf with a local checkout of src/protobuf.
 common:unpinned-sonic-protobuf --override_module=sonic-protobuf=%workspace%/../../src/protobuf
 
 # Override sonic-build-infra with a local checkout of src/sonic-build-infra.
 common:unpinned-sonic-build-infra --override_module=sonic-build-infra=%workspace%/../../src/sonic-build-infra
 
+# Override sonic-dash-api with a local checkout of src/sonic-dash-api.
+common:unpinned-sonic-dash-api --override_module=sonic-dash-api=%workspace%/../../src/sonic-dash-api
+
 # Override sonic-fips with a local checkout of src/sonic-fips.
 common:unpinned-sonic-fips --override_module=sonic-fips=%workspace%/../../src/sonic-fips
+
+# Override sonic-sairedis with a local checkout of src/sonic-sairedis.
+common:unpinned-sonic-sairedis --override_module=sonic-sairedis=%workspace%/../../src/sonic-sairedis
+
+# Override sonic-swss with a local checkout of src/sonic-swss.
+common:unpinned-sonic-swss --override_module=sonic-swss=%workspace%/../../src/sonic-swss
 
 # Override sonic-swss-common with a local checkout of src/sonic-swss-common.
 common:unpinned-sonic-swss-common --override_module=sonic-swss-common=%workspace%/../../src/sonic-swss-common

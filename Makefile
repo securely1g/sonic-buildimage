@@ -41,10 +41,10 @@ endif
 
 # Bazel dockers (SONIC_BAZEL_DOCKER_IMAGES) only support the trixie base today,
 # so fail fast whenever anything else is requested.
-ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+ifneq ($(filter-out bazel_disabled,$(BAZEL_MIN_READINESS)),)
 BAZEL_NON_TRIXIE_BUILDS := $(strip $(BUILD_JESSIE) $(BUILD_STRETCH) $(BUILD_BUSTER) $(BUILD_BULLSEYE) $(BUILD_BOOKWORM))
 ifneq ($(BAZEL_NON_TRIXIE_BUILDS),)
-$(error BUILD_WITH_BAZEL_WHEN_AVAILABLE=y only supports trixie builds: Bazel dockers require the trixie base. Re-run with trixie only, e.g. NOJESSIE=1 NOSTRETCH=1 NOBUSTER=1 NOBULLSEYE=1 NOBOOKWORM=1 NOTRIXIE=0.)
+$(error BAZEL_MIN_READINESS=$(BAZEL_MIN_READINESS) only supports trixie builds: Bazel dockers require the trixie base. Re-run with trixie only, e.g. NOJESSIE=1 NOSTRETCH=1 NOBUSTER=1 NOBULLSEYE=1 NOBOOKWORM=1 NOTRIXIE=0.)
 endif
 endif
 
