@@ -112,6 +112,13 @@ landed. Its source, ordered patches and runtime metadata are unchanged; no
 libyang-Python source override is needed. Other unmerged recipes remain explicit
 in `draft_sources.json`.
 
+Sairedis `0.0.1-1a6eb685de84d73b5939d269af1dc3e1fa71ff50` and FIPS
+`0.0.2-df34b541eb08d1a6a4b039e69c4d716c84566061` also resolve directly from
+maintained registry `main`, following registry [#105](https://github.com/securely1g/sonic-bazel-registry/pull/105)
+and [#106](https://github.com/securely1g/sonic-bazel-registry/pull/106). Their source
+archives, patches and producer-owned runtime metadata match the reviewed recipes;
+no source override is prepared for either module.
+
 ```sh
 python3 tools/bazel/ci/prepare_draft_sources.py \
   --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
@@ -202,6 +209,6 @@ base-specific declarations in `dockers/docker-base-trixie/requirements.in`.
 
 Shared sysroot and Kerberos tools use landed infrastructure `0.0.17-8baf1ad829c5095297d85148b042145b87d623a3` from registry #81. Distroless #82 supplies the Debian library linking interface used by native shared libraries. Both resolve through maintained `main`; no infrastructure source override is needed. The root version selection keeps older consumer declarations from choosing an obsolete compiler snapshot.
 
-The FIPS runtime source is `da444a14aea8483fcb8df84d0a049bf9db0fb15a`. It declares the GNU tool runtime files required by SymCrypt, while OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
+The FIPS runtime source is `df34b541eb08d1a6a4b039e69c4d716c84566061`. It declares the GNU tool runtime files required by SymCrypt, while OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
 
-FIPS runtime and debug TARs resolve as `sonic-fips@0.0.2-da444a14aea8483fcb8df84d0a049bf9db0fb15a` from the maintained registry `main` endpoint. The source is the landed FIPS revision; no FIPS source override is prepared. The remaining entries in `draft_sources.json` still require their own prerequisite PRs.
+FIPS runtime and debug TARs resolve as `sonic-fips@0.0.2-df34b541eb08d1a6a4b039e69c4d716c84566061` from the maintained registry `main` endpoint. The source is the landed FIPS revision; no FIPS source override is prepared. The remaining entries in `draft_sources.json` still require their own prerequisite PRs.
