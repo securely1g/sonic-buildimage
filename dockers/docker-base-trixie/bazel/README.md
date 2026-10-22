@@ -106,6 +106,12 @@ needed by this stacked image change. The preparation helper verifies each source
 recipe, archive and overlay and asks Bazel's standard `http_archive` rule to apply
 the original ordered patches. It does not maintain a second patch implementation.
 
+`libyang-python@3.1.0.sonic.4` resolves directly from maintained registry `main`
+after [registry #102](https://github.com/securely1g/sonic-bazel-registry/pull/102)
+landed. Its source, ordered patches and runtime metadata are unchanged; no
+libyang-Python source override is needed. Other unmerged recipes remain explicit
+in `draft_sources.json`.
+
 ```sh
 python3 tools/bazel/ci/prepare_draft_sources.py \
   --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
