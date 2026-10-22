@@ -473,6 +473,15 @@ def enrich_breakdowns(api, repo, runs, limit):
                 step["breakdown"] = breakdown.parse_log(log, step)
 
 
+def completed_job_details(run):
+    """A completed run can arrive before its jobs and steps have concluded."""
+    for job in run["jobs"]:
+        for item in (job, *job["steps"]):
+            if item.get("status") != "completed" or item.get("conclusion") is None:
+                return False
+    return True
+
+
 def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs=MAX_LOG_JOBS):
     repository = api.get(f"repos/{repo}")
     if repository.get("private") is not False or repository.get("full_name", "").lower() != repo.lower():
@@ -508,7 +517,8 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs
             raise CollectionError("Run-list response is missing its ID or attempt")
         for attempt in range(1, current_attempt + 1):
             old = retained.get((current_id, attempt))
-            if not backfill and old and old.get("status") == "completed" and old.get("conclusion") is not None:
+            if (not backfill and old and old.get("status") == "completed"
+                    and old.get("conclusion") is not None and completed_job_details(old)):
                 if attempt < current_attempt or (
                     old.get("updated_at") == timestamp(latest_raw.get("updated_at"))
                     and old.get("conclusion") == latest_raw.get("conclusion")

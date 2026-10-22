@@ -279,6 +279,39 @@ class CollectionTests(unittest.TestCase):
         collector.collect(api, REPO, initial, backfill=True)
         self.assertEqual(sum(call.endswith("/jobs") for call in api.calls), 2)
 
+    def test_completed_run_refreshes_unfinished_job_details(self):
+        for unfinished in ("job", "step"):
+            with self.subTest(unfinished=unfinished):
+                first = FakeAPI()
+                stale_job = job()
+                target = stale_job if unfinished == "job" else stale_job["steps"][0]
+                target.update(status="in_progress", conclusion=None, completed_at=None)
+                endpoint = f"repos/{REPO}/actions/runs/10/attempts/1/jobs"
+                first.jobs[endpoint] = [stale_job]
+                initial = collector.collect(first, REPO, empty())
+                refresh = FakeAPI()
+                result = collector.collect(refresh, REPO, initial)
+                self.assertIn(endpoint, refresh.calls)
+                refreshed = result["runs"][0]["jobs"][0]
+                self.assertEqual(refreshed["status"], "completed")
+                self.assertEqual(refreshed["steps"][0]["status"], "completed")
+                self.assertEqual(refreshed["image_build_seconds"], 600)
+                cached = FakeAPI()
+                collector.collect(cached, REPO, result)
+                self.assertNotIn(endpoint, cached.calls)
+
+    def test_prior_attempt_refreshes_unfinished_jobs(self):
+        first = FakeAPI()
+        endpoint = f"repos/{REPO}/actions/runs/10/attempts/1/jobs"
+        first.jobs[endpoint] = [job(status="queued", conclusion=None)]
+        initial = collector.collect(first, REPO, empty())
+        refresh = FakeAPI(latest=[run(attempt=2)])
+        refresh.attempts[f"repos/{REPO}/actions/runs/10/attempts/1"] = run()
+        result = collector.collect(refresh, REPO, initial)
+        self.assertIn(endpoint, refresh.calls)
+        self.assertEqual([r["attempt"] for r in result["runs"]], [2, 1])
+        self.assertEqual(result["runs"][1]["jobs"][0]["status"], "completed")
+
     def test_nonterminal_always_refetches_and_expired_history_is_retained(self):
         api = FakeAPI(latest=[run(status="in_progress", conclusion=None)])
         initial = collector.collect(api, REPO, empty())
