@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-22T23:10:06.825601Z",
+  "generated_at": "2026-10-22T23:37:27.354037Z",
   "pull_requests": [
     {
       "base_sha": "0ba9684b8379c68d4b349c3999cc6b3d2cfa2a37",
@@ -423,28 +423,28 @@
       "url": "https://github.com/securely1g/sonic-buildimage/pull/9"
     },
     {
-      "base_sha": "2257df117b26640ced5f701cf64e5be561927d0c",
-      "draft": true,
-      "head_branch": "codex/p4rt-cache-schema",
-      "head_sha": "632f1f679466360b9b5515cb5f1eff60ab9eefe7",
-      "merged_at": null,
       "number": 8,
-      "state": "open",
       "title": "Use declared P4RT schemas and separate caches with opt-in TARs",
-      "updated_at": "2026-10-22T22:19:24Z",
-      "url": "https://github.com/securely1g/sonic-buildimage/pull/8"
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/securely1g/sonic-buildimage/pull/8",
+      "head_sha": "1f30bd36c470095fe9e0b339c51d01189d68a281",
+      "base_sha": "ae9e72cd2fa3e8097b46f615d1eaf840c6ac143e",
+      "head_branch": "codex/p4rt-cache-schema",
+      "updated_at": "2026-10-22T23:35:53Z",
+      "merged_at": null
     },
     {
-      "base_sha": "2257df117b26640ced5f701cf64e5be561927d0c",
-      "draft": true,
-      "head_branch": "codex/central-gnoi",
-      "head_sha": "eb681a2d26ad2abf088afe88423fd5d3f857c6c1",
-      "merged_at": null,
       "number": 7,
-      "state": "open",
       "title": "Use central gNOI schemas for system-manager builds",
-      "updated_at": "2026-10-22T22:19:21Z",
-      "url": "https://github.com/securely1g/sonic-buildimage/pull/7"
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/securely1g/sonic-buildimage/pull/7",
+      "head_sha": "34f7cb6d2ed7809c1cb300f5433efd2daff19bba",
+      "base_sha": "ae9e72cd2fa3e8097b46f615d1eaf840c6ac143e",
+      "head_branch": "codex/central-gnoi",
+      "updated_at": "2026-10-22T23:35:51Z",
+      "merged_at": null
     },
     {
       "base_sha": "b0a9362a7a1b4b5e1b7188c019d256f7c8aaff9f",
@@ -459,16 +459,16 @@
       "url": "https://github.com/securely1g/sonic-buildimage/pull/6"
     },
     {
-      "base_sha": "b0a9362a7a1b4b5e1b7188c019d256f7c8aaff9f",
-      "draft": false,
-      "head_branch": "codex/sysmgr-runtime-tars",
-      "head_sha": "2257df117b26640ced5f701cf64e5be561927d0c",
-      "merged_at": null,
       "number": 5,
-      "state": "open",
       "title": "Package SONiC system-manager programs and debug symbols with Bazel",
-      "updated_at": "2026-10-22T22:19:13Z",
-      "url": "https://github.com/securely1g/sonic-buildimage/pull/5"
+      "state": "open",
+      "draft": false,
+      "url": "https://github.com/securely1g/sonic-buildimage/pull/5",
+      "head_sha": "ae9e72cd2fa3e8097b46f615d1eaf840c6ac143e",
+      "base_sha": "b0a9362a7a1b4b5e1b7188c019d256f7c8aaff9f",
+      "head_branch": "codex/sysmgr-runtime-tars",
+      "updated_at": "2026-10-22T23:35:48Z",
+      "merged_at": null
     },
     {
       "base_sha": "44426ed0ac0d4a77ff376d474c9648fffa6c5275",
@@ -497,6 +497,270 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "run_id": 39872830781,
+      "attempt": 1,
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml",
+      "source_sha": "34f7cb6d2ed7809c1cb300f5433efd2daff19bba",
+      "branch": "codex/central-gnoi",
+      "event": "pull_request",
+      "status": "queued",
+      "conclusion": null,
+      "pr_numbers": [
+        7
+      ],
+      "pr_association": "commit",
+      "pr_association_note": null,
+      "started_at": "2026-10-22T23:35:49Z",
+      "completed_at": null,
+      "updated_at": "2026-10-22T23:35:49Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872830781/attempts/1",
+      "jobs": [
+        {
+          "job_id": 120151150799,
+          "name": "SWSS source layers (AMD64)",
+          "kind": "source",
+          "architecture": "amd64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:50Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872830781/job/120151150799"
+        },
+        {
+          "job_id": 120151150960,
+          "name": "Container archive (AMD64)",
+          "kind": "container",
+          "architecture": "amd64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:50Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872830781/job/120151150960"
+        },
+        {
+          "job_id": 120151150964,
+          "name": "Container archive (ARM64)",
+          "kind": "container",
+          "architecture": "arm64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:50Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872830781/job/120151150964"
+        }
+      ]
+    },
+    {
+      "run_id": 39872828859,
+      "attempt": 1,
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml",
+      "source_sha": "ae9e72cd2fa3e8097b46f615d1eaf840c6ac143e",
+      "branch": "codex/sysmgr-runtime-tars",
+      "event": "pull_request",
+      "status": "queued",
+      "conclusion": null,
+      "pr_numbers": [
+        5
+      ],
+      "pr_association": "commit",
+      "pr_association_note": null,
+      "started_at": "2026-10-22T23:35:48Z",
+      "completed_at": null,
+      "updated_at": "2026-10-22T23:35:48Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872828859/attempts/1",
+      "jobs": [
+        {
+          "job_id": 120151144804,
+          "name": "SWSS source layers (AMD64)",
+          "kind": "source",
+          "architecture": "amd64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:49Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872828859/job/120151144804"
+        },
+        {
+          "job_id": 120151145260,
+          "name": "Container archive (ARM64)",
+          "kind": "container",
+          "architecture": "arm64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:49Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872828859/job/120151145260"
+        },
+        {
+          "job_id": 120151145263,
+          "name": "Container archive (AMD64)",
+          "kind": "container",
+          "architecture": "amd64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:49Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872828859/job/120151145263"
+        }
+      ]
+    },
+    {
+      "run_id": 39872827716,
+      "attempt": 1,
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml",
+      "source_sha": "1f30bd36c470095fe9e0b339c51d01189d68a281",
+      "branch": "codex/p4rt-cache-schema",
+      "event": "pull_request",
+      "status": "queued",
+      "conclusion": null,
+      "pr_numbers": [
+        8
+      ],
+      "pr_association": "commit",
+      "pr_association_note": null,
+      "started_at": "2026-10-22T23:35:47Z",
+      "completed_at": null,
+      "updated_at": "2026-10-22T23:35:47Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872827716/attempts/1",
+      "jobs": [
+        {
+          "job_id": 120151140584,
+          "name": "SWSS source layers (AMD64)",
+          "kind": "source",
+          "architecture": "amd64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:48Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872827716/job/120151140584"
+        },
+        {
+          "job_id": 120151140648,
+          "name": "Container archive (ARM64)",
+          "kind": "container",
+          "architecture": "arm64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:48Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872827716/job/120151140648"
+        },
+        {
+          "job_id": 120151140741,
+          "name": "Container archive (AMD64)",
+          "kind": "container",
+          "architecture": "amd64",
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-10-22T23:35:48Z",
+          "completed_at": null,
+          "duration_seconds": null,
+          "image_build_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "phases": {
+            "setup": null,
+            "build": null,
+            "validation": null,
+            "upload": null,
+            "other": null
+          },
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/39872827716/job/120151140741"
+        }
+      ]
+    },
     {
       "attempt": 1,
       "branch": "codex/bazel-kernel-cache",
