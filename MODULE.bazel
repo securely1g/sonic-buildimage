@@ -27,11 +27,11 @@ bazel_dep(name = "pigz", version = "2.8.bcr.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
-bazel_dep(name = "libyang-python", version = "3.1.0.sonic.4", repo_name = "libyang_python")
+bazel_dep(name = "libyang-python", version = "3.1.0.sonic.5", repo_name = "libyang_python")
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.11")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -48,7 +48,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.20-e5adaecfdbd2a144e86ce1c2c99a0fa99977ff44",
+    version = "0.0.22-280833c24ec33d2dbd8ea0a7639e5ac82dfc55f8",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -58,11 +58,11 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.1-1a6eb685de84d73b5939d269af1dc3e1fa71ff50",
+    version = "0.0.2-fd7a37f96590c74e863ec9e831b191fc44d84922",
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.4-2430c001f554d0fea8ec269e6214bb152d3c4238", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.4-348987b8f4a3ae97269f59e0817e54f9eed6e19e", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -100,7 +100,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.4",
+    version = "3.7.0.sonic.5",
 )
 
 single_version_override(
@@ -228,23 +228,23 @@ apt_inputs(
     lock = "//dockers/docker-base-trixie/bazel:apt.lock.json",
 )
 
-bazel_dep(name = "socat", version = "1.8.0.2.sonic.2")
-bazel_dep(name = "iproute2", version = "6.15.0.sonic.2")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.4")
-bazel_dep(name = "libyang", version = "3.12.2.sonic.3")
+bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.5")
+bazel_dep(name = "libyang", version = "3.12.2.sonic.4")
 
 single_version_override(
     module_name = "sonic-rust-deps",
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.2-df34b541eb08d1a6a4b039e69c4d716c84566061", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.3-ec63f672851d5bc9a371931026f35fdf59139c2b", repo_name = "sonic_fips")
 
 # Select the landed Debian GCC toolchains while older consumers retain
 # their previous module declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.20-e5adaecfdbd2a144e86ce1c2c99a0fa99977ff44",
+    version = "0.0.22-280833c24ec33d2dbd8ea0a7639e5ac82dfc55f8",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -266,15 +266,15 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.4-2430c001f554d0fea8ec269e6214bb152d3c4238",
+    version = "0.0.4-348987b8f4a3ae97269f59e0817e54f9eed6e19e",
 )
 
 single_version_override(
     module_name = "sonic-sairedis",
-    version = "0.0.1-1a6eb685de84d73b5939d269af1dc3e1fa71ff50",
+    version = "0.0.2-fd7a37f96590c74e863ec9e831b191fc44d84922",
 )
 
 single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.2-df34b541eb08d1a6a4b039e69c4d716c84566061",
+    version = "0.0.3-ec63f672851d5bc9a371931026f35fdf59139c2b",
 )
