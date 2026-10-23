@@ -1,13 +1,31 @@
-# One-job VS build runner
+# One-job OCI and VS build runner
 
 These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
-runner for one full VS image job. The default repository is
+runner for one OCI source-check or full VS image job. The default repository is
 `securely1g/sonic-buildimage`; use `--master` for the current shared VS pool,
 and pass `--repo owner/name` to select another repository. Same-repository PR
 builds and enabled manual builds use its existing `sonic-vs-source-master`
 label. The workflow's event selects the source revision; the pool name does not
 force PR builds onto master. GitHub assigns an eligible queued job when the
 single runner becomes available.
+
+The SWSS and Syncd source jobs also use this pool for same-repository PRs,
+master pushes and manual runs. Fork PRs retain hosted runners. These checks
+build the real P4C, PI, BMv2 and FIPS TARs required by generated package metadata;
+the hosted Syncd runner ran out of disk while copying P4C's debug binaries.
+Dedicated source jobs use the existing 100 GiB workspace admission floor on
+each filesystem holding outputs or caches. This is an admission threshold, not
+a measured maximum build size.
+They retain the pinned Debian Trixie job container.
+
+Both source jobs share `/data/sonic-runner/cache/sonic-buildimage/oci`, mounted
+at `/bazel_cache`. This cache belongs to their root-run job containers and is
+separate from the Make builder's `bazel` cache, preserving its ownership.
+They reuse `tools/bazel/slave.bazelrc` for repository and action-cache settings
+and retain Bazelisk downloads there. GitHub cache upload/download is disabled
+for these dedicated jobs. After Bazel setup and public evidence upload both succeed, the job
+shuts down Bazel and removes only its private output base; the shared cache,
+checkout and retained evidence remain.
 
 `--pr NUMBER` remains available for older or separately configured workflows
 that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected custom
@@ -143,7 +161,7 @@ finishes. It waits while a runner service, Listener/Worker process or Docker
 container is active. Once the host is idle, it checks the configured GitHub
 identity, runs preflight, and uses `rearm.py` to create one fresh ephemeral
 runner. After that runner consumes a job and unregisters, the next timer check
-registers its replacement. Build caches and previous attempt directories remain
+registers its replacement. Shared caches and previous attempt directories remain
 in place. Authentication or preflight failures appear in the service journal
 and can be retried by the next timer check after the underlying issue is fixed.
 
