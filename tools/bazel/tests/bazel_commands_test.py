@@ -234,6 +234,39 @@ class ActionAuditTest(unittest.TestCase):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                 self.foreign(command)
 
+    def test_synthetic_repository_number_keeps_reviewed_source_identity(self):
+        # Adding another use_repo_rule import changes Bazel's synthetic name,
+        # as iproute2 metadata generation did. Only that generated number may
+        # vary: the actual owner and script repository must still agree.
+        make = ("$EXT_BUILD_ROOT/bazel-out/k8-opt-exec/bin/external/sonic-build-infra+/"
+                "tools/build_tools/configure_runtime_amd64/bin/make")
+        for reviewed_owner, reviewed_script in bazel_commands.FOREIGN_SOURCE_SCRIPTS.items():
+            if "++_repo_rules+" not in reviewed_owner:
+                continue
+            for suffix in ("2", "13"):
+                owner = reviewed_owner.replace("++_repo_rules+", "++_repo_rules" + suffix + "+")
+                script = "bazel-out/k8-fastbuild/bin/external/" + reviewed_script.replace(
+                    "++_repo_rules+", "++_repo_rules" + suffix + "+")
+                recipe = make + " -j4 install DESTDIR=$BUILD_TMPDIR/$INSTALL_PREFIX"
+                if owner.startswith("@@p4lang-"):
+                    recipe += " V=0 pythondir=/usr/lib/python3/dist-packages"
+                with self.subTest(owner=owner):
+                    result = self.audit(script, [], file_contents=recipe, owner=owner, executable=True)
+                    self.assertEqual(result["packaging_wrappers"], [])
+                    self.assertEqual(result["foreign_source_builds"][0]["owner"], owner)
+                for bad_owner, bad_script, bad_recipe in (
+                        (reviewed_owner, script, recipe),
+                        (owner, "bazel-out/k8-fastbuild/bin/external/" + reviewed_script, recipe),
+                        (owner.replace("_source", "_unreviewed_source"), script, recipe),
+                        (owner.replace("_repo_rules" + suffix, "_other_rules" + suffix), script, recipe),
+                        (owner, script.replace("build_script.sh", "other_script.sh"), recipe),
+                        (owner, script, recipe + "\n" + make + " package"),
+                        (owner, script, recipe + "\ndpkg-deb --build tree output"),
+                        (owner, script, recipe + "\ndpkg-buildpackage -b")):
+                    with self.subTest(owner=bad_owner, script=bad_script, recipe=bad_recipe):
+                        with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                            self.audit(bad_script, [], file_contents=bad_recipe, owner=bad_owner, executable=True)
+
     def test_nested_iproute2_source_requires_exact_owner_path_and_native_recipe(self):
         owner = "@@iproute2++_repo_rules+iproute2_source//:iproute2_build"
         script = "bazel-out/k8-fastbuild-ST-7e42167d27dc/bin/external/iproute2++_repo_rules+iproute2_source/iproute2_build_foreign_cc/build_script.sh"
