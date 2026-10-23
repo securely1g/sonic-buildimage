@@ -27,7 +27,13 @@ DASH_COMPILER_ENV = {"ARFLAGS", "AR_FLAGS", "ASFLAGS", "CFLAGS", "CXXFLAGS", "LD
 
 
 def foreign_source_script(action, owner, outputs, lines):
-    expected = FOREIGN_SOURCE_SCRIPTS.get(owner)
+    # Bazel numbers synthetic use_repo_rule extensions when a MODULE adds a
+    # second rule import. Match the reviewed module/repository/target identity
+    # independently of that number, then bind its output to the actual owner.
+    reviewed_owner = re.sub(r"\+\+_repo_rules[0-9]+\+", "++_repo_rules+", owner or "")
+    expected = FOREIGN_SOURCE_SCRIPTS.get(reviewed_owner)
+    if expected:
+        expected = owner.removeprefix("@@").split("//", 1)[0] + "/" + expected.split("/", 1)[1]
     if not (expected and action.get("mnemonic") == "FileWrite" and action.get("isExecutable") is True and
             len(outputs) == 1 and re.fullmatch(r"bazel-out/[^/]+/bin/external/" + re.escape(expected), outputs[0])):
         return False
@@ -49,7 +55,7 @@ def foreign_source_script(action, owner, outputs, lines):
         # rules_foreign_cc's Make rule prefixes DASH's reviewed all/install
         # commands with compiler settings. Keep this specific to that producer;
         # neither arbitrary environment wrappers nor shell commands are allowed.
-        if owner == DASH_SOURCE:
+        if reviewed_owner == DASH_SOURCE:
             while words and "=" in words[0]:
                 key, value = words.pop(0).split("=", 1)
                 if key not in DASH_COMPILER_ENV or re.search(r"[;|&`\n]|\$\(", value):
@@ -61,18 +67,18 @@ def foreign_source_script(action, owner, outputs, lines):
         make_args = iter(words[1:])
         dash_makefile_seen = False
         for word in make_args:
-            if owner == DASH_SOURCE and word == "-f":
+            if reviewed_owner == DASH_SOURCE and word == "-f":
                 # DASH builds from the adapter's private generated source tree.
                 # Permit only its declared Makefile, once per command.
                 if dash_makefile_seen or next(make_args, None) != "generated_sources/Makefile":
                     return False
                 dash_makefile_seen = True
                 continue
-            if owner == DASH_SOURCE and word == "PREFIX=$INSTALLDIR":
+            if reviewed_owner == DASH_SOURCE and word == "PREFIX=$INSTALLDIR":
                 continue
             if word in {"all", "build_sw", "install", "install_sw", "install_ssldirs", "install-nokeys"}:
                 continue
-            if (owner in {"@@p4lang-pi++_repo_rules+pi_source//:sdk",
+            if (reviewed_owner in {"@@p4lang-pi++_repo_rules+pi_source//:sdk",
                           "@@p4lang-bmv2++_repo_rules+bmv2_source//:bmv2_build"} and
                     "=" in word and word.split("=", 1)[0] in {"V", "pythondir", "pyexecdir"}):
                 continue
