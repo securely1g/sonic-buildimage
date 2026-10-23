@@ -12,6 +12,8 @@
 # Empty globs allow this package to load before Make has prepared the inputs.
 # The files must exist before building the Bazel targets that consume them.
 exports_files(
+    # Exact-name globs intentionally omit Make outputs until they exist.
+    # buildifier: disable=constant-glob
     glob(
         [
             "target/docker-config-engine-trixie.oci/oci-layout",

@@ -11,7 +11,6 @@ load("//tools/bazel/dpkg:defs.bzl", "PATH_INCLUDES")
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
-
 load(":runtime.bzl", "common_runtime_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -33,7 +32,6 @@ sh_test(
         "@sonic_swss_common//tools/bazel/runtime:test_runtime",
     ],
 )
-
 
 # Shared installed-wheel mechanics: reject owner checkout imports and retain
 # receipts for the exact artifacts exercised by component-specific probes.
