@@ -17,6 +17,10 @@ generate a package, modify a runner, or clear a cache.
   `sonic-vs.img.gz` and the SWSS debug container archive together.
 - Record the run's source commit separately from the current PR head. Historical
   evidence does not establish that the latest PR revision passed.
+- Resolve each PR's selected base branch independently of historical PR metadata.
+  Display that target separately from the run's recorded event base. Neither
+  proves which base a job checked out; the dashboard labels attempt bases as
+  unverified and does not infer image artifact publication from successful timings.
 
 The initial collector covers `bazel-swss-oci.yml`, `bazel-oci.yml`, and
 `bazel.yml`. It can report observed durations from earlier builds, but their
