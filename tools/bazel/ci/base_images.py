@@ -155,7 +155,9 @@ def main():
                             image + ".source.tar": owner + "source_runtime",
                             image + ".packages.json": owner + "runtime_package_metadata"})
         targets["config-engine.path-normalization.json"] = "//dockers/docker-config-engine-trixie:runtime_path_normalization"
-        tests = ["@sonic_build_infra//oci/tests:installed_packages_test",
+        tests = ["@sonic_build_infra//oci/tests:runtime_packages_test",
+                 "@sonic_build_infra//oci/tests:runtime_packages_rule_test",
+                 "@sonic_build_infra//oci/tests:installed_packages_test",
                  "@sonic_build_infra//oci/tests:owner_metadata_test",
                  "@sonic_build_infra//oci/tests:installed_packages_rule_test",
                  "@sonic_build_infra//oci/tests:account_layer_test",
