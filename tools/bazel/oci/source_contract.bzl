@@ -19,6 +19,11 @@ def _impl(ctx):
         inputs.extend(files)
         args.add("--module", name + "=" + files[0].path)
     for name, target in ctx.attr.sources.items():
+        files = target[DefaultInfo].files.to_list()
+        if len(files) != 1:
+            fail("source package must provide one runtime TAR")
+        inputs.extend(files)
+        args.add("--payload", name + "=" + files[0].path)
         args.add("--source", name + "=" + ctx.attr.declared_sources[name])
         args.add("--public-source", name + "=" + ctx.attr.public_sources[name])
     ctx.actions.run(
