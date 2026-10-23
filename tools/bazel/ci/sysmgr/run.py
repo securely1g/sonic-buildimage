@@ -112,6 +112,10 @@ def verify_packages(paths):
                           "runtime_sha256": sha(binary), "debug_sha256": sha(detached)})
         library = runtime / BINARIES[1]
         require("[librebootgnoi.so.0]" in output("readelf", "-d", str(library)), "Wrong gNOI SONAME")
+        protobuf_runtime = re.findall(r"Shared library: \[(libprotobuf[^\]]*)\]",
+                                      output("readelf", "-d", str(runtime / BINARIES[0])))
+        require(protobuf_runtime == ["libprotobuf.so.32"],
+                "System-manager must use the SONiC protobuf runtime: " + repr(protobuf_runtime))
         for suffix in ("", ".0"):
             link = library.parent / ("librebootgnoi.so" + suffix)
             require(link.is_symlink() and link.readlink() == Path(library.name), "Broken library symlink")
@@ -140,7 +144,8 @@ def verify_packages(paths):
         subprocess.run(["python3", str(ROOT / "dockers/docker-sysmgr/debug_symbols_test.py"),
                         str(paths["debug-layer.tar"]), str(paths["config-layer.tar"])], check=True)
         return {"runtime_debug_pairs": pairs, "architecture": "amd64", "image_layer_tests": 2,
-                "packaged_runtime_probe": probe_result.strip(), "packaged_loader_resolution": linked}
+                "packaged_runtime_probe": probe_result.strip(), "packaged_loader_resolution": linked,
+                "protobuf_runtime": protobuf_runtime}
 
 
 def main():
@@ -176,6 +181,7 @@ def main():
         receipt["platform"] = platform.platform()
         receipt["os_release"] = platform.freedesktop_os_release()
         if args.mode == "test":
+            run(["python3", "-E", str(ROOT / "tools/bazel/ci/resolution_test.py")], "resolution-test")
             for name in ("root_config_test", "submodule_config_test"):
                 run(["python3", "-E", str(ROOT / "tools/bazel/registry" / (name + ".py"))], name)
             run(["bazel", "test", *OPTIONS, "--nocache_test_results", "--test_output=errors",
@@ -212,8 +218,7 @@ def main():
                 shutil.copyfile(ROOT / files[0], paths[name])
                 receipt["artifacts"][name] = {"target": target, "sha256": sha(paths[name]), "bytes": paths[name].stat().st_size}
             receipt["validation"] = verify_packages(paths)
-        graph = run(["bazel", "mod", "graph", "--extension_info=hidden", "--lockfile_mode=update"], "module-graph")
-        receipt["resolution"] = resolution.retain(ROOT, directory, graph)
+        receipt["resolution"] = resolution.collect(ROOT, directory)
         receipt["architecture"] = "amd64"
         receipt["status"] = "passed"
     except Exception as error:
