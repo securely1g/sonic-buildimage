@@ -48,6 +48,15 @@ def archive(path, entries):
 
 
 class SourceIdentityTest(unittest.TestCase):
+    def test_additional_control_fields_require_valid_names_and_string_values(self):
+        """Full owner controls remain typed records, including fields outside the dependency subset."""
+        for key, value in (("Recommends", ["libexample"]), ("Bad:Field", "value"), ("", "value")):
+            with self.subTest(key=key, value=value):
+                package = source_contract()["packages"][0]
+                package["control_fields"][key] = value
+                with self.assertRaisesRegex(ValueError, "dependency controls"):
+                    subject.package_identity(package, architecture="amd64")
+
     def test_four_component_release_is_checked_against_module_version(self):
         source = {"module": "p4c", "version": "1.2.4.2.sonic.1", "release": "1.2.4.2", "target": "@p4c//:p4c_pkg"}
         subject.source_identity(source, name="p4lang-p4c")
@@ -361,6 +370,23 @@ class UnrelatedSourceContractTest(SourcePackageFixture, unittest.TestCase):
     """Prove source handling is independent of Syncd and the three SONiC libraries."""
 
     contract_document = source_contract()
+
+    def test_receipts_preserve_and_bind_complete_debian_controls(self):
+        """Optional relationships and descriptions cannot disappear or change after source assembly."""
+        controls = self.value["packages"][0]["control_fields"]
+        controls.update({"Recommends": "sample-helper", "Breaks": "old-sample (<< 2)",
+                         "Description": "Example library\n Detailed description."})
+        self.contract.write_bytes(subject.json_bytes(self.value))
+        result = self.build()
+        self.assertEqual(result["packages"][0]["control_fields"], controls)
+        subject.validate_receipt(self.receipt, self.runtime_tar, contract_path=self.contract)
+        for field in ("Recommends", "Breaks", "Description"):
+            with self.subTest(field=field):
+                altered = copy.deepcopy(result)
+                altered["packages"][0]["control_fields"].pop(field)
+                self.receipt.write_bytes(subject.json_bytes(altered))
+                with self.assertRaisesRegex(ValueError, "differs from the reviewed contract"):
+                    subject.validate_receipt(self.receipt, self.runtime_tar, contract_path=self.contract)
 
     def test_installation_owner_and_setgid_change_metadata_only(self):
         """Image-local group assignment preserves the owner's exact executable bytes."""

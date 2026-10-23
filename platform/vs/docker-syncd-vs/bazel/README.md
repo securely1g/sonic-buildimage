@@ -80,8 +80,11 @@ bazel build --config=syncd-dash \
 [BUILD.bazel](../BUILD.bazel) lists the actual target bindings. The
 [path policy](../config/source_paths.json) records only installed paths, file modes
 and ownership. The `source_contract` target combines it with each producer's
-`runtime_packages.json` and the selected `MODULE.bazel`. Package names, versions
-and dependency controls therefore stay with the source owner. SONiC owners use their
+generated `runtime_packages.json` and the selected `MODULE.bazel`. Metadata is
+built from existing Debian controls, changelogs and target TARs. The contract
+checks the generated payload hash against the exact TAR selected by this image.
+The `syncd-dash` configuration selects both the DASH SDK and its generated
+metadata for sairedis dependency analysis. SONiC owners use their
 full source commit; foreign packages use the upstream release and SONiC patch
 version. Assembly checks the resolved module declarations and actual TAR bytes.
 

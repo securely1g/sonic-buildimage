@@ -1,5 +1,6 @@
 """Image contracts follow owner metadata without copied package versions."""
 
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -27,10 +28,10 @@ class SourceContractTest(unittest.TestCase):
         self.owner.write_text(json.dumps(self.metadata))
         self.module.write_text('module(name = "example", version = "2.4.0.sonic.1")\n')
 
-    def run_contract(self):
+    def run_contract(self, payloads=None):
         return generate(self.expectations, {"@@example+//:runtime_packages.json": self.owner},
                         {"example": self.module}, {"libexample": "@@example+//:runtime"},
-                        {"libexample": "@example//:runtime"}, self.output)
+                        {"libexample": "@example//:runtime"}, self.output, payloads)
 
     def test_owner_changes_update_contract_without_editing_image_policy(self):
         first = self.run_contract()["packages"][0]
@@ -55,6 +56,34 @@ class SourceContractTest(unittest.TestCase):
         self.assertEqual(package["architecture"], "arm64")
         self.assertEqual(package["control_fields"]["Architecture"], "arm64")
         self.assertEqual(package["source"]["commit"], revision)
+
+    def test_complete_debian_controls_keep_their_original_fields(self):
+        """Preserve optional relationships and multiline text without promoting Recommends to Depends."""
+        fields = self.metadata["packages"]["libexample"]["control_fields"]
+        fields.pop("Depends")
+        fields.update({"Recommends": "libc6 (>= 2.38)", "Breaks": "liboldexample (<< 2.4)",
+                       "Replaces": "liboldexample", "Description": "Example library\n Detailed description."})
+        self.owner.write_text(json.dumps(self.metadata))
+        controls = self.run_contract()["packages"][0]["control_fields"]
+        for key, value in fields.items():
+            self.assertEqual(controls[key], value)
+        self.assertEqual(controls["Depends"], "")
+        self.assertEqual(controls["Pre-Depends"], "")
+        self.assertEqual(controls["Multi-Arch"], "no")
+
+    def test_generated_controls_are_bound_to_the_actual_runtime_tar(self):
+        """Reject stale dependency metadata even when its public TAR label is unchanged."""
+        payload = self.root / "runtime.tar"
+        payload.write_bytes(b"runtime payload")
+        self.metadata["architecture"] = "amd64"
+        self.metadata["packages"]["libexample"]["payload_sha256"] = hashlib.sha256(payload.read_bytes()).hexdigest()
+        self.owner.write_text(json.dumps(self.metadata))
+        with self.assertRaisesRegex(ValueError, "requires its runtime TAR"):
+            self.run_contract()
+        self.run_contract({"libexample": payload})
+        payload.write_bytes(b"changed runtime payload")
+        with self.assertRaisesRegex(ValueError, "differs from runtime TAR"):
+            self.run_contract({"libexample": payload})
 
     def test_image_cannot_override_owner_dependency_fields(self):
         self.policy["packages"]["libexample"]["control_fields"] = {"Depends": ""}
