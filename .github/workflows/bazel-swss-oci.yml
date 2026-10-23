@@ -480,9 +480,15 @@ jobs:
             --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
             --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
         run: |
-          make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+          make target/sonic-vs.img.gz target/docker-orchagent-dbg.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y VS_VALIDATE_SERVICES=y \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
             2>&1 | tee artifacts/vs/build.log
+
+      - name: Require guest service evidence for this VS image
+        run: |
+          python3 -B -m tools.ci.guest_validation \
+            --report target/sonic-vs.guest-validation.json \
+            --image target/sonic-vs.img.gz
 
       - name: Verify P4RT packaged split debug symbols
         run: |
@@ -542,6 +548,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
+
+      - name: Retain strict VS guest validation receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-guest-validation-amd64
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.guest-validation.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload VS image and SWSS archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
