@@ -23,6 +23,8 @@ from tools.bazel.oci.oci_layout import validate_layout
 from tools.bazel.oci import normalize_layer as normalization
 
 
+# Required dependency keys in schema-1 contracts. Other Debian fields stay in
+# the contract and receipt so the owner record is preserved in full.
 CONTROL_FIELDS = {"Package", "Version", "Architecture", "Depends", "Pre-Depends", "Provides", "Multi-Arch"}
 SOURCE_FIELDS = {"module", "version", "target"}
 RECEIPT_SCHEMA = 2
@@ -137,7 +139,8 @@ def package_identity(record, *, architecture):
             isinstance(record.get("version"), str) and record["version"] and
             record.get("architecture") == architecture, "unsupported source package identity")
     fields = record.get("control_fields")
-    require(isinstance(fields, dict) and set(fields) == CONTROL_FIELDS and
+    require(isinstance(fields, dict) and CONTROL_FIELDS <= fields.keys() and
+            all(isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", key) for key in fields) and
             all(isinstance(value, str) for value in fields.values()) and
             (fields["Package"], fields["Version"], fields["Architecture"]) ==
             (name, record["version"], record["architecture"]),
