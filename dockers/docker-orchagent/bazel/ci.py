@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Build and inspect the SWSS source layers on a native AMD64 Trixie runner."""
+"""Build and inspect SWSS source layers on native AMD64 or ARM64 Trixie."""
 
 import argparse
 from functools import partial
 import json
 from pathlib import Path
 import platform
+import re
 import sys
 import time
 
@@ -30,6 +31,13 @@ OPTIONS = [
     "--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
     "--lockfile_mode=update", "--noshow_progress", "--color=no", "--curses=no",
 ]
+NATIVE_PLATFORMS = {
+    "amd64": ("x86_64", "x86_64_trixie", 62),
+    "arm64": ("aarch64", "aarch64_trixie", 183),
+}
+RUST_QUERY = ('kind("rust_library rule", deps(set('
+              '@sonic_swss//crates/countersyncd:countersyncd '
+              '@sonic_swss//crates/countersyncd:common_rust_test)))')
 TESTS = [
     "//tools/bazel/tests:apt_selection_test",
     "//tools/bazel/tests:select_apt_payloads_test",
@@ -43,6 +51,8 @@ TESTS = [
     "//tools/bazel/tests:supervisor_python_wheel_test",
     "//src/sonic-config-engine:sonic_cfggen_cli_test",
     "//tools/bazel/tests:common_rust_runtime_test",
+    "@sonic_swss_common//dist:libswsscommon_package_test",
+    "@sonic_swss_common//pyext:swsscommon_package_test",
     "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
     "//tools/bazel/tests:manifest_labels_test",
     "//tools/bazel/tests:manifest_labels_action_test",
@@ -50,7 +60,39 @@ TESTS = [
 ]
 
 
-def verify_packages(paths, source):
+def native_options(architecture):
+    """Reject cross execution and select matching target and build-tool platforms."""
+    machine, platform_name, _elf_machine = NATIVE_PLATFORMS[architecture]
+    if platform.machine() != machine or platform.freedesktop_os_release().get("VERSION_CODENAME") != "trixie":
+        raise ValueError(f"SWSS source-layer CI requires native {architecture.upper()} Debian Trixie")
+    label = "@sonic_build_infra//platforms:" + platform_name
+    return ["--platforms=" + label, "--host_platform=" + label, *OPTIONS]
+
+
+def shared_rust_graph(output):
+    """Require one shared crate source for both Common and the SWSS consumers."""
+    labels = set(output.splitlines())
+    artifact_validation.require(not any("swss_crates" in label for label in labels),
+                                "legacy SWSS-owned Rust graph is still selected")
+    selected = {}
+    for name, suffix in (("serde", "//:serde"), ("serde_core", "//:serde_core"),
+                         ("swss_common", "//crates/swss-common:swss_common")):
+        matches = {label for label in labels if label.endswith(suffix)}
+        artifact_validation.require(len(matches) == 1,
+                                    "expected one shared Rust target for " + name)
+        selected[name] = matches.pop()
+    hubs = []
+    for name in ("serde", "serde_core"):
+        match = re.fullmatch(r"(@@[^/]+[+~]sonic_rust_crates)__" + name + r"-[^/]+//:" + name,
+                             selected[name])
+        artifact_validation.require(match is not None,
+                                    name + " is not supplied by the shared SONiC Rust graph")
+        hubs.append(match.group(1))
+    artifact_validation.require(hubs[0] == hubs[1], "Serde crates use different repository hubs")
+    return selected
+
+
+def verify_packages(paths, source, expected_machine):
     runtime = artifact_validation.payload(paths["swss.tar"])
     programs = package_contract.swss_contract(source, runtime)
     dependencies = artifact_validation.payload(paths["rdeps.tar"])
@@ -58,10 +100,11 @@ def verify_packages(paths, source):
         if metadata["kind"] != "directory":
             artifact_validation.require(dependencies.get(name) == metadata, "runtime layer changed SWSS payload: " + name)
     protobuf = artifact_validation.payload(paths["protobuf.tar"], require_root=False)
-    package_contract.source_protobuf_contract(dependencies, protobuf)
+    package_contract.source_protobuf_contract(dependencies, protobuf, expected_machine=expected_machine)
+    libraries = package_contract.shared_library_contract(dependencies, expected_machine)
     debug = artifact_validation.debug_archives(
-        paths["rdeps.tar"], paths["debug-symbols.tar"], expected_machine=62)
-    required_debug = set(programs) | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so", package_contract.PROTOBUF_RUNTIME}
+        paths["rdeps.tar"], paths["debug-symbols.tar"], expected_machine=expected_machine)
+    required_debug = set(programs) | libraries | {"usr/lib/libdashapi.so", "usr/lib/python3/dist-packages/dash_api/_utils.so", package_contract.protobuf_runtime(expected_machine)}
     artifact_validation.require(required_debug <= {pair["path"] for pair in debug["debug_pairs"]}, "incomplete SWSS/DASH/protobuf debug coverage")
     configuration = artifact_validation.payload(paths["config.tar"])
     artifact_validation.require(configuration.get("usr/bin/docker-init.sh", {}).get("mode") == 0o755,
@@ -84,17 +127,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--bazel", default="bazel")
+    parser.add_argument("--architecture", choices=NATIVE_PLATFORMS, required=True)
     args = parser.parse_args()
     directory = args.artifacts.resolve()
     if directory.exists() and any(directory.iterdir()):
         parser.error("artifact directory must be empty: " + str(directory))
     directory.mkdir(parents=True, exist_ok=True)
-    receipt = {"status": "running", "commands": [],
+    receipt = {"status": "running", "commands": [], "architecture": args.architecture,
                "scope": "SWSS source layers and matching debug symbols; no complete OCI image or VS installer."}
     started = time.monotonic()
     try:
-        if platform.machine() != "x86_64" or platform.freedesktop_os_release().get("VERSION_CODENAME") != "trixie":
-            raise ValueError("SWSS source-layer CI requires native AMD64 Debian Trixie")
+        options = native_options(args.architecture)
         receipt["platform"] = platform.platform()
         receipt["revision"] = execute(["git", "rev-parse", "HEAD"], directory, receipt, "revision").strip()
         version = execute([args.bazel, "--version"], directory, receipt, "version").strip()
@@ -107,10 +150,11 @@ def main():
             "make", "-f", "tools/bazel/prepare_manifests.mk",
             "MANIFEST_METADATA=rules/docker-orchagent.mk",
             "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "BLDENV=trixie", "CONFIGURED_PLATFORM=vs",
+            # Make's registered OCI image profile is AMD64; these manifests are
+            # configuration inputs, independent of the native source toolchain.
             "CONFIGURED_ARCH=amd64", "ENABLE_ASAN=n", "DBG_IMAGE_MARK=dbg",
             "DOCKERS_PATH=dockers",
         ], directory, receipt, "make-manifests")
-        options = OPTIONS
         receipt["action_audit"] = bazel_commands.audit_targets(
             args.bazel, options, [*TESTS, *TARGETS.values()],
             workspace=ROOT, output=directory / "action-audit.json")
@@ -118,12 +162,16 @@ def main():
                  "--build_event_json_file=" + str(directory / "test-events.jsonl"),
                  *TESTS], directory, receipt, "bazel-tests")
         receipt["tests"] = {target: "passed" for target in TESTS}
+        rust_targets = execute([
+            args.bazel, "cquery", *options, "--noimplicit_deps", "--output=starlark",
+            "--starlark:expr=str(target.label)", RUST_QUERY,
+        ], directory, receipt, "shared-rust-graph")
+        receipt["shared_rust_graph"] = shared_rust_graph(rust_targets)
         paths = build.collect_archives(ROOT, directory, receipt, TARGETS,
                                        bazel=args.bazel, options=options)
         source = source_directory(args.bazel, options, directory, receipt)
-        receipt["validation"] = verify_packages(paths, source)
+        receipt["validation"] = verify_packages(paths, source, NATIVE_PLATFORMS[args.architecture][2])
         receipt["resolution"] = resolution.collect(ROOT, directory, bazel=[args.bazel])
-        receipt["architecture"] = "amd64"
         receipt["status"] = "passed"
     except Exception as error:
         receipt.update(status="failed", error=str(error))
