@@ -40,7 +40,7 @@ The previous configuration target names remain aliases for existing consumers.
 For example, to add a base configuration file, export the file in the image's
 main `BUILD.bazel` and add its destination and mode in `config/BUILD.bazel`.
 Adding a source runtime package still belongs in the main image definition and
-its owner-exported `runtime_packages.json`. The image's
+its owner's package-to-TAR mapping in `BUILD.bazel`. The image's
 `bazel/source_paths.json` lists only required paths. `sonic_layer` removes
 repeated directory entries from Debian archives before applying the file filter;
 Docker rejects repeated paths within a layer.
@@ -168,9 +168,13 @@ input to Syncd.
 
 The shared `@sonic_build_infra//oci:installed_packages.bzl` rule preserves
 Debian control fields from the selected APT packages and reads source package
-identity from each producer's `runtime_packages.json`. The producer owns the
-package name, Debian version, dependency fields and runtime TAR target. The
-image supplies required installed paths, not another copy of that metadata.
+identity from each producer's generated `runtime_packages.json` target. Its
+existing Debian control and changelog supply package fields and versions; the
+shared rule derives library dependencies from the actual runtime TARs and
+declared target libraries. `BUILD.bazel` maps Debian package names to those TARs.
+The image supplies required installed paths. The in-tree eventd and Rust
+supervisor targets follow the same rule; their metadata JSON is no longer
+maintained by hand.
 
 The helper binds each record to its actual TAR label and selected owner module,
 checks required files and records native file hashes and ownership. It validates
