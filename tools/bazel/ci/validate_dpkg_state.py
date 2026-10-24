@@ -269,9 +269,33 @@ def initial_configuration(commands, records):
 
 
 def source_file_inventory(receipts, root=Path("/")):
-    """Protect source binaries independently of whether dpkg manages them."""
-    expected = {}
-    for receipt in receipts:
+    """Protect final source bytes, allowing only a declared same-source mode change."""
+    expected, origins = {}, {}
+
+    def add_entry(name, metadata, package, receipt_index):
+        # A child image may apply its own mode policy to the exact same source
+        # TAR. Resolve that declared change before comparing older receipts with
+        # the final filesystem; no other content or ownership change is allowed.
+        fields = ("package", "target", "source_revision", "source_version", "payload_sha256")
+        identity = tuple(package.get(key) for key in fields)
+        identity_valid = (package.get("packaging") == "runtime-layer" and
+                          all(isinstance(value, str) and value for value in identity) and
+                          re.fullmatch(r"[0-9a-f]{64}", identity[-1]) is not None)
+        identity = identity if identity_valid else None
+        if name in expected and expected[name] != metadata:
+            previous = expected[name]
+            modes = package.get("path_modes")
+            declared_mode = modes.get(name) if isinstance(modes, dict) else None
+            require(set(previous) == set(metadata) == {"sha256", "mode", "uid", "gid"} and
+                    all(previous[key] == metadata[key] for key in ("sha256", "uid", "gid")) and
+                    type(declared_mode) is int and 0 <= declared_mode <= 0o7777 and
+                    declared_mode == metadata["mode"] and identity is not None and
+                    all(index < receipt_index and owner == identity for index, owner in origins[name]),
+                    "Source payload differs between build receipts: " + name)
+        expected[name] = metadata
+        origins.setdefault(name, []).append((receipt_index, identity))
+
+    for receipt_index, receipt in enumerate(receipts):
         for package in receipt.get("source_packages", []):
             for name in package.get("excluded_baseline_paths", []):
                 require(isinstance(name, str) and name and not name.startswith("/") and
@@ -282,29 +306,28 @@ def source_file_inventory(receipts, root=Path("/")):
                 name = entry["path"]
                 require(not name.startswith("/") and ".." not in Path(name).parts,
                         "Invalid source payload path")
-                path = root / name
-                require(path.is_file() and not path.is_symlink(), "Source payload is not a regular file: " + name)
-                metadata = {"sha256": sha(path), "mode": stat.S_IMODE(path.stat().st_mode),
-                            "uid": path.stat().st_uid, "gid": path.stat().st_gid}
-                require(all(metadata[key] == entry[key] for key in metadata),
-                        "Source payload differs from its build receipt: " + name)
-                require(name not in expected or expected[name] == metadata, "Conflicting source payload receipts")
-                expected[name] = metadata
+                add_entry(name, {key: entry[key] for key in ("sha256", "mode", "uid", "gid")},
+                          package, receipt_index)
             for entry in package.get("runtime_links", []):
                 name = entry["path"]
                 require(not name.startswith("/") and ".." not in Path(name).parts,
                         "Invalid source symlink path")
-                path = root / name
-                require(path.is_symlink(), "Source symlink is missing: " + name)
-                # Match archive inventory normalization: flattening may add ./,
-                # while parent components must retain their path semantics.
-                metadata = {"kind": "symlink", "linkname": str(PurePosixPath(os.readlink(path))),
-                            "mode": stat.S_IMODE(path.lstat().st_mode),
-                            "uid": path.lstat().st_uid, "gid": path.lstat().st_gid}
-                require(all(metadata[key] == entry[key] for key in metadata),
-                        "Source symlink differs from its build receipt: " + name)
-                require(name not in expected or expected[name] == metadata, "Conflicting source symlink receipts")
-                expected[name] = metadata
+                add_entry(name, {key: entry[key] for key in ("kind", "linkname", "mode", "uid", "gid")},
+                          package, receipt_index)
+    for name, entry in expected.items():
+        path = root / name
+        if entry.get("kind") == "symlink":
+            require(path.is_symlink(), "Source symlink is missing: " + name)
+            # Flattening may add ./ without changing a symlink's target.
+            metadata = {"kind": "symlink", "linkname": str(PurePosixPath(os.readlink(path))),
+                        "mode": stat.S_IMODE(path.lstat().st_mode),
+                        "uid": path.lstat().st_uid, "gid": path.lstat().st_gid}
+            require(metadata == entry, "Source symlink differs from its build receipt: " + name)
+        else:
+            require(path.is_file() and not path.is_symlink(), "Source payload is not a regular file: " + name)
+            metadata = {"sha256": sha(path), "mode": stat.S_IMODE(path.stat().st_mode),
+                        "uid": path.stat().st_uid, "gid": path.stat().st_gid}
+            require(metadata == entry, "Source payload differs from its build receipt: " + name)
     return expected
 
 
@@ -349,7 +372,8 @@ def run_guest(request):
                     "Invalid inherited source receipt")
         # Parent receipts describe an earlier dpkg database. Use only their
         # source inventories; the current image receipt above owns dpkg state.
-        # Keep overlapping source paths so inconsistent proofs still fail.
+        # Keep parent paths; only an explicit child mode policy for the same
+        # source payload may supersede an inherited regular-file mode.
         source_receipts = [*inherited_sources, *receipts]
         audit(commands)
         if request["mode"] == "initial-configuration":

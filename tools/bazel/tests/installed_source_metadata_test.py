@@ -259,6 +259,53 @@ class SourceOverlayTest(unittest.TestCase):
                          'linkname': 'libcommon.so.0.0.0', 'mode': 0o777, 'uid': 0, 'gid': 0}])
         self.assertIn('run/common/config', {item['path'] for item in source['runtime_files']})
 
+    def test_declared_lua_normalization_is_verified_and_retained(self):
+        """A checked child mode override is distinct from merely observing a new mode."""
+        path = 'usr/share/swss/consumer_table_pops.lua'
+        self.original[path] = (b'return redis.call("PING")', 0o755)
+        self.normalized[path] = (self.original[path][0], 0o644)
+        spec = self.root / 'spec.json'
+        package = json.loads(spec.read_text())['packages']['common']
+        # Syncd uses the generated contract's list form; base images use the
+        # provenance dictionary form. Both must retain the same existing policy.
+        for contract in (False, True):
+            with self.subTest(contract=contract):
+                modes = {path: 0o644, 'var/run/common/config': 0o644}
+                if contract:
+                    packages = [{'package': 'common', 'required_paths': package['required_paths'],
+                                 'path_modes': modes, 'source': {'target': package['target'],
+                                 'commit': package['source_revision'], 'version': '0.0.4-source'}}]
+                else:
+                    packages = {'common': {**package, 'path_modes': modes}}
+                spec.write_text(json.dumps({'schema': 1, 'packages': packages}))
+                report = self.inspect(allow_same_owner_overlays=True)
+                source = report['source_packages'][0]
+                self.assertEqual(source.get('path_modes'), {path: 0o644, 'run/common/config': 0o644})
+                lua = next(entry for entry in source['runtime_files'] if entry['path'] == path)
+                self.assertEqual(lua['mode'], 0o644)
+                self.assertEqual(lua['sha256'], __import__('hashlib').sha256(self.original[path][0]).hexdigest())
+                self.normalized[path] = (self.original[path][0], 0o755)
+                with self.assertRaisesRegex(ValueError, 'mode differs from its declaration'):
+                    self.inspect(allow_same_owner_overlays=True)
+                self.normalized[path] = (self.original[path][0], 0o644)
+
+    def test_mode_policy_cannot_authorize_invalid_or_other_package_paths(self):
+        """Only a canonical regular file from this package can carry a mode policy."""
+        spec = self.root / 'spec.json'
+        document = json.loads(spec.read_text())
+        for modes in (
+            [], {'../escape': 0o644}, {'/run/common/config': 0o644},
+            {'run//common/config': 0o644}, {'run/common/config': True},
+            {'run/common/config': -1}, {'run/common/config': 0o10000},
+            {'usr/lib/libcommon.so.0': 0o777}, {'var/lib/dpkg/status': 0o644},
+            {'missing': 0o644},
+        ):
+            with self.subTest(modes=modes):
+                document['packages']['common']['path_modes'] = modes
+                spec.write_text(json.dumps(document))
+                with self.assertRaisesRegex(ValueError, 'source path mode'):
+                    self.inspect(allow_same_owner_overlays=True)
+
     def test_unowned_payload_cannot_change_bytes_or_links(self):
         del self.files['var/lib/dpkg/info/common.list']
         for name, replacement, message in (
@@ -288,6 +335,10 @@ class SourceOverlayTest(unittest.TestCase):
             self.inspect(allow_same_owner_overlays=True)
 
     def test_debug_stage_rechecks_inherited_source_and_overlay_proof(self):
+        spec = self.root / 'spec.json'
+        document = json.loads(spec.read_text())
+        document['packages']['common']['path_modes'] = {'run/common/config': 0o644}
+        spec.write_text(json.dumps(document))
         report = self.inspect(allow_same_owner_overlays=True)
         inherited = self.root / 'inherited.json'
         inherited.write_text(json.dumps(report))
@@ -302,6 +353,7 @@ class SourceOverlayTest(unittest.TestCase):
             payloads={'common': self.root / 'source.tar'})
         self.assertEqual(result['verified_overlays'], report['verified_overlays'])
         self.assertEqual(result['inherited_metadata_sha256'], subject.sha(inherited))
+        self.assertEqual(result['source_packages'][0].get('path_modes'), {'run/common/config': 0o644})
 
     def test_source_only_selection_retains_provenance_without_make_manifest(self):
         report = self.inspect(allow_same_owner_overlays=True)

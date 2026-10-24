@@ -176,10 +176,15 @@ _SOURCE_PACKAGES = {
     "libnl-route-3-dev": "@libnl3//:libnl-route-3-dev_files",
 }
 
-# Preserve producer paths, ownership and permissions in the configured image.
-alias(
+# Retain ssh-agent's ownership and setgid mode created by Debian's scripts.
+# All other source permissions remain producer-owned, including Common's Lua files.
+normalize_layer(
     name = "source_runtime_layer",
-    actual = ":rdeps",
+    src = ":rdeps",
+    base = ":configured_debian",
+    expected_platform = "linux/amd64",
+    preserve_metadata = ["usr/bin/ssh-agent"],
+    tars = _SOURCE_PACKAGES.values(),
 )
 
 # Generate provenance and dependency records directly from owner metadata.
