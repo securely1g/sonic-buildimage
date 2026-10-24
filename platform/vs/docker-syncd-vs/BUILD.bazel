@@ -177,19 +177,13 @@ _SOURCE_PACKAGES = {
     "libnl-route-3-dev": "@libnl3//:libnl-route-3-dev_files",
 }
 
-sonic_layer(
-    name = "source_runtime_files",
-    root_owned = True,
-    tars = _SOURCE_PACKAGES.values(),
-)
-
+# Reuse the checked, filtered payload so image permissions match source_paths.json.
 # Common's runtime uses /var/run; preserve the base's /var/run -> /run link.
 normalize_layer(
     name = "source_runtime_layer",
-    src = ":source_runtime_files",
+    src = ":rdeps",
     base = ":configured_debian",
     expected_platform = "linux/amd64",
-    modes = {"run/redis/sonic-db/database_config.json": "0644"},
     preserve_metadata = ["usr/bin/ssh-agent"],
     root_owned = True,
     tars = _SOURCE_PACKAGES.values(),

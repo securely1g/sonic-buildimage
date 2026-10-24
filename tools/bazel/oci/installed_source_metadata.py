@@ -70,6 +70,7 @@ def source_specification(path):
             'source_revision': item['source'].get('commit', item['source'].get('release')),
             'source_version': item['source'].get('version'),
             'required_paths': list(item['required_paths']),
+            'path_modes': item.get('path_modes', {}),
         } for item in specification['packages']}
     require(specification.get('schema') == 1 and isinstance(specification.get('packages'), dict),
             'invalid source declarations')
@@ -223,6 +224,24 @@ def describe(rootfs, installation, spec, architecture, inherited_metadata=None, 
             target = path_location(path, files)
             require(target not in files, 'image retains an excluded baseline file: ' + path)
             excluded_baseline_paths.append(target)
+        # Keep the image's declared normalization separate from observed file
+        # metadata. A child image may intentionally normalize an inherited
+        # source file, but a matching receipt alone must not authorize it.
+        declared_modes = item.get('path_modes', {})
+        require(isinstance(declared_modes, dict), 'invalid source path modes: ' + name)
+        path_modes = {}
+        source_files = {record['path']: record for record in runtime_files}
+        for path, mode in declared_modes.items():
+            require(isinstance(path, str) and path and not path.startswith('/') and
+                    '..' not in PurePosixPath(path).parts and str(PurePosixPath(path)) == path and
+                    type(mode) is int and 0 <= mode <= 0o7777,
+                    'invalid source path mode: ' + str(path))
+            target = path_location(path, files)
+            require(target in source_files and source_files[target]['mode'] == mode,
+                    'source path mode differs from its declaration: ' + path)
+            require(target not in path_modes or path_modes[target] == mode,
+                    'conflicting source path modes: ' + path)
+            path_modes[target] = mode
         if inherited_metadata is not None:
             prior = next(entry for entry in previous['source_packages'] if entry['package'] == name)
             require(prior.get('payload_sha256') == sha(archive), 'inherited runtime-layer source changed: ' + name)
@@ -234,6 +253,7 @@ def describe(rootfs, installation, spec, architecture, inherited_metadata=None, 
                 for owner in [name] if owner in installed},
             'runtime_files': sorted(runtime_files, key=lambda entry: entry['path']),
             'runtime_links': sorted(runtime_links, key=lambda entry: entry['path']),
+            'path_modes': dict(sorted(path_modes.items())),
             'excluded_baseline_paths': sorted(excluded_baseline_paths),
             'native_files': sorted(native, key=lambda entry: entry['path'])})
     overlay_proof = {}
