@@ -18,6 +18,22 @@ import sys
 
 ENVIRONMENT = 'debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c'
 COMMANDS = {'build', 'test', 'run', 'aquery', 'cquery', 'query', 'info'}
+NATIVE_SHARED_CACHE = Path('/bazel_cache/native-root')
+
+
+def cache_arguments(arguments, shared_cache):
+    """Keep root's writable caches separate from the ordinary Make user's.
+
+    Command-line defaults override the mounted slave RC. Caller options follow
+    these defaults, so an explicitly selected (or disabled) cache still wins.
+    The shared source distdir remains available without changing its contents.
+    """
+    if not shared_cache:
+        return list(arguments)
+    return [arguments[0],
+            '--repository_cache=' + str(NATIVE_SHARED_CACHE / 'repository_cache'),
+            '--disk_cache=' + str(NATIVE_SHARED_CACHE / 'disk_cache'),
+            *arguments[1:]]
 
 
 @contextmanager
@@ -112,14 +128,15 @@ def command(arguments, workspace, bazel, cache, startup=()):
     result = ['docker', 'run', '--rm', '--init', '--cap-add=SYS_ADMIN', '--cap-add=NET_ADMIN',
               '--security-opt=seccomp=unconfined', '--security-opt=apparmor=unconfined',
               '--workdir', str(workspace.resolve()), '--env', 'APT_INSTALL_BUILD_CONTAINER=' + ENVIRONMENT,
-              '--env', 'BAZELISK_HOME=' + str(Path('/bazel_cache/bazelisk') if shared_cache else cache / 'bazelisk')]
+              '--env', 'BAZELISK_HOME=' + str(NATIVE_SHARED_CACHE / 'bazelisk' if shared_cache else cache / 'bazelisk')]
     for path, readonly in mounts.items():
         if ',' in str(path):
             raise ValueError('Docker bind paths cannot contain commas: ' + str(path))
         result.extend(['--mount', 'type=bind,src=' + str(path) + ',dst=' + str(path) + (',readonly' if readonly else '')])
     if shared_cache:
-        # The outer Make slave uses this same reviewed system RC. Mounting only
-        # /bazel_cache would leave its repository and action caches unselected.
+        # Keep the ordinary slave configuration, but override its writable
+        # cache defaults below so root does not populate the Make user's
+        # caches. No existing shared cache entries need to be changed.
         slave_rc = workspace.resolve() / 'tools/bazel/slave.bazelrc'
         if not slave_rc.is_file():
             raise ValueError('Missing native build cache configuration: ' + str(slave_rc))
@@ -132,7 +149,8 @@ python3 -B -c 'from pathlib import Path; import sys; from tools.bazel.oci.native
 exec "$@"
 '''
     result.extend([ENVIRONMENT, 'sh', '-c', script, 'native-bazel', str(bazel.resolve()),
-                   '--output_user_root=' + str(cache / 'bazel'), *startup, *arguments])
+                   '--output_user_root=' + str(cache / 'bazel'), *startup,
+                   *cache_arguments(arguments, shared_cache)])
     return result
 
 
@@ -149,6 +167,10 @@ def main():
     if os.geteuid() == 0 and os.environ.get('APT_INSTALL_BUILD_CONTAINER') == ENVIRONMENT:
         # Direct execution and Make's Docker launcher use the same preflight.
         sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+        shared_cache = Path('/bazel_cache').is_dir()
+        arguments = cache_arguments(arguments, shared_cache)
+        if shared_cache:
+            os.environ['BAZELISK_HOME'] = str(NATIVE_SHARED_CACHE / 'bazelisk')
         audit_command([executable, *startup, *arguments], Path.cwd())
         os.execv(executable, [executable, *startup, *arguments])
     workspace = Path.cwd()

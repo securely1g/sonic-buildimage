@@ -49,7 +49,7 @@ class NativeBuildTest(unittest.TestCase):
             self.assertTrue(repository.is_dir())
 
     def test_native_container_retains_shared_cache_configuration_when_mounted(self):
-        """Mounting the Make cache must also select its reviewed RC and Bazelisk path."""
+        """Root must retain Make's mounted inputs without writing its ordinary caches."""
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             cache = workspace / 'private-cache'
@@ -70,9 +70,81 @@ class NativeBuildTest(unittest.TestCase):
                     rc_mount = 'type=bind,src=' + str(rc) + ',dst=/etc/bazel.bazelrc,readonly'
                     self.assertEqual(rc_mount in argv, present)
                     self.assertEqual('type=bind,src=/bazel_cache,dst=/bazel_cache' in argv, present)
-                    expected = '/bazel_cache/bazelisk' if present else str(cache / 'bazelisk')
+                    expected = '/bazel_cache/native-root/bazelisk' if present else str(cache / 'bazelisk')
                     self.assertIn('BAZELISK_HOME=' + expected, argv)
-                    self.assertEqual(argv[-len(arguments):], arguments)
+                    expected_arguments = arguments
+                    if present:
+                        expected_arguments = ['build',
+                            '--repository_cache=/bazel_cache/native-root/repository_cache',
+                            '--disk_cache=/bazel_cache/native-root/disk_cache', *arguments[1:]]
+                    self.assertEqual(argv[argv.index('build'):], expected_arguments)
+
+    def test_explicit_cache_choices_override_native_defaults_and_keep_distdir(self):
+        """A caller can choose or disable each cache; source downloads stay shared."""
+        self.shared_cache = True
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            cache = workspace / 'private-cache'
+            cache.mkdir()
+            bazel = workspace / 'bazel'
+            bazel.touch()
+            rc = workspace / 'tools/bazel/slave.bazelrc'
+            rc.parent.mkdir(parents=True)
+            rc.touch()
+            for value in ('', str(workspace / 'explicit-cache')):
+                with self.subTest(cache=value):
+                    arguments = ['build', '--repository_cache=' + value, '--disk_cache=' + value,
+                                 '--distdir=/bazel_cache/distdir', '//:image']
+                    with patch.object(native_build.subprocess, 'check_output', return_value=str(workspace / '.git') + '\n'), \
+                         patch.object(Path, 'mkdir'):
+                        argv = native_build.command(arguments, workspace, bazel, cache)
+                    selected = argv[argv.index('build'):]
+                    # Bazel gives later scalar flags precedence over RC/defaults.
+                    for name in ('repository_cache', 'disk_cache'):
+                        prefix = '--' + name + '='
+                        values = [item[len(prefix):] for item in selected if item.startswith(prefix)]
+                        self.assertEqual(values, ['/bazel_cache/native-root/' + name, value])
+                    self.assertIn('--distdir=/bazel_cache/distdir', selected)
+                    self.assertIn('type=bind,src=/bazel_cache,dst=/bazel_cache', argv)
+                    self.assertEqual(selected[-len(arguments[1:]):], arguments[1:])
+
+    def test_root_direct_execution_audits_and_uses_the_same_cache_choices(self):
+        """Entering an existing native container must not bypass writer isolation."""
+        original = ['run', '--repository_cache=', '--disk_cache=/custom/disk',
+                    '--distdir=/bazel_cache/distdir', '//:export', '--', '--output', '/tmp/image']
+        startup = ['--output_user_root=/private/output']
+        for present in (False, True):
+            with self.subTest(shared_cache=present):
+                self.shared_cache = present
+                environment = {'APT_INSTALL_BUILD_CONTAINER': native_build.ENVIRONMENT,
+                               'BAZEL_NATIVE_STARTUP_ARGS': json.dumps(startup),
+                               'BAZELISK_HOME': '/bazel_cache/bazelisk'}
+                executed = {}
+
+                def execute(executable, argv):
+                    executed.update(executable=executable, argv=argv,
+                                    bazelisk_home=native_build.os.environ['BAZELISK_HOME'])
+                    raise SystemExit(0)
+
+                with patch.object(native_build.sys, 'argv', ['native_build.py', *original]), \
+                     patch.object(native_build.os, 'geteuid', return_value=0), \
+                     patch.dict(native_build.os.environ, environment), \
+                     patch.object(native_build.shutil, 'which', return_value='/usr/bin/bazel'), \
+                     patch.object(native_build, 'audit_command') as audit, \
+                     patch.object(native_build.os, 'execv', side_effect=execute):
+                    with self.assertRaises(SystemExit) as result:
+                        native_build.main()
+                self.assertEqual(result.exception.code, 0)
+                expected = ['/usr/bin/bazel', *startup, 'run']
+                if present:
+                    expected += ['--repository_cache=/bazel_cache/native-root/repository_cache',
+                                 '--disk_cache=/bazel_cache/native-root/disk_cache']
+                expected += original[1:]
+                self.assertEqual(executed['executable'], '/usr/bin/bazel')
+                self.assertEqual(executed['argv'], expected)
+                self.assertEqual(audit.call_args.args[0], expected)
+                self.assertEqual(executed['bazelisk_home'],
+                    '/bazel_cache/native-root/bazelisk' if present else '/bazel_cache/bazelisk')
 
     def test_shared_output_containers_wait_and_release_after_failure(self):
         """Real launcher processes cannot overlap Docker or strand the lock on failure.
