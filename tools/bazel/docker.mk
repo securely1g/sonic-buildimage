@@ -48,7 +48,9 @@ $(addprefix $(TARGET_PATH)/, $(sort $(SONIC_BAZEL_OCI_BASES))) : $(TARGET_PATH)/
 	python3 tools/bazel/oci/prepare_oci_base.py --archive "$($*.oci_OCI_ARCHIVE)" \
 		--output "$@" --expected-platform "$($*.oci_OCI_PLATFORM)" $(LOG)
 
-$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform bazel-docker-force \
+# Each top-level Make goal enters a fresh slave. The native runner needs that
+# slave's Docker daemon even when all archive inputs already exist in the cache.
+$(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform docker-start bazel-docker-force \
 		$$($$*.gz_BAZEL_DEPENDS)
 	$(HEADER)
 	{

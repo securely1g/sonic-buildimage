@@ -1,9 +1,12 @@
 """Check the private cgroup boundary used by installed-image validation."""
 
 import errno
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -113,6 +116,58 @@ class NestedDockerTest(unittest.TestCase):
                 prepare_nested_docker.prepare()
         self.assertFalse((self.root / "sys/fs/cgroup/sonic-docker-init").exists())
         self.assertFalse((self.root / "sys/fs/cgroup/cgroup.subtree_control").exists())
+
+
+class NativeImageWorkflowTest(unittest.TestCase):
+    def test_p4_check_starts_its_own_daemon_and_preserves_test_results(self):
+        """A fresh P4 validation slave needs Docker and must retain failed-test evidence."""
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        anchor = "          cat > artifacts/vs/check-syncd-p4-images.sh <<'SH'\n"
+        self.assertEqual(workflow.count(anchor), 1)
+        script = textwrap.dedent(workflow.split(anchor, 1)[1].split("\n          SH", 1)[0])
+        for startup_status, test_status in ((0, 0), (0, 9), (7, 0)):
+            with self.subTest(startup=startup_status, test=test_status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                commands = root / "bin"
+                commands.mkdir()
+                # Stubs model daemon readiness without starting or altering a host service.
+                (commands / "make").write_text("""#!/bin/bash
+set -eu
+test "$*" = '-f slave.mk docker-start'
+echo docker-start >> calls
+if [ "$STARTUP_STATUS" -ne 0 ]; then exit "$STARTUP_STATUS"; fi
+touch docker-ready
+""")
+                (commands / "python3").write_text("""#!/bin/bash
+set -eu
+test -f docker-ready
+test "$*" = '-B tools/bazel/oci/native_build.py test --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test --nocache_test_results --nozip_undeclared_test_outputs'
+echo bazel-test >> calls
+exit "$TEST_STATUS"
+""")
+                for command in commands.iterdir():
+                    command.chmod(0o755)
+                results = root / "bazel-testlogs/tools/bazel/tests/syncd_p4_images_test"
+                evidence = ("test.log", "test.xml", "test.outputs/validation.json")
+                for name in evidence:
+                    path = results / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(name + "\n")
+                result = subprocess.run(
+                    ["bash", "-c", script], cwd=root,
+                    env=dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                             STARTUP_STATUS=str(startup_status), TEST_STATUS=str(test_status)),
+                    text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, startup_status or test_status, result.stderr)
+                self.assertEqual((root / "calls").read_text().splitlines(),
+                                 ["docker-start"] if startup_status else ["docker-start", "bazel-test"])
+                output = root / "artifacts/vs/syncd-p4-images"
+                if startup_status:
+                    self.assertFalse(output.exists())
+                else:
+                    for name in evidence:
+                        self.assertEqual((output / Path(name).name).read_text(), name + "\n")
 
 
 if __name__ == "__main__":

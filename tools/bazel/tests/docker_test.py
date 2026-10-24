@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 
 class ArchiveRecipeFixture:
-    """Use production logging/publication; replace only the Bazel executable."""
+    """Use production logging/publication with a fake daemon and Bazel executable."""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -27,6 +27,8 @@ class ArchiveRecipeFixture:
         for archive in self.archives:
             (self.target / archive).write_bytes(b"previous image")
         self.calls = self.root / "bazel-calls.jsonl"
+        self.docker_ready = self.root / "docker-ready"
+        self.docker_starts = self.root / "docker-starts"
         self.fake_bazel = self.root / "bazel executable"
         self.fake_bazel.write_text("#!/usr/bin/env python3\n" + r"""
 import hashlib, json, os, pathlib, sys
@@ -36,11 +38,14 @@ label = arguments[-1]
 archive = json.loads(os.environ['FAKE_BAZEL_LABELS'])[label]
 prerequisites = json.loads(os.environ['FAKE_BAZEL_PREREQUISITES'])[archive]
 record = {'arguments': arguments,
+          'docker_ready': pathlib.Path('docker-ready').is_file(),
           'prerequisites_ready': all(pathlib.Path(path).is_file() for path in prerequisites),
           'prerequisite_sha256': {path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
                                   for path in prerequisites if pathlib.Path(path).is_file()}}
 with pathlib.Path(os.environ['FAKE_BAZEL_CALLS']).open('a') as output:
     output.write(json.dumps(record) + '\n')
+if not record['docker_ready']:
+    raise SystemExit('Docker fixture was not started before Bazel')
 if not record['prerequisites_ready']:
     raise SystemExit('Make prerequisites were not prepared before Bazel')
 mode = os.environ.get('FAKE_BAZEL_MODE', '')
@@ -93,9 +98,12 @@ else:
 .SECONDEXPANSION:
 TARGET_PATH = target
 CONFIGURED_ARCH = amd64
-# This bridge test supplies a fake Bazel; native_build has its own tests.
+# This bridge test supplies fake Docker/Bazel; native_build has its own tests.
 BAZEL_IMAGE_RUNNER = "$${BAZEL:-bazel}"
-.PHONY: .platform
+.PHONY: .platform docker-start
+docker-start:
+	@printf 'start\\n' >> docker-starts
+	@touch docker-ready
 """ + f"PROJECT_ROOT = {self.root}\n" + log_setting + "\n" + r"""
 sbom_emit_fragment = printf 'sbom %s %s %s\n' '$(1)' '$(2)' '$(3)' >> publication-markers
 FOOTER = printf 'footer %s\n' '$@' >> publication-markers
@@ -162,6 +170,35 @@ inputs/%.ready: inputs/%.source
 registered: $(SONIC_TARGET_LIST)
 	@printf 'registered=%s\\n' '$(SONIC_TARGET_LIST)'
 """
+
+    def test_standalone_runtime_and_debug_restart_docker_in_each_fresh_slave(self):
+        """A later archive request must not rely on the preceding slave's daemon."""
+        runtime, debug = self.archives[0], self.archives[2]
+        invocation = 0
+        for existing_output in (False, True):
+            for archive in (runtime, debug):
+                with self.subTest(archive=archive, existing_output=existing_output):
+                    invocation += 1
+                    if not existing_output:
+                        (self.target / archive).unlink()
+                    # Simulate leaving the prior slave; no real daemon is used.
+                    self.docker_ready.unlink(missing_ok=True)
+                    self.calls.unlink(missing_ok=True)
+                    self.assert_success(self.run_make(archive))
+                    self.assertTrue(self.docker_ready.is_file())
+                    calls = self.recorded_calls()
+                    self.assertEqual([call['arguments'][0] for call in calls], ['build', 'cquery'])
+                    self.assertTrue(all(call['docker_ready'] for call in calls))
+                    self.assertEqual((self.target / archive).read_bytes(), ('new ' + archive).encode())
+                    self.assertEqual(self.docker_starts.read_text().splitlines(), ['start'] * invocation)
+
+    def test_parallel_runtime_and_debug_share_one_docker_start(self):
+        """Start once per Make invocation before every parallel archive build and query."""
+        self.assert_success(self.run_make(*self.archives, parallel=True))
+        self.assertEqual(self.docker_starts.read_text().splitlines(), ['start'])
+        calls = self.recorded_calls()
+        self.assertEqual(len(calls), 2 * len(self.archives))
+        self.assertTrue(all(call['docker_ready'] for call in calls))
 
     def test_runtime_and_debug_export_custom_targets_after_deferred_prerequisites(self):
         """Honor owner-supplied targets and deferred inputs without requiring SWSS files or
