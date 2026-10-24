@@ -92,7 +92,9 @@ define build_bazel_docker_images
 	$(FOOTER)
 endef
 
-$(addprefix $(TARGET_PATH)/, $(filter-out $(SONIC_BAZEL_VS_PAIR_OUTPUTS),$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES))) : $(TARGET_PATH)/%.gz : .platform bazel-docker-force \
+# Each top-level Make goal enters a fresh slave. The native runner needs that
+# slave's Docker daemon even when all archive inputs already exist in the cache.
+$(addprefix $(TARGET_PATH)/, $(filter-out $(SONIC_BAZEL_VS_PAIR_OUTPUTS),$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES))) : $(TARGET_PATH)/%.gz : .platform docker-start bazel-docker-force \
         $$($$*.gz_BAZEL_DEPENDS)
 	$(call build_bazel_docker_images,$(@F))
 
@@ -103,7 +105,7 @@ define bazel_vs_pair_rule
 ifneq ($$(strip $$($(1)_BAZEL_ARGS)),$$(strip $$($(2)_BAZEL_ARGS)))
 $$(error VS runtime/debug pair $(1) $(2) requires identical Bazel arguments)
 endif
-$(addprefix $(TARGET_PATH)/,$(1) $(2)) &: .platform bazel-docker-force \
+$(addprefix $(TARGET_PATH)/,$(1) $(2)) &: .platform docker-start bazel-docker-force \
         $$$$($(1)_BAZEL_DEPENDS) $$$$($(2)_BAZEL_DEPENDS) \
         $(addprefix $(TARGET_PATH)/.container-build-method/,$(filter $(SONIC_BAZEL_SWITCHABLE_IMAGES),$(1) $(2)))
 	$$(call build_bazel_docker_images,$(1) $(2))

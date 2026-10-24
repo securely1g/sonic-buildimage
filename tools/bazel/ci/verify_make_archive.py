@@ -62,8 +62,11 @@ def main():
         "SONIC_BAZEL_DOCKER_IMAGES = docker-fixture.gz docker-overlay.gz",
         "SONIC_BAZEL_DBG_DOCKER_IMAGES = docker-fixture-dbg.gz",
         "SONIC_BAZEL_OCI_BASES = " + " ".join(BASES),
-        ".PHONY: .platform",
+        # This fixture uses Bazel directly; production starts Docker for its
+        # native installer, but these archive-only targets need no daemon.
+        ".PHONY: .platform docker-start",
         ".platform:",
+        "docker-start:",
     ]
     for name, architecture in BASES.items():
         # Existing archives model a Make package-cache hit: no Docker rebuild
