@@ -1,5 +1,36 @@
 # Buildimage Bazel support
 
+## Cached kernel tools and infrastructure selection
+
+The image root, standalone YANG-model root, and kernel cache consumer select
+`sonic-build-infra@0.0.22-a12bc826d6f811a157db5c7c02a2fe033896cc14`.
+Each root includes this policy because Bazel does not import a dependency's RC:
+
+```text
+build --remote_download_regex=(^|.*/)tools/build_tools/kernel_runtime_(amd64|arm64)(/.*)?$
+```
+
+It restores the complete declared kernel/metadata tool tree while preserving
+packaged directory aliases. For example, Sairedis metadata generation needs the
+Perl `5.40 -> 5.40.1` alias and its child directories after a cache hit. The image
+root keeps the option in `tools/bazel/common.bazelrc`; standalone roots declare
+it in their own `.bazelrc` files.
+
+The matched kernel producer separates execution hosts from target platforms.
+The native image handoff reads `HOST_ARCHITECTURES`, verifies invocation schema 3
+and package-manifest schema 4, and requires the execution host to match the target.
+Pinned Bazel executable hashes, source identity and package/debug checks remain
+mandatory.
+
+Local builds and source CI use the published infrastructure registration through
+the maintained registry on `main`. Kernel integration still uses its existing
+`SONIC_REVIEW_REGISTRY` input to select the unpublished
+[kernel registration #139](https://github.com/securely1g/sonic-bazel-registry/pull/139).
+Generated locks and build events identify the tested selection. Remove the kernel
+CI override after that registration lands, before making this adoption ready
+for review.
+
+
 Shared support belongs beside the tools it serves; container-specific entrypoints
 and expectations remain with the container integration.
 

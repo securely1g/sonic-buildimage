@@ -12,3 +12,6 @@ build:release --compilation_mode=opt
 test --test_output=errors
 
 try-import %workspace%/.bazelrc.user
+
+# Download complete cached kernel/metadata tool trees for this root.
+build --remote_download_regex=(^|.*/)tools/build_tools/kernel_runtime_(amd64|arm64)(/.*)?$
