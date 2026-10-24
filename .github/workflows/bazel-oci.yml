@@ -726,10 +726,12 @@ jobs:
 
       - name: Prepare persistent agent caches
         run: |
-          install -d -m 0700 /data/sonic-runner/cache/sonic-buildimage \
-            "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
+          # Keep ordinary Make writers separate from older root-created cache entries.
+          SONIC_BAZEL_CACHE_SOURCE="$SONIC_BAZEL_CACHE_SOURCE/make-uid-$(id -u)"
+          install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
           test -w "$SONIC_BAZEL_CACHE_SOURCE"
           test -w "$SONIC_DPKG_CACHE_SOURCE"
+          printf 'SONIC_BAZEL_CACHE_SOURCE=%s\n' "$SONIC_BAZEL_CACHE_SOURCE" >> "$GITHUB_ENV"
           printf 'Bazel cache: %s\nMake package cache: %s (%s)\n' \
             "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" "$SONIC_DPKG_CACHE_METHOD"
 
