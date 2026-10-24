@@ -1,2 +1,7 @@
+common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+common --registry=https://bcr.bazel.build
 common --enable_bzlmod
 build --lockfile_mode=update
+
+# Standalone roots do not inherit the image root or dependency RC files.
+build --remote_download_regex=(^|.*/)tools/build_tools/kernel_runtime_(amd64|arm64)(/.*)?$

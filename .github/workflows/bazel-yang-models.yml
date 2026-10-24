@@ -57,16 +57,14 @@ jobs:
           test "$(uname -m)" = '${{ matrix.machine }}'
           test ! -e MODULE.bazel.lock
           git check-ignore MODULE.bazel.lock
-          registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
-          options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
+          options=(--lockfile_mode=update)
           mkdir -p artifacts
-          # The standalone module and image root use the same maintained registry.
+          # Both roots use the maintained registry from their tracked RC files.
           (cd ../.. && bazel cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt
           uname -m > artifacts/execution-machine.txt
           python3 ../../tools/bazel/ci/bazel_commands.py --output artifacts/action-audit.json \
-            --bazel-arg="--registry=$registry" --bazel-arg=--registry=https://bcr.bazel.build \
             //:yang_models_package_test //:yang_models_wheel //:yang_models_pkg
           bazel test "${options[@]}" --test_output=all //:yang_models_package_test
           bazel build "${options[@]}" //:yang_models_wheel //:yang_models_pkg

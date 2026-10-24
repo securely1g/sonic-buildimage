@@ -30,6 +30,9 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.number == 6
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
+    env:
+      # Draft kernel recipe on top of the published infrastructure registry.
+      SONIC_REVIEW_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/11c07bd84ab94c6ba0b92f57e3a9f8c945ca0975
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,6 +136,7 @@ jobs:
         run: |
           umask 077
           docker run --rm --platform "linux/${{ matrix.arch }}" \
+            --env SONIC_REVIEW_REGISTRY \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/sonic,readonly" \
             --workdir /sonic \
             debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c \

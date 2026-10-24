@@ -129,7 +129,7 @@ sidecars alongside packages from other producers:
 | `linux-headers-ABI_6.12.41-1_ARCH.deb` | Architecture headers and generated configuration/Module.symvers |
 | `linux-headers-6.12.41+deb13-common-sonic_6.12.41-1_all.deb` | Common headers |
 | `linux-kbuild-6.12.41+deb13_6.12.41-1_ARCH.deb` | External-module build tools |
-| `kernel-packages.json` | Schema 3 source/archive/tools identity, package checksums/control fields, debug pairing and all created packages |
+| `kernel-packages.json` | Schema 4 native host/target identity, source/archive/tools identity, package checksums/control fields, debug pairing and all created packages |
 | `kernel-provenance.json` | Original buildimage commit, handoff-input digest, kernel gitlink, target and verified registry resolution |
 
 `ABI` includes the architecture suffix and `ARCH` is `amd64` or `arm64`.
@@ -204,12 +204,13 @@ boot a guest, load a module into a running guest or establish forwarding.
 
 ## Dependency state
 
-Local builds and CI use the maintained registry endpoint on `main`. The direct
-sandbox build selects the landed
-[shared tools #62](https://github.com/securely1g/sonic-build-infra/pull/62),
-[tools registration #122](https://github.com/securely1g/sonic-bazel-registry/pull/122),
-[kernel source #3](https://github.com/securely1g/sonic-linux-kernel/pull/3) and
-[kernel registration #124](https://github.com/securely1g/sonic-bazel-registry/pull/124).
+The tracked default uses the maintained registry endpoint on `main`, including
+published [build-infra 0.0.22](https://github.com/securely1g/sonic-bazel-registry/pull/120).
+The selected [kernel source #5](https://github.com/securely1g/sonic-linux-kernel/pull/5)
+and [kernel registration #139](https://github.com/securely1g/sonic-bazel-registry/pull/139)
+remain under review. Kernel CI explicitly selects the reviewed registration
+snapshot through `SONIC_REVIEW_REGISTRY`; a local reproduction needs that same
+selection until the kernel registration is published.
 Both source and tools revisions are fixed in `MODULE.bazel`, and the kernel
 source revision must match the buildimage gitlink. Native AMD64 and ARM64
 source/cache validation runs on Ubuntu 22.04 with unprivileged user namespaces;
