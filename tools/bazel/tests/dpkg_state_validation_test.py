@@ -1,5 +1,6 @@
 """Checks that installed-image APT evidence cannot hide incomplete package state."""
 
+import copy
 import hashlib
 import io
 import json
@@ -157,6 +158,111 @@ class PackageStateValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Source payload differs"):
                 validation.source_file_inventory([receipt], root)
 
+    def source_mode_receipts(self, root):
+        """One child Lua mode override, plus a source file inherited only from its parent."""
+        entries = []
+        for name in ("usr/share/swss/consumer_state_table_pops.lua", "usr/share/swss/inherited-only.lua"):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("source bytes for " + name)
+            path.chmod(0o644)
+            entries.append({"path": name, "sha256": validation.sha(path), "mode": 0o644,
+                            "uid": path.stat().st_uid, "gid": path.stat().st_gid})
+        package = {"package": "libswsscommon", "packaging": "runtime-layer",
+                   "target": "@sonic_swss_common//dist:libswsscommon_pkg",
+                   "source_revision": "a" * 40, "source_version": "0.0.5-" + "a" * 40,
+                   "payload_sha256": "b" * 64, "runtime_files": entries}
+        parent, child = copy.deepcopy(package), copy.deepcopy(package)
+        parent["runtime_files"][0]["mode"] = 0o755
+        child["runtime_files"] = child["runtime_files"][:1]
+        child["path_modes"] = {entries[0]["path"]: 0o644}
+        return [{"source_packages": [parent]}, {"source_packages": [child]}], entries
+
+    def test_child_declared_mode_preserves_same_source_bytes_and_other_parent_files(self):
+        """A declared 0644 Lua overlay supersedes only the same payload's inherited 0755 mode."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipts, entries = self.source_mode_receipts(root)
+            actual = validation.source_file_inventory(receipts, root)
+            self.assertEqual(actual, {entry["path"]: {key: value for key, value in entry.items() if key != "path"}
+                                      for entry in entries})
+            (root / entries[1]["path"]).unlink()
+            with self.assertRaisesRegex(ValueError, "Source payload is not a regular file"):
+                validation.source_file_inventory(receipts, root)
+
+    def test_source_mode_override_requires_valid_matching_policy(self):
+        """Absent, malformed or unrelated policy cannot excuse conflicting inherited permissions."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipts, entries = self.source_mode_receipts(root)
+            name = entries[0]["path"]
+            for policy in (None, [], {}, {name: "0644"}, {name: 0o755}, {name: True}):
+                with self.subTest(policy=policy):
+                    changed = copy.deepcopy(receipts)
+                    changed[1]["source_packages"][0]["path_modes"] = policy
+                    with self.assertRaisesRegex(ValueError, "Source payload differs between build receipts"):
+                        validation.source_file_inventory(changed, root)
+
+    def test_source_mode_override_requires_complete_unchanged_producer_identity(self):
+        """The child must name the same actual TAR, owner target and source selection."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipts, _ = self.source_mode_receipts(root)
+            fields = ("package", "target", "source_revision", "source_version", "payload_sha256", "packaging")
+            for field in fields:
+                for missing in (False, True):
+                    with self.subTest(field=field, missing=missing):
+                        changed = copy.deepcopy(receipts)
+                        if missing:
+                            for receipt in changed:
+                                receipt["source_packages"][0].pop(field)
+                        else:
+                            changed[1]["source_packages"][0][field] = "different-owner-input"
+                        with self.assertRaisesRegex(ValueError, "Source payload differs between build receipts"):
+                            validation.source_file_inventory(changed, root)
+            for invalid_hash in ("", "g" * 64, "b" * 63):
+                with self.subTest(payload_sha256=invalid_hash):
+                    changed = copy.deepcopy(receipts)
+                    for receipt in changed:
+                        receipt["source_packages"][0]["payload_sha256"] = invalid_hash
+                    with self.assertRaisesRegex(ValueError, "Source payload differs between build receipts"):
+                        validation.source_file_inventory(changed, root)
+
+    def test_declared_mode_cannot_hide_hash_owner_type_or_same_receipt_conflicts(self):
+        """Only permission bits may differ across layers; every other provenance check stays strict."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipts, entries = self.source_mode_receipts(root)
+            for field, value in (("sha256", "c" * 64), ("uid", entries[0]["uid"] + 1), ("gid", entries[0]["gid"] + 1)):
+                with self.subTest(field=field):
+                    changed = copy.deepcopy(receipts)
+                    changed[1]["source_packages"][0]["runtime_files"][0][field] = value
+                    with self.assertRaisesRegex(ValueError, "Source payload differs between build receipts"):
+                        validation.source_file_inventory(changed, root)
+            with self.assertRaisesRegex(ValueError, "Source payload differs between build receipts"):
+                validation.source_file_inventory([{"source_packages": [receipt["source_packages"][0] for receipt in receipts]}], root)
+            changed = copy.deepcopy(receipts)
+            child = changed[1]["source_packages"][0]
+            child["runtime_files"] = []
+            child["runtime_links"] = [{"path": entries[0]["path"], "kind": "symlink", "linkname": "other.lua",
+                                       "mode": 0o777, "uid": entries[0]["uid"], "gid": entries[0]["gid"]}]
+            with self.assertRaisesRegex(ValueError, "Source payload differs between build receipts"):
+                validation.source_file_inventory(changed, root)
+
+    def test_declared_mode_cannot_hide_conflicting_parent_symlink_targets(self):
+        """Link replacements remain conflicting even when the package has a valid Lua mode policy."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipts, entries = self.source_mode_receipts(root)
+            name = "usr/share/swss/alias.lua"
+            for index, receipt in enumerate(receipts):
+                receipt["source_packages"][0]["runtime_links"] = [{
+                    "path": name, "kind": "symlink", "linkname": "old.lua" if index == 0 else "new.lua",
+                    "mode": 0o777, "uid": entries[0]["uid"], "gid": entries[0]["gid"],
+                }]
+            with self.assertRaisesRegex(ValueError, "Source payload differs between build receipts"):
+                validation.source_file_inventory(receipts, root)
+
     def test_corrupt_cached_package_is_rejected_before_dpkg_or_container_execution(self):
         lock = validation.read_lock(Path(__file__).with_name("dpkg_transactions.lock.json"), "amd64")
         with tempfile.TemporaryDirectory() as temporary:
@@ -236,7 +342,7 @@ class PackageStateValidationTest(unittest.TestCase):
                     self.assertIn("changed an existing package", result["error"])
 
     def run_install_with_inherited_sources(self, *, mutation=None, conflicting_source=False,
-                                           stale_current_state=False):
+                                           stale_current_state=False, source_mode_change=False):
         """Use real receipt/filesystem checks around a simulated APT transaction."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -272,6 +378,17 @@ class PackageStateValidationTest(unittest.TestCase):
                               "info_files": {state_name: "c" * 64 if stale_current_state else current_state},
                               "source_packages": [common, {"package": "swss", "runtime_files": [service_file]}]},
             }
+            if source_mode_change:
+                lua = source_file("usr/share/swss/consumer_state_table_pops.lua")
+                (root / lua["path"]).chmod(0o644)
+                lua["mode"] = 0o644
+                common.update(packaging="runtime-layer", target="@sonic_swss_common//dist:libswsscommon_pkg",
+                              source_revision="a" * 40, source_version="0.0.5-" + "a" * 40,
+                              payload_sha256="b" * 64, path_modes={lua["path"]: 0o644})
+                common["runtime_files"].append(lua)
+                inherited_common = copy.deepcopy(common)
+                inherited_common["runtime_files"][-1]["mode"] = 0o755
+                receipts["config-engine"]["source_packages"] = [inherited_common]
             if conflicting_source:
                 receipts["config-engine"]["source_packages"] = [dict(common, runtime_files=[dict(common_file, sha256="d" * 64)])]
             paths = {}
@@ -299,6 +416,8 @@ class PackageStateValidationTest(unittest.TestCase):
                     elif mutation == "link":
                         link.unlink()
                         link.symlink_to("libswsscommon.so.other")
+                    elif mutation == "mode":
+                        (root / lua["path"]).chmod(0o755)
                 return subprocess.CompletedProcess(command, 0, "amd64\n", "")
 
             load_receipts = validation.load_installed_receipts
@@ -343,6 +462,19 @@ class PackageStateValidationTest(unittest.TestCase):
                 self.assertEqual(result["status"], "failed")
                 self.assertIn(error, result["error"])
                 self.assertTrue(any(command[-2:] == ["install", "qrencode"] for command in commands))
+
+    def test_apt_preserves_the_declared_child_mode_after_inherited_receipt_reconciliation(self):
+        """The allowed build-time Lua mode change must not excuse a later APT permission mutation."""
+        for mutation in (None, "mode"):
+            with self.subTest(mutation=mutation):
+                result, commands, _ = self.run_install_with_inherited_sources(
+                    source_mode_change=True, mutation=mutation)
+                self.assertTrue(any(command[-2:] == ["install", "qrencode"] for command in commands))
+                self.assertEqual(result["status"], "passed" if mutation is None else "failed", result.get("error"))
+                if mutation is None:
+                    self.assertEqual(result["install"]["preserved_source_files"], 5)
+                else:
+                    self.assertIn("Source payload differs from its build receipt", result["error"])
 
     def test_current_source_receipt_cannot_hide_conflicting_parent_proof(self):
         result, commands, _ = self.run_install_with_inherited_sources(conflicting_source=True)
