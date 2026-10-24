@@ -46,6 +46,7 @@ $(DOCKER_SYNCD_BASE_DBG)_PATH = $($(DOCKER_SYNCD_BASE)_PATH)
 
 $(DOCKER_SYNCD_BASE)_DEPENDS += $(SYNCD_VS) \
                               $(LIBNL3_DEV) \
+                              $(LIBNL_ROUTE3_DEV) \
                               $(LIBNL3)
 
 $(DOCKER_SYNCD_BASE)_DBG_DEPENDS += $(SYNCD_VS_DBG) \
