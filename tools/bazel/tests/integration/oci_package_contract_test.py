@@ -322,18 +322,18 @@ class SharedLibraryPolicyTest(SourcePackageFixture, unittest.TestCase):
     def test_unregistered_source_declares_module_version_without_losing_commit_pin(self):
         record = copy.deepcopy(self.value["packages"][0])
         source = record["source"]
-        source["module_version"] = "0.0.4"
+        source["module_version"] = source["version"].rsplit("-", 1)[0]
         subject.package_identity(record, architecture="amd64")
         module = self.root / "unregistered.MODULE.bazel"
-        module.write_text('module(name="' + source["module"] + '", version="0.0.4")\n')
+        module.write_text('module(name="' + source["module"] + '", version="' + source["module_version"] + '")\n')
         subject.verify_modules({"packages": [record]}, {source["module"]: module})
-        module.write_text('module(name="' + source["module"] + '", version="0.0.5")\n')
+        module.write_text('module(name="' + source["module"] + '", version="0.0.0-invalid")\n')
         with self.assertRaisesRegex(ValueError, "resolved source module differs"):
             subject.verify_modules({"packages": [record]}, {source["module"]: module})
         module.write_text('module(name="' + source["module"] + '")\n')
         with self.assertRaisesRegex(ValueError, "resolved source module differs"):
             subject.verify_modules({"packages": [record]}, {source["module"]: module})
-        source["version"] = "0.0.4"
+        source["version"] = source["module_version"]
         with self.assertRaisesRegex(ValueError, "public owner target"):
             subject.package_identity(record, architecture="amd64")
 
