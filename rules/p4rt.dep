@@ -2,7 +2,7 @@ SPATH       := $($(SONIC_P4RT)_SRC_PATH)
 DEP_FILES   := $(SONIC_COMMON_FILES_LIST) rules/p4rt.mk rules/p4rt.dep
 DEP_FILES   += $(SONIC_COMMON_BASE_FILES_LIST) $(SPATH)/Makefile
 SMDEP_PATH  := $(SPATH)/sonic-pins
-DEP_FILES   += $(shell cd $(SPATH) && git ls-files | grep -v ^sonic-pins)
+DEP_FILES   += $(addprefix $(SPATH)/,$(shell cd $(SPATH) && git ls-files | grep -v ^sonic-pins))
 SMDEP_FILES := $(addprefix $(SMDEP_PATH)/,$(shell cd $(SMDEP_PATH) && git ls-files))
 
 $(SONIC_P4RT)_CACHE_MODE  := GIT_CONTENT_SHA
@@ -10,3 +10,12 @@ $(SONIC_P4RT)_DEP_FLAGS   := $(SONIC_COMMON_FLAGS_LIST)
 $(SONIC_P4RT)_DEP_FILES   := $(DEP_FILES)
 $(SONIC_P4RT)_SMDEP_FILES := $(SMDEP_FILES)
 $(SONIC_P4RT)_SMDEP_PATHS := $(SMDEP_PATH)
+
+ifeq ($(P4RT_BUILD_WITH_BAZEL_TARS),y)
+# The debug TAR is an independent file target with the same source inputs.
+$(SONIC_P4RT_DBG)_CACHE_MODE := $($(SONIC_P4RT)_CACHE_MODE)
+$(SONIC_P4RT_DBG)_DEP_FLAGS := $($(SONIC_P4RT)_DEP_FLAGS)
+$(SONIC_P4RT_DBG)_DEP_FILES := $($(SONIC_P4RT)_DEP_FILES)
+$(SONIC_P4RT_DBG)_SMDEP_FILES := $($(SONIC_P4RT)_SMDEP_FILES)
+$(SONIC_P4RT_DBG)_SMDEP_PATHS := $($(SONIC_P4RT)_SMDEP_PATHS)
+endif
