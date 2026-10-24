@@ -163,6 +163,7 @@ def phase(args, work, name, cache, *, offline=False, success=True, change_lock=N
     command = [sys.executable, str(source / "tools/bazel/p4/stage.py"),
                "--output-directory", str(output), "--cache-directory", str(cache),
                "--bazel", wrapper]
+    command.extend("--bazel-arg=" + value for value in args.bazel_arg)
     if offline:
         command.append("--bazel-arg=--repository_disable_download")
     receipt = run(command, source, evidence / "stage.log", success=success)
@@ -183,7 +184,7 @@ def phase(args, work, name, cache, *, offline=False, success=True, change_lock=N
     receipt["sbom"] = verify_sbom(source, output, lock["packages"][0], evidence)
     command = [wrapper, "aquery", "--output=jsonproto", "--lockfile_mode=update",
                "--repository_cache=" + str(cache / "repository_cache"),
-               "--disk_cache=", "--remote_cache=", "--remote_executor=", TARGET]
+               "--disk_cache=", "--remote_cache=", "--remote_executor=", *args.bazel_arg, TARGET]
     if offline:
         command.insert(-1, "--repository_disable_download")
     # Keep stdout parseable; Bazel progress goes to stderr.
@@ -323,6 +324,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, required=True, help="new evidence directory")
     parser.add_argument("--bazel", default="bazel")
+    parser.add_argument("--bazel-arg", action="append", default=[],
+                        help="additional option shared by every fresh checkout and action audit")
     parser.add_argument("--work-directory", type=Path, help="parent for disposable checkouts and cache")
     args = parser.parse_args()
     resolved = shutil.which(args.bazel)
