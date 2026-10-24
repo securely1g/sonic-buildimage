@@ -106,18 +106,17 @@ needed by this stacked image change. The preparation helper verifies each source
 recipe, archive and overlay and asks Bazel's standard `http_archive` rule to apply
 the original ordered patches. It does not maintain a second patch implementation.
 
-`libyang-python@3.1.0.sonic.4` resolves directly from maintained registry `main`
-after [registry #102](https://github.com/securely1g/sonic-bazel-registry/pull/102)
-landed. Its source, ordered patches and runtime metadata are unchanged; no
-libyang-Python source override is needed. Other unmerged recipes remain explicit
-in `draft_sources.json`.
+`sonic-build-infra@0.0.22-a12bc826d6f811a157db5c7c02a2fe033896cc14`
+resolves directly from maintained registry `main` after
+[registry #120](https://github.com/securely1g/sonic-bazel-registry/pull/120)
+landed. Its source override has been removed. The root still supplies the
+targeted kernel-runtime download policy because dependency `.bazelrc` files are
+not inherited.
 
-Sairedis `0.0.1-1a6eb685de84d73b5939d269af1dc3e1fa71ff50` and FIPS
-`0.0.2-df34b541eb08d1a6a4b039e69c4d716c84566061` also resolve directly from
-maintained registry `main`, following registry [#105](https://github.com/securely1g/sonic-bazel-registry/pull/105)
-and [#106](https://github.com/securely1g/sonic-bazel-registry/pull/106). Their source
-archives, patches and producer-owned runtime metadata match the reviewed recipes;
-no source override is prepared for either module.
+The eight metadata-producing module candidates remain explicit in
+`draft_sources.json`: Common, Sairedis, FIPS, libyang, libyang-python, libnl3,
+socat and iproute2. They select the same published infrastructure version, but
+their own registrations must land before their overrides can be removed.
 
 ```sh
 python3 tools/bazel/ci/prepare_draft_sources.py \
@@ -211,8 +210,10 @@ For Python changes, edit the owning `requirements.in` and regenerate the shared
 config-engine lock with the existing documented `uv pip compile` command. Keep
 base-specific declarations in `dockers/docker-base-trixie/requirements.in`.
 
-Shared sysroot and Kerberos tools use landed infrastructure `0.0.17-8baf1ad829c5095297d85148b042145b87d623a3` from registry #81. Distroless #82 supplies the Debian library linking interface used by native shared libraries. Both resolve through maintained `main`; no infrastructure source override is needed. The root version selection keeps older consumer declarations from choosing an obsolete compiler snapshot.
+`MODULE.bazel` records the selected infrastructure, Distroless and FIPS versions.
+The root infrastructure selection keeps older consumer declarations from choosing
+an obsolete compiler or execution-tool runtime. FIPS owns the GNU tool runtime
+files required by SymCrypt and the OpenSSL, OpenSSH, Kerberos and SymCrypt
+runtime/debug TAR contracts.
 
-The FIPS runtime source is `df34b541eb08d1a6a4b039e69c4d716c84566061`. It declares the GNU tool runtime files required by SymCrypt, while OpenSSL, OpenSSH, Kerberos and SymCrypt runtime/debug TAR targets retain their package contracts.
-
-FIPS runtime and debug TARs resolve as `sonic-fips@0.0.2-df34b541eb08d1a6a4b039e69c4d716c84566061` from the maintained registry `main` endpoint. The source is the landed FIPS revision; no FIPS source override is prepared. The remaining entries in `draft_sources.json` still require their own prerequisite PRs.
+The source-base roots select published `sonic-build-infra@0.0.22-a12bc826d6f811a157db5c7c02a2fe033896cc14` from `main` and retain the targeted `kernel_runtime_(amd64|arm64)` remote-download policy in `tools/bazel/common.bazelrc`. FIPS runtime and debug TARs select `sonic-fips@0.0.3-fb8f59927c45b642f1e3e90344d96de92b20d0ac`. The remaining producer candidates are prepared from reviewed commits and verified `source.json` digests in `draft_sources.json`. Their source and registry prerequisite PRs must land before this stack is ready.

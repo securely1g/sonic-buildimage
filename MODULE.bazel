@@ -48,7 +48,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.21-28a3aa9b96f1ce66e4ce04f9a7d26c96e3bbb0c6",
+    version = "0.0.22-a12bc826d6f811a157db5c7c02a2fe033896cc14",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -58,11 +58,11 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.2-43135a203bd087839706ca49ccac356d6b5e11bf",
+    version = "0.0.2-6728e538ac6461f30744f6409e4e3cb857385fde",
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.4-df21cc179b204f1ecdddc7fb5b06bb4e530bcd91", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.5-824a6db622d173d990795af60a5ff36d904c4139", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -238,13 +238,13 @@ single_version_override(
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.3-5d1dfc86d733046fe22fa3cb699db639314af49f", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.3-fb8f59927c45b642f1e3e90344d96de92b20d0ac", repo_name = "sonic_fips")
 
 # Select the landed Debian GCC toolchains while older consumers retain
 # their previous module declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.21-28a3aa9b96f1ce66e4ce04f9a7d26c96e3bbb0c6",
+    version = "0.0.22-a12bc826d6f811a157db5c7c02a2fe033896cc14",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -266,15 +266,15 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.4-df21cc179b204f1ecdddc7fb5b06bb4e530bcd91",
+    version = "0.0.5-824a6db622d173d990795af60a5ff36d904c4139",
 )
 
 single_version_override(
     module_name = "sonic-sairedis",
-    version = "0.0.2-43135a203bd087839706ca49ccac356d6b5e11bf",
+    version = "0.0.2-6728e538ac6461f30744f6409e4e3cb857385fde",
 )
 
 single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.3-5d1dfc86d733046fe22fa3cb699db639314af49f",
+    version = "0.0.3-fb8f59927c45b642f1e3e90344d96de92b20d0ac",
 )

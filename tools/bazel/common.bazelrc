@@ -12,3 +12,7 @@ build:release --compilation_mode=opt
 test --test_output=errors
 
 try-import %workspace%/.bazelrc.user
+
+# Restore complete declared kernel/metadata tool trees from the action cache.
+# A dependency's .bazelrc is not inherited by this image build root.
+build --remote_download_regex=(^|.*/)tools/build_tools/kernel_runtime_(amd64|arm64)(/.*)?$
