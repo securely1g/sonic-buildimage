@@ -145,7 +145,9 @@ target/bazel-manifests/%/manifest.json:
         self.assertEqual(values["debug"], "")
         self.assertEqual(values["install"], "docker-syncd-vs.gz")
         self.assertEqual(values["install_debug"], "docker-syncd-vs-dbg.gz")
-        self.assertEqual(values["runtime_packages"].split(), ["syncd-vs.deb", "libnl-3-dev.deb", "libnl-3-200.deb"])
+        self.assertEqual(values["runtime_packages"].split(), [
+            "syncd-vs.deb", "libnl-3-dev.deb", "libnl-route-3-dev.deb", "libnl-3-200.deb",
+        ])
         self.assertEqual(values["runtime_path"], "platform/vs/docker-syncd-vs")
         self.assertEqual(values["debug_path"], values["runtime_path"])
         self.assertIn("--privileged", values["run_opt"])
