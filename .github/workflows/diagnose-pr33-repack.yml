@@ -1,4 +1,4 @@
-name: Diagnose retained PR33 OCI repack
+name: Diagnose PR33 OCI repack
 
 on:
   push:
@@ -6,142 +6,225 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: diagnose-pr33-repack
   cancel-in-progress: false
 
 jobs:
-  retained-image-test:
+  syncd-image-test:
     runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
-      RETAINED_CHECKOUT: /data/sonic-runner/attempts/20261025T021608Z-0373a92f/_work/sonic-buildimage/sonic-buildimage/vs-40147247150-1
-      RETAINED_SHA: 90fa6735a0c75545f72f8c4d5306f48e829476a8
+      SOURCE_SHA: 90fa6735a0c75545f72f8c4d5306f48e829476a8
+      BAZEL: bazel
+      P4RT_BUILD_WITH_BAZEL_TARS: "y"
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:repack-diagnostic
+      SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
       SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
       SONIC_DPKG_CACHE_METHOD: rwcache
     defaults:
       run:
         shell: bash
+        working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Checkout diagnostic code only
+
+      - name: Check source-build runner capacity
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker info > /dev/null
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          workspace = Path.cwd().resolve()
+          usage = shutil.disk_usage(workspace)
+          free_gib = usage.free / 1024**3
+          print(f'Workspace: {workspace}; available: {free_gib:.1f} GiB; '
+                f'total: {usage.total / 1024**3:.1f} GiB', flush=True)
+          if usage.free < 100 * 1024**3:
+              raise SystemExit(f'The full Make VS build needs at least 100 GiB free; '
+                               f'{workspace} has {free_gib:.1f} GiB available')
+          PY
+
+      - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # An interrupted submodule clone can leave an invalid HEAD that the
+          # checkout action's superproject clean/reset cannot repair.
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}
+          fetch-depth: 3
           persist-credentials: false
-          submodules: false
+          submodules: recursive
 
-      - name: Verify retained inputs and prepare isolated diagnostic outputs
+      - name: Verify diagnostic-only changes and record source provenance
         run: |
-          set -euo pipefail
-          docker info > /dev/null
-          test "$(git -C "$RETAINED_CHECKOUT" rev-parse HEAD)" = "$RETAINED_SHA"
-          # Reuse the exact previously built slave; missing state must fail rather
-          # than initiating another slave or installer build.
-          docker image inspect sonic-slave-trixie:4b8b34e9bb1 > /dev/null
-          cache="/data/sonic-runner/cache/sonic-buildimage/bazel/make-uid-$(id -u)"
-          test -d "$cache/native-root/disk_cache"
-          test -w "$cache"
-          test -d "$RETAINED_CHECKOUT/target/bazel-native"
-          test -f "$RETAINED_CHECKOUT/.bazelrc.user"
-          printf 'SONIC_BAZEL_CACHE_SOURCE=%s\n' "$cache" >> "$GITHUB_ENV"
-          output="$GITHUB_WORKSPACE/repack-diagnostic"
-          mkdir -p "$output/native-output"
-          printf 'DIAGNOSTIC_OUTPUT=%s\n' "$output" >> "$GITHUB_ENV"
-          sha256sum tools/bazel/oci/image_validation.py > "$output/diagnostic-source.sha256"
-          cp "$RETAINED_CHECKOUT/MODULE.bazel.lock" "$output/MODULE.bazel.lock"
-          sha256sum "$output/MODULE.bazel.lock" > "$output/diagnostic-lock-before.sha256"
-          cat > "$output/snapshot.py" <<'PY'
+          mkdir -p artifacts/vs
+          python3 - <<'PYCODE'
           import hashlib
           import json
           import os
           from pathlib import Path
           import subprocess
-          import sys
-
-          root = Path(os.environ['RETAINED_CHECKOUT'])
           def git(*args):
-              return subprocess.check_output(['git', '-C', str(root), *args])
-          def digest(path):
-              with path.open('rb') as stream:
-                  return hashlib.file_digest(stream, 'sha256').hexdigest()
-          paths = [
-              'target/sonic-vs.img.gz',
-              'target/docker-orchagent.gz', 'target/docker-orchagent-dbg.gz',
-              'target/docker-syncd-vs.gz', 'target/docker-syncd-vs-dbg.gz',
-              'tools/bazel/oci/image_validation.py', 'MODULE.bazel',
-              'MODULE.bazel.lock', '.bazelrc.user',
-              'dockers/docker-base-trixie/bazel/draft_sources.json',
-          ]
+              return subprocess.check_output(['git', *args], text=True).strip()
+          changed = set(git('diff', '--name-only', os.environ['SOURCE_SHA'], 'HEAD').splitlines())
+          assert changed == {'.github/workflows/diagnose-pr33-repack.yml', 'tools/bazel/oci/image_validation.py'}, sorted(changed)
+          assert not git('status', '--porcelain', '--untracked-files=no'), 'Dirty diagnostic source tree'
+          paths = ['MODULE.bazel', '.bazelversion', '.bazelrc',
+                   'dockers/docker-base-trixie/bazel/draft_sources.json',
+                   'platform/vs/docker-syncd-vs/BUILD.bazel', 'tools/bazel/oci/image_validation.py']
           receipt = {
-              'head': git('rev-parse', 'HEAD').decode().strip(),
-              'tracked_diff_sha256': hashlib.sha256(git('diff', '--no-ext-diff', '--binary', 'HEAD')).hexdigest(),
-              'files': {name: {'size': (root / name).stat().st_size, 'sha256': digest(root / name)} for name in paths},
+              'source_revision': os.environ['SOURCE_SHA'], 'diagnostic_revision': git('rev-parse', 'HEAD'),
+              'tree': git('rev-parse', 'HEAD^{tree}'), 'changed_files': sorted(changed),
+              'source_artifact_run': 40147247150, 'source_artifact_id': 12582801254,
+              'source_artifact_digest': 'sha256:eed5035469db32f561f0acfa3a64b256f73ffe65a8cac35495123c6c48ac8a8f',
+              'files': {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in paths},
+              'scope': 'Fresh Syncd runtime/debug archives and strict P4 image test; no VS installer target.',
           }
-          assert receipt['head'] == os.environ['RETAINED_SHA'], receipt['head']
-          Path(sys.argv[1]).write_text(json.dumps(receipt, indent=2) + '\n')
-          if len(sys.argv) == 3:
-              assert receipt == json.loads(Path(sys.argv[2]).read_text()), 'Retained source or Make archives changed'
-          PY
-          python3 "$output/snapshot.py" "$output/before.json"
+          Path('artifacts/vs/provenance.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PYCODE
 
-      - name: Rerun only the retained Syncd image test with bounded diagnostics
+      - name: Check VS build prerequisites
+        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
+
+      - name: Prepare persistent agent caches
         run: |
+          # Keep ordinary Make writers separate from older root-created cache entries.
+          SONIC_BAZEL_CACHE_SOURCE="$SONIC_BAZEL_CACHE_SOURCE/make-uid-$(id -u)"
+          install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
+          test -w "$SONIC_BAZEL_CACHE_SOURCE"
+          test -w "$SONIC_DPKG_CACHE_SOURCE"
+          printf 'SONIC_BAZEL_CACHE_SOURCE=%s\n' "$SONIC_BAZEL_CACHE_SOURCE" >> "$GITHUB_ENV"
+          printf 'Bazel cache: %s\nMake package cache: %s (%s)\n' \
+            "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" "$SONIC_DPKG_CACHE_METHOD"
+
+      - name: Download pinned sources retained by the original source job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bazel-repository-inputs
+          run-id: 40147247150
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
+
+      - name: Prepare the shared Bazel source-download directory
+        run: |
+          python3 -B tools/bazel/gzip/source_archive.py \
+            --archives-dir artifacts/vs/repository-inputs \
+            --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" \
+            > artifacts/vs/source-download-receipt.json
+
+      - name: Configure the native VS image
+        run: |
+          mkdir -p artifacts/vs
+          make init 2>&1 | tee artifacts/vs/init.log
+          make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
+            2>&1 | tee artifacts/vs/configure.log
+
+      - name: Check nested Docker in both build environments
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          for build_env in bookworm trixie; do
+            make -f Makefile.work BLDENV="$build_env" docker-start \
+              SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
+              2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
+          done
+
+      - name: Prepare source dependencies inside the Trixie build environment
+        run: |
+          cat > artifacts/vs/prepare-source-dependencies.sh <<'SH'
+          # AUTO-GENERATED by .github/workflows/bazel-oci.yml. DO NOT EDIT MANUALLY.
           set -euo pipefail
-          diagnostic="$GITHUB_WORKSPACE/tools/bazel/oci/image_validation.py"
-          diagnostic_sha=$(sha256sum "$diagnostic" | cut -d ' ' -f 1)
-          cat > "$DIAGNOSTIC_OUTPUT/run.sh" <<'SH'
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$PWD/target/bazel-draft-sources" \
+            --receipt artifacts/vs/draft-sources.json \
+            --bazel "$BAZEL" --bazelrc-output .bazelrc.user
+          SH
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
+            SONIC_RUN_CMDS="bash artifacts/vs/prepare-source-dependencies.sh" \
+            2>&1 | tee artifacts/vs/prepare-source-dependencies.log
+
+      - name: Build only the Syncd runtime and debug archives
+        env:
+          BAZEL_CONTAINER_ARGS: >-
+            --distdir=/bazel_cache/distdir/ape-1.0.1
+            --distdir=/bazel_cache/distdir/download_utils-1.0.1
+            --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
+            --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
+            --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+        run: |
+          make target/docker-syncd-vs.gz target/docker-syncd-vs-dbg.gz \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y VS_VALIDATE_SERVICES=y \
+            ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
+            2>&1 | tee artifacts/vs/build.log
+          sha256sum target/docker-syncd-vs.gz target/docker-syncd-vs-dbg.gz > artifacts/vs/archives-before.sha256
+
+      - name: Run strict image validation and print the bounded OCI inventory diff
+        run: |
+          cat > artifacts/vs/check-syncd-p4-images.sh <<'SH'
+          # AUTO-GENERATED by .github/workflows/bazel-oci.yml. DO NOT EDIT MANUALLY.
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 90fa6735a0c75545f72f8c4d5306f48e829476a8
-          test "$(sha256sum tools/bazel/oci/image_validation.py | cut -d ' ' -f 1)" = "$DIAGNOSTIC_SHA"
-          make -f slave.mk docker-start SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n
-          # DinD's recursive workspace bind must carry the read-only diagnostic
-          # submount into the native container. Fail before Bazel if it does not.
-          image=debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-          actual=$(docker run --rm --network=none --label "$SONIC_CI_CONTAINER_LABEL" \
-            --mount type=bind,src=/sonic,dst=/sonic,readonly "$image" \
-            sha256sum /sonic/tools/bazel/oci/image_validation.py)
-          test "${actual%% *}" = "$DIAGNOSTIC_SHA"
-          printf '%s\n' "$actual" > /diag/nested-diagnostic-source.sha256
-          status=0
-          python3 -B tools/bazel/oci/native_build.py test --config=syncd-dash \
-            //tools/bazel/tests:syncd_p4_images_test \
-            --nocache_test_results --test_output=all --nozip_undeclared_test_outputs \
-            --lockfile_mode=update --symlink_prefix=target/bazel-native/diagnostic- || status=$?
-          # Native audit files and symlinks are redirected into this job's bind;
-          # the retained Make archives and original Python file stay untouched.
-          logs=target/bazel-native/diagnostic-testlogs/tools/bazel/tests/syncd_p4_images_test
+          make -f slave.mk docker-start
+          test_status=0
+          python3 -B tools/bazel/oci/native_build.py test --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
+            --nocache_test_results --test_output=all --nozip_undeclared_test_outputs --lockfile_mode=update || test_status=$?
+          mkdir -p artifacts/vs/syncd-p4-images
           for file in test.log test.xml test.outputs/validation.json; do
-            if test -f "$logs/$file"; then
-              tail -c 8388608 "$logs/$file" > "/diag/$(basename "$file")"
+            path="bazel-testlogs/tools/bazel/tests/syncd_p4_images_test/$file"
+            if test -f "$path"; then
+              cp "$path" "artifacts/vs/syncd-p4-images/$(basename "$file")"
             fi
           done
-          printf '%s\n' "$status" > /diag/bazel-test-exit-code.txt
-          exit "$status"
+          printf '%s\n' "$test_status" > artifacts/vs/test-exit-code.txt
+          exit "$test_status"
           SH
-          extra="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=bazel -e DIAGNOSTIC_SHA=$diagnostic_sha -e SONIC_CI_CONTAINER_LABEL=$SONIC_CI_CONTAINER_LABEL"
-          extra+=" --mount type=bind,src=$diagnostic,dst=/sonic/tools/bazel/oci/image_validation.py,readonly"
-          extra+=" --mount type=bind,src=$DIAGNOSTIC_OUTPUT,dst=/diag"
-          extra+=" --mount type=bind,src=$DIAGNOSTIC_OUTPUT/native-output,dst=/sonic/target/bazel-native"
-          extra+=" --mount type=bind,src=$DIAGNOSTIC_OUTPUT/MODULE.bazel.lock,dst=/sonic/MODULE.bazel.lock"
-          for name in sonic-vs.img.gz docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.gz docker-syncd-vs-dbg.gz; do
-            extra+=" --mount type=bind,src=$RETAINED_CHECKOUT/target/$name,dst=/sonic/target/$name,readonly"
-          done
-          cd "$RETAINED_CHECKOUT"
-          set +e
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            SONIC_SLAVE_REUSE_TRIXIE_IMAGE=sonic-slave-trixie \
-            SONIC_SLAVE_REUSE_TRIXIE_TAG=4b8b34e9bb1 \
-            SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n \
-            SONIC_BUILDER_EXTRA_CMDLINE="$extra" \
-            SONIC_RUN_CMDS="bash /diag/run.sh" \
-            2>&1 | tee /dev/stderr | tail -c 16777216 > "$DIAGNOSTIC_OUTPUT/diagnostic.log"
-          status=${PIPESTATUS[0]}
-          printf '%s\n' "$status" > "$DIAGNOSTIC_OUTPUT/make-exit-code.txt"
-          exit "$status"
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
+            SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-p4-images.sh" \
+            2>&1 | tee artifacts/vs/syncd-p4-images.log
+
+      - name: Retain bounded diagnostics and verify the test preserved Make archives
+        if: always()
+        run: |
+          mkdir -p artifacts/repack-diagnostic
+          python3 - <<'PYCODE'
+          import hashlib
+          import json
+          from pathlib import Path
+          output = Path('artifacts/repack-diagnostic')
+          inputs = [Path('MODULE.bazel'), Path('MODULE.bazel.lock'), Path('.bazelrc.user'),
+                    Path('tools/bazel/oci/image_validation.py')]
+          inputs += sorted(Path('target/bazel-manifests').glob('*/manifest.json'))
+          hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs if p.is_file()}
+          (output / 'final-inputs.json').write_text(json.dumps(hashes, indent=2) + '\n')
+          files = list(Path('artifacts/vs').glob('*.log')) + list(Path('artifacts/vs').glob('*.json'))
+          files += list(Path('artifacts/vs').glob('*.sha256')) + list(Path('artifacts/vs').glob('*-exit-code.txt'))
+          files += list(Path('artifacts/vs/syncd-p4-images').glob('*'))
+          files += list(Path('target/bazel-native').glob('action-audit-*.json'))
+          for path in files:
+              if not path.is_file():
+                  continue
+              with path.open('rb') as stream:
+                  size = path.stat().st_size
+                  stream.seek(max(0, size - 16 * 1024 * 1024))
+                  (output / path.name).write_bytes(stream.read())
+          before = Path('artifacts/vs/provenance.json')
+          if before.is_file():
+              expected = json.loads(before.read_text())['files']['tools/bazel/oci/image_validation.py']
+              assert hashes['tools/bazel/oci/image_validation.py'] == expected, 'Diagnostic Python changed'
+          PYCODE
+          if test -f artifacts/vs/archives-before.sha256; then
+            sha256sum --check artifacts/vs/archives-before.sha256 > artifacts/repack-diagnostic/archives-unchanged.log
+          fi
 
       - name: Remove only this diagnostic job's containers
         if: always()
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           containers=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
@@ -152,25 +235,12 @@ jobs:
             fi
           fi
 
-      - name: Verify retained source and image archives are unchanged
-        if: always() && env.DIAGNOSTIC_OUTPUT != ''
-        run: |
-          test -f "$DIAGNOSTIC_OUTPUT/before.json"
-          python3 "$DIAGNOSTIC_OUTPUT/snapshot.py" "$DIAGNOSTIC_OUTPUT/after.json" "$DIAGNOSTIC_OUTPUT/before.json"
-          sha256sum "$DIAGNOSTIC_OUTPUT/MODULE.bazel.lock" > "$DIAGNOSTIC_OUTPUT/diagnostic-lock-after.sha256"
-
-      - name: Upload bounded diagnostic logs and provenance
+      - name: Upload bounded logs, receipts and provenance only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pr33-retained-repack-diagnostic
-          path: |
-            repack-diagnostic/*.json
-            repack-diagnostic/*.log
-            repack-diagnostic/*.xml
-            repack-diagnostic/*.sha256
-            repack-diagnostic/*-exit-code.txt
-            repack-diagnostic/native-output/action-audit-*.json
+          name: pr33-repack-diagnostic
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/repack-diagnostic/
           if-no-files-found: warn
           retention-days: 7
           compression-level: 1
