@@ -1,7 +1,14 @@
 # Build the VS Syncd container with Bazel
 
-The supported profile is native AMD64 Debian Trixie, VS with DASH and FIPS,
-without ASAN or Syncd RPC. Other Make profiles retain their Dockerfile build.
+`BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` selects the registered Bazel runtime and
+debug images without filtering platform, architecture or FIPS settings. For
+example, `CONFIGURED_ARCH=arm64 INCLUDE_FIPS=n` selects the same Bazel targets
+as AMD64 with FIPS enabled. Setting the global flag to `n` keeps Make/Docker.
+
+The remaining guards still require Trixie, DASH enabled and the `dbg` image
+marker, with no cross build, QEMU, ASAN or Syncd RPC; builds of the
+`docker-sonic-vs` container also keep their existing producer. This selection
+policy does not add a toolchain or establish image validation for every tuple.
 
 Bazel builds the project runtime packages from source, starting with the
 `docker-base-trixie` and `docker-config-engine-trixie` images. PI, BMv2, P4C and
@@ -157,8 +164,8 @@ to be checked in or regenerated.
 Hosted contract checks exercise selection, source provenance, installed files,
 package state and Make fallback behavior. Source-owner and base-image workflows
 validate their supported native AMD64 and ARM64 configurations separately.
-The image profile remains AMD64-only; native ARM64 source-producer checks do
-not establish an ARM64 DASH image.
+Full DASH Syncd image validation currently runs on native AMD64; native ARM64
+source-producer checks do not establish an ARM64 DASH image.
 
 Full validation must use the resulting runtime/debug images: resolve installed
 libraries, run the CLI and startup checks, and verify matching debug symbols.

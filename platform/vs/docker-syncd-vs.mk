@@ -9,12 +9,12 @@ $(error BUILD_WITH_BAZEL_WHEN_AVAILABLE must be y or n)
 endif
 endif
 
-# Keep the same narrow native Trixie boundary as the first SWSS OCI consumer.
+# The global selector applies across platform, architecture and FIPS settings.
 # All project packages, including P4/DASH, use source runtime/debug TARs.
-# The other syncd configurations continue to use their Dockerfile.
+# Keep the remaining Trixie, DASH and execution-mode guards below.
 ifeq ($(BLDENV),trixie)
 SONIC_BAZEL_SWITCHABLE_IMAGES += $(DOCKER_SYNCD_BASE) $(DOCKER_SYNCD_BASE_DBG)
-ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE):$(CONFIGURED_PLATFORM):$(CONFIGURED_ARCH):$(DBG_IMAGE_MARK):$(INCLUDE_VS_DASH_SAI):$(INCLUDE_FIPS),y:vs:amd64:dbg:y:y)
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE):$(DBG_IMAGE_MARK):$(INCLUDE_VS_DASH_SAI),y:dbg:y)
 ifeq ($(filter y,$(CROSS_BUILD_ENVIRON) $(MULTIARCH_QEMU_ENVIRON) $(ENABLE_ASAN) $(ENABLE_SYNCD_RPC)),)
 ifeq ($(findstring docker-sonic-vs,$(SONIC_BUILD_TARGET) $(EXTRA_DOCKER_TARGETS)),)
 SONIC_BAZEL_DOCKER_IMAGES += $(DOCKER_SYNCD_BASE)

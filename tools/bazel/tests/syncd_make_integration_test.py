@@ -152,15 +152,33 @@ target/bazel-manifests/%/manifest.json:
         self.assertIn("--cap-add=SYS_RAWIO", values["run_opt"])
         self.assertIn("-v /etc/sonic:/etc/sonic:ro", values["run_opt"])
 
-    def test_default_and_unsupported_configurations_keep_make(self):
-        """Profiles outside native AMD64 Trixie DASH/FIPS must keep the complete legacy path."""
+    def test_platform_architecture_and_fips_follow_the_global_selector(self):
+        """The same registered Syncd targets are selected across these Make settings."""
+        for platform in ("vs", "mellanox"):
+            for architecture in ("amd64", "arm64", "armhf"):
+                for fips in ("y", "n"):
+                    with self.subTest(platform=platform, architecture=architecture, fips=fips):
+                        settings = {"CONFIGURED_PLATFORM": platform, "CONFIGURED_ARCH": architecture,
+                                    "INCLUDE_FIPS": fips}
+                        selected = self.values(self.run_make(BUILD_WITH_BAZEL_WHEN_AVAILABLE="y", **settings))
+                        self.assertEqual(selected["bazel"], "docker-syncd-vs.gz")
+                        self.assertEqual(selected["bazel_debug"], "docker-syncd-vs-dbg.gz")
+                        self.assertEqual(selected["runtime_label"], "//platform/vs/docker-syncd-vs:docker-syncd-vs.gz")
+                        self.assertEqual(selected["debug_label"], "//platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz")
+                        legacy = self.values(self.run_make(BUILD_WITH_BAZEL_WHEN_AVAILABLE="n", **settings))
+                        self.assertEqual(legacy["bazel"], "")
+                        self.assertEqual(legacy["bazel_debug"], "")
+                        self.assertIn("docker-syncd-vs.gz", legacy["legacy"].split())
+                        self.assertIn("docker-syncd-vs-dbg.gz", legacy["debug"].split())
+
+    def test_default_and_remaining_guarded_configurations_keep_make(self):
+        """Disabling Bazel or selecting another image mode keeps the legacy producer."""
         default = self.values(self.run_make())
         self.assertEqual(default["bazel"], "")
         self.assertEqual(default["switchable"].split(), ["docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"])
         for setting in (
-            {"BLDENV": "bookworm"}, {"CONFIGURED_PLATFORM": "mellanox"}, {"CONFIGURED_ARCH": "arm64"},
-            {"CONFIGURED_ARCH": "armhf"}, {"DBG_IMAGE_MARK": "debug"}, {"INCLUDE_VS_DASH_SAI": "n"},
-            {"INCLUDE_FIPS": "n"}, {"ENABLE_ASAN": "y"}, {"ENABLE_SYNCD_RPC": "y"},
+            {"BLDENV": "bookworm"}, {"DBG_IMAGE_MARK": "debug"}, {"INCLUDE_VS_DASH_SAI": "n"},
+            {"ENABLE_ASAN": "y"}, {"ENABLE_SYNCD_RPC": "y"},
             {"CROSS_BUILD_ENVIRON": "y"}, {"MULTIARCH_QEMU_ENVIRON": "y"},
             {"SONIC_BUILD_TARGET": "target/docker-sonic-vs.gz"}, {"EXTRA_DOCKER_TARGETS": "docker-sonic-vs"},
         ):
