@@ -19,8 +19,8 @@ metadata generation uses the declared spelling tool from the pinned runtime.
 
 ## Build
 
-During review, first prepare the exact source dependencies listed in the
-[base image manifest](../../../../dockers/docker-base-trixie/bazel/draft_sources.json):
+During review, first prepare the one pending DASH registration listed in the
+[temporary source manifest](../../../../dockers/docker-base-trixie/bazel/draft_sources.json):
 
 ```sh
 python3 tools/bazel/ci/prepare_draft_sources.py \
@@ -35,9 +35,13 @@ prepare it inside the Trixie SONiC builder before a full Make build. The generat
 remain `main` and the Bazel Central Registry; archive and patch integrity are
 verified by the preparation helper and Bazel.
 
-The manifest records the reviewed shared tool-runtime, foreign-rule and DASH
-source registrations together. Update their versions in `MODULE.bazel` and
-their source receipts together before regenerating the private overrides.
+Common, Sairedis, FIPS, PI, BMv2, P4C and the build rules use their published
+registry versions. Only DASH still uses a reviewed temporary registration from
+[registry PR #112](https://github.com/securely1g/sonic-bazel-registry/pull/112).
+For example, preparing this manifest creates a local override for `sonic-dash`;
+it does not replace the published Common or FIPS modules. Remove this last
+override after the matching DASH registration lands. Update its module version
+and source receipt together if that reviewed registration changes.
 
 Use the existing Make interface after configuring native VS:
 

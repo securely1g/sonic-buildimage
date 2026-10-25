@@ -126,6 +126,10 @@ manifest entry once its selected registration is available from `main`; after
 all entries land, remove the preparation step and its generated `.bazelrc.user`.
 The helper refuses to overwrite a manually maintained user RC file.
 
+This Syncd development branch also declares an unpublished DASH registration.
+The same preparation manifest retains its reviewed source alongside the producer
+updates; see the [Syncd build instructions](../../../../platform/vs/docker-syncd-vs/bazel/README.md#build).
+
 ## Make selection and direct ARM64 validation
 
 For Trixie builds, `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` selects these two

@@ -384,7 +384,7 @@ jobs:
           cache-save: ${{ runner.environment != 'self-hosted' }}
           cache-version: "8.5.1"
 
-      - name: Prepare the reviewed dependency sources
+      - name: Prepare the pending DASH dependency
         run: |
           source_cache_args=()
           if test "${{ runner.environment }}" = self-hosted; then
@@ -584,7 +584,7 @@ jobs:
           cache-save: ${{ runner.environment != 'self-hosted' }}
           cache-version: "8.5.1"
 
-      - name: Prepare the reviewed dependency sources
+      - name: Prepare the pending DASH dependency
         run: |
           source_cache_args=()
           if test "${{ runner.environment }}" = self-hosted; then
