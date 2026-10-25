@@ -475,6 +475,23 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             debug_install, installed_debug = configured_files(configured_debug_tar, debug_installation, architecture)
             final_runtime = {}
             apply_layer(runtime_rootfs_tar, final_runtime)
+            if final_runtime != runtime_files:
+                different = sorted(name for name in final_runtime.keys() | runtime_files.keys()
+                                   if final_runtime.get(name) != runtime_files.get(name))
+                # Diagnostic branch only: retain the original strict assertion
+                # below and report its actual inputs without changing the image.
+                print("OCI_ROOTFS_DIAGNOSTIC=" + json.dumps({
+                    "runtime_manifest_digest": runtime_descriptor["digest"],
+                    "rootfs_sha256": sha(runtime_rootfs_tar),
+                    "debug_installation_base_sha256": debug_install.get("base_sha256"),
+                    "expected_entries": len(final_runtime),
+                    "actual_entries": len(runtime_files),
+                    "different_entries": len(different),
+                    "truncated": len(different) > 100,
+                    "differences": {name: {"rootfs_tar": final_runtime.get(name),
+                                            "runtime_oci": runtime_files.get(name)}
+                                    for name in different[:100]},
+                }, sort_keys=True), flush=True)
             require(final_runtime == runtime_files, "runtime OCI differs from its complete filesystem")
             require(debug_install.get("base_sha256") == sha(runtime_rootfs_tar),
                     "debug installation did not start from this runtime filesystem")
