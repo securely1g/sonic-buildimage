@@ -154,6 +154,13 @@ jobs:
           python3 -c 'import gzip; from pathlib import Path; p = Path("artifacts/archive"); (p / "archive-fixture.tar").write_bytes(gzip.decompress((p / "archive-fixture.gz").read_bytes()))'
           sha256sum artifacts/archive/archive-fixture.* > artifacts/archive/archive-sha256.txt
 
+      - name: Check configured-image source mode policies
+        run: |
+          PYTHONPATH="$PWD" python3 -B tools/bazel/tests/integration/oci_image_test.py \
+            ConfiguredSourceModeTest \
+            ValidateImageTest.test_configured_image_accepts_only_declared_source_mode_changes \
+            -v 2>&1 | tee artifacts/archive/source-modes.log
+
       - name: Check shared Make rules with unrelated container targets
         run: |
           python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'

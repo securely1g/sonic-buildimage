@@ -285,6 +285,33 @@ def configured_runtime_payload(files, metadata_path, rootfs, installation, archi
     return expected
 
 
+def configured_source_modes(files, source_files, contract, receipt):
+    """Apply declared mode-only changes from the already checked source TAR."""
+    if contract is None or receipt is None:
+        return files
+    records = {item["package"]: item for item in package_contract.receipt_records(receipt, contract)}
+    expected = dict(files)
+    for package in contract["packages"]:
+        owner_files = records[package["package"]]["files"]
+        for path, mode in package.get("path_modes", {}).items():
+            previous, source = files.get(path), source_files.get(path)
+            if previous is None or previous == source:
+                continue
+            require(path == member_name(path) and not any(
+                path == prefix or path.startswith(prefix + "/")
+                for prefix in ("var/lib/dpkg", "var/lib/apt")),
+                "source mode policy changes package-manager state: " + path)
+            require(source is not None and owner_files.get(path) == source and
+                    source.get("kind") == previous.get("kind") == "file" and
+                    type(mode) is int and 0 <= mode <= 0o7777 and source.get("mode") == mode,
+                    "source mode policy differs from its checked owner TAR: " + path)
+            require({key: value for key, value in previous.items() if key != "mode"} ==
+                    {key: value for key, value in source.items() if key != "mode"},
+                    "source mode policy changes more than permissions: " + path)
+            expected[path] = source
+    return expected
+
+
 def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                     runtime_manifest_path, debug_manifest_path, source_root, *, policy, source_contract_path=None,
                     apt_lock_path=None, dpkg_filter_path=None, fixture=False,
@@ -526,6 +553,8 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             # Package-manager state is never an allowed replacement.
             expected_configured = configured_runtime_payload(installed_runtime, runtime_package_metadata,
                 configured_runtime_tar, runtime_installation, architecture, runtime_source_layer)
+            expected_configured = configured_source_modes(
+                expected_configured, expected_source_runtime, source_contract, source_provenance)
             assert_payload({name: item for name, item in expected_configured.items()
                             if item["kind"] != "directory" and name not in static_files},
                            runtime_files, "runtime OCI changes the configured package filesystem")

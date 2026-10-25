@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).absolute().parents[4]
 sys.path.insert(0, str(ROOT))
@@ -375,9 +376,20 @@ class ValidateImageTest(unittest.TestCase):
         self.assertNotIn("assembly", result["overlay_checks"])
         self.assertEqual(result["archives"]["runtime"]["tag"], "docker-example:latest")
 
-    def configured_inputs(self, *, omit_runtime_oci_root=False, runtime_oci_entries=()):
+    def configured_inputs(self, *, omit_runtime_oci_root=False, runtime_oci_entries=(), source=False):
         """Build independent complete rootfs images with bound APT receipts."""
         inputs = self.complete_make_only_inputs()
+        if source:
+            inputs.update(self.source_archives())
+            inputs["source_contract_path"] = self.source_contract_path
+            receipt = json.loads(inputs["source_receipt"].read_bytes())
+            receipt["base_manifest_digest"] = subject.image(inputs["base_path"])[0]["digest"]
+            inputs["source_receipt"].write_text(json.dumps(receipt))
+            for variant in ("runtime", "debug"):
+                path = inputs[variant + "_apt_selection"]
+                selection = json.loads(path.read_bytes())
+                selection["source_receipt_sha256"] = subject.sha(inputs["source_receipt"])
+                path.write_text(json.dumps(selection))
         inputs.pop("apt_layer")
         inputs.pop("debug_tools_layer")
         self.policy["image_validation"]["package_state"] = True
@@ -438,6 +450,48 @@ class ValidateImageTest(unittest.TestCase):
         result = subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
             self.runtime_handoff, self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root,
             policy=self.policy, dpkg_filter_path=self.filter_path, **inputs)
+        self.assertEqual(result["overlay_checks"]["assembly"], "configured_filesystems")
+        self.assertEqual(result["archives"]["debug"]["tag"], "docker-example-dbg:latest")
+
+    def test_configured_image_accepts_only_declared_source_mode_changes(self):
+        """Reproduce Syncd's seven inherited 0755 Lua files becoming declared 0644."""
+        names = ["usr/share/swss/" + name for name in (
+            "consumer_state_table_pops.lua", "consumer_table_pops.lua", "fdb_flush.lua",
+            "fdb_flush.v2.lua", "portcounter.lua", "producer_state_table_apply_view.lua", "table_dump.lua")]
+        self.source_contract["packages"][0].update(
+            required_paths={name: "file" for name in names}, path_modes={name: 0o644 for name in names})
+        self.source_contract_path.write_text(json.dumps(self.source_contract))
+        inputs = self.configured_inputs(source=True)
+        final_runtime = self.root / "runtime-final.tar"
+        final_runtime.write_bytes(inputs["configured_runtime_tar"].read_bytes())
+        inputs["runtime_rootfs_tar"] = final_runtime
+        previous = io.BytesIO()
+        with tarfile.open(final_runtime) as archive, tarfile.open(fileobj=previous, mode="w") as output:
+            for entry in archive:
+                if entry.name in names:
+                    entry.mode = 0o755
+                output.addfile(entry, archive.extractfile(entry) if entry.isfile() else None)
+        inputs["configured_runtime_tar"].write_bytes(previous.getvalue())
+        installation = json.loads(inputs["runtime_installation"].read_bytes())
+        installation["rootfs_sha256"] = subject.sha(inputs["configured_runtime_tar"])
+        inputs["runtime_installation"].write_text(json.dumps(installation))
+        inputs["runtime_source_layer"] = inputs["source_runtime_tar"]
+        entries = source_packages.inventory(inputs["source_runtime_tar"])
+        metadata = self.root / "source-metadata.json"
+        metadata.write_text(json.dumps({"schema": 1, "architecture": "amd64",
+            "rootfs_sha256": subject.sha(inputs["configured_runtime_tar"]),
+            "installation_sha256": subject.sha(inputs["runtime_installation"]),
+            "runtime_layer_sha256": subject.sha(inputs["runtime_source_layer"]),
+            "source_packages": [{"packaging": "runtime-layer", "native_files": [],
+                "runtime_files": [{"path": name, **{key: entries[name][key] for key in
+                                  ("sha256", "mode", "uid", "gid")}} for name in names]}]}))
+        inputs["runtime_package_metadata"] = metadata
+        # Restore the previous comparison to prove this fixture reaches the
+        # same failing configured-filesystem branch as the real full-VS job.
+        with mock.patch.object(subject, "configured_source_modes", side_effect=lambda files, *_: files):
+            with self.assertRaisesRegex(ValueError, "runtime OCI changes the configured package filesystem.*consumer_state_table_pops.lua"):
+                self.validate(**inputs)
+        result = self.validate(**inputs)
         self.assertEqual(result["overlay_checks"]["assembly"], "configured_filesystems")
         self.assertEqual(result["archives"]["debug"]["tag"], "docker-example-dbg:latest")
 
@@ -956,6 +1010,95 @@ class ConfiguredOverlayTest(unittest.TestCase):
             "owners": ["common"], "file": self.files["var/lib/dpkg/status"]}
         with self.assertRaisesRegex(ValueError, "package-manager state"):
             self.expected()
+
+
+class ConfiguredSourceModeTest(unittest.TestCase):
+    def fixture(self, architecture="amd64"):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        names = ["usr/share/swss/" + name for name in (
+            "consumer_state_table_pops.lua", "consumer_table_pops.lua", "fdb_flush.lua",
+            "fdb_flush.v2.lua", "portcounter.lua", "producer_state_table_apply_view.lua", "table_dump.lua")]
+        contract = source_contract(architecture=architecture)
+        package = contract["packages"][0]
+        package["required_paths"] = {name: "file" for name in names}
+        package["path_modes"] = {name: 0o644 for name in names}
+        contract_path = root / "contract.json"
+        contract_path.write_text(json.dumps(contract))
+        archive = root / "source.tar"
+        archive.write_bytes(layer([(name, ("unchanged source: " + name).encode(), 0o644) for name in names]))
+        source_files = source_packages.inventory(archive)
+        receipt = {**identity(contract), "schema": source_packages.RECEIPT_SCHEMA, "kind": "bazel_source",
+            "contract_sha256": subject.sha(contract_path), "base_manifest_digest": "sha256:" + "b" * 64,
+            "module_file_sha256": {package["source"]["module"]: "a" * 64},
+            "packages": [{**package, "input_tar_sha256": subject.sha(archive), "files": source_files}],
+            "payload": {"sha256": subject.sha(archive), "size": archive.stat().st_size, "members": len(source_files)}}
+        receipt_path = root / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt))
+        receipt = source_packages.validate_receipt(receipt_path, archive, contract_path=contract_path)
+        previous = {name: {**entry, "mode": 0o755} for name, entry in source_files.items()}
+        previous["var/lib/dpkg/status"] = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0,
+                                            "sha256": "c" * 64, "size": 123}
+        return previous, source_files, contract, receipt
+
+    def test_declared_lua_modes_pass_for_both_architectures(self):
+        for architecture in ("amd64", "arm64"):
+            with self.subTest(architecture=architecture):
+                previous, source_files, contract, receipt = self.fixture(architecture)
+                actual = {**previous, **source_files}
+                # This is the exact comparison that failed in the full Syncd job.
+                with self.assertRaisesRegex(ValueError, "differs at: usr/share/swss/"):
+                    subject.assert_payload(previous, actual, "configured package filesystem")
+                expected = subject.configured_source_modes(previous, source_files, contract, receipt)
+                subject.assert_payload(expected, actual, "configured package filesystem")
+                self.assertEqual(expected["var/lib/dpkg/status"], previous["var/lib/dpkg/status"])
+                self.assertTrue(all(previous[name]["mode"] == 0o755 for name in source_files))
+
+    def test_missing_declaration_does_not_authorize_mode_changes(self):
+        previous, source_files, contract, receipt = self.fixture()
+        contract["packages"][0].pop("path_modes")
+        expected = subject.configured_source_modes(previous, source_files, contract, receipt)
+        with self.assertRaisesRegex(ValueError, "differs at"):
+            subject.assert_payload(expected, {**previous, **source_files}, "configured package filesystem")
+
+    def test_mode_policy_cannot_change_bytes_owners_types_or_links(self):
+        for field, value in (("sha256", "d" * 64), ("size", 1000), ("uid", 1000), ("gid", 1000),
+                             ("kind", "symlink"), ("linkname", "elsewhere"), ("mode", 0o600)):
+            with self.subTest(field=field):
+                previous, source_files, contract, receipt = self.fixture()
+                name = next(iter(source_files))
+                source_files[name][field] = value
+                receipt["packages"][0]["files"][name][field] = value
+                with self.assertRaisesRegex(ValueError, "source mode policy"):
+                    subject.configured_source_modes(previous, source_files, contract, receipt)
+
+    def test_checked_owner_inventory_must_match_the_source_layer(self):
+        previous, source_files, contract, receipt = self.fixture()
+        receipt["packages"][0]["files"][next(iter(source_files))]["mode"] = 0o600
+        with self.assertRaisesRegex(ValueError, "checked owner TAR"):
+            subject.configured_source_modes(previous, source_files, contract, receipt)
+
+    def test_mode_policy_cannot_exempt_package_manager_state(self):
+        for path in ("var/lib/dpkg/status", "var/lib/apt/extended_states"):
+            with self.subTest(path=path):
+                previous, source_files, contract, receipt = self.fixture()
+                source = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0, "sha256": "d" * 64, "size": 20}
+                previous[path] = {**source, "mode": 0o600}
+                source_files[path] = source
+                contract["packages"][0]["path_modes"][path] = 0o644
+                receipt["packages"][0]["files"][path] = source
+                with self.assertRaisesRegex(ValueError, "package-manager state"):
+                    subject.configured_source_modes(previous, source_files, contract, receipt)
+
+    def test_final_image_still_must_match_the_declared_mode_and_contents(self):
+        previous, source_files, contract, receipt = self.fixture()
+        expected = subject.configured_source_modes(previous, source_files, contract, receipt)
+        for field, value in (("mode", 0o755), ("sha256", "d" * 64), ("uid", 1000), ("gid", 1000)):
+            actual = copy.deepcopy(expected)
+            actual[next(iter(source_files))][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "differs at"):
+                subject.assert_payload(expected, actual, "configured package filesystem")
 
 
 if __name__ == "__main__":
