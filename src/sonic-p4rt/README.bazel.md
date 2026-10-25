@@ -1,41 +1,24 @@
-# P4RT runtime and debug archives
+# P4RT packages and debug validation
 
-`P4RT_BUILD_WITH_BAZEL_TARS=y` selects the source owner's existing
-`//p4rt_app:p4rt_binaries` and `//p4rt_app:p4rt_debug` TAR targets for the Make
-container build. The default is `n`, which preserves the existing Debian
-package recipes, output names and container dependencies. The outer Make
-builder forwards the selector into the slave container.
+The existing Make recipe builds `//p4rt_app:p4rt_deb` and
+`//p4rt_app:p4rt_dbg_deb` from the pinned `sonic-pins` source. Legacy Docker
+builds install those DEBs. `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` selects Bazel
+only for registered OCI images; it does not change P4RT's package format or
+inject source TARs into its Dockerfile.
 
-The selected archives are published as
-`target/files/trixie/sonic-p4rt_0.0.1_amd64.tar.bz2` and
-`target/files/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.tar.bz2` for AMD64/Trixie.
-Runtime and debug images consume these TAR bytes directly. The six runtime
-programs retain their `/usr/local/bin` paths; the debug image adds the matching
-`p4rt.dwp`. Common and GMP runtime dependencies remain explicit. The file names
-separate retained TAR outputs from the legacy DEBs when switching producers.
+For example, the full VS workflow requests both
+`target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb` and
+`target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb`, then verifies their
+split debug symbols with `tools/bazel/ci/verify_p4rt_debug.py` using the paired
+`--runtime-deb` and `--debug-deb` options.
 
-Each archive is a separate Make target. Requesting debug also prepares runtime,
-and removing either archive rebuilds that output. Before executing Bazel, the
-TAR recipe resolves only test labels and audits the configured TAR/test action
-graph. Query failures, empty test selections and DEB-producing actions stop the
-recipe. A failed build does not replace an existing published archive.
+The verifier also accepts existing source-owner TAR outputs with paired
+`--runtime-tar` and `--debug-tar` options. This standalone validation support
+does not register those outputs with Make or feed them into legacy Docker.
+Both interfaces require `--source-root` and `--output`.
 
-For existing TAR outputs, run the same isolated debug check used by the fixture
-suite with `--runtime-tar`, `--debug-tar`, `--source-root` and `--output` arguments
-to `tools/bazel/ci/verify_p4rt_debug.py`. The verifier also retains the existing
-paired `--runtime-deb`/`--debug-deb` interface for legacy workflows.
-
-The PR-triggered `Container archive` jobs run `p4rt_tar_test.py` on AMD64 and
-ARM64 through the existing Python test discovery. Those tests exercise Make
-selection, missing-output recovery, failure propagation, action auditing,
-template rendering and legacy compatibility with controlled Bazel commands.
-`p4rt_debug_test.py` separately compiles small native ELF/DWP fixtures and checks
-isolated GDB lookup. Neither suite establishes production P4RT compilation,
-actual image assembly or forwarding. Those checks remain required for the
-selected source revision and architecture. Ordinary Make invocations keep the
-existing Debian package path unless the TAR selector is explicitly enabled.
-
-The full VS source-image job in `.github/workflows/bazel-oci.yml` explicitly
-sets `P4RT_BUILD_WITH_BAZEL_TARS=y` for its Make configuration, build and slave
-commands. It requests both TAR outputs before split-debug verification. This
-job setting does not change the default for ordinary Make invocations.
+`tools/bazel/tests/p4rt_tar_test.py` checks standalone archive validation and
+legacy DEB selection. `p4rt_debug_test.py` compiles native ELF/DWP fixtures and
+checks isolated GDB lookup, including invalid and unrelated symbols. These
+fixture checks do not establish production P4RT compilation, image assembly or
+forwarding for a given source revision and architecture.

@@ -683,8 +683,6 @@ jobs:
       - sonic-vs-source-master
     timeout-minutes: 720
     env:
-      # This source-image profile explicitly consumes P4RT runtime/debug TARs.
-      P4RT_BUILD_WITH_BAZEL_TARS: "y"
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
       # Keep build results outside run-specific checkouts and disposable builders.
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
@@ -794,8 +792,8 @@ jobs:
           make target/sonic-vs.img.gz \
             target/docker-orchagent.gz target/docker-orchagent-dbg.gz \
             target/docker-syncd-vs.gz target/docker-syncd-vs-dbg.gz \
-            target/files/trixie/sonic-p4rt_0.0.1_amd64.tar.bz2 \
-            target/files/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.tar.bz2 \
+            target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
+            target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y VS_VALIDATE_SERVICES=y \
             ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
@@ -861,8 +859,8 @@ jobs:
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             SONIC_RUN_CMDS="python3 -B tools/bazel/ci/verify_p4rt_debug.py \
-              --runtime-tar target/files/trixie/sonic-p4rt_0.0.1_amd64.tar.bz2 \
-              --debug-tar target/files/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.tar.bz2 \
+              --runtime-deb target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
+              --debug-deb target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
               --source-root src/sonic-p4rt/sonic-pins \
               --output artifacts/vs/p4rt-debug-verification.json" \
             2>&1 | tee artifacts/vs/p4rt-debug-verification.log
