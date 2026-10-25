@@ -375,18 +375,20 @@ class ValidateImageTest(unittest.TestCase):
         self.assertNotIn("assembly", result["overlay_checks"])
         self.assertEqual(result["archives"]["runtime"]["tag"], "docker-example:latest")
 
-    def configured_inputs(self):
+    def configured_inputs(self, *, omit_runtime_oci_root=False, runtime_oci_entries=()):
         """Build independent complete rootfs images with bound APT receipts."""
         inputs = self.complete_make_only_inputs()
         inputs.pop("apt_layer")
         inputs.pop("debug_tools_layer")
         self.policy["image_validation"]["package_state"] = True
 
-        def flatten(layers):
+        def flatten(layers, *, omit_root=False):
             members = {}
             for raw in layers:
                 with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
                     for entry in archive:
+                        if omit_root and entry.name == ".":
+                            continue
                         members[entry.name] = (entry, archive.extractfile(entry).read() if entry.isfile() else None)
             stream = io.BytesIO()
             with tarfile.open(fileobj=stream, mode="w") as archive:
@@ -395,11 +397,19 @@ class ValidateImageTest(unittest.TestCase):
             return stream.getvalue()
 
         status = layer([("var/lib/dpkg/status", b"Package: example-runtime\nStatus: install ok installed\n", 0o644)])
-        self.runtime_layers = [flatten([*self.runtime_layers, status])]
+        runtime_rootfs = flatten([*self.runtime_layers, status])
+        runtime_layers = [runtime_rootfs]
+        if runtime_oci_entries:
+            additions = io.BytesIO()
+            with tarfile.open(fileobj=additions, mode="w") as archive:
+                for entry in runtime_oci_entries:
+                    archive.addfile(entry)
+            runtime_layers.append(additions.getvalue())
+        self.runtime_layers = [flatten(runtime_layers, omit_root=omit_runtime_oci_root)]
         self.debug_layers = [flatten([*self.debug_layers, status])]
         self.write_images()
         for variant in ("runtime", "debug"):
-            raw = (self.runtime_layers if variant == "runtime" else self.debug_layers)[0]
+            raw = runtime_rootfs if variant == "runtime" else self.debug_layers[0]
             rootfs = self.root / (variant + "-configured.tar")
             rootfs.write_bytes(raw)
             receipt = self.root / (variant + "-installed.json")
@@ -415,7 +425,7 @@ class ValidateImageTest(unittest.TestCase):
                       "Layers": ["layer.tar"]}]
             inputs[variant + "_archive"].write_bytes(gzip.compress(layer([
                 ("config.json", config, 0o644), ("manifest.json", json.dumps(saved).encode(), 0o644),
-                ("layer.tar", raw, 0o644)]), mtime=0))
+                ("layer.tar", (self.runtime_layers if variant == "runtime" else self.debug_layers)[0], 0o644)]), mtime=0))
             if variant == "runtime":
                 selection = inputs["debug_apt_selection"]
                 value = json.loads(selection.read_text()); value["base_manifest_digest"] = descriptor["digest"]
@@ -430,6 +440,119 @@ class ValidateImageTest(unittest.TestCase):
             policy=self.policy, dpkg_filter_path=self.filter_path, **inputs)
         self.assertEqual(result["overlay_checks"]["assembly"], "configured_filesystems")
         self.assertEqual(result["archives"]["debug"]["tag"], "docker-example-dbg:latest")
+
+    def test_runtime_oci_may_omit_only_the_unchanged_default_root(self):
+        """Umoci's omitted root still represents the TAR's root-owned 0755 directory."""
+        inputs = self.configured_inputs(omit_runtime_oci_root=True)
+        result = subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
+            self.runtime_handoff, self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root,
+            policy=self.policy, dpkg_filter_path=self.filter_path, **inputs)
+        self.assertEqual(result["overlay_checks"]["assembly"], "configured_filesystems")
+
+    def test_runtime_oci_may_materialize_missing_parent_directories(self):
+        """Nested package files imply root-owned 0755 parents even without TAR entries."""
+        parents = []
+        for name in ("usr/share", "usr/share/example-runtime"):
+            entry = tarfile.TarInfo(name)
+            entry.type, entry.mode = tarfile.DIRTYPE, 0o755
+            parents.append(entry)
+        inputs = self.configured_inputs(runtime_oci_entries=parents)
+        result = subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci",
+            self.runtime_handoff, self.debug_handoff, self.runtime_manifest, self.debug_manifest, self.root,
+            policy=self.policy, dpkg_filter_path=self.filter_path, **inputs)
+        self.assertEqual(result["overlay_checks"]["assembly"], "configured_filesystems")
+
+    def test_implicit_parents_reject_changed_metadata_and_unrelated_empty_directories(self):
+        """Only required ancestors receive defaults; explicit modes, owners and types must match."""
+        for field, value in (("mode", 0o700), ("uid", 123), ("gid", 456),
+                             ("type", tarfile.SYMTYPE), ("extra_empty_directory", None)):
+            with self.subTest(field=field):
+                name = "unrelated-empty" if field == "extra_empty_directory" else "usr/share/example-runtime"
+                entry = tarfile.TarInfo(name)
+                entry.type, entry.mode = tarfile.DIRTYPE, 0o755
+                if field != "extra_empty_directory":
+                    setattr(entry, field, value)
+                if field == "type":
+                    entry.linkname = "elsewhere"
+                inputs = self.configured_inputs(runtime_oci_entries=[entry])
+                with self.assertRaisesRegex(ValueError, "runtime OCI differs from its complete filesystem") as raised:
+                    self.validate(**inputs)
+                self.assertIn('"path": "' + name + '"', str(raised.exception))
+
+    def test_implicit_root_preserves_root_metadata_and_every_other_path_check(self):
+        """Root modes/owners, nonroot directories, file bytes and link kinds stay strict."""
+        inputs = self.configured_inputs(omit_runtime_oci_root=True)
+        original = inputs["runtime_rootfs_tar"].read_bytes()
+        cases = []
+        for field, value in (("mode", 0o700), ("uid", 123), ("gid", 456), ("type", tarfile.SYMTYPE)):
+            entry = tarfile.TarInfo(".")
+            entry.type, entry.mode = tarfile.DIRTYPE, 0o755
+            setattr(entry, field, value)
+            if field == "type":
+                entry.linkname = "usr"
+            cases.append(("root_" + field, entry, None))
+        directory = tarfile.TarInfo("extra-parent")
+        directory.type, directory.mode = tarfile.DIRTYPE, 0o755
+        cases.append(("nonroot_directory", directory, None))
+        for field, value in (("mode", 0o600), ("uid", 123), ("gid", 456)):
+            entry = tarfile.TarInfo("usr/share/example-runtime/data")
+            data = b"example-runtime"
+            entry.mode, entry.size = 0o644, len(data)
+            setattr(entry, field, value)
+            cases.append(("file_" + field, entry, data))
+        for kind in ("changed_bytes", "hardlink"):
+            entry = tarfile.TarInfo("usr/share/example-runtime/data")
+            entry.mode = 0o644
+            if kind == "hardlink":
+                entry.type, entry.linkname = tarfile.LNKTYPE, "usr/bin/ssh"
+                data = None
+            else:
+                data = b"unexpected contents"
+                entry.size = len(data)
+            cases.append((kind, entry, data))
+        for name, replacement, data in cases:
+            with self.subTest(name=name):
+                rootfs = self.root / "changed-runtime-rootfs.tar"
+                with tarfile.open(fileobj=io.BytesIO(original)) as source, tarfile.open(rootfs, "w") as output:
+                    for entry in source:
+                        if entry.name != replacement.name:
+                            output.addfile(entry, source.extractfile(entry) if entry.isfile() else None)
+                    output.addfile(replacement, io.BytesIO(data) if data is not None else None)
+                inputs["runtime_rootfs_tar"] = rootfs
+                receipt = json.loads(inputs["debug_installation"].read_bytes())
+                receipt["base_sha256"] = subject.sha(rootfs)
+                inputs["debug_installation"].write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(ValueError, "runtime OCI differs from its complete filesystem") as raised:
+                    self.validate(**inputs)
+                self.assertIn('"path": "' + replacement.name + '"', str(raised.exception))
+                self.assertIn('"expected":', str(raised.exception))
+                self.assertIn('"actual":', str(raised.exception))
+
+    def test_implicit_parents_are_not_inferred_through_links_or_nondefault_directories(self):
+        """Symlink and SGID ancestry cannot justify guessed 0755/root child metadata."""
+        directory = {"kind": "directory", "mode": 0o755, "uid": 0, "gid": 0}
+        regular = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0,
+                   "size": 7, "sha256": "a" * 64}
+        for parent in ({**directory, "mode": 0o2755, "gid": 456},
+                       {**directory, "mode": 0o700}, {**directory, "uid": 123},
+                       {**directory, "kind": "symlink", "mode": 0o777, "linkname": "elsewhere"},
+                       regular):
+            with self.subTest(parent=parent):
+                expected = {"service": parent, "service/nested/file": regular}
+                actual = {**expected, "service/nested": directory}
+                with self.assertRaisesRegex(ValueError, '"path": "service/nested"'):
+                    subject.assert_complete_filesystem(expected, actual, "filesystem mismatch")
+
+    def test_complete_filesystem_diagnostics_bound_large_difference_sets(self):
+        """A failed image reports total differences and ten actionable path records."""
+        files = {"extra-%02d" % number: {"kind": "directory", "mode": 0o755, "uid": 0, "gid": 0}
+                 for number in range(25)}
+        with self.assertRaisesRegex(ValueError, "25 differing paths; first 10") as raised:
+            subject.assert_complete_filesystem({}, files, "filesystem mismatch")
+        details = json.loads(str(raised.exception).split(": ", 1)[1])
+        self.assertEqual(len(details), 10)
+        self.assertEqual(details[0]["path"], "extra-00")
+        self.assertEqual(details[-1]["path"], "extra-09")
 
     def test_configured_receipt_rejects_other_filesystem_or_runtime_base(self):
         inputs = self.configured_inputs()
