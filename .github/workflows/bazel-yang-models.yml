@@ -7,6 +7,8 @@ on:
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
       - 'tools/bazel/ci/bazel_commands.py'
+      - 'tools/bazel/ci/prepare_draft_sources.py'
+      - 'dockers/docker-base-trixie/bazel/draft_sources.json'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
   push:
@@ -16,6 +18,8 @@ on:
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
       - 'tools/bazel/ci/bazel_commands.py'
+      - 'tools/bazel/ci/prepare_draft_sources.py'
+      - 'dockers/docker-base-trixie/bazel/draft_sources.json'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
   workflow_dispatch:
@@ -49,6 +53,21 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
           disk-cache: yang-models-${{ matrix.architecture }}
+      - name: Prepare producer dependencies for the image-root query
+        shell: bash
+        run: |
+          python3 -B tools/bazel/ci/prepare_draft_sources.py \
+            --manifest dockers/docker-base-trixie/bazel/draft_sources.json \
+            --output "$RUNNER_TEMP/yang-root-dependencies" \
+            --receipt artifacts/dependencies/draft-sources.json \
+            --bazelrc-output .bazelrc.user
+      - name: Retain image-root source provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: yang-models-draft-sources-${{ matrix.architecture }}
+          path: artifacts/dependencies/draft-sources.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash
