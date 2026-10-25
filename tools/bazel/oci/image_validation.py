@@ -166,6 +166,35 @@ def assert_payload(expected, actual, description):
     require(not differences, description + " differs at: " + ", ".join(differences[:20]))
 
 
+def assert_complete_filesystem(expected, actual, description):
+    """Compare complete filesystems including directories implied by their paths."""
+    # In the controlled root build container, extraction below ordinary root-owned
+    # 0755 directories creates missing ancestors with those defaults. Umoci records
+    # them even when the TAR only names children. Do not extrapolate through links,
+    # nondefault owners/modes (such as SGID), or unrelated empty directories.
+    default_directory = {"kind": "directory", "mode": 0o755, "uid": 0, "gid": 0}
+
+    def with_ancestors(files):
+        result = {".": default_directory, **files}
+        for name in files:
+            for parent in reversed(PurePosixPath(name).parents):
+                entry = result.setdefault(str(parent), default_directory)
+                if entry != default_directory:
+                    break
+        return result
+
+    expected, actual = with_ancestors(expected), with_ancestors(actual)
+    differences, count = [], 0
+    for name in sorted(expected.keys() | actual.keys()):
+        before, after = expected.get(name), actual.get(name)
+        if before != after:
+            count += 1
+            if len(differences) < 10:
+                differences.append({"path": name, "expected": before, "actual": after})
+    require(not count, description + " (" + str(count) + " differing paths; first " +
+            str(len(differences)) + "): " + json.dumps(differences, sort_keys=True))
+
+
 def docker_archive(path, expected_tag, config_digest, layer_descriptors):
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest) is not None, "invalid expected OCI config digest")
     with path.open("rb") as stream:
@@ -597,7 +626,8 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             debug_install, installed_debug = configured_files(configured_debug_tar, debug_installation, architecture)
             final_runtime = {}
             apply_layer(runtime_rootfs_tar, final_runtime)
-            require(final_runtime == runtime_files, "runtime OCI differs from its complete filesystem")
+            assert_complete_filesystem(final_runtime, runtime_files,
+                                       "runtime OCI differs from its complete filesystem")
             require(debug_install.get("base_sha256") == sha(runtime_rootfs_tar),
                     "debug installation did not start from this runtime filesystem")
             # Startup files are deliberately applied after package installation.
