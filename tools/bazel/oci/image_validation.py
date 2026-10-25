@@ -286,15 +286,16 @@ def configured_runtime_payload(files, metadata_path, rootfs, installation, archi
 
 
 def configured_source_modes(files, source_files, contract, receipt):
-    """Apply declared mode-only changes from the already checked source TAR."""
+    """Preserve mode-only differences authenticated by the producer TAR receipt."""
     if contract is None or receipt is None:
         return files
     records = {item["package"]: item for item in package_contract.receipt_records(receipt, contract)}
     expected = dict(files)
     for package in contract["packages"]:
         owner_files = records[package["package"]]["files"]
-        for path, mode in package.get("path_modes", {}).items():
+        for path, original in owner_files.items():
             previous, source = files.get(path), source_files.get(path)
+            mode = original.get("mode")
             if previous is None or previous == source:
                 continue
             require(path == member_name(path) and not any(

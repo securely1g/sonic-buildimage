@@ -10,6 +10,7 @@ load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:apt_install_inputs.bzl", "apt_install_inputs")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:installed_source_metadata.bzl", "installed_source_metadata")
+load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:repack_oci.bzl", "repack_oci")
 load("//tools/bazel/oci:rootfs_metadata.bzl", "rootfs_metadata")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
@@ -533,7 +534,7 @@ test_suite(
 filegroup(
     name = "ci_artifacts",
     srcs = [
-        ":configured_debian",
+        ":installation_receipt",
         ":runtime_package_metadata",
     ],
 )

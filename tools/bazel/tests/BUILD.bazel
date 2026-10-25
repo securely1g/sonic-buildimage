@@ -995,9 +995,12 @@ py_binary(
 
 run_binary(
     name = "oci_license_fixture_tar",
-    tool = ":oci_license_fixture",
-    args = ["--write", "$(location oci-license-fixture.tar)"],
     outs = ["oci-license-fixture.tar"],
+    args = [
+        "--write",
+        "$(location oci-license-fixture.tar)",
+    ],
+    tool = ":oci_license_fixture",
 )
 
 dpkg_filter(
@@ -1013,12 +1016,15 @@ sonic_layer(
 py_test(
     name = "oci_license_filter_test",
     srcs = ["integration/oci_license_filter_test.py"],
-    main = "integration/oci_license_filter_test.py",
     args = [
         "$(rootpath :oci_license_filtered)",
         "$(rootpath :oci_license_refiltered)",
     ],
-    data = [":oci_license_filtered", ":oci_license_refiltered"],
+    data = [
+        ":oci_license_filtered",
+        ":oci_license_refiltered",
+    ],
+    main = "integration/oci_license_filter_test.py",
 )
 
 # Rust links Common's shared library; its indirect runtime imports need the

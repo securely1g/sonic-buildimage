@@ -454,12 +454,11 @@ class ValidateImageTest(unittest.TestCase):
         self.assertEqual(result["archives"]["debug"]["tag"], "docker-example-dbg:latest")
 
     def test_configured_image_accepts_only_declared_source_mode_changes(self):
-        """Reproduce Syncd's seven inherited 0755 Lua files becoming declared 0644."""
+        """Reproduce inherited Lua files taking the source producer's verified 0644 modes."""
         names = ["usr/share/swss/" + name for name in (
             "consumer_state_table_pops.lua", "consumer_table_pops.lua", "fdb_flush.lua",
             "fdb_flush.v2.lua", "portcounter.lua", "producer_state_table_apply_view.lua", "table_dump.lua")]
-        self.source_contract["packages"][0].update(
-            required_paths={name: "file" for name in names}, path_modes={name: 0o644 for name in names})
+        self.source_contract["packages"][0].update(required_paths={name: "file" for name in names})
         self.source_contract_path.write_text(json.dumps(self.source_contract))
         inputs = self.configured_inputs(source=True)
         final_runtime = self.root / "runtime-final.tar"
@@ -1023,7 +1022,6 @@ class ConfiguredSourceModeTest(unittest.TestCase):
         contract = source_contract(architecture=architecture)
         package = contract["packages"][0]
         package["required_paths"] = {name: "file" for name in names}
-        package["path_modes"] = {name: 0o644 for name in names}
         contract_path = root / "contract.json"
         contract_path.write_text(json.dumps(contract))
         archive = root / "source.tar"
@@ -1040,9 +1038,9 @@ class ConfiguredSourceModeTest(unittest.TestCase):
         previous = {name: {**entry, "mode": 0o755} for name, entry in source_files.items()}
         previous["var/lib/dpkg/status"] = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0,
                                             "sha256": "c" * 64, "size": 123}
-        return previous, source_files, contract, receipt
+        return previous, source_files, contract, copy.deepcopy(receipt)
 
-    def test_declared_lua_modes_pass_for_both_architectures(self):
+    def test_producer_lua_modes_pass_for_both_architectures(self):
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture):
                 previous, source_files, contract, receipt = self.fixture(architecture)
@@ -1055,12 +1053,11 @@ class ConfiguredSourceModeTest(unittest.TestCase):
                 self.assertEqual(expected["var/lib/dpkg/status"], previous["var/lib/dpkg/status"])
                 self.assertTrue(all(previous[name]["mode"] == 0o755 for name in source_files))
 
-    def test_missing_declaration_does_not_authorize_mode_changes(self):
+    def test_missing_producer_inventory_does_not_authorize_mode_changes(self):
         previous, source_files, contract, receipt = self.fixture()
-        contract["packages"][0].pop("path_modes")
-        expected = subject.configured_source_modes(previous, source_files, contract, receipt)
-        with self.assertRaisesRegex(ValueError, "differs at"):
-            subject.assert_payload(expected, {**previous, **source_files}, "configured package filesystem")
+        receipt["packages"][0]["files"] = {}
+        with self.assertRaisesRegex(ValueError, "lacks a package tar identity and inventory"):
+            subject.configured_source_modes(previous, source_files, contract, receipt)
 
     def test_mode_policy_cannot_change_bytes_owners_types_or_links(self):
         for field, value in (("sha256", "d" * 64), ("size", 1000), ("uid", 1000), ("gid", 1000),
@@ -1069,7 +1066,6 @@ class ConfiguredSourceModeTest(unittest.TestCase):
                 previous, source_files, contract, receipt = self.fixture()
                 name = next(iter(source_files))
                 source_files[name][field] = value
-                receipt["packages"][0]["files"][name][field] = value
                 with self.assertRaisesRegex(ValueError, "source mode policy"):
                     subject.configured_source_modes(previous, source_files, contract, receipt)
 
@@ -1086,7 +1082,6 @@ class ConfiguredSourceModeTest(unittest.TestCase):
                 source = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0, "sha256": "d" * 64, "size": 20}
                 previous[path] = {**source, "mode": 0o600}
                 source_files[path] = source
-                contract["packages"][0]["path_modes"][path] = 0o644
                 receipt["packages"][0]["files"][path] = source
                 with self.assertRaisesRegex(ValueError, "package-manager state"):
                     subject.configured_source_modes(previous, source_files, contract, receipt)

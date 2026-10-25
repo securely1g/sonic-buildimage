@@ -123,9 +123,10 @@ class SourceOverlayTest(unittest.TestCase):
         revisions = ('a' * 40, 'b' * 40)
         for revision in revisions:
             module.write_text('module(name = "common", version = "0.0.4-' + revision + '")\n')
-            generate(paths, {'@@common+//:runtime_packages.json': owner}, {'common': module},
+            generate({'@@common+//:runtime_packages.json': owner}, {'common': module},
                      {'common': '@@common+//:runtime'}, {'common': '@common//:runtime'},
-                     self.root / 'spec.json', architecture='amd64', mode='provenance')
+                     self.root / 'spec.json', {'common': self.write_tar('source.tar', self.original)},
+                     architecture='amd64', expectations=paths, mode='provenance')
             report = self.inspect(allow_same_owner_overlays=True)
             self.assertEqual(report['source_packages'][0]['source_revision'], revision)
             self.assertEqual(report['source_packages'][0]['source_version'], '0.0.4-' + revision)
@@ -144,6 +145,43 @@ class SourceOverlayTest(unittest.TestCase):
                 self.files[path] = (value, 0o644)
                 with self.assertRaisesRegex(ValueError, 'excluded baseline file'):
                     self.inspect(allow_same_owner_overlays=True)
+
+    def test_sparse_owner_checks_and_image_additions_reach_installed_validation(self):
+        """Moving the library check into its producer must not weaken installed-file checks."""
+        paths = self.root / 'paths.json'
+        paths.write_text(json.dumps({'schema': 1, 'packages': {'common': {
+            'required_paths': ['run/common/config']}}}))
+        module = self.root / 'MODULE.bazel'
+        module.write_text('module(name="common", version="0.0.6-' + 'a' * 40 + '")\n')
+        owner = self.root / 'owner.json'
+        payload = self.write_tar('source.tar', self.original)
+        document = {'schema': 1, 'module': 'common', 'packages': {'common': {
+            'runtime_target': '//:runtime',
+            'required_paths': ['usr/lib/libcommon.so.0', 'var/run/common/config'],
+            'payload_sha256': subject.sha(payload),
+            'control_fields': {'Package': 'common', 'Version': '2.0'}}}}
+
+        def generate_spec():
+            owner.write_text(json.dumps(document))
+            return generate({'@@common+//:runtime_packages.json': owner}, {'common': module},
+                            {'common': '@@common+//:runtime'}, {'common': '@common//:runtime'},
+                            self.root / 'spec.json', {'common': payload}, architecture='amd64',
+                            expectations=paths, mode='provenance')
+
+        result = generate_spec()
+        self.assertEqual(result['packages']['common']['required_paths'], [
+            'usr/lib/libcommon.so.0', 'var/run/common/config', 'run/common/config'])
+        self.inspect(allow_same_owner_overlays=True)
+        document['packages']['common']['required_paths'].append('usr/lib/missing-producer.so')
+        generate_spec()
+        with self.assertRaisesRegex(ValueError, 'required runtime-layer path'):
+            self.inspect(allow_same_owner_overlays=True)
+        document['packages']['common']['required_paths'].pop()
+        paths.write_text(json.dumps({'schema': 1, 'packages': {'common': {
+            'required_paths': ['run/common/missing-image-config']}}}))
+        generate_spec()
+        with self.assertRaisesRegex(ValueError, 'required runtime-layer path'):
+            self.inspect(allow_same_owner_overlays=True)
 
     def test_required_source_plugin_cannot_disappear_from_payload(self):
         spec = self.root / 'spec.json'
@@ -164,7 +202,7 @@ class SourceOverlayTest(unittest.TestCase):
                    if line.startswith('path-exclude ')]
         self.assertEqual(len(filters), 10)
         self.assertEqual(len(spec['excluded_baseline_paths']), 10)
-        self.assertEqual(len(spec['required_paths']), 11)  # CLI library plus ten source plugins.
+        self.assertEqual(len(spec['required_paths']), 10)  # Image-specific source plugin locations.
         for triplet in ('x86_64-linux-gnu', 'aarch64-linux-gnu'):
             for path in spec['excluded_baseline_paths']:
                 path = '/' + path.format(multiarch=triplet)

@@ -67,8 +67,8 @@ FILES = {
         ("input-locks", "artifacts/syncd-vs/input-locks.sha256", "hashes"),
         ("module-lock", "artifacts/syncd-vs/bazel/MODULE.bazel.lock", "lock"),
         ("module-graph", "artifacts/syncd-vs/bazel/module-graph.json", "graph"),
-        ("installed-package-status", "artifacts/syncd-vs/bazel/installed_packages.status", "binary"),
-        ("installed-package-metadata", "artifacts/syncd-vs/bazel/installed_packages.json", "binary"),
+        ("package-installation-receipt", "artifacts/syncd-vs/bazel/configured_debian.json", "binary"),
+        ("installed-package-metadata", "artifacts/syncd-vs/bazel/runtime_package_metadata.json", "binary"),
     ],
     "vs": [],
 }
