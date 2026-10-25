@@ -44,15 +44,16 @@ class DockerStageCopyTest(unittest.TestCase):
         """Keep the same mounted-file boundary in Make's optional debug images."""
         generated = subprocess.check_output([
             'bash', str(ROOT / 'build_debug_docker_j2.sh'), 'test-base:latest',
-            'debug_debs', 'debug_packages', 'debug_tars',
+            'debug_debs', 'debug_packages',
         ], text=True)
         template = Environment(
             loader=FileSystemLoader(str(ROOT)), undefined=StrictUndefined,
         ).from_string(generated)
         rendered = template.render(
-            debug_debs='', debug_packages='', debug_tars='project-debug.tar',
+            debug_debs='project-dbgsym.deb', debug_packages='',
         )
-        self.assertIn('ADD files/project-debug.tar /', rendered)
+        self.assertIn('debs/project-dbgsym.deb', rendered)
+        self.assertNotIn('ADD files/', rendered)
         self._assert_dockerfile_stage_copy(rendered)
 
     def _assert_dockerfile_stage_copy(self, rendered):
