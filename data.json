@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-25T06:02:44.527220Z",
+  "generated_at": "2026-10-25T06:23:27.232575Z",
   "pull_requests": [
     {
       "base_sha": "e8324ddf17e5c5e460fec64bf7454bd215826a9c",
@@ -3853,8 +3853,8 @@
     {
       "attempt": 1,
       "branch": "codex/syncd-vs-oci-publication",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-25T06:22:42Z",
+      "conclusion": "success",
       "event": "pull_request",
       "jobs": [
         {
@@ -4761,9 +4761,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-25T06:22:42Z",
+          "conclusion": "success",
+          "duration_seconds": 6638.0,
           "image_build_elapsed_seconds": 3010.0,
           "image_build_seconds": 3010.0,
           "job_id": 121048044785,
@@ -4771,13 +4771,13 @@
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
             "build": 3010.0,
-            "other": 41.0,
+            "other": 43.0,
             "setup": 271.0,
-            "upload": 2.0,
+            "upload": 1317.0,
             "validation": 1993.0
           },
           "started_at": "2026-10-25T04:32:04Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-25T04:32:08Z",
@@ -4881,11 +4881,318 @@
             },
             {
               "breakdown": {
-                "duration_seconds": null,
-                "reason": "pending-collection",
-                "sections": [],
+                "duration_seconds": 3009.294662,
+                "reason": null,
+                "sections": [
+                  {
+                    "duration_seconds": 2110.357946,
+                    "id": "vs-image-1",
+                    "label": "VS image, dependencies and cleanup",
+                    "offset_seconds": 0.0,
+                    "tasks": [
+                      {
+                        "duration_seconds": 203.188907,
+                        "id": "config-engine-1",
+                        "label": "Config-engine container",
+                        "offset_seconds": 107.133401,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 196.092652,
+                        "id": "base-1",
+                        "label": "Base container",
+                        "offset_seconds": 114.610199,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 28.434933,
+                        "id": "syncd-release-1",
+                        "label": "Syncd release container",
+                        "offset_seconds": 314.42068,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 0.715725,
+                        "id": "bmp-watchdog-1",
+                        "label": "BMP watchdog container",
+                        "offset_seconds": 359.749,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.740889,
+                        "id": "gnmi-watchdog-1",
+                        "label": "gNMI watchdog container",
+                        "offset_seconds": 365.233562,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.260973,
+                        "id": "sonic-otel-1",
+                        "label": "OpenTelemetry container",
+                        "offset_seconds": 368.970887,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.739026,
+                        "id": "router-advertiser-1",
+                        "label": "Router advertiser container",
+                        "offset_seconds": 374.575676,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.985185,
+                        "id": "dash-engine-1",
+                        "label": "DASH engine container",
+                        "offset_seconds": 379.929024,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 300.46853,
+                        "id": "orchagent-release-1",
+                        "label": "Orchagent release container",
+                        "offset_seconds": 395.787753,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 195.205716,
+                        "id": "rootfs-1",
+                        "label": "Root filesystem squashfs",
+                        "offset_seconds": 616.883553,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 0.962653,
+                        "id": "sonic-mgmt-framework-1",
+                        "label": "Management framework container",
+                        "offset_seconds": 714.924195,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.778411,
+                        "id": "database-1",
+                        "label": "Database container",
+                        "offset_seconds": 723.896917,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.705319,
+                        "id": "p4rt-runtime-1",
+                        "label": "P4RT runtime package",
+                        "offset_seconds": 727.325208,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.762158,
+                        "id": "gnmi-sidecar-1",
+                        "label": "gNMI sidecar container",
+                        "offset_seconds": 749.299023,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.149433,
+                        "id": "sonic-gnmi-1",
+                        "label": "gNMI container",
+                        "offset_seconds": 753.265684,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.815685,
+                        "id": "mux-1",
+                        "label": "MUX container",
+                        "offset_seconds": 759.681109,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.794937,
+                        "id": "restapi-sidecar-1",
+                        "label": "REST API sidecar container",
+                        "offset_seconds": 766.57977,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.736082,
+                        "id": "sysmgr-1",
+                        "label": "System manager container",
+                        "offset_seconds": 771.594706,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.818474,
+                        "id": "lldp-1",
+                        "label": "LLDP container",
+                        "offset_seconds": 786.071207,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 2.638695,
+                        "id": "sonic-p4rt-1",
+                        "label": "P4RT container",
+                        "offset_seconds": 789.970723,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 5.102003,
+                        "id": "gbsyncd-vs-1",
+                        "label": "Gearbox syncd container",
+                        "offset_seconds": 797.572129,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.043898,
+                        "id": "platform-monitor-1",
+                        "label": "Platform monitor container",
+                        "offset_seconds": 830.707227,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.841841,
+                        "id": "snmp-1",
+                        "label": "SNMP container",
+                        "offset_seconds": 835.129137,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.951097,
+                        "id": "dhcp-relay-1",
+                        "label": "DHCP relay container",
+                        "offset_seconds": 842.348658,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.740373,
+                        "id": "eventd-1",
+                        "label": "Event daemon container",
+                        "offset_seconds": 853.601413,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.745846,
+                        "id": "sonic-bmp-1",
+                        "label": "BMP container",
+                        "offset_seconds": 864.113126,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.803621,
+                        "id": "swss-layer-1",
+                        "label": "SWSS layer container",
+                        "offset_seconds": 879.173074,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.861468,
+                        "id": "dash-ha-1",
+                        "label": "DASH HA container",
+                        "offset_seconds": 890.528577,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.925519,
+                        "id": "fpm-frr-1",
+                        "label": "FRR container",
+                        "offset_seconds": 906.257396,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.826829,
+                        "id": "nat-1",
+                        "label": "NAT container",
+                        "offset_seconds": 919.105797,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.824067,
+                        "id": "sflow-1",
+                        "label": "sFlow container",
+                        "offset_seconds": 934.344934,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.830297,
+                        "id": "teamd-1",
+                        "label": "Team daemon container",
+                        "offset_seconds": 938.271449,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.813503,
+                        "id": "macsec-1",
+                        "label": "MACsec container",
+                        "offset_seconds": 946.094532,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1112.839327,
+                        "id": "final-image-1",
+                        "label": "Final VS image recipe",
+                        "offset_seconds": 976.651433,
+                        "outcome": "finished"
+                      }
+                    ]
+                  },
+                  {
+                    "duration_seconds": 266.494947,
+                    "id": "orchagent-release-1",
+                    "label": "Orchagent release",
+                    "offset_seconds": 2110.357946,
+                    "tasks": [
+                      {
+                        "duration_seconds": 204.967503,
+                        "id": "orchagent-release-1",
+                        "label": "Orchagent release container",
+                        "offset_seconds": 53.277972,
+                        "outcome": "finished"
+                      }
+                    ]
+                  },
+                  {
+                    "duration_seconds": 284.890908,
+                    "id": "orchagent-debug-1",
+                    "label": "Orchagent debug",
+                    "offset_seconds": 2376.852893,
+                    "tasks": [
+                      {
+                        "duration_seconds": 225.378656,
+                        "id": "orchagent-debug-1",
+                        "label": "Orchagent debug container",
+                        "offset_seconds": 51.827138,
+                        "outcome": "finished"
+                      }
+                    ]
+                  },
+                  {
+                    "duration_seconds": 279.88988,
+                    "id": "syncd-debug-1",
+                    "label": "Syncd debug",
+                    "offset_seconds": 2661.743801,
+                    "tasks": [
+                      {
+                        "duration_seconds": 222.449631,
+                        "id": "syncd-debug-1",
+                        "label": "Syncd debug container",
+                        "offset_seconds": 49.622248,
+                        "outcome": "finished"
+                      }
+                    ]
+                  },
+                  {
+                    "duration_seconds": 67.660981,
+                    "id": "p4rt-debug-1",
+                    "label": "P4RT debug package",
+                    "offset_seconds": 2941.633681,
+                    "tasks": [
+                      {
+                        "duration_seconds": 1.33331,
+                        "id": "p4rt-debug-1",
+                        "label": "P4RT debug package",
+                        "offset_seconds": 64.082675,
+                        "outcome": "cached"
+                      }
+                    ]
+                  }
+                ],
                 "source": "github-job-log",
-                "status": "unavailable",
+                "status": "available",
                 "version": 1
               },
               "completed_at": "2026-10-25T05:26:46Z",
@@ -4988,24 +5295,34 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-25T06:22:37Z",
+              "conclusion": "success",
+              "duration_seconds": 1315.0,
               "name": "Upload VS image and OCI container archives",
               "number": 21,
               "phase": "upload",
               "started_at": "2026-10-25T06:00:42Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-25T06:22:39Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Post Checkout repository",
               "number": 42,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-25T06:22:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T06:22:39Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 43,
+              "phase": "other",
+              "started_at": "2026-10-25T06:22:39Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40143753386/job/121048044785"
@@ -5019,8 +5336,8 @@
       "run_id": 40143753386,
       "source_sha": "07b6d0b538250708bd71ddd0d0872b21bfc98234",
       "started_at": "2026-10-24T23:41:22Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-25T04:32:05Z",
+      "status": "completed",
+      "updated_at": "2026-10-25T06:22:42Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40143753386/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
