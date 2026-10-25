@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-25T20:10:08.578133Z",
+  "generated_at": "2026-10-25T20:14:32.937484Z",
   "pull_requests": [
     {
       "base_sha": "a6e20839d271649e63c44e4c55346a6fa554caad",
@@ -2457,13 +2457,242 @@
           "phases": {
             "build": null,
             "other": null,
-            "setup": null,
+            "setup": 247.0,
             "upload": null,
             "validation": null
           },
-          "started_at": "2026-10-25T19:45:02Z",
-          "status": "queued",
-          "steps": [],
+          "started_at": "2026-10-25T20:10:15Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-25T20:10:21Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:10:16Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:10:21Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check source-build runner capacity",
+              "number": 2,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:10:21Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:12:52Z",
+              "conclusion": "success",
+              "duration_seconds": 151.0,
+              "name": "Checkout repository",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:10:21Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:12:52Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check VS build prerequisites",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:12:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:12:52Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Prepare persistent agent caches",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:12:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:12:54Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Download verified sources from this run's source job",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:12:52Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:12:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Prepare the shared Bazel source-download directory",
+              "number": 7,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:12:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:13:26Z",
+              "conclusion": "success",
+              "duration_seconds": 31.0,
+              "name": "Configure the native VS image",
+              "number": 8,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:12:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-25T20:14:23Z",
+              "conclusion": "success",
+              "duration_seconds": 57.0,
+              "name": "Check nested Docker in both build environments",
+              "number": 9,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:13:26Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare source dependencies inside the Trixie build environment",
+              "number": 10,
+              "phase": "setup",
+              "started_at": "2026-10-25T20:14:23Z",
+              "status": "in_progress"
+            },
+            {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Build the VS image and both OCI container variants",
+              "number": 11,
+              "phase": "build",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Verify source-built P4 runtime and debug TARs in both Syncd images",
+              "number": 12,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Validate installed Syncd programs and all source debug symbols",
+              "number": 13,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Require guest service evidence for this VS image",
+              "number": 14,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Verify P4RT packaged split debug symbols",
+              "number": 15,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Remove this job's remaining build containers",
+              "number": 16,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 17,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public VS build summary",
+              "number": 18,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain installed Syncd and source dependency evidence",
+              "number": 19,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain strict VS guest validation receipt",
+              "number": 20,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload VS image and OCI container archives",
+              "number": 21,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 42,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40225791341/job/121271885232"
         }
       ],
@@ -2475,8 +2704,8 @@
       "run_id": 40225791341,
       "source_sha": "c16aecc3cf803dccb2c6df288918c0447ceb50d5",
       "started_at": "2026-10-25T19:23:18Z",
-      "status": "queued",
-      "updated_at": "2026-10-25T19:45:02Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-25T20:10:15Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40225791341/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
