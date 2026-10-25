@@ -39,21 +39,6 @@ RUN apt install -f -y \
 {% endif %}
 {% endif %}
 
-"
-
-# Optional source-built debug archives. Existing three-argument callers keep
-# their original Debian-package behavior.
-if [ -n "${4:-}" ]; then
-    cat <<EOF
-{% if $4 is defined %}
-{% for archive in $4.split() %}
-ADD files/{{ archive }} /
-{% endfor %}
-{% endif %}
-EOF
-fi
-
-echo "
 
 ## Clean up
 RUN apt-get clean -y; apt-get autoclean -y; apt-get autoremove -y

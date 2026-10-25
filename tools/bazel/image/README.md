@@ -118,11 +118,10 @@ must match the configured 1.2.4.2-3 descriptor; the older cached archive cannot
 substitute for it. A source mirror missing the matching archive still requires
 access to the upstream source repository.
 
-The source-installer profile explicitly passes `P4RT_BUILD_WITH_BAZEL_TARS=y`
-to each native Make stage. P4RT runtime and matching debug outputs come from
-the source owner's TAR targets without requesting its DEB wrappers. The selector
-is forwarded into the slave and package submakes; ordinary Make builds retain
-`P4RT_BUILD_WITH_BAZEL_TARS=n` and their existing DEB recipe.
+The source-installer profile keeps P4RT on its existing Make/Debian package
+path. Its source-owner Bazel targets build the runtime and matching debug DEBs,
+and the legacy Dockerfiles install those packages. Bazel's separate OCI assembly
+uses runtime/debug TARs only for the images whose Bazel integration selects them.
 
 The native stage also builds config-engine and the Scapy wheel. The Make target
 excludes the orchagent archive while retaining its service templates; Bazel

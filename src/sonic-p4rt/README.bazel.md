@@ -1,37 +1,31 @@
-# P4RT runtime and debug archives
+# P4RT source build and debug checks
 
-`P4RT_BUILD_WITH_BAZEL_TARS=y` selects the source owner's existing
-`//p4rt_app:p4rt_binaries` and `//p4rt_app:p4rt_debug` TAR targets for the Make
-container build. The default is `n`, which preserves the existing Debian
-package recipes, output names and container dependencies. The outer Make
-builder forwards the selector into the slave container.
+The existing Make recipe builds `//p4rt_app:p4rt_deb` and
+`//p4rt_app:p4rt_dbg_deb`, runs `//p4rt_app/...` tests, and publishes the
+runtime and debug Debian packages. The legacy Dockerfile installs those
+packages through its existing Debian package flow.
 
-The selected archives are published as
-`target/files/trixie/sonic-p4rt_0.0.1_amd64.tar.bz2` and
-`target/files/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.tar.bz2` for AMD64/Trixie.
-Runtime and debug images consume these TAR bytes directly. The six runtime
-programs retain their `/usr/local/bin` paths; the debug image adds the matching
-`p4rt.dwp`. Common and GMP runtime dependencies remain explicit. The file names
-separate retained TAR outputs from the legacy DEBs when switching producers.
+For example, an AMD64/Trixie build produces
+`target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb` and
+`target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb`. Make registers the
+runtime package as the Docker runtime dependency and the debug package as
+the debug-image dependency. Source-owned TAR targets remain available for
+Bazel consumers; legacy Docker assembly does not consume them.
 
-Each archive is a separate Make target. Requesting debug also prepares runtime,
-and removing either archive rebuilds that output. Before executing Bazel, the
-TAR recipe resolves only test labels and audits the configured TAR/test action
-graph. Query failures, empty test selections and DEB-producing actions stop the
-recipe. A failed build does not replace an existing published archive.
+The schema/cache adapter stages the installed `/usr/include/swss/cfg_schema.h`
+in a declared repository and supplies its label to Common. The build reuses
+`/bazel_cache/repository_cache` and `/bazel_cache/disk_cache`, while keeping
+Bazel server/output state private to each slave container.
 
-For existing TAR outputs, run the same isolated debug check used by the fixture
-suite with `--runtime-tar`, `--debug-tar`, `--source-root` and `--output` arguments
-to `tools/bazel/ci/verify_p4rt_debug.py`. The verifier also retains the existing
-paired `--runtime-deb`/`--debug-deb` interface for legacy workflows.
+Run `tools/bazel/ci/verify_p4rt_debug.py` with paired `--runtime-deb` and
+`--debug-deb` arguments, plus `--source-root` and `--output`, to check existing
+package outputs. Its paired TAR interface remains available to validate source
+archives independently of Make/Docker integration.
 
-The PR-triggered `Bazel checks (AMD64)` job runs `p4rt_tar_test.py` through
-the existing Python test discovery. Those tests exercise Make
-selection, missing-output recovery, failure propagation, action auditing,
-template rendering and legacy compatibility with controlled Bazel commands.
-`p4rt_debug_test.py` separately compiles small native ELF/DWP fixtures and checks
-isolated GDB lookup. Neither suite establishes production P4RT compilation,
-actual image assembly or forwarding. Those checks remain required for the
-selected source revision and architecture. The source-installer profile in
-`tools/bazel/ci/native_build.py` explicitly selects TARs in its Make arguments
-for each preparation stage; ordinary Make builds retain the default package path.
+`p4rt_schema_cache_test.py` exercises the existing package recipe with
+controlled Bazel commands, including schema/cache inputs, no-op behavior,
+missing-header errors and Docker package selection. `p4rt_tar_test.py` checks
+archive inventory validation and the debug verifier's DEB interface.
+`p4rt_debug_test.py` compiles native ELF/DWP fixtures and checks isolated GDB
+lookup. These focused tests do not establish production P4RT compilation,
+full image assembly or forwarding on either architecture.

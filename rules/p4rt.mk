@@ -2,21 +2,6 @@
 
 SONIC_P4RT_VERSION = 0.0.1
 
-ifeq ($(P4RT_BUILD_WITH_BAZEL_TARS),y)
-SONIC_P4RT = sonic-p4rt_$(SONIC_P4RT_VERSION)_$(CONFIGURED_ARCH).tar.bz2
-$(SONIC_P4RT)_SRC_PATH = $(SRC_PATH)/sonic-p4rt
-$(SONIC_P4RT)_DEPENDS += $(LIBSWSSCOMMON_DEV)
-SONIC_MAKE_FILES += $(SONIC_P4RT)
-
-SONIC_P4RT_DBG = sonic-p4rt-dbgsym_$(SONIC_P4RT_VERSION)_$(CONFIGURED_ARCH).tar.bz2
-$(SONIC_P4RT_DBG)_SRC_PATH = $($(SONIC_P4RT)_SRC_PATH)
-$(SONIC_P4RT_DBG)_DEPENDS += $(LIBSWSSCOMMON_DEV)
-# Serialize the two invocations in the shared source checkout. Each archive
-# remains a real target, so deleting either output rebuilds that output.
-$(SONIC_P4RT_DBG)_AFTER_FILES += $(SONIC_P4RT)
-SONIC_MAKE_FILES += $(SONIC_P4RT_DBG)
-
-else
 SONIC_P4RT = sonic-p4rt_$(SONIC_P4RT_VERSION)_$(CONFIGURED_ARCH).deb
 $(SONIC_P4RT)_SRC_PATH = $(SRC_PATH)/sonic-p4rt
 $(SONIC_P4RT)_DEPENDS += $(LIBSWSSCOMMON_DEV)
@@ -27,8 +12,6 @@ SONIC_P4RT_DBG = sonic-p4rt-dbgsym_$(SONIC_P4RT_VERSION)_$(CONFIGURED_ARCH).deb
 $(SONIC_P4RT_DBG)_DEPENDS += $(SONIC_P4RT)
 $(SONIC_P4RT_DBG)_RDEPENDS += $(SONIC_P4RT)
 $(eval $(call add_derived_package,$(SONIC_P4RT),$(SONIC_P4RT_DBG)))
-
-endif
 
 export SONIC_P4RT SONIC_P4RT_DBG SONIC_P4RT_VERSION
 

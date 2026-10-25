@@ -294,8 +294,7 @@ class NativeBuildTest(unittest.TestCase):
         return daemon, popen, probe, fake_root
 
     def test_private_daemon_and_source_build_recipe_are_used_for_all_stages(self):
-        daemon, popen, probe, fake_root = self.run_inside(
-            extra_env={"P4RT_BUILD_WITH_BAZEL_TARS": "n"})
+        daemon, popen, probe, fake_root = self.run_inside()
         socket = "unix://" + str(fake_root / "run/sonic-native-ci/docker.sock")
         self.assertIn("--host=" + socket, popen.call_args.args[0])
         self.assertIn("--data-root=" + str(self.args.state / "docker-data"), popen.call_args.args[0])
@@ -306,7 +305,6 @@ class NativeBuildTest(unittest.TestCase):
         flags = {
             "BLDENV=trixie", "PLATFORM_ARCH=amd64", "USERNAME=admin",
             "BAZEL_MIN_READINESS=bazel_disabled", "KERNEL_PROCURE_METHOD=build",
-            "P4RT_BUILD_WITH_BAZEL_TARS=y",
             "ENABLE_DOCKER_BASE_PULL=n", "SONIC_DPKG_CACHE_METHOD=none",
             "DEFAULT_CONTAINER_REGISTRY=docker.io",
             "MIRROR_URLS=http://deb.debian.org/debian/",
