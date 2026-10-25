@@ -195,10 +195,43 @@ use_repo(apt, "trixie")
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
-    packages = ["liblua5.1-0-dev", "redis-server"],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+    packages = [
+        "liblua5.1-0-dev",
+        "redis-server",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
 use_repo(apt, "eventd_deps")
+
+# System-manager and FIPS source files are owned by this checkout. Shared
+# Common and build infrastructure keep the root's landed registry selections.
+bazel_dep(name = "sonic-sysmgr", version = "0.0.0", repo_name = "sonic_sysmgr")
+local_path_override(
+    module_name = "sonic-sysmgr",
+    path = "src/sonic-sysmgr",
+)
+
+bazel_dep(name = "sonic-fips", version = "0.0.0", repo_name = "sonic_fips")
+local_path_override(
+    module_name = "sonic-fips",
+    path = "src/sonic-fips",
+)
+
+bazel_dep(name = "protobuf-legacy", version = "3.21.12-sonic.1", repo_name = "sonic_protobuf")
+bazel_dep(name = "libnl3", version = "3.7.0-sonic.2")
+bazel_dep(name = "bazel_lib", version = "3.1.1")
+bazel_dep(name = "aspect_rules_py", version = "1.11.2")
+
+bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.3", dev_dependency = True)
+
+uv = use_extension("@aspect_rules_py//uv/unstable:extension.bzl", "uv")
+use_repo(uv, "pypi")
+
+include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
 
 # Commit suffixes do not sort by source date; keep the selected compiler revision.
 single_version_override(
