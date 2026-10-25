@@ -68,8 +68,16 @@ def generate(owners, modules, sources, public_sources, output, payloads, *, arch
     module_sources = module_sources or {}
     if mode != "provenance" and module_sources:
         raise ValueError("module-only sources are supported only for provenance")
-    if not set(module_sources) <= set(sources) or set(policy["packages"]) != set(sources):
+    image_packages = set(policy["packages"])
+    if not set(module_sources) <= set(sources) or not image_packages <= set(sources):
         raise ValueError("image paths differ from source TAR declarations")
+    if mode == "contract" and image_packages != set(sources):
+        raise ValueError("typed image contracts require every source TAR declaration")
+    if not set(module_sources) <= image_packages:
+        raise ValueError("module-only sources require image paths")
+    # Existing package metadata remains authoritative where available. The
+    # fallback records only source identity for owners without that metadata;
+    # it never invents Debian controls or bypasses an owner's TAR hash check.
     declared_packages = {name for path in owners.values()
                          for name in json.loads(path.read_text()).get("packages", {})}
     if declared_packages.intersection(module_sources):
@@ -84,10 +92,16 @@ def generate(owners, modules, sources, public_sources, output, payloads, *, arch
         if set(resolution_policy["packages"][name]) - {
                 "required_paths", "path_modes", "path_owners", "required_inherited_files"}:
             raise ValueError("image policy duplicates owner package metadata: " + name)
-        identities[module] = {"version": module_identity(modules[module], module)}
+        required_paths = resolution_policy["packages"][name].get("required_paths", [])
+        if not expand_required_paths(list(required_paths) if isinstance(required_paths, dict) else required_paths,
+                                     architecture):
+            raise ValueError("module-only sources require image paths: " + name)
+        version = module_identity(modules[module], module)
+        identities[module] = {"version": version}
         records["packages"][name] = {"source_module": module}
     overrides = git_revisions(root_module)
     packages = []
+    path_policies = {}
     for name, item in records["packages"].items():
         if "payload_sha256" in item:
             with payloads[name].open("rb") as stream:
@@ -116,12 +130,17 @@ def generate(owners, modules, sources, public_sources, output, payloads, *, arch
             raise ValueError("unversioned source provenance requires its root git override: " + module)
         else:
             source["release"] = version.rsplit(".sonic.", 1)[0]
-        requirements = {"required_paths": paths} if mode == "contract" else policy["packages"][name]
+        requirements = {"required_paths": paths} if mode == "contract" else dict(policy["packages"].get(name, {}))
+        if mode == "provenance" and name not in module_sources:
+            # Keep sparse image additions and exclusions beside producer checks.
+            requirements["required_paths"] = list(dict.fromkeys([
+                *item["required_paths"], *item.get("producer_required_paths", [])]))
+        path_policies[name] = requirements
         packages.append({**requirements, "package": name, "kind": "runtime-layer", "version": version,
                          "architecture": architecture, "source": source})
     if mode == "provenance":
         result = {"schema": 1, "packages": {
-            item["package"]: {**policy["packages"][item["package"]],
+            item["package"]: {**path_policies[item["package"]],
                               "target": item["source"]["target"],
                               "source_revision": item["source"].get("commit", item["source"].get("release")),
                               "source_version": item["source"]["version"]}

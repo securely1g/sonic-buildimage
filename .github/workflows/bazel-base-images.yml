@@ -54,6 +54,10 @@ jobs:
           repository-cache: true
           disk-cache: configured-debian-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Check clean dependency inputs
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
       - name: Install locked packages and test apt-get install
         run: |
           PYTHONPATH="$PWD" python3 -B -m unittest tools.bazel.tests.single_layer_rootfs_test -v

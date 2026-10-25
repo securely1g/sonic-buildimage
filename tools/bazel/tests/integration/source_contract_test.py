@@ -168,6 +168,47 @@ class SourceContractTest(unittest.TestCase):
                      self.output, {"libexample": self.payload}, architecture="amd64",
                      expectations=self.expectations, mode="provenance")
 
+    def owner_provenance(self, architecture="amd64"):
+        self.expectations.write_text(json.dumps(self.policy))
+        self.owner.write_text(json.dumps(self.metadata))
+        triplet = {"amd64": "x86_64-linux-gnu", "arm64": "aarch64-linux-gnu"}[architecture]
+        paths = self.metadata["packages"]["libexample"].get("required_paths", ["usr/lib/libexample.so.2"])
+        self.write_payload([path.format(multiarch=triplet) for path in paths],
+                           machine={"amd64": 62, "arm64": 183}[architecture])
+        return generate({"@@example+//:runtime_packages.json": self.owner},
+                        {"example": self.module}, {"libexample": "@@example+//:runtime"},
+                        {"libexample": "@example//:runtime"}, self.output, {"libexample": self.payload},
+                        architecture=architecture, expectations=self.expectations,
+                        mode="provenance")["packages"]["libexample"]
+
+    def test_sparse_policy_inherits_owner_paths_on_both_architectures(self):
+        """A package may disappear from image JSON once its producer supplies the checks."""
+        paths = ["usr/lib/{multiarch}/libswsscommon.so.0", "var/run/redis/sonic-db/database_config.json"]
+        self.policy["packages"] = {}
+        self.metadata["packages"]["libexample"]["required_paths"] = paths
+        for architecture in ("amd64", "arm64"):
+            with self.subTest(architecture=architecture):
+                result = self.owner_provenance(architecture)
+                self.assertEqual(result["required_paths"], paths)
+                self.assertNotIn("control_fields", result)
+        self.metadata["packages"]["libexample"].pop("required_paths")
+        with self.assertRaisesRegex(ValueError, "lacks producer or image required paths"):
+            self.owner_provenance()
+
+    def test_provenance_unions_producer_checks_without_dropping_image_policy(self):
+        """Keep libnl's source plugin checks and Debian-path exclusions beside its producer SONAME."""
+        library = "usr/lib/{multiarch}/libnl-cli-3.so.200"
+        plugin = "usr/lib/{multiarch}/libnl-3/cli/cls/basic.so"
+        old_plugin = "usr/lib/{multiarch}/libnl/cli/cls/basic.so"
+        self.metadata["packages"]["libexample"]["required_paths"] = [library]
+        self.policy["packages"]["libexample"] = {
+            "required_paths": [plugin], "excluded_baseline_paths": [old_plugin],
+            "path_modes": {plugin: 0o644}}
+        result = self.owner_provenance()
+        self.assertEqual(result["required_paths"], [library, plugin])
+        self.assertEqual(result["excluded_baseline_paths"], [old_plugin])
+        self.assertEqual(result["path_modes"], {plugin: 0o644})
+
     def module_provenance(self, root_module=None):
         return generate({}, {"example": self.module},
                         {"libexample": "@@example+//:runtime"},
@@ -221,6 +262,14 @@ class SourceContractTest(unittest.TestCase):
                      {"example": self.module}, {"libexample": "@@example+//:runtime"},
                      {"libexample": "@example//:runtime"}, self.output, {"libexample": self.payload},
                      architecture="amd64", expectations=self.expectations, mode="provenance", module_sources={"libexample": "example"})
+
+    def test_module_only_provenance_still_requires_explicit_image_paths(self):
+        for packages in ({}, {"libexample": {"required_paths": []}}):
+            with self.subTest(packages=packages):
+                self.policy["packages"] = packages
+                self.expectations.write_text(json.dumps(self.policy))
+                with self.assertRaisesRegex(ValueError, "module-only sources require image paths"):
+                    self.module_provenance()
 
 
 if __name__ == "__main__":

@@ -1,15 +1,14 @@
-"""Check that the image installs the same source modes its contract validates.
+"""Check that image assembly preserves producer-owned Lua modes.
 
-Tiny TARs reproduce Common's executable Lua inputs without compiling project
+Tiny TARs reproduce Common's correctly packaged Lua inputs without compiling project
 code. The actual Syncd BUILD wiring chooses the input to the production source
-assembler and normalizer. Real bsdtar exclusion/notice behavior is exercised by
-the separate oci_license_filter_test; these fixture paths survive that filter.
+assembler and normalizer. The source producer supplies the package payload;
+this test checks that image assembly preserves its declared files and modes.
 """
 
 import ast
 import hashlib
 import io
-import json
 from pathlib import Path
 import sys
 import tarfile
@@ -60,14 +59,18 @@ class SourceLayerPolicyTest(unittest.TestCase):
         owner = ROOT / "platform/vs/docker-syncd-vs"
         tree = ast.parse((owner / "BUILD.bazel").read_text())
         self.layer = declaration(tree, "normalize_layer", "source_runtime_layer")
-        self.filtered = declaration(tree, "dpkg_filter", "rdeps")
-        policies = json.loads((owner / "config/source_paths.json").read_text())["packages"]
-        modes = policies["libswsscommon"]["path_modes"]
-        self.lua = {name: mode for name, mode in modes.items() if name.endswith(".lua")}
-        self.assertTrue(self.lua, "The image contract must exercise Common Lua inputs")
+        self.source_layer = declaration(tree, "sonic_layer", "rdeps")
+        # The producer owns package paths and modes; the image no longer keeps
+        # a second source_paths catalog or rewrites source-contract metadata.
+        contract = declaration(tree, "source_contract", "source_contract")
+        self.assertNotIn("expectations", contract)
+        self.assertNotIn("modes", self.layer)
+        self.assertNotIn("root_owned", self.layer)
+        self.lua = {"usr/share/swss/consumer_table_pops.lua": 0o644,
+                    "usr/share/swss/producer_state_table_update.lua": 0o644}
+        modes = {**self.lua, "run/redis/sonic-db/database_config.json": 0o644}
         self.contents = {name: ("source bytes: " + name + "\n").encode() for name in modes}
-        common = [(name.replace("run/", "var/run/", 1) if name.startswith("run/") else name,
-                   self.contents[name], 0o755, 0, None) for name in modes]
+        common = [(name, self.contents[name], mode, 0, None) for name, mode in modes.items()]
         self.ssh_bytes = b"source-built ssh-agent fixture\n"
         ssh = [("usr/bin/ssh-agent", self.ssh_bytes, 0o755, 0, None)]
         packages = {}
@@ -78,14 +81,11 @@ class SourceLayerPolicyTest(unittest.TestCase):
         write_tar(self.raw, common + ssh)
         self.checked = self.root / "checked.tar"
         contract = {"architecture": "amd64", "packages": [
-            {"package": "libswsscommon", "required_paths": {}, "path_modes": modes},
-            {"package": "openssh-client", "required_paths": {},
-             "path_modes": {"usr/bin/ssh-agent": policies["openssh-client"]["path_modes"]["usr/bin/ssh-agent"]},
-             "path_owners": policies["openssh-client"]["path_owners"]},
+            {"package": "libswsscommon", "required_paths": {}},
+            {"package": "openssh-client", "required_paths": {}},
         ]}
         package_contract.combine_tars(contract, packages, self.checked, {})
-        # Use a different installed group from the static contract to prove the
-        # real configured baseline still controls ssh-agent's metadata.
+        # The real configured baseline controls ssh-agent's metadata.
         self.base = self.root / "configured.tar"
         aliases = normalize_layer.DIRECTORY_ALIASES
         entries = [(target, None, 0o755, 0, None) for target in sorted({value["target"] for value in aliases.values()})]
@@ -96,20 +96,18 @@ class SourceLayerPolicyTest(unittest.TestCase):
     def assembled_layer(self):
         """Follow the actual source edge; reverting to raw TARs changes the result."""
         source = ast.literal_eval(self.layer["src"])
-        self.assertEqual(ast.literal_eval(self.filtered["src"]), ":source_runtime_payloads")
-        # None of these fixture paths are filtered. The public rdeps edge must
-        # remain the dpkg_filter target, retaining the real exclusion pass.
-        inputs = {":rdeps": self.checked, ":source_runtime_files": self.raw}
-        self.assertIn(source, inputs, "Review the changed image source pipeline")
+        self.assertEqual(ast.unparse(self.source_layer["tars"]), "_SOURCE_PACKAGES.values()")
+        self.assertEqual(source, ":rdeps")
+        inputs = {":rdeps": self.checked}
         result = self.root / "installed.tar"
         options = {key: ast.literal_eval(self.layer[key]) for key in
-                   ("expected_platform", "root_owned", "preserve_metadata")}
+                   ("expected_platform", "preserve_metadata")}
         options["modes"] = ast.literal_eval(self.layer["modes"]) if "modes" in self.layer else {}
         normalize_layer.normalize(inputs[source], self.base, result, **options)
         return result
 
-    def test_image_lua_modes_match_the_checked_source_contract(self):
-        """Prevent executable owner Lua inputs from bypassing the image's 0644 policy."""
+    def test_image_preserves_producer_lua_modes_and_bytes(self):
+        """The image retains the Lua permissions supplied by the source producer."""
         installed = payload(self.assembled_layer(), require_root=False)
         for name, mode in self.lua.items():
             with self.subTest(path=name):

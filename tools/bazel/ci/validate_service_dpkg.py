@@ -117,7 +117,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    options = ["--config=syncd-dash", *shlex.split(os.environ.get("BAZEL_CONTAINER_ARGS", ""))]
+    options = ["--config=syncd-dash", "--//dockers/docker-orchagent:source_config_engine=true",
+               *shlex.split(os.environ.get("BAZEL_CONTAINER_ARGS", ""))]
     paths = build_inputs(shlex.split(args.bazel), options, args.output)
     validate_dpkg_images(paths, args.output)
 
