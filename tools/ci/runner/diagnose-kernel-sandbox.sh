@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-off diagnostic, on an isolated branch; leaves host policy unchanged.
+# One-off diagnostic and scoped policy repair, on an isolated branch.
 set -euo pipefail
 mkdir -p artifacts/kernel-sandbox
 exec > >(tee artifacts/kernel-sandbox/probe.log) 2>&1
