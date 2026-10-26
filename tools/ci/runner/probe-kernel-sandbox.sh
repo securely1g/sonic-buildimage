@@ -10,7 +10,7 @@ for name in kernel/apparmor_restrict_unprivileged_userns kernel/unprivileged_use
   if [[ -f /proc/sys/$name ]]; then printf '%s=' "$name"; cat "/proc/sys/$name"; fi
 done
 printf '\nFresh reproduction: same builder, Bazel release and user; historical workspace was removed.\n'
-curl --fail --location --retry 3 https://releases.bazel.build/8.5.1/release/bazel-8.5.1-linux-x86_64 -o /tmp/bazel-8.5.1
+curl --fail --location --max-time 90 --retry 1 https://releases.bazel.build/8.5.1/release/bazel-8.5.1-linux-x86_64 -o /tmp/bazel-8.5.1
 printf '%s  %s\n' 61d89402f0368e64b6c827be5de79d8e65382e8124c3cbb97325611a1851392e /tmp/bazel-8.5.1 | sha256sum --check
 chmod 0755 /tmp/bazel-8.5.1
 output=/sonic/target/bazel-kernel-state/probe/build/output

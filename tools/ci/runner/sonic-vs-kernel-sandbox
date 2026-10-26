@@ -1,0 +1,7 @@
+# Temporary diagnostic policy for trusted SONiC kernel build actions.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile sonic-vs-kernel-sandbox /sonic/target/bazel-kernel-state/*/build/output/install/*/linux-sandbox flags=(unconfined) {
+  userns,
+}
