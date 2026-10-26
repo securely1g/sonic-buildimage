@@ -21,3 +21,8 @@ for directory,dirs,files in os.walk(root,followlinks=False):
   if kind=="dir" and s.st_uid!=1001 and len(examples)<12:examples.append(str(p))
 print("ownership_counts",dict(counts),flush=True);print("different_owner_examples",examples,flush=True)
 '
+
+printf '\nRepair only the verified stale root-owned digest directories:\n'
+docker run --rm --privileged --mount "type=bind,src=$cache,dst=/bazel_cache" \
+  --mount "type=bind,src=$PWD/tools/ci/runner/repair-bazel-cache.py,dst=/repair.py,readonly" \
+  "$image" python3 /repair.py
