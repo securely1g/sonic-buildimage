@@ -1,5 +1,5 @@
 #!/bin/bash
-# Prepare the existing P4 prerequisites and check them in one Trixie builder.
+# Validate both OCI image families and P4 debug packages in one Trixie builder.
 set -euo pipefail
 
 if (( $# == 0 )); then
@@ -14,6 +14,8 @@ mkdir -p artifacts/vs/syncd-p4-images
 # implementation details or hardcodes a package version.
 configuration=$("${make_command[@]}" --no-print-directory -s -j1 -f - .vs-ci-config <<'MAKE'
 $(info VS_CI:DEBS_PATH=$(strip $(DEBS_PATH)))
+$(info VS_CI:TARGET_PATH=$(strip $(TARGET_PATH)))
+$(info VS_CI:DOCKER_CONFIG_ENGINE_TRIXIE=$(strip $(DOCKER_CONFIG_ENGINE_TRIXIE)))
 $(info VS_CI:SONIC_P4RT=$(strip $(SONIC_P4RT)))
 $(info VS_CI:SONIC_P4RT_DBG=$(strip $(SONIC_P4RT_DBG)))
 $(info VS_CI:BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(strip $(BUILD_WITH_BAZEL_WHEN_AVAILABLE)))
@@ -57,39 +59,64 @@ for image in docker-orchagent docker-syncd-vs; do
         exit 1
     fi
 done
-for key in DEBS_PATH SONIC_P4RT SONIC_P4RT_DBG; do
+for key in DEBS_PATH SONIC_P4RT SONIC_P4RT_DBG TARGET_PATH DOCKER_CONFIG_ENGINE_TRIXIE; do
     [[ -n ${config[$key]} ]] || { echo "Missing Make package setting: $key" >&2; exit 1; }
 done
+if [[ " ${config[SONIC_BAZEL_DOCKER_IMAGES]} " != *" ${config[DOCKER_CONFIG_ENGINE_TRIXIE]} "* ]]; then
+    echo 'Shared image validation requires the Bazel config-engine archive producer' >&2
+    exit 1
+fi
 runtime_deb=${config[DEBS_PATH]}/${config[SONIC_P4RT]}
 debug_deb=${config[DEBS_PATH]}/${config[SONIC_P4RT_DBG]}
+base_archive=${config[TARGET_PATH]}/${config[DOCKER_CONFIG_ENGINE_TRIXIE]}
 # Preserve the owner's dependency installation, freshness and cache rules.
 # Finish the legacy P4 workspace before testing the image workspace.
-"${make_command[@]}" --no-print-directory -j1 "$runtime_deb" "$debug_deb"
-for package in "$runtime_deb" "$debug_deb"; do
+# SWSS inherits this OCI base directly, so its Docker-load archive is not a
+# service-image prerequisite. Materialize it once for the shared Docker checks.
+"${make_command[@]}" --no-print-directory -j1 "$runtime_deb" "$debug_deb" "$base_archive"
+for package in "$runtime_deb" "$debug_deb" "$base_archive"; do
     [[ -s $package ]] || { echo "Missing or empty P4RT prerequisite: $package" >&2; exit 1; }
 done
 
-# Match the Syncd archive recipe's options, including the caller's cache and
-# distdir settings. Changing output bases here would defeat in-session reuse.
+# Match the archive recipes, including the caller's cache and distdir settings.
+# Keep one output base and server; only Syncd selects its DASH configuration.
 option_lines=$(python3 tools/bazel/build_helpers.py options \
     --cache-directory="${BAZEL_CONTAINER_CACHE_DIR-${BAZEL_SWSS_CACHE_DIR:-}}" \
-    --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}} --config=syncd-dash")
+    --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}}")
 bazel_options=()
 if test -n "$option_lines"; then mapfile -t bazel_options <<< "$option_lines"; fi
 bazel_options+=(--platforms=@sonic_build_infra//platforms:x86_64_trixie
     --host_platform=@sonic_build_infra//platforms:x86_64_trixie)
 
+collect_test_results() {
+    local test_name="$1" output="artifacts/vs/$2" file path
+    mkdir -p "$output"
+    for file in test.log test.xml test.outputs/validation.json; do
+        path="bazel-testlogs/tools/bazel/tests/$test_name/$file"
+        if test -f "$path"; then
+            cp "$path" "$output/$(basename "$file")"
+        fi
+    done
+}
+# Retain each result before another Bazel invocation changes bazel-testlogs.
 test_status=0
-"${BAZEL:-bazel}" test "${bazel_options[@]}" //tools/bazel/tests:syncd_p4_images_test \
+"${BAZEL:-bazel}" test "${bazel_options[@]}" //tools/bazel/tests:swss_images_test \
+    --nocache_test_results --nozip_undeclared_test_outputs \
+    2>&1 | tee artifacts/vs/swss-images.log || test_status=$?
+collect_test_results swss_images_test swss-images
+"${BAZEL:-bazel}" test "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
     --nocache_test_results --nozip_undeclared_test_outputs \
     2>&1 | tee artifacts/vs/syncd-p4-images.log || test_status=$?
-for file in test.log test.xml test.outputs/validation.json; do
-    path="bazel-testlogs/tools/bazel/tests/syncd_p4_images_test/$file"
-    if test -f "$path"; then
-        cp "$path" "artifacts/vs/syncd-p4-images/$(basename "$file")"
-    fi
-done
+collect_test_results syncd_p4_images_test syncd-p4-images
 if test "$test_status" -ne 0; then exit "$test_status"; fi
+
+# cquery alone does not materialize cached policy outputs.
+"${BAZEL:-bazel}" build "${bazel_options[@]}" //tools/bazel/tests:swss_installed_images_policy
+policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --output=files //tools/bazel/tests:swss_installed_images_policy)
+cp "$policy" artifacts/vs/swss-installed-images-policy.json
+"${BAZEL:-bazel}" build "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_installed_images_policy
+policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --config=syncd-dash --output=files //tools/bazel/tests:syncd_installed_images_policy)
+cp "$policy" artifacts/vs/syncd-installed-images-policy.json
 
 python3 -B tools/bazel/ci/verify_p4rt_debug.py \
     --runtime-deb "$runtime_deb" --debug-deb "$debug_deb" \
