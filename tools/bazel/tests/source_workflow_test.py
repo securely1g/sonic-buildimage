@@ -50,6 +50,7 @@ class SourceWorkflowTest(unittest.TestCase):
         self.commands.mkdir()
         (self.directory / "artifacts/vs").mkdir(parents=True)
         for name in (".bazelversion", "tools/bazel/build_helpers.py",
+                     "tools/bazel/cache/credentials.py",
                      "platform/vs/docker-syncd-vs/bazel/apt.lock.json",
                      "platform/vs/docker-syncd-vs/BUILD.bazel"):
             fixture = self.directory / name

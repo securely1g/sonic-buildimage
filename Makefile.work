@@ -509,6 +509,11 @@ ifneq ($(SONIC_VERSION_CACHE_SOURCE),)
 	DOCKER_RUN += -v "$(SONIC_VERSION_CACHE_SOURCE):/vcache:rw"
 endif
 
+# Forward cache authentication by name so the value never appears in Make's
+# printed Docker command or its command-line variables. Keep this independent
+# of the optional local cache mount below. Only the Bazel client uses it.
+DOCKER_RUN += -e BAZEL_REMOTE_AUTH
+
 # Reuse downloads and action outputs across disposable builder containers.
 # Create the bind source as the host build user, before Docker can create a
 # root-owned directory. Keep the output base private to each builder/check-out.

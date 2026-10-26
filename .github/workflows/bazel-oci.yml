@@ -534,6 +534,7 @@ jobs:
         id: vs_build
         env:
           MEASURE_ORCHAGENT_REUSE: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_orchagent_reuse }}
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           measurement=()
           if [[ "$MEASURE_ORCHAGENT_REUSE" == true ]]; then

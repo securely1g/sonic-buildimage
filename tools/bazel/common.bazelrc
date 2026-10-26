@@ -1,5 +1,9 @@
 common --lockfile_mode=update
 
+# Common CI and sonic-slave must use the same action environment. Inherited
+# PATH/LD_LIBRARY_PATH values otherwise change cross-repository cache keys.
+common --incompatible_strict_action_env
+
 # Default direct invocations to AMD64; the Make container bridge selects the
 # configured native architecture, and ARM64 callers can pass both platform flags.
 common --platforms=@sonic_build_infra//platforms:x86_64_trixie
