@@ -26,7 +26,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.15")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -45,7 +45,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
+    version = "0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -97,7 +97,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.6",
+    version = "3.7.0.sonic.7",
 )
 
 single_version_override(
@@ -244,8 +244,8 @@ apt_inputs(
 )
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
-bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.5")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
 
 single_version_override(
@@ -259,7 +259,7 @@ bazel_dep(name = "sonic-fips", version = "0.0.3-d1a2c8f692d4197295269ed445022c38
 # their previous infrastructure declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
+    version = "0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -330,4 +330,12 @@ source_files(
         "@sonic_swss//dist:BUILD.bazel": "dist-BUILD.bazel.txt",
         "@sonic_swss//:debian/swss.install": "swss.install.txt",
     },
+)
+
+# libteam is its own module so standalone builds and SWSS consumers share the
+# in-tree Debian source, SONiC patch series and Make's src/libteam checkout.
+bazel_dep(name = "libteam", version = "1.31.sonic-buildimage")
+local_path_override(
+    module_name = "libteam",
+    path = "src/libteam",
 )
