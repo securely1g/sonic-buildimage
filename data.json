@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-26T03:13:19.224970Z",
+  "generated_at": "2026-10-26T03:15:21.685044Z",
   "pull_requests": [
     {
       "base_sha": "a6e20839d271649e63c44e4c55346a6fa554caad",
@@ -11,7 +11,7 @@
       "number": 51,
       "state": "open",
       "title": "Build FRR and its SONiC dependencies with native Bazel",
-      "updated_at": "2026-10-26T03:07:07Z",
+      "updated_at": "2026-10-26T03:14:06Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/51"
     },
     {
@@ -263,7 +263,7 @@
       "number": 30,
       "state": "open",
       "title": "Build base and config-engine container images from source",
-      "updated_at": "2026-10-26T03:09:29Z",
+      "updated_at": "2026-10-26T03:14:55Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/30"
     },
     {
@@ -593,6 +593,109 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "codex/kernel-sandbox-diagnostic-20261026",
+      "completed_at": "2026-10-26T03:14:25Z",
+      "conclusion": "success",
+      "event": "workflow_dispatch",
+      "jobs": [
+        {
+          "architecture": null,
+          "completed_at": "2026-10-26T03:14:25Z",
+          "conclusion": "success",
+          "duration_seconds": 42.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 121379253235,
+          "kind": "other",
+          "name": "diagnose",
+          "phases": {
+            "build": null,
+            "other": 37.0,
+            "setup": 3.0,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-26T03:13:43Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-26T03:13:46Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-26T03:13:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T03:13:59Z",
+              "conclusion": "success",
+              "duration_seconds": 13.0,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-26T03:13:46Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T03:14:21Z",
+              "conclusion": "success",
+              "duration_seconds": 22.0,
+              "name": "Reproduce sandbox admission in retained Trixie builder",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-10-26T03:13:59Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T03:14:23Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Save diagnostic evidence",
+              "number": 4,
+              "phase": "other",
+              "started_at": "2026-10-26T03:14:21Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T03:14:23Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 8,
+              "phase": "other",
+              "started_at": "2026-10-26T03:14:23Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T03:14:23Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 9,
+              "phase": "other",
+              "started_at": "2026-10-26T03:14:23Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40263017467/job/121379253235"
+        }
+      ],
+      "pr_association": "none",
+      "pr_association_note": null,
+      "pr_numbers": [],
+      "run_id": 40263017467,
+      "source_sha": "8a1d7cc239cce449a07dc098fff6bc2cb1fb049f",
+      "started_at": "2026-10-26T03:13:40Z",
+      "status": "completed",
+      "updated_at": "2026-10-26T03:14:26Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40263017467/attempts/1",
+      "workflow_name": "Bazel kernel sandbox diagnostic",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/kernel-sandbox-diagnostic-20261026",
