@@ -1,0 +1,173 @@
+load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_shared_library")
+load("@sonic_build_infra//cc:shared_library.bzl", "shared_library_cc_info")
+load("@sonic_build_infra//tar:sonic_deploy_tar.bzl", "sonic_deploy_tar")
+load("@tar.bzl//tar:tar.bzl", "tar")
+load("@rules_gzip//gzip/compress:defs.bzl", "gzip_compress")
+
+package(default_visibility = ["//visibility:public"])
+
+# configure.ac defaults with the Debian/SONiC root daemon configuration.
+expand_template(
+    name = "config",
+    template = "@@//src/libteam:config.h.in",
+    out = "config.h",
+    substitutions = {
+        "@ENABLE_LOGGING@": "1",
+        "@ENABLE_DBUS@": "1",
+        "@ENABLE_ZMQ@": "1",
+        "@HAVE_RTNL_LINK_GET_PHYS_ID@": "1",
+        "@HAVE_RTNL_LINK_SET_CARRIER@": "1",
+        "@HAVE_RTNL_LINK_GET_CARRIER@": "1",
+        "@PACKAGE_VERSION@": "1.31",
+        "@TEAMD_USER@": "root",
+        "@TEAMD_GROUP@": "root",
+    },
+)
+cc_library(
+    name = "private_headers",
+    hdrs = [":config"] + glob(["include/**/*.h", "libteam/*.h", "libteamdctl/*.h", "teamd/*.h"]),
+    includes = [".", "include"],
+)
+COPTS = ["-O2", "-g", "-D_FORTIFY_SOURCE=2", "-Wall", "-D_GNU_SOURCE", "-fstack-protector-strong", "-Wformat", "-Werror=format-security"]
+NL = ["@libnl3//:libnl_3", "@libnl3//:libnl_genl_3", "@libnl3//:libnl_route_3", "@libnl3//:libnl_cli_3"]
+IPC = ["@libteam_deps//libdbus-1-dev:libdbus-1_cc", "@libteam_deps//libzmq3-dev:libzmq_cc"]
+cc_library(
+    name = "libteam_objects",
+    srcs = ["libteam/libteam.c", "libteam/ports.c", "libteam/options.c", "libteam/ifinfo.c", "libteam/stringify.c"],
+    copts = COPTS + ["-fvisibility=hidden", "-ffunction-sections", "-fdata-sections"],
+    deps = [":private_headers"] + NL,
+)
+cc_shared_library(
+    name = "libteam_shared",
+    dynamic_deps = ["@libnl3//:libnl_3_shared", "@libnl3//:libnl_genl_3_shared", "@libnl3//:libnl_route_3_shared", "@libnl3//:libnl_cli_3_shared"],
+    shared_lib_name = "libteam.so.5.6.1",
+    user_link_flags = ["-Wl,-soname,libteam.so.5", "-Wl,--gc-sections", "-Wl,--as-needed", "-Wl,-z,relro,-z,now"],
+    deps = [":libteam_objects"],
+)
+shared_library_cc_info(name = "libteam_link", shared_library = ":libteam_shared")
+cc_library(name = "libteam", hdrs = ["include/team.h"], strip_include_prefix = "include", deps = [":libteam_link", "@libnl3//:headers"])
+cc_library(
+    name = "libteamdctl_objects",
+    srcs = ["libteamdctl/libteamdctl.c", "libteamdctl/cli_usock.c", "libteamdctl/cli_dbus.c", "libteamdctl/cli_zmq.c"],
+    copts = COPTS + ["-fvisibility=hidden", "-ffunction-sections", "-fdata-sections"],
+    deps = [":private_headers", "@libteam_deps//libdaemon-dev:libdaemon_headers", "@libteam_deps//libjansson-dev:libjansson_headers"] + IPC,
+)
+cc_shared_library(
+    name = "libteamdctl_shared",
+    shared_lib_name = "libteamdctl.so.0.1.5",
+    user_link_flags = ["-Wl,-soname,libteamdctl.so.0", "-Wl,--gc-sections", "-Wl,--as-needed", "-Wl,-z,relro,-z,now"],
+    deps = [":libteamdctl_objects"],
+)
+shared_library_cc_info(name = "libteamdctl_link", shared_library = ":libteamdctl_shared", runtime_deps = IPC)
+cc_library(name = "libteamdctl", hdrs = ["include/teamdctl.h"], strip_include_prefix = "include", deps = [":libteamdctl_link"])
+cc_binary(
+    name = "teamd",
+    srcs = [
+        "teamd/teamd.c", "teamd/teamd_common.c", "teamd/teamd_json.c", "teamd/teamd_config.c", "teamd/teamd_state.c",
+        "teamd/teamd_workq.c", "teamd/teamd_events.c", "teamd/teamd_per_port.c", "teamd/teamd_option_watch.c",
+        "teamd/teamd_ifinfo_watch.c", "teamd/teamd_lw_ethtool.c", "teamd/teamd_lw_psr.c", "teamd/teamd_lw_arp_ping.c",
+        "teamd/teamd_lw_nsna_ping.c", "teamd/teamd_lw_tipc.c", "teamd/teamd_link_watch.c", "teamd/teamd_ctl.c",
+        "teamd/teamd_dbus.c", "teamd/teamd_zmq.c", "teamd/teamd_usock.c", "teamd/teamd_phys_port_check.c",
+        "teamd/teamd_bpf_chef.c", "teamd/teamd_hash_func.c", "teamd/teamd_balancer.c", "teamd/teamd_runner_basic_ones.c",
+        "teamd/teamd_runner_activebackup.c", "teamd/teamd_runner_loadbalance.c", "teamd/teamd_runner_lacp.c",
+    ],
+    copts = COPTS,
+    deps = [":private_headers", ":libteam", "@libteam_deps//libdaemon-dev:libdaemon_cc", "@libteam_deps//libjansson-dev:libjansson_cc"] + IPC,
+)
+cc_binary(name = "teamnl", srcs = ["utils/teamnl.c"], copts = COPTS, deps = [":private_headers", ":libteam"])
+cc_binary(name = "teamdctl", srcs = ["utils/teamdctl.c"], copts = COPTS, deps = [":private_headers", ":libteamdctl", "@libteam_deps//libjansson-dev:libjansson_cc"])
+[
+    cc_binary(name = name, srcs = ["examples/" + name + ".c"], copts = COPTS, deps = [":libteam"])
+    for name in ["team_manual_control", "team_monitor"]
+]
+
+# Debian's multiarch ABI layout; the toolchain selects the corresponding ELF.
+# Exact dist_man*_MANS from man/Makefile.am.
+MAN_PAGES = ["man/bond2team.1", "man/teamd.conf.5", "man/teamd.8", "man/teamdctl.8", "man/teamnl.8"]
+gzip_compress(name = "changelog_gz", src = "@libteam_debian//:debian/changelog", level = 9)
+[
+    gzip_compress(name = f.split("/")[-1] + "_gz", src = f, level = 9)
+    for f in MAN_PAGES
+]
+DOC_SRCS = [":changelog_gz", "@libteam_debian//:debian/copyright"]
+[
+    sonic_deploy_tar(
+        name = "libteam_runtime_" + arch,
+        binaries = {libdir + "/libteam.so.5.6.1 uid=0 gid=0 mode=0644 type=file": ":libteam_shared"},
+        srcs = DOC_SRCS,
+        mtree = [libdir + "/libteam.so.5 uid=0 gid=0 mode=0777 type=link link=libteam.so.5.6.1", "usr/share/doc/libteam5/changelog.Debian.gz uid=0 gid=0 mode=0644 type=file content=$(location :changelog_gz)", "usr/share/doc/libteam5/copyright uid=0 gid=0 mode=0644 type=file content=$(location @libteam_debian//:debian/copyright)"],
+        force_debug_build = True,
+        visibility = ["//visibility:public"],
+    )
+    for arch, libdir in [("amd64", "usr/lib/x86_64-linux-gnu"), ("arm64", "usr/lib/aarch64-linux-gnu")]
+]
+[
+    sonic_deploy_tar(
+        name = "libteamdctl_runtime_" + arch,
+        binaries = {libdir + "/libteamdctl.so.0.1.5 uid=0 gid=0 mode=0644 type=file": ":libteamdctl_shared"},
+        srcs = DOC_SRCS,
+        mtree = [libdir + "/libteamdctl.so.0 uid=0 gid=0 mode=0777 type=link link=libteamdctl.so.0.1.5", "usr/share/doc/libteamdctl0/changelog.Debian.gz uid=0 gid=0 mode=0644 type=file content=$(location :changelog_gz)", "usr/share/doc/libteamdctl0/copyright uid=0 gid=0 mode=0644 type=file content=$(location @libteam_debian//:debian/copyright)"],
+        force_debug_build = True,
+        visibility = ["//visibility:public"],
+    )
+    for arch, libdir in [("amd64", "usr/lib/x86_64-linux-gnu"), ("arm64", "usr/lib/aarch64-linux-gnu")]
+]
+[
+    alias(name = name, actual = select({"@platforms//cpu:x86_64": ":" + base + "_amd64" + suffix, "@platforms//cpu:aarch64": ":" + base + "_arm64" + suffix}))
+    for base in ["libteam_runtime", "libteamdctl_runtime"]
+    for suffix in ["", ".debug_symbols"]
+    for name in [base + suffix]
+]
+sonic_deploy_tar(
+    name = "libteam_utils_runtime",
+    binaries = {
+        "usr/bin/teamd uid=0 gid=0 mode=0755 type=file": ":teamd",
+        "usr/bin/teamnl uid=0 gid=0 mode=0755 type=file": ":teamnl",
+        "usr/bin/teamdctl uid=0 gid=0 mode=0755 type=file": ":teamdctl",
+    },
+    srcs = ["utils/bond2team", "teamd/dbus/teamd.conf", "HOWTO.BASICS", "README"] + glob(["teamd/example_configs/*.conf"]) + [":" + f.split("/")[-1] + "_gz" for f in MAN_PAGES] + DOC_SRCS,
+    mtree = [
+        "usr/bin/bond2team uid=0 gid=0 mode=0755 type=file content=$(location utils/bond2team)",
+        "etc/dbus-1/system.d/teamd.conf uid=0 gid=0 mode=0644 type=file content=$(location teamd/dbus/teamd.conf)",
+    ] + ["usr/share/doc/libteam-utils/changelog.Debian.gz uid=0 gid=0 mode=0644 type=file content=$(location :changelog_gz)", "usr/share/doc/libteam-utils/copyright uid=0 gid=0 mode=0644 type=file content=$(location @libteam_debian//:debian/copyright)"] + [
+        "usr/share/doc/libteam-utils/" + f + " uid=0 gid=0 mode=0644 type=file content=$(location " + f + ")"
+        for f in ["HOWTO.BASICS", "README"]
+    ] + [
+        "usr/share/doc/libteam-utils/examples/" + f.split("/")[-1] + " uid=0 gid=0 mode=0644 type=file content=$(location " + f + ")"
+        for f in glob(["teamd/example_configs/*.conf"])
+    ] + [
+        "usr/share/man/man" + f[-1] + "/" + f.split("/")[-1] + ".gz uid=0 gid=0 mode=0644 type=file content=$(location :" + f.split("/")[-1] + "_gz)"
+        for f in MAN_PAGES
+    ],
+    force_debug_build = True,
+    visibility = ["//visibility:public"],
+)
+[
+    expand_template(
+        name = name + "_pc_" + arch,
+        template = directory + "/" + name + ".pc.in",
+        out = arch + "/" + name + ".pc",
+        substitutions = {"@prefix@": "/usr", "@exec_prefix@": "$${prefix}", "@libdir@": "/" + libdir, "@includedir@": "$${prefix}/include", "@PACKAGE_VERSION@": "1.31"},
+    )
+    for name, directory in [("libteam", "libteam"), ("libteamdctl", "libteamdctl")]
+    for arch, libdir in [("amd64", "usr/lib/x86_64-linux-gnu"), ("arm64", "usr/lib/aarch64-linux-gnu")]
+]
+[
+    tar(
+        name = "libteam_dev_" + arch,
+        srcs = ["include/team.h", "include/teamdctl.h", ":libteam_pc_" + arch, ":libteamdctl_pc_" + arch] + DOC_SRCS,
+        mtree = [
+            "usr/share/doc/libteam-dev/changelog.Debian.gz uid=0 gid=0 mode=0644 type=file content=$(location :changelog_gz)",
+            "usr/share/doc/libteam-dev/copyright uid=0 gid=0 mode=0644 type=file content=$(location @libteam_debian//:debian/copyright)",
+            "usr/include/team.h uid=0 gid=0 mode=0644 type=file content=$(location include/team.h)",
+            "usr/include/teamdctl.h uid=0 gid=0 mode=0644 type=file content=$(location include/teamdctl.h)",
+            libdir + "/libteam.so uid=0 gid=0 mode=0777 type=link link=libteam.so.5.6.1",
+            libdir + "/libteamdctl.so uid=0 gid=0 mode=0777 type=link link=libteamdctl.so.0.1.5",
+            libdir + "/pkgconfig/libteam.pc uid=0 gid=0 mode=0644 type=file content=$(location :libteam_pc_" + arch + ")",
+            libdir + "/pkgconfig/libteamdctl.pc uid=0 gid=0 mode=0644 type=file content=$(location :libteamdctl_pc_" + arch + ")",
+        ],
+    )
+    for arch, libdir in [("amd64", "usr/lib/x86_64-linux-gnu"), ("arm64", "usr/lib/aarch64-linux-gnu")]
+]
+alias(name = "libteam_dev", actual = select({"@platforms//cpu:x86_64": ":libteam_dev_amd64", "@platforms//cpu:aarch64": ":libteam_dev_arm64"}))

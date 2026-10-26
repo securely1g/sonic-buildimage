@@ -20,7 +20,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.14")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
@@ -37,7 +37,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.23-5b224d7190d04f1b7b68429eedfc03b7b1565ed0",
+    version = "0.0.25-f27d1bc8b5c148aedb408df73d3a3eb06b43e98f",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -89,7 +89,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.6",
+    version = "3.7.0.sonic.7",
 )
 
 single_version_override(
@@ -232,7 +232,7 @@ apt_inputs(
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
 
 single_version_override(
@@ -246,7 +246,7 @@ bazel_dep(name = "sonic-fips", version = "0.0.3-0565bc0426dde6a1e7c495de17707c95
 # their previous infrastructure declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.23-5b224d7190d04f1b7b68429eedfc03b7b1565ed0",
+    version = "0.0.25-f27d1bc8b5c148aedb408df73d3a3eb06b43e98f",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -280,3 +280,5 @@ single_version_override(
     module_name = "sonic-fips",
     version = "0.0.3-0565bc0426dde6a1e7c495de17707c9557f843a9",
 )
+
+include("//src/libteam:deps.MODULE.bazel")
