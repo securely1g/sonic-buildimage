@@ -969,9 +969,12 @@ py_binary(
 
 run_binary(
     name = "oci_license_fixture_tar",
-    tool = ":oci_license_fixture",
-    args = ["--write", "$(location oci-license-fixture.tar)"],
     outs = ["oci-license-fixture.tar"],
+    args = [
+        "--write",
+        "$(location oci-license-fixture.tar)",
+    ],
+    tool = ":oci_license_fixture",
 )
 
 dpkg_filter(
@@ -987,12 +990,15 @@ sonic_layer(
 py_test(
     name = "oci_license_filter_test",
     srcs = ["integration/oci_license_filter_test.py"],
-    main = "integration/oci_license_filter_test.py",
     args = [
         "$(rootpath :oci_license_filtered)",
         "$(rootpath :oci_license_refiltered)",
     ],
-    data = [":oci_license_filtered", ":oci_license_refiltered"],
+    data = [
+        ":oci_license_filtered",
+        ":oci_license_refiltered",
+    ],
+    main = "integration/oci_license_filter_test.py",
 )
 
 # Rust links Common's shared library; its indirect runtime imports need the
@@ -1192,3 +1198,115 @@ py_test(
     main = "integration/source_contract_test.py",
     deps = ["//tools/bazel/oci:source_contract_lib"],
 )
+
+# The source-only owner has no Make package receipt. The common image validator
+# instead binds its exact declared native/configuration TARs to the final OCI.
+_SWSS_OWNER = "//dockers/docker-orchagent"
+
+_SWSS_IMAGE_INPUTS = {
+    "runtime_path": _SWSS_OWNER + ":docker-orchagent",
+    "debug_path": _SWSS_OWNER + ":docker-orchagent-dbg",
+    "runtime_manifest_path": "//:target/bazel-manifests/docker-orchagent/manifest.json",
+    "debug_manifest_path": "//:target/bazel-manifests/docker-orchagent-dbg/manifest.json",
+    "apt_lock_path": _SWSS_OWNER + "/bazel:apt.lock.json",
+    "base_path": _SWSS_OWNER + ":config_engine_base_layout",
+    "apt_layer": _SWSS_OWNER + ":apt_deps",
+    "debug_tools_layer": _SWSS_OWNER + ":debug_tools",
+    "runtime_apt_selection": _SWSS_OWNER + ":runtime_apt_selection",
+    "debug_apt_selection": _SWSS_OWNER + ":debug_apt_selection",
+    "runtime_archive": _SWSS_OWNER + ":docker-orchagent.gz",
+    "debug_archive": _SWSS_OWNER + ":docker-orchagent-dbg.gz",
+    "base_symbols": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
+    "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
+    "config_metadata": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
+    "workspace_module": "@image_source_modules//:sonic-buildimage.MODULE.bazel",
+    "policy": _SWSS_OWNER + ":package_policy",
+    "make_runtime_archive": "//:target/docker-orchagent.gz",
+    "make_debug_archive": "//:target/docker-orchagent-dbg.gz",
+    "readelf": "@sonic_build_infra//toolchains/binutils:readelf",
+    "objcopy": "@sonic_build_infra//toolchains/binutils:objcopy",
+}
+
+_SWSS_RUNTIME_LAYERS = [
+    _SWSS_OWNER + ":rdeps",
+    _SWSS_OWNER + "/config:python_runtime",
+    _SWSS_OWNER + "/config:files",
+]
+
+_SWSS_DEBUG_LAYERS = [_SWSS_OWNER + ":docker-orchagent.debug_symbols"]
+
+py_test(
+    name = "swss_images_test",
+    size = "large",
+    srcs = ["integration/oci_images_test.py"],
+    args = ["--" + name.replace("_", "-") + "=$(rootpath " + label + ")" for name, label in _SWSS_IMAGE_INPUTS.items()] +
+           ["--runtime-payload-layer=$(rootpath " + label + ")" for label in _SWSS_RUNTIME_LAYERS] +
+           ["--debug-payload-layer=$(rootpath " + label + ")" for label in _SWSS_DEBUG_LAYERS],
+    data = _SWSS_IMAGE_INPUTS.values() + _SWSS_RUNTIME_LAYERS + _SWSS_DEBUG_LAYERS,
+    main = "integration/oci_images_test.py",
+    tags = ["manual"],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:container_validation",
+        "//tools/bazel/oci:source_base_validation",
+    ],
+)
+
+# Each image family must use the same configuration as its Make build: SWSS
+# uses the default flags, while Syncd uses --config=syncd-dash. The runtime
+# validator combines these policies and checks the shared base is identical.
+_INSTALLED_IMAGE_FAMILIES = {
+    "swss": (_SWSS_OWNER, "docker-orchagent"),
+    "syncd": (_SYNCD_OWNER, "docker-syncd-vs"),
+}
+
+_INSTALLED_BASE = "//dockers/docker-config-engine-trixie"
+
+[
+    run_binary(
+        name = family + "_installed_images_policy",
+        srcs = [
+            _INSTALLED_BASE + ":installed_checks",
+            owner + ":installed_checks",
+            _INSTALLED_BASE + ":docker-config-engine-trixie",
+            _INSTALLED_BASE + ":docker-config-engine-trixie.gz",
+            owner + ":" + image,
+            owner + ":" + image + ".gz",
+            owner + ":" + image + "-dbg",
+            owner + ":" + image + "-dbg.gz",
+        ],
+        outs = [family + "-installed-images-policy.json"],
+        args = [
+            "--architecture",
+            "amd64",
+            "--out",
+            "$(location " + family + "-installed-images-policy.json)",
+            "--policy=$(location " + _INSTALLED_BASE + ":installed_checks)",
+            "--policy=$(location " + owner + ":installed_checks)",
+        ] + [arg for name, image_owner in [
+            ("docker-config-engine-trixie", _INSTALLED_BASE),
+            (image, owner),
+            (
+                image + "-dbg",
+                owner,
+            ),
+        ] for arg in [
+            "--layout",
+            name,
+            "$(location " + image_owner + ":" + name + ")",
+            "--archive",
+            name,
+            "$(location " + image_owner + ":" + name + ".gz)",
+        ]],
+        target_compatible_with = [
+            "@platforms//cpu:x86_64",
+            "@platforms//os:linux",
+        ],
+        tool = "//tools/bazel/oci:installed_images_policy",
+    )
+    for family, (owner, image) in _INSTALLED_IMAGE_FAMILIES.items()
+]
