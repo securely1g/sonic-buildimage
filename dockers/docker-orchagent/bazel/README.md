@@ -142,10 +142,12 @@ To update packages in a separate clean checkout:
    automatically. Run the owner tests and rebuild
    both images; check the automatic selection receipts and installed consumers.
 
-The selector does not evaluate dependency-version requirements or run package
-installation scripts. It does not update the inherited dpkg database or
-regenerate loader/Python caches. Full image support remains AMD64; native ARM64
-helper tests do not establish a complete ARM64 image.
+The selector checks `Depends` and `Pre-Depends`, including version requirements,
+across the checked base, retained packages and selected APT additions. Source
+TARs layered afterwards are outside that selection check. It does not run
+package installation scripts, update the inherited dpkg database or regenerate
+loader/Python caches. Full image support remains AMD64; native ARM64 helper
+tests do not establish a complete ARM64 image.
 
 ## Startup configuration
 
