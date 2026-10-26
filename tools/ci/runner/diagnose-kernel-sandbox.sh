@@ -11,27 +11,26 @@ printf 'Host: '; uname -a
 id
 docker ps --format '{{.ID}} {{.Image}} {{.Status}}'
 container_name=sonic-kernel-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}
-profile=$PWD/tools/ci/runner/sonic-vs-kernel-sandbox
-profile_loaded=false
-host_parser() {
+host_policy() {
   docker run --rm --privileged --pid=host "$image" \
-    nsenter --target 1 --mount --root --wd -- /usr/sbin/apparmor_parser "$@" "$profile"
+    nsenter --target 1 --mount --root --wd -- /usr/bin/python3 \
+    "$PWD/tools/ci/runner/apparmor_kernel.py" "$@"
 }
 cleanup() {
   docker rm -f "$container_name" >/dev/null 2>&1 || true
-  if "$profile_loaded"; then host_parser -R; fi
 }
 trap cleanup EXIT
 run_probe() {
 timeout 180s docker run --rm --privileged --init --name "$container_name" \
+  -e "PROBE_REQUIRE_SUCCESS=${1:-0}" \
   --mount "type=bind,src=$probe_workspace,dst=/sonic" \
   --mount "type=bind,src=$PWD/tools/ci/runner/probe-kernel-sandbox.sh,dst=/probe.sh,readonly" \
+  --mount "type=bind,src=$PWD/tools/ci/runner/sandbox-action-probe,dst=/action-probe,readonly" \
   --workdir /sonic "$image" bash /probe.sh
 }
-printf '\nBEFORE temporary scoped policy:\n'
+printf '\nBEFORE durable scoped policy:\n'
 run_probe
-host_parser -Q -K
-host_parser -r -T
-profile_loaded=true
-printf '\nAFTER temporary scoped policy:\n'
-run_probe
+host_policy --install
+host_policy
+printf '\nAFTER durable scoped policy:\n'
+run_probe 1

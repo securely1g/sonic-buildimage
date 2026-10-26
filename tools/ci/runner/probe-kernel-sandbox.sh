@@ -39,6 +39,11 @@ for sandbox in "${sandboxes[@]}"; do
     printf "user_mount_namespace_exit=%s\n" "$?"
   ' probe "$execution_root" "$sandbox"
 done
+if [[ ${PROBE_REQUIRE_SUCCESS:-0} == 1 ]]; then
+  printf '\nReal uncached Bazel action with filesystem and network assertions:\n'
+  runuser -u sonic-runner -- bash /action-probe/run-probe.sh /tmp/bazel-8.5.1 \
+    "${sandboxes[0]%/linux-sandbox}" /sonic/target/kernel-sandbox-action-proof || exit
+fi
 printf '\nRelevant host kernel policy messages:\n'
 dmesg --time-format iso --since '15 minutes ago' | grep -Ei 'apparmor|denied|userns|namespace|sandbox' | tail -100
 test "${#sandboxes[@]}" -gt 0
