@@ -9,9 +9,9 @@ For SWSS on native AMD64
 Debian Trixie with `PLATFORM=vs` and ASAN disabled, the switch makes Bazel compile
 SWSS and assemble its runtime and debug OCI images. Other SWSS configurations
 continue to use Make, even with the switch set to `y`.
-Make continues to generate the container manifests and build
-the config-engine base, the Scapy wheel, other containers, host packages, kernel
-and final `sonic-vs.img.gz` virtual-machine image.
+Bazel composes SWSS directly on the source-built config-engine OCI target.
+Make generates the container manifests and Scapy wheel, and coordinates the
+other containers, host packages, kernel and final `sonic-vs.img.gz` image.
 
 The source and toolchain revisions are declared in the root `MODULE.bazel`; they do not change
 the source revisions used by Make's existing submodules. SWSS and its declared
@@ -210,17 +210,17 @@ make target/docker-orchagent.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 make target/docker-orchagent-dbg.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 ```
 
-These targets first produce their Make inputs, including
-`target/docker-config-engine-trixie.oci`, the Scapy wheel, and
-`target/bazel-manifests/docker-orchagent/manifest.json`. The debug target also
-prepares `target/bazel-manifests/docker-orchagent-dbg/manifest.json`, since its
-image extends the runtime image. SWSS registers the
-base in `SONIC_BAZEL_OCI_BASES`, selecting its Make archive with `_OCI_ARCHIVE`
-and `linux/amd64` with `_OCI_PLATFORM`. The shared rule in
-`tools/bazel/docker.mk` publishes the base's existing OCI files without converting or
-recompressing them. The original `.gz` remains available to existing consumers.
-Both outputs contain the same final config-engine image. Preparation also runs
-after a Make package-cache hit and preserves unchanged layout timestamps.
+These targets first produce the Scapy wheel and Make manifests for
+`docker-base-trixie`, `docker-config-engine-trixie` and `docker-orchagent` under
+`target/bazel-manifests/`. The debug target also prepares the
+`docker-orchagent-dbg` manifest, since its image extends the runtime image.
+Bazel consumes `//dockers/docker-config-engine-trixie:docker-config-engine-trixie`
+directly for the APT selection and SWSS image. Its Docker installer `.gz` remains
+an independent output for Make-built child containers and the installer.
+
+For example, changing a config-engine source layer invalidates the dependent
+SWSS OCI actions through Bazel's graph. SWSS does not read
+`target/docker-config-engine-trixie.gz` or require a prepared `.oci` directory.
 
 With those inputs already available in `target/`, the equivalent Bazel targets are
 `//dockers/docker-orchagent:docker-orchagent.gz` and
@@ -232,24 +232,19 @@ The shared archive helper publishes the completed archive to `target/` only
 after both commands succeed. It preserves the previous archive on failure and
 keeps its timestamp when the new bytes are unchanged.
 
-If the Docker base archive and Scapy wheel already exist, prepare the layout
-and manifests before invoking Bazel directly:
+With the Scapy wheel available, prepare all owning manifests before invoking
+Bazel directly:
 
 ```sh
-python3 tools/bazel/oci/prepare_oci_base.py \
-  --archive target/docker-config-engine-trixie.gz \
-  --output target/docker-config-engine-trixie.oci \
-  --expected-platform linux/amd64
 make -f tools/bazel/prepare_manifests.mk \
-  MANIFEST_METADATA=rules/docker-orchagent.mk \
+  'MANIFEST_METADATA=rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk rules/docker-orchagent.mk' \
   BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs \
   CONFIGURED_ARCH=amd64 ENABLE_ASAN=n DBG_IMAGE_MARK=dbg DOCKERS_PATH=dockers
 ```
 
-The helper accepts the native OCI entries emitted by the pinned Docker version.
-An older Docker-only cache must be rebuilt; it is not converted. Publication is
-atomic, and repeating it with unchanged content preserves the layout timestamps.
-See [the OCI base guide](../../../tools/bazel/oci/README.md#use-makes-oci-base).
+The [legacy OCI import helper](../../../tools/bazel/oci/README.md#use-makes-oci-base)
+remains available for Make-produced archives containing native OCI entries. It
+does not convert Docker-only archives and is not used by this source-built base.
 
 ## Reuse local build caches
 
@@ -336,7 +331,7 @@ a rebuild. Its public result retains action names, cache status and archive
 hashes. See the [archive guide](../../../tools/bazel/oci/README.md#reproducible-docker-archives).
 
 The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
-the Make handoff, OCI base publication, configuration rendering and package
+the Make manifest handoff, legacy OCI import helpers, configuration rendering and package
 validator. A native Make regression also checks package-cache reuse across fresh
 checkouts and invalidation when source or architecture changes. The job then builds SWSS, its runtime dependencies, configuration and matching
 debug-symbol tar layers. It also runs SWSS's Common Rust API and Serde consumer
@@ -347,6 +342,11 @@ inventory, installed bytes and modes, AMD64 ELF files, build IDs, DWARF and debu
 includes the five tar files, hashes, summarized test and debug validation,
 generated module lock and resolved module graph. CI starts without a module lock
 and rejects tracked input changes.
+
+The native base-image CI also builds SWSS's `runtime_apt_selection` on AMD64.
+It requires the selection receipt to name the exact config-engine OCI manifest
+just validated and to report satisfied runtime dependencies. This exercises the
+source-built base dependency without a Scapy wheel or a complete SWSS build.
 
 The shared [`public_artifacts.py`](../../../tools/bazel/ci/public_artifacts.py)
 step prepares each public upload. Bazel event records can include client
@@ -359,9 +359,8 @@ summary retains P4RT package/debug hashes, lookup counts and output sizes; the
 separate VS image and SWSS archive upload keeps its existing files.
 
 The `Make VS with Bazel SWSS (AMD64)` job builds the complete OCI
-archives and final VS image after the source-layer check succeeds. It runs
-automatically for pull requests and pushes to `master`, and on manual workflow
-dispatch. It requires a disposable runner with the labels `self-hosted`, `linux`,
+archives and final VS image after the source-layer check succeeds. It requires
+manual workflow dispatch with `skip_vs` disabled and a disposable runner with the labels `self-hosted`, `linux`,
 `x64` and `sonic-vs-source-pr-NUMBER` for a pull request, or
 `sonic-vs-source-master` for push/manual runs. The host needs Docker, KVM, `j2`
 and at least 100 GiB free for the workspace plus room for Docker storage.
@@ -370,12 +369,24 @@ provisioning, host preflight and one-job rearming, including PR #9 examples.
 When no matching runner is available, this job remains queued; the
 source-layer check alone does not validate the complete image.
 
+After the build, a fresh Trixie slave loads that run's config-engine, SWSS runtime
+and SWSS debug archives into its private Docker daemon. Read-only, network-disabled
+probes verify inherited Common bytes, parent layer order, the `/var/run` symlink
+and normalized database configuration. The shared ELF verifier checks Common's
+build ID, DWARF and debuglink CRC against the symbols copied from the debug image.
+The check writes `artifacts/vs/swss-common-verification.json` and prints its receipt
+to the job log. It does not boot SONiC services.
+
 Workflow concurrency is scoped to the source revision so a new push can run its
 hosted checks while an older full VS build keeps its progress. A rerun of the same
 revision supersedes its earlier run; a new full VS job waits for its runner.
 
-The Make base supplies Python Common bindings while Bazel supplies Common's C++
-library; their compatibility must be checked with the complete image. Guest
+The native config-engine base supplies Common's C++ library, Python bindings
+and normalized database configuration from the same Bazel-resolved Common
+module used to link SWSS. SWSS does not overlay that package again; its debug
+image collects the inherited Common symbols through the OCI base dependency.
+The source-layer check rejects paths that would overwrite Debian's directory
+aliases, including `var/run`. Complete-image validation remains necessary. Guest
 boot, forwarding, ARM64 images and cross builds remain unvalidated. ASAN uses
 the existing Make path. Listing SWSS in `SONIC_PACKAGES_LOCAL` is rejected when
 its Bazel path is selected.
@@ -411,7 +422,8 @@ lives under `tools/bazel/oci`; runner setup and native Make cache tests live und
 
 Another container can opt in through `SONIC_BAZEL_DOCKER_IMAGES` and
 `SONIC_BAZEL_DBG_DOCKER_IMAGES` with its own `_BAZEL_TARGET`, `_PATH` and optional
-`_BAZEL_DEPENDS` declarations. Register Make archive bases through
+`_BAZEL_DEPENDS` declarations. Consume Bazel-built bases directly by their OCI
+target labels. Register native OCI imports from Make archives through
 `SONIC_BAZEL_OCI_BASES` and per-base `_OCI_ARCHIVE`/`_OCI_PLATFORM` values. Register
 manifests using `SONIC_BAZEL_MANIFESTS` and each key's
 `_MANIFEST_IMAGE`/`_MANIFEST_SUFFIX` values, adding the generated JSON paths to

@@ -163,9 +163,10 @@ registered outputs can also be requested as direct Make targets.
 Add the resulting `$(TARGET_PATH)/docker-example-base.oci` to the consuming
 container's `_BAZEL_DEPENDS` as in the [bridge example](../README.md#example-another-runtime-and-debug-archive).
 
-SWSS uses this interface to publish `target/docker-config-engine-trixie.oci`
-from `target/docker-config-engine-trixie.gz`, with image platform `linux/amd64`.
-It remains the only production opt-in, supporting native AMD64 Trixie VS builds.
+Use this interface only when the base producer is Make and its archive already
+contains native OCI entries. SWSS instead consumes
+`//dockers/docker-config-engine-trixie:docker-config-engine-trixie` directly;
+its Bazel-produced Docker installer archive is not an OCI import source.
 The pinned Docker 28.5.2 saves both
 Docker metadata and an OCI layout in the same archive. Make extracts the existing
 OCI files without changing the index, config or layer bytes. Both outputs
@@ -175,8 +176,7 @@ The shared producer is `tools/bazel/oci/prepare_oci_base.py`, also exposed as
 `//tools/bazel/oci:prepare_oci_base`. It imports the sibling `oci_layout` validator;
 neither helper depends on the SWSS build package.
 
-Declare the prepared layout files as Bazel inputs; the root `BUILD.bazel` does
-this for SWSS's config-engine base. The
+Declare the prepared layout files as Bazel inputs in the consuming package. The
 `oci_base_layout` macro validates descriptor digests, sizes and the requested OS
 and architecture, then uses upstream `copy_to_directory` to assemble the directory
 consumed by `oci_image`. The check reads the image config even when the index has

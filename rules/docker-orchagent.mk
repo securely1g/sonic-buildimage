@@ -20,12 +20,13 @@ ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE):$(CONFIGURED_PLATFORM):$(CONFIGURED_ARC
 ifeq ($(filter y,$(CROSS_BUILD_ENVIRON) $(MULTIARCH_QEMU_ENVIRON) $(ENABLE_ASAN)),)
 SONIC_BAZEL_DOCKER_IMAGES += $(DOCKER_ORCHAGENT)
 SONIC_BAZEL_DBG_DOCKER_IMAGES += $(DOCKER_ORCHAGENT_DBG)
-SONIC_BAZEL_OCI_BASES += docker-config-engine-trixie.oci
-docker-config-engine-trixie.oci_OCI_ARCHIVE = $(TARGET_PATH)/$(DOCKER_CONFIG_ENGINE_TRIXIE)
-docker-config-engine-trixie.oci_OCI_PLATFORM = linux/amd64
 $(DOCKER_ORCHAGENT)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT)
 $(DOCKER_ORCHAGENT_DBG)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT_DBG)
-$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS = $(TARGET_PATH)/docker-config-engine-trixie.oci $(PYTHON_WHEELS_PATH)/$(SCAPY)
+# Bazel composes the native config-engine image; Make supplies only its
+# generated metadata, plus the Scapy wheel used by the SWSS configuration layer.
+$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS = $(TARGET_PATH)/bazel-manifests/docker-base-trixie/manifest.json
+$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS += $(TARGET_PATH)/bazel-manifests/docker-config-engine-trixie/manifest.json
+$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS += $(PYTHON_WHEELS_PATH)/$(SCAPY)
 # Both variants use runtime metadata, with Make adding the debug suffix.
 SONIC_BAZEL_MANIFESTS += $(DOCKER_ORCHAGENT_STEM) $(DOCKER_ORCHAGENT_STEM)-$(DBG_IMAGE_MARK)
 $(DOCKER_ORCHAGENT_STEM)_MANIFEST_IMAGE = $(DOCKER_ORCHAGENT)

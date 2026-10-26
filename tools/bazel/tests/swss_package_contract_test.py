@@ -13,6 +13,25 @@ sys.path.insert(0, str(ROOT / "dockers/docker-orchagent/bazel"))
 import package_contract as contract
 
 
+class SourceLayerContractTest(unittest.TestCase):
+    def test_canonical_runtime_paths_preserve_the_base(self):
+        contract.source_layer_contract({
+            "usr/bin/orchagent": {"kind": "file"},
+            "usr/lib/libsairedis.so.0": {"kind": "file"},
+            "run/redis/sonic-db/database_config.json": {"kind": "file"},
+        })
+
+    def test_common_package_cannot_reintroduce_var_run_after_base_normalization(self):
+        for name in ("var/run", "var/run/redis/sonic-db/database_config.json"):
+            with self.subTest(path=name), self.assertRaisesRegex(ValueError, "inherited directory alias"):
+                contract.source_layer_contract({name: {"kind": "file"}})
+
+    def test_other_debian_directory_aliases_cannot_be_overlaid(self):
+        for name in ("bin/tool", "sbin/tool", "lib/library.so", "lib64/ld-linux.so"):
+            with self.subTest(path=name), self.assertRaisesRegex(ValueError, "inherited directory alias"):
+                contract.source_layer_contract({name: {"kind": "file"}})
+
+
 class SwssContractTest(unittest.TestCase):
     """Compare synthetic payloads with source-owned program and Lua declarations."""
 

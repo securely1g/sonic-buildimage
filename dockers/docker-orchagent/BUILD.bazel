@@ -2,7 +2,6 @@ load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
-load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 
@@ -35,17 +34,11 @@ _APT_POLICY = {
     "features": {},
 }
 
-# Make publishes the config-engine image as OCI files before invoking Bazel.
-# Its Python/config-engine utilities and libnl/libyang runtime are retained.
-oci_base_layout(
+# Compose the source-built OCI image directly. The Docker archive is an
+# installer output, not an OCI input to another Bazel image.
+alias(
     name = "config_engine_base_layout",
-    srcs = [
-        "//:config_engine_oci_files",
-        "//:target/docker-config-engine-trixie.oci/oci-layout",
-    ],
-    expected_platform = "linux/amd64",
-    marker = "$(execpath //:target/docker-config-engine-trixie.oci/oci-layout)",
-    root = "target/docker-config-engine-trixie.oci",
+    actual = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
 )
 
 # Select checked Debian contents before filtering the final layer. Packages
@@ -76,7 +69,8 @@ sonic_layer(
     root_owned = True,
     tars = [
         "@sonic_swss//dist:swss_pkg",
-        "@sonic_swss_common//:libswsscommon_pkg",
+        # Common's runtime and normalized database configuration are inherited
+        # from config-engine; its symbols follow the OCI base dependency.
         "@sonic_sairedis//lib:libsairedis_pkg",
         "@sonic_sairedis//meta:libsaimetadata_pkg",
         "@sonic_dash_api//:libdashapi_pkg",
@@ -85,7 +79,7 @@ sonic_layer(
 )
 
 # Check the runtime dependencies' transitive symbols without requiring the
-# config-engine base container that Make builds for complete image assembly.
+# config-engine base container used for complete image assembly.
 debug_symbols_layer(
     name = "rdeps_debug_symbols",
     image = ":rdeps",

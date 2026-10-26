@@ -5,7 +5,8 @@ and expectations remain with the container integration.
 
 Tracked scripts, templates and Make metadata are exported by `BUILD.bazel` files
 in `files/scripts`, `files/build_templates` and `rules`. The root `BUILD.bazel`
-declares the Make-generated manifests, config-engine OCI files and Scapy wheel.
+declares the Make-generated manifests and Scapy wheel. SWSS consumes the
+source-built config-engine OCI target directly within the Bazel graph.
 
 | Location | Responsibility |
 | --- | --- |
@@ -118,8 +119,8 @@ that archive from a matching Make cache; a failed extraction preserves the prior
 archive and leaves the newer stamp in place for a retry.
 Archives selected for Bazel cannot appear in `SONIC_PACKAGES_LOCAL`: the shared
 archive macro supplies `:latest`, while that Make mode expects versioned tags.
-SWSS remains the only production container registered for Bazel. Its supported
-configuration is native AMD64 Trixie VS without ASAN. Other SWSS configurations
+The base/config-engine images and service images register their own Bazel
+producers. SWSS supports native AMD64 Trixie VS without ASAN. Other SWSS configurations
 keep the Make build even with `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`.
 The config-engine and py-common wheel targets are separate, directly invoked
 Bazel targets; this switch selects container builders.

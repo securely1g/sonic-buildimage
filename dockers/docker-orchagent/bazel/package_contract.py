@@ -11,6 +11,14 @@ from tools.bazel.ci.artifact_validation import path_name, require, sha
 PROTOBUF_RUNTIME = "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12"
 
 
+def source_layer_contract(files):
+    """Overlays must preserve the Debian directory aliases inherited from the base."""
+    for name in files:
+        require(not any(name == alias or name.startswith(alias + "/")
+                        for alias in ("bin", "sbin", "lib", "lib64", "var/run")),
+                "runtime layer replaces an inherited directory alias: " + name)
+
+
 def source_protobuf_contract(combined, protobuf):
     require(protobuf.get(PROTOBUF_RUNTIME, {}).get("elf_machine") == 62,
             "missing source-built AMD64 protobuf runtime")

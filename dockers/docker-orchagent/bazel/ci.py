@@ -17,8 +17,8 @@ import package_contract
 
 
 execute = partial(command_log.execute, cwd=ROOT)
-# These targets create tar archives, never Debian packages. Make supplies the
-# config-engine base and Scapy wheel when it assembles the complete OCI image.
+# These targets create tar archives, never Debian packages. The complete image
+# also consumes the native config-engine OCI target and Make's Scapy wheel.
 TARGETS = {
     "swss.tar": "@sonic_swss//dist:swss_pkg",
     "protobuf.tar": "@sonic_dash_api//:protobuf_runtime_pkg",
@@ -57,6 +57,7 @@ def verify_packages(paths, source):
     runtime = artifact_validation.payload(paths["swss.tar"])
     programs = package_contract.swss_contract(source, runtime)
     dependencies = artifact_validation.payload(paths["rdeps.tar"])
+    package_contract.source_layer_contract(dependencies)
     for name, metadata in runtime.items():
         if metadata["kind"] != "directory":
             artifact_validation.require(dependencies.get(name) == metadata, "runtime layer changed SWSS payload: " + name)
