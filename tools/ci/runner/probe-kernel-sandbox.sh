@@ -9,18 +9,23 @@ cat /proc/self/attr/current
 for name in kernel/apparmor_restrict_unprivileged_userns kernel/unprivileged_userns_clone user/max_user_namespaces; do
   if [[ -f /proc/sys/$name ]]; then printf '%s=' "$name"; cat "/proc/sys/$name"; fi
 done
-printf '\nKernel build state:\n'
-find /sonic/target/bazel-kernel-state -maxdepth 5 -type d -name execroot -print
+printf '\nFresh reproduction: same builder, Bazel release and user; historical workspace was removed.\n'
+curl --fail --location --retry 3 https://releases.bazel.build/8.5.1/release/bazel-8.5.1-linux-x86_64 -o /tmp/bazel-8.5.1
+printf '%s  %s\n' 61d89402f0368e64b6c827be5de79d8e65382e8124c3cbb97325611a1851392e /tmp/bazel-8.5.1 | sha256sum --check
+chmod 0755 /tmp/bazel-8.5.1
+output=/sonic/target/bazel-kernel-state/probe/build/output
+mkdir -p "$output/probe/execroot/_main"
+chown -R 1001:1003 /sonic/target
+runuser -u sonic-runner -- /tmp/bazel-8.5.1 --batch --output_user_root="$output" --nosystem_rc --nohome_rc version
 printf '\nSandbox executables:\n'
-mapfile -t sandboxes < <(find /sonic/target/bazel-kernel-state /bazel_cache/kernel-linux-sandbox /bazel_cache/bazelisk -type f -name linux-sandbox 2>/dev/null)
+mapfile -t sandboxes < <(find "$output/install" -type f -name linux-sandbox)
 printf '%s\n' "${sandboxes[@]}"
 for sandbox in "${sandboxes[@]}"; do
   stat -- "$sandbox"
   file -- "$sandbox"
   sha256sum -- "$sandbox"
   findmnt -no TARGET,FSTYPE,OPTIONS --target "$sandbox"
-  execution_root=$(find /sonic/target/bazel-kernel-state -maxdepth 7 -type d -path '*/execroot/*' -print -quit)
-  if [[ -z $execution_root ]]; then execution_root=/sonic; fi
+  execution_root=$output/probe/execroot/_main
   printf '\nProbe cwd=%s sandbox=%s\n' "$execution_root" "$sandbox"
   runuser -u sonic-runner -- bash -c '
     cd "$1" || exit
