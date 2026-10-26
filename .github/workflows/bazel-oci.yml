@@ -19,7 +19,7 @@ jobs:
       - name: Checkout the reviewed verifier fix
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 6b13c8e76390dc31d6f46c879af1db40b78df3b0
+          ref: c8a7d44eff2242c02f25396f703dda47304f12eb
           path: verifier
           persist-credentials: false
       - name: Verify only the retained final outputs
@@ -27,7 +27,7 @@ jobs:
         env:
           RETAINED_SOURCE: /data/sonic-runner/attempts/20261026T121813Z-ccd64e7e/_work/sonic-buildimage/sonic-buildimage/vs-40313988993-1
           RETAINED_REVISION: cb1bf3db0220c69d28a58d304c513d674a486f95
-          VERIFIER_REVISION: 6b13c8e76390dc31d6f46c879af1db40b78df3b0
+          VERIFIER_REVISION: c8a7d44eff2242c02f25396f703dda47304f12eb
           BUILDER_TAG: sonic-slave-trixie:b4eb14c7457
           VERIFY_P4RT: ${{ inputs.verify_p4rt }}
         run: |
