@@ -97,7 +97,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.6",
+    version = "3.7.0.sonic.7",
 )
 
 single_version_override(
@@ -245,7 +245,7 @@ apt_inputs(
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
 
 single_version_override(
@@ -330,4 +330,12 @@ source_files(
         "@sonic_swss//dist:BUILD.bazel": "dist-BUILD.bazel.txt",
         "@sonic_swss//:debian/swss.install": "swss.install.txt",
     },
+)
+
+# libteam is its own module so standalone builds and SWSS consumers share the
+# in-tree Debian source, SONiC patch series and Make's src/libteam checkout.
+bazel_dep(name = "libteam", version = "1.31.sonic-buildimage")
+local_path_override(
+    module_name = "libteam",
+    path = "src/libteam",
 )
