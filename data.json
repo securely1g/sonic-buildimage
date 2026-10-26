@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-26T10:58:14.673506Z",
+  "generated_at": "2026-10-26T11:10:13.411111Z",
   "pull_requests": [
     {
       "base_sha": "b3d6c3971fa2c6ffedf457a9c18c734ba34b0efb",
@@ -51,15 +51,15 @@
       "url": "https://github.com/securely1g/sonic-buildimage/pull/52"
     },
     {
-      "base_sha": "a6e20839d271649e63c44e4c55346a6fa554caad",
+      "base_sha": "b3d6c3971fa2c6ffedf457a9c18c734ba34b0efb",
       "draft": true,
       "head_branch": "frr-native-bazel",
-      "head_sha": "15fc15e48ee4429e73c6f6aa24e6eb6103902c36",
+      "head_sha": "b65e0dab6d63794afc8d1ae29f927c5fa723bcb6",
       "merged_at": null,
       "number": 51,
       "state": "open",
       "title": "Build FRR and its SONiC dependencies with native Bazel",
-      "updated_at": "2026-10-26T06:36:59Z",
+      "updated_at": "2026-10-26T11:09:24Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/51"
     },
     {
@@ -641,6 +641,25 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "frr-native-bazel",
+      "completed_at": null,
+      "conclusion": "action_required",
+      "event": "pull_request",
+      "jobs": [],
+      "pr_association": "none",
+      "pr_association_note": null,
+      "pr_numbers": [],
+      "run_id": 40312937600,
+      "source_sha": "b65e0dab6d63794afc8d1ae29f927c5fa723bcb6",
+      "started_at": "2026-10-26T11:09:30Z",
+      "status": "completed",
+      "updated_at": "2026-10-26T11:09:30Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40312937600/attempts/1",
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/syncd-vs-oci-publication",
@@ -3457,8 +3476,8 @@
     {
       "attempt": 1,
       "branch": "codex/swss-source-base-handoff",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-26T11:09:10Z",
+      "conclusion": "failure",
       "event": "workflow_dispatch",
       "jobs": [
         {
@@ -4052,23 +4071,23 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
+          "completed_at": "2026-10-26T11:09:10Z",
+          "conclusion": "failure",
+          "duration_seconds": 5265.0,
+          "image_build_elapsed_seconds": 4977.0,
           "image_build_seconds": null,
           "job_id": 121494133617,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
+            "build": 4977.0,
+            "other": 2.0,
             "setup": 280.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-10-26T09:41:25Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-26T09:41:38Z",
@@ -4169,84 +4188,94 @@
                 "status": "unavailable",
                 "version": 1
               },
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T11:09:03Z",
+              "conclusion": "failure",
+              "duration_seconds": 4977.0,
               "name": "Build the VS image with Bazel SWSS archives",
               "number": 10,
               "phase": "build",
               "started_at": "2026-10-26T09:46:06Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-26T11:09:03Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify inherited Common in the final SWSS images",
               "number": 11,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T11:09:03Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-26T11:09:03Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify P4RT packaged split debug symbols",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T11:09:03Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T11:09:03Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Remove this job's remaining build containers",
               "number": 13,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T11:09:03Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T11:09:03Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Prepare public artifact list",
               "number": 14,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T11:09:03Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T11:09:05Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Upload public VS build summary",
               "number": 15,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T11:09:03Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-26T11:09:05Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Upload VS image and SWSS archives",
               "number": 16,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T11:09:05Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T11:09:07Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Post Checkout repository",
               "number": 32,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T11:09:05Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T11:09:07Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 33,
+              "phase": "other",
+              "started_at": "2026-10-26T11:09:07Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40294545364/job/121494133617"
@@ -4260,8 +4289,8 @@
       "run_id": 40294545364,
       "source_sha": "23b2094cecc581efa411378080c40376ed52463e",
       "started_at": "2026-10-26T08:45:55Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-26T09:41:25Z",
+      "status": "completed",
+      "updated_at": "2026-10-26T11:09:11Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40294545364/attempts/1",
       "workflow_name": "Bazel SWSS OCI",
       "workflow_path": ".github/workflows/bazel-swss-oci.yml"
