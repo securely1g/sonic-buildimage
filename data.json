@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-26T12:47:01.682430Z",
+  "generated_at": "2026-10-26T13:03:14.395727Z",
   "pull_requests": [
     {
       "base_sha": "b3d6c3971fa2c6ffedf457a9c18c734ba34b0efb",
@@ -66,12 +66,12 @@
       "base_sha": "b3d6c3971fa2c6ffedf457a9c18c734ba34b0efb",
       "draft": true,
       "head_branch": "frr-native-bazel",
-      "head_sha": "71e8b194c00f90d9206105cb389f70aa2b702e33",
+      "head_sha": "d86d044e9059fa31f6dc4ddbb6d70d5d3ba99996",
       "merged_at": null,
       "number": 51,
       "state": "open",
       "title": "Build FRR and its SONiC dependencies with native Bazel",
-      "updated_at": "2026-10-26T12:13:44Z",
+      "updated_at": "2026-10-26T12:55:15Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/51"
     },
     {
@@ -653,6 +653,25 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "frr-native-bazel",
+      "completed_at": null,
+      "conclusion": "action_required",
+      "event": "pull_request",
+      "jobs": [],
+      "pr_association": "none",
+      "pr_association_note": null,
+      "pr_numbers": [],
+      "run_id": 40326142883,
+      "source_sha": "d86d044e9059fa31f6dc4ddbb6d70d5d3ba99996",
+      "started_at": "2026-10-26T12:54:23Z",
+      "status": "completed",
+      "updated_at": "2026-10-26T12:54:23Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40326142883/attempts/1",
+      "workflow_name": "Bazel SWSS OCI",
+      "workflow_path": ".github/workflows/bazel-swss-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/make-common-remote-cache",
@@ -1941,8 +1960,8 @@
     {
       "attempt": 1,
       "branch": "codex/vs-image-repair-validation-20261026",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-26T13:02:07Z",
+      "conclusion": "failure",
       "event": "workflow_dispatch",
       "jobs": [
         {
@@ -2536,23 +2555,23 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "completed_at": "2026-10-26T13:02:07Z",
+          "conclusion": "failure",
+          "duration_seconds": 2624.0,
+          "image_build_elapsed_seconds": 2268.0,
+          "image_build_seconds": 2268.0,
           "job_id": 121556458289,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
+            "build": 2268.0,
+            "other": 2.0,
             "setup": 292.0,
-            "upload": null,
-            "validation": null
+            "upload": 2.0,
+            "validation": 50.0
           },
           "started_at": "2026-10-26T12:18:23Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-26T12:18:28Z",
@@ -2646,91 +2665,467 @@
             },
             {
               "breakdown": {
-                "duration_seconds": null,
-                "reason": "step-not-successful",
-                "sections": [],
+                "duration_seconds": 2267.521439,
+                "reason": null,
+                "sections": [
+                  {
+                    "duration_seconds": 1978.738566,
+                    "id": "vs-image-1",
+                    "label": "VS image, dependencies and cleanup",
+                    "offset_seconds": 0.0,
+                    "tasks": [
+                      {
+                        "duration_seconds": 204.671451,
+                        "id": "config-engine-1",
+                        "label": "Config-engine container",
+                        "offset_seconds": 115.828765,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 127.685332,
+                        "id": "base-1",
+                        "label": "Base container",
+                        "offset_seconds": 193.163332,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 0.718126,
+                        "id": "bmp-watchdog-1",
+                        "label": "BMP watchdog container",
+                        "offset_seconds": 350.106416,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.737456,
+                        "id": "gnmi-watchdog-1",
+                        "label": "gNMI watchdog container",
+                        "offset_seconds": 355.742266,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.226958,
+                        "id": "sonic-otel-1",
+                        "label": "OpenTelemetry container",
+                        "offset_seconds": 359.415246,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.740566,
+                        "id": "router-advertiser-1",
+                        "label": "Router advertiser container",
+                        "offset_seconds": 364.912938,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 2.026698,
+                        "id": "dash-engine-1",
+                        "label": "DASH engine container",
+                        "offset_seconds": 370.21595,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 19.866236,
+                        "id": "orchagent-release-1",
+                        "label": "Orchagent release container",
+                        "offset_seconds": 408.217648,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 164.614742,
+                        "id": "rootfs-1",
+                        "label": "Root filesystem squashfs",
+                        "offset_seconds": 429.996772,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 0.901808,
+                        "id": "sonic-mgmt-framework-1",
+                        "label": "Management framework container",
+                        "offset_seconds": 507.388178,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.787994,
+                        "id": "database-1",
+                        "label": "Database container",
+                        "offset_seconds": 516.223085,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.74383,
+                        "id": "gnmi-sidecar-1",
+                        "label": "gNMI sidecar container",
+                        "offset_seconds": 542.857495,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.560275,
+                        "id": "sonic-gnmi-1",
+                        "label": "gNMI container",
+                        "offset_seconds": 546.776078,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.840329,
+                        "id": "mux-1",
+                        "label": "MUX container",
+                        "offset_seconds": 553.505084,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.590668,
+                        "id": "sonic-p4rt-1",
+                        "label": "P4RT container",
+                        "offset_seconds": 557.376403,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.737178,
+                        "id": "restapi-sidecar-1",
+                        "label": "REST API sidecar container",
+                        "offset_seconds": 563.550334,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.746995,
+                        "id": "sysmgr-1",
+                        "label": "System manager container",
+                        "offset_seconds": 568.114713,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.795105,
+                        "id": "lldp-1",
+                        "label": "LLDP container",
+                        "offset_seconds": 583.58622,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 4.194474,
+                        "id": "syncd-release-1",
+                        "label": "Syncd release container",
+                        "offset_seconds": 589.80918,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 4.43688,
+                        "id": "gbsyncd-vs-1",
+                        "label": "Gearbox syncd container",
+                        "offset_seconds": 597.531551,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.132096,
+                        "id": "platform-monitor-1",
+                        "label": "Platform monitor container",
+                        "offset_seconds": 638.05143,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.94476,
+                        "id": "snmp-1",
+                        "label": "SNMP container",
+                        "offset_seconds": 643.147859,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 102.635315,
+                        "id": "dhcp-relay-1",
+                        "label": "DHCP relay container",
+                        "offset_seconds": 651.440126,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 26.258275,
+                        "id": "eventd-1",
+                        "label": "Event daemon container",
+                        "offset_seconds": 693.067272,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 24.279179,
+                        "id": "sonic-bmp-1",
+                        "label": "BMP container",
+                        "offset_seconds": 719.405971,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 30.47154,
+                        "id": "swss-layer-1",
+                        "label": "SWSS layer container",
+                        "offset_seconds": 752.832647,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 24.690015,
+                        "id": "dash-ha-1",
+                        "label": "DASH HA container",
+                        "offset_seconds": 794.977506,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 36.30605,
+                        "id": "fpm-frr-1",
+                        "label": "FRR container",
+                        "offset_seconds": 803.002246,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 27.506712,
+                        "id": "nat-1",
+                        "label": "NAT container",
+                        "offset_seconds": 819.750633,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 28.349095,
+                        "id": "sflow-1",
+                        "label": "sFlow container",
+                        "offset_seconds": 839.388354,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 24.359693,
+                        "id": "teamd-1",
+                        "label": "Team daemon container",
+                        "offset_seconds": 847.340633,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 37.395614,
+                        "id": "macsec-1",
+                        "label": "MACsec container",
+                        "offset_seconds": 867.846336,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 1022.283257,
+                        "id": "final-image-1",
+                        "label": "Final VS image recipe",
+                        "offset_seconds": 945.071625,
+                        "outcome": "finished",
+                        "phase_breakdown": {
+                          "duration_seconds": 1022.206596,
+                          "reason": null,
+                          "segments": [
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 16.645183,
+                              "offset_seconds": 0.0,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 302.20918,
+                              "offset_seconds": 16.645183,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 19.48754,
+                              "offset_seconds": 318.854363,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 0.038975,
+                              "offset_seconds": 338.341903,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 46.206513,
+                              "offset_seconds": 338.380878,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 0.044926,
+                              "offset_seconds": 384.587391,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "installer",
+                              "duration_seconds": 8.33311,
+                              "offset_seconds": 384.632317,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 241.383577,
+                              "offset_seconds": 392.965427,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 45.855112,
+                              "offset_seconds": 634.349004,
+                              "phase": "boot-checks"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 0.032957,
+                              "offset_seconds": 680.204116,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 31.550641,
+                              "offset_seconds": 680.237073,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 0.026025,
+                              "offset_seconds": 711.787714,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 243.308499,
+                              "offset_seconds": 711.813739,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 35.333784,
+                              "offset_seconds": 955.122238,
+                              "phase": "boot-checks"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 0.03272,
+                              "offset_seconds": 990.456022,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 31.525507,
+                              "offset_seconds": 990.488742,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 0.192347,
+                              "offset_seconds": 1022.014249,
+                              "phase": "assembly"
+                            }
+                          ],
+                          "source": "build-phase-markers",
+                          "status": "available",
+                          "version": 1
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "duration_seconds": 288.782873,
+                    "id": "orchagent-debug-1",
+                    "label": "Orchagent debug",
+                    "offset_seconds": 1978.738566,
+                    "tasks": [
+                      {
+                        "duration_seconds": 220.860398,
+                        "id": "orchagent-debug-1",
+                        "label": "Orchagent debug container",
+                        "offset_seconds": 60.812488,
+                        "outcome": "finished"
+                      }
+                    ]
+                  }
+                ],
                 "source": "github-job-log",
-                "status": "unavailable",
+                "status": "available",
                 "version": 1
               },
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T13:01:04Z",
+              "conclusion": "success",
+              "duration_seconds": 2268.0,
               "name": "Build the VS image with Bazel SWSS archives",
               "number": 10,
               "phase": "build",
               "started_at": "2026-10-26T12:23:16Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T13:01:54Z",
+              "conclusion": "failure",
+              "duration_seconds": 50.0,
               "name": "Verify inherited Common in the final SWSS images",
               "number": 11,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T13:01:04Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-26T13:01:54Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify P4RT packaged split debug symbols",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T13:01:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T13:01:54Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Remove this job's remaining build containers",
               "number": 13,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T13:01:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T13:01:54Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Prepare public artifact list",
               "number": 14,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T13:01:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T13:01:56Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Upload public VS build summary",
               "number": 15,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T13:01:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-26T13:01:56Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Upload VS image and SWSS archives",
               "number": 16,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T13:01:56Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-26T13:01:58Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Post Checkout repository",
               "number": 32,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-26T13:01:56Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T13:01:58Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 33,
+              "phase": "other",
+              "started_at": "2026-10-26T13:01:58Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40313988993/job/121556458289"
@@ -2742,8 +3137,8 @@
       "run_id": 40313988993,
       "source_sha": "cb1bf3db0220c69d28a58d304c513d674a486f95",
       "started_at": "2026-10-26T11:17:41Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-26T12:18:23Z",
+      "status": "completed",
+      "updated_at": "2026-10-26T13:02:08Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40313988993/attempts/1",
       "workflow_name": "Bazel SWSS OCI",
       "workflow_path": ".github/workflows/bazel-swss-oci.yml"
