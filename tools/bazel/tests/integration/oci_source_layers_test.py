@@ -46,6 +46,14 @@ def verify_layers(runtime_path, dependencies_path, configuration_path, symbols_p
     runtime = artifact_validation.payload(runtime_path)
     programs = package_contract.validate_install_inventory(source, runtime, policy["install_inventory"])
     dependencies = artifact_validation.payload(dependencies_path)
+    # Source overlays sit on Debian's normalized base. A legacy Common TAR,
+    # for example, must not recreate var/run/redis through var/run -> /run.
+    for name in dependencies:
+        artifact_validation.require(
+            not any(name == alias or name.startswith(alias + "/")
+                    for alias in package_contract.normalization.DIRECTORY_ALIASES),
+            "source layer replaces an inherited directory alias: " + name,
+        )
     for name, metadata in runtime.items():
         if metadata["kind"] != "directory":
             artifact_validation.require(dependencies.get(name) == metadata,

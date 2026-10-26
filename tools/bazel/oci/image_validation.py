@@ -5,7 +5,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import tarfile
 
@@ -28,6 +28,57 @@ def apply_layer(path, files, *, merged_usr=False, checked_overlay=False):
     return oci_inventory.apply_layer(
         path, files, checked_overlay=checked_overlay,
         normalize_member=validate_payloads.normalized_member if merged_usr else None)
+
+
+def assert_ancestry(parent, child, description):
+    """Bind both OCI layer descriptors and Docker's uncompressed rootfs chain."""
+    require(child.manifest["layers"][:len(parent.layers)] == parent.manifest["layers"] and
+            child.config["rootfs"]["diff_ids"][:len(parent.layers)] == parent.config["rootfs"]["diff_ids"],
+            description)
+
+
+def verify_unique_layer_paths(layout):
+    """Docker rejects duplicate paths within a TAR, including directories."""
+    for layer in layout.layers:
+        seen = set()
+        with tarfile.open(layer, "r:*") as archive:
+            for member in archive:
+                name = str(PurePosixPath(member.name))
+                require(name not in seen, "OCI layer repeats a path that Docker cannot load: " + name)
+                seen.add(name)
+
+
+def image_inventory(layout):
+    """Read effective files and their origins without materializing image links."""
+    verify_unique_layer_paths(layout)
+    files, origins = {}, {}
+    for index, layer in enumerate(layout.layers):
+        entries = apply_layer(layer, files)
+        origins = {name: origin for name, origin in origins.items() if name in files}
+        origins.update({name: index for name in entries})
+    return files, origins
+
+
+def verify_file(files, name, expected, description="image changed declared source file"):
+    require(member_name(name) == name and oci_inventory.resolve_path(name, files) == name,
+            "image file path is redirected or noncanonical: " + name)
+    actual = files.get(name, {})
+    require(actual.get("kind") == "file" and all(actual.get(key) == value for key, value in expected.items()),
+            description + ": " + name)
+    return actual
+
+
+def verify_directory_aliases(files, aliases=None):
+    if aliases is None:
+        aliases = {"bin": "usr/bin", "sbin": "usr/sbin", "lib": "usr/lib", "var/run": "/run"}
+        if "lib64" in files:
+            aliases["lib64"] = "usr/lib64"
+    for name, target in aliases.items():
+        item = files.get(name, {})
+        require(item.get("kind") == "symlink" and item.get("linkname") == target,
+                "image changed a Debian directory alias: " + name)
+        require(not any(path.startswith(name + "/") for path in files),
+                "image installs files through a directory alias: " + name)
 
 
 def apply_debug_tools_layer(path, files, *, alternatives=(), elf_machine=62):
@@ -173,6 +224,39 @@ def docker_archive(path, expected_tag, config_digest, layer_descriptors):
             "config_digest": config_digest, "layers": len(layer_descriptors)}
 
 
+def installed_images_policy(declarations, layouts, archives, architecture):
+    """Bind owner-declared installed checks to validated OCI and archive bytes."""
+    images, pairs, inventories, checked = [], [], {}, {}
+    for declaration in declarations:
+        require(declaration["architecture"] == architecture, "installed policy architecture differs")
+        pairs.extend(declaration.get("symbol_pairs", []))
+        for declared in declaration["images"]:
+            name = declared["name"]
+            require(name not in checked and name in layouts and name in archives, "missing or duplicate installed image: " + name)
+            layout = image(Path(layouts[name]), expected_platform="linux/" + architecture)
+            files, _ = image_inventory(layout)
+            verify_directory_aliases(files, declared.get("directory_aliases", {}))
+            expected = {}
+            for path, metadata in declared.get("files", {}).items():
+                item = verify_file(files, path, metadata)
+                expected[path] = {key: item[key] for key in ("kind", "sha256", "mode", "uid", "gid")}
+            parent = declared.get("parent")
+            if parent:
+                require(parent in checked, "installed image parent must precede its child: " + name)
+                assert_ancestry(checked[parent], layout, "installed image does not extend its declared parent: " + name)
+                for path in declared.get("inherit_files", []):
+                    item = verify_file(inventories[parent], path, {})
+                    verify_file(files, path, item, "image changes an inherited file")
+                    expected[path] = {key: item[key] for key in ("kind", "sha256", "mode", "uid", "gid")}
+            archive = Path(archives[name])
+            archive_report = docker_archive(archive, declared["tag"], layout.manifest["config"]["digest"], layout.manifest["layers"])
+            images.append({**declared, "files": expected, "archive_sha256": archive_report["sha256"],
+                           "config_digest": layout.manifest["config"]["digest"],
+                           "expected_rootfs": layout.config["rootfs"], "expected_config": layout.config.get("config", {})})
+            inventories[name], checked[name] = files, layout
+    return {"architecture": architecture, "images": images, "symbol_pairs": pairs}
+
+
 def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                     runtime_manifest_path, debug_manifest_path, source_root, *, policy, source_contract_path=None,
                     apt_lock_path=None, dpkg_filter_path=None, fixture=False,
@@ -180,7 +264,8 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                     runtime_apt_selection=None, debug_apt_selection=None, package_state_contract=None,
                     runtime_archive=None, debug_archive=None,
                     source_runtime_tar=None, source_debug_tar=None, source_receipt=None,
-                    base_debug_symbols=None, base_debug_receipt=None, base_debug_package_manifest=None):
+                    base_debug_symbols=None, base_debug_receipt=None, base_debug_package_manifest=None,
+                    runtime_payload_layers=(), debug_payload_layers=()):
     validate_policy(policy)
     expectations = policy.get("image_validation", {})
     native_expectations = policy.get("native", {})
@@ -225,8 +310,23 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         source_provenance, expected_source_runtime, expected_source_debug = source_payloads(
             source_runtime_tar, source_debug_tar, source_receipt,
             contract_path=source_contract_path, fixture=fixture)
-    runtime_descriptor, runtime_manifest, runtime_config, runtime_layers = image(runtime_path, expected_platform=expected_platform)
-    debug_descriptor, debug_manifest, debug_config, debug_layers = image(debug_path, expected_platform=expected_platform)
+    # Source-only owners compose already-validated native TARs directly. Their
+    # actual layers are declared inputs; receipt-backed owners retain the
+    # existing contract and may not substitute this alternative.
+    direct_layers = bool(runtime_payload_layers or debug_payload_layers)
+    require(not direct_layers or (policy["retained_source"] == "none" and not has_source and
+            not native_expectations.get("require_source", False) and
+            runtime_payload_layers and debug_payload_layers),
+            "declared source layers cannot replace a required package receipt")
+    if direct_layers:
+        for path in runtime_payload_layers:
+            apply_layer(Path(path), expected_source_runtime)
+        for path in debug_payload_layers:
+            apply_layer(Path(path), expected_source_debug)
+    runtime_layout = image(runtime_path, expected_platform=expected_platform)
+    runtime_descriptor, runtime_manifest, runtime_config, runtime_layers = runtime_layout
+    debug_layout = image(debug_path, expected_platform=expected_platform)
+    debug_descriptor, debug_manifest, debug_config, debug_layers = debug_layout
     inherited_symbols_receipt, expected_inherited_symbols = None, {}
     if base_debug_symbols is not None:
         from tools.bazel.oci.native_packages import imported_symbol_receipt
@@ -250,15 +350,9 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         label = settings.get("Labels", {}).get("com.azure.sonic.manifest")
         require(isinstance(label, str) and json.loads(label) == json.loads(manifest_path.read_bytes()),
                 variant + " OCI manifest label differs from Make")
-    runtime_layer_descriptors = runtime_manifest["layers"]
-    require(debug_manifest["layers"][:len(runtime_layer_descriptors)] == runtime_layer_descriptors,
-            "debug image does not extend the exact runtime OCI layers")
-    runtime_diff_ids = runtime_config["rootfs"]["diff_ids"]
-    require(debug_config["rootfs"]["diff_ids"][:len(runtime_diff_ids)] == runtime_diff_ids,
-            "debug image does not extend the exact runtime rootfs")
-    runtime_files = {}
-    for layer in runtime_layers:
-        apply_layer(layer, runtime_files)
+    assert_ancestry(runtime_layout, debug_layout, "debug image does not extend the exact runtime OCI layers/rootfs")
+    runtime_files, _ = image_inventory(runtime_layout)
+    verify_unique_layer_paths(debug_layout)
     debug_files = dict(runtime_files)
     for layer in debug_layers[len(runtime_layers):]:
         apply_layer(layer, debug_files)
@@ -322,13 +416,22 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     overlay_report = None
     archive_report = None
     if complete:
-        base_descriptor, base_manifest, base_config, base_layers = image(base_path, expected_platform=expected_platform)
+        base_layout = image(base_path, expected_platform=expected_platform)
+        base_descriptor, base_manifest, base_config, base_layers = base_layout
         if has_source:
             require(source_provenance.get("base_manifest_digest") == base_descriptor["digest"],
                     "source packages were prepared for a different OCI base")
-        require(runtime_manifest["layers"][:len(base_manifest["layers"])] == base_manifest["layers"] and
-                runtime_config["rootfs"]["diff_ids"][:len(base_config["rootfs"]["diff_ids"])] == base_config["rootfs"]["diff_ids"],
-                "runtime image does not extend the exact managed OCI base")
+        assert_ancestry(base_layout, runtime_layout, "runtime image does not extend the exact managed OCI base")
+        if direct_layers:
+            for variant, layout, parent, layers in (
+                    ("runtime", runtime_layout, base_layout, [apt_layer, *runtime_payload_layers]),
+                    ("debug", debug_layout, runtime_layout, [debug_tools_layer, *debug_payload_layers])):
+                descriptors = layout.manifest["layers"][len(parent.layers):]
+                require(len(descriptors) == len(layers) and all(
+                    descriptor["digest"] == "sha256:" + sha(Path(layer)) and
+                    descriptor["size"] == Path(layer).stat().st_size
+                    for descriptor, layer in zip(descriptors, layers)),
+                    variant + " OCI layers differ from their declared source/APT/configuration inputs")
         base_settings = base_config.get("config", {})
         base_environment = dict(value.split("=", 1) for value in base_settings.get("Env", []))
         base_environment.update(expectations.get("environment", {}))
@@ -370,6 +473,8 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             apply_layer(layer, checked_files, checked_overlay=True)
         validate_payloads.base_aliases(runtime_path, expected_platform=expected_platform)
         validate_payloads.base_aliases(debug_path, expected_platform=expected_platform)
+        verify_directory_aliases(runtime_files)
+        verify_directory_aliases(debug_files)
         lock_sha = sha(apt_lock_path)
         runtime_selection = json.loads(runtime_apt_selection.read_bytes())
         debug_selection = json.loads(debug_apt_selection.read_bytes())
@@ -377,9 +482,14 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             (runtime_selection, "runtime", base_descriptor["digest"], runtime_receipt["manifest_sha256"]),
             (debug_selection, "debug", runtime_descriptor["digest"], debug_receipt["manifest_sha256"]),
         ):
-            require(selection.get("schema") == 1 and selection.get("variant") == variant and
+            selected_variant = selection.get("group") if direct_layers else selection.get("variant")
+            require(selection.get("schema") == 1 and selected_variant == variant and
                     selection.get("base_manifest_digest") == base_digest and selection.get("apt_lock_sha256") == lock_sha and
                     selection.get("make_manifest_sha256") == make_sha, variant + " APT selection identity differs")
+            if direct_layers:
+                require(selection.get("image") == policy["image"] and
+                        selection.get("dependency_check", {}).get("status") == "satisfied",
+                        variant + " APT selection has the wrong image or unsatisfied dependencies")
             if has_source:
                 require(selection.get("source_receipt_sha256") == sha(source_receipt),
                         variant + " APT selection uses a different source receipt")
@@ -413,7 +523,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                           "debug_alternative_links": [path for item in expectations.get("debug_alternatives", []) for path in item["paths"]],
                           "runtime_apt_selected": len(runtime_selection["selected"]),
                           "runtime_apt_skipped_base": len(runtime_selection["skipped_base"]),
-                          "runtime_apt_skipped_make": len(runtime_selection["skipped_make"]),
+                          "runtime_apt_skipped_make": len(runtime_selection["skipped_retained" if direct_layers else "skipped_make"]),
                           "debug_apt_selected": len(debug_selection["selected"]),
                           "runtime_non_elf_base_changes": runtime_selection["changed_non_elf_base_paths"],
                           "debug_non_elf_base_changes": debug_selection["changed_non_elf_base_paths"]}
