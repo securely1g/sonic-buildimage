@@ -97,7 +97,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.6",
+    version = "3.7.0.sonic.7",
 )
 
 single_version_override(
@@ -245,7 +245,7 @@ apt_inputs(
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
 
 single_version_override(
@@ -351,3 +351,5 @@ apt_inputs(
     name = "sysmgr_apt_inputs",
     lock = "//dockers/docker-sysmgr/bazel:apt.lock.json",
 )
+
+include("//src/libteam:deps.MODULE.bazel")
