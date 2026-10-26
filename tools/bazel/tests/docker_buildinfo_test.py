@@ -41,14 +41,14 @@ class DockerBuildinfoTest(unittest.TestCase):
             DOCKER_USERNAME="sonic", DOCKER_USERTAG="latest", DOCKER_BASE_ARCH="amd64",
             CONFIGURED_ARCH="amd64", **packages)
 
-    def prepare(self, image, original=None):
+    def prepare(self, image, original=None, architecture="amd64", distro="trixie"):
         dockerfile = self.workspace / "dockers" / image / "Dockerfile"
         if original is not None:
             dockerfile.parent.mkdir(parents=True, exist_ok=True)
             dockerfile.write_text(original)
         subprocess.run(
             ["bash", str(ROOT / "scripts/prepare_docker_buildinfo.sh"), image,
-             str(dockerfile.relative_to(self.workspace)), "amd64", "", "trixie"],
+             str(dockerfile.relative_to(self.workspace)), architecture, "", distro],
             cwd=self.workspace, env=dict(os.environ, SKIP_BUILD_HOOK="y"),
             check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return dockerfile.read_text()
@@ -112,6 +112,41 @@ class DockerBuildinfoTest(unittest.TestCase):
 
     def test_single_stage_image_retains_its_hooks(self):
         self.assert_hooks("docker-config-engine-stretch", initialized={0}, final_stage=0)
+
+    def test_native_slave_dockerfile_bytes_preserve_existing_cache_keys(self):
+        environment = jinja2.Environment(loader=jinja2.FileSystemLoader(ROOT),
+                                         keep_trailing_newline=True)
+        for distro in ("bookworm", "trixie"):
+            image = "sonic-slave-" + distro
+            for architecture in ("amd64", "arm64"):
+                with self.subTest(distro=distro, architecture=architecture):
+                    original = environment.get_template(image + "/Dockerfile.j2").render(
+                        DEFAULT_CONTAINER_REGISTRY="publicmirror.azurecr.io/",
+                        CONFIGURED_ARCH=architecture, CROSS_BUILD_ENVIRON="n",
+                        MULTIARCH_QEMU_ENVIRON="n", INCLUDE_FIPS="n")
+                    # The original generator's byte contract, including the
+                    # blank lines and trailing spaces hashed by SLAVE_BASE_TAG.
+                    prologue = (
+                        "# Auto-Generated for buildinfo\n"
+                        "ARG SONIC_VERSION_CACHE\n"
+                        "ARG SONIC_VERSION_CONTROL_COMPONENTS\n"
+                        "ARG ENABLE_SBOM=n\n"
+                        'COPY ["buildinfo", "/usr/local/share/buildinfo"]\n'
+                        f"COPY vcache/ /sonic/target/vcache/{image}\n"
+                        "RUN dpkg -i /usr/local/share/buildinfo/sonic-build-hooks_1.0_all.deb\n"
+                        f"ENV IMAGENAME={image}\n"
+                        f"ENV DISTRO={distro}\n"
+                        "ENV ENABLE_SBOM=$ENABLE_SBOM\n"
+                        f"RUN pre_run_buildinfo {image}\n\n")
+                    first_run = next(line for line in original.splitlines(keepends=True)
+                                     if line.startswith("RUN "))
+                    expected = original.replace(first_run, prologue + first_run, 1)
+                    expected += (f"\nRUN post_run_buildinfo {image} \n"
+                                 f"\nRUN post_run_cleanup {image} \n")
+                    generated = self.prepare(image, original, architecture, distro)
+                    self.assertEqual(generated, expected)
+                    self.assertEqual(self.prepare(image, architecture=architecture, distro=distro),
+                                     generated, "preparation must preserve bytes on repeat")
 
     def test_copy_only_runtime_stage_initializes_before_finalizing(self):
         for flatten in (False, True):

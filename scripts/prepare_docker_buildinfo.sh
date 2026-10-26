@@ -94,12 +94,14 @@ if [ ! -f $DOCKERFILE_TARGET ] || ! grep -q "Auto-Generated for buildinfo" $DOCK
         }
         { print }
         END {
-            if (!copybaselinenumber) {
-                if (!initialized) print prescript
-                print postscript
-            }
+            if (!copybaselinenumber && !initialized) print prescript
         }
     ' "$DOCKERFILE" > "$TEMP_FILE"
+    if [ -z "$COPY_BASE_LINE_NUMBER" ]; then
+        # Slave image tags hash this file; retain the original spaces/newlines.
+        printf '\nRUN post_run_buildinfo %s \n\nRUN post_run_cleanup %s \n' \
+            "$IMAGENAME" "$IMAGENAME" >> "$TEMP_FILE"
+    fi
 
     cat $TEMP_FILE > $DOCKERFILE_TARGET
     rm -f $TEMP_FILE
