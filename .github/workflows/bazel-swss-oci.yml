@@ -1,7 +1,12 @@
-name: Bazel kernel sandbox diagnostic
+name: Retained SWSS image diagnostic
 
 on:
   workflow_dispatch:
+    inputs:
+      verify_p4rt:
+        description: Also check the retained P4RT runtime and split debug packages
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -9,16 +14,107 @@ permissions:
 jobs:
   diagnose:
     runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout the reviewed verifier fix
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 6b13c8e76390dc31d6f46c879af1db40b78df3b0
+          path: verifier
           persist-credentials: false
-      - name: Verify permission repairs in the actual builder
-        run: bash tools/ci/runner/verify-permission-repairs.sh
+      - name: Verify only the retained final outputs
+        shell: bash
+        env:
+          RETAINED_SOURCE: /data/sonic-runner/attempts/20261026T121813Z-ccd64e7e/_work/sonic-buildimage/sonic-buildimage/vs-40313988993-1
+          RETAINED_REVISION: cb1bf3db0220c69d28a58d304c513d674a486f95
+          VERIFIER_REVISION: 6b13c8e76390dc31d6f46c879af1db40b78df3b0
+          BUILDER_TAG: sonic-slave-trixie:b4eb14c7457
+          VERIFY_P4RT: ${{ inputs.verify_p4rt }}
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/artifacts/retained-swss"
+          mkdir -p "$evidence"
+          exec > >(tee "$evidence/diagnostic.log") 2>&1
+          printf '%s\n' 'Diagnostic only: inspect run 40313988993 outputs without rebuilding images or changing that failed run.'
+          if ! test -d "$RETAINED_SOURCE"; then
+            printf 'Required retained attempt is absent: %s\n' "$RETAINED_SOURCE" >&2
+            exit 1
+          fi
+          test "$(git -c safe.directory="$RETAINED_SOURCE" -C "$RETAINED_SOURCE" rev-parse HEAD)" = "$RETAINED_REVISION"
+          test "$(git -C verifier rev-parse HEAD)" = "$VERIFIER_REVISION"
+          for archive in docker-config-engine-trixie.gz docker-orchagent.gz docker-orchagent-dbg.gz; do
+            if ! test -s "$RETAINED_SOURCE/target/$archive"; then
+              printf 'Required retained archive is absent or empty: %s\n' "$archive" >&2
+              exit 1
+            fi
+          done
+          test -s "$RETAINED_SOURCE/target/sonic-vs.img.gz"
+          mounts=()
+          if test "$VERIFY_P4RT" = true; then
+            for package in sonic-p4rt_0.0.1_amd64.deb sonic-p4rt-dbgsym_0.0.1_amd64.deb; do
+              test -s "$RETAINED_SOURCE/target/debs/trixie/$package"
+            done
+            test -s "$RETAINED_SOURCE/src/sonic-p4rt/sonic-pins/p4rt_app/p4rt.cc"
+            mounts+=(--mount "type=bind,src=$RETAINED_SOURCE/src/sonic-p4rt/sonic-pins,dst=/retained-pins,readonly")
+          fi
+          # Fail if the exact retained builder is unavailable; do not pull or rebuild it.
+          builder_id=$(docker image inspect --format '{{.Id}}' "$BUILDER_TAG")
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$builder_id")" = linux/amd64
+          export DIAGNOSTIC_BUILDER_ID="$builder_id" DIAGNOSTIC_EVIDENCE="$evidence"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          source = Path(os.environ['RETAINED_SOURCE'])
+          names = ['sonic-vs.img.gz', 'docker-config-engine-trixie.gz', 'docker-orchagent.gz', 'docker-orchagent-dbg.gz']
+          result = {'kind': 'retained-image-diagnostic', 'source_run': 40313988993,
+                    'source_revision': os.environ['RETAINED_REVISION'],
+                    'verifier_revision': os.environ['VERIFIER_REVISION'],
+                    'builder_tag': os.environ['BUILDER_TAG'], 'builder_id': os.environ['DIAGNOSTIC_BUILDER_ID'],
+                    'outputs': {name: {'bytes': (source / 'target' / name).stat().st_size} for name in names},
+                    'scope': 'Read-only retained outputs; no image rebuild; original run remains failed.'}
+          (Path(os.environ['DIAGNOSTIC_EVIDENCE']) / 'provenance.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, sort_keys=True))
+          PY
+          scratch=$(mktemp -d "$RUNNER_TEMP/swss-retained-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.XXXXXX")
+          container="swss-retained-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            # This directory was created by this step and contains only its private store.
+            sudo rm -rf -- "$scratch"
+          }
+          trap cleanup EXIT
+          mkdir "$scratch/docker"
+          docker run --rm --pull=never --name "$container" --privileged --init \
+            --cgroupns=private --network=none --ulimit nofile=524288:524288 \
+            --label "io.sonic-buildimage.ci-job=$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:retained-swss" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/verifier,dst=/verifier,readonly" \
+            --mount "type=bind,src=$RETAINED_SOURCE/target,dst=/retained-target,readonly" \
+            --mount "type=bind,src=$scratch/docker,dst=/var/lib/docker" \
+            --mount "type=bind,src=$evidence,dst=/evidence" \
+            "${mounts[@]}" --env "VERIFY_P4RT=$VERIFY_P4RT" \
+            --workdir /verifier -i "$builder_id" bash -seu <<'BASH'
+          python3 -B tools/bazel/ci/prepare_nested_docker.py
+          sed -i 's/--storage-driver=vfs/--storage-driver=overlay2/' /etc/default/docker
+          service docker start
+          ./scripts/wait_for_docker.sh 60
+          # Invoke the production verifier unchanged, including its inner memory/PID limits.
+          python3 -B dockers/docker-orchagent/bazel/verify_image.py \
+            --target /retained-target --output /evidence/swss-common-verification.json
+          if test "$VERIFY_P4RT" = true; then
+            python3 -B tools/bazel/ci/verify_p4rt_debug.py \
+              --runtime-deb /retained-target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
+              --debug-deb /retained-target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
+              --source-root /retained-pins --output /evidence/p4rt-debug-verification.json
+          fi
+          BASH
       - name: Save diagnostic evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: kernel-sandbox-diagnostic
-          path: artifacts/kernel-sandbox
+          name: retained-swss-diagnostic
+          path: |
+            artifacts/retained-swss/*.json
+            artifacts/retained-swss/*.log
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 1
