@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-26T05:29:23.281938Z",
+  "generated_at": "2026-10-26T05:30:39.143367Z",
   "pull_requests": [
     {
       "base_sha": "a6e20839d271649e63c44e4c55346a6fa554caad",
@@ -608,8 +608,8 @@
     {
       "attempt": 1,
       "branch": "codex/kernel-sandbox-diagnostic-20261026",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-26T05:29:00Z",
+      "conclusion": "success",
       "event": "workflow_dispatch",
       "jobs": [
         {
@@ -702,8 +702,8 @@
       "run_id": 40272743936,
       "source_sha": "91aabda521fb30b295634b4eb16fcd9d18ac12d4",
       "started_at": "2026-10-26T05:09:44Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-26T05:28:23Z",
+      "status": "completed",
+      "updated_at": "2026-10-26T05:29:01Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40272743936/attempts/1",
       "workflow_name": "Bazel kernel sandbox diagnostic",
       "workflow_path": ".github/workflows/bazel-swss-oci.yml"
@@ -1317,13 +1317,182 @@
           "phases": {
             "build": null,
             "other": null,
-            "setup": null,
+            "setup": 25.0,
             "upload": null,
             "validation": null
           },
-          "started_at": "2026-10-26T05:19:24Z",
-          "status": "queued",
-          "steps": [],
+          "started_at": "2026-10-26T05:29:44Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-26T05:30:10Z",
+              "conclusion": "success",
+              "duration_seconds": 25.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-26T05:29:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T05:30:10Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check source-build runner capacity",
+              "number": 2,
+              "phase": "setup",
+              "started_at": "2026-10-26T05:30:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Checkout repository",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-26T05:30:10Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check VS build prerequisites",
+              "number": 4,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare persistent agent caches",
+              "number": 5,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Download verified sources from this run's source job",
+              "number": 6,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare the shared Bazel source-download directory",
+              "number": 7,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Configure the native VS image",
+              "number": 8,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check nested Docker in both build environments",
+              "number": 9,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Build the VS image with Bazel SWSS archives",
+              "number": 10,
+              "phase": "build",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Verify P4RT packaged split debug symbols",
+              "number": 11,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Remove this job's remaining build containers",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public VS build summary",
+              "number": 14,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload VS image and SWSS archives",
+              "number": 15,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 30,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40272560253/job/121411505179"
         }
       ],
@@ -1335,8 +1504,8 @@
       "run_id": 40272560253,
       "source_sha": "850ad9838c597e9f3346530b449442af95d69e1f",
       "started_at": "2026-10-26T05:07:28Z",
-      "status": "queued",
-      "updated_at": "2026-10-26T05:19:24Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-26T05:29:44Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40272560253/attempts/1",
       "workflow_name": "Bazel SWSS OCI",
       "workflow_path": ".github/workflows/bazel-swss-oci.yml"
