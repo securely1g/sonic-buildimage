@@ -23,9 +23,11 @@ class VsOciSessionTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
-        (self.directory / "tools/bazel/ci").mkdir(parents=True)
-        for source in ("tools/bazel/ci/verify_vs_oci.sh", "tools/bazel/build_helpers.py"):
-            shutil.copyfile(ROOT / source, self.directory / source)
+        for source in ("tools/bazel/ci/verify_vs_oci.sh", "tools/bazel/build_helpers.py",
+                       "tools/bazel/cache/credentials.py"):
+            destination = self.directory / source
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / source, destination)
         (self.directory / "tools/bazel/ci/verify_p4rt_debug.py").write_text(
             "import json, os, pathlib, sys\n"
             "pathlib.Path('debug-arguments.json').write_text(json.dumps(sys.argv[1:]))\n"

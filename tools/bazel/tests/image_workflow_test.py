@@ -22,8 +22,10 @@ class VerificationWorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="image configs ") as temporary:
             directory = Path(temporary)
             (directory / "artifacts/vs").mkdir(parents=True)
-            (directory / "tools/bazel").mkdir(parents=True)
-            shutil.copyfile(ROOT / "tools/bazel/build_helpers.py", directory / "tools/bazel/build_helpers.py")
+            for source in ("tools/bazel/build_helpers.py", "tools/bazel/cache/credentials.py"):
+                destination = directory / source
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / source, destination)
             calls = directory / "calls.jsonl"
             policy = directory / "policy.json"
             policy.write_text("{}\n")
