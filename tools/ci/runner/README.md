@@ -2,12 +2,26 @@
 
 These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
 runner for one full VS image job. The default repository is
-`securely1g/sonic-buildimage`; select a job explicitly with `--pr NUMBER` or
-`--master`, and pass `--repo owner/name` to select another repository.
+`securely1g/sonic-buildimage`; use `--master` for its shared PR/manual queue,
+and pass `--repo owner/name` to select another repository.
 The optional manager below registers replacements automatically after each job.
-The workflow routes PR jobs to `sonic-vs-source-pr-NUMBER` and push/manual jobs
-to `sonic-vs-source-master`. A runner gets only its selected custom label plus
-GitHub's default `self-hosted`, `linux`, `x64` labels.
+The full VS workflow runs automatically for PR branches in this repository,
+including drafts, after the SWSS source checks pass. It uses GitHub's default
+PR events: opened, synchronized and reopened. Fork PRs keep their hosted checks
+and do not automatically run on this persistent host.
+
+PR and manual VS jobs share the existing `sonic-vs-source-master` label. Despite
+its historical name, that label now serves the shared PR queue. Configure the
+manager with `--master`; it registers one runner, executes one queued job, then
+registers its replacement. Multiple PRs wait for available capacity rather than
+needing a different runner configuration for each PR. For example, a job for
+PR #30 can run on the same host as the next job for PR #13.
+
+Manual `Bazel SWSS OCI` runs include the full image build by default; select
+`skip_vs=true` to run only source/archive checks. Ordinary pushes to master
+retain source/archive checks without starting an additional full image build.
+The runner scripts still support `--pr NUMBER` for older workflows that request
+`sonic-vs-source-pr-NUMBER`; this workflow uses the shared label instead.
 
 ## Prepare a host once
 
@@ -128,8 +142,9 @@ sudo journalctl -u sonic-vs-runner-manager.service -n 50 --no-pager
 ```
 
 For P330, the operator is `lgh`. `--master` selects the
-`sonic-vs-source-master` routing label used by push/manual VS jobs. To maintain a
-runner for one reviewed PR instead, select `--pr NUMBER`. The manager maintains
+`sonic-vs-source-master` routing label used by automatic PR and manual VS jobs.
+For an older workflow that requires a PR-specific label, select `--pr NUMBER`.
+The manager maintains
 only the configured route; it does not dispatch workflows, cancel queued runs,
 or change the source revision of an existing job.
 
@@ -187,18 +202,20 @@ does not clear it. The marker contains configuration and time, never tokens.
 
 Run these as the normal operator who is already authenticated to GitHub with
 repository runner administration access. Keep that login out of `sonic-runner`.
-Inspect the queued runs and cancel obsolete attempts before arming; a PR label
-selects the PR, not an individual commit or run.
+Inspect the queued runs before arming. The shared label accepts the next eligible
+repository PR or manual VS job; it does not select a particular PR or revision.
+Preserve active builds and cancel obsolete attempts only when authorized.
 
 ```sh
 gh auth status
 gh run list --repo securely1g/sonic-buildimage --workflow bazel-swss-oci.yml --limit 10
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9 --dry-run
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+python3 /opt/sonic-runner-tools/runner/rearm.py --master --dry-run
+python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
-Use `--master` for a push/manual job. Arm only after reviewing the PR code and
-workflow that will run. For a failed attempt, retry the workflow with
+Use `--pr NUMBER` only for an older workflow that still requests a PR-specific
+label. The shared queue accepts the repository's trusted branches under its CI
+policy. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
 run's workflow. A new registration is required after each consumed job.
@@ -251,12 +268,12 @@ space to inspect the actual filesystem; an extraction-time capacity change is
 only one possible cause. Restore the documented workspace and Docker budgets
 before rearming. A PR update does not refresh the installed helper under
 `/opt`. On an already bootstrapped, idle host, install the updated helpers from
-the reviewed checkout, then recheck capacity and arm the desired queued run:
+the reviewed checkout, then recheck capacity and arm the shared queue:
 
 ```sh
 sudo install -m 0755 -o root -g root tools/ci/runner/preflight.py tools/ci/runner/rearm.py /opt/sonic-runner-tools/runner/
 sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.py
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
 The additional check prevents registration when extraction uses the remaining
@@ -284,7 +301,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 
 | Failure or gap | Repeatable protection |
 | --- | --- |
-| Generic label accepted an older unrelated queued job | Per-PR labels; inspect/cancel obsolete runs before arming |
+| A PR-specific label left jobs waiting for an idle host registered for another PR | One shared queue for repository PRs and manual builds; each registration runs one job |
 | Interrupted submodule checkout left `.git/modules/.../HEAD` pointing at `.invalid` | Fresh runner directory for each registration; workflow checkout also uses run/attempt-specific paths |
 | Missing host `j2` or service PATH differs from operator shell | Pinned root-owned virtual environment, explicit service PATH and render check |
 | Restrictive service umask made copied pip/APT config root-only | `UMask=0022`, private runner directories, process/service umask checks, fresh checkout and rebuilt affected images |
