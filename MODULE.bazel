@@ -67,6 +67,8 @@ bazel_dep(
 git_override(
     module_name = "sonic-swss",
     commit = "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
+    patches = ["//tools/bazel:sonic-swss-libteam.patch"],
+    patch_strip = 1,
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
@@ -268,6 +270,8 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
+    patches = ["//tools/bazel:sonic-swss-common-zmq.patch"],
+    patch_strip = 1,
     version = "0.0.6-be3495e6958310cb3dd02d6a290a6564efd9aa95",
 )
 
