@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-26T05:28:11.752060Z",
+  "generated_at": "2026-10-26T05:29:23.281938Z",
   "pull_requests": [
     {
       "base_sha": "a6e20839d271649e63c44e4c55346a6fa554caad",
@@ -614,9 +614,9 @@
       "jobs": [
         {
           "architecture": null,
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-26T05:29:00Z",
+          "conclusion": "success",
+          "duration_seconds": 37.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 121408914193,
@@ -624,14 +624,75 @@
           "name": "diagnose",
           "phases": {
             "build": null,
-            "other": null,
-            "setup": null,
+            "other": 29.0,
+            "setup": 3.0,
             "upload": null,
-            "validation": null
+            "validation": 1.0
           },
-          "started_at": "2026-10-26T05:09:46Z",
-          "status": "queued",
-          "steps": [],
+          "started_at": "2026-10-26T05:28:23Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-26T05:28:27Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-26T05:28:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T05:28:36Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-26T05:28:27Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T05:28:37Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Verify permission repairs in the actual builder",
+              "number": 3,
+              "phase": "validation",
+              "started_at": "2026-10-26T05:28:36Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T05:28:57Z",
+              "conclusion": "success",
+              "duration_seconds": 20.0,
+              "name": "Save diagnostic evidence",
+              "number": 4,
+              "phase": "other",
+              "started_at": "2026-10-26T05:28:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T05:28:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 8,
+              "phase": "other",
+              "started_at": "2026-10-26T05:28:57Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-26T05:28:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 9,
+              "phase": "other",
+              "started_at": "2026-10-26T05:28:57Z",
+              "status": "completed"
+            }
+          ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40272743936/job/121408914193"
         }
       ],
@@ -641,8 +702,8 @@
       "run_id": 40272743936,
       "source_sha": "91aabda521fb30b295634b4eb16fcd9d18ac12d4",
       "started_at": "2026-10-26T05:09:44Z",
-      "status": "queued",
-      "updated_at": "2026-10-26T05:09:44Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-26T05:28:23Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40272743936/attempts/1",
       "workflow_name": "Bazel kernel sandbox diagnostic",
       "workflow_path": ".github/workflows/bazel-swss-oci.yml"
