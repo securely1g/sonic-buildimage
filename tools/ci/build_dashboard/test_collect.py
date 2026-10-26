@@ -218,6 +218,72 @@ class AssociationTests(unittest.TestCase):
         self.assertEqual(self.identify(run(pull_requests=[], head_branch="master"), [pr(branch="master")]), ([], "none"))
         self.assertEqual(self.identify(run(pull_requests=[], head_repository={"full_name": "someone/fork"}), [pr()]), ([], "none"))
 
+    def test_fork_pr_requires_unique_exact_repository_branch_and_head(self):
+        value = run(pull_requests=[], head_repository={"full_name": "contributor/sonic-buildimage"})
+        current = pr(repo="contributor/sonic-buildimage")
+        self.assertEqual(self.identify(value, [pr(number=2), current]), ([1], "commit"))
+        for changed in (dict(sha=OTHER_SHA), dict(branch="different"), dict(repo="another/sonic-buildimage")):
+            with self.subTest(changed=changed):
+                self.assertEqual(self.identify(value, [pr(**({"repo": "contributor/sonic-buildimage"} | changed))]), ([], "none"))
+        self.assertEqual(self.identify(value, [current, pr(number=2, repo="contributor/sonic-buildimage")]), ([], "none"))
+        for event in ("push", "workflow_dispatch", "pull_request_target"):
+            with self.subTest(event=event):
+                self.assertEqual(self.identify(dict(value, event=event), [current]), ([], "none"))
+
+    def test_fork_default_branch_and_case_insensitive_repository_match(self):
+        value = run(pull_requests=[], head_branch="master",
+                    head_repository={"full_name": "Contributor/sonic-buildimage"})
+        self.assertEqual(self.identify(value, [pr(branch="master", repo="contributor/sonic-buildimage")]),
+                         ([1], "commit"))
+
+    def test_completed_unassociated_fork_attempt_refreshes_without_job_reads(self):
+        value = run(pull_requests=[], conclusion="action_required",
+                    head_repository={"full_name": "contributor/sonic-buildimage"})
+        api = FakeAPI(latest=[value], pulls=[pr(repo="contributor/sonic-buildimage")])
+        api.jobs[f"repos/{REPO}/actions/runs/10/attempts/1/jobs"] = []
+        initial = collector.collect(api, REPO, empty())
+        initial["runs"][0].update(pr_numbers=[], pr_association="none")
+        retry = FakeAPI(latest=[value], pulls=api.pulls)
+        result = collector.collect(retry, REPO, initial)
+        self.assertEqual(result["runs"][0]["pr_numbers"], [1])
+        self.assertEqual(result["runs"][0]["conclusion"], "action_required")
+        self.assertEqual(result["runs"][0]["jobs"], [])
+        self.assertEqual(result["runs"][0]["event_bases"], [])
+        self.assertFalse(any(endpoint.endswith("/jobs") for endpoint in retry.calls))
+        mismatch = FakeAPI(latest=[dict(value, head_repository={"full_name": "other/fork"})], pulls=api.pulls)
+        self.assertEqual(collector.collect(mismatch, REPO, initial)["runs"][0]["pr_numbers"], [])
+
+    def test_cached_association_rejects_changed_attempt_source(self):
+        initial = collector.collect(FakeAPI(), REPO, empty())
+        initial["runs"][0].update(pr_numbers=[], pr_association="none")
+        api = FakeAPI(latest=[run(head_sha=OTHER_SHA)])
+        with self.assertRaises(collector.CollectionError):
+            collector.collect(api, REPO, initial)
+
+    def test_prior_unassociated_attempt_uses_its_own_fork_metadata(self):
+        old = run(pull_requests=[], conclusion="action_required",
+                  head_repository={"full_name": "contributor/sonic-buildimage"})
+        first = FakeAPI(latest=[old], pulls=[pr(repo="contributor/sonic-buildimage")])
+        endpoint = f"repos/{REPO}/actions/runs/10/attempts/1/jobs"
+        first.jobs[endpoint] = []
+        initial = collector.collect(first, REPO, empty())
+        initial["runs"][0].update(pr_numbers=[], pr_association="none")
+        retry = FakeAPI(latest=[dict(old, run_attempt=2, head_repository={"full_name": "another/fork"})],
+                        pulls=first.pulls)
+        attempt = f"repos/{REPO}/actions/runs/10/attempts/1"
+        retry.attempts[attempt] = old
+        result = collector.collect(retry, REPO, initial)
+        self.assertIn(attempt, retry.calls)
+        self.assertNotIn(endpoint, retry.calls)
+        self.assertEqual(result["runs"][0]["pr_numbers"], [])
+        self.assertEqual(result["runs"][1]["pr_numbers"], [1])
+
+        # Unrelated historical commits need no extra lookup on every refresh.
+        initial["runs"][0]["source_sha"] = OTHER_SHA
+        retry.calls.clear()
+        collector.collect(retry, REPO, initial)
+        self.assertNotIn(attempt, retry.calls)
+
 
 class CollectionTests(unittest.TestCase):
     def test_selected_base_is_separate_from_historical_and_event_bases(self):

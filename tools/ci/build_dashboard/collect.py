@@ -312,6 +312,20 @@ class Associations:
             return direct, "github"
         branch, sha = raw.get("head_branch"), raw.get("head_sha")
         source_repo = (raw.get("head_repository") or {}).get("full_name")
+        if (raw.get("event") == "pull_request" and isinstance(source_repo, str)
+                and source_repo.lower() != self.repo.lower()):
+            # Fork runs can omit pull_requests while waiting for approval. Only
+            # the exact current fork/branch/commit tuple proves their PR; do not
+            # infer historical fork membership from a branch name or commit API.
+            if (not branch or not REPOSITORY_RE.fullmatch(source_repo)
+                    or not isinstance(sha, str) or not SHA_RE.fullmatch(sha)):
+                return [], "none"
+            candidates = [pr for pr in self.pulls.values()
+                          if ((pr.get("head", {}).get("repo") or {}).get("full_name", "").lower()
+                              == source_repo.lower())
+                          and pr.get("head", {}).get("ref") == branch
+                          and pr.get("head", {}).get("sha") == sha]
+            return ([candidates[0]["number"]], "commit") if len(candidates) == 1 else ([], "none")
         if (not branch or branch == self.default_branch or not isinstance(sha, str)
                 or not SHA_RE.fullmatch(sha) or (source_repo and source_repo.lower() != self.repo.lower())):
             return [], "none"
@@ -527,9 +541,20 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs
                     if attempt == current_attempt and "event_bases" not in old:
                         old = dict(old, event_bases=event_bases(latest_raw))
                         retained[(current_id, attempt)] = old
-                    if str(old.get("pr_association_note") or "").startswith("PR association temporarily unavailable:"):
-                        retry_raw = {"head_branch": old.get("branch"), "head_sha": old.get("source_sha"),
-                                     "head_repository": {"full_name": repo}, "pull_requests": []}
+                    unassociated_head = (not old.get("pr_numbers") and old.get("event") == "pull_request"
+                        and any(pr.get("head", {}).get("sha") == old.get("source_sha")
+                                and pr.get("head", {}).get("ref") == old.get("branch") for pr in pulls))
+                    if ((attempt == current_attempt and not old.get("pr_numbers")) or unassociated_head
+                            or str(old.get("pr_association_note") or "").startswith(
+                                "PR association temporarily unavailable:")):
+                        # Retry missing links from fresh metadata, including
+                        # terminal zero-job fork runs. Keep cached job evidence.
+                        retry_raw = latest_raw if attempt == current_attempt else api.get(
+                            f"repos/{repo}/actions/runs/{current_id}/attempts/{attempt}")
+                        if (retry_raw.get("id") != current_id or retry_raw.get("run_attempt") != attempt
+                                or retry_raw.get("head_sha") != old.get("source_sha")
+                                or retry_raw.get("head_branch") != old.get("branch")):
+                            raise CollectionError("Cached run association metadata does not match the attempt")
                         numbers, method = associations.identify(retry_raw)
                         retained[(current_id, attempt)] = dict(old, pr_numbers=numbers, pr_association=method,
                             pr_association_note=associations.notes.get(old.get("source_sha")))

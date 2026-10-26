@@ -23,7 +23,8 @@ does not execute a build or execute any content from a log.
   `completed_at`, `updated_at`, `url`, `jobs`, `event_bases`.
   `source_sha` is GitHub's run `head_sha`; it is not replaced by the current PR
   head. `pr_association` is `github` (run's explicit PR links), `commit` (exact
-  current same-repository PR head), `branch` (unique same-repository feature
+  current same-repository PR head, or a unique exact fork repository/branch/head
+  match for a `pull_request` event), `branch` (unique same-repository feature
   branch, additionally verified through GitHub's commit-to-PR endpoint), or
   `none`. Multiple/ambiguous inferred matches are left unassociated.
   `event_bases` contains only `{number, ref, sha}` from the workflow run's
