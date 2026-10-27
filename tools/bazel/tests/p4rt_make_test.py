@@ -25,12 +25,15 @@ class P4rtMakeTest(unittest.TestCase):
                 "SONIC_P4RT=p4rt.deb", "SONIC_P4RT_DBG=p4rt-dbg.deb",
                 "BAZEL_CACHE=" + dest + "/absent", dest + "/p4rt.deb",
             ], cwd=SOURCE, text=True)
-        build, test = [shlex.split(line) for line in result.splitlines() if line.startswith("bazel ")]
+        p4rt = "USE_BAZEL_VERSION=6.4.0 bazel "
+        commands = [shlex.split(line.removeprefix(p4rt)) for line in result.splitlines()
+                    if line.startswith(p4rt)]
+        build, test = [command for command in commands if command[0] in ("build", "test")]
         for command in (build, test):
             self.assertIn("--experimental_downloader_config=" + str(POLICY), command)
-        self.assertEqual(build[1], "build")
+        self.assertEqual(build[0], "build")
         self.assertEqual(build[-2:], ["//p4rt_app:p4rt_deb", "//p4rt_app:p4rt_dbg_deb"])
-        self.assertEqual(test[1], "test")
+        self.assertEqual(test[0], "test")
         self.assertEqual(test[-1], "//p4rt_app/...")
 
     def test_only_the_pinned_xz_archive_adds_an_official_mirror(self):
