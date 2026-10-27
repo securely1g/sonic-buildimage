@@ -615,6 +615,7 @@ endif
 
 export kernel_procure_method=$(KERNEL_PROCURE_METHOD)
 export vs_build_prepare_mem=$(VS_PREPARE_MEM)
+export vs_validate_services=$(VS_VALIDATE_SERVICES)
 
 ###############################################################################
 ## Canned sequences

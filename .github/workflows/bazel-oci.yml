@@ -685,6 +685,12 @@ jobs:
             SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-p4-images.sh" \
             2>&1 | tee artifacts/vs/syncd-p4-images.log
 
+      - name: Require guest service evidence for this VS image
+        run: |
+          python3 -B -m tools.ci.guest_validation \
+            --report target/sonic-vs.guest-validation.json \
+            --image target/sonic-vs.img.gz
+
       - name: Verify P4RT packaged split debug symbols
         run: |
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
@@ -757,6 +763,15 @@ jobs:
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/source-base.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/static-validation.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/installed-validation.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Retain strict VS guest validation receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-guest-validation-amd64
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.guest-validation.json
           if-no-files-found: warn
           retention-days: 14
 
