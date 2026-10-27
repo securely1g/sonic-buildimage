@@ -38,10 +38,8 @@ PY
     )
 fi
 
-make target/docker-orchagent-dbg.gz \
-    target/docker-syncd-vs.gz target/docker-syncd-vs-dbg.gz \
-    target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
-    target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb "${options[@]}"
+# Keep the remaining archive and P4 verification work in one private builder.
+make bazel-vs-oci "${options[@]}"
 verify_start=$EPOCHREALTIME
 python3 -B tools/bazel/ci/vs_archive_reuse.py verify --workspace "$PWD" --receipt "$receipt"
 verify_end=$EPOCHREALTIME

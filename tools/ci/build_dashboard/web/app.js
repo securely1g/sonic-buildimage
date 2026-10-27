@@ -6,6 +6,7 @@ const KIND_LABELS = {"make-vs": "Make VS", "bazel-vs": "Bazel VS installer", con
 const PHASES = ["setup", "build", "validation", "upload", "other"];
 // Keep this vocabulary in sync with breakdown.py. Never display labels or log text from a snapshot.
 const SECTION_LABELS = {
+  "oci-session": "OCI archives and verification",
   "vs-image": "VS image, dependencies and cleanup", "orchagent-release": "Orchagent release",
   "orchagent-debug": "Orchagent debug", "syncd-release": "Syncd release", "syncd-debug": "Syncd debug",
   "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",

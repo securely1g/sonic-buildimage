@@ -1507,6 +1507,7 @@ SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES))
 
 # Load the shared container rules after all owners declare their metadata.
 include tools/bazel/docker.mk
+include tools/bazel/vs_oci.mk
 
 # Targets for building docker debug images
 $(addprefix $(TARGET_PATH)/, $(DOCKER_DBG_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform docker-start \
