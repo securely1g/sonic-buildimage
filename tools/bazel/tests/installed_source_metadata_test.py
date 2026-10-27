@@ -3,7 +3,10 @@ import io
 import copy
 import fnmatch
 import json
+import os
 from pathlib import Path
+import stat
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +14,7 @@ from unittest.mock import patch
 try:
     from tools.bazel.oci import installed_source_metadata as subject
     from tools.bazel.oci.source_contract import generate
+    from tools.bazel.oci.normalize_layer import normalized_member
 except ModuleNotFoundError as error:
     if error.name not in ('sonic_apt', 'sonic_oci'):
         raise
@@ -392,6 +396,50 @@ class SourceOverlayTest(unittest.TestCase):
         self.assertEqual(result['verified_overlays'], report['verified_overlays'])
         self.assertEqual(result['inherited_metadata_sha256'], subject.sha(inherited))
         self.assertEqual(result['source_packages'][0].get('path_modes'), {'run/common/config': 0o644})
+
+    def test_debug_roundtrip_requires_the_installed_symlink_mode(self):
+        """Protobuf's mode-000 SONAME link becomes 0777 on Linux, without chmod."""
+        link = 'usr/lib/libcommon.so.0'
+        target = self.original[link][0]
+        self.original[link] = (target, 0)
+        installed_link = self.root / 'installed-link'
+        os.symlink(target, installed_link)
+        installed_mode = stat.S_IMODE(installed_link.lstat().st_mode)
+        self.assertEqual(installed_mode, 0o777)
+        header = tarfile.TarInfo(link)
+        header.type, header.linkname, header.mode = tarfile.SYMTYPE, target, 0
+        for normalize in (False, True):
+            with self.subTest(normalize=normalize):
+                mode = normalized_member(header, root_owned=normalize).mode
+                self.normalized[link] = (target, mode)
+                report = self.inspect(allow_same_owner_overlays=True)
+                inherited = self.root / 'inherited.json'
+                inherited.write_text(json.dumps(report))
+                self.files.update(self.normalized)
+                self.files[link] = (target, installed_mode)
+                self.files['usr/share/sonic/bazel/runtime.json'] = (inherited.read_bytes(), 0o644)
+
+                def inspect_debug():
+                    rootfs = self.write_tar('debug-rootfs.tar', self.files)
+                    receipt = self.root / 'debug-installation.json'
+                    receipt.write_text(json.dumps({'status': 'passed', 'architecture': 'amd64',
+                                                  'rootfs_sha256': subject.sha(rootfs)}))
+                    return subject.describe(rootfs, receipt, self.root / 'spec.json', 'amd64',
+                        inherited_metadata=inherited,
+                        inherited_metadata_path='usr/share/sonic/bazel/runtime.json',
+                        payloads={'common': self.root / 'source.tar'})
+
+                if not normalize:
+                    with self.assertRaisesRegex(ValueError, 'same-owner source overlay: ' + link):
+                        inspect_debug()
+                else:
+                    self.assertEqual(inspect_debug()['verified_overlays'], report['verified_overlays'])
+                    # Normalizing the symlink does not authorize regular-file
+                    # permission changes during debug package installation.
+                    library = 'usr/lib/libcommon.so.0.0.0'
+                    self.files[library] = (self.normalized[library][0], 0o600)
+                    with self.assertRaisesRegex(ValueError, 'same-owner source overlay: ' + library):
+                        inspect_debug()
 
     def test_source_only_selection_retains_provenance_without_make_manifest(self):
         report = self.inspect(allow_same_owner_overlays=True)

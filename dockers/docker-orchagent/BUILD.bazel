@@ -11,6 +11,7 @@ load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:apt_install_inputs.bzl", "apt_install_inputs")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:installed_source_metadata.bzl", "installed_source_metadata")
+load("//tools/bazel/oci:normalize_layer.bzl", "normalize_layer")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:repack_oci.bzl", "repack_oci")
 load("//tools/bazel/oci:rootfs_metadata.bzl", "rootfs_metadata")
@@ -260,10 +261,16 @@ apt_install(
     tags = ["manual"],
 )
 
-# Source producers supply their installed paths and permissions.
-alias(
+# Linux installs symlinks with mode 0777, even when a producer's TAR records
+# mode 000. Record that installed representation before the debug APT roundtrip;
+# keep regular-file permissions and source bytes unchanged.
+normalize_layer(
     name = "source_runtime_layer",
-    actual = ":rdeps",
+    src = ":rdeps",
+    base = ":configured_debian",
+    expected_platform = "linux/amd64",
+    root_owned = True,
+    tars = _SOURCE_PACKAGES.values(),
 )
 
 filegroup(
