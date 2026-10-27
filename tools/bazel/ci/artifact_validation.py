@@ -1,6 +1,8 @@
 """Inspect archive payloads and verify their matching split ELF debug symbols."""
 
 import hashlib
+
+from tools.bazel.ci.validation_inputs import cached_inventory, sha256
 from pathlib import Path, PurePosixPath
 import re
 import struct
@@ -16,8 +18,7 @@ def require(condition, message):
 
 
 def sha(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+    return sha256(path)
 
 
 def path_name(value):
@@ -64,6 +65,11 @@ def file_metadata(stream, name):
 
 
 def payload(path, require_root=True):
+    return cached_inventory(path, ("package_payload", require_root),
+                            lambda: _payload(path, require_root))
+
+
+def _payload(path, require_root):
     result = {}
     with tarfile.open(path) as archive:
         for member in archive:
