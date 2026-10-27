@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-27T19:23:07.788371Z",
+  "generated_at": "2026-10-27T20:16:17.199492Z",
   "pull_requests": [
     {
       "base_sha": "ad02c810d43a267d34d2969e79d583c87d64979c",
@@ -311,7 +311,7 @@
       "number": 40,
       "state": "open",
       "title": "Test SWSS source packages on AMD64 and ARM64",
-      "updated_at": "2026-10-27T18:40:19Z",
+      "updated_at": "2026-10-27T19:24:28Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/40"
     },
     {
@@ -395,7 +395,7 @@
       "number": 33,
       "state": "open",
       "title": "Assemble OCI images from source TARs with APT support",
-      "updated_at": "2026-10-27T17:13:26Z",
+      "updated_at": "2026-10-27T20:05:40Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/33"
     },
     {
@@ -10294,8 +10294,8 @@
     {
       "attempt": 1,
       "branch": "codex/dpkg-package-state",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-27T20:15:06Z",
+      "conclusion": "failure",
       "event": "pull_request",
       "jobs": [
         {
@@ -11152,23 +11152,23 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
+          "completed_at": "2026-10-27T20:15:06Z",
+          "conclusion": "failure",
+          "duration_seconds": 7534.0,
+          "image_build_elapsed_seconds": 7256.0,
           "image_build_seconds": null,
           "job_id": 122307083387,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
+            "build": 7256.0,
+            "other": 2.0,
             "setup": 270.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-10-27T18:09:32Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-27T18:09:42Z",
@@ -11269,104 +11269,114 @@
                 "status": "unavailable",
                 "version": 1
               },
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-27T20:14:59Z",
+              "conclusion": "failure",
+              "duration_seconds": 7256.0,
               "name": "Build the VS image and both OCI container variants",
               "number": 10,
               "phase": "build",
               "started_at": "2026-10-27T18:14:03Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-27T20:14:59Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify source-built P4 runtime and debug TARs in both Syncd images",
               "number": 11,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:14:59Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-27T20:14:59Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Validate APT transactions in runtime and debug service images",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:14:59Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-27T20:14:59Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify P4RT packaged split debug symbols",
               "number": 13,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:14:59Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-27T20:14:59Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Remove this job's remaining build containers",
               "number": 14,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:14:59Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-27T20:14:59Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Prepare public artifact list",
               "number": 15,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:14:59Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-27T20:15:01Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Upload public VS build summary",
               "number": 16,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:14:59Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-27T20:15:01Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Retain installed image and APT transaction evidence",
               "number": 17,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:15:01Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-27T20:15:01Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Upload VS image and OCI container archives",
               "number": 18,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:15:01Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-27T20:15:03Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Post Checkout repository",
               "number": 36,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-27T20:15:01Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-27T20:15:03Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 37,
+              "phase": "other",
+              "started_at": "2026-10-27T20:15:03Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40531218515/job/122307083387"
@@ -11380,8 +11390,8 @@
       "run_id": 40531218515,
       "source_sha": "8f10b296d894531242f7e97f66260924efccb652",
       "started_at": "2026-10-27T15:27:50Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-27T18:09:33Z",
+      "status": "completed",
+      "updated_at": "2026-10-27T20:15:07Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40531218515/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
