@@ -255,6 +255,19 @@ class ImagePhaseTests(unittest.TestCase):
 
 
 class ParserTests(unittest.TestCase):
+    def test_shared_oci_session_preserves_child_archive_timings(self):
+        log = synthetic_log().replace(b"Making target/docker-orchagent.gz", b"Making bazel-vs-oci")
+        log = log.replace(b"[ target/docker-orchagent.gz ]", b"[ target/docker-orchagent-dbg.gz ]")
+        value = breakdown.parse_log(log, job()["steps"][0])
+        self.assertTrue(breakdown.valid(value))
+        self.assertEqual(value["duration_seconds"], 600.2)
+        self.assertEqual([section["id"] for section in value["sections"]], ["vs-image-1", "oci-session-1"])
+        session = value["sections"][1]
+        self.assertEqual(session["label"], "OCI archives and verification")
+        self.assertEqual(session["duration_seconds"], 110.4)
+        self.assertEqual(session["tasks"][0]["id"], "orchagent-debug-1")
+        self.assertEqual(session["tasks"][0]["duration_seconds"], 10)
+
     def test_sequential_sections_include_setup_cleanup_and_exclude_later_step(self):
         value = parsed()
         self.assertTrue(breakdown.valid(value))

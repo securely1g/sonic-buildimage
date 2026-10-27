@@ -34,6 +34,7 @@ REASONS = {
 RETRY_REASONS = {"pending-collection", "logs-temporarily-unavailable"}
 SECTION_LABELS = {
     "vs-image": "VS image, dependencies and cleanup",
+    "oci-session": "OCI archives and verification",
     "orchagent-release": "Orchagent release",
     "orchagent-debug": "Orchagent debug",
     "syncd-release": "Syncd release",
@@ -292,7 +293,7 @@ are observed recipe/cache intervals and are deliberately not summed.
         previous = when
         outer = OUTER.fullmatch(text)
         if outer:
-            kind = target_kind(outer[1])
+            kind = "oci-session" if outer[1] == "bazel-vs-oci" else target_kind(outer[1])
             kind = "vs-image" if kind == "final-image" else kind
             if kind not in SECTION_LABELS:
                 return unavailable("unsupported-log-format")

@@ -50,12 +50,8 @@ if os.environ.get("FAIL") == kind or os.environ.get("FAIL") == sys.argv[1]:
         make = [call[1:] for call in calls if call[0] == "make"]
         self.assertEqual(make[0][0], "target/sonic-vs.img.gz")
         self.assertFalse(any("target/docker-orchagent.gz" in call for call in make))
-        self.assertEqual(make[1][:5], [
-            "target/docker-orchagent-dbg.gz", "target/docker-syncd-vs.gz", "target/docker-syncd-vs-dbg.gz",
-            "target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb",
-            "target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb",
-        ])
-        self.assertEqual(make[0][1:], make[1][5:])
+        self.assertEqual(make[1][0], "bazel-vs-oci")
+        self.assertEqual(make[0][1:], make[1][1:])
         report = json.loads((root / "artifacts/vs/orchagent-reuse-timing.json").read_text())
         self.assertIsNone(report["redundant_request_seconds"])
         self.assertIsNone(report["net_avoided_seconds"])
@@ -74,7 +70,7 @@ if os.environ.get("FAIL") == kind or os.environ.get("FAIL") == sys.argv[1]:
 
     def test_failed_build_or_validation_stops_without_claiming_savings(self):
         for failure in ("target/sonic-vs.img.gz", "capture", "target/docker-orchagent.gz",
-                        "verify-runtime", "target/docker-orchagent-dbg.gz", "verify"):
+                        "verify-runtime", "bazel-vs-oci", "verify"):
             with self.subTest(failure=failure):
                 result, calls, root = self.run_build(measure=True, fail=failure)
                 self.assertEqual(result.returncode, 17, result.stderr)

@@ -41,6 +41,29 @@ validation cost and their difference. This measures the removed request, not a
 paired full-job speedup. Normal PR runs omit the request. Existing source,
 installed-image, debug-symbol and firmware boot checks remain required.
 
+After capturing the installer's runtime archive, the helper requests the
+`bazel-vs-oci` aggregate with the same build options. It verifies the retained
+archive again after the aggregate succeeds.
+
+This aggregate is limited to native AMD64/Trixie VS with those features. It
+uses the release Orchagent archive verified by the VS build helper,
+checks Bookworm prerequisites once, then keeps the existing Orchagent debug and
+Syncd release/debug archive recipes, both existing P4RT Debian package targets,
+and the P4 image/package checks in one Trixie container. Each archive still uses
+its owner's dependencies and Bazel options; compatible calls reuse that
+container's private Bazel server and output tree. The aggregate serializes its
+prerequisites and stops on a failed build or check. Standalone archive requests
+and other build configurations retain their existing rules.
+
+`verify_vs_oci.sh` runs the same uncached P4 image test and split-debug package
+check before the builder exits. It preserves `artifacts/vs/syncd-p4-images/`,
+`syncd-p4-images.log`, `p4rt-debug-verification.log` and
+`p4rt-debug-verification.json`. Repository and action caches may still be shared
+through the existing cache mount; Bazel server/output state stays inside this
+one builder. Do not parallelize top-level Make goals that share Docker state.
+The tests below exercise dispatch, ordering, configuration and failure behavior
+without Docker; a full VS CI run is needed to measure actual time savings.
+
 - `container.py` runs an owner's `:ci_tests` test suite and builds its
   `:ci_artifacts` filegroup. Tests and exported files are declared in the
   container's `BUILD.bazel`; no Python CI configuration or callback is loaded.
