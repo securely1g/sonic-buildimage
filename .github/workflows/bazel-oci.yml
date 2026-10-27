@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       skip_vs:
-        description: Skip the full VS image build
+        description: Run only source and archive checks, without the full VS image build
         type: boolean
-        default: true
+        default: false
       measure_orchagent_reuse:
         description: Time the old redundant Orchagent request after the VS build
         type: boolean
