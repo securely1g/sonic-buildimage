@@ -558,8 +558,9 @@ jobs:
         run: |
           cat > artifacts/vs/check-swss-source.sh <<'SH'
           set -euo pipefail
+          make -f slave.mk docker-start
+          # Match Make's native image environment and root-private cache defaults.
           option_lines=$(python3 tools/bazel/build_helpers.py options \
-            --cache-directory="${BAZEL_CONTAINER_CACHE_DIR-${BAZEL_SWSS_CACHE_DIR:-}}" \
             --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}}")
           ci_options=()
           if test -n "$option_lines"; then
@@ -567,7 +568,8 @@ jobs:
           fi
           python3 -B tools/bazel/ci/container.py --reuse-build \
             --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk \
-            --bazel "$BAZEL" --artifacts artifacts/swss \
+            --source-file tools/bazel/oci/native_build.py \
+            --bazel "$PWD/tools/bazel/oci/native_build.py" --artifacts artifacts/swss \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true "${ci_options[@]}"
@@ -613,8 +615,9 @@ jobs:
             platform/vs/docker-syncd-vs/BUILD.bazel > artifacts/syncd-vs/input-locks.sha256
           cat > artifacts/vs/check-syncd-source.sh <<'SH'
           set -euo pipefail
+          make -f slave.mk docker-start
+          # Match Make's native image environment and root-private cache defaults.
           option_lines=$(python3 tools/bazel/build_helpers.py options \
-            --cache-directory="${BAZEL_CONTAINER_CACHE_DIR-${BAZEL_SWSS_CACHE_DIR:-}}" \
             --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}}")
           ci_options=()
           if test -n "$option_lines"; then
@@ -622,12 +625,13 @@ jobs:
           fi
           python3 -B tools/bazel/ci/container.py --reuse-build \
             --container //platform/vs/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk \
-            --bazel "$BAZEL" --artifacts artifacts/syncd-vs/bazel \
+            --source-file tools/bazel/oci/native_build.py \
+            --bazel "$PWD/tools/bazel/oci/native_build.py" --artifacts artifacts/syncd-vs/bazel \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--config=syncd-dash "${ci_options[@]}"
           python3 -B tools/bazel/ci/bazel_commands.py \
-            --bazel "$BAZEL" --bazel-arg=--config=syncd-dash "${ci_options[@]}" \
+            --bazel "$PWD/tools/bazel/oci/native_build.py" --bazel-arg=--config=syncd-dash "${ci_options[@]}" \
             --output artifacts/syncd-vs/p4-image-test-analysis.json \
             //tools/bazel/tests:syncd_p4_images_test
           SH
