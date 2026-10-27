@@ -196,5 +196,75 @@ class SourceWorkflowTest(unittest.TestCase):
                     self.assertFalse(any(call["name"] == "rm" or "clean" in call["args"] for call in calls))
 
 
+class NativeArmSourceWorkflowTest(unittest.TestCase):
+    def job(self, name):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        match = re.search(r"^  " + re.escape(name) + r":\n(.*?)(?=^  [\w-]+:\n|\Z)",
+                          workflow, re.M | re.S)
+        self.assertIsNotNone(match, name)
+        return match.group(1)
+
+    def step(self, name):
+        job = self.job("source-arm64")
+        marker = "      - name: " + name + "\n"
+        self.assertEqual(job.count(marker), 1)
+        step = job.split(marker, 1)[1].split("\n      - name:", 1)[0]
+        return textwrap.dedent(step.split("        run: |\n", 1)[1])
+
+    def test_arm_source_command_selects_native_suite_and_preserves_inputs(self):
+        """Execute the workflow command and inspect its complete CLI arguments."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "tools/bazel/ci/container.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("import json, sys\nfrom pathlib import Path\n"
+                              "Path('arguments.json').write_text(json.dumps(sys.argv[1:]))\n")
+            environment = dict(os.environ, BAZEL="selected-bazel",
+                               SONIC_CI_MANIFEST_METADATA="rules/docker-orchagent.mk")
+            subprocess.run(["bash", "-e", "-c", self.step("Test and collect declared ARM64 source artifacts")],
+                           cwd=root, env=environment, check=True, capture_output=True, text=True)
+            self.assertEqual(json.loads((root / "arguments.json").read_text()), [
+                "--container", "//dockers/docker-orchagent",
+                "--source-file", "rules/docker-orchagent.mk",
+                "--architecture", "arm64", "--test-suite", "ci_source_tests",
+                "--bazel", "selected-bazel", "--artifacts", "artifacts/swss",
+            ])
+
+    def test_native_guard_rejects_an_amd64_host(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, body in {
+                "uname": '#!/bin/sh\nprintf "%s\\n" "$FIXTURE_MACHINE"\n',
+                "git": "#!/bin/sh\nexit 0\n",
+            }.items():
+                path = root / name
+                path.write_text(body)
+                path.chmod(0o755)
+            for machine, accepted in (("aarch64", True), ("x86_64", False)):
+                with self.subTest(machine=machine):
+                    environment = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                                       FIXTURE_MACHINE=machine, GITHUB_WORKSPACE=str(root))
+                    result = subprocess.run(["bash", "-e", "-c", self.step(
+                        "Check native architecture and generated dependency state")],
+                        cwd=root, env=environment, capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, accepted)
+
+    def test_arm_evidence_does_not_replace_amd_installer_inputs(self):
+        arm, checks, vs = self.job("source-arm64"), self.job("checks"), self.job("vs")
+        self.assertIn("runs-on: ubuntu-24.04-arm", arm)
+        self.assertIn("disk-cache: buildimage-swss-oci-arm64", arm)
+        self.assertIn("name: swss-source-layers-arm64", arm)
+        self.assertNotIn("bazel-repository-inputs", arm)
+        self.assertNotIn("--test-suite ci_tests", arm)
+        self.assertIn("name: OCI regression checks (AMD64)", checks)
+        self.assertIn("Validate SWSS source packages from the Make build", vs)
+        self.assertIn("--reuse-build", vs)
+        self.assertIn("name: swss-source-layers-amd64", vs)
+        needs = re.search(r"^    needs: (.+)$", vs, re.M)
+        self.assertIsNotNone(needs)
+        self.assertNotIn("source-arm64", needs.group(1))
+        self.assertIn("checks", needs.group(1))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,7 +67,7 @@ def validate_policy(policy):
     """Check the common policy interface; consumer sections retain their own validators."""
     required = {"schema", "image", "architecture", "distribution", "retained_source", "features",
                 "debug_tools", "retained_requirements"}
-    optional = {"install_inventory", "libraries", "required_debug_paths", "config_paths", "native", "image_validation"}
+    optional = {"install_inventory", "libraries", "required_debug_paths", "config_paths", "native", "image_validation", "required_libraries"}
     require(isinstance(policy, dict) and required <= policy.keys() and policy.keys() <= required | optional,
             "invalid package policy fields")
     require(type(policy["schema"]) is int and policy["schema"] == 1, "unsupported package policy schema")
@@ -585,6 +585,26 @@ def validate_library_payload(combined, original, policy):
     require(isinstance(pattern, str) and pattern, "missing exclusive library path pattern")
     require({name for name, item in combined.items() if fnmatch.fnmatchcase(name, pattern) and item["kind"] != "directory"} ==
             {runtime, *links}, "conflicting runtime library in declared layer")
+
+
+def validate_required_libraries(files, policy):
+    """Require the owner-declared runtime libraries and their ABI links."""
+    machine = elf_machine(policy["architecture"])
+    libraries = policy.get("required_libraries", {})
+    require(isinstance(libraries, dict), "invalid required library inventory")
+    for path, links in libraries.items():
+        _source_path(path)
+        item = files.get(path, {})
+        require(item.get("kind") == "file" and item.get("elf_machine") == machine,
+                "missing runtime library for the selected architecture: " + path)
+        require(isinstance(links, dict), "invalid required library SONAME links")
+        for name, target in links.items():
+            _source_path(name)
+            require(isinstance(target, str) and target and
+                    files.get(name, {}).get("kind") == "symlink" and
+                    files[name].get("linkname") == target,
+                    "incorrect runtime SONAME link: " + name)
+    return set(libraries)
 
 
 def bindings(values, *, paths=True):

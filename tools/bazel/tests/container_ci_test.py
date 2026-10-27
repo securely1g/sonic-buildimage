@@ -156,7 +156,8 @@ else:
             return result
         return self.original_execute(command, directory, receipt, name, **kwargs)
 
-    def run_ci(self, mode="pass", *, error=None, resolution_error=None, machine="x86_64", source_files=(), reuse_build=False):
+    def run_ci(self, mode="pass", *, error=None, resolution_error=None, machine="x86_64", source_files=(),
+               architecture="amd64", test_suite="ci_tests", reuse_build=False):
         (self.root / "mode").write_text(mode)
         console = io.StringIO()
         self.original_execute = command_log.execute
@@ -169,12 +170,12 @@ else:
             if error is None:
                 container.run(self.owner, workspace=self.root, artifacts=self.artifacts,
                               bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files,
-                              reuse_build=reuse_build)
+                              architecture=architecture, test_suite=test_suite, reuse_build=reuse_build)
             else:
                 with self.assertRaises(error):
                     container.run(self.owner, workspace=self.root, artifacts=self.artifacts,
                                   bazel=str(self.bazel), options=["--jobs=2"], source_files=source_files,
-                                  reuse_build=reuse_build)
+                                  architecture=architecture, test_suite=test_suite, reuse_build=reuse_build)
         self.assertFalse((self.artifacts / "actions.raw.json").exists())
         self.assertFalse((self.artifacts / "tests.raw.json").exists())
         self.assertFalse((self.artifacts / "artifact-execution.raw.json").exists())
@@ -457,6 +458,19 @@ else:
     def test_unsupported_machine_blocks_all_commands(self):
         """These native AMD64 jobs must reject execution on another architecture."""
         self.assert_failed_without_report(self.run_ci(machine="aarch64", error=ValueError))
+        self.assertFalse(self.executed)
+
+    def test_native_arm64_source_suite_binds_host_and_target_platforms(self):
+        receipt = self.run_ci(machine="aarch64", architecture="arm64", test_suite="ci_source_tests")
+        self.assertEqual(receipt["architecture"], "arm64")
+        self.assertEqual(receipt["ci_tests"], self.owner + ":ci_source_tests")
+        for command in self.bazel_commands():
+            if command[0] in ("test", "build", "aquery"):
+                self.assertIn("--platforms=@sonic_build_infra//platforms:aarch64_trixie", command)
+                self.assertIn("--host_platform=@sonic_build_infra//platforms:aarch64_trixie", command)
+
+    def test_arm64_selection_rejects_x64_execution(self):
+        self.assert_failed_without_report(self.run_ci(architecture="arm64", error=ValueError))
         self.assertFalse(self.executed)
 
     def test_nonempty_artifact_directory_is_preserved(self):

@@ -95,7 +95,7 @@ def receipt(kind, architecture="amd64"):
                     "test.log": {"path": SENTINEL}}
                     for number in range(artifacts.RECEIPT_TEST_COUNTS["archive"][1])}}
     if kind == "source":
-        return {"status": "passed", "revision": REVISION, **unsafe,
+        return {"status": "passed", "architecture": architecture, "revision": REVISION, **unsafe,
                 "tests": {"//tests:contract_" + str(number): "passed" for number in range(2)},
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
                                "source_contract": {"dist/BUILD.bazel": DIGEST},
@@ -459,6 +459,55 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
         self.assertTrue(ready)
         self.assertEqual(summary["receipts"]["python"]["architecture"], "arm64")
+
+    def test_source_publication_binds_native_architecture(self):
+        """Native source archives retain their validated architecture in public evidence."""
+        for architecture in ("amd64", "arm64"):
+            with self.subTest(architecture=architecture):
+                seed(self.root, "source", architecture)
+                summary, paths, ready = self.prepare("source", architecture=architecture)
+                self.assertTrue(ready, summary)
+                self.assertTrue(summary["complete"])
+                self.assertEqual(summary["architecture"], architecture)
+                self.assertEqual(summary["receipts"]["source"]["architecture"], architecture)
+                self.assertEqual(summary["receipts"]["source"]["artifact_sha256"],
+                                 receipt("source", architecture)["validation"]["artifact_sha256"])
+                self.assertEqual(len(paths), len(artifacts.FILES["source"]) + 1)
+
+    def test_source_receipt_cannot_publish_for_another_architecture(self):
+        """A passing receipt from either native runner cannot certify the other runner."""
+        for architecture, wrong in (("amd64", "arm64"), ("arm64", "amd64")):
+            with self.subTest(architecture=architecture):
+                seed(self.root, "source", wrong)
+                summary, paths, ready = self.prepare("source", architecture=architecture)
+                self.assertFalse(ready)
+                self.assertFalse(summary["complete"])
+                self.assertEqual(paths, [])
+                self.assertIn({"input": "source-receipt", "reason": "architecture-mismatch"},
+                              summary["blocked"])
+
+    def test_source_receipt_requires_explicit_supported_architecture(self):
+        for architecture in (None, "riscv64"):
+            with self.subTest(architecture=architecture):
+                seed(self.root, "source")
+                value = receipt("source")
+                if architecture is None:
+                    del value["architecture"]
+                else:
+                    value["architecture"] = architecture
+                write_json(self.root, "artifacts/swss/receipt.json", value)
+                summary, paths, ready = self.prepare("source")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertIn({"input": "source-receipt", "reason": "invalid-receipt-summary"},
+                              summary["blocked"])
+
+    def test_source_arm64_support_does_not_enable_arm64_installer_publication(self):
+        for kind in ("syncd", "vs"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                with self.assertRaisesRegex(artifacts.PublicArtifactError, "invalid-architecture"):
+                    self.prepare(kind, architecture="arm64")
 
     def test_previous_python_receipt_cannot_cover_new_yang_checks(self):
         """Neither the original nor shared-base receipts cover the YANG checks."""
