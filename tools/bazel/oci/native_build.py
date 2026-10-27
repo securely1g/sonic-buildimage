@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 ENVIRONMENT = 'debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c'
-COMMANDS = {'build', 'test', 'run', 'aquery', 'cquery', 'query', 'info'}
+COMMANDS = {'build', 'test', 'run', 'aquery', 'cquery', 'query', 'info', 'mod'}
 NATIVE_SHARED_CACHE = Path('/bazel_cache/native-root')
 
 
@@ -156,14 +156,18 @@ exec "$@"
 
 def main():
     arguments = sys.argv[1:]
-    if not arguments or arguments[0] not in COMMANDS:
-        raise SystemExit('Pass one Bazel image build/test/run/query command')
-    startup = json.loads(os.environ.get('BAZEL_NATIVE_STARTUP_ARGS', '[]'))
-    if not isinstance(startup, list) or any(not isinstance(item, str) or not item.startswith('--') for item in startup):
-        raise SystemExit('BAZEL_NATIVE_STARTUP_ARGS must be a JSON array of Bazel startup options')
+    if arguments != ['--version'] and (not arguments or arguments[0] not in COMMANDS):
+        raise SystemExit('Pass one Bazel image build/test/run/query/mod command or --version')
     executable = shutil.which(os.environ.get('BAZEL', 'bazel'))
     if not executable:
         raise SystemExit('Bazel executable was not found')
+    if arguments == ['--version']:
+        # CI checks the selected Bazel version before resolving any build state.
+        # This client-only operation needs neither Docker nor an output lock.
+        os.execv(executable, [executable, '--version'])
+    startup = json.loads(os.environ.get('BAZEL_NATIVE_STARTUP_ARGS', '[]'))
+    if not isinstance(startup, list) or any(not isinstance(item, str) or not item.startswith('--') for item in startup):
+        raise SystemExit('BAZEL_NATIVE_STARTUP_ARGS must be a JSON array of Bazel startup options')
     if os.geteuid() == 0 and os.environ.get('APT_INSTALL_BUILD_CONTAINER') == ENVIRONMENT:
         # Direct execution and Make's Docker launcher use the same preflight.
         sys.path.insert(0, str(Path(__file__).resolve().parents[3]))

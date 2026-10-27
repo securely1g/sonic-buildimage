@@ -905,6 +905,80 @@ jobs:
           test -s target/sonic-vs.bin.dockers
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
 
+      - name: Validate SWSS source packages in the native installer
+        id: native_swss_validation
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          cd /sonic
+          bash tools/bazel/ci/validate_vs_source.sh swss \
+            2>&1 | tee artifacts/vs/swss-source-validation.log
+
+      - name: Prepare native SWSS source artifact list
+        id: native_swss_artifacts
+        if: always()
+        env:
+          CI_JOB_STATUS: ${{ steps.native_swss_validation.outcome == 'success' && 'success' || 'failure' }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py source \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture "amd64" \
+            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload native SWSS source evidence
+        if: always() && steps.native_swss_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-source-layers-amd64
+          path: ${{ steps.native_swss_artifacts.outputs.paths }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+      - name: Validate Syncd source packages in the native installer
+        id: native_syncd_validation
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          cd /sonic
+          bash tools/bazel/ci/validate_vs_source.sh syncd \
+            2>&1 | tee artifacts/vs/syncd-source-validation.log
+
+      - name: Prepare native Syncd source artifact list
+        id: native_syncd_artifacts
+        if: always()
+        env:
+          CI_JOB_STATUS: ${{ steps.native_syncd_validation.outcome == 'success' && 'success' || 'failure' }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py syncd \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture "amd64" \
+            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload native Syncd source evidence
+        if: always() && steps.native_syncd_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: syncd-vs-oci-contracts-amd64
+          path: ${{ steps.native_syncd_artifacts.outputs.paths }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
       - name: Validate the installer and retained container pairs
         env:
           BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
@@ -924,11 +998,6 @@ jobs:
             P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources \
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
             ENABLE_ASAN=n ENABLE_SYNCD_RPC=n 2>&1 | tee artifacts/vs/validation.log
-          python3 -B tools/bazel/ci/vs_archive_reuse.py verify-pairs \
-            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
-            --orchagent-receipt artifacts/vs/orchagent-reuse.json
-          sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
-            target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
 
       - name: Verify installed base, SWSS and Syncd images
         timeout-minutes: 20
@@ -954,8 +1023,14 @@ jobs:
           docker info > /dev/null
           python3 -B tools/bazel/ci/validate_service_dpkg.py \
             --bazel "python3 -B tools/bazel/oci/native_build.py" \
+            --workspace "$PWD" --pair-receipt artifacts/vs/runtime-debug-pairs.json \
             --output artifacts/vs/syncd-installed \
             2>&1 | tee artifacts/vs/service-dpkg.log
+          python3 -B tools/bazel/ci/vs_archive_reuse.py verify-pairs \
+            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
+            --orchagent-receipt artifacts/vs/orchagent-reuse.json
+          sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
+            target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
 
       - name: Publish the installer and matching container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -983,6 +1058,8 @@ jobs:
             artifacts/vs/*.txt
             artifacts/vs/*.sha256
             artifacts/vs/syncd-p4-images/validation.json
+            artifacts/vs/syncd-installed/captured-inputs.json
+            artifacts/vs/syncd-installed/*-graph/action-audit.json
             artifacts/vs/syncd-installed/dpkg-images.json
             artifacts/vs/syncd-installed/dpkg-*/*.json
             artifacts/vs/syncd-installed/dpkg-*/*.log

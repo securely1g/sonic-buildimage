@@ -1,6 +1,7 @@
 """Check the real Make launcher preserves arguments and accessible cache paths."""
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,30 @@ class NativeBuildTest(unittest.TestCase):
             self.assertIn('exec "$@"', bootstrap)
             self.assertLess(bootstrap.index('audit_command(sys.argv[1:]'), bootstrap.index('exec "$@"'))
             self.assertTrue(repository.is_dir())
+
+    def test_executable_version_probe_uses_selected_bazel_without_build_state(self):
+        """Container CI can probe this executable before Docker or native setup."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bazel = root / 'selected bazel'
+            bazel.write_text('#!' + sys.executable + '\n'
+                             'import os, sys\n'
+                             'assert sys.argv[1:] == ["--version"]\n'
+                             'print("bazel 8.5.1")\n'
+                             'sys.exit(int(os.environ["VERSION_STATUS"]))\n')
+            bazel.chmod(0o755)
+            cache = root / 'native-cache'
+            environment = dict(os.environ, BAZEL=str(bazel), BAZEL_NATIVE_CACHE_DIR=str(cache),
+                               BAZEL_NATIVE_STARTUP_ARGS='not needed for a version probe')
+            for status in (0, 23):
+                with self.subTest(status=status):
+                    result = subprocess.run([str(Path(native_build.__file__).resolve()), '--version'],
+                                            cwd=root, env=dict(environment, VERSION_STATUS=str(status)),
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertEqual(result.stdout, 'bazel 8.5.1\n')
+                    self.assertEqual(result.stderr, '')
+                    self.assertFalse(cache.exists())
 
     def test_native_container_retains_shared_cache_configuration_when_mounted(self):
         """Root must retain Make's mounted inputs without writing its ordinary caches."""
@@ -145,6 +170,44 @@ class NativeBuildTest(unittest.TestCase):
                 self.assertEqual(audit.call_args.args[0], expected)
                 self.assertEqual(executed['bazelisk_home'],
                     '/bazel_cache/native-root/bazelisk' if present else '/bazel_cache/bazelisk')
+
+    def test_mod_graph_keeps_native_cache_and_output_context_without_build_audit(self):
+        """Provenance collection uses the same root cache and Bazel server as builds."""
+        self.shared_cache = True
+        arguments = ['mod', 'graph', '--output=json', '--extension_info=hidden', '--lockfile_mode=off']
+        startup = ['--output_base=/private/selected-output']
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            cache = workspace / 'private-cache'
+            bazel = workspace / 'bazel'
+            rc = workspace / 'tools/bazel/slave.bazelrc'
+            rc.parent.mkdir(parents=True)
+            rc.touch()
+            with patch.object(native_build.subprocess, 'check_output', return_value=str(workspace / '.git') + '\n'), \
+                 patch.object(Path, 'mkdir'):
+                docker = native_build.command(arguments, workspace, bazel, cache, startup)
+            expected = [str(bazel), '--output_user_root=' + str(cache / 'bazel'), *startup, 'mod',
+                        '--repository_cache=/bazel_cache/native-root/repository_cache',
+                        '--disk_cache=/bazel_cache/native-root/disk_cache', *arguments[1:]]
+            self.assertEqual(docker[docker.index('native-bazel') + 1:], expected)
+            self.assertIn('APT_INSTALL_BUILD_CONTAINER=' + native_build.ENVIRONMENT, docker)
+            self.assertIn('BAZELISK_HOME=/bazel_cache/native-root/bazelisk', docker)
+            self.assertIn('type=bind,src=' + str(rc) + ',dst=/etc/bazel.bazelrc,readonly', docker)
+            with patch.object(native_build.sys, 'argv', ['native_build.py', *arguments]), \
+                 patch.object(native_build.os, 'geteuid', return_value=0), \
+                 patch.dict(native_build.os.environ, {
+                     'APT_INSTALL_BUILD_CONTAINER': native_build.ENVIRONMENT,
+                     'BAZEL_NATIVE_STARTUP_ARGS': json.dumps(startup),
+                 }), \
+                 patch.object(native_build.shutil, 'which', return_value=str(bazel)), \
+                 patch.object(bazel_commands, 'audit_targets') as audit, \
+                 patch.object(native_build.os, 'execv', side_effect=SystemExit(0)) as execute:
+                with self.assertRaises(SystemExit) as result:
+                    native_build.main()
+            self.assertEqual(result.exception.code, 0)
+            self.assertEqual(execute.call_args.args,
+                             (str(bazel), [str(bazel), *startup, *expected[expected.index('mod'):]]))
+            audit.assert_not_called()
 
     def test_shared_output_containers_wait_and_release_after_failure(self):
         """Real launcher processes cannot overlap Docker or strand the lock on failure.
@@ -294,9 +357,11 @@ sys.exit(status)
                 self.assertEqual(audit.call_args.kwargs['workspace'], workspace)
 
     def test_queries_do_not_execute_a_build_or_extra_audit(self):
-        with patch.object(bazel_commands, 'audit_targets') as audit:
-            native_build.audit_command(['bazel', 'aquery', 'deps(//:image)'], Path.cwd())
-        audit.assert_not_called()
+        for command, argument in (('query', 'deps(//:image)'), ('aquery', 'deps(//:image)'),
+                                  ('cquery', '//:image'), ('info', 'output_path'), ('mod', 'graph')):
+            with self.subTest(command=command), patch.object(bazel_commands, 'audit_targets') as audit:
+                native_build.audit_command(['bazel', command, argument], Path.cwd())
+                audit.assert_not_called()
 
     def test_run_audits_only_bazel_flags_and_the_program_target(self):
         arguments = ['bazel', 'run', '--config=syncd-dash', '//dockers/example:export',

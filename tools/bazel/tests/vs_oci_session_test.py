@@ -32,7 +32,7 @@ class VsOciSessionTest(unittest.TestCase):
             "print('debug verification output')\n"
             "sys.exit(int(os.environ.get('DEBUG_STATUS', '0')))\n")
         self.bazel = self.directory / "bazel"
-        self.bazel.write_text("""#!/usr/bin/env python3
+        fake_bazel = """#!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
 with pathlib.Path('bazel-arguments.jsonl').open('a') as output:
@@ -50,8 +50,13 @@ if args[0] == 'cquery':
     policy = pathlib.Path('policy.json')
     policy.write_text('{}')
     print(policy)
-""")
+"""
+        self.bazel.write_text(fake_bazel)
         self.bazel.chmod(0o755)
+        native_runner = self.directory / "tools/bazel/oci/native_build.py"
+        native_runner.parent.mkdir(parents=True)
+        native_runner.write_text(
+            "from pathlib import Path\nPath('native-runner-used').open('a').write('yes' + chr(10))\n" + fake_bazel)
         self.make = self.directory / "make command"
         self.make.write_text("#!" + sys.executable + "\n" +
                             "import json, os, pathlib, sys\n"
@@ -119,10 +124,10 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         result = self.run_verifier(BAZEL_CONTAINER_CACHE_DIR=str(cache),
                                    BAZEL_CONTAINER_ARGS="--distdir='/input with spaces' --jobs=3")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.directory / "native-runner-used").read_text().splitlines(), ["yes"] * 6)
         arguments = [json.loads(line) for line in (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
         self.assertEqual(len(arguments), 6)
-        common = [f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
-                  "--distdir=/input with spaces", "--jobs=3",
+        common = ["--distdir=/input with spaces", "--jobs=3",
                   "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
                   "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
         for index, (target, flags) in enumerate((("swss_images_test", []),

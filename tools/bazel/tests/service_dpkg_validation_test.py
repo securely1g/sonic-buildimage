@@ -1,6 +1,7 @@
 """Keep service-image APT checks tied to every exact AMD64 runtime/debug archive."""
 
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -8,6 +9,8 @@ import unittest
 from unittest import mock
 
 from tools.bazel.ci import validate_service_dpkg as validation
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 class ServiceDpkgValidationTest(unittest.TestCase):
@@ -101,15 +104,107 @@ class ServiceDpkgValidationTest(unittest.TestCase):
             self.assertNotIn("runtime_handoff", resolved)
             self.assertNotIn("debug_handoff", resolved)
 
-    def run_images(self, fail_first=False):
+    def test_make_query_reads_owner_arguments_without_running_a_build_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            makefile = """BLDENV := trixie
+CONFIGURED_PLATFORM := vs
+CONFIGURED_ARCH := amd64
+CROSS_BUILD_ENVIRON := n
+MULTIARCH_QEMU_ENVIRON := n
+export INSHOOKS=y
+$(if $(INSHOOKS),$(shell touch hook-ran))
+SONIC_BAZEL_DOCKER_IMAGES := docker-orchagent.gz docker-syncd-vs.gz
+SONIC_BAZEL_DBG_DOCKER_IMAGES := docker-orchagent-dbg.gz docker-syncd-vs-dbg.gz
+docker-orchagent.gz_BAZEL_ARGS :=
+docker-orchagent-dbg.gz_BAZEL_ARGS :=
+docker-syncd-vs.gz_BAZEL_ARGS := --config=syncd-dash
+docker-syncd-vs-dbg.gz_BAZEL_ARGS := --config=syncd-dash
+all: ; touch build-ran
+"""
+            (workspace / "slave.mk").write_text(makefile)
+            self.assertEqual(validation.query_owner_arguments(workspace), {
+                "orchagent": "",
+                "syncd": "--config=syncd-dash",
+            })
+            self.assertFalse((workspace / "build-ran").exists())
+            self.assertFalse((workspace / "hook-ran").exists())
+            (workspace / "slave.mk").write_text(makefile.replace(
+                "docker-orchagent-dbg.gz_BAZEL_ARGS :=",
+                "docker-orchagent-dbg.gz_BAZEL_ARGS := --config=syncd-dash"))
+            with self.assertRaisesRegex(ValueError, "matching runtime/debug owner arguments"):
+                validation.query_owner_arguments(workspace)
+            self.assertFalse((workspace / "build-ran").exists())
+            self.assertFalse((workspace / "hook-ran").exists())
+
+    def test_each_owner_uses_its_make_options_and_graph(self):
+        owners = {"syncd": "--config=syncd-dash", "orchagent": ""}
+        with mock.patch.dict(os.environ, {"BAZEL_CONTAINER_ARGS": "--config=common --define='message=two words'",
+                                          "BAZEL_SWSS_ARGS": "--config=ignored"}):
+            options = validation.resolve_bazel_options(ROOT, owners)
+        platform = ["--platforms=@sonic_build_infra//platforms:x86_64_trixie",
+                    "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
+        for owner in owners:
+            self.assertEqual(options[owner], ["--config=common", "--define=message=two words",
+                                              *([owners[owner]] if owners[owner] else []), *platform])
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(validation, "build_inputs", return_value={}) as build:
+            validation.build_service_inputs(["bazel"], options, Path(temporary), ROOT)
+        self.assertEqual(build.call_count, 2)
+        for call, owner in zip(build.call_args_list, ("syncd", "orchagent")):
+            self.assertEqual(call.args[1], options[owner])
+            self.assertEqual(set(call.args[3]), {key for key in validation.TARGETS
+                                                 if key.startswith("orchagent_") == (owner == "orchagent")})
+
+    def pair_receipt(self, workspace):
+        target = workspace / "target"
+        target.mkdir()
+        pairs = {}
+        for image in ("docker-orchagent", "docker-syncd-vs"):
+            pairs[image] = {}
+            for variant in ("runtime", "debug"):
+                path = target / (image + ("-dbg.gz" if variant == "debug" else ".gz"))
+                path.write_bytes((image + variant).encode())
+                pairs[image][variant] = {"sha256": validation.sha(path), "bytes": path.stat().st_size,
+                                         "config_digest": "sha256:" + "a" * 64}
+        receipt = {"schema": 1, "installer": {"image": "sonic-vs.bin", "sha256": "c" * 64, "debug": False,
+                   "paired_images": ["target/docker-orchagent.gz", "target/docker-syncd-vs.gz"]}, "pairs": pairs}
+        path = workspace / "pairs.json"
+        path.write_text(json.dumps(receipt))
+        return path, receipt
+
+    def test_captured_receipt_rejects_incomplete_or_changed_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            path, receipt = self.pair_receipt(workspace)
+            captured = validation.captured_archives(workspace, path, workspace)
+            self.assertEqual(set(captured), {"syncd-runtime", "syncd-debug", "orchagent-runtime", "orchagent-debug"})
+            self.assertTrue(all(row["path"].parent == workspace / "target" for row in captured.values()))
+            path.write_text("[]")
+            with self.assertRaisesRegex(ValueError, "Unsupported captured"):
+                validation.captured_archives(workspace, path, workspace)
+            receipt["pairs"]["docker-orchagent"]["runtime"]["bytes"] = True
+            path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, "identity is incomplete"):
+                validation.captured_archives(workspace, path, workspace)
+            receipt["pairs"]["docker-orchagent"]["runtime"]["bytes"] = 1
+            path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, "archive size differs"):
+                validation.captured_archives(workspace, path, workspace)
+
+    def run_images(self, fail_first=False, mismatch=None):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
+            receipt, _ = self.pair_receipt(output)
+            captured = validation.captured_archives(output, receipt, output)
             paths = {}
-            for prefix in ("", "orchagent_"):
+            for image, prefix in (("syncd", ""), ("orchagent", "orchagent_")):
                 for variant in ("runtime", "debug"):
                     paths[prefix + variant] = output / (prefix + variant)
                     paths[prefix + variant + "_archive"] = output / (prefix + variant + ".gz")
-                    paths[prefix + variant + "_archive"].write_bytes((prefix + variant).encode())
+                    paths[prefix + variant + "_archive"].write_bytes(captured[image + "-" + variant]["path"].read_bytes())
+            if mismatch == "archive":
+                paths["runtime_archive"].write_bytes(b"different configured graph")
             calls = []
 
             def probe(**kwargs):
@@ -122,18 +217,24 @@ class ServiceDpkgValidationTest(unittest.TestCase):
 
             layout = SimpleNamespace(manifest={"config": {"digest": "sha256:" + "a" * 64}},
                                      descriptor={"digest": "sha256:" + "b" * 64})
-            with mock.patch.object(validation, "validate_layout", return_value=layout) as inspect, \
+            layouts = [layout] * 4
+            if mismatch == "config":
+                layouts[0] = SimpleNamespace(manifest={"config": {"digest": "sha256:" + "d" * 64}},
+                                              descriptor={"digest": "sha256:" + "b" * 64})
+            with mock.patch.object(validation, "validate_layout", side_effect=layouts) as inspect, \
                     mock.patch.object(validation, "validate_dpkg_state", side_effect=probe):
-                if fail_first:
+                if fail_first or mismatch:
                     with self.assertRaisesRegex(ValueError, "transactions failed"):
-                        validation.validate_dpkg_images(paths, output)
+                        validation.validate_dpkg_images(paths, captured, output)
                 else:
-                    validation.validate_dpkg_images(paths, output)
-                self.assertEqual(len(calls), 4)
+                    validation.validate_dpkg_images(paths, captured, output)
+                names = ["syncd-runtime", "syncd-debug", "orchagent-runtime", "orchagent-debug"]
+                if mismatch:
+                    names.pop(0)
+                self.assertEqual(len(calls), len(names))
                 self.assertTrue(all(call.args[1] == "linux/amd64" for call in inspect.call_args_list))
                 self.assertTrue(all(call["architecture"] == "amd64" for call in calls))
-                self.assertEqual([call["archive"] for call in calls],
-                                 [paths[name + "_archive"] for name in ("runtime", "debug", "orchagent_runtime", "orchagent_debug")])
+                self.assertEqual([call["archive"] for call in calls], [captured[name]["path"] for name in names])
                 for call in calls:
                     self.assertEqual(call["archive_sha256"], validation.sha(call["archive"]))
                     self.assertEqual(call["config_digest"], "sha256:" + "a" * 64)
@@ -144,7 +245,7 @@ class ServiceDpkgValidationTest(unittest.TestCase):
                     self.assertNotIn("upgrade_packages", call)
                     self.assertNotIn("remove_packages", call)
                 self.assertEqual(calls[0]["installed_receipts"], ["/usr/share/sonic/bazel/syncd-packages.json"])
-                self.assertEqual(calls[3]["installed_receipts"], ["/usr/share/sonic/bazel/orchagent-packages.json"])
+                self.assertEqual(calls[-1]["installed_receipts"], ["/usr/share/sonic/bazel/orchagent-packages.json"])
                 result = json.loads((output / "dpkg-images.json").read_text())
                 self.assertEqual(result["architecture"], "amd64")
                 return result
@@ -157,6 +258,13 @@ class ServiceDpkgValidationTest(unittest.TestCase):
         result = self.run_images(fail_first=True)
         self.assertEqual(result["images"]["syncd-runtime"]["status"], "failed")
         self.assertEqual(result["images"]["orchagent-debug"]["status"], "passed")
+
+    def test_different_queried_archive_or_config_cannot_validate_captured_image(self):
+        for mismatch in ("archive", "config"):
+            with self.subTest(mismatch=mismatch):
+                result = self.run_images(mismatch=mismatch)
+                self.assertEqual(result["images"]["syncd-runtime"]["status"], "failed")
+                self.assertIn("differs from the captured Make archive", result["images"]["syncd-runtime"]["error"])
 
 
 if __name__ == "__main__":

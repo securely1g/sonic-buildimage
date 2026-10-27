@@ -8,11 +8,11 @@ package expectations remain in the owner declarations and tests.
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
 archive checks, lightweight hosted regressions and the full VS integration
 job. The active `vs_container` job builds inside a privileged SONiC slave,
-then runs shared SWSS/Syncd static image checks and Docker-load validation in
-that same worker. Build and validation share its Bazel server and caches.
-The older `vs` job is disabled; its post-Make source-package suites and
-cache-action reports remain in that legacy path and are not run by the active
-job. Add checks for future
+then runs SWSS/Syncd source-package checks, static image checks and Docker-load
+validation in the same worker. They share its checkout, native image launcher,
+platform/feature flags and root-private Bazel action cache. Cached outputs can
+be restored without recompiling the same source packages. The older `vs` job
+remains disabled. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.
 Keep checks that compile image inputs in the full build job so they can reuse
 its action outputs.
@@ -25,6 +25,17 @@ Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
 job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
+
+In the prepared native worker, `validate_vs_source.sh swss|syncd` checks the
+private Docker daemon and calls the existing container validator with the native
+APT launcher. The two workflow steps run independently after a successful build,
+and the existing public artifact selectors retain their source and contract
+evidence. The installer validation then uses `verify_vs_oci.sh` for P4 checks and
+`validate_service_dpkg.py` for runtime/debug APT transactions before upload.
+The APT validator reads each image owner's configured Make arguments, audits that
+owner's Bazel graph, and requires its archive hash, size, and config digest to match
+the captured Make pair. It exercises the captured `target/` archives, then the
+workflow verifies the pairs again and records final upload hashes.
 
 The native VS Make build produces the runtime and debug archives together for
 each registered Bazel container, using the same builder and Bazel invocation
@@ -39,8 +50,11 @@ worker, builds `target/sonic-vs.bin` directly through `slave.mk`, and runs
 the runtime/debug archive identities across validation. The private Docker
 daemon belongs to this worker and is stopped after evidence publication.
 
-The retained legacy wrapper [`build_vs.sh`](build_vs.sh) runs one
-`make target/sonic-vs.bin` request
+## Legacy host-driven VS path
+
+The disabled legacy `vs` job retains the following host-driven helpers.
+
+[`build_vs.sh`](build_vs.sh) runs one `make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
 The **Build the VS installer (.bin)** workflow step ends
 when Make finishes producing the ONIE installer and its runtime/debug archive pairs.
@@ -76,9 +90,10 @@ It requires native AMD64/Trixie VS with Bazel, FIPS and DASH enabled, without
 ASAN, Syncd RPC or cross/emulated execution, and checks that both runtime/debug
 container pairs select their Bazel producers.
 
-The shared verifier resolves the config-engine archive and the two existing
-P4RT package prerequisites through Make, then runs the SWSS and Syncd image
-checks and offline P4RT split-debug-symbol check in the same Trixie builder.
+The verifier resolves the config-engine archive and two existing P4RT package
+prerequisites serially through Make, then runs the SWSS/Syncd image checks and
+offline P4RT split-debug-symbol check in the same Trixie builder. Image tests and
+policy generation use the native APT launcher with root-private cache defaults.
 It does not request the Orchagent or Syncd Make archives again or add a package
 definition. The legacy wrapper's Bookworm builder cleanup
 is retained. The final pair check requires all four archives and their manifests
@@ -132,15 +147,16 @@ validate the resulting image and measure end-to-end time.
 - `container.py` runs an owner's `:ci_tests` test suite and builds its
   `:ci_artifacts` filegroup. Tests and exported files are declared in the
   container's `BUILD.bazel`; no Python CI configuration or callback is loaded.
-  For example, for separate cold runs after preparing the matching Make
-  manifests (use separate clean workspaces for these examples):
+  For example, for separate cold runs with Docker available and the matching
+  Make manifests prepared (use separate clean workspaces for these examples):
 
   ```sh
   python3 -B tools/bazel/ci/container.py \
-    --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk --bazel bazel --artifacts artifacts/swss
+    --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk \
+    --bazel "$PWD/tools/bazel/oci/native_build.py" --artifacts artifacts/swss
   python3 -B tools/bazel/ci/container.py \
     --container //platform/vs/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk \
-    --bazel-arg=--config=syncd-dash --bazel bazel --artifacts artifacts/syncd-vs/bazel
+    --bazel-arg=--config=syncd-dash --bazel "$PWD/tools/bazel/oci/native_build.py" --artifacts artifacts/syncd-vs/bazel
   ```
 
   Start from native AMD64 Trixie without `MODULE.bazel.lock` and use an empty
@@ -149,8 +165,10 @@ validate the resulting image and measure end-to-end time.
   initial hash, and retains the tested lock/graph afterward. It never deletes
   the lock, clears outputs or disables package/source checks. Use Make's exact
   feature flags (`--config=syncd-dash` for Syncd; SWSS always inherits the
-  source-built config-engine image), both native platform flags,
-  and the same cache/download options. In this mode, the Git cleanliness check
+  source-built config-engine image), both native platform flags, and the same
+  explicit cache/download options. The launcher supplies the native APT
+  environment and root-private cache defaults; do not replace them with the
+  ordinary Make user's cache paths. In this mode, the Git cleanliness check
   covers the declared Bazel inputs and their containing submodules, allowing
   unrelated legacy Make submodules to create their normal build patches.
   Changes to validated inputs or their submodule commits still fail.

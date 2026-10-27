@@ -50,6 +50,8 @@ class SourceWorkflowTest(unittest.TestCase):
         self.commands.mkdir()
         (self.directory / "artifacts/vs").mkdir(parents=True)
         for name in (".bazelversion", "tools/bazel/build_helpers.py",
+                     "tools/bazel/oci/native_build.py",
+                     "tools/bazel/ci/validate_vs_source.sh",
                      "platform/vs/docker-syncd-vs/bazel/apt.lock.json",
                      "platform/vs/docker-syncd-vs/BUILD.bazel"):
             fixture = self.directory / name
@@ -67,6 +69,10 @@ class SourceWorkflowTest(unittest.TestCase):
                                     ('BAZEL', 'BAZEL_CONTAINER_ARGS')}}) + '\n')
             if name == 'rm' or 'clean' in args or 'cleanall' in args:
                 raise SystemExit('Source validation must preserve existing build state')
+            if name == 'docker':
+                if args != ['info']:
+                    raise SystemExit('Source validation may only check the prepared daemon')
+                raise SystemExit(int(os.environ.get('DOCKER_EXIT', '0')))
             source_runner = name == 'python3' and 'tools/bazel/ci/container.py' in args
             if os.environ.get('HOSTED_CHECKS') == '1':
                 if source_runner or (name == 'bazel' and any(arg in ('build', 'test') for arg in args)):
@@ -100,7 +106,7 @@ class SourceWorkflowTest(unittest.TestCase):
                 elif args[:1] == ['check-ignore']:
                     print('MODULE.bazel.lock')
             ''')
-        for name in ("make", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp"):
+        for name in ("make", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp", "docker"):
             executable = self.commands / name
             executable.write_text(recorder)
             executable.chmod(0o755)
@@ -197,6 +203,67 @@ class SourceWorkflowTest(unittest.TestCase):
                     analyses = [call for call in calls if "tools/bazel/ci/bazel_commands.py" in call["args"]]
                     self.assertEqual(len(analyses), int(dash and not source_exit and not make_exit))
                     self.assertFalse(any(call["name"] == "rm" or "clean" in call["args"] for call in calls))
+
+    def test_native_source_validation_reuses_outputs_and_propagates_failures(self):
+        workflow_steps = steps(jobs()["vs_container"])
+        names = list(workflow_steps)
+        families = (
+            ("SWSS", "swss", "source", "//dockers/docker-orchagent", "rules/docker-orchagent.mk", "artifacts/swss", False),
+            ("Syncd", "syncd", "syncd", "//platform/vs/docker-syncd-vs", "platform/vs/docker-syncd-vs.mk", "artifacts/syncd-vs/bazel", True),
+        )
+        lock = self.directory / "MODULE.bazel.lock"
+        lock.write_text("already-resolved Make build\n")
+        native_runner = str(self.directory / "tools/bazel/oci/native_build.py")
+        for family, mode, kind, owner, source, artifacts, dash in families:
+            name = "Validate " + family + " source packages in the native installer"
+            step = workflow_steps[name]
+            self.assertLess(names.index("Build sonic-vs.bin directly with slave.mk"), names.index(name))
+            self.assertLess(names.index(name), names.index("Validate the installer and retained container pairs"))
+            self.assertIn("if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}", step)
+            self.assertIn('source "$RUNNER_TEMP/sonic-vs-slave.env"', step)
+            self.assertIn("cd /sonic", step)
+            self.assertIn("bash tools/bazel/ci/validate_vs_source.sh " + mode, step)
+            selector = workflow_steps["Prepare native " + family + " source artifact list"]
+            self.assertIn("public_artifacts.py " + kind, selector)
+            self.assertIn("steps.native_" + mode + "_validation.outcome == 'success'", selector)
+            for source_exit, docker_exit in ((0, 0), (19, 0), (0, 29)):
+                with self.subTest(family=family, source_exit=source_exit, docker_exit=docker_exit):
+                    self.calls.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["bash", str(ROOT / "tools/bazel/ci/validate_vs_source.sh"), mode],
+                        cwd=self.directory,
+                        env=dict(self.environment, SOURCE_EXIT=str(source_exit), DOCKER_EXIT=str(docker_exit)),
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, source_exit or docker_exit, result.stdout + result.stderr)
+                    self.assertEqual(lock.read_text(), "already-resolved Make build\n")
+                    calls = self.recorded()
+                    self.assertEqual([call["args"] for call in calls if call["name"] == "docker"], [["info"]])
+                    runners = [call for call in calls if "tools/bazel/ci/container.py" in call["args"]]
+                    self.assertEqual(len(runners), 0 if docker_exit else 1)
+                    if runners:
+                        args = runners[0]["args"]
+                        self.assertIn("--reuse-build", args)
+                        for flag, value in (("--container", owner), ("--source-file", source),
+                                            ("--artifacts", artifacts), ("--bazel", native_runner)):
+                            self.assertEqual(args[args.index(flag) + 1], value)
+                        self.assertIn("tools/bazel/oci/native_build.py", args)
+                        self.assertIn("tools/bazel/ci/validate_vs_source.sh", args)
+                        self.assertEqual("--bazel-arg=--config=syncd-dash" in args, dash)
+                        self.assertNotIn("--bazel-arg=--//dockers/docker-orchagent:source_config_engine=true", args)
+                        for option in ("--distdir=/bazel_cache/source downloads", "--remote_download_all",
+                                       "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
+                                       "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"):
+                            self.assertIn("--bazel-arg=" + option, args)
+                        self.assertFalse(any(arg.startswith(("--bazel-arg=--repository_cache=", "--bazel-arg=--disk_cache=")) for arg in args))
+                        self.assertEqual(runners[0]["environment"],
+                                         {key: self.environment[key] for key in ("BAZEL", "BAZEL_CONTAINER_ARGS")})
+                    analyses = [call for call in calls if "tools/bazel/ci/bazel_commands.py" in call["args"]]
+                    self.assertEqual(len(analyses), int(dash and not source_exit and not docker_exit))
+                    if analyses:
+                        args = analyses[0]["args"]
+                        self.assertEqual(args[args.index("--bazel") + 1], native_runner)
+                        self.assertIn("--bazel-arg=--config=syncd-dash", args)
+                    self.assertFalse(any(call["name"] in {"make", "rm"} or "clean" in call["args"] for call in calls))
 
 
 if __name__ == "__main__":

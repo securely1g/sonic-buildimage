@@ -56,6 +56,9 @@ class VerificationWorkflowTest(unittest.TestCase):
                     sys.exit(status)
                 '''))
             bazel.chmod(0o755)
+            native = directory / "tools/bazel/oci/native_build.py"
+            native.parent.mkdir(parents=True)
+            shutil.copyfile(bazel, native)
             for swss_exit, syncd_exit in ((0, 0), (13, 0), (0, 17), (13, 17)):
                 with self.subTest(swss_exit=swss_exit, syncd_exit=syncd_exit):
                     self.check_static_workflow(directory, script, bazel, calls, policy, swss_exit, syncd_exit)

@@ -78,15 +78,15 @@ for package in "$runtime_deb" "$debug_deb" "$base_archive"; do
     [[ -s $package ]] || { echo "Missing or empty P4RT prerequisite: $package" >&2; exit 1; }
 done
 
-# Match the archive recipes, including the caller's cache and distdir settings.
-# Keep one output base and server; only Syncd selects its DASH configuration.
+# Match the archive recipes while keeping the runner's root-private
+# cache defaults. Preserve caller settings; only Syncd selects DASH.
 option_lines=$(python3 tools/bazel/build_helpers.py options \
-    --cache-directory="${BAZEL_CONTAINER_CACHE_DIR-${BAZEL_SWSS_CACHE_DIR:-}}" \
     --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}}")
 bazel_options=()
 if test -n "$option_lines"; then mapfile -t bazel_options <<< "$option_lines"; fi
 bazel_options+=(--platforms=@sonic_build_infra//platforms:x86_64_trixie
     --host_platform=@sonic_build_infra//platforms:x86_64_trixie)
+native_runner=(python3 -B tools/bazel/oci/native_build.py)
 
 collect_test_results() {
     local test_name="$1" output="artifacts/vs/$2" file path
@@ -100,22 +100,22 @@ collect_test_results() {
 }
 # Retain each result before another Bazel invocation changes bazel-testlogs.
 test_status=0
-"${BAZEL:-bazel}" test "${bazel_options[@]}" //tools/bazel/tests:swss_images_test \
+"${native_runner[@]}" test "${bazel_options[@]}" //tools/bazel/tests:swss_images_test \
     --nocache_test_results --nozip_undeclared_test_outputs \
     2>&1 | tee artifacts/vs/swss-images.log || test_status=$?
 collect_test_results swss_images_test swss-images
-"${BAZEL:-bazel}" test "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
+"${native_runner[@]}" test "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
     --nocache_test_results --nozip_undeclared_test_outputs \
     2>&1 | tee artifacts/vs/syncd-p4-images.log || test_status=$?
 collect_test_results syncd_p4_images_test syncd-p4-images
 if test "$test_status" -ne 0; then exit "$test_status"; fi
 
 # cquery alone does not materialize cached policy outputs.
-"${BAZEL:-bazel}" build "${bazel_options[@]}" //tools/bazel/tests:swss_installed_images_policy
-policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --output=files //tools/bazel/tests:swss_installed_images_policy)
+"${native_runner[@]}" build "${bazel_options[@]}" //tools/bazel/tests:swss_installed_images_policy
+policy=$("${native_runner[@]}" cquery "${bazel_options[@]}" --output=files //tools/bazel/tests:swss_installed_images_policy)
 cp "$policy" artifacts/vs/swss-installed-images-policy.json
-"${BAZEL:-bazel}" build "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_installed_images_policy
-policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --config=syncd-dash --output=files //tools/bazel/tests:syncd_installed_images_policy)
+"${native_runner[@]}" build "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_installed_images_policy
+policy=$("${native_runner[@]}" cquery "${bazel_options[@]}" --config=syncd-dash --output=files //tools/bazel/tests:syncd_installed_images_policy)
 cp "$policy" artifacts/vs/syncd-installed-images-policy.json
 
 python3 -B tools/bazel/ci/verify_p4rt_debug.py \
