@@ -31,6 +31,9 @@ SOURCE_FILES = (
     "tools/bazel/ci/artifact_validation.py", "tools/bazel/ci/resolution.py",
     "tools/bazel/gzip/source_archive.py", "tools/bazel/ci/public_artifacts.py",
     "tools/bazel/prepare_manifests.mk", "rules/functions", ".github/workflows/bazel-oci.yml",
+    "slave.mk", "rules/linux-kernel.mk",
+    "tools/ci/native_vs/bootstrap.sh", "tools/ci/native_vs/apt-packages.txt",
+    "tools/ci/native_vs/debian-sources.txt", "tools/ci/native_vs/requirements.txt",
     "tools/bazel/oci/source_contract.bzl",
 )
 

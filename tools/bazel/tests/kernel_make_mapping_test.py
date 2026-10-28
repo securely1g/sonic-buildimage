@@ -276,6 +276,42 @@ class KernelMakeMappingTest(unittest.TestCase):
         self.assertEqual(self.kernel_arguments()[0], expected)
         self.assertFalse((self.workspace / "native-built.txt").exists())
 
+    def test_make_remote_cache_reaches_kernel_preparation_without_a_disk_cache(self):
+        """Hosted Make must pass its read cache to the separate kernel launcher."""
+        makefile = self.lazy_make_fixture()
+        endpoint = "https://lgh-bazel-87263989.eastus.cloudapp.azure.com/"
+        result = self.run_make(makefile, "bazel-kernel-ensure",
+                               SONIC_BAZEL_CACHE_SOURCE="", SONIC_BAZEL_REMOTE_CACHE=endpoint)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.kernel_arguments()[1], {
+            "--debs-directory": "target/debs/trixie", "--remote-cache": endpoint,
+        })
+        self.assertNotIn("--upload-local-results", (self.workspace / "arguments.json").read_text())
+        self.assertEqual((self.workspace / "order.txt").read_text().splitlines(), ["ensure"])
+
+    def test_make_quotes_the_remote_cache_as_one_argument(self):
+        """Leave endpoint validation to the launcher without evaluating shell input."""
+        makefile = self.lazy_make_fixture()
+        endpoint = "https://cache.test/owner's; `touch shell-executed`"
+        result = self.run_make(makefile, "bazel-kernel-ensure", SONIC_BAZEL_REMOTE_CACHE=endpoint)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.kernel_arguments()[1]["--remote-cache"], endpoint)
+        self.assertFalse((self.workspace / "shell-executed").exists())
+
+    def test_direct_make_uses_its_visible_cache_path(self):
+        """A host cache path must not be rewritten to the sonic-slave mount."""
+        makefile = self.lazy_make_fixture()
+        cache = self.root / "native cache's files"
+        for source in ("", "/path/used/by/the/slave/wrapper"):
+            with self.subTest(slave_cache=source):
+                result = self.run_make(makefile, "bazel-kernel-ensure",
+                                       SONIC_BAZEL_CACHE_SOURCE=source,
+                                       BAZEL_CONTAINER_CACHE_DIR=str(cache))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.kernel_arguments()[1], {
+                    "--debs-directory": "target/debs/trixie", "--cache-directory": str(cache),
+                })
+
     def test_kernel_configuration_is_shell_quoted_and_make_mode_stays_native(self):
         makefile = self.lazy_make_fixture()
         special = "profile's value; `touch shell-executed` $$(touch shell-executed)"

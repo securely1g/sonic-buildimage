@@ -36,10 +36,14 @@ SONIC_BAZEL_KERNEL_CONFIG := CONFIGURED_ARCH CONFIGURED_PLATFORM BLDENV \
         KERNEL_SUBVERSION KERNEL_FEATURESET KVERSION ADDITIONAL_BUILD_PROFILES \
         SECURE_UPGRADE_MODE SECURE_UPGRADE_KERNEL_CAFILE INCLUDE_EXTERNAL_PATCHES \
         EXTERNAL_KERNEL_PATCH_URL EXTERNAL_KERNEL_PATCH_LOC
+# Direct Make uses the same visible cache path as the container archive recipe.
+# The normal sonic-slave wrapper exposes its host cache at /bazel_cache.
+SONIC_BAZEL_KERNEL_CACHE_DIRECTORY = $(if $(strip $(BAZEL_CONTAINER_CACHE_DIR)),$(BAZEL_CONTAINER_CACHE_DIR),$(if $(strip $(SONIC_BAZEL_CACHE_SOURCE)),/bazel_cache))
 bazel-kernel-ensure:
 	python3 -B tools/bazel/kernel/prepare.py ensure --debs-directory '$(subst ','"'"',$(DEBS_PATH))' \
 		$(foreach setting,$(SONIC_BAZEL_KERNEL_CONFIG),--kernel-config '$(setting)=$(subst ','"'"',$(if $(filter SECURE_UPGRADE_MODE,$(setting)),$(subst ",,$($(setting))),$($(setting))))') \
-		$(if $(strip $(SONIC_BAZEL_CACHE_SOURCE)),--cache-directory /bazel_cache)
+		$(if $(strip $(SONIC_BAZEL_REMOTE_CACHE)),--remote-cache '$(subst ','"'"',$(SONIC_BAZEL_REMOTE_CACHE))') \
+		$(if $(strip $(SONIC_BAZEL_KERNEL_CACHE_DIRECTORY)),--cache-directory '$(subst ','"'"',$(SONIC_BAZEL_KERNEL_CACHE_DIRECTORY))')
 else
 SONIC_MAKE_DEBS += $(LINUX_HEADERS_COMMON)
 endif

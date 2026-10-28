@@ -1262,14 +1262,14 @@ endif
 
 # start docker daemon
 docker-start :
-	$(Q)sudo sed -i 's/--storage-driver=vfs/--storage-driver=$(SONIC_SLAVE_DOCKER_DRIVER)/' /etc/default/docker
-	$(Q)sudo sed -i -e '/http_proxy/d' -e '/https_proxy/d' /etc/default/docker
-	$(Q)sudo bash -c "{ echo \"export http_proxy=$$http_proxy\"; \
-	            echo \"export https_proxy=$$https_proxy\"; \
-	            echo \"export no_proxy=$$no_proxy\"; } >> /etc/default/docker"
 	$(Q)if [ x$(SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD) = x"y" ]; then \
-		test -S /var/run/docker.sock && sudo docker ps &> /dev/null || ./scripts/wait_for_docker.sh 60; \
+		docker info &> /dev/null || ./scripts/wait_for_docker.sh 60; \
 	else \
+		sudo sed -i 's/--storage-driver=vfs/--storage-driver=$(SONIC_SLAVE_DOCKER_DRIVER)/' /etc/default/docker; \
+		sudo sed -i -e '/http_proxy/d' -e '/https_proxy/d' /etc/default/docker; \
+		sudo bash -c "{ echo \"export http_proxy=$$http_proxy\"; \
+		            echo \"export https_proxy=$$https_proxy\"; \
+		            echo \"export no_proxy=$$no_proxy\"; } >> /etc/default/docker"; \
 		sudo service docker status &> /dev/null || ( sudo service docker start &> /dev/null && ./scripts/wait_for_docker.sh 60 ); \
 	fi
 

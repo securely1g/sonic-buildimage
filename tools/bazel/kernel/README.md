@@ -90,6 +90,17 @@ existing `$(DEBS_PATH)`. Package outputs are copied once from Bazel into this
 directory, with no intermediate persistent package collection.
 `--remote-cache URL`
 enables read-only reuse; `--upload-local-results` explicitly permits writes.
+
+Normal Make forwards the optional `SONIC_BAZEL_REMOTE_CACHE` URL to this separate
+kernel launcher and leaves uploads disabled. For example, hosted VS CI uses
+`SONIC_BAZEL_REMOTE_CACHE=https://lgh-bazel-87263989.eastus.cloudapp.azure.com/`
+for anonymous cache reads. No credential is needed or forwarded. The launcher
+does not read the user Bazel RC or `BAZEL_CONTAINER_ARGS`, so the explicit Make
+handoff also covers kernel compilation. Its invocation receipt must match the
+requested endpoint and read-only policy before outputs are published. Verified
+retained packages can still be reused without running Bazel or contacting the
+cache; that reuse is not evidence of a remote cache hit.
+
 `--distdir` accepts exactly the three checksum-pinned Debian source archives.
 `--ca-bundle` and `--java-trust-store` supply public trust material. The source
 launcher verifies the pinned native Bazel executable and requires the kernel
@@ -101,9 +112,11 @@ at `/bazel_cache`; the kernel uses its `kernel-linux-sandbox/repository_cache` a
 `kernel-linux-sandbox/disk_cache` subdirectories as the slave user. This fixed
 namespace avoids the old worker's root-owned kernel cache. Kernel preparation runs
 directly in that environment and needs no Docker daemon or host-path mirrors.
-For a direct host invocation, pass the actual cache path with
-`--cache-directory /path/to/cache`. The kernel is prepared only when its
-Make dependency is reached.
+For direct Make, set `BAZEL_CONTAINER_CACHE_DIR` to the actual visible cache path;
+it takes precedence over the slave mount. Leaving both cache variables empty
+omits the local disk action cache while remote reads remain available. For a
+direct preparation command, pass `--cache-directory /path/to/cache`.
+The kernel is prepared only when its Make dependency is reached.
 
 Verified DEBs in the normal package directory survive unrelated buildimage/SWSS
 commits: their kernel, source archive, tool, configuration and tracked handoff-input identities

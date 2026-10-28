@@ -348,6 +348,7 @@ class KernelBundleTest(unittest.TestCase):
         receipt = kernel.build(self.root, self.root / "state", "http://127.0.0.1:8080", False,
                                execute=execute, fetch=lambda url: metadata[url])
         command = calls[0]
+        self.assertEqual(command[command.index("--remote-cache") + 1], "http://127.0.0.1:8080")
         self.assertIn("--remote-cache-read-only", command)
         self.assertNotIn("--disk-cache", command)
         self.assertEqual(command[command.index("--target") + 1], kernel.TARGET)
@@ -386,6 +387,31 @@ class KernelBundleTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "launcher invocation differs"):
                     kernel.build(self.root, self.root / ("invalid-state-" + str(index)),
                                  None, False, execute=execute)
+
+    def test_build_rejects_a_missing_cache_or_enabled_uploads_in_the_launcher_receipt(self):
+        """A configured read cache must reach the build, not merely its Make command."""
+        endpoint = "https://lgh-bazel-87263989.eastus.cloudapp.azure.com/"
+        for index, override in enumerate((
+            {"remote_cache": None}, {"remote_cache": "https://other-cache.test/"},
+            {"remote_cache_read_only": False},
+        )):
+            with self.subTest(override=override):
+                def execute(command, workspace):
+                    self.assertEqual(command[command.index("--remote-cache") + 1], endpoint)
+                    self.assertIn("--remote-cache-read-only", command)
+                    workdir = Path(command[command.index("--work-dir") + 1])
+                    workdir.mkdir(parents=True)
+                    invocation = {
+                        "schema": 2, "target": kernel.TARGET, "uid": 1000,
+                        "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
+                        "kernel_config": self.state["kernel_config"], **self.state["launcher"],
+                        "remote_cache": endpoint, "remote_cache_read_only": True,
+                        "disk_cache": None, **override,
+                    }
+                    (workdir / "invocation.json").write_text(json.dumps(invocation))
+                with self.assertRaisesRegex(ValueError, "launcher invocation differs"):
+                    kernel.build(self.root, self.root / ("invalid-cache-" + str(index)),
+                                 endpoint, False, execute=execute)
 
     def test_output_staging_rejects_paths_outside_the_local_build_directory(self):
         workdir = self.root / "local-build"

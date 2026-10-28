@@ -7,10 +7,27 @@ package expectations remain in the owner declarations and tests.
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
 archive checks, lightweight hosted regressions and the full VS integration
-job. SWSS and Syncd source-package checks run after Make in that VS job, using
-its checkout, Trixie builder, platform/feature flags and persistent Bazel action
-cache. The private builder output bases remain separate; cached outputs can
-be restored without recompiling the same source packages. Add checks for future
+job. The VS job runs on `ubuntu-24.04` and invokes `make -f slave.mk`
+in a stock Debian Trixie environment. It does not build or launch sonic-slave.
+Debian is still required because the remaining Make recipes install and compile
+Debian package dependencies. The job uses the hosted Docker daemon, rather than
+starting another daemon inside its execution environment.
+
+SWSS and Syncd source-package checks run after Make in the same checkout and
+execution environment, retaining its Bazel outputs and matching platform/feature
+flags. Bazel reads the LGH remote cache at
+`https://lgh-bazel-87263989.eastus.cloudapp.azure.com/`; uploads are disabled and
+no cache credentials are passed. A system RC inside the disposable environment
+also covers P4RT's separate Bazel 6 workspace, using only cache flags supported
+by both versions. Bazelisk still selects each workspace's declared version.
+The kernel ignores system/user RC files, so Make forwards
+`SONIC_BAZEL_REMOTE_CACHE` to its launcher explicitly. Avoiding a
+local disk action cache prevents storing a second copy of compiled outputs.
+Remote caching still requires local space for sources, outputs, Docker images
+and installer assembly; it does not supply a remote worker or a Make package
+cache. The job checks actual free space and KVM access before provisioning.
+See [native VS preparation](../../ci/native_vs/README.md) for the execution
+prerequisites and direct Make interface. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.
 Keep checks that compile image inputs in the full build job so they can reuse
 its action outputs.

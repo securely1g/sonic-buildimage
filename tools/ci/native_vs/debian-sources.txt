@@ -1,0 +1,29 @@
+# apt-get build-dep supplies execution dependencies for the retained upstream
+# Make recipes. These names identify Debian source packages, not SONiC binaries.
+# SONiC's actual patched source/version remains selected by rules/*.mk.
+bash
+frr
+ifupdown2
+initramfs-tools
+iproute2
+iptables
+isc-dhcp
+kdump-tools
+libteam
+lldpd
+lm-sensors
+makedumpfile
+monit
+mpdecimal
+openssh
+libpam-radius-auth
+rasdaemon
+redis
+socat
+wpa
+# FIPS retains the native Debian packaging builds for host packages.
+krb5
+openssl
+python3.13
+# libnl3 and net-snmp use SONiC-retained packaging, whose build contract differs
+# from current Debian Build-Conflicts. Their tools are in apt-packages.txt.

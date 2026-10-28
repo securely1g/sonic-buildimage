@@ -418,45 +418,41 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    # Share the existing P330 pool; checkout still uses this event's ref and SHA.
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - sonic-vs-source-master
-    timeout-minutes: 720
+    # Make runs directly inside stock Debian, using the hosted Docker daemon.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
-      # Keep build results outside run-specific checkouts and disposable builders.
-      SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
-      SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
-      SONIC_DPKG_CACHE_METHOD: rwcache
-      BAZEL_CONTAINER_ARGS: >-
-        --distdir=/bazel_cache/distdir/ape-1.0.1
-        --distdir=/bazel_cache/distdir/download_utils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
-        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+      VS_BUILD_CONTAINER: sonic-vs-${{ github.run_id }}-${{ github.run_attempt }}
+      SONIC_BAZEL_REMOTE_CACHE: https://lgh-bazel-87263989.eastus.cloudapp.azure.com/
+      # Remote reads do not need credentials. Avoid a duplicate local action cache.
+      SONIC_DPKG_CACHE_METHOD: none
+      # Override rules/config's persistent-slave cache default: no such mount here.
+      SONIC_BAZEL_CACHE_SOURCE: ""
     defaults:
       run:
         shell: bash
         working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Check source-build runner capacity
+      - name: Prepare hosted storage and check KVM
         working-directory: ${{ github.workspace }}
         run: |
+          # This is a disposable hosted VM; these preinstalled SDKs are unused.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           docker info > /dev/null
+          test -c /dev/kvm
+          sudo chgrp "$(id -g)" /dev/kvm
+          sudo chmod 0660 /dev/kvm
           python3 - <<'PY'
-          from pathlib import Path
+          import fcntl
           import shutil
-          workspace = Path.cwd().resolve()
-          usage = shutil.disk_usage(workspace)
-          free_gib = usage.free / 1024**3
-          print(f'Workspace: {workspace}; available: {free_gib:.1f} GiB; '
-                f'total: {usage.total / 1024**3:.1f} GiB', flush=True)
-          if usage.free < 100 * 1024**3:
-              raise SystemExit(f'The full Make VS build needs at least 100 GiB free; '
-                               f'{workspace} has {free_gib:.1f} GiB available')
+          from pathlib import Path
+          free = shutil.disk_usage(Path.cwd()).free
+          print(f'Available workspace: {free / 1024**3:.1f} GiB', flush=True)
+          if free < 100 * 1024**3:
+              raise SystemExit('The native full VS build requires at least 100 GiB free')
+          with open('/dev/kvm', 'rb') as device:
+              assert fcntl.ioctl(device.fileno(), 0xAE00, 0) == 12
           PY
 
       - name: Checkout repository
@@ -468,32 +464,15 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Check VS build prerequisites
-        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
-
-      - name: Prepare persistent agent caches
-        run: |
-          # Keep ordinary Make writers separate from older root-created cache entries.
-          SONIC_BAZEL_CACHE_SOURCE="$SONIC_BAZEL_CACHE_SOURCE/make-uid-$(id -u)"
-          install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
-          test -w "$SONIC_BAZEL_CACHE_SOURCE"
-          test -w "$SONIC_DPKG_CACHE_SOURCE"
-          # A writable cache root does not prove old digest directories are writable.
-          # Check directories only: cached content files may intentionally be read-only.
-          for cache in repository_cache disk_cache kernel-linux-sandbox/repository_cache kernel-linux-sandbox/disk_cache; do
-            cache_path="$SONIC_BAZEL_CACHE_SOURCE/$cache"
-            if test -d "$cache_path"; then
-              blocked=$(find "$cache_path" -type d ! -writable -print -quit)
-              if test -n "$blocked"; then
-                stat -c 'Unwritable Bazel cache directory: %n (uid=%u gid=%g mode=%a)' "$blocked" >&2
-                echo 'Repair this cache directory for the runner user before rebuilding; preserve cached content.' >&2
-                exit 1
-              fi
-            fi
-          done
-          printf 'SONIC_BAZEL_CACHE_SOURCE=%s\n' "$SONIC_BAZEL_CACHE_SOURCE" >> "$GITHUB_ENV"
-          printf 'Bazel cache: %s\nMake package cache: %s (%s)\n' \
-            "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" "$SONIC_DPKG_CACHE_METHOD"
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          # Bazel runs in Debian; its outputs are not the host action's cache.
+          bazelisk-cache: false
+          repository-cache: false
+          disk-cache: false
+          module-root: vs-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Download verified sources from the hosted checks
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -501,42 +480,83 @@ jobs:
           name: bazel-repository-inputs
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
 
-      - name: Prepare the shared Bazel source-download directory
+      - name: Configure LGH cache reads and verified source downloads
         run: |
+          mkdir -p artifacts/vs
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shlex
+          # Validate the downloaded archives with the existing preparation CLI below.
+          root = Path.cwd() / 'artifacts/vs/distdir'
+          cache_options = [
+              '--remote_cache=' + os.environ['SONIC_BAZEL_REMOTE_CACHE'],
+              '--remote_accept_cached=true', '--remote_upload_local_results=false',
+              '--remote_executor=', '--incompatible_strict_action_env',
+          ]
+          options = cache_options + [
+              '--jobs=4', '--local_resources=cpu=4', '--local_resources=memory=8000',
+          ]
+          for name in ('ape-1.0.1', 'download_utils-1.0.1', 'rules_coreutils-1.0.1',
+                       'rules_gzip-1.0.0', 'toolchain_utils-1.0.2'):
+              options.append('--distdir=' + str(root / name))
+          # The ignored user rc also covers follow-up direct Bazel invocations.
+          Path('.bazelrc.user').write_text(''.join('build ' + shlex.quote(option) + '\n' for option in options))
+          # P4RT uses a separate Bazel 6 root. Only cross-version cache settings
+          # belong in its system rc; image platforms and Bazel 8 flags do not.
+          Path('artifacts/vs/cache.bazelrc').write_text(''.join('build ' + shlex.quote(option) + '\n' for option in cache_options))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('BAZEL_CONTAINER_ARGS=' + shlex.join(options) + '\n')
+          PY
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
-            --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" \
+            --output "$PWD/artifacts/vs/distdir" \
             > artifacts/vs/source-download-receipt.json
+
+      - name: Prepare plain Debian execution environment
+        run: |
+          docker run --detach --init --privileged \
+            --name "$VS_BUILD_CONTAINER" --label "$SONIC_CI_CONTAINER_LABEL" \
+            --device /dev/kvm --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD:$PWD" --workdir "$PWD" \
+            --volume "$(readlink -f "$(command -v bazel)"):/usr/local/bin/bazel:ro" \
+            --env BAZEL=/usr/local/bin/bazel \
+            --env HOME=/home/vsbuild \
+            --env PATH=/usr/local/go/bin:/usr/local/bin:/usr/.cargo/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --env CARGO_HOME=/usr/.cargo --env RUSTUP_HOME=/usr/.cargo \
+            --env BAZEL_CONTAINER_ARGS --env SONIC_BAZEL_REMOTE_CACHE \
+            --env SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=y \
+            --env DOCKER_USERNAME=runner --env DOCKER_USERTAG="${{ github.run_id }}-${{ github.run_attempt }}" \
+            --env DOCKER_LOCKDIR="$PWD/target/docker-locks" \
+            --env DOCKER_LOCKFILE_SAVE="$PWD/target/docker-locks/docker_save.lock" \
+            --env SONIC_DPKG_CACHE_METHOD --env SONIC_BAZEL_CACHE_SOURCE \
+            --env VS_UID="$(id -u)" --env VS_GID="$(id -g)" \
+            debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c \
+            sleep infinity
+          docker cp artifacts/vs/cache.bazelrc "$VS_BUILD_CONTAINER:/etc/bazel.bazelrc"
+          docker exec "$VS_BUILD_CONTAINER" bash tools/ci/native_vs/bootstrap.sh \
+            2>&1 | tee artifacts/vs/bootstrap.log
 
       - name: Configure the native VS image
         run: |
-          mkdir -p artifacts/vs
-          make init 2>&1 | tee artifacts/vs/init.log
-          make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
+            make -f slave.mk configure PLATFORM=vs PLATFORM_ARCH=amd64 \
+            BUILD_WORKDIR="$PWD/target/native-work" TARGET_BOOTLOADER=grub \
             2>&1 | tee artifacts/vs/configure.log
-
-      - name: Check nested Docker in both build environments
-        timeout-minutes: 10
-        run: |
-          set -o pipefail
-          for build_env in bookworm trixie; do
-            make -f Makefile.work BLDENV="$build_env" docker-start \
-              SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
-              2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
-          done
 
       - name: Build the VS image and both OCI container variants
         id: vs_build
         run: |
-          make target/sonic-vs.img.gz \
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
+            make -f slave.mk target/sonic-vs.img.gz \
             target/docker-orchagent.gz target/docker-orchagent-dbg.gz \
             target/docker-syncd-vs.gz target/docker-syncd-vs-dbg.gz \
             target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
             target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
             ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
+            BUILD_WORKDIR="$PWD/target/native-work" TARGET_BOOTLOADER=grub \
+            SONIC_BUILD_JOBS=1 SONIC_CONFIG_MAKE_JOBS=4 \
             2>&1 | tee artifacts/vs/build.log
 
       - name: Validate SWSS source packages from the Make build
@@ -559,10 +579,8 @@ jobs:
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true "${ci_options[@]}"
           SH
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            DOCKER_ROOT="$PWD/target/docker-source-validation" \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
-            SONIC_RUN_CMDS="bash artifacts/vs/check-swss-source.sh" \
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
+            bash artifacts/vs/check-swss-source.sh \
             2>&1 | tee artifacts/vs/swss-source-validation.log
 
       - name: Prepare SWSS source artifact list
@@ -618,10 +636,8 @@ jobs:
             --output artifacts/syncd-vs/p4-image-test-analysis.json \
             //tools/bazel/tests:syncd_p4_images_test
           SH
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            DOCKER_ROOT="$PWD/target/docker-source-validation" \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
-            SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-source.sh" \
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
+            bash artifacts/vs/check-syncd-source.sh \
             2>&1 | tee artifacts/vs/syncd-source-validation.log
 
       - name: Prepare Syncd source artifact list
@@ -666,20 +682,18 @@ jobs:
           done
           exit "$test_status"
           SH
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
-            SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-p4-images.sh" \
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
+            bash artifacts/vs/check-syncd-p4-images.sh \
             2>&1 | tee artifacts/vs/syncd-p4-images.log
 
       - name: Verify P4RT packaged split debug symbols
         run: |
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-            SONIC_RUN_CMDS="python3 -B tools/bazel/ci/verify_p4rt_debug.py \
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
+            python3 -B tools/bazel/ci/verify_p4rt_debug.py \
               --runtime-deb target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
               --debug-deb target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
               --source-root src/sonic-p4rt/sonic-pins \
-              --output artifacts/vs/p4rt-debug-verification.json" \
+              --output artifacts/vs/p4rt-debug-verification.json \
             2>&1 | tee artifacts/vs/p4rt-debug-verification.log
 
       - name: Remove this job's remaining build containers
@@ -704,6 +718,21 @@ jobs:
               test -z "$remaining"
             fi
           fi
+
+      - name: Retain native execution environment versions
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-native-bootstrap-amd64
+          path: |
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/native-bootstrap/native-tool-versions.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/native-bootstrap/debian-packages.tsv
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/native-bootstrap/python-packages.txt
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/native-bootstrap/bootstrap-inputs.sha256
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/native-bootstrap/go-version.txt
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/native-bootstrap/rust-version.txt
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Prepare public artifact list
         id: public_artifacts
