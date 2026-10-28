@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-28T19:50:53.148838Z",
+  "generated_at": "2026-10-28T20:24:51.828967Z",
   "pull_requests": [
     {
       "base_sha": "2dc503aaecfb0d3c317608aaeabc68a108e32b97",
@@ -107,7 +107,7 @@
       "number": 61,
       "state": "open",
       "title": "[libteam]: Build with native Bazel rules and migrate SWSS consumers",
-      "updated_at": "2026-10-28T16:52:38Z",
+      "updated_at": "2026-10-28T19:56:52Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/61"
     },
     {
@@ -227,7 +227,7 @@
       "number": 51,
       "state": "open",
       "title": "Build FRR and its SONiC dependencies with native Bazel",
-      "updated_at": "2026-10-28T16:52:36Z",
+      "updated_at": "2026-10-28T19:56:43Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/51"
     },
     {
@@ -239,7 +239,7 @@
       "number": 50,
       "state": "open",
       "title": "Include full VS builds in manual OCI runs by default",
-      "updated_at": "2026-10-27T16:19:06Z",
+      "updated_at": "2026-10-28T20:21:49Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/50"
     },
     {
@@ -347,7 +347,7 @@
       "number": 41,
       "state": "open",
       "title": "Fix image timing and PR status in the build dashboard",
-      "updated_at": "2026-10-28T19:42:28Z",
+      "updated_at": "2026-10-28T19:55:31Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/41"
     },
     {
@@ -786,12 +786,12 @@
       "base_sha": "44426ed0ac0d4a77ff376d474c9648fffa6c5275",
       "draft": true,
       "head_branch": "codex/bazel-swss-image",
-      "head_sha": "cd27fe9981ec88774b82345400db4a053582dce9",
+      "head_sha": "793eec8831b18b85cb27e9d33920b48c24fffc9e",
       "merged_at": null,
       "number": 2,
       "state": "open",
       "title": "Build SWSS containers and virtual-switch installers with Bazel",
-      "updated_at": "2026-10-28T17:25:54Z",
+      "updated_at": "2026-10-28T20:11:38Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/2"
     },
     {
@@ -809,6 +809,750 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "codex/bazel-swss-image",
+      "completed_at": null,
+      "conclusion": null,
+      "event": "pull_request",
+      "jobs": [
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 123066487204,
+          "kind": "source",
+          "name": "Bazel SWSS packages (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 1364.0,
+            "setup": 36.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-10-28T19:59:53Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-28T19:59:54Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-28T19:59:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:00Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-28T19:59:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:16Z",
+              "conclusion": "success",
+              "duration_seconds": 16.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:00Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:30Z",
+              "conclusion": "success",
+              "duration_seconds": 14.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:16Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:42Z",
+              "conclusion": "success",
+              "duration_seconds": 12.0,
+              "name": "Initialize the recorded Bazel component sources",
+              "number": 5,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:42Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Verify gNOI is supplied by Bazel Central Registry",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:42Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:42Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Verify fresh generated dependency state",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:42Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:47Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Set up Bazel",
+              "number": 8,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:42Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:47Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Check P4RT TAR handoff and isolated debug symbols",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:47Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:23:13Z",
+              "conclusion": "success",
+              "duration_seconds": 1346.0,
+              "name": "Run Bazel checks and validate outputs",
+              "number": 10,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:47Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Validate sysmgr runtime and matching debug tars",
+              "number": 11,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:23:13Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload build evidence and packages",
+              "number": 12,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 22,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 23,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 24,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/job/123066487204"
+        },
+        {
+          "architecture": "arm64",
+          "completed_at": "2026-10-28T20:02:06Z",
+          "conclusion": "success",
+          "duration_seconds": 132.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 123066487475,
+          "kind": "source",
+          "name": "Bazel protobuf headers (ARM64)",
+          "phases": {
+            "build": null,
+            "other": 96.0,
+            "setup": 31.0,
+            "upload": 1.0,
+            "validation": 0.0
+          },
+          "started_at": "2026-10-28T19:59:54Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-28T19:59:56Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-28T19:59:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:01Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-28T19:59:56Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:18Z",
+              "conclusion": "success",
+              "duration_seconds": 17.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:01Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:24Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:18Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:30Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Initialize the recorded Bazel component sources",
+              "number": 5,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:30Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Verify gNOI is supplied by Bazel Central Registry",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:30Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Verify fresh generated dependency state",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:37Z",
+              "conclusion": "success",
+              "duration_seconds": 7.0,
+              "name": "Set up Bazel",
+              "number": 8,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:37Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Check P4RT TAR handoff and isolated debug symbols",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:01:53Z",
+              "conclusion": "success",
+              "duration_seconds": 76.0,
+              "name": "Run Bazel checks and validate outputs",
+              "number": 10,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:01:53Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Validate sysmgr runtime and matching debug tars",
+              "number": 11,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:01:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:01:54Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Upload build evidence and packages",
+              "number": 12,
+              "phase": "upload",
+              "started_at": "2026-10-28T20:01:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:01Z",
+              "conclusion": "success",
+              "duration_seconds": 7.0,
+              "name": "Post Set up Bazel",
+              "number": 22,
+              "phase": "other",
+              "started_at": "2026-10-28T20:01:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:01Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Checkout repository",
+              "number": 23,
+              "phase": "other",
+              "started_at": "2026-10-28T20:02:01Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:03Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Stop containers",
+              "number": 24,
+              "phase": "other",
+              "started_at": "2026-10-28T20:02:01Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:03Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 25,
+              "phase": "other",
+              "started_at": "2026-10-28T20:02:03Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/job/123066487475"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-28T20:08:13Z",
+          "conclusion": "success",
+          "duration_seconds": 500.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 123066487521,
+          "kind": "checks",
+          "name": "Bazel checks (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 461.0,
+            "setup": 32.0,
+            "upload": 2.0,
+            "validation": 3.0
+          },
+          "started_at": "2026-10-28T19:59:53Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-28T19:59:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-28T19:59:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:00Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-28T19:59:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:17Z",
+              "conclusion": "success",
+              "duration_seconds": 17.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:00Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:25Z",
+              "conclusion": "success",
+              "duration_seconds": 8.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:17Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:34Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Initialize the recorded Bazel component sources",
+              "number": 5,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:25Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:35Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Verify gNOI is supplied by Bazel Central Registry",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:34Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:35Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Verify fresh generated dependency state",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:35Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:41Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Set up Bazel",
+              "number": 8,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:35Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:43Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Check P4RT TAR handoff and isolated debug symbols",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:41Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:07:58Z",
+              "conclusion": "success",
+              "duration_seconds": 435.0,
+              "name": "Run Bazel checks and validate outputs",
+              "number": 10,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:07:58Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Validate sysmgr runtime and matching debug tars",
+              "number": 11,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:07:58Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:08:00Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Upload build evidence and packages",
+              "number": 12,
+              "phase": "upload",
+              "started_at": "2026-10-28T20:07:58Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:08:09Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Post Set up Bazel",
+              "number": 22,
+              "phase": "other",
+              "started_at": "2026-10-28T20:08:00Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:08:10Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Post Checkout repository",
+              "number": 23,
+              "phase": "other",
+              "started_at": "2026-10-28T20:08:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:08:12Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Stop containers",
+              "number": 24,
+              "phase": "other",
+              "started_at": "2026-10-28T20:08:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:08:12Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 25,
+              "phase": "other",
+              "started_at": "2026-10-28T20:08:12Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/job/123066487521"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-28T20:02:48Z",
+          "conclusion": "success",
+          "duration_seconds": 175.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 123066487779,
+          "kind": "source",
+          "name": "Bazel protobuf headers (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 139.0,
+            "setup": 32.0,
+            "upload": 2.0,
+            "validation": 0.0
+          },
+          "started_at": "2026-10-28T19:59:53Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-10-28T19:59:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-28T19:59:54Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T19:59:59Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-10-28T19:59:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:15Z",
+              "conclusion": "success",
+              "duration_seconds": 16.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-28T19:59:59Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:24Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:15Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:37Z",
+              "conclusion": "success",
+              "duration_seconds": 13.0,
+              "name": "Initialize the recorded Bazel component sources",
+              "number": 5,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:37Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Verify gNOI is supplied by Bazel Central Registry",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:37Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Verify fresh generated dependency state",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:43Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Set up Bazel",
+              "number": 8,
+              "phase": "setup",
+              "started_at": "2026-10-28T20:00:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:00:43Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Check P4RT TAR handoff and isolated debug symbols",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:00:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:31Z",
+              "conclusion": "success",
+              "duration_seconds": 108.0,
+              "name": "Run Bazel checks and validate outputs",
+              "number": 10,
+              "phase": "other",
+              "started_at": "2026-10-28T20:00:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:31Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Validate sysmgr runtime and matching debug tars",
+              "number": 11,
+              "phase": "validation",
+              "started_at": "2026-10-28T20:02:31Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:33Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Upload build evidence and packages",
+              "number": 12,
+              "phase": "upload",
+              "started_at": "2026-10-28T20:02:31Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:42Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Post Set up Bazel",
+              "number": 22,
+              "phase": "other",
+              "started_at": "2026-10-28T20:02:33Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:43Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Post Checkout repository",
+              "number": 23,
+              "phase": "other",
+              "started_at": "2026-10-28T20:02:42Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:47Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Stop containers",
+              "number": 24,
+              "phase": "other",
+              "started_at": "2026-10-28T20:02:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:02:47Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 25,
+              "phase": "other",
+              "started_at": "2026-10-28T20:02:47Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/job/123066487779"
+        }
+      ],
+      "pr_association": "github",
+      "pr_association_note": null,
+      "pr_numbers": [
+        2
+      ],
+      "run_id": 40759272512,
+      "source_sha": "793eec8831b18b85cb27e9d33920b48c24fffc9e",
+      "started_at": "2026-10-28T19:59:50Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-28T20:00:00Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/attempts/1",
+      "workflow_name": "Bazel",
+      "workflow_path": ".github/workflows/bazel.yml"
+    },
     {
       "attempt": 1,
       "branch": "pr/bazel-libteam",
