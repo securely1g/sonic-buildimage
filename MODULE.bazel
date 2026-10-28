@@ -26,7 +26,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 bazel_dep(name = "rules_pkg", version = "1.1.0")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.6")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
@@ -47,7 +47,7 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.25-1341eaf4a7759ef0121ae7c17edcd0000d063038",
+    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -99,7 +99,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.7",
+    version = "3.7.0.sonic.6",
 )
 
 single_version_override(
@@ -274,7 +274,7 @@ use_repo(apt_bookworm_metadata, "fib_bookworm_deps")
 
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.25-1341eaf4a7759ef0121ae7c17edcd0000d063038",
+    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
