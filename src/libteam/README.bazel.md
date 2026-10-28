@@ -12,9 +12,13 @@ Before registry PRs #146–#148 land, CI selects the single frozen registry
 records the composition. Infrastructure is
 `0.0.25-6f6658865b7f687fa5e78d1675c0db8a5765b2ce`, Distroless is `.sonic.13`,
 and libnl3 is `3.7.0.sonic.7`. The normal `.bazelrc` still uses maintained `main`.
-For local candidate validation, use the explicit flags in
-`.github/workflows/bazel-libteam.yml`, which load `common.bazelrc` without
-loading the default registry endpoint. Do not append both endpoints.
+For local candidate validation, run
+`tools/bazel/ci/libteam_draft_bazel.sh build //src/libteam:libteam_runtime`.
+This wrapper loads `common.bazelrc` without the default registry endpoint.
+The inherited base-image, OCI, eventd, Rust-listener and image-root YANG checks
+use this same reviewed catalog; standalone YANG validation stays on `main`.
+The dedicated libteam matrix retains its existing explicit registry flags.
+Do not append both endpoints.
 Replace the temporary CI endpoint with maintained `main` and verify landed
 source revisions before review readiness.
 
