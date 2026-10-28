@@ -96,9 +96,13 @@ jobs:
                      "--lockfile_mode=update"]
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
           pull = event.get("pull_request", {})
-          revision = subprocess.check_output(["git", "rev-list", "--parents", "-n", "1", "HEAD"], text=True).split()
+          revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          # cat-file preserves parent headers even with checkout's shallow history.
+          commit = subprocess.check_output(["git", "cat-file", "-p", "HEAD"], text=True)
+          parents = [line.split()[1] for line in commit.split("\n\n", 1)[0].splitlines()
+                     if line.startswith("parent ")]
           receipt = {
-              "tested_commit": revision[0], "tested_parents": revision[1:],
+              "tested_commit": revision, "tested_parents": parents,
               "pull_request_head": pull.get("head", {}).get("sha"),
               "pull_request_base": pull.get("base", {}).get("sha"),
               "architecture": os.environ["NATIVE_ARCHITECTURE"], "components": {},
