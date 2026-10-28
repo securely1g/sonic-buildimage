@@ -150,8 +150,8 @@ $(filter target/debs/trixie/linux-%.deb target/debs/trixie/linux-%.deb-install \
 # The VS CI follow-up builds share one Trixie container and its private Bazel
 # server. All selected containers belong to Trixie; Bookworm still checks the
 # installer's dependencies once before the aggregate enters the Trixie slave.
-.PHONY: bazel-vs-oci
-bazel-vs-oci:
+.PHONY: bazel-vs-oci bazel-vs-oci-verify
+bazel-vs-oci bazel-vs-oci-verify:
 	@echo "+++ --- Making $@ --- +++"
 ifeq ($(NOTRIXIE),0)
 ifeq ($(NOBOOKWORM),0)

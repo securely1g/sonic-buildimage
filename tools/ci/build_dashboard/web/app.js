@@ -7,6 +7,7 @@ const PHASES = ["setup", "build", "validation", "upload", "other"];
 // Keep this vocabulary in sync with breakdown.py. Never display labels or log text from a snapshot.
 const SECTION_LABELS = {
   "oci-session": "OCI archives and verification",
+  "oci-verification": "P4 packages and OCI verification",
   "vs-image": "VS image, dependencies and cleanup", "orchagent-release": "Orchagent release",
   "orchagent-debug": "Orchagent debug", "syncd-release": "Syncd release", "syncd-debug": "Syncd debug",
   "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
@@ -16,6 +17,7 @@ const TASK_LABELS = {
   "config-engine": "Config-engine container", "orchagent-release": "Orchagent release container",
   "orchagent-debug": "Orchagent debug container", "syncd-release": "Syncd release container",
   "syncd-debug": "Syncd debug container", "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
+  "orchagent-pair": "Orchagent runtime and debug containers", "syncd-pair": "Syncd runtime and debug containers",
   "bmp-watchdog": "BMP watchdog container", "gnmi-watchdog": "gNMI watchdog container",
   "sonic-otel": "OpenTelemetry container", "router-advertiser": "Router advertiser container",
   "dash-engine": "DASH engine container", "sonic-mgmt-framework": "Management framework container",

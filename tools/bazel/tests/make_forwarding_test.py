@@ -27,7 +27,7 @@ class MakeForwardingTest(unittest.TestCase):
         (self.directory / "scripts").mkdir()
         (self.directory / "scripts/run_with_retry").symlink_to(ROOT / "scripts/run_with_retry")
         self.log = self.directory / "forwarded.log"
-        targets = " ".join((*ARTIFACTS, "jessie", "bookworm", "docker-cleanup", "bazel-vs-oci"))
+        targets = " ".join((*ARTIFACTS, "jessie", "bookworm", "docker-cleanup", "bazel-vs-oci", "bazel-vs-oci-verify"))
         # This controlled inner Make records dispatch only. Its phony targets
         # ensure it never masks a successful handoff from the real outer file.
         (self.directory / "Makefile.work").write_text(f""".PHONY: {targets}
@@ -131,11 +131,13 @@ class MakeForwardingTest(unittest.TestCase):
         self.assertEqual(self.state(target), before)
 
     def test_vs_oci_session_enters_each_distribution_once(self):
-        result, calls = self.make("bazel-vs-oci", NOBOOKWORM="0")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls, [["bookworm", "y", "bookworm", ""],
-                                ["bazel-vs-oci", "y", "trixie", ""],
-                                ["docker-cleanup", "y", "bookworm", ""]])
+        for goal in ("bazel-vs-oci", "bazel-vs-oci-verify"):
+            with self.subTest(goal=goal):
+                result, calls = self.make(goal, NOBOOKWORM="0")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(calls, [["bookworm", "y", "bookworm", ""],
+                                        [goal, "y", "trixie", ""],
+                                        ["docker-cleanup", "y", "bookworm", ""]])
 
     def test_vs_oci_session_stops_after_failed_preparation_or_build(self):
         for failed, count in (("bookworm", 1), ("bazel-vs-oci", 2)):

@@ -35,6 +35,7 @@ RETRY_REASONS = {"pending-collection", "logs-temporarily-unavailable"}
 SECTION_LABELS = {
     "vs-image": "VS image, dependencies and cleanup",
     "oci-session": "OCI archives and verification",
+    "oci-verification": "P4 packages and OCI verification",
     "orchagent-release": "Orchagent release",
     "orchagent-debug": "Orchagent debug",
     "syncd-release": "Syncd release",
@@ -42,6 +43,7 @@ SECTION_LABELS = {
     "p4rt-runtime": "P4RT runtime package",
     "p4rt-debug": "P4RT debug package",
 }
+OUTER_TARGETS = {"bazel-vs-oci": "oci-session", "bazel-vs-oci-verify": "oci-verification"}
 TASK_LABELS = {
     "final-image": "Final VS image recipe",
     "rootfs": "Root filesystem squashfs",
@@ -49,8 +51,10 @@ TASK_LABELS = {
     "config-engine": "Config-engine container",
     "orchagent-release": "Orchagent release container",
     "orchagent-debug": "Orchagent debug container",
+    "orchagent-pair": "Orchagent runtime and debug containers",
     "syncd-release": "Syncd release container",
     "syncd-debug": "Syncd debug container",
+    "syncd-pair": "Syncd runtime and debug containers",
     "p4rt-runtime": "P4RT runtime package",
     "p4rt-debug": "P4RT debug package",
     "bmp-watchdog": "BMP watchdog container",
@@ -92,16 +96,20 @@ EXACT_TARGETS = {
 for _kind in TASK_LABELS.keys() - {
     "final-image", "rootfs", "base", "config-engine", "swss-layer", "orchagent-release",
     "orchagent-debug", "syncd-release", "syncd-debug", "p4rt-runtime", "p4rt-debug",
+    "orchagent-pair", "syncd-pair",
 }:
     EXACT_TARGETS[f"target/docker-{_kind}.gz"] = _kind
 
 DISTRO_CONTAINER = re.compile(r"target/docker-(base|config-engine|swss-layer)-(bookworm|trixie)\.gz\Z")
 P4RT = re.compile(r"target/files/(?:bookworm|trixie)/sonic-p4rt(-dbgsym)?_[0-9][A-Za-z0-9.+~:-]{0,63}_amd64\.tar\.bz2\Z")
+P4RT_DEB = re.compile(r"target/debs/(?:bookworm|trixie)/sonic-p4rt(-dbgsym)?_[0-9][A-Za-z0-9.+~:-]{0,63}_amd64\.deb\Z")
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z) (.*)$")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 OUTER = re.compile(r"\+\+\+ --- Making (\S{1,256}) --- \+\+\+\s*\Z")
 TARGET = re.compile(r"\[ (building|finished|cached) \] \[ (\S{1,256}) \]\s*\Z")
 IMAGE_PHASE_MARKER = re.compile(r"\[ image phases \] \[ (\S{1,256}) \] (.*)\Z")
+IMAGE_PAIR_MARKER = re.compile(r"\[ bazel image pair \] \[ (\S{1,256}) \] \[ (\S{1,256}) \]\Z")
+IMAGE_PAIR_KINDS = {"target/docker-orchagent.gz": "orchagent-pair", "target/docker-syncd-vs.gz": "syncd-pair"}
 
 
 def phase_unavailable(reason):
@@ -201,7 +209,7 @@ def target_kind(target):
     match = DISTRO_CONTAINER.fullmatch(target)
     if match:
         return match[1]
-    match = P4RT.fullmatch(target)
+    match = P4RT.fullmatch(target) or P4RT_DEB.fullmatch(target)
     if match:
         return "p4rt-debug" if match[1] else "p4rt-runtime"
     return None
@@ -266,6 +274,7 @@ are observed recipe/cache intervals and are deliberately not summed.
         return unavailable("incomplete-log")
     previous = log_start
     sections, active, counts = [], {}, Counter()
+    active_pairs = {}
     current = None
     task_count = 0
     active_phase = None
@@ -291,9 +300,16 @@ are observed recipe/cache intervals and are deliberately not summed.
         if when < previous or when > log_end:
             return unavailable("invalid-timing")
         previous = when
+        pair = IMAGE_PAIR_MARKER.fullmatch(text)
+        if pair:
+            identity, runtime = pair.groups()
+            if (identity in active and runtime in IMAGE_PAIR_KINDS and
+                    identity in (runtime, runtime.removesuffix(".gz") + "-dbg.gz")):
+                active_pairs[identity] = IMAGE_PAIR_KINDS[runtime]
+            continue
         outer = OUTER.fullmatch(text)
         if outer:
-            kind = "oci-session" if outer[1] == "bazel-vs-oci" else target_kind(outer[1])
+            kind = OUTER_TARGETS.get(outer[1]) or target_kind(outer[1])
             kind = "vs-image" if kind == "final-image" else kind
             if kind not in SECTION_LABELS:
                 return unavailable("unsupported-log-format")
@@ -334,6 +350,7 @@ are observed recipe/cache intervals and are deliberately not summed.
             task_count += 1
             if task_count > MAX_TASKS:
                 return unavailable("unsupported-log-format")
+            kind = active_pairs.pop(identity, kind)
             count = sum(task["id"].rsplit("-", 1)[0] == kind for task in current["tasks"]) + 1
             task = {"id": f"{kind}-{count}", "label": TASK_LABELS[kind],
                     "offset_seconds": round((began - current["start"]).total_seconds(), 6),
