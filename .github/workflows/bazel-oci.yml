@@ -515,11 +515,24 @@ jobs:
             > artifacts/vs/source-download-receipt.json
 
       - name: Prepare plain Debian execution environment
+        id: native_environment
         run: |
+          # slave.mk consumes the normalized registry passed by its caller.
+          container_registry=$(make --no-print-directory -f - <<'MAKE'
+          include rules/config
+          -include rules/config.organization
+          -include rules/config.user
+          export DEFAULT_CONTAINER_REGISTRY
+          .RECIPEPREFIX := >
+          .PHONY: print-registry
+          print-registry:
+          >@python3 -c 'import os; value = os.environ["DEFAULT_CONTAINER_REGISTRY"].rstrip("/"); print(value + "/" if value else "")'
+          MAKE
+          )
           # The kernel's Speakup generator has a 256-byte filename buffer.
           # Keep its scratch prefix short, with receipts retained in the checkout.
           mkdir -p target/bazel-kernel-state
-          docker run --detach --init --privileged \
+          docker run --detach --init --privileged --ulimit nofile=524288:524288 \
             --name "$VS_BUILD_CONTAINER" --label "$SONIC_CI_CONTAINER_LABEL" \
             --device /dev/kvm --volume /var/run/docker.sock:/var/run/docker.sock \
             --volume "$PWD:$PWD" --workdir "$PWD" \
@@ -528,6 +541,10 @@ jobs:
             --volume "$(readlink -f "$(command -v bazel)"):/usr/local/bin/bazel:ro" \
             --env BAZEL=/usr/local/bin/bazel \
             --env HOME=/home/vsbuild \
+            --env USER=vsbuild --env BUILD_HOSTNAME="$(hostname)" \
+            --env BUILD_TIMESTAMP="$(date +%Y%m%d.%H%M%S)" \
+            --env SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct HEAD)}" \
+            --env SONIC_DEFAULT_CONTAINER_REGISTRY="$container_registry" \
             --env PATH=/usr/local/go/bin:/usr/local/bin:/usr/.cargo/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
             --env CARGO_HOME=/usr/.cargo --env RUSTUP_HOME=/usr/.cargo \
             --env BAZEL_CONTAINER_ARGS --env SONIC_BAZEL_REMOTE_CACHE \
@@ -716,6 +733,12 @@ jobs:
               --source-root src/sonic-p4rt/sonic-pins \
               --output artifacts/vs/p4rt-debug-verification.json \
             2>&1 | tee artifacts/vs/p4rt-debug-verification.log
+
+      - name: Collect native build versions
+        if: always() && steps.native_environment.outcome == 'success'
+        run: |
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
+            scripts/collect_build_version_files.sh 0 trixie target
 
       - name: Remove this job's remaining build containers
         if: always()

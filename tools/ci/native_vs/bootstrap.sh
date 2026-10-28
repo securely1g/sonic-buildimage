@@ -36,6 +36,8 @@ sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sourc
 apt-get update
 mapfile -t packages < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$setup_dir/apt-packages.txt")
 apt-get install -y --no-install-recommends "${packages[@]}"
+# Both KVM installer console scripts spawn telnet through pexpect.
+command -v telnet
 mapfile -t source_packages < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$setup_dir/debian-sources.txt")
 apt-get build-dep -y --no-install-recommends "${source_packages[@]}"
 # Existing legacy Make recipes install Python wheels into this disposable root.
@@ -89,6 +91,8 @@ git config --global --add safe.directory "$workspace"
 # These files are also inputs to the service-image Docker builds.
 make --no-print-directory -f - <<'MAKE'
 include rules/config
+-include rules/config.organization
+-include rules/config.user
 export BUILD_PACKAGES_URL SONIC_VERSION_CONTROL_COMPONENTS SONIC_VERSION_CACHE_SOURCE
 export MIRROR_SNAPSHOT BUILD_PUBLIC_URL BUILD_SNAPSHOT_URL PIP_HTTP_TIMEOUT
 export TRUSTED_GPG_URLS
@@ -118,6 +122,8 @@ mapfile -t go_config < <(make --no-print-directory -f - <<'MAKE'
 BLDENV := trixie
 CONFIGURED_ARCH := amd64
 include rules/config
+-include rules/config.organization
+-include rules/config.user
 include rules/functions
 include rules/sonic-fips.mk
 .PHONY: print-go

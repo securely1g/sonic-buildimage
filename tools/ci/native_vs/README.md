@@ -48,6 +48,16 @@ adds the build user to the socket and KVM groups and permits its existing sudo
 operations. Docker service builds and native package builds retain their
 original Make rules.
 
+The job passes `USER=vsbuild` and the runner's `BUILD_HOSTNAME` so the installed
+`sonic_version.yml` records a valid build identity. It reads the Docker registry
+from `rules/config` and its organization/user overrides, then passes the
+normalized prefix to `slave.mk`. Build timestamps, the commit-derived
+`SOURCE_DATE_EPOCH`, and the existing 524288-file limit are preserved.
+Before removing the execution container, it
+runs the existing version collector to retain build-hook records in `target/versions`.
+The KVM console scripts use the installed `telnet` CLI; bootstrap checks that
+command before compilation starts.
+
 The host matches the standalone kernel CI environment's unprivileged user
 namespace support. Before Make runs, the workflow checks namespace creation
 and the embedded Bazel Linux sandbox helper as `vsbuild`, including isolated

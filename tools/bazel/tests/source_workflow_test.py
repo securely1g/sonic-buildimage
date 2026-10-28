@@ -14,6 +14,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/bazel-oci.yml"
+CONTAINER_BUILD_ENVIRONMENT = (
+    "BAZEL", "BAZEL_CONTAINER_ARGS", "SONIC_BAZEL_KERNEL_STATE_ROOT", "USER",
+    "BUILD_HOSTNAME", "BUILD_TIMESTAMP", "SOURCE_DATE_EPOCH", "SONIC_DEFAULT_CONTAINER_REGISTRY",
+)
 
 
 def jobs():
@@ -51,7 +55,7 @@ class SourceWorkflowTest(unittest.TestCase):
         self.commands.mkdir()
         (self.directory / "artifacts/vs").mkdir(parents=True)
         (self.directory / "artifacts/vs/cache.bazelrc").write_text("# Prepared by the cache configuration step\n")
-        for name in (".bazelversion", "tools/bazel/build_helpers.py",
+        for name in (".bazelversion", "rules/config", "tools/bazel/build_helpers.py",
                      "platform/vs/docker-syncd-vs/bazel/apt.lock.json",
                      "platform/vs/docker-syncd-vs/BUILD.bazel"):
             fixture = self.directory / name
@@ -66,7 +70,7 @@ class SourceWorkflowTest(unittest.TestCase):
             with Path(os.environ['CALLS']).open('a') as output:
                 output.write(json.dumps({'name': name, 'args': args,
                     'environment': {key: os.environ.get(key) for key in
-                                    ('BAZEL', 'BAZEL_CONTAINER_ARGS', 'SONIC_BAZEL_KERNEL_STATE_ROOT')}}) + '\n')
+                                    __BUILD_ENVIRONMENT_KEYS__}}) + '\n')
             if name == 'rm' or 'clean' in args or 'cleanall' in args:
                 raise SystemExit('Source validation must preserve existing build state')
             source_runner = name == 'python3' and 'tools/bazel/ci/container.py' in args
@@ -74,9 +78,13 @@ class SourceWorkflowTest(unittest.TestCase):
                 if source_runner or (name == 'bazel' and any(arg in ('build', 'test') for arg in args)):
                     raise SystemExit('Hosted regression checks must not compile source packages')
             if name == 'make':
+                if args == ['--no-print-directory', '-f', '-']:
+                    raise SystemExit(subprocess.run(['/usr/bin/make', *args]).returncode)
                 if args[:2] != ['-f', 'slave.mk'] or 'sonic-slave-run' in args:
                     raise SystemExit('Native VS must invoke slave.mk directly')
                 raise SystemExit(int(os.environ.get('MAKE_EXIT', '0')))
+            if name == 'collect_build_version_files.sh':
+                raise SystemExit(int(os.environ.get('COLLECT_EXIT', '0')))
             if name == 'docker':
                 state_path = Path(os.environ['CONTAINERS'])
                 state = json.loads(state_path.read_text()) if state_path.exists() else {}
@@ -108,7 +116,7 @@ class SourceWorkflowTest(unittest.TestCase):
                         source, destination, *_ = value.split(':')
                         if destination == '/k':
                             assert Path(source).is_dir(), 'Create the kernel state directory before Docker mounts it'
-                    elif option not in ('--device', '--workdir', '--label'):
+                    elif option not in ('--device', '--workdir', '--label', '--ulimit'):
                         raise SystemExit('Unmodeled Docker option: ' + option)
                 if operation == 'run':
                     assert selected and remaining[0].startswith('debian:trixie-')
@@ -126,7 +134,7 @@ class SourceWorkflowTest(unittest.TestCase):
                 # current host's Bazel settings or credential variables.
                 environment = dict(state[selected], **environment)
                 for key in ('PATH', 'CALLS', 'CONTAINERS', 'SOURCE_EXIT', 'MAKE_EXIT',
-                            'FIXTURE_UID', 'UNSHARE_EXIT', 'BAZEL_INFO_EXIT'):
+                            'FIXTURE_UID', 'UNSHARE_EXIT', 'BAZEL_INFO_EXIT', 'COLLECT_EXIT'):
                     if key in os.environ:
                         environment[key] = os.environ[key]
                 if command == ['bash', 'tools/ci/native_vs/bootstrap.sh']:
@@ -136,6 +144,8 @@ class SourceWorkflowTest(unittest.TestCase):
             if source_runner:
                 raise SystemExit(int(os.environ.get('SOURCE_EXIT', '0')))
             if name == 'python3' and args[:1] == ['tools/bazel/build_helpers.py']:
+                raise SystemExit(subprocess.run([sys.executable, *args]).returncode)
+            if name == 'python3' and args[:1] == ['-c']:
                 raise SystemExit(subprocess.run([sys.executable, *args]).returncode)
             if name == 'python3' and args == ['-'] and os.environ.get('RUN_PYTHON_STDIN') == '1':
                 raise SystemExit(subprocess.run([sys.executable, '-'], input=sys.stdin.read(), text=True).returncode)
@@ -151,16 +161,25 @@ class SourceWorkflowTest(unittest.TestCase):
                 print(os.environ.get('FIXTURE_UID', '1000') if args == ['-u'] else '1000')
             if name == 'unshare':
                 raise SystemExit(int(os.environ.get('UNSHARE_EXIT', '0')))
+            if name == 'hostname':
+                print('native-host-fixture')
             if name == 'git':
                 if args[:2] == ['rev-parse', 'HEAD']:
                     print('a' * 40)
                 elif args[:1] == ['check-ignore']:
                     print('MODULE.bazel.lock')
-            ''').replace('__SANDBOX_INSTALL_BASE__', repr(str(self.directory / 'bazel-install')))
-        for name in ("make", "docker", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp", "id", "unshare"):
+                elif args == ['log', '-1', '--format=%ct', 'HEAD']:
+                    print('1728000000')
+            ''').replace('__SANDBOX_INSTALL_BASE__', repr(str(self.directory / 'bazel-install'))).replace(
+                '__BUILD_ENVIRONMENT_KEYS__', repr(CONTAINER_BUILD_ENVIRONMENT))
+        for name in ("make", "docker", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp", "id", "unshare", "hostname"):
             executable = self.commands / name
             executable.write_text(recorder)
             executable.chmod(0o755)
+        collector = self.directory / "scripts/collect_build_version_files.sh"
+        collector.parent.mkdir()
+        collector.write_text(recorder)
+        collector.chmod(0o755)
         self.sandbox_status = self.directory / "sandbox-status.json"
         sandbox = self.directory / "bazel-install/linux-sandbox"
         sandbox.parent.mkdir()
@@ -193,6 +212,8 @@ class SourceWorkflowTest(unittest.TestCase):
             GITHUB_STEP_SUMMARY=str(self.directory / "github-summary"),
             SONIC_CI_CONTAINER_LABEL="test-source-validation=one-job",
         )
+        for variable in ("DEFAULT_CONTAINER_REGISTRY", "SOURCE_DATE_EPOCH"):
+            self.environment.pop(variable, None)
 
     def execute(self, script, **environment):
         # GitHub evaluates these scalar expressions before invoking bash.
@@ -209,6 +230,7 @@ class SourceWorkflowTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         docker = [call for call in self.recorded() if call["name"] == "docker" and call["args"][0] == "run"]
         self.assertEqual(len(docker), 1)
+        self.assertEqual(docker[0]["args"][docker[0]["args"].index("--ulimit") + 1], "nofile=524288:524288")
         mounts = [docker[0]["args"][index + 1] for index, argument in enumerate(docker[0]["args"])
                   if argument == "--volume"]
         self.assertIn(str(self.directory / "target/bazel-kernel-state") + ":/k", mounts)
@@ -287,8 +309,7 @@ class SourceWorkflowTest(unittest.TestCase):
                                        "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"):
                             self.assertIn("--bazel-arg=" + option, args)
                         self.assertEqual(runner[0]["environment"],
-                                         {key: container_environment[key] for key in
-                                          ("BAZEL", "BAZEL_CONTAINER_ARGS", "SONIC_BAZEL_KERNEL_STATE_ROOT")})
+                                         {key: container_environment[key] for key in CONTAINER_BUILD_ENVIRONMENT})
                         self.assertFalse(any(arg.startswith("--bazel-arg=--disk_cache=") for arg in args))
                     analyses = [call for call in calls if "tools/bazel/ci/bazel_commands.py" in call["args"]]
                     self.assertEqual(len(analyses), int(dash and not source_exit and not docker_exit))
@@ -322,6 +343,82 @@ class SourceWorkflowTest(unittest.TestCase):
         self.assertNotIn("sonic-slave-run", job)
         self.assertNotIn("Makefile.work", job)
         self.assertNotIn("USE_BAZEL_VERSION", job)
+
+    def test_native_environment_keeps_registry_precedence_and_build_identity(self):
+        """Direct Make must retain wrapper registry overrides, ownership and reproducible timestamps."""
+        build = shell(steps(jobs()["vs"])["Build the VS image and both OCI container variants"])
+        cases = (
+            (None, None, None, "publicmirror.azurecr.io/"),
+            ("organization.test/team///", None, None, "organization.test/team/"),
+            ("organization.test", "user.test/team/", "1600000000", "user.test/team/"),
+            ("organization.test", "", "1600000001", ""),
+            (None, "registry.test/owner's;`touch registry-command-executed`", None,
+             "registry.test/owner's;`touch registry-command-executed`/"),
+        )
+        for organization, user, epoch, expected_registry in cases:
+            with self.subTest(organization=organization, user=user, epoch=epoch):
+                self.calls.unlink(missing_ok=True)
+                for filename, value in (("config.organization", organization), ("config.user", user)):
+                    config = self.directory / "rules" / filename
+                    if value is None:
+                        config.unlink(missing_ok=True)
+                    else:
+                        config.write_text("DEFAULT_CONTAINER_REGISTRY := " + value + "\n")
+                if epoch is None:
+                    self.environment.pop("SOURCE_DATE_EPOCH", None)
+                else:
+                    self.environment["SOURCE_DATE_EPOCH"] = epoch
+                environment = self.prepare_container()
+                self.assertEqual(environment["USER"], "vsbuild")
+                self.assertEqual(environment["BUILD_HOSTNAME"], "native-host-fixture")
+                self.assertRegex(environment["BUILD_TIMESTAMP"], r"^\d{8}\.\d{6}$")
+                self.assertEqual(environment["SOURCE_DATE_EPOCH"], epoch or "1728000000")
+                self.assertEqual(environment["SONIC_DEFAULT_CONTAINER_REGISTRY"], expected_registry)
+                self.assertFalse((self.directory / "registry-command-executed").exists())
+                result = self.execute(build, USER="host-user", BUILD_HOSTNAME="host-name",
+                                      BUILD_TIMESTAMP="host-time", SOURCE_DATE_EPOCH="host-epoch",
+                                      SONIC_DEFAULT_CONTAINER_REGISTRY="host-registry/")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                make = [call for call in self.recorded() if call["name"] == "make"]
+                self.assertEqual(len(make), 1)
+                self.assertEqual(make[0]["environment"],
+                                 {key: environment[key] for key in CONTAINER_BUILD_ENVIRONMENT})
+        # A configuration error must fail before creating the build environment.
+        self.calls.unlink()
+        (self.directory / "rules/config.user").write_text("$(error invalid registry fixture)\n")
+        failed = self.execute(shell(steps(jobs()["vs"])["Prepare plain Debian execution environment"]))
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("invalid registry fixture", failed.stderr)
+        self.assertFalse(any(call["name"] == "docker" for call in self.recorded()))
+
+    def test_version_collection_runs_before_cleanup_even_after_build_failure(self):
+        """Retain package versions while the execution container still exists, including failed builds."""
+        workflow_steps = steps(jobs()["vs"])
+        name = "Collect native build versions"
+        names = list(workflow_steps)
+        self.assertLess(names.index("Build the VS image and both OCI container variants"), names.index(name))
+        self.assertLess(names.index(name), names.index("Remove this job's remaining build containers"))
+        self.assertIn("id: native_environment", workflow_steps["Prepare plain Debian execution environment"])
+        self.assertRegex(workflow_steps[name],
+                         r"(?m)^        if: always\(\) && steps\.native_environment\.outcome == 'success'$")
+        environment = self.prepare_container()
+        for collector_exit, docker_exit in ((0, 0), (47, 0), (0, 49)):
+            with self.subTest(collector_exit=collector_exit, docker_exit=docker_exit):
+                self.calls.unlink(missing_ok=True)
+                result = self.execute(shell(workflow_steps[name]), COLLECT_EXIT=str(collector_exit),
+                                      DOCKER_EXEC_EXIT=str(docker_exit))
+                self.assertEqual(result.returncode, collector_exit or docker_exit, result.stdout + result.stderr)
+                calls = self.recorded()
+                docker = [call for call in calls if call["name"] == "docker"]
+                self.assertEqual(len(docker), 1)
+                self.assertEqual(docker[0]["args"], ["exec", "--user", "vsbuild", self.environment["VS_BUILD_CONTAINER"],
+                                                    "scripts/collect_build_version_files.sh", "0", "trixie", "target"])
+                collector = [call for call in calls if call["name"] == "collect_build_version_files.sh"]
+                self.assertEqual(len(collector), int(not docker_exit))
+                if collector:
+                    self.assertEqual(collector[0]["args"], ["0", "trixie", "target"])
+                    self.assertEqual(collector[0]["environment"],
+                                     {key: environment[key] for key in CONTAINER_BUILD_ENVIRONMENT})
 
     def test_unprivileged_sandbox_probes_gate_make_and_preserve_failures(self):
         """Reject unusable user/network namespaces before configure or packaging can start."""
