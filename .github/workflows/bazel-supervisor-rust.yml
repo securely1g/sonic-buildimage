@@ -6,6 +6,7 @@ on:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/frr_draft_bazel.sh
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/frr_draft_bazel.sh
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -20,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-supervisor-rust-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-supervisor-rust-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -79,6 +81,7 @@ jobs:
       - name: Audit and test source runtime and debug packages
         env:
           MACHINE: ${{ matrix.machine }}
+          BAZEL: ${{ github.workspace }}/tools/bazel/ci/frr_draft_bazel.sh
         run: |
           set -euo pipefail
           flags=(--jobs=4
@@ -90,10 +93,10 @@ jobs:
             //src/sonic-supervisord-utilities-rs:package_test)
           audit_flags=()
           for flag in "${flags[@]}"; do audit_flags+=("--bazel-arg=$flag"); done
-          python3 tools/bazel/ci/bazel_commands.py "${audit_flags[@]}" \
+          python3 tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit_flags[@]}" \
             --output artifacts/supervisor-rust/action-audit.json "${targets[@]}"
-          bazel test "${flags[@]}" --test_output=errors "${targets[@]}"
-          bazel cquery "${flags[@]}" --noimplicit_deps \
+          "$BAZEL" test "${flags[@]}" --test_output=errors "${targets[@]}"
+          "$BAZEL" cquery "${flags[@]}" --noimplicit_deps \
             'kind("rust_library rule", deps(//src/sonic-supervisord-utilities-rs:supervisor_library))' \
             > artifacts/supervisor-rust/rust-libraries.txt
           cp MODULE.bazel.lock artifacts/supervisor-rust/MODULE.bazel.lock
