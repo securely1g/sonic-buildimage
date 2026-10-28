@@ -114,13 +114,10 @@ jobs:
             2>&1 | tee artifacts/test.log
           # Keep production outputs and ordinary checks on the default allocator.
           # Valgrind must own allocation instrumentation in its separate profile.
-          # The upstream suite currently declares AMD64-only compatibility.
-          if [[ "$CI_ARCHITECTURE" == amd64 ]]; then
-            run_bazel test --//src/sonic-frr:tcmalloc=false \
-              --build_event_json_file="$PWD/artifacts/memcheck-events.json" \
-              //src/sonic-frr:upstream_check \
-              2>&1 | tee artifacts/memcheck.log
-          fi
+          run_bazel test --//src/sonic-frr:tcmalloc=false \
+            --build_event_json_file="$PWD/artifacts/memcheck-events.json" \
+            //src/sonic-frr:upstream_check \
+            2>&1 | tee artifacts/memcheck.log
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Preserve native test diagnostics
         if: always()

@@ -27,9 +27,10 @@ execution is provided by this component build.
 runs the ordinary upstream checks with the default tcmalloc configuration.
 `:upstream_check` retains the complete suite, including all six Valgrind checks;
 run it with `--//src/sonic-frr:tcmalloc=false` so Valgrind owns allocation
-instrumentation. Both suites currently declare AMD64-only compatibility.
+instrumentation. Both suites support native AMD64 and ARM64 execution.
 CI keeps the production TARs and ordinary tests on the default allocator and
-runs the complete memory-check suite separately for Bookworm and Trixie.
+runs the complete memory-check suite separately for Bookworm and Trixie on
+both architectures. Cross-compiling the check programs does not execute them.
 This avoids the observed tcmalloc initialization errors under Bookworm Valgrind
 and preserves strict memory-error exit codes without suppressions.
 

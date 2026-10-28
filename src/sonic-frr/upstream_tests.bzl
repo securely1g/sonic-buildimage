@@ -31,6 +31,7 @@ def frr_upstream_check(name, binaries, sources):
         ],
         target_compatible_with = select({
             "@platforms//cpu:x86_64": [],
+            "@platforms//cpu:aarch64": [],
             "//conditions:default": ["@platforms//:incompatible"],
         }),
         tags = ["manual"],
