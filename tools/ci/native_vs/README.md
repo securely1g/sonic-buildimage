@@ -17,6 +17,10 @@ that literal path. No host packages are changed.
 
 - `apt-packages.txt` contains execution/image tools and native development or
   test dependencies omitted from the retained source packages' controls.
+  It explicitly includes `debian-keyring` because installation disables APT
+  recommendations. The retained `makedumpfile` recipe uses `dget` to verify
+  the Debian maintainer's signature on `makedumpfile_1.7.7-1.dsc` before
+  extracting its source; `devscripts` alone does not install that keyring.
 - `debian-sources.txt` identifies the Debian source recipes whose `Build-Depends`
   supply the rest of the native build environment. This installs their build
   tools, not their runtime binaries as substitutes for SONiC source outputs.
@@ -85,6 +89,18 @@ consistently on all direct Make calls. Configure first with `PLATFORM=vs`,
 FIPS/DASH and native architecture flags for the actual image build.
 
 ## Validation evidence
+
+The hosted job samples allocated space on the checkout and Docker filesystems
+every 30 seconds, counting a shared filesystem once. Sampling begins after
+checkout, before bootstrap, and continues through the image build and validation.
+It stops before container cleanup, including when the build fails. The
+`sonic-vs-disk-usage-amd64` artifact contains `samples.jsonl` and `summary.json`
+with initial and maximum sampled used space, maximum growth from that baseline,
+and minimum available space. Total used space includes the runner's existing
+files; growth is additional usage after checkout. These filesystem measurements
+include other activity on the runner; they do not measure an instantaneous peak
+or attribute every byte to this build. The preflight's 100 GiB free-space check
+is a configured safety floor, not a measured full-build requirement.
 
 Bootstrap retains the selected native tool versions, complete installed Debian
 and Python package versions, and setup-input hashes under

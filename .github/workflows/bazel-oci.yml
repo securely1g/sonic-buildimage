@@ -451,7 +451,7 @@ jobs:
           free = shutil.disk_usage(Path.cwd()).free
           print(f'Available workspace: {free / 1024**3:.1f} GiB', flush=True)
           if free < 100 * 1024**3:
-              raise SystemExit('The native full VS build requires at least 100 GiB free')
+              raise SystemExit('Available space is below the configured 100 GiB safety floor; full-build peak usage is not yet established')
           with open('/dev/kvm', 'rb') as device:
               assert fcntl.ioctl(device.fileno(), 0xAE00, 0) == 12
           PY
@@ -464,6 +464,25 @@ jobs:
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
           submodules: recursive
+
+      - name: Start disk measurement
+        id: disk_measurement
+        run: |
+          mkdir -p artifacts/vs/disk
+          docker_root=$(docker info --format '{{.DockerRootDir}}')
+          test -n "$docker_root"
+          # Both paths can be on the same device. The sampler counts it once.
+          sudo python3 -B tools/ci/native_vs/disk_usage.py record \
+            --output "$PWD/artifacts/vs/disk" --path "$PWD" --path "$docker_root" \
+            --interval 30 --max-duration 21600 \
+            > artifacts/vs/disk/recorder.log 2>&1 < /dev/null &
+          recorder_pid=$!
+          for attempt in $(seq 1 30); do
+            test ! -f artifacts/vs/disk/ready || break
+            kill -0 "$recorder_pid"
+            sleep 1
+          done
+          test -f artifacts/vs/disk/ready
 
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
@@ -740,6 +759,13 @@ jobs:
           docker exec --user vsbuild "$VS_BUILD_CONTAINER" \
             scripts/collect_build_version_files.sh 0 trixie target
 
+      - name: Finish disk measurement before cleanup
+        if: always() && steps.disk_measurement.outcome != 'skipped'
+        timeout-minutes: 1
+        run: |
+          sudo python3 -B tools/ci/native_vs/disk_usage.py finish \
+            --output "$PWD/artifacts/vs/disk" --wait 30
+
       - name: Remove this job's remaining build containers
         if: always()
         timeout-minutes: 2
@@ -762,6 +788,15 @@ jobs:
               test -z "$remaining"
             fi
           fi
+
+      - name: Retain disk measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-disk-usage-amd64
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/disk/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Retain native execution environment versions
         if: always()
