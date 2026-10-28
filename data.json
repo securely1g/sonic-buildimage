@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-28T20:24:51.828967Z",
+  "generated_at": "2026-10-28T21:04:50.110312Z",
   "pull_requests": [
     {
       "base_sha": "2dc503aaecfb0d3c317608aaeabc68a108e32b97",
@@ -107,7 +107,7 @@
       "number": 61,
       "state": "open",
       "title": "[libteam]: Build with native Bazel rules and migrate SWSS consumers",
-      "updated_at": "2026-10-28T19:56:52Z",
+      "updated_at": "2026-10-28T20:37:28Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/61"
     },
     {
@@ -227,7 +227,7 @@
       "number": 51,
       "state": "open",
       "title": "Build FRR and its SONiC dependencies with native Bazel",
-      "updated_at": "2026-10-28T19:56:43Z",
+      "updated_at": "2026-10-28T20:37:19Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/51"
     },
     {
@@ -818,9 +818,9 @@
       "jobs": [
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-28T20:27:43Z",
+          "conclusion": "success",
+          "duration_seconds": 1670.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 123066487204,
@@ -828,13 +828,13 @@
           "name": "Bazel SWSS packages (AMD64)",
           "phases": {
             "build": null,
-            "other": 1364.0,
+            "other": 1430.0,
             "setup": 36.0,
-            "upload": null,
-            "validation": 0.0
+            "upload": 12.0,
+            "validation": 189.0
           },
           "started_at": "2026-10-28T19:59:53Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-28T19:59:54Z",
@@ -937,54 +937,64 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-28T20:26:22Z",
+              "conclusion": "success",
+              "duration_seconds": 189.0,
               "name": "Validate sysmgr runtime and matching debug tars",
               "number": 11,
               "phase": "validation",
               "started_at": "2026-10-28T20:23:13Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-28T20:26:34Z",
+              "conclusion": "success",
+              "duration_seconds": 12.0,
               "name": "Upload build evidence and packages",
               "number": 12,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-28T20:26:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-28T20:27:38Z",
+              "conclusion": "success",
+              "duration_seconds": 64.0,
               "name": "Post Set up Bazel",
               "number": 22,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-28T20:26:34Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-28T20:27:38Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository",
               "number": 23,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-28T20:27:38Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-28T20:27:40Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Stop containers",
               "number": 24,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-28T20:27:38Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T20:27:40Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 25,
+              "phase": "other",
+              "started_at": "2026-10-28T20:27:40Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/job/123066487204"
@@ -1537,6 +1547,28 @@
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/job/123066487779"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 123081308322,
+          "kind": "bazel-vs",
+          "name": "Bazel VS installer (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-28T20:27:43Z",
+          "status": "queued",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/job/123081308322"
         }
       ],
       "pr_association": "github",
@@ -1547,8 +1579,8 @@
       "run_id": 40759272512,
       "source_sha": "793eec8831b18b85cb27e9d33920b48c24fffc9e",
       "started_at": "2026-10-28T19:59:50Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-28T20:00:00Z",
+      "status": "queued",
+      "updated_at": "2026-10-28T20:27:43Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40759272512/attempts/1",
       "workflow_name": "Bazel",
       "workflow_path": ".github/workflows/bazel.yml"
@@ -28306,8 +28338,8 @@
     {
       "attempt": 1,
       "branch": "codex/vs-orchagent-archive-reuse",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-28T21:03:33Z",
+      "conclusion": "cancelled",
       "event": "pull_request",
       "jobs": [
         {
@@ -28901,9 +28933,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-28T21:03:33Z",
+          "conclusion": "cancelled",
+          "duration_seconds": 86400.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 122468798228,
@@ -28917,7 +28949,7 @@
             "validation": null
           },
           "started_at": "2026-10-27T21:03:33Z",
-          "status": "queued",
+          "status": "completed",
           "steps": [],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40583147176/job/122468798228"
         }
@@ -28930,8 +28962,8 @@
       "run_id": 40583147176,
       "source_sha": "af8592e13822e9da6e1f79b05708bde0fde0b4e7",
       "started_at": "2026-10-27T21:01:11Z",
-      "status": "queued",
-      "updated_at": "2026-10-27T21:03:33Z",
+      "status": "completed",
+      "updated_at": "2026-10-28T21:03:34Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40583147176/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
@@ -29564,9 +29596,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-28T20:25:09Z",
+          "conclusion": "cancelled",
+          "duration_seconds": 86401.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 122449003477,
@@ -29580,7 +29612,7 @@
             "validation": null
           },
           "started_at": "2026-10-27T20:25:08Z",
-          "status": "queued",
+          "status": "completed",
           "steps": [],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40577864227/job/122449003477"
         }
@@ -29593,8 +29625,8 @@
       "run_id": 40577864227,
       "source_sha": "fa8165b584720c03409cb6852765b5c251056c9c",
       "started_at": "2026-10-27T20:25:08Z",
-      "status": "queued",
-      "updated_at": "2026-10-27T20:25:08Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-28T20:25:10Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40577864227/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
