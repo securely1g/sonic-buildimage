@@ -8,10 +8,11 @@ integration patches select this source-built libteam and the per-library ZeroMQ
 interface; the Common patch applies to the current landed `f7fda40` source.
 
 Before registry PRs #146–#148 land, CI selects the single frozen registry
-`d25ab9d2a37ab2caf9b052cc3aaa4e35aee1a74d`; its `DRAFT_VALIDATION_INPUTS.json`
+`e0bf141cea82764b18d15d7d2c8516cbf3e99290`; its `DRAFT_VALIDATION_INPUTS.json`
 records the composition. Infrastructure is
-`0.0.25-1341eaf4a7759ef0121ae7c17edcd0000d063038`, Distroless is `.sonic.13`,
-and libnl3 is `3.7.0.sonic.7`. The normal `.bazelrc` still uses maintained `main`.
+`0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c`, Distroless is `.sonic.13`,
+and libnl3 is `3.7.0.sonic.6`. Both retain their published versions and source
+archives, with the reviewed native changes applied as registry patches. The normal `.bazelrc` still uses maintained `main`.
 For local candidate validation, run
 `tools/bazel/ci/libteam_draft_bazel.sh build //src/libteam:libteam_runtime`.
 This wrapper loads `common.bazelrc` without the default registry endpoint.
