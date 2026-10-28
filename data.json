@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-28T03:43:32.457170Z",
+  "generated_at": "2026-10-28T03:54:02.562142Z",
   "pull_requests": [
     {
       "base_sha": "ad02c810d43a267d34d2969e79d583c87d64979c",
@@ -359,7 +359,7 @@
       "number": 36,
       "state": "open",
       "title": "Let Bazel 6 P4RT use Common's Bazel 8 library and headers",
-      "updated_at": "2026-10-27T16:55:57Z",
+      "updated_at": "2026-10-28T03:52:09Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/36"
     },
     {
@@ -18755,13 +18755,202 @@
           "phases": {
             "build": null,
             "other": null,
-            "setup": null,
+            "setup": 243.0,
             "upload": null,
             "validation": null
           },
-          "started_at": "2026-10-27T18:08:55Z",
-          "status": "queued",
-          "steps": [],
+          "started_at": "2026-10-28T03:43:53Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-28T03:44:07Z",
+              "conclusion": "success",
+              "duration_seconds": 12.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:43:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:44:07Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check source-build runner capacity",
+              "number": 2,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:44:07Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:46:24Z",
+              "conclusion": "success",
+              "duration_seconds": 137.0,
+              "name": "Checkout repository",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:44:07Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:46:24Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check VS build prerequisites",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:46:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:46:24Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Prepare persistent agent caches",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:46:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:46:27Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
+              "name": "Download verified sources from this run's source job",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:46:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:46:27Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Prepare the shared Bazel source-download directory",
+              "number": 7,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:46:27Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:47:00Z",
+              "conclusion": "success",
+              "duration_seconds": 33.0,
+              "name": "Configure the native VS image",
+              "number": 8,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:46:27Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-28T03:47:58Z",
+              "conclusion": "success",
+              "duration_seconds": 58.0,
+              "name": "Check nested Docker in both build environments",
+              "number": 9,
+              "phase": "setup",
+              "started_at": "2026-10-28T03:47:00Z",
+              "status": "completed"
+            },
+            {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Build the VS image and both OCI container variants",
+              "number": 10,
+              "phase": "build",
+              "started_at": "2026-10-28T03:47:58Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Verify source-built P4 runtime and debug TARs in both Syncd images",
+              "number": 11,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Verify P4RT packaged split debug symbols",
+              "number": 12,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Remove this job's remaining build containers",
+              "number": 13,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 14,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public VS build summary",
+              "number": 15,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain installed Syncd and source dependency evidence",
+              "number": 16,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload VS image and OCI container archives",
+              "number": 17,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 34,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40535083104/job/122376396015"
         }
       ],
@@ -18773,8 +18962,8 @@
       "run_id": 40535083104,
       "source_sha": "8d1d593bfe28766f4898a620f37d3f295120fec5",
       "started_at": "2026-10-27T15:51:10Z",
-      "status": "queued",
-      "updated_at": "2026-10-27T18:08:55Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-28T03:43:54Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/40535083104/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
