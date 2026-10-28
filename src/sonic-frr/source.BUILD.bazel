@@ -3,6 +3,7 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_shared_library")
 load("@sonic_build_infra//cc:shared_library.bzl", "shared_library_cc_info")
 load("@sonic_build_infra//cc:runtime_test.bzl", "native_runtime_binary")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@sonic-buildimage//src/sonic-frr:upstream_tests.bzl", "frr_upstream_check")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -6165,36 +6166,16 @@ _UPSTREAM_CHECK_BINARIES = [
     (":pceplib/test/pcep_utils_tests_valgrind_check", "pceplib/test/pcep_utils_tests_valgrind.sh"),
 ]
 
-py_test(
+frr_upstream_check(
     name = "upstream_check",
-    srcs = ["@sonic-buildimage//src/sonic-frr:upstream_tests.py"],
-    main = "@sonic-buildimage//src/sonic-frr:upstream_tests.py",
-    deps = ["@rules_python//python/runfiles"],
-    data = glob(["tests/**"], exclude = ["tests/topotests/**"]) + [binary for binary, _ in _UPSTREAM_CHECK_BINARIES] + [
-        "@sonic_build_infra//tools/build_tools:python3",
-        "@sonic-buildimage//src/sonic-frr:upstream_cli_reference",
-        "@sonic-buildimage//src/sonic-frr:upstream_config_status",
-    ],
-    args = [
-        "--python=$(rlocationpath @sonic_build_infra//tools/build_tools:python3)",
-        "--cli-reference=$(rlocationpath @sonic-buildimage//src/sonic-frr:upstream_cli_reference)",
-        "--config-status=$(rlocationpath @sonic-buildimage//src/sonic-frr:upstream_config_status)",
-    ] + [
-        "--source=$(rlocationpath " + source + ")"
-        for source in glob(["tests/**"], exclude = ["tests/topotests/**"])
-    ] + [
-        "--binary=" + logical + "=$(rlocationpath " + binary + ")"
-        for binary, logical in _UPSTREAM_CHECK_BINARIES
-    ] + [
-        "--standalone=" + program
-        for program in ["pceplib/test/pcep_msg_tests", "pceplib/test/pcep_pcc_api_tests", "pceplib/test/pcep_session_logic_tests", "pceplib/test/pcep_socket_comm_tests", "pceplib/test/pcep_timers_tests", "pceplib/test/pcep_utils_tests", "pceplib/test/pcep_msg_tests_valgrind.sh", "pceplib/test/pcep_pcc_api_tests_valgrind.sh", "pceplib/test/pcep_session_logic_tests_valgrind.sh", "pceplib/test/pcep_socket_comm_tests_valgrind.sh", "pceplib/test/pcep_timers_tests_valgrind.sh", "pceplib/test/pcep_utils_tests_valgrind.sh"]
-    ],
-    target_compatible_with = select({
-        "@platforms//cpu:x86_64": [],
-        "//conditions:default": ["@platforms//:incompatible"],
-    }),
-    tags = ["manual"],
-    timeout = "long",
+    binaries = _UPSTREAM_CHECK_BINARIES,
+    sources = glob(["tests/**"], exclude = ["tests/topotests/**"]),
+)
+
+frr_upstream_check(
+    name = "upstream_native_check",
+    binaries = [(binary, logical) for binary, logical in _UPSTREAM_CHECK_BINARIES if not logical.endswith("_valgrind.sh")],
+    sources = glob(["tests/**"], exclude = ["tests/topotests/**"]),
 )
 
 filegroup(

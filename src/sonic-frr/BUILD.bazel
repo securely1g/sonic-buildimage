@@ -17,6 +17,7 @@ exports_files(glob(["patch/*.patch"]) + [
     "patch/series",
     "test_generation.py",
     "upstream_tests.py",
+    "upstream_tests.bzl",
     "source.BUILD.bazel",
     "bazel_xrelfo.patch",
     "bazel_documentation.patch",
@@ -568,6 +569,7 @@ alias(name = "programs", actual = "@frr_source//:programs")
 alias(name = "modules", actual = "@frr_source//:modules")
 alias(name = "check_programs", actual = "@frr_source//:check_programs")
 test_suite(name = "upstream_check", tests = ["@frr_source//:upstream_check"])
+test_suite(name = "upstream_native_check", tests = ["@frr_source//:upstream_native_check"])
 
 _COMMON_HEADER_DEFINES = [
     "#define BFD_LINUX 1",

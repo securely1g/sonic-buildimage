@@ -23,11 +23,15 @@ accounts, writable directories, service startup and cache generation. The TARs
 can be layered directly; no intermediate DEB assembly or maintainer-script
 execution is provided by this component build.
 
-`:check_programs` builds the upstream check binaries. `:upstream_check` executes
-the upstream check suite, including its Valgrind memory checks. The known
-Valgrind/tcmalloc incompatibility remains documented in the FRR contribution
-notes; this installation-output change preserves tcmalloc and the upstream test
-behavior.
+`:check_programs` builds the upstream check binaries. `:upstream_native_check`
+runs the ordinary upstream checks with the default tcmalloc configuration.
+`:upstream_check` retains the complete suite, including all six Valgrind checks;
+run it with `--//src/sonic-frr:tcmalloc=false` so Valgrind owns allocation
+instrumentation. Both suites currently declare AMD64-only compatibility.
+CI keeps the production TARs and ordinary tests on the default allocator and
+runs the complete memory-check suite separately for Bookworm and Trixie.
+This avoids the observed tcmalloc initialization errors under Bookworm Valgrind
+and preserves strict memory-error exit codes without suppressions.
 
 ## Native source CI
 
