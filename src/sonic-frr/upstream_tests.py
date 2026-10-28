@@ -30,6 +30,23 @@ def merge_standalone_report(report, results):
     tree.write(report, encoding='utf-8', xml_declaration=True)
 
 
+def retain_valgrind_logs(root, outputs, results):
+    failed_logs = {
+        result['name'].removesuffix('_valgrind.sh') + '.val.log'
+        for result in results
+        if result['exit_code'] and result['name'].endswith('_valgrind.sh')
+    }
+    for path in root.glob('pceplib/test/*.val.log'):
+        if not path.is_file():
+            continue
+        destination = outputs / path.name
+        if path.resolve() != destination.resolve():
+            shutil.copyfile(path, destination)
+        if path.relative_to(root).as_posix() in failed_logs:
+            print('Valgrind diagnostics:', path.name, flush=True)
+            print(path.read_text(errors='replace'), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--python', required=True)
@@ -70,6 +87,11 @@ def main():
         for logical in options.standalone:
             if logical not in binaries:
                 raise ValueError('Original standalone check has no declared native executable: ' + logical)
+            if logical.endswith('_valgrind.sh'):
+                # Write outside the temporary source layout from the start so
+                # Bazel can retain diagnostics even if this test times out.
+                log = root / (logical.removesuffix('_valgrind.sh') + '.val.log')
+                log.symlink_to((outputs / log.name).resolve())
             started = time.monotonic()
             completed = subprocess.run([str(root / logical)], cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             result = {'name': logical, 'exit_code': completed.returncode, 'seconds': time.monotonic() - started, 'output': completed.stdout}
@@ -80,8 +102,7 @@ def main():
             print('Original check:', logical, 'exit:', completed.returncode, flush=True)
             if completed.returncode:
                 print(completed.stdout, flush=True)
-        for path in root.glob('pceplib/test/*.val.log'):
-            shutil.copyfile(path, outputs / path.name)
+        retain_valgrind_logs(root, outputs, results)
         report = Path(os.environ.get('XML_OUTPUT_FILE', str(outputs / 'tests.xml')))
         command = [declared.Rlocation(options.python), str(tests / 'runtests.py'), '--junitxml=' + str(report), '-v', str(tests)]
         pytest = subprocess.run(command, cwd=tests, env=environment)
