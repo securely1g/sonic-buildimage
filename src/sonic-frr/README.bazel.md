@@ -45,9 +45,9 @@ declared runtime. It runs the original FRR checks, including Valgrind, and both
 sonic-fib tests. A failing upstream check remains a failing job.
 
 While registry PRs #146–#150 are unmerged, the workflow uses the single frozen
-candidate registry `41d98ae02d50c83a5575e76992294d24db70028d`. Its
+candidate registry `88b921106d3c5097204752a38be6c6b29bad2399`. Its
 `DRAFT_VALIDATION_INPUTS.json` records every composed prerequisite. The candidate
-selects infrastructure `0.0.25-6f6658865b7f687fa5e78d1675c0db8a5765b2ce`,
+selects infrastructure `0.0.25-917c7d5792f88c9de485ea5172a835bb0c06bf6a`,
 Distroless `.sonic.13`, libnl3 `.sonic.7`, libyang `.sonic.6` and Net-SNMP
 `5.9.3.sonic.1`. The default `.bazelrc` still uses maintained `main`.
 
