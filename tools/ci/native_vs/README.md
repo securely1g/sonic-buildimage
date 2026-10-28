@@ -17,10 +17,12 @@ that literal path. No host packages are changed.
 
 - `apt-packages.txt` contains execution/image tools and native development or
   test dependencies omitted from the retained source packages' controls.
-  It explicitly includes `debian-keyring` because installation disables APT
-  recommendations. The retained `makedumpfile` recipe uses `dget` to verify
-  the Debian maintainer's signature on `makedumpfile_1.7.7-1.dsc` before
-  extracting its source; `devscripts` alone does not install that keyring.
+  It explicitly includes `debian-keyring` and `debian-tag2upload-keyring`
+  because installation disables APT recommendations. The retained recipes
+  use `dget` to verify Debian source signatures before extraction:
+  `makedumpfile_1.7.7-1.dsc` needs the maintainer keyring, while
+  `openssh_10.0p1-7.dsc` needs the separate tag2upload service keyring.
+  `devscripts` alone does not install either keyring.
 - `debian-sources.txt` identifies the Debian source recipes whose `Build-Depends`
   supply the rest of the native build environment. This installs their build
   tools, not their runtime binaries as substitutes for SONiC source outputs.
