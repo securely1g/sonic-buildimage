@@ -1,7 +1,7 @@
 # Direct Make execution for the VS image
 
-The hosted VS job uses a plain, pinned Debian Trixie container. It runs the
-existing `make -f slave.mk` recipes there and calls Bazel directly for the
+The standard Ubuntu 22.04 hosted VS job uses a plain, pinned Debian Trixie
+container. It runs the existing `make -f slave.mk` recipes there and calls Bazel directly for the
 registered producers. It neither builds nor launches a sonic-slave image.
 Docker is still required to build and inspect service containers, and the
 unchanged `sonic-vs.img.gz` recipe still installs and boots a KVM guest.
@@ -47,6 +47,12 @@ and the Docker tag/lock variables normally passed by Makefile.work. Bootstrap
 adds the build user to the socket and KVM groups and permits its existing sudo
 operations. Docker service builds and native package builds retain their
 original Make rules.
+
+The host matches the standalone kernel CI environment's unprivileged user
+namespace support. Before Make runs, the workflow checks namespace creation
+and the embedded Bazel Linux sandbox helper as `vsbuild`, including isolated
+network execution. A failed probe stops the job without relaxing the kernel's
+required `linux-sandbox` strategy.
 
 Later `docker exec` invocations must carry:
 

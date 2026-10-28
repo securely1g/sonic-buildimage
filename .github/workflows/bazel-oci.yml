@@ -418,8 +418,9 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    # Make runs directly inside stock Debian, using the hosted Docker daemon.
-    runs-on: ubuntu-24.04
+    # Match the kernel CI host's unprivileged namespace support. Make still runs
+    # in stock Debian Trixie, using the hosted Docker daemon and KVM device.
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
@@ -536,6 +537,21 @@ jobs:
           docker cp artifacts/vs/cache.bazelrc "$VS_BUILD_CONTAINER:/etc/bazel.bazelrc"
           docker exec "$VS_BUILD_CONTAINER" bash tools/ci/native_vs/bootstrap.sh \
             2>&1 | tee artifacts/vs/bootstrap.log
+
+      - name: Require the unprivileged Bazel Linux sandbox
+        run: |
+          docker exec --user vsbuild "$VS_BUILD_CONTAINER" bash -euc '
+            test "$(id -u)" -ne 0
+            unshare --user --map-current-user --mount --ipc --uts --net --pid --fork /bin/true
+            install_base=$("$BAZEL" --batch --nosystem_rc --nohome_rc --noworkspace_rc \
+              --output_user_root="$PWD/target/native-bazel-preflight" info install_base)
+            test -x "$install_base/linux-sandbox"
+            # Match the Bazel availability probe, exposing its errors before
+            # Make starts packaging. Also require an isolated network.
+            env -i "$install_base/linux-sandbox" -T 5 \
+              -D "$PWD/artifacts/vs/sandbox-probe.log" -- /bin/true
+            env -i "$install_base/linux-sandbox" -T 5 -N -- /bin/true
+          '
 
       - name: Configure the native VS image
         run: |

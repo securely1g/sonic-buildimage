@@ -121,7 +121,8 @@ class SourceWorkflowTest(unittest.TestCase):
                 # Exec inherits the environment saved by docker run, not the
                 # current host's Bazel settings or credential variables.
                 environment = dict(state[selected], **environment)
-                for key in ('PATH', 'CALLS', 'CONTAINERS', 'SOURCE_EXIT', 'MAKE_EXIT'):
+                for key in ('PATH', 'CALLS', 'CONTAINERS', 'SOURCE_EXIT', 'MAKE_EXIT',
+                            'FIXTURE_UID', 'UNSHARE_EXIT', 'BAZEL_INFO_EXIT'):
                     if key in os.environ:
                         environment[key] = os.environ[key]
                 if command == ['bash', 'tools/ci/native_vs/bootstrap.sh']:
@@ -138,16 +139,41 @@ class SourceWorkflowTest(unittest.TestCase):
                 raise SystemExit(int(os.environ.get('SOURCE_DOWNLOAD_EXIT', '0')))
             if name == 'bazel' and args == ['--version']:
                 print('bazel ' + Path('.bazelversion').read_text().strip())
+            if name == 'bazel' and args[-2:] == ['info', 'install_base']:
+                print(__SANDBOX_INSTALL_BASE__)
+                raise SystemExit(int(os.environ.get('BAZEL_INFO_EXIT', '0')))
+            if name == 'id':
+                assert args in (['-u'], ['-g'])
+                print(os.environ.get('FIXTURE_UID', '1000') if args == ['-u'] else '1000')
+            if name == 'unshare':
+                raise SystemExit(int(os.environ.get('UNSHARE_EXIT', '0')))
             if name == 'git':
                 if args[:2] == ['rev-parse', 'HEAD']:
                     print('a' * 40)
                 elif args[:1] == ['check-ignore']:
                     print('MODULE.bazel.lock')
-            ''')
-        for name in ("make", "docker", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp"):
+            ''').replace('__SANDBOX_INSTALL_BASE__', repr(str(self.directory / 'bazel-install')))
+        for name in ("make", "docker", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp", "id", "unshare"):
             executable = self.commands / name
             executable.write_text(recorder)
             executable.chmod(0o755)
+        self.sandbox_status = self.directory / "sandbox-status.json"
+        sandbox = self.directory / "bazel-install/linux-sandbox"
+        sandbox.parent.mkdir()
+        sandbox.write_text("#!" + sys.executable + "\n" + textwrap.dedent(r'''
+            import json, sys
+            from pathlib import Path
+            args = sys.argv[1:]
+            # Read the initial environment: Python can add LC_CTYPE after exec.
+            environment_keys = sorted(entry.split(b'=', 1)[0].decode() for entry in
+                                      Path('/proc/self/environ').read_bytes().split(b'\0') if entry)
+            with Path(__CALLS__).open('a') as output:
+                output.write(json.dumps({'name': 'linux-sandbox', 'args': args,
+                                         'environment_keys': environment_keys}) + '\n')
+            status = json.loads(Path(__STATUS__).read_text())
+            raise SystemExit(status['network' if '-N' in args else 'normal'])
+            ''').replace('__CALLS__', repr(str(self.calls))).replace('__STATUS__', repr(str(self.sandbox_status))))
+        sandbox.chmod(0o755)
         self.environment = dict(
             os.environ, PATH=str(self.commands) + os.pathsep + os.environ["PATH"],
             CALLS=str(self.calls), BAZEL=str(self.commands / "bazel"),
@@ -277,11 +303,67 @@ class SourceWorkflowTest(unittest.TestCase):
                                    "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "INCLUDE_VS_DASH_SAI=y", "INCLUDE_FIPS=y"):
                         self.assertIn(target, make[0]["args"])
         job = jobs()["vs"]
-        self.assertIn("runs-on: ubuntu-24.04", job)
+        self.assertIn("runs-on: ubuntu-22.04", job)
         self.assertNotIn("self-hosted", job)
         self.assertNotIn("sonic-slave-run", job)
         self.assertNotIn("Makefile.work", job)
         self.assertNotIn("USE_BAZEL_VERSION", job)
+
+    def test_unprivileged_sandbox_probes_gate_make_and_preserve_failures(self):
+        """Reject unusable user/network namespaces before configure or packaging can start."""
+        workflow_steps = steps(jobs()["vs"])
+        probe = "Require the unprivileged Bazel Linux sandbox"
+        configure = "Configure the native VS image"
+        build = "Build the VS image and both OCI container variants"
+        names = list(workflow_steps)
+        self.assertLess(names.index("Prepare plain Debian execution environment"), names.index(probe))
+        self.assertLess(names.index(probe), names.index(configure))
+        self.assertLess(names.index(configure), names.index(build))
+        self.prepare_container()
+        # Model the bind-mounted Bazel executable without creating a container filesystem.
+        state_path = self.directory / "containers.json"
+        state = json.loads(state_path.read_text())
+        state[self.environment["VS_BUILD_CONTAINER"]]["BAZEL"] = str(self.commands / "bazel")
+        state_path.write_text(json.dumps(state))
+        script = "\n".join(shell(workflow_steps[name]) for name in (probe, configure, build))
+        cases = (
+            ("usable", "1000", 0, 0, 0, 0, 0, 2),
+            ("root", "0", 0, 0, 0, 0, 1, 0),
+            ("namespace-denied", "1000", 37, 0, 0, 0, 37, 0),
+            ("bazel-info-failed", "1000", 0, 39, 0, 0, 39, 0),
+            ("sandbox-failed", "1000", 0, 0, 41, 0, 41, 1),
+            ("network-sandbox-failed", "1000", 0, 0, 0, 43, 43, 2),
+        )
+        for label, uid, unshare_exit, bazel_exit, normal_exit, network_exit, expected_exit, probes in cases:
+            with self.subTest(case=label):
+                self.calls.unlink(missing_ok=True)
+                self.sandbox_status.write_text(json.dumps({"normal": normal_exit, "network": network_exit}))
+                result = self.execute(script, FIXTURE_UID=uid, UNSHARE_EXIT=str(unshare_exit),
+                                      BAZEL_INFO_EXIT=str(bazel_exit))
+                self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
+                calls = self.recorded()
+                make = [call for call in calls if call["name"] == "make"]
+                self.assertEqual(len(make), 0 if expected_exit else 2)
+                unshare = [call for call in calls if call["name"] == "unshare"]
+                self.assertEqual(len(unshare), int(uid != "0"))
+                if unshare:
+                    self.assertEqual(unshare[0]["args"], ["--user", "--map-current-user", "--mount",
+                                                         "--ipc", "--uts", "--net", "--pid", "--fork", "/bin/true"])
+                bazel = [call for call in calls if call["name"] == "bazel"]
+                self.assertEqual(len(bazel), int(uid != "0" and not unshare_exit))
+                if bazel:
+                    self.assertEqual(bazel[0]["args"], ["--batch", "--nosystem_rc", "--nohome_rc", "--noworkspace_rc",
+                                                       "--output_user_root=" + str(self.directory / "target/native-bazel-preflight"),
+                                                       "info", "install_base"])
+                helpers = [call for call in calls if call["name"] == "linux-sandbox"]
+                self.assertEqual(len(helpers), probes)
+                for helper in helpers:
+                    self.assertEqual(helper["environment_keys"], [], "The embedded sandbox must run with env -i")
+                if helpers:
+                    self.assertEqual(helpers[0]["args"], ["-T", "5", "-D", str(self.directory / "artifacts/vs/sandbox-probe.log"),
+                                                         "--", "/bin/true"])
+                if len(helpers) == 2:
+                    self.assertEqual(helpers[1]["args"], ["-T", "5", "-N", "--", "/bin/true"])
 
     def test_lgh_configuration_applies_to_direct_bazel_and_make_without_writer_credentials(self):
         """Cache reads reach both invocation paths without exporting writer secrets or enabling uploads."""

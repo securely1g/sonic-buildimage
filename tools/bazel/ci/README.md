@@ -7,7 +7,7 @@ package expectations remain in the owner declarations and tests.
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
 archive checks, lightweight hosted regressions and the full VS integration
-job. The VS job runs on `ubuntu-24.04` and invokes `make -f slave.mk`
+job. The VS job runs on `ubuntu-22.04` and invokes `make -f slave.mk`
 in a stock Debian Trixie environment. It does not build or launch sonic-slave.
 Debian is still required because the remaining Make recipes install and compile
 Debian package dependencies. The job uses the hosted Docker daemon, rather than
@@ -26,6 +26,10 @@ local disk action cache prevents storing a second copy of compiled outputs.
 Remote caching still requires local space for sources, outputs, Docker images
 and installer assembly; it does not supply a remote worker or a Make package
 cache. The job checks actual free space and KVM access before provisioning.
+Its host matches the kernel pipeline's unprivileged namespace support. Before
+Make starts, the build user must pass namespace creation and the actual Bazel
+Linux sandbox helper's normal and network-isolated probes; no local-execution
+fallback is enabled.
 See [native VS preparation](../../ci/native_vs/README.md) for the execution
 prerequisites and direct Make interface. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.
