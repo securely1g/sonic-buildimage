@@ -143,7 +143,7 @@ jobs:
           # Never let checkout's cleanup erase another retained source attempt.
           path: vs-installer-ci/checkout-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Allocate fresh installer scratch on the root filesystem
+      - name: Allocate fresh installer scratch on a qualifying filesystem
         id: build_area
         run: |
           staged="$GITHUB_WORKSPACE/vs-installer-ci/checkout-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

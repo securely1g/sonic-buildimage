@@ -26,47 +26,43 @@ class BuildAreaTest(unittest.TestCase):
             "filesystems": [{"fstype": fstype, "options": options}]}), "")
 
     def test_live_capacity_and_filesystem_rejections(self):
-        # Bazel may put TEST_TMPDIR on a different mount from /. This test
-        # controls the positive device identity; the mismatch has its own test.
-        original = Path.stat
-        device = original(self.root).st_dev
-        def stat_path(path, *args, **kwargs):
-            result = original(path, *args, **kwargs)
-            if path == Path("/"):
-                fields = list(result)
-                fields[2] = device
-                return os.stat_result(fields)
-            return result
-        patch = mock.patch.object(Path, "stat", stat_path)
-        patch.start()
-        self.addCleanup(patch.stop)
+        device = self.root.stat().st_dev
         with mock.patch.object(build_area.subprocess, "run", return_value=self.mount()) as command, \
                 mock.patch.object(build_area.shutil, "disk_usage") as disk:
             disk.return_value.free = build_area.MIN_FREE
-            self.assertEqual(build_area.check_filesystem(self.root), build_area.MIN_FREE)
+            self.assertEqual(build_area.check_filesystem(self.root, device), build_area.MIN_FREE)
             self.assertEqual(command.call_args.kwargs["timeout"], 10)
             disk.return_value.free -= 1
             with self.assertRaisesRegex(ValueError, "300 GiB"):
-                build_area.check_filesystem(self.root)
+                build_area.check_filesystem(self.root, device)
         for fstype, options in (("tmpfs", "rw"), ("ext4", "rw,nodev"), ("ext4", "rw,noexec")):
             with self.subTest(fstype=fstype, options=options), \
                     mock.patch.object(build_area.subprocess, "run", return_value=self.mount(fstype, options)), \
                     self.assertRaises(ValueError):
-                build_area.check_filesystem(self.root)
+                build_area.check_filesystem(self.root, device)
         with mock.patch.object(build_area.subprocess, "run", return_value=self.mount()), \
                 mock.patch.object(build_area.os, "access", return_value=False), \
                 self.assertRaisesRegex(ValueError, "writable"):
-            build_area.check_filesystem(self.root)
+            build_area.check_filesystem(self.root, device)
 
-    def test_data_backed_home_is_rejected_before_allocation(self):
+    def test_separate_filesystem_is_accepted_and_its_device_stays_fixed(self):
         original = Path.stat
         root_device = Path("/").stat().st_dev
+        selected_device = root_device + 1
         def stat_path(path, *args, **kwargs):
             result = original(path, *args, **kwargs)
-            return mock.Mock(st_dev=root_device + 1) if path == self.home else result
+            if path == self.home:
+                fields = list(result)
+                fields[2] = selected_device
+                return os.stat_result(fields)
+            return result
         with mock.patch.object(Path, "stat", stat_path), \
-                self.assertRaisesRegex(ValueError, "root filesystem"):
-            build_area.check_filesystem(self.home)
+                mock.patch.object(build_area.subprocess, "run", return_value=self.mount()), \
+                mock.patch.object(build_area.shutil, "disk_usage") as disk:
+            disk.return_value.free = build_area.MIN_FREE
+            self.assertEqual(build_area.check_filesystem(self.home, selected_device), build_area.MIN_FREE)
+            with self.assertRaisesRegex(ValueError, "selected filesystem"):
+                build_area.check_filesystem(self.home, root_device)
 
     def test_persistent_attempts_are_unique_and_previous_files_are_retained(self):
         with mock.patch.object(build_area, "check_filesystem", return_value=build_area.MIN_FREE):
@@ -83,9 +79,9 @@ class BuildAreaTest(unittest.TestCase):
         self.assertFalse(record["automatic_cleanup"])
 
     def test_bad_home_falls_back_without_touching_it(self):
-        def check(path):
+        def check(path, _device):
             if path.is_relative_to(self.home):
-                raise ValueError("not root filesystem")
+                raise ValueError("insufficient capacity")
             return build_area.MIN_FREE
         original = Path.stat
         def stat_path(path, *args, **kwargs):
@@ -107,7 +103,7 @@ class BuildAreaTest(unittest.TestCase):
         alias = self.root / "alias"
         alias.symlink_to(self.home, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlinks"):
-            build_area.check_filesystem(alias)
+            build_area.check_filesystem(alias, alias.stat().st_dev)
         with mock.patch.object(build_area, "check_filesystem", return_value=build_area.MIN_FREE), \
                 mock.patch.object(build_area.os, "getuid", return_value=os.getuid() + 1), \
                 self.assertRaisesRegex(ValueError, "belong to the runner"):

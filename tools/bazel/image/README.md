@@ -292,16 +292,18 @@ job requires 300 GiB free after restoring caches. Provision Docker, Git, Python
 The controller runs as root inside the public worker image, without host sudo.
 The job accepts same-repository PRs and pushes or manual runs on `master`.
 Each run stages a unique checkout, then allocates fresh sibling checkout/state
-directories on the root ext4 filesystem. The allocator checks ownership,
+directories on a qualifying ext4 filesystem. The allocator checks ownership,
 writability, mount options and at least 300 GiB free before moving the checkout;
 the existing 300 GiB check after cache restoration still applies. It prefers a
 runner-owned `.local/share/sonic-vs-installer` under the account home or service
-`HOME`. A home on `/data` is ineligible. If neither home qualifies, it creates a
-unique private directory under root-owned sticky `/var/tmp`. That fallback
-follows the host's temporary-directory retention policy; this workflow does not
-automatically clean it. `build-area.json` records the selected path, filesystem,
-initial free bytes and retention. Root scratch shares space with host Docker and
-the OS, so their growth can reduce available headroom during a build.
+`HOME`, including a home on `/data` when it passes those checks. The allocated
+directories must stay on the selected candidate's device without symlinks. If
+neither home qualifies, it creates a unique private directory under root-owned
+sticky `/var/tmp`. That fallback follows the host's temporary-directory retention
+policy; this workflow does not automatically clean it. `build-area.json` records
+the selected path, filesystem, initial free bytes and retention. Scratch may
+share space with host Docker or other data, so their growth can reduce available
+headroom during a build.
 
 Only the fresh checkout, invocation outputs and private native Docker state move
 to this filesystem. The exact existing

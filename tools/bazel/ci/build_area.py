@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allocate fresh root-filesystem installer scratch without moving shared caches."""
+"""Allocate fresh installer scratch on a qualifying filesystem."""
 
 import argparse
 import json
@@ -15,9 +15,11 @@ import tempfile
 MIN_FREE = 300 * 1024**3
 
 
-def check_filesystem(path):
-    if path.resolve() != path or path.stat().st_dev != Path("/").stat().st_dev:
-        raise ValueError("build area must be on the root filesystem without symlinks")
+def check_filesystem(path, expected_device):
+    if path.resolve() != path:
+        raise ValueError("build area must not contain symlinks")
+    if path.stat().st_dev != expected_device:
+        raise ValueError("build area must stay on the selected filesystem")
     result = subprocess.run(["findmnt", "--json", "--output", "FSTYPE,OPTIONS", "--target", str(path)],
                             check=True, capture_output=True, text=True, timeout=10)
     mounts = json.loads(result.stdout)["filesystems"]
@@ -47,7 +49,10 @@ def allocate(homes, temporary=Path("/var/tmp")):
             existing = parent
             while not existing.exists() and not existing.is_symlink():
                 existing = existing.parent
-            check_filesystem(existing)
+            # A qualifying home may use a separate filesystem from the OS.
+            # Keep this candidate's new directories on its checked device.
+            device = existing.stat().st_dev
+            check_filesystem(existing, device)
             # Existing per-user directories must belong to this runner. The
             # shared fallback is safe only with standard sticky-directory rules.
             if parent == temporary:
@@ -61,12 +66,12 @@ def allocate(homes, temporary=Path("/var/tmp")):
                 if (parent.is_symlink() or parent.stat().st_uid != os.getuid()
                         or parent.stat().st_mode & 0o022):
                     raise ValueError("persistent parent must belong to the runner")
-            check_filesystem(parent)
+            check_filesystem(parent, device)
             private = Path(tempfile.mkdtemp(prefix="sonic-vs-installer-", dir=parent))
             root = private / "build"
             root.mkdir(mode=0o755)
             root.chmod(0o755)
-            free = check_filesystem(root)
+            free = check_filesystem(root, device)
             if private.stat().st_uid != os.getuid() or stat.S_IMODE(private.stat().st_mode) != 0o700:
                 raise ValueError("new build area must be private and runner-owned")
             state = root / "state"
@@ -86,8 +91,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--github-env", type=Path, required=True)
     args = parser.parse_args()
-    # Service HOME can intentionally point at /data. The account home is a
-    # candidate only after the same live filesystem and ownership checks.
+    # Account and service homes, including a service home on /data, are
+    # candidates only after the same live filesystem and ownership checks.
     workspace, state = allocate([pwd.getpwuid(os.getuid()).pw_dir, os.environ.get("HOME")])
     with args.github_env.open("a") as output:
         output.write("VS_WORKSPACE=" + str(workspace) + "\nVS_STATE=" + str(state) + "\n")
