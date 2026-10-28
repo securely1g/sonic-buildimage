@@ -8,10 +8,10 @@ def common_runtime_test(name, binary, test_args = [], **kwargs):
     sh_test(
         name = name,
         srcs = ["@sonic_swss_common//tools/bazel/runtime:run_with_runtime.py"],
-        args = ["$(rootpath " + runtime + ")", "-"] + select({
+        args = ["$(rootpath @patchelf//:patchelf)", "$(rootpath " + runtime + ")", "-"] + select({
             "@sonic_swss_common//tools/bazel:yang_modules_enabled": ["enabled"],
             "//conditions:default": ["disabled"],
         }) + ["$(rootpath " + binary + ")"] + test_args,
-        data = [runtime, binary],
+        data = [runtime, binary, "@patchelf//:patchelf"],
         **kwargs
     )
