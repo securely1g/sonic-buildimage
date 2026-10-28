@@ -65,7 +65,8 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           test "$(dpkg --print-architecture)" = "$CI_ARCHITECTURE"
-          git -c safe.directory="$GITHUB_WORKSPACE" log -1 --format='%H %P' > artifacts/checkout.txt
+          git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD > artifacts/checkout-sha.txt
+          git -c safe.directory="$GITHUB_WORKSPACE" cat-file -p HEAD > artifacts/checkout.txt
           printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" "$CI_ARCHITECTURE" "$CI_DISTRIBUTION" "$SONIC_BAZEL_REGISTRY" > artifacts/inputs.txt
           options=(
             "--registry=$SONIC_BAZEL_REGISTRY"
