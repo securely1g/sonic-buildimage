@@ -30,6 +30,10 @@ Its host matches the kernel pipeline's unprivileged namespace support. Before
 Make starts, the build user must pass namespace creation and the actual Bazel
 Linux sandbox helper's normal and network-isolated probes; no local-execution
 fallback is enabled.
+Kernel scratch directories use the short `/k` bind mount: the unchanged Speakup
+generator cannot open filenames longer than 255 bytes. This mount retains its
+receipts under `target/bazel-kernel-state`, with fresh per-build directories and
+the existing cleanup of heavy outputs after successful package verification.
 See [native VS preparation](../../ci/native_vs/README.md) for the execution
 prerequisites and direct Make interface. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.

@@ -706,10 +706,11 @@ def remove_build_tree(path):
     shutil.rmtree(path)
 
 
-def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cache_directory=None,
+def ensure(workspace, *, architecture=None, kernel_config=None, state=None, state_root=None, cache_directory=None,
            remote_cache=None, upload=False, ca_bundle=None,
            java_trust_store=None, distdir=None, debs_directory=None, builder=None):
     """Verify/reuse or build the kernel packages in Make's normal DEB directory."""
+    require(state is None or state_root is None, "kernel state and automatic state root are mutually exclusive")
     workspace = workspace.resolve(strict=True)
     with package_lock(workspace):
         source = source_state(workspace, architecture, kernel_config)
@@ -749,9 +750,10 @@ def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cach
                     "with a new --state-dir and the same --debs-directory")
         temporary_state = state is None
         if temporary_state:
-            states = workspace / "target/bazel-kernel-state"
+            states = Path(state_root) if state_root is not None else workspace / "target/bazel-kernel-state"
             require(not states.is_symlink(), "kernel state directory must not be a symlink")
-            states.mkdir(exist_ok=True)
+            states = states.resolve()
+            states.mkdir(parents=True, exist_ok=True)
             state = Path(tempfile.mkdtemp(prefix=architecture + "-", dir=states))
             state.rmdir()  # build() deliberately requires a fresh state path.
         else:
@@ -778,7 +780,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("plan", "build", "ensure", "verify"))
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--state-dir", type=Path)
+    state_options = parser.add_mutually_exclusive_group()
+    state_options.add_argument("--state-dir", type=Path)
+    state_options.add_argument("--state-root", type=Path,
+                               help="parent of fresh automatic states for ensure (default: target/bazel-kernel-state)")
     parser.add_argument("--debs-directory", type=Path,
                         help="normal Make DEB directory (default: target/debs/trixie)")
     parser.add_argument("--architecture", choices=("amd64", "arm64"), default=native_architecture(),
@@ -793,10 +798,13 @@ def main():
     parser.add_argument("--cache-directory", type=Path,
                         help="persistent Bazel download/action cache visible to this process")
     args = parser.parse_args()
+    if args.state_root is not None and args.command != "ensure":
+        parser.error("--state-root is only supported by ensure")
     workspace = args.workspace.resolve(strict=True)
     configuration = parse_kernel_config(args.kernel_config)
     if args.command == "ensure":
         result = ensure(workspace, architecture=args.architecture, kernel_config=configuration, state=args.state_dir,
+                        state_root=args.state_root,
                         cache_directory=args.cache_directory, remote_cache=args.remote_cache,
                         upload=args.upload_local_results,
                         ca_bundle=args.ca_bundle, java_trust_store=args.java_trust_store, distdir=args.distdir,

@@ -66,7 +66,7 @@ class SourceWorkflowTest(unittest.TestCase):
             with Path(os.environ['CALLS']).open('a') as output:
                 output.write(json.dumps({'name': name, 'args': args,
                     'environment': {key: os.environ.get(key) for key in
-                                    ('BAZEL', 'BAZEL_CONTAINER_ARGS')}}) + '\n')
+                                    ('BAZEL', 'BAZEL_CONTAINER_ARGS', 'SONIC_BAZEL_KERNEL_STATE_ROOT')}}) + '\n')
             if name == 'rm' or 'clean' in args or 'cleanall' in args:
                 raise SystemExit('Source validation must preserve existing build state')
             source_runner = name == 'python3' and 'tools/bazel/ci/container.py' in args
@@ -104,7 +104,11 @@ class SourceWorkflowTest(unittest.TestCase):
                         selected = value
                     elif option == '--user':
                         user = value
-                    elif option not in ('--volume', '--device', '--workdir', '--label'):
+                    elif option == '--volume':
+                        source, destination, *_ = value.split(':')
+                        if destination == '/k':
+                            assert Path(source).is_dir(), 'Create the kernel state directory before Docker mounts it'
+                    elif option not in ('--device', '--workdir', '--label'):
                         raise SystemExit('Unmodeled Docker option: ' + option)
                 if operation == 'run':
                     assert selected and remaining[0].startswith('debian:trixie-')
@@ -203,8 +207,15 @@ class SourceWorkflowTest(unittest.TestCase):
     def prepare_container(self):
         result = self.execute(shell(steps(jobs()["vs"])["Prepare plain Debian execution environment"]))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        docker = [call for call in self.recorded() if call["name"] == "docker" and call["args"][0] == "run"]
+        self.assertEqual(len(docker), 1)
+        mounts = [docker[0]["args"][index + 1] for index, argument in enumerate(docker[0]["args"])
+                  if argument == "--volume"]
+        self.assertIn(str(self.directory / "target/bazel-kernel-state") + ":/k", mounts)
+        environment = json.loads((self.directory / "containers.json").read_text())[self.environment["VS_BUILD_CONTAINER"]]
+        self.assertEqual(environment["SONIC_BAZEL_KERNEL_STATE_ROOT"], "/k")
         self.calls.unlink()
-        return json.loads((self.directory / "containers.json").read_text())[self.environment["VS_BUILD_CONTAINER"]]
+        return environment
 
     def test_hosted_regressions_gate_vs_without_source_compilation(self):
         """Cheap hosted checks gate the full VS job without compiling its source closure twice."""
@@ -276,7 +287,8 @@ class SourceWorkflowTest(unittest.TestCase):
                                        "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"):
                             self.assertIn("--bazel-arg=" + option, args)
                         self.assertEqual(runner[0]["environment"],
-                                         {key: container_environment[key] for key in ("BAZEL", "BAZEL_CONTAINER_ARGS")})
+                                         {key: container_environment[key] for key in
+                                          ("BAZEL", "BAZEL_CONTAINER_ARGS", "SONIC_BAZEL_KERNEL_STATE_ROOT")})
                         self.assertFalse(any(arg.startswith("--bazel-arg=--disk_cache=") for arg in args))
                     analyses = [call for call in calls if "tools/bazel/ci/bazel_commands.py" in call["args"]]
                     self.assertEqual(len(analyses), int(dash and not source_exit and not docker_exit))
@@ -289,12 +301,14 @@ class SourceWorkflowTest(unittest.TestCase):
         for make_exit, docker_exit in ((0, 0), (17, 0), (0, 29)):
             with self.subTest(make_exit=make_exit, docker_exit=docker_exit):
                 self.calls.unlink(missing_ok=True)
-                result = self.execute(script, MAKE_EXIT=str(make_exit), DOCKER_EXEC_EXIT=str(docker_exit))
+                result = self.execute(script, MAKE_EXIT=str(make_exit), DOCKER_EXEC_EXIT=str(docker_exit),
+                                      SONIC_BAZEL_KERNEL_STATE_ROOT="/host-value-must-not-leak")
                 self.assertEqual(result.returncode, make_exit or docker_exit, result.stdout + result.stderr)
                 make = [call for call in self.recorded() if call["name"] == "make"]
                 self.assertEqual(len(make), 0 if docker_exit else 1)
                 if make:
                     self.assertEqual(make[0]["args"][:2], ["-f", "slave.mk"])
+                    self.assertEqual(make[0]["environment"]["SONIC_BAZEL_KERNEL_STATE_ROOT"], "/k")
                     for target in ("target/sonic-vs.img.gz", "target/docker-orchagent.gz",
                                    "target/docker-orchagent-dbg.gz", "target/docker-syncd-vs.gz",
                                    "target/docker-syncd-vs-dbg.gz",

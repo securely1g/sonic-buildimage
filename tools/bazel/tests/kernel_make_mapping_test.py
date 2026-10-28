@@ -298,6 +298,32 @@ class KernelMakeMappingTest(unittest.TestCase):
         self.assertEqual(self.kernel_arguments()[1]["--remote-cache"], endpoint)
         self.assertFalse((self.workspace / "shell-executed").exists())
 
+    def test_optional_short_state_root_is_quoted_without_changing_cache_options(self):
+        """Shorten kernel build paths when requested while keeping cache selection independent."""
+        makefile = self.lazy_make_fixture()
+        endpoint = "https://lgh-bazel-87263989.eastus.cloudapp.azure.com/"
+        cache = str(self.root / "native cache's files")
+        state_roots = (None, "", "   ", "/k", str(self.root / "kernel's files; `touch shell-executed`"))
+        cache_cases = (
+            ({}, {}),
+            ({"SONIC_BAZEL_REMOTE_CACHE": endpoint}, {"--remote-cache": endpoint}),
+            ({"SONIC_BAZEL_REMOTE_CACHE": endpoint, "BAZEL_CONTAINER_CACHE_DIR": cache},
+             {"--remote-cache": endpoint, "--cache-directory": cache}),
+        )
+        for state_root in state_roots:
+            for cache_variables, cache_options in cache_cases:
+                with self.subTest(state_root=state_root, cache=cache_options):
+                    variables = dict(cache_variables, SONIC_BAZEL_CACHE_SOURCE="")
+                    if state_root is not None:
+                        variables["SONIC_BAZEL_KERNEL_STATE_ROOT"] = state_root
+                    result = self.run_make(makefile, "bazel-kernel-ensure", **variables)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    expected = {"--debs-directory": "target/debs/trixie", **cache_options}
+                    if state_root and state_root.strip():
+                        expected["--state-root"] = state_root
+                    self.assertEqual(self.kernel_arguments()[1], expected)
+                    self.assertFalse((self.workspace / "shell-executed").exists())
+
     def test_direct_make_uses_its_visible_cache_path(self):
         """A host cache path must not be rewritten to the sonic-slave mount."""
         makefile = self.lazy_make_fixture()

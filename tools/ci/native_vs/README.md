@@ -54,6 +54,12 @@ and the embedded Bazel Linux sandbox helper as `vsbuild`, including isolated
 network execution. A failed probe stops the job without relaxing the kernel's
 required `linux-sandbox` strategy.
 
+The workflow also mounts `target/bazel-kernel-state` at `/k` and sets
+`SONIC_BAZEL_KERNEL_STATE_ROOT=/k`. This shortens the automatic kernel scratch
+directories enough for Speakup's 256-byte filename buffer, while preserving
+fresh directories, cleanup after success, and receipts in the host checkout.
+The kernel source, patches, package outputs and provenance stay unchanged.
+
 Later `docker exec` invocations must carry:
 
 ```text

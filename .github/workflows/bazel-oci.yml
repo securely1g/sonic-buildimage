@@ -516,10 +516,15 @@ jobs:
 
       - name: Prepare plain Debian execution environment
         run: |
+          # The kernel's Speakup generator has a 256-byte filename buffer.
+          # Keep its scratch prefix short, with receipts retained in the checkout.
+          mkdir -p target/bazel-kernel-state
           docker run --detach --init --privileged \
             --name "$VS_BUILD_CONTAINER" --label "$SONIC_CI_CONTAINER_LABEL" \
             --device /dev/kvm --volume /var/run/docker.sock:/var/run/docker.sock \
             --volume "$PWD:$PWD" --workdir "$PWD" \
+            --volume "$PWD/target/bazel-kernel-state:/k" \
+            --env SONIC_BAZEL_KERNEL_STATE_ROOT=/k \
             --volume "$(readlink -f "$(command -v bazel)"):/usr/local/bin/bazel:ro" \
             --env BAZEL=/usr/local/bin/bazel \
             --env HOME=/home/vsbuild \

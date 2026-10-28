@@ -730,6 +730,54 @@ class KernelBundleTest(unittest.TestCase):
         self.assertTrue(kernel.ensure(self.root, builder=builder)["reused"])
         self.assertEqual(len(calls), 1)
 
+    def test_short_state_root_rematerializes_in_fresh_children_and_keeps_only_build_evidence(self):
+        """A short bind-mounted root avoids long kernel paths without retaining duplicate build trees."""
+        saved = self.root / "saved-outputs"
+        shutil.copytree(self.bundle, saved)
+        temporary = tempfile.TemporaryDirectory(prefix="kernel-state-")
+        self.addCleanup(temporary.cleanup)
+        states = Path(temporary.name)
+        calls = []
+        records = {"consumer/MODULE.bazel.lock": "complete lock", "build/module-graph.json": "complete graph",
+                   "build/invocation.json": "invocation", "kernel-receipt.json": "receipt", "plan.json": "plan"}
+
+        def builder(workspace, state, remote, upload, **options):
+            self.assertEqual(state.parent, states)
+            self.assertFalse(state.exists())
+            calls.append(state)
+            prepared = kernel.plan(workspace, state, remote, upload,
+                                   debs_directory=options["debs_directory"])
+            self.assertEqual(prepared["state"], str(state))
+            self.declared_outputs(state / "build", saved)
+            kernel.stage_outputs(state / "build", options["debs_directory"], workspace, self.state, self.selected)
+            for relative, data in records.items():
+                path = state / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(data)
+            for relative in ("build/output", "repository-cache"):
+                directory = state / relative
+                directory.mkdir(parents=True)
+                (directory / "disposable").write_bytes(b"temporary build data")
+                directory.chmod(0o555)
+            return {"plan": prepared}
+
+        missing = next(iter(self.packages))
+        for iteration in range(2):
+            (self.bundle / missing).unlink()
+            result = kernel.ensure(self.root, state_root=states, builder=builder)
+            self.assertFalse(result["reused"])
+            self.assertEqual((self.bundle / missing).read_bytes(), (saved / missing).read_bytes())
+            self.assertEqual(len(calls), iteration + 1)
+            self.assertEqual(len(set(calls)), len(calls))
+            self.assertFalse((calls[-1] / "build/output").exists())
+            self.assertFalse((calls[-1] / "repository-cache").exists())
+            for relative, data in records.items():
+                self.assertEqual((calls[-1] / relative).read_text(), data)
+            self.assertTrue(kernel.ensure(self.root, state_root=states, builder=builder)["reused"])
+            self.assertEqual(len(calls), iteration + 1)
+        self.assertEqual(set(states.iterdir()), set(calls))
+        self.assertFalse((self.root / "target/bazel-kernel-state").exists())
+
     def test_missing_deb_does_not_hide_corrupted_retained_package(self):
         missing, corrupt = list(self.packages)[:2]
         (self.bundle / missing).unlink()
@@ -792,6 +840,23 @@ class KernelConfigurationTest(unittest.TestCase):
         registry = patch.dict(os.environ, {"SONIC_REVIEW_REGISTRY": kernel.DEFAULT_REGISTRY})
         registry.start()
         self.addCleanup(registry.stop)
+
+    def test_state_root_is_only_valid_for_automatic_ensure_and_excludes_an_explicit_state(self):
+        """Reject ambiguous or unused root options before inspecting or creating any build workspace."""
+        for command in ("plan", "build", "verify"):
+            with self.subTest(command=command):
+                result = subprocess.run([sys.executable, "-B", kernel.__file__, command,
+                                         "--state-root", "/unused-kernel-state"],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("--state-root is only supported by ensure", result.stderr)
+        result = subprocess.run([sys.executable, "-B", kernel.__file__, "ensure",
+                                 "--state-root", "/unused-kernel-state", "--state-dir", "/unused-kernel-build"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("not allowed with argument", result.stderr)
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            kernel.ensure(ROOT, state=Path("/unused-kernel-build"), state_root=Path("/unused-kernel-state"))
 
     def test_cleanup_rejects_a_symlink_root_without_touching_its_target(self):
         with tempfile.TemporaryDirectory() as temporary:

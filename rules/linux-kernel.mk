@@ -42,6 +42,7 @@ SONIC_BAZEL_KERNEL_CACHE_DIRECTORY = $(if $(strip $(BAZEL_CONTAINER_CACHE_DIR)),
 bazel-kernel-ensure:
 	python3 -B tools/bazel/kernel/prepare.py ensure --debs-directory '$(subst ','"'"',$(DEBS_PATH))' \
 		$(foreach setting,$(SONIC_BAZEL_KERNEL_CONFIG),--kernel-config '$(setting)=$(subst ','"'"',$(if $(filter SECURE_UPGRADE_MODE,$(setting)),$(subst ",,$($(setting))),$($(setting))))') \
+		$(if $(strip $(SONIC_BAZEL_KERNEL_STATE_ROOT)),--state-root '$(subst ','"'"',$(SONIC_BAZEL_KERNEL_STATE_ROOT))') \
 		$(if $(strip $(SONIC_BAZEL_REMOTE_CACHE)),--remote-cache '$(subst ','"'"',$(SONIC_BAZEL_REMOTE_CACHE))') \
 		$(if $(strip $(SONIC_BAZEL_KERNEL_CACHE_DIRECTORY)),--cache-directory '$(subst ','"'"',$(SONIC_BAZEL_KERNEL_CACHE_DIRECTORY))')
 else

@@ -118,6 +118,16 @@ omits the local disk action cache while remote reads remain available. For a
 direct preparation command, pass `--cache-directory /path/to/cache`.
 The kernel is prepared only when its Make dependency is reached.
 
+For a deeply nested checkout, set `SONIC_BAZEL_KERNEL_STATE_ROOT` to a short,
+writable directory visible to Make, or pass `ensure --state-root DIRECTORY`
+directly. This selects the parent of automatically allocated state directories;
+each rebuild still gets a fresh child and prunes heavy outputs after successful
+verification. The default remains `target/bazel-kernel-state`. Hosted VS CI bind
+mounts that host directory at `/k` and passes `/k` to avoid the unchanged Speakup
+generator's 256-byte filename buffer. A symlink does not shorten the resolved
+paths. `--state-root` is exclusive with an explicit `--state-dir`, whose retained
+state and manual cleanup behavior are unchanged.
+
 Verified DEBs in the normal package directory survive unrelated buildimage/SWSS
 commits: their kernel, source archive, tool, configuration and tracked handoff-input identities
 must still match, and every package digest/control field is rechecked. Original
