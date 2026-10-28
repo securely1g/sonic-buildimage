@@ -49,7 +49,20 @@ def cache():
                for phase in ("cold", "warm", "changed")}}
 
 
-def events(count):
+def cache_reuse(kind):
+    return {
+        "artifact_target": artifacts.SOURCE_ARTIFACT_TARGETS[kind], "phase": "before_tests",
+        "action_count": 4, "cache_hit_count": 3, "executed_count": 1,
+        "actions": [
+            {"target": None, "mnemonic": "Tar", "runner": "processwrapper-sandbox",
+             "cache_hit": False, "count": 1},
+            {"target": "@@sonic-swss+//orchagent:orchagent", "mnemonic": "CppCompile",
+             "runner": "disk cache hit", "cache_hit": True, "count": 3},
+        ],
+    }
+
+
+def events(count=2, *, targets=None):
     values = [{"id": {"started": {}}, "started": {"command": "test", "buildToolVersion": "8.5.1",
                "host": SENTINEL, "user": SENTINEL, "optionsDescription": SENTINEL,
                "workingDirectory": "/home/runner/" + SENTINEL}},
@@ -60,8 +73,8 @@ def events(count):
                "unstructuredCommandLine": {"args": [
                    "--client_env=BAZELISK_GITHUB_TOKEN=" + SYNTHETIC_JOB_TOKEN,
                    "--client_env=PRIVATE_PATH=/home/runner/" + SENTINEL]}}]
-    for number in range(count):
-        name = "//tests:contract_" + str(number)
+    targets = targets if targets is not None else ["//tests:contract_" + str(number) for number in range(count)]
+    for name in targets:
         values.extend([
             {"id": {"targetCompleted": {"label": name}},
              "completed": {"success": True, "outputGroup": [{"files": [{"uri": "file:///home/runner/" + SENTINEL}]}]}},
@@ -83,12 +96,13 @@ def receipt(kind, architecture="amd64"):
                     for number in range(artifacts.RECEIPT_TEST_COUNTS["archive"][1])}}
     if kind == "source":
         return {"status": "passed", "revision": REVISION, **unsafe,
-                "tests": {"//tests:source_" + str(number): "passed"
-                          for number in range(artifacts.RECEIPT_TEST_COUNTS["source"][1])},
+                "tests": {"//tests:contract_" + str(number): "passed" for number in range(2)},
                 "validation": {"programs": [SENTINEL], "debug_pairs": [{"path": SENTINEL}],
-                               "source_contract": {"dist/BUILD.bazel": DIGEST}}}
+                               "source_contract": {"dist/BUILD.bazel": DIGEST},
+                               "artifact_sha256": {Path(name).name: hashlib.sha256(b"public build output\n").hexdigest()
+                                                   for _, name, kind in artifacts.FILES["source"] if kind == "binary"}}}
     if kind == "syncd":
-        return {"targets": ["//tests:syncd_" + str(number) for number in range(7)],
+        return {"status": "passed", "targets": ["//tests:contract_" + str(number) for number in range(2)],
                 "source_hashes": {"bazel/apt.lock.json": DIGEST}, "module_lock_sha256": DIGEST,
                 "test_outputs": [SENTINEL], **unsafe}
     return {"status": "passed", "runtime_sha256": DIGEST, "dwp_sha256": DIGEST,
@@ -113,7 +127,7 @@ def seed(root, kind, architecture="amd64"):
             values = {"lock": lock(), "graph": {"key": "<root>", "name": "sonic-buildimage", "version": "", "dependencies": []}, "cache": cache()}
             write_json(root, name, values[file_kind])
     for _logical, name, count in artifacts.BEP[kind]:
-        write(root, name, events(count))
+        write(root, name, events(2 if count is None else count))
     receipts = {"archive": ("artifacts/config-engine/receipt.json", "python"),
                 "source": ("artifacts/swss/receipt.json", "source"),
                 "syncd": ("artifacts/syncd-vs/bazel/report.json", "syncd"),
@@ -127,7 +141,17 @@ def seed(root, kind, architecture="amd64"):
         write_json(root, "artifacts/syncd-vs/bazel/execution-gate-audit.json",
                    {"action_count": 12, "output_count": 24, "deb_outputs": [], "packaging_wrappers": [], "raw": SENTINEL})
     if kind == "vs":
-        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz"):
+        for source_kind in ("source", "syncd"):
+            seed(root, source_kind, architecture)
+            name = "artifacts/swss/receipt.json" if source_kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+            source_receipt = json.loads((root / name).read_text())
+            source_receipt["cache_reuse"] = cache_reuse(source_kind)
+            write_json(root, name, source_receipt)
+            _, _, ready = artifacts.prepare(source_kind, root, root, "success", REVISION, architecture,
+                                            head_sha="3" * 40, base_sha="4" * 40)
+            assert ready, source_kind
+        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                     "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
             write(root, "target/" + name, b"validated image output\n")
     write(root, "artifacts/unexpected.log", SENTINEL)
 
@@ -148,7 +172,6 @@ class PublicArtifactsTest(unittest.TestCase):
         """Adding a package suite must not make successful CI unpublishable."""
         for kind, filename in (
             ("archive", "tools/bazel/ci/python_packages.py"),
-            ("source", "dockers/docker-orchagent/bazel/ci.py"),
         ):
             tree = ast.parse((ROOT / filename).read_text())
             suites = next(ast.literal_eval(node.value) for node in tree.body
@@ -156,6 +179,17 @@ class PublicArtifactsTest(unittest.TestCase):
                               isinstance(target, ast.Name) and target.id == "TESTS"
                               for target in node.targets))
             self.assertEqual(artifacts.RECEIPT_TEST_COUNTS[kind][1], len(suites), filename)
+
+    def test_archive_test_counts_match_the_native_workflow(self):
+        """New contract tests must not prevent successful CI artifact uploads."""
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        for logical, event_path, count in artifacts.BEP["archive"]:
+            with self.subTest(logical=logical):
+                command = workflow.split(event_path, 1)[1].split("2>&1 | tee", 1)[0]
+                labels = [line.strip().rstrip("\\").strip()
+                          for line in command.splitlines() if line.strip().startswith("//")]
+                self.assertEqual(len(labels), len(set(labels)))
+                self.assertEqual(count, len(labels))
 
     def test_bep_summary_omits_environment_paths_and_raw_events(self):
         summary = artifacts.bep_summary(events(2).splitlines())
@@ -229,7 +263,8 @@ class PublicArtifactsTest(unittest.TestCase):
                 root = self.root / kind
                 root.mkdir()
                 seed(root, kind)
-                summary, paths, ready = artifacts.prepare(kind, root, self.root, "success", REVISION, "amd64")
+                summary, paths, ready = artifacts.prepare(kind, root, self.root, "success", REVISION, "amd64",
+                                                         head_sha="3" * 40, base_sha="4" * 40)
                 self.assertTrue(ready)
                 self.assertTrue(summary["complete"])
                 self.assertEqual(len(paths), len(artifacts.FILES[kind]) + 1)
@@ -237,6 +272,187 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(any(path.endswith((".log", ".jsonl", ".xml", "receipt.json")) for path in paths))
                 self.assertNotIn(SENTINEL, json.dumps(summary))
                 self.assertEqual(summary["architecture"], "amd64")
+
+    def test_vs_success_reports_both_container_variants_and_the_installer(self):
+        """A passing VS publication must account for runtime/debug archives from both OCI owners."""
+        seed(self.root, "vs")
+        for kind in ("source", "syncd"):
+            path = self.root / artifacts.SUMMARY[kind]
+            value = json.loads(path.read_text())
+            value["private_diagnostics"] = SENTINEL
+            write_json(self.root, artifacts.SUMMARY[kind], value)
+        summary, paths, ready = self.prepare("vs")
+        self.assertTrue(ready)
+        self.assertTrue(summary["complete"])
+        self.assertEqual(summary["receipts"]["outputs"], {
+            name: {"bytes": len(b"validated image output\n")}
+            for name in (
+                "sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz",
+            )
+        })
+        self.assertEqual(summary["receipts"]["source_validation"],
+                         {kind: {"test_count": 2, "cache_reuse": {
+                             key: value for key, value in cache_reuse(kind).items() if key != "actions"
+                         }} for kind in ("source", "syncd")})
+        self.assertEqual(paths, [artifacts.SUMMARY["vs"]])
+        self.assertNotIn(SENTINEL, json.dumps(summary))
+
+    def test_vs_requires_both_completed_source_summaries(self):
+        """An installer and P4RT pass cannot replace the moved SWSS or Syncd checks."""
+        for kind in ("source", "syncd"):
+            for mode in ("missing", "null", "incomplete", "failed", "blocked", "missing-output"):
+                with self.subTest(kind=kind, mode=mode):
+                    seed(self.root, "vs")
+                    path = self.root / artifacts.SUMMARY[kind]
+                    value = json.loads(path.read_text())
+                    if mode == "missing":
+                        path.unlink()
+                    else:
+                        if mode == "null": value = None
+                        elif mode == "incomplete": value["complete"] = False
+                        elif mode == "failed": value["job_status"] = "failure"
+                        elif mode == "blocked": value["blocked"] = [{"input": "tests", "reason": "failed"}]
+                        else: value["missing"] = ["module-lock"]
+                        write_json(self.root, artifacts.SUMMARY[kind], value)
+                    summary, paths, ready = self.prepare("vs")
+                    self.assertFalse(ready)
+                    self.assertFalse(summary["complete"])
+                    self.assertEqual(paths, [])
+                    self.assertIn({"input": kind + "-public-summary", "reason": "invalid-source-validation"},
+                                  summary["blocked"])
+
+    def test_vs_rejects_source_summaries_from_a_different_build(self):
+        """A passing result from another revision, PR merge or architecture is stale evidence."""
+        replacements = {"kind": "archive", "revision": "5" * 40, "head_sha": "6" * 40,
+                        "base_sha": "7" * 40, "architecture": "arm64"}
+        for kind in ("source", "syncd"):
+            for field, replacement in replacements.items():
+                with self.subTest(kind=kind, field=field):
+                    seed(self.root, "vs")
+                    path = self.root / artifacts.SUMMARY[kind]
+                    value = json.loads(path.read_text())
+                    value[field] = replacement
+                    write_json(self.root, artifacts.SUMMARY[kind], value)
+                    summary, paths, ready = self.prepare("vs")
+                    self.assertFalse(ready)
+                    self.assertFalse(summary["complete"])
+                    self.assertEqual(paths, [])
+
+    def test_vs_rejects_failed_or_absent_tests_even_with_complete_source_status(self):
+        """Do not trust a complete flag when the embedded test results contradict it."""
+        for kind in ("source", "syncd"):
+            for mode in ("no-tests", "failed-test", "unfinished-build", "truncated"):
+                with self.subTest(kind=kind, mode=mode):
+                    seed(self.root, "vs")
+                    path = self.root / artifacts.SUMMARY[kind]
+                    value = json.loads(path.read_text())
+                    build = value["builds"][kind + "-tests"]
+                    if mode == "no-tests": build["tests"] = {}
+                    elif mode == "failed-test": next(iter(build["tests"].values()))["status"] = "FAILED"
+                    elif mode == "unfinished-build": build["finished"] = None
+                    else: build["truncated"] = True
+                    write_json(self.root, artifacts.SUMMARY[kind], value)
+                    summary, paths, ready = self.prepare("vs")
+                    self.assertFalse(ready)
+                    self.assertFalse(summary["complete"])
+                    self.assertEqual(paths, [])
+
+    def test_failed_vs_still_publishes_partial_status_without_source_summaries(self):
+        """Early build failures must remain visible even when source checks never ran."""
+        for status in ("failure", "cancelled"):
+            with self.subTest(status=status):
+                summary, paths, ready = self.prepare("vs", status)
+                self.assertTrue(ready)
+                self.assertFalse(summary["complete"])
+                self.assertEqual(paths, [artifacts.SUMMARY["vs"]])
+                self.assertNotIn("source_validation", summary["receipts"])
+
+    def test_source_publication_keeps_optional_cache_action_counts(self):
+        """Cold jobs remain supported; post-build receipts retain misses as evidence."""
+        for kind in ("source", "syncd"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                summary, _, ready = self.prepare(kind)
+                self.assertTrue(ready)
+                self.assertNotIn("cache_reuse", summary["receipts"][kind])
+                name = "artifacts/swss/receipt.json" if kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+                value = json.loads((self.root / name).read_text())
+                value["cache_reuse"] = cache_reuse(kind)
+                write_json(self.root, name, value)
+                summary, _, ready = self.prepare(kind)
+                self.assertTrue(ready)
+                self.assertEqual(summary["receipts"][kind]["cache_reuse"], cache_reuse(kind))
+                self.assertNotIn(SENTINEL, json.dumps(summary))
+
+    def test_cache_action_counts_reject_raw_fields_and_inconsistent_evidence(self):
+        """Only complete aggregate action counts can cross the public artifact boundary."""
+        for mode in ("raw-command", "raw-action", "wrong-phase", "missing-actions", "no-actions",
+                     "wrong-total", "wrong-hits", "wrong-executed", "boolean-count", "zero-count",
+                     "nonboolean-hit", "unsafe-target", "unsafe-runner", "unsafe-mnemonic",
+                     "duplicate", "unsorted", "false-cache-hit", "miss-with-cache-runner"):
+            with self.subTest(mode=mode):
+                value = cache_reuse("source")
+                if mode == "raw-command": value["argv"] = [SENTINEL]
+                elif mode == "raw-action": value["actions"][0]["commandArgs"] = [SENTINEL]
+                elif mode == "wrong-phase": value["phase"] = "after_tests"
+                elif mode == "missing-actions": del value["actions"]
+                elif mode == "no-actions": value.update(action_count=0, cache_hit_count=0, executed_count=0, actions=[])
+                elif mode == "wrong-total": value["action_count"] += 1
+                elif mode == "wrong-hits": value["cache_hit_count"] += 1
+                elif mode == "wrong-executed": value["executed_count"] += 1
+                elif mode == "boolean-count": value["actions"][0]["count"] = True
+                elif mode == "zero-count": value["actions"][0]["count"] = 0
+                elif mode == "nonboolean-hit": value["actions"][0]["cache_hit"] = 1
+                elif mode == "unsafe-target": value["actions"][0]["target"] = "/home/runner/" + SENTINEL
+                elif mode == "unsafe-runner": value["actions"][0]["runner"] = "/home/runner/" + SENTINEL
+                elif mode == "unsafe-mnemonic": value["actions"][0]["mnemonic"] = "compile\n" + SENTINEL
+                elif mode == "duplicate": value["actions"].append(value["actions"][0].copy())
+                elif mode == "unsorted": value["actions"].reverse()
+                elif mode == "false-cache-hit":
+                    value["actions"][0]["cache_hit"] = True
+                    value.update(cache_hit_count=4, executed_count=0)
+                else:
+                    value["actions"][1]["cache_hit"] = False
+                    value.update(cache_hit_count=0, executed_count=4)
+                for kind in ("source", "syncd"):
+                    source_receipt = receipt(kind)
+                    source_receipt["cache_reuse"] = value
+                    with self.assertRaises(artifacts.PublicArtifactError):
+                        artifacts.receipt_summary(source_receipt, kind)
+
+    def test_vs_requires_cache_evidence_for_each_owners_production_artifacts(self):
+        """Passing tests alone cannot prove reuse of Make's production packages."""
+        for kind in ("source", "syncd"):
+            for mode in ("missing", "wrong-target", "after-tests", "inconsistent-count"):
+                with self.subTest(kind=kind, mode=mode):
+                    seed(self.root, "vs")
+                    path = self.root / artifacts.SUMMARY[kind]
+                    value = json.loads(path.read_text())
+                    if mode == "missing": del value["receipts"][kind]["cache_reuse"]
+                    elif mode == "wrong-target": value["receipts"][kind]["cache_reuse"]["artifact_target"] = "//tools/bazel/tests:ci_artifacts"
+                    elif mode == "after-tests": value["receipts"][kind]["cache_reuse"]["phase"] = "after_tests"
+                    else: value["receipts"][kind]["cache_reuse"]["action_count"] += 1
+                    write_json(self.root, artifacts.SUMMARY[kind], value)
+                    summary, paths, ready = self.prepare("vs")
+                    self.assertFalse(ready)
+                    self.assertFalse(summary["complete"])
+                    self.assertEqual(paths, [])
+                    self.assertIn({"input": kind + "-public-summary", "reason": "invalid-source-validation"},
+                                  summary["blocked"])
+
+    def test_vs_missing_syncd_debug_archive_blocks_successful_publication(self):
+        """A successful installer/P4RT result cannot hide an unbuilt Syncd debug image."""
+        seed(self.root, "vs")
+        (self.root / "target/docker-syncd-vs-dbg.gz").unlink()
+        summary, paths, ready = self.prepare("vs")
+        self.assertFalse(ready)
+        self.assertFalse(summary["complete"])
+        self.assertEqual(paths, [])
+        self.assertEqual(summary["missing"], ["output-docker-syncd-vs-dbg.gz"])
+        self.assertEqual(len(summary["receipts"]["outputs"]), 4)
+        self.assertNotIn("docker-syncd-vs-dbg.gz", summary["receipts"]["outputs"])
+        self.assertNotIn(SENTINEL, json.dumps(summary))
 
     def test_archive_supports_native_arm64_metadata(self):
         seed(self.root, "archive", "arm64")
@@ -256,6 +472,134 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])
                 self.assertIn({"input": "python-receipt", "reason": "incomplete-receipt"}, summary["blocked"])
+
+    def test_container_jobs_accept_any_nonempty_declared_test_inventory(self):
+        """Container CI may add tests in BUILD without changing a hard-coded Python count."""
+        targets = ["//sample:first", "//sample:second", "@@component+//native:third"]
+        for kind in ("source", "syncd"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                bep = artifacts.BEP[kind][0][1]
+                write(self.root, bep, events(targets=targets))
+                name = "artifacts/swss/receipt.json" if kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+                value = json.loads((self.root / name).read_text())
+                if kind == "source": value["tests"] = dict.fromkeys(targets, "passed")
+                else: value["targets"] = targets
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare(kind)
+                self.assertTrue(ready, summary)
+                self.assertTrue(paths)
+                self.assertEqual(set(summary["builds"][kind + "-tests"]["tests"]), set(targets))
+
+    def test_container_test_evidence_must_match_exact_declared_identities(self):
+        """Equal counts, extra tests or missing tests cannot disguise the wrong validation graph."""
+        mutations = {
+            "different-same-count": ["//foreign:one", "//foreign:two"],
+            "missing": ["//tests:contract_0"],
+            "extra": ["//tests:contract_0", "//tests:contract_1", "//foreign:extra"],
+        }
+        for kind in ("source", "syncd"):
+            for mode, targets in mutations.items():
+                with self.subTest(kind=kind, mode=mode):
+                    seed(self.root, kind)
+                    write(self.root, artifacts.BEP[kind][0][1], events(targets=targets))
+                    summary, paths, ready = self.prepare(kind)
+                    self.assertFalse(ready, summary)
+                    self.assertEqual(paths, [])
+
+    def test_empty_container_suite_cannot_publish_success(self):
+        """Matching empty BEP and declared inventories still provide no successful validation."""
+        for kind in ("source", "syncd"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                write(self.root, artifacts.BEP[kind][0][1], events(targets=[]))
+                name = "artifacts/swss/receipt.json" if kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+                value = json.loads((self.root / name).read_text())
+                if kind == "source": value["tests"] = {}
+                else: value["targets"] = []
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare(kind)
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
+
+    def test_source_publication_requires_exact_validated_archive_hashes(self):
+        """Do not upload untested, missing or changed archives under a passing source receipt."""
+        for change in ("missing-bindings", "missing-archive", "extra-archive", "changed-bytes"):
+            with self.subTest(change=change):
+                seed(self.root, "source")
+                name = "artifacts/swss/receipt.json"
+                value = json.loads((self.root / name).read_text())
+                validated = value["validation"]["artifact_sha256"]
+                if change == "missing-bindings": del value["validation"]["artifact_sha256"]
+                elif change == "missing-archive": del validated["swss.tar"]
+                elif change == "extra-archive": validated["unpublished.tar"] = DIGEST
+                else: write(self.root, "artifacts/swss/swss.tar", b"different configured output")
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare("source")
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
+                self.assertIn({"input": "source-receipt", "reason": "validated-artifact-mismatch"}, summary["blocked"])
+
+    def test_source_summary_keeps_safe_tested_archive_bindings(self):
+        """Preserve the exact filename-to-digest proof in the public source summary."""
+        seed(self.root, "source")
+        summary, _, ready = self.prepare("source")
+        self.assertTrue(ready)
+        self.assertEqual(summary["receipts"]["source"]["artifact_sha256"],
+                         receipt("source")["validation"]["artifact_sha256"])
+
+    def test_archive_binding_names_and_digests_are_validated_before_publication(self):
+        """Archive bindings cannot leak paths or disguise malformed digests as validation evidence."""
+        for value in ({"../secret.tar": DIGEST}, {"subdir/output.tar": DIGEST}, {"output.tar": SENTINEL}, []):
+            with self.subTest(value=value), self.assertRaises(artifacts.PublicArtifactError):
+                document = receipt("source")
+                document["validation"]["artifact_sha256"] = value
+                artifacts.receipt_summary(document, "source")
+
+    def test_source_requires_package_validation_evidence(self):
+        """A discovered test suite cannot replace required archive/program/debug/source checks."""
+        for missing in ("validation", "programs", "debug_pairs", "source_contract"):
+            with self.subTest(missing=missing):
+                seed(self.root, "source")
+                name = "artifacts/swss/receipt.json"
+                value = json.loads((self.root / name).read_text())
+                if missing == "validation": del value["validation"]
+                else: del value["validation"][missing]
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare("source")
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
+
+    def test_container_failed_status_cannot_publish_success(self):
+        """Complete test identities cannot override a failed runner receipt or report."""
+        for kind in ("source", "syncd"):
+            with self.subTest(kind=kind):
+                seed(self.root, kind)
+                name = "artifacts/swss/receipt.json" if kind == "source" else "artifacts/syncd-vs/bazel/report.json"
+                value = json.loads((self.root / name).read_text())
+                value["status"] = "failed"
+                write_json(self.root, name, value)
+                summary, paths, ready = self.prepare(kind)
+                self.assertFalse(ready, summary)
+                self.assertEqual(paths, [])
+
+    def test_archive_requires_all_twelve_native_workflow_tests(self):
+        for architecture in ("amd64", "arm64"):
+            with self.subTest(architecture=architecture):
+                seed(self.root, "archive", architecture)
+                event_path = "artifacts/archive/test-events.jsonl"
+                write(self.root, event_path, events(12))
+                summary, paths, ready = self.prepare("archive", architecture=architecture)
+                self.assertTrue(ready)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 12)
+                self.assertTrue(paths)
+
+                write(self.root, event_path, events(11))
+                summary, paths, ready = self.prepare("archive", architecture=architecture)
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
+                              summary["blocked"])
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")

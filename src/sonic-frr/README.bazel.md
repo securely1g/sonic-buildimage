@@ -28,3 +28,29 @@ the upstream check suite, including its Valgrind memory checks. The known
 Valgrind/tcmalloc incompatibility remains documented in the FRR contribution
 notes; this installation-output change preserves tcmalloc and the upstream test
 behavior.
+
+## Native source CI
+
+The `Bazel FRR and sonic-fib` workflow builds the installation TARs, matching
+symbols and upstream check programs on native AMD64 and ARM64. FRR metadata
+is selected on its declared Trixie platforms; sonic-fib metadata covers both
+distributions. Each
+architecture tests both the Trixie and Bookworm target platform using the
+declared runtime. It runs the original FRR checks, including Valgrind, and both
+sonic-fib tests. A failing upstream check remains a failing job.
+
+While registry PRs #146–#150 are unmerged, the workflow uses the single frozen
+candidate registry `41d98ae02d50c83a5575e76992294d24db70028d`. Its
+`DRAFT_VALIDATION_INPUTS.json` records every composed prerequisite. The candidate
+selects infrastructure `0.0.25-6f6658865b7f687fa5e78d1675c0db8a5765b2ce`,
+Distroless `.sonic.13`, libnl3 `.sonic.7`, libyang `.sonic.6` and Net-SNMP
+`5.9.3.sonic.1`. The default `.bazelrc` still uses maintained `main`.
+
+For local candidate validation, use the command and explicit platform flags in
+`.github/workflows/bazel-frr.yml`: its startup flags load `common.bazelrc`
+without also loading the default registry endpoint. Do not append the candidate
+to the default endpoint as a fallback. Replace the temporary CI endpoint with
+canonical `main` and verify landed source revisions before review readiness.
+The workflow retains checkout inputs, resolution lock, build/test events and
+named output files with SHA-256 checksums. These component results do not
+establish a complete SONiC image or the inherited image workflows' success.
