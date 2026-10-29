@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-29T14:08:24.463358Z",
+  "generated_at": "2026-10-29T15:11:27.903458Z",
   "pull_requests": [
     {
       "base_sha": "2dc503aaecfb0d3c317608aaeabc68a108e32b97",
@@ -11,7 +11,7 @@
       "number": 71,
       "state": "open",
       "title": "Validate exact PR pairs in Bazel OCI CI",
-      "updated_at": "2026-10-29T13:54:45Z",
+      "updated_at": "2026-10-29T14:13:49Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/71"
     },
     {
@@ -107,7 +107,7 @@
       "number": 63,
       "state": "open",
       "title": "Reuse the verified Orchagent archive from the VS build",
-      "updated_at": "2026-10-29T09:11:59Z",
+      "updated_at": "2026-10-29T14:22:06Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/63"
     },
     {
@@ -2167,17 +2167,17 @@
           "completed_at": null,
           "conclusion": null,
           "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2605.0,
+          "image_build_seconds": 2605.0,
           "job_id": 123483012229,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
-            "setup": 276.0,
-            "upload": null,
-            "validation": null
+            "build": 2605.0,
+            "other": 0.0,
+            "setup": 286.0,
+            "upload": 68.0,
+            "validation": 1783.0
           },
           "started_at": "2026-10-29T13:40:24Z",
           "status": "in_progress",
@@ -2295,160 +2295,160 @@
             {
               "breakdown": {
                 "duration_seconds": null,
-                "reason": "step-not-successful",
+                "reason": "pending-collection",
                 "sections": [],
                 "source": "github-job-log",
                 "status": "unavailable",
                 "version": 1
               },
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:28:26Z",
+              "conclusion": "success",
+              "duration_seconds": 2605.0,
               "name": "Build the VS image and both OCI container variants",
               "number": 12,
               "phase": "build",
               "started_at": "2026-10-29T13:45:01Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:38:22Z",
+              "conclusion": "success",
+              "duration_seconds": 596.0,
               "name": "Validate SWSS source packages from the Make build",
               "number": 13,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:28:26Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:38:28Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
               "name": "Prepare SWSS source artifact list",
               "number": 14,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:38:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:39:31Z",
+              "conclusion": "success",
+              "duration_seconds": 63.0,
               "name": "Upload public source layers and evidence",
               "number": 15,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:38:28Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:49:12Z",
+              "conclusion": "success",
+              "duration_seconds": 581.0,
               "name": "Validate Syncd source packages from the Make build",
               "number": 16,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:39:31Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:49:16Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
               "name": "Prepare Syncd source artifact list",
               "number": 17,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:49:12Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:49:19Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
               "name": "Upload public contract evidence",
               "number": 18,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:49:16Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:58:42Z",
+              "conclusion": "success",
+              "duration_seconds": 563.0,
               "name": "Verify source-built P4 runtime and debug TARs in both Syncd images",
               "number": 19,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:49:19Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:59:25Z",
+              "conclusion": "success",
+              "duration_seconds": 43.0,
               "name": "Verify P4RT packaged split debug symbols",
               "number": 20,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:58:42Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:59:25Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Remove this job's remaining build containers",
               "number": 21,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:59:25Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:59:25Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Prepare public artifact list",
               "number": 22,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:59:25Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:59:27Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Upload public VS build summary",
               "number": 23,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:59:25Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-29T14:59:27Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify exact checkout for installed evidence",
               "number": 24,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:59:27Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-29T14:59:27Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Retain installed Syncd and source dependency evidence",
               "number": 25,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:59:27Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-29T14:59:27Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify exact checkout for image uploads",
               "number": 26,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:59:27Z",
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -2457,8 +2457,8 @@
               "name": "Upload VS image and OCI container archives",
               "number": 27,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-29T14:59:27Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
