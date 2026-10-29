@@ -14,17 +14,43 @@ on:
         description: Time the old redundant Orchagent request after the VS build
         type: boolean
         default: false
+      pr_number:
+        description: Same-repository PR number for supplementary exact-pair validation
+        type: string
+        default: ''
+      expected_head:
+        description: Expected full PR head SHA
+        type: string
+        default: ''
+      expected_base_ref:
+        description: Expected selected base branch
+        type: string
+        default: ''
+      expected_base:
+        description: Expected full selected base SHA
+        type: string
+        default: ''
+      expected_merge:
+        description: Deterministic merge SHA from checkout_pair.py plan
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
-  cancel-in-progress: true
+  # Normal same-revision reruns supersede; pair runs preserve an active run.
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr_number != '' || inputs.expected_head != '' || inputs.expected_base_ref != '' || inputs.expected_base != '' || inputs.expected_merge != '') && format('bazel-oci-pair-{0}', github.run_id) || format('bazel-oci-{0}-{1}', github.event.pull_request.number || github.ref, github.sha) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.pr_number != '' || inputs.expected_head != '' || inputs.expected_base_ref != '' || inputs.expected_base != '' || inputs.expected_merge != '')) }}
 
 env:
   BAZEL: bazel
+  SONIC_EXACT_PAIR: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr_number != '' || inputs.expected_head != '' || inputs.expected_base_ref != '' || inputs.expected_base != '' || inputs.expected_merge != '') }}
+  SONIC_PAIR_PR: ${{ inputs.pr_number }}
+  SONIC_PAIR_HEAD: ${{ inputs.expected_head }}
+  SONIC_PAIR_BASE_REF: ${{ inputs.expected_base_ref }}
+  SONIC_PAIR_BASE: ${{ inputs.expected_base }}
+  SONIC_PAIR_MERGE: ${{ inputs.expected_merge }}
 
 jobs:
   archive:
@@ -60,6 +86,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Prepare exact PR pair
+        id: exact_pair
+        if: env.SONIC_EXACT_PAIR == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B tools/bazel/ci/checkout_pair.py prepare \
+            --workspace "$PWD" --runner-temp "$RUNNER_TEMP" --validator-revision "$GITHUB_SHA" \
+            --pr-number "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" --github-output "$GITHUB_OUTPUT"
 
       - name: Check native architecture and generated dependency state
         run: |
@@ -282,12 +319,20 @@ jobs:
           CI_JOB_STATUS: ${{ job.status }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector || 'tools/bazel/ci/public_artifacts.py' }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
         run: |
-          python3 -B tools/bazel/ci/public_artifacts.py archive \
+          python3 -B "$CI_COLLECTOR" archive \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
             --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
             --architecture "${{ matrix.architecture }}" \
             --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" \
+            --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload public archive evidence
@@ -324,6 +369,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Prepare exact PR pair
+        id: exact_pair
+        if: env.SONIC_EXACT_PAIR == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B tools/bazel/ci/checkout_pair.py prepare \
+            --workspace "$PWD" --runner-temp "$RUNNER_TEMP" --validator-revision "$GITHUB_SHA" \
+            --pr-number "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" --github-output "$GITHUB_OUTPUT"
 
       - name: Check generated dependency state
         run: |
@@ -391,6 +447,22 @@ jobs:
           (root / "redis.json").write_text(json.dumps(receipt, indent=2) + "\n")
           PY
 
+      - name: Verify exact checkout for source downloads
+        id: checkout_artifact
+        if: always() && env.SONIC_EXACT_PAIR == 'true'
+        env:
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
+        run: |
+          python3 -B "$CI_COLLECTOR" checkout --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" \
+            --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
+            --output artifacts/repository-inputs/checkout.json --github-output "$GITHUB_OUTPUT"
+
       - name: Upload the source downloads for the VS job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -403,9 +475,19 @@ jobs:
             artifacts/repository-inputs/toolchain_utils-1.0.2/src.tar.gz
             artifacts/repository-inputs/receipt.json
             artifacts/repository-inputs/test-helpers/
+            ${{ steps.checkout_artifact.outputs.path }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+      - name: Retain exact checkout after hosted failure
+        if: always() && env.SONIC_EXACT_PAIR == 'true' && steps.checkout_artifact.outcome == 'success' && job.status != 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bazel-checks-checkout
+          path: ${{ steps.checkout_artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Report validation scope
         run: |
@@ -422,7 +504,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    # Share the existing P330 pool; checkout still uses this event's ref and SHA.
+    # Share the existing P330 pool; exact mode verifies its separate source pair.
     runs-on:
       - self-hosted
       - linux
@@ -472,6 +554,18 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: Prepare exact PR pair
+        id: exact_pair
+        if: env.SONIC_EXACT_PAIR == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B tools/bazel/ci/checkout_pair.py prepare \
+            --workspace "$PWD" --runner-temp "$RUNNER_TEMP" --validator-revision "$GITHUB_SHA" \
+            --pr-number "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" --github-output "$GITHUB_OUTPUT" \
+            --submodules
+
       - name: Check VS build prerequisites
         run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
 
@@ -504,6 +598,21 @@ jobs:
         with:
           name: bazel-repository-inputs
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
+
+      - name: Verify exact source download checkout
+        if: env.SONIC_EXACT_PAIR == 'true'
+        env:
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
+        run: |
+          python3 -B "$CI_COLLECTOR" checkout --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" \
+            --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
+            --compare artifacts/vs/repository-inputs/checkout.json --require-submodules
 
       - name: Prepare the shared Bazel source-download directory
         run: |
@@ -585,12 +694,20 @@ jobs:
           CI_JOB_STATUS: ${{ steps.swss_validation.outcome == 'success' && 'success' || 'failure' }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector || 'tools/bazel/ci/public_artifacts.py' }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
         run: |
-          python3 -B tools/bazel/ci/public_artifacts.py source \
+          python3 -B "$CI_COLLECTOR" source \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
             --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
             --architecture "amd64" \
             --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" \
+            --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload public source layers and evidence
@@ -644,12 +761,20 @@ jobs:
           CI_JOB_STATUS: ${{ steps.syncd_validation.outcome == 'success' && 'success' || 'failure' }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector || 'tools/bazel/ci/public_artifacts.py' }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
         run: |
-          python3 -B tools/bazel/ci/public_artifacts.py syncd \
+          python3 -B "$CI_COLLECTOR" syncd \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
             --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
             --architecture "amd64" \
             --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" \
+            --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload public contract evidence
@@ -726,12 +851,20 @@ jobs:
           CI_JOB_STATUS: ${{ job.status }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector || 'tools/bazel/ci/public_artifacts.py' }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
         run: |
-          python3 -B tools/bazel/ci/public_artifacts.py vs \
+          python3 -B "$CI_COLLECTOR" vs \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
             --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
             --architecture "amd64" \
             --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" \
+            --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" --expected-base-ref "$SONIC_PAIR_BASE_REF" \
+            --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload public VS build summary
@@ -744,8 +877,23 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Verify exact checkout for installed evidence
+        id: installed_checkout
+        if: always() && env.SONIC_EXACT_PAIR == 'true'
+        env:
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
+        run: |
+          python3 -B "$CI_COLLECTOR" checkout --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" \
+            --expected-base-ref "$SONIC_PAIR_BASE_REF" --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
+            --output artifacts/vs/checkout.json --github-output "$GITHUB_OUTPUT" --require-submodules
+
       - name: Retain installed Syncd and source dependency evidence
-        if: always()
+        if: always() && (env.SONIC_EXACT_PAIR != 'true' || steps.installed_checkout.outcome == 'success')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-syncd-installed-amd64
@@ -757,8 +905,24 @@ jobs:
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/source-base.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/static-validation.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/installed-validation.json
+            ${{ steps.installed_checkout.outputs.path }}
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Verify exact checkout for image uploads
+        id: image_checkout
+        if: env.SONIC_EXACT_PAIR == 'true'
+        env:
+          CI_COLLECTOR: ${{ steps.exact_pair.outputs.artifact_collector }}
+          CI_RECEIPT: ${{ steps.exact_pair.outputs.receipt }}
+          CI_RECEIPT_SHA: ${{ steps.exact_pair.outputs.receipt_sha256 }}
+          CI_VALIDATOR: ${{ steps.exact_pair.outputs.validator_revision }}
+        run: |
+          python3 -B "$CI_COLLECTOR" checkout --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --checkout-receipt "$CI_RECEIPT" --checkout-receipt-sha256 "$CI_RECEIPT_SHA" \
+            --validator-revision "$CI_VALIDATOR" --expected-pr "$SONIC_PAIR_PR" --expected-head "$SONIC_PAIR_HEAD" \
+            --expected-base-ref "$SONIC_PAIR_BASE_REF" --expected-base "$SONIC_PAIR_BASE" --expected-merge "$SONIC_PAIR_MERGE" \
+            --output target/checkout.json --github-output "$GITHUB_OUTPUT" --require-submodules
 
       - name: Upload VS image and OCI container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -770,6 +934,7 @@ jobs:
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz
+            ${{ steps.image_checkout.outputs.path }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

@@ -130,7 +130,12 @@ class SourceWorkflowTest(unittest.TestCase):
         self.assertIn("name: OCI regression checks (AMD64)", checks)
         self.assertIn("runs-on: ubuntu-24.04", checks)
         self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: (?:checks|\[checks\])$")
+        conditions = {"Prepare exact PR pair": "if: env.SONIC_EXACT_PAIR == 'true'",
+                      "Verify exact checkout for source downloads": "if: always() && env.SONIC_EXACT_PAIR == 'true'"}
         for name, step in steps(checks).items():
+            if name in conditions:
+                self.assertIn(conditions[name], step)
+                continue
             script = shell(step)
             if script is not None:
                 with self.subTest(step=name):
@@ -143,6 +148,30 @@ class SourceWorkflowTest(unittest.TestCase):
                              (call["name"] == "bazel" and
                               any(arg in ("build", "test") for arg in call["args"]))
                              for call in calls))
+
+    def test_exact_pair_receipts_cover_all_executing_jobs(self):
+        workflow_jobs = jobs()
+        for job in ("archive", "checks", "vs"):
+            exact = steps(workflow_jobs[job])["Prepare exact PR pair"]
+            self.assertIn("if: env.SONIC_EXACT_PAIR == 'true'", exact)
+            self.assertIn('--expected-merge "$SONIC_PAIR_MERGE"', exact)
+            self.assertIn('--validator-revision "$GITHUB_SHA"', exact)
+        self.assertIn("--submodules", steps(workflow_jobs["vs"])["Prepare exact PR pair"])
+        check_steps = steps(workflow_jobs["checks"])
+        self.assertLess(list(check_steps).index("Verify exact checkout for source downloads"),
+                        list(check_steps).index("Upload the source downloads for the VS job"))
+        self.assertIn("steps.checkout_artifact.outputs.path", check_steps["Upload the source downloads for the VS job"])
+        self.assertIn("job.status != 'success'", check_steps["Retain exact checkout after hosted failure"])
+        vs_steps = steps(workflow_jobs["vs"])
+        self.assertLess(list(vs_steps).index("Download verified sources from the hosted checks"),
+                        list(vs_steps).index("Verify exact source download checkout"))
+        self.assertLess(list(vs_steps).index("Verify exact source download checkout"),
+                        list(vs_steps).index("Prepare the shared Bazel source-download directory"))
+        self.assertIn("steps.installed_checkout.outputs.path", vs_steps["Retain installed Syncd and source dependency evidence"])
+        self.assertIn("steps.image_checkout.outputs.path", vs_steps["Upload VS image and OCI container archives"])
+        text = WORKFLOW.read_text()
+        self.assertIn("format('bazel-oci-pair-{0}', github.run_id)", text)
+        self.assertIn("format('bazel-oci-{0}-{1}', github.event.pull_request.number || github.ref, github.sha)", text)
 
     def test_make_source_validation_reuses_outputs_and_propagates_failures(self):
         workflow_steps = steps(jobs()["vs"])

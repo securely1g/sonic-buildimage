@@ -3,13 +3,33 @@
 
 import argparse
 import hashlib
+import importlib
+import importlib.util
 import json
 import math
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import sys
 import tempfile
 from urllib.parse import parse_qsl, urlsplit
+
+_CHECKOUT_PAIR = None
+
+
+def checkout_verifier():
+    """Load the optional verifier from this collector's own source revision."""
+    global _CHECKOUT_PAIR
+    if _CHECKOUT_PAIR is None:
+        if __package__:
+            _CHECKOUT_PAIR = importlib.import_module(__package__ + ".checkout_pair")
+        else:
+            spec = importlib.util.spec_from_file_location("_sonic_checkout_pair", Path(__file__).with_name("checkout_pair.py"))
+            if spec is None or spec.loader is None:
+                raise ImportError("checkout receipt verifier is unavailable")
+            _CHECKOUT_PAIR = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_CHECKOUT_PAIR)
+    return _CHECKOUT_PAIR
 
 SHA = re.compile(r"[0-9a-f]{64}")
 REVISION = re.compile(r"[0-9a-f]{40}")
@@ -361,7 +381,7 @@ def receipt_summary(value, kind):
     raise PublicArtifactError("unknown-receipt-kind")
 
 
-def source_validation_summary(value, kind, identity):
+def source_validation_summary(value, kind, identity, checkout_identity=None):
     """Bind completed source checks to this image build without republishing them."""
     require(isinstance(value, dict) and value.get("schema") == 1, "invalid-source-summary")
     require(value.get("kind") == kind and value.get("job_status") == "success" and
@@ -369,6 +389,9 @@ def source_validation_summary(value, kind, identity):
             value.get("blocked") == [], "incomplete-source-summary")
     require(all(key in value and value[key] == expected for key, expected in identity.items()),
             "source-summary-identity-mismatch")
+    if checkout_identity is not None:
+        checkout = checkout_verifier().verify_projection(value.get("receipts", {}).get("checkout"), checkout_identity)
+        require(checkout["submodules_verified_at_checkout"], "missing-source-submodule-checkout")
     build = value.get("builds", {}).get(kind + "-tests", {})
     require(isinstance(build, dict) and build.get("command") == "test" and
             build.get("finished") == {"success": True, "exit_code": 0} and
@@ -381,11 +404,15 @@ def source_validation_summary(value, kind, identity):
                 "failed-source-test")
     reuse = cache_reuse_summary(value.get("receipts", {}).get(kind, {}).get("cache_reuse"))
     require(reuse["artifact_target"] == SOURCE_ARTIFACT_TARGETS[kind], "wrong-cache-reuse-target")
-    return {"test_count": len(tests),
-            "cache_reuse": {key: item for key, item in reuse.items() if key != "actions"}}
+    result = {"test_count": len(tests),
+              "cache_reuse": {key: item for key, item in reuse.items() if key != "actions"}}
+    if checkout_identity is not None:
+        result["checkout_identity_sha256"] = checkout_verifier().canonical(checkout_identity)
+    return result
 
 
-def prepare(kind, workspace, upload_root, job_status, revision, architecture, head_sha=None, base_sha=None):
+def prepare(kind, workspace, upload_root, job_status, revision, architecture, head_sha=None, base_sha=None,
+            pair=None, checkout_receipt=None, checkout_receipt_sha256=None, validator_revision=None):
     workspace, upload_root = Path(workspace).resolve(), Path(upload_root).resolve()
     require(workspace.is_relative_to(upload_root), "workspace-outside-upload-root")
     require(kind in FILES and job_status in {"success", "failure", "cancelled"}, "invalid-mode")
@@ -393,6 +420,18 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
     require(isinstance(revision, str) and REVISION.fullmatch(revision), "invalid-revision")
     for value in (head_sha, base_sha):
         require(value in (None, "") or isinstance(value, str) and REVISION.fullmatch(value), "invalid-revision")
+    checkout = None
+    if pair is not None or checkout_receipt is not None or checkout_receipt_sha256 is not None or validator_revision is not None:
+        require(pair is not None and checkout_receipt is not None and checkout_receipt_sha256 is not None and validator_revision is not None,
+                "missing-exact-pair-input")
+        checkout = checkout_verifier().verify_receipt(checkout_receipt, workspace, pair, validator_revision,
+                                                      checkout_receipt_sha256)
+        require(kind == "archive" or checkout["submodules_verified_at_checkout"],
+                "missing-vs-submodule-checkout")
+        identity = checkout["identity"]
+        require(revision == identity["merge_sha"] and head_sha in (None, "", identity["head_sha"]) and
+                base_sha in (None, "", identity["base_sha"]), "exact-pair-input-mismatch")
+        head_sha, base_sha = identity["head_sha"], identity["base_sha"]
     missing, blocked, selected, paths = [], [], {}, []
 
     def input_path(logical, relative):
@@ -471,6 +510,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             blocked.append({"input": logical, "reason": "invalid-bep-summary"})
 
     receipts = {}
+    if checkout is not None:
+        receipts["checkout"] = checkout
     receipt_specs = {
         "archive": [("python", "artifacts/config-engine/receipt.json", "python")],
         "source": [("source", "artifacts/swss/receipt.json", "source")],
@@ -506,7 +547,7 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             value = read_json(logical, SUMMARY[source_kind])
             try:
                 receipts["source_validation"][source_kind] = source_validation_summary(
-                    value, source_kind, identity)
+                    value, source_kind, identity, checkout["identity"] if checkout is not None else None)
             except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
                 blocked.append({"input": logical, "reason": "invalid-source-validation"})
         outputs = {}
@@ -573,7 +614,84 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
     return summary, sorted(paths) if ready else [], ready
 
 
+def pair_arguments(parser):
+    parser.add_argument("--checkout-receipt", default="")
+    parser.add_argument("--checkout-receipt-sha256", default="")
+    parser.add_argument("--expected-pr", default="")
+    parser.add_argument("--expected-head", default="")
+    parser.add_argument("--expected-base-ref", default="")
+    parser.add_argument("--expected-base", default="")
+    parser.add_argument("--expected-merge", default="")
+    parser.add_argument("--validator-revision", default="")
+
+
+def pair_options(args):
+    values = (args.checkout_receipt, args.checkout_receipt_sha256, args.expected_pr, args.expected_head, args.expected_base_ref,
+              args.expected_base, args.expected_merge, args.validator_revision)
+    if not any(values):
+        return None, None, None, None
+    require(all(values), "missing-exact-pair-input")
+    pair = checkout_verifier().inputs(args.expected_pr, args.expected_head, args.expected_base_ref,
+                                args.expected_base, args.expected_merge, require_merge=True)
+    return pair, Path(args.checkout_receipt), args.checkout_receipt_sha256, args.validator_revision
+
+
+def collect_checkout(workspace, upload_root, receipt, receipt_sha256, pair, validator_revision, output=None, compare=None,
+                     require_submodules=False):
+    workspace, upload_root = Path(workspace).resolve(), Path(upload_root).resolve()
+    require(workspace.is_relative_to(upload_root), "workspace-outside-upload-root")
+    value = checkout_verifier().verify_receipt(receipt, workspace, pair, validator_revision, receipt_sha256)
+    require(not require_submodules or value["submodules_verified_at_checkout"], "missing-vs-submodule-checkout")
+    safe_json(value)
+    if compare is not None:
+        compare = workspace / relative_name(compare)
+        require(all(not parent.is_symlink() for parent in compare.parents if parent != workspace),
+                "symlink-producer-checkout-parent")
+        require(compare.is_file() and not compare.is_symlink() and compare.resolve().is_relative_to(workspace) and
+                compare.stat().st_size <= 128 * 1024, "missing-producer-checkout")
+        producer = load_json(compare.read_text())
+        checkout_verifier().verify_projection(producer, value["identity"])
+        safe_json(producer)
+    relative = None
+    if output is not None:
+        target = workspace / relative_name(output)
+        require(not target.exists() and not target.is_symlink(), "checkout-output-exists")
+        require(all(not parent.is_symlink() for parent in target.parents if parent != workspace) and
+                target.parent.resolve().is_relative_to(workspace), "checkout-output-outside-workspace")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        require(target.parent.resolve().is_relative_to(workspace), "checkout-output-outside-workspace")
+        checkout_verifier().write_json(target, value, mode=0o644)
+        relative = str(target.resolve().relative_to(upload_root))
+    return value, relative
+
+
+def checkout_main():
+    parser = argparse.ArgumentParser(description="Verify an exact-pair checkout receipt for a CI artifact")
+    parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--upload-root", type=Path, required=True)
+    parser.add_argument("--output")
+    parser.add_argument("--compare")
+    parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--require-submodules", action="store_true")
+    pair_arguments(parser)
+    args = parser.parse_args(sys.argv[2:])
+    try:
+        pair, receipt, receipt_sha256, revision = pair_options(args)
+        require(pair is not None, "missing-exact-pair-input")
+        value, path = collect_checkout(args.workspace, args.upload_root, receipt, receipt_sha256, pair, revision,
+                                       args.output, args.compare, args.require_submodules)
+        if path and args.github_output:
+            with args.github_output.open("a") as stream:
+                stream.write("path=" + path + "\n")
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        parser.exit(1, "checkout artifact verification failed\n")
+    print(json.dumps({"verified": True, "identity_sha256": value["identity_sha256"]}))
+
+
 def main():
+    if sys.argv[1:2] == ["checkout"]:
+        checkout_main()
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kind", choices=FILES)
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
@@ -584,11 +702,14 @@ def main():
     parser.add_argument("--head-sha")
     parser.add_argument("--base-sha")
     parser.add_argument("--github-output", type=Path, required=True)
+    pair_arguments(parser)
     args = parser.parse_args()
     try:
+        pair, receipt, receipt_sha256, validator_revision = pair_options(args)
         summary, paths, ready = prepare(args.kind, args.workspace, args.upload_root, args.job_status,
-                                        args.revision, args.architecture, args.head_sha, args.base_sha)
-    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+                                        args.revision, args.architecture, args.head_sha, args.base_sha,
+                                        pair, receipt, receipt_sha256, validator_revision)
+    except (ImportError, OSError, ValueError, TypeError, AttributeError, RecursionError):
         parser.exit(1, "public artifact preparation failed\n")
     if ready:
         with args.github_output.open("a") as stream:
