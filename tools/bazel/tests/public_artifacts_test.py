@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -21,6 +22,22 @@ DIGEST = "2" * 64
 SENTINEL = "fixture_private_value_never_publish"
 SYNTHETIC_JOB_TOKEN = "ghs_" + "x" * 36
 SYNTHETIC_INSTALLATION_TOKEN = "ghs_12345_eyJ" + "a" * 12 + ".eyJ" + "b" * 12 + "." + "c" * 12
+
+
+def exact_checkout():
+    verifier = artifacts.checkout_verifier()
+    expected = verifier.inputs("33", "3" * 40, "master", "4" * 40, REVISION, require_merge=True)
+    identity = {"repository": verifier.REPOSITORY, "pr_number": 33,
+                "head_repository": verifier.REPOSITORY, "head_ref": "feature",
+                "head_sha": "3" * 40, "base_ref": "master", "base_sha": "4" * 40,
+                "merge_sha": REVISION, "tree_sha": "6" * 40, "parents": ["4" * 40, "3" * 40],
+                "validator_revision": "5" * 40,
+                "validator_files": {name: DIGEST for name in verifier.SCRIPTS}}
+    value = {"schema": 1, "status": "verified", "identity": identity,
+             "identity_sha256": verifier.canonical(identity), "receipt_sha256": DIGEST,
+             "verified_at": "2026-10-29T00:00:00+00:00", "submodules_verified_at_checkout": True,
+             "submodule_count_at_checkout": 0, "submodules_sha256_at_checkout": DIGEST}
+    return expected, value
 
 
 def write(root, name, value):
@@ -167,6 +184,74 @@ class PublicArtifactsTest(unittest.TestCase):
     def prepare(self, kind, status="success", architecture="amd64"):
         return artifacts.prepare(kind, self.root, self.root, status, REVISION, architecture,
                                  head_sha="3" * 40, base_sha="4" * 40)
+
+    def test_exact_checkout_is_retained_and_binds_source_summaries(self):
+        expected, checkout = exact_checkout()
+        seed(self.root, "vs")
+        with mock.patch.object(artifacts.checkout_verifier(), "verify_receipt", return_value=checkout):
+            for kind in ("source", "syncd"):
+                summary, _, ready = artifacts.prepare(kind, self.root, self.root, "success", REVISION, "amd64",
+                    pair=expected, checkout_receipt=self.root / "checkout.json", checkout_receipt_sha256=DIGEST, validator_revision="5" * 40)
+                self.assertTrue(ready)
+                self.assertEqual(summary["receipts"]["checkout"], checkout)
+            summary, _, ready = artifacts.prepare("vs", self.root, self.root, "success", REVISION, "amd64",
+                pair=expected, checkout_receipt=self.root / "checkout.json", checkout_receipt_sha256=DIGEST, validator_revision="5" * 40)
+            self.assertTrue(ready)
+            self.assertTrue(summary["complete"])
+            for kind in ("source", "syncd"):
+                self.assertEqual(summary["receipts"]["source_validation"][kind]["checkout_identity_sha256"],
+                                 checkout["identity_sha256"])
+            source = self.root / artifacts.SUMMARY["source"]
+            value = json.loads(source.read_text()); value["receipts"]["checkout"]["identity"]["tree_sha"] = "f" * 40
+            source.write_text(json.dumps(value))
+            summary, _, ready = artifacts.prepare("vs", self.root, self.root, "success", REVISION, "amd64",
+                pair=expected, checkout_receipt=self.root / "checkout.json", checkout_receipt_sha256=DIGEST, validator_revision="5" * 40)
+            self.assertFalse(ready)
+            self.assertFalse(summary["complete"])
+            self.assertIn({"input": "source-public-summary", "reason": "invalid-source-validation"}, summary["blocked"])
+
+    def test_exact_success_requires_a_checkout_receipt(self):
+        expected, _ = exact_checkout()
+        seed(self.root, "source")
+        with self.assertRaises(ValueError):
+            artifacts.prepare("source", self.root, self.root, "success", REVISION, "amd64",
+                pair=expected, checkout_receipt=self.root / "missing.json", checkout_receipt_sha256=DIGEST, validator_revision="5" * 40)
+
+    def test_exact_source_requires_the_vs_submodule_snapshot(self):
+        expected, checkout = exact_checkout(); checkout["submodules_verified_at_checkout"] = False
+        seed(self.root, "source")
+        with mock.patch.object(artifacts.checkout_verifier(), "verify_receipt", return_value=checkout):
+            with self.assertRaisesRegex(ValueError, "missing-vs-submodule-checkout"):
+                artifacts.prepare("source", self.root, self.root, "success", REVISION, "amd64",
+                    pair=expected, checkout_receipt=self.root / "checkout.json", checkout_receipt_sha256=DIGEST, validator_revision="5" * 40)
+
+    def test_checkout_artifact_rejects_a_different_producer(self):
+        expected, checkout = exact_checkout()
+        with mock.patch.object(artifacts.checkout_verifier(), "verify_receipt", return_value=checkout):
+            _, path = artifacts.collect_checkout(self.root, self.root, self.root / "receipt.json", DIGEST, expected,
+                "5" * 40, output="artifacts/repository-inputs/checkout.json")
+            self.assertEqual(path, "artifacts/repository-inputs/checkout.json")
+            value = json.loads((self.root / path).read_text())
+            value["identity"]["base_sha"] = "f" * 40
+            write_json(self.root, "artifacts/downloaded/checkout.json", value)
+            with self.assertRaises(ValueError):
+                artifacts.collect_checkout(self.root, self.root, self.root / "receipt.json", DIGEST, expected,
+                    "5" * 40, compare="artifacts/downloaded/checkout.json")
+
+    def test_legacy_summary_has_no_exact_checkout_fields(self):
+        seed(self.root, "source")
+        summary, _, ready = self.prepare("source")
+        self.assertTrue(ready)
+        self.assertNotIn("checkout", summary["receipts"])
+
+    def test_legacy_import_does_not_require_exact_pair_source(self):
+        script = self.root / "public_artifacts.py"
+        script.write_bytes((ROOT / "tools/bazel/ci/public_artifacts.py").read_bytes())
+        result = subprocess.run([sys.executable, "-B", "-c",
+            "import importlib.util, sys; s = importlib.util.spec_from_file_location('collector', sys.argv[1]); "
+            "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); assert m._CHECKOUT_PAIR is None",
+            str(script)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_receipt_counts_match_the_actual_producer_suites(self):
         """Adding a package suite must not make successful CI unpublishable."""
