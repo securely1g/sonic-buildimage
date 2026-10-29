@@ -6,12 +6,13 @@ import lzma
 import os
 from pathlib import Path
 import stat
+import struct
 import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from mkinitramfs import compress_initrd, Mkinitramfs, Rootfs, gnu_tsort, script_prereqs, read_kernel_metadata, build_initrd
+from mkinitramfs import ARCH, compress_initrd, Mkinitramfs, Rootfs, gnu_tsort, script_prereqs, read_kernel_metadata, build_initrd
 
 
 class InitrdTest(unittest.TestCase):
@@ -138,6 +139,41 @@ class InitrdTest(unittest.TestCase):
                                        'kernel_release': '../../host'}))
         with self.assertRaisesRegex(ValueError, 'invalid kernel release'):
             read_kernel_metadata(metadata)
+
+    def test_copy_exec_rejects_unsupported_elf_architecture(self):
+        def header(machine, elfclass=2, encoding=1):
+            ident = b'\x7fELF' + bytes([elfclass, encoding, 1]) + bytes(9)
+            if elfclass == 1:
+                return struct.pack('<16sHHIIIIIHHHHHH', ident, 2, machine, 1, 0, 52, 0, 0, 52, 32, 0, 40, 0, 0)
+            return struct.pack('<16sHHIQQQIHHHHHH', ident, 2, machine, 1, 0, 64, 0, 0, 64, 56, 0, 64, 0, 0)
+
+        (self.root / 'usr/bin').mkdir(parents=True)
+        (self.root / 'staged/usr/bin').mkdir(parents=True)
+        cases = [
+            ('amd64', header(183), 'architecture mismatch'),
+            ('arm64', header(62), 'architecture mismatch'),
+            ('amd64', header(3, elfclass=1), 'class or encoding'),
+            ('amd64', header(62, encoding=2), 'class or encoding'),
+            ('amd64', header(62), None),
+            ('arm64', header(183), None),
+            ('amd64', b'#!/bin/sh\nexit 0\n', None),
+        ]
+        for index, (architecture, content, error) in enumerate(cases):
+            with self.subTest(architecture=architecture, error=error):
+                name = 'program-' + str(index)
+                source = self.root / 'usr/bin' / name
+                source.write_bytes(content)
+                source.chmod(0o755)
+                self.fs.meta['usr/bin/' + name] = (stat.S_IFREG | 0o755, 0, 0, 0)
+                mk = object.__new__(Mkinitramfs)
+                mk.r, mk.arch, mk.a = self.fs, architecture, ARCH[architecture]
+                mk.D, mk.dmeta, mk.log, mk.cache = '/staged', {}, [], None
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        mk.copy_exec('/usr/bin/' + name)
+                else:
+                    self.assertEqual(mk.copy_exec('/usr/bin/' + name), 0)
+                    self.assertEqual((self.root / 'staged/usr/bin' / name).read_bytes(), content)
 
     def test_rootfs_boot_bytes_and_module_directory_must_match_the_producer(self):
         layer = Path(self.temp.name) / 'kernel.tar'

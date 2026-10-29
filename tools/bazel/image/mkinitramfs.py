@@ -281,8 +281,14 @@ def elf_read(path, data=None):
     if data is None:
         with open(path, 'rb') as f:
             data = f.read()
-    if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
+    if data[:4] != b'\x7fELF':
         return None
+    if len(data) < 6:
+        raise ValueError('truncated ELF identification in ' + path)
+    if data[4] != 2 or data[5] != 1:
+        raise ValueError('unsupported ELF class or encoding in ' + path)
+    if len(data) < 64:
+        raise ValueError('truncated ELF header in ' + path)
     e_type, e_machine = struct.unpack_from('<HH', data, 16)
     e_phoff, e_shoff = struct.unpack_from('<QQ', data, 32)
     e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx = struct.unpack_from('<HHHHH', data, 54)
@@ -567,7 +573,12 @@ class Mkinitramfs:
         """Library paths `ldd src` prints (sed-filtered as in copy_exec)."""
         c = self.r.canon(src)
         info = elf_read(self.r.host(c))
-        if info is None or not info['dynamic'] or info['machine'] != self.a['machine']:
+        if info is None:
+            return []
+        if info['machine'] != self.a['machine']:
+            raise ValueError('ELF architecture mismatch for %s: machine %d does not match %s' %
+                             (src, info['machine'], self.arch))
+        if not info['dynamic']:
             return []
         if info['interp'] is None and not info['needed']:
             return []  # statically linked / static-pie
