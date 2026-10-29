@@ -15,7 +15,7 @@ from functools import partial
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 import struct
 import tarfile
@@ -198,10 +198,11 @@ def _write(spec, cleanup):
             for destination, path in resources.items():
                 add_file(archive, "installer/" + destination, path)
             for path, destination in spec["extra_files"]:
-                if destination.split("/")[0] in set(resources) | {"install.sh", "machine.conf", names["payload_name"], names["dockerfs_name"]}:
-                    raise ValueError("installer resource conflicts with reserved path: " + destination)
-                if not destination or destination.startswith("/") or ".." in destination.split("/"):
+                normalized = PurePosixPath(destination)
+                if normalized.is_absolute() or ".." in normalized.parts or str(normalized) == ".":
                     raise ValueError("unsafe installer destination " + destination)
+                if normalized.parts[0] in set(resources) | {"install.sh", "machine.conf", names["payload_name"], names["dockerfs_name"]}:
+                    raise ValueError("installer resource conflicts with reserved path: " + destination)
                 add_resource(archive, destination, path, spec.get("extra_file_modes", {}))
             if external:
                 add_file(archive, "installer/" + names["dockerfs_name"], external)

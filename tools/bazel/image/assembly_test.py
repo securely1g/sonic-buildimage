@@ -199,9 +199,10 @@ class AssemblyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires a declared"):
             onie.build(spec)
         spec["signing_mode"] = "no_sign"
-        spec["extra_files"] = [[spec["machine_conf"], "default_platform.conf"]]
-        with self.assertRaisesRegex(ValueError, "conflicts"):
-            onie.build(spec)
+        for destination in ("default_platform.conf", "./default_platform.conf"):
+            spec["extra_files"] = [[spec["machine_conf"], destination]]
+            with self.assertRaisesRegex(ValueError, "conflicts"):
+                onie.build(spec)
 
     @unittest.skipUnless(TOOLS.tar_split, "pass a declared tar-split tool for Docker integration")
     def test_tar_split_reassembles_original_layer_and_payload_size(self):
