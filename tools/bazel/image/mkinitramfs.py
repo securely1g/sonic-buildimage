@@ -28,6 +28,7 @@ import tempfile
 
 from ldcache import generate_cache
 from newc import write_newc
+from kernel_inputs import read_kernel_metadata as read_boot_metadata
 
 PINS = {
     'usr/sbin/mkinitramfs': '5a75ff72dc960544213c5fb95a22f18c23be75fcc5bdf1803ade278162d9ddb9',
@@ -1289,13 +1290,9 @@ def compress_initrd(source_path, output, spec):
 
 
 def read_kernel_metadata(path):
-    with open(path) as stream:
-        metadata = json.load(stream)
-    if metadata.get('schema') != 1 or metadata.get('architecture') not in ARCH:
-        raise ValueError('unsupported kernel image metadata schema or architecture')
-    release = metadata.get('kernel_release', '')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]*', release):
-        raise ValueError('invalid kernel release in producer metadata')
+    metadata = read_boot_metadata(path)
+    if metadata.get('architecture') not in ARCH:
+        raise ValueError('unsupported kernel image metadata architecture')
     return metadata
 
 
@@ -1316,8 +1313,13 @@ def build_initrd(spec, output, report):
             source = root.canon('/' + entry['path'])
             if source is None or sha256(root.host(source)) != entry['sha256']:
                 raise ValueError('rootfs boot file differs from kernel producer metadata: ' + entry['path'])
-        module_path = '/' + metadata['module_directory']
-        if not root.isdir(module_path) or os.path.basename(module_path) != release:
+        module_directory = metadata.get('module_directory')
+        if not isinstance(module_directory, str):
+            raise ValueError('invalid producer module directory')
+        module_path = '/' + module_directory
+        standard_path = '/lib/modules/' + release
+        if not root.isdir(module_path) or os.path.basename(module_path) != release or \
+                not root.isdir(standard_path) or root.canon(module_path) != root.canon(standard_path):
             raise ValueError('rootfs lacks matching producer module directory')
         confdir = spec.get('config_dir', '/etc/initramfs-tools')
         if not confdir.startswith('/') or '..' in confdir.split('/'):

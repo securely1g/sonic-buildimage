@@ -2,24 +2,97 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["defs.bzl", "initramfs.bzl", "tests.bzl", "assembly_test.py"])
+exports_files([
+    "defs.bzl",
+    "initramfs.bzl",
+    "tests.bzl",
+    "assembly_test.py",
+])
 
-py_library(name = "newc", srcs = ["newc.py"], imports = ["."])
-py_library(name = "ldcache", srcs = ["ldcache.py"], imports = ["."])
-py_library(name = "kernel_inputs", srcs = ["kernel_inputs.py", "image_config.py"], imports = ["."])
+py_library(
+    name = "newc",
+    srcs = ["newc.py"],
+    imports = ["."],
+)
+
+py_library(
+    name = "ldcache",
+    srcs = ["ldcache.py"],
+    imports = ["."],
+)
+
+py_library(
+    name = "kernel_inputs",
+    srcs = [
+        "image_config.py",
+        "kernel_inputs.py",
+    ],
+    imports = ["."],
+)
 
 py_library(
     name = "assembly_lib",
-    srcs = ["onie.py", "overlay2_store.py", "disk_image.py", "merge_layers.py"],
+    srcs = [
+        "disk_image.py",
+        "merge_layers.py",
+        "onie.py",
+        "overlay2_store.py",
+    ],
     imports = ["."],
-    deps = [":kernel_inputs", "@sonic_build_infra//oci:package_metadata"],
+    deps = [
+        ":kernel_inputs",
+        "@sonic_build_infra//oci:package_metadata",
+    ],
 )
 
-py_binary(name = "merge_layers", srcs = ["merge_layers.py"])
-py_binary(name = "overlay2_store", srcs = ["overlay2_store.py"], deps = [":assembly_lib"])
-py_binary(name = "onie", srcs = ["onie.py"], deps = [":kernel_inputs"])
-py_binary(name = "disk_image", srcs = ["disk_image.py"], deps = [":assembly_lib"])
-py_binary(name = "mkinitramfs", srcs = ["mkinitramfs.py"], deps = [":newc", ":ldcache"])
+py_binary(
+    name = "merge_layers",
+    srcs = ["merge_layers.py"],
+)
 
-py_test(name = "assembly_test", srcs = ["assembly_test.py"], deps = [":assembly_lib"])
-py_test(name = "mkinitramfs_test", srcs = ["mkinitramfs.py", "mkinitramfs_test.py"], deps = [":newc", ":ldcache"])
+py_binary(
+    name = "overlay2_store",
+    srcs = ["overlay2_store.py"],
+    deps = [":assembly_lib"],
+)
+
+py_binary(
+    name = "onie",
+    srcs = ["onie.py"],
+    deps = [":kernel_inputs"],
+)
+
+py_binary(
+    name = "disk_image",
+    srcs = ["disk_image.py"],
+    deps = [":assembly_lib"],
+)
+
+py_binary(
+    name = "mkinitramfs",
+    srcs = ["mkinitramfs.py"],
+    deps = [
+        ":kernel_inputs",
+        ":ldcache",
+        ":newc",
+    ],
+)
+
+py_test(
+    name = "assembly_test",
+    srcs = ["assembly_test.py"],
+    deps = [":assembly_lib"],
+)
+
+py_test(
+    name = "mkinitramfs_test",
+    srcs = [
+        "mkinitramfs.py",
+        "mkinitramfs_test.py",
+    ],
+    deps = [
+        ":kernel_inputs",
+        ":ldcache",
+        ":newc",
+    ],
+)

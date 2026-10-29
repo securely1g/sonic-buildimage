@@ -23,6 +23,27 @@ class InitrdTest(unittest.TestCase):
         self.root.mkdir()
         self.fs = Rootfs(str(self.root))
 
+    def kernel_layer(self, name, directories=(), symlinks=()):
+        layer = Path(self.temp.name) / (name + '.tar')
+        records = {}
+        with tarfile.open(layer, 'w') as archive:
+            for path in directories:
+                member = tarfile.TarInfo(path)
+                member.type, member.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(member)
+            for path, target in symlinks:
+                member = tarfile.TarInfo(path)
+                member.type, member.linkname = tarfile.SYMTYPE, str(target)
+                archive.addfile(member)
+            for kind in ('vmlinuz', 'config', 'System.map'):
+                content = (kind + ' declared bytes').encode()
+                path = 'boot/' + kind + '-vendor-release'
+                member = tarfile.TarInfo(path)
+                member.mode, member.size = 0o644, len(content)
+                archive.addfile(member, io.BytesIO(content))
+                records[kind] = {'path': path, 'sha256': hashlib.sha256(content).hexdigest()}
+        return layer, records
+
     def test_rooted_absolute_links_and_merged_usr(self):
         (self.root / 'usr/lib').mkdir(parents=True)
         (self.root / 'lib').symlink_to('/usr/lib')
@@ -191,13 +212,16 @@ class InitrdTest(unittest.TestCase):
 
     def test_kernel_release_comes_from_producer_metadata(self):
         metadata = Path(self.temp.name) / 'kernel.json'
-        metadata.write_text(json.dumps({'schema': 1, 'architecture': 'arm64',
-                                       'kernel_release': 'different-release+vendor.7'}))
+        release = 'different-release+vendor.7'
+        value = {'schema': 1, 'architecture': 'arm64', 'kernel_release': release,
+                 'boot': {kind: {'path': 'boot/' + kind + '-' + release, 'sha256': '0' * 64}
+                          for kind in ('vmlinuz', 'config', 'System.map')}}
+        metadata.write_text(json.dumps(value))
         parsed = read_kernel_metadata(metadata)
         self.assertEqual(parsed['kernel_release'], 'different-release+vendor.7')
         self.assertEqual(parsed['architecture'], 'arm64')
-        metadata.write_text(json.dumps({'schema': 1, 'architecture': 'arm64',
-                                       'kernel_release': '../../host'}))
+        value['kernel_release'] = '../../host'
+        metadata.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, 'invalid kernel release'):
             read_kernel_metadata(metadata)
 
@@ -237,47 +261,65 @@ class InitrdTest(unittest.TestCase):
                     self.assertEqual((self.root / 'staged/usr/bin' / name).read_bytes(), content)
 
     def test_rootfs_boot_bytes_and_module_directory_must_match_the_producer(self):
-        layer = Path(self.temp.name) / 'kernel.tar'
-        content = b'kernel from a different build'
-        with tarfile.open(layer, 'w') as archive:
-            member = tarfile.TarInfo('boot/vmlinuz-vendor-release')
-            member.mode, member.size = 0o644, len(content)
-            archive.addfile(member, io.BytesIO(content))
+        layer, records = self.kernel_layer('kernel')
         metadata = Path(self.temp.name) / 'producer.json'
         value = {'schema': 1, 'architecture': 'amd64', 'kernel_release': 'vendor-release',
-                 'module_directory': 'usr/lib/modules/vendor-release',
-                 'boot': {'vmlinuz': {'path': 'boot/vmlinuz-vendor-release', 'sha256': '0' * 64}}}
-        metadata.write_text(json.dumps(value))
+                 'module_directory': 'usr/lib/modules/vendor-release', 'boot': records}
         spec = {'layers': [str(layer)], 'kernel_metadata': str(metadata)}
+        metadata.write_text(json.dumps(dict(value, boot={})))
+        with self.assertRaisesRegex(ValueError, 'missing kernel boot record'):
+            build_initrd(spec, str(self.root / 'initrd'), str(self.root / 'audit.json'))
+        expected_digest = records['vmlinuz']['sha256']
+        records['vmlinuz']['sha256'] = '0' * 64
+        metadata.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, 'boot file differs'):
             build_initrd(spec, str(self.root / 'initrd'), str(self.root / 'audit.json'))
-        value['boot']['vmlinuz']['sha256'] = hashlib.sha256(content).hexdigest()
+        records['vmlinuz']['sha256'] = expected_digest
         metadata.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, 'lacks matching producer module directory'):
             build_initrd(spec, str(self.root / 'initrd'), str(self.root / 'audit.json'))
+
+    def test_module_directory_resolves_to_standard_kmod_tree(self):
+        cases = [
+            ('alternate', 'opt/vendor/modules/vendor-release',
+             ('lib/modules/vendor-release', 'opt/vendor/modules/vendor-release'), (), False),
+            ('merged-usr', 'usr/lib/modules/vendor-release',
+             ('usr/lib/modules/vendor-release',), (('lib', 'usr/lib'),), True),
+        ]
+        for name, module_directory, directories, symlinks, accepted in cases:
+            with self.subTest(name=name):
+                layer, records = self.kernel_layer(name, directories, symlinks)
+                metadata = Path(self.temp.name) / (name + '.json')
+                metadata.write_text(json.dumps({'schema': 1, 'architecture': 'amd64', 'kernel_release': 'vendor-release',
+                                                'module_directory': module_directory, 'boot': records}))
+                observed = []
+
+                class ProbeAssembler:
+                    def __init__(probe, root, spec, work):
+                        observed.append(root.canon('/lib/modules/vendor-release'))
+
+                    def build(probe, confdir):
+                        raise RuntimeError('probe stopped before assembly')
+
+                spec = {'layers': [str(layer)], 'kernel_metadata': str(metadata)}
+                with patch('mkinitramfs.Mkinitramfs', ProbeAssembler):
+                    if accepted:
+                        with self.assertRaisesRegex(RuntimeError, 'probe stopped before assembly'):
+                            build_initrd(spec, str(self.root / 'initrd'), str(self.root / 'audit.json'))
+                        self.assertEqual(observed, ['/usr/lib/modules/vendor-release'])
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'lacks matching producer module directory'):
+                            build_initrd(spec, str(self.root / 'initrd'), str(self.root / 'audit.json'))
+                        self.assertEqual(observed, [])
 
     def test_extra_config_replaces_final_symlink_inside_rootfs(self):
         sentinel = Path(self.temp.name) / 'outside-rootfs-sentinel'
         sentinel.write_bytes(b'preserve this sentinel')
         extra = Path(self.temp.name) / 'override'
         extra.write_bytes(b'MODULES=list\n')
-        layer = Path(self.temp.name) / 'config-rootfs.tar'
-        records = {}
-        with tarfile.open(layer, 'w') as archive:
-            for name in ('lib/modules/vendor-release', 'etc/initramfs-tools/conf.d'):
-                member = tarfile.TarInfo(name)
-                member.type, member.mode = tarfile.DIRTYPE, 0o755
-                archive.addfile(member)
-            for kind in ('vmlinuz', 'config', 'System.map'):
-                content = (kind + ' declared bytes').encode()
-                name = 'boot/' + kind + '-vendor-release'
-                member = tarfile.TarInfo(name)
-                member.mode, member.size = 0o644, len(content)
-                archive.addfile(member, io.BytesIO(content))
-                records[kind] = {'path': name, 'sha256': hashlib.sha256(content).hexdigest()}
-            member = tarfile.TarInfo('etc/initramfs-tools/conf.d/override')
-            member.type, member.linkname = tarfile.SYMTYPE, str(sentinel)
-            archive.addfile(member)
+        layer, records = self.kernel_layer(
+            'config-rootfs', ('lib/modules/vendor-release', 'etc/initramfs-tools/conf.d'),
+            (('etc/initramfs-tools/conf.d/override', sentinel),))
         metadata = Path(self.temp.name) / 'config-kernel.json'
         metadata.write_text(json.dumps({'schema': 1, 'architecture': 'amd64', 'kernel_release': 'vendor-release',
                                         'module_directory': 'lib/modules/vendor-release', 'boot': records}))
