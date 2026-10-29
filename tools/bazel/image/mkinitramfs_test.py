@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from mkinitramfs import ARCH, compress_initrd, Mkinitramfs, Rootfs, gnu_tsort, script_prereqs, read_kernel_metadata, build_initrd
+from newc import write_newc
 
 
 class InitrdTest(unittest.TestCase):
@@ -373,6 +374,23 @@ class InitrdTest(unittest.TestCase):
 
 
 class CompressionContractTest(unittest.TestCase):
+    def test_newc_rejects_invalid_header_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'
+            root.mkdir()
+            (root / 'file').write_bytes(b'payload')
+            for field in ('mode', 'mtime'):
+                for index, value in enumerate((-1, 2**32, 1.5, '1', True)):
+                    with self.subTest(field=field, value=value):
+                        destination = Path(directory) / (field + str(index) + '.cpio')
+
+                        def metadata(path, st):
+                            return (value, 0) if field == 'mode' else (st.st_mode, value)
+
+                        with self.assertRaisesRegex(ValueError, 'newc ' + field):
+                            write_newc(root, destination, metadata)
+                        self.assertFalse(destination.exists() and destination.stat().st_size)
+
     def test_zstd_module_requires_explicit_decoder(self):
         mk = object.__new__(Mkinitramfs)
         mk.zstd = None

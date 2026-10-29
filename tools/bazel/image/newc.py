@@ -11,6 +11,16 @@ import os
 import stat
 
 
+_NEWC_FIELDS = ('ino', 'mode', 'uid', 'gid', 'nlink', 'mtime', 'filesize',
+                'devmajor', 'devminor', 'rdevmajor', 'rdevminor', 'namesize', 'check')
+
+
+def _header_value(name, value):
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xffffffff:
+        raise ValueError('newc ' + name + ' must be an unsigned 32-bit integer')
+    return value
+
+
 def write_newc(root, output, metadata=None):
     root = os.fspath(root)
     entries = []
@@ -43,8 +53,9 @@ def write_newc(root, output, metadata=None):
             nonlocal position
             ino = inodes.setdefault(identity(st), len(inodes) + 1) if st is not None else 0
             encoded = name.encode() + b'\0'
-            header = b'070701' + b''.join(b'%08X' % value for value in (
-                ino, mode, 0, 0, nlink, mtime, len(data), 0, 0, 0, 0, len(encoded), 0))
+            values = (ino, mode, 0, 0, nlink, mtime, len(data), 0, 0, 0, 0, len(encoded), 0)
+            header = b'070701' + b''.join(b'%08X' % _header_value(field, value)
+                                          for field, value in zip(_NEWC_FIELDS, values))
             blob = header + encoded
             blob += b'\0' * (-len(blob) % 4)
             blob += data + b'\0' * (-len(data) % 4)
@@ -55,6 +66,7 @@ def write_newc(root, output, metadata=None):
             host = os.path.join(root, path)
             st = os.lstat(host)
             mode, mtime = metadata(host, st) if metadata else (st.st_mode & ~0o7000, 0)
+            mode, mtime = _header_value('mode', mode), _header_value('mtime', mtime)
             if stat.S_IFMT(mode) != stat.S_IFMT(st.st_mode):
                 raise ValueError('metadata changes file type: ' + path)
             if stat.S_ISDIR(st.st_mode):
