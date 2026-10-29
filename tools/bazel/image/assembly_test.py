@@ -16,6 +16,7 @@ import re
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import onie
@@ -333,6 +334,21 @@ class AssemblyTest(unittest.TestCase):
         self.assertEqual(files["EFI/BOOT/BOOTX64.EFI"].read_bytes(), shim.read_bytes())
         self.assertEqual(files["EFI/SONiC-OS/grubx64.efi"].read_bytes(), grub.read_bytes())
         self.assertIn("/grub", files["EFI/debian/grub.cfg"].read_text())
+        for filename in ("../BOOTX64.EFI", "EFI/BOOTX64.EFI", r"..\BOOTX64.EFI"):
+            invalid = dict(layout, efi_boot_filename=filename)
+            with self.assertRaisesRegex(ValueError, "basename"):
+                disk_image.efi_entries(spec, invalid, self.root, [{"role": "sonic", "label": "SONiC-OS"}], None)
+        invalid_files = dict(spec["efi_files"])
+        invalid_files[r"EFI/SONiC-OS\extra.efi"] = str(grub)
+        with self.assertRaisesRegex(ValueError, "POSIX path"):
+            disk_image.efi_entries(dict(spec, efi_files=invalid_files), layout, self.root,
+                                   [{"role": "sonic", "label": "SONiC-OS"}], None)
+        invalid = dict(layout, grub_platform="x86_64-efi", grub_prefix="/grub",
+                       grub_modules=[], efi_grub_filename=r"grub\extra.efi")
+        with patch.object(disk_image, "run"):
+            with self.assertRaisesRegex(ValueError, "POSIX path"):
+                disk_image.efi_entries({"uefi_mode": "grub", "grub_mkimage": "unused"}, invalid, self.root,
+                                       [{"role": "sonic", "label": "SONiC-OS"}], self.root)
         spec["efi_bootloader"] = "missing.efi"
         with self.assertRaisesRegex(ValueError, "missing"):
             disk_image.efi_entries(spec, layout, self.root, [{"role": "sonic", "label": "SONiC-OS"}], None)

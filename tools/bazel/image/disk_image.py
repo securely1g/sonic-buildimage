@@ -120,6 +120,13 @@ def prepare_grub_environment(spec, work):
 
 def efi_entries(spec, layout, work, partitions, assets):
     """EFI paths follow the installer; signed files remain byte-identical."""
+    fallback_name = layout["efi_boot_filename"]
+    if not isinstance(fallback_name, str) or "\\" in fallback_name:
+        raise ValueError("EFI fallback filename must be a basename without backslashes")
+    fallback_path = PurePosixPath(fallback_name)
+    if fallback_path.is_absolute() or len(fallback_path.parts) != 1 or ".." in fallback_path.parts:
+        raise ValueError("EFI fallback filename must be a basename")
+    fallback_name = fallback_path.name
     mode = spec.get("uefi_mode", "grub")
     if mode == "signed":
         files = {relative(name): Path(path) for name, path in spec["efi_files"].items()}
@@ -135,9 +142,10 @@ def efi_entries(spec, layout, work, partitions, assets):
     else:
         raise ValueError("unsupported UEFI mode " + mode)
     for name in files:
-        if not name.startswith("EFI/") or name.endswith("/"):
-            raise ValueError("EFI file destination must be beneath EFI/: " + name)
-    fallback = "EFI/BOOT/" + layout["efi_boot_filename"]
+        # Mtools treats both slash and backslash as directory separators.
+        if "\\" in name or not name.startswith("EFI/") or name.endswith("/"):
+            raise ValueError("EFI file destination must be a POSIX path beneath EFI/: " + name)
+    fallback = "EFI/BOOT/" + fallback_name
     if fallback in files and files[fallback] != files[loader]:
         raise ValueError("EFI fallback conflicts with selected bootloader")
     files[fallback] = files[loader]
