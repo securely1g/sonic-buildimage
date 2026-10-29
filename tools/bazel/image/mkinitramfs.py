@@ -641,6 +641,19 @@ class Mkinitramfs:
                 queue.append((found, sub, chain if not inf['runpath'] else own_rpath))
         return order + [rtld]
 
+    def target_elf(self, src, role, data=None):
+        """Read native target code; callers keep opaque firmware outside this check."""
+        canonical = self.r.canon(src)
+        if canonical is None:
+            raise ValueError('missing ' + role + ': ' + src)
+        info = elf_read(self.r.host(canonical), data=data)
+        if info is None:
+            raise ValueError(role + ' is not ELF: ' + src)
+        if info['machine'] != self.a['machine']:
+            raise ValueError('%s ELF architecture mismatch for %s: machine %d does not match %s' %
+                             (role, src, info['machine'], self.arch))
+        return info
+
     def copy_exec(self, src, target=None):
         target = target or src
         rc = self.copy_file('binary', src, target)
@@ -688,7 +701,7 @@ class Mkinitramfs:
             if self.copy_file('module', kmod):
                 continue
             module_path = self.r.host(self.r.canon(kmod))
-            info = elf_read(module_path, data=self.module_bytes(module_path))
+            info = self.target_elf(kmod, 'kernel module', data=self.module_bytes(module_path))
             modinfo = elf_section(info, '.modinfo') or b''
             for item in modinfo.split(b'\0'):
                 if item.startswith(b'firmware='):
@@ -1012,11 +1025,13 @@ class Mkinitramfs:
             if command in ('gzip', 'kinit', 'zcat'):
                 continue
             if not self.r.exists(self.dpath('/sbin/' + command)):
+                self.target_elf(src, 'klibc program')
                 self.cp_p(src, self.dpath('/bin'), no_clobber=True)
         libs = self.r.glob('/usr/lib', 'klibc-*.so')
         if not libs:
             raise RuntimeError('klibc-utils hook: no /usr/lib/klibc-*.so')
         for src in libs:
+            self.target_elf(src, 'klibc library')
             self.cp_p(src, self.dpath('/lib'))
 
     def hook_mke2fs(self):

@@ -9,6 +9,7 @@ import stat
 import struct
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -260,6 +261,51 @@ class InitrdTest(unittest.TestCase):
                 else:
                     self.assertEqual(mk.copy_exec('/usr/bin/' + name), 0)
                     self.assertEqual((self.root / 'staged/usr/bin' / name).read_bytes(), content)
+
+    def test_klibc_and_modules_match_target_architecture(self):
+        def header(machine, kind):
+            ident = b'\x7fELF' + bytes([2, 1, 1]) + bytes(9)
+            return struct.pack('<16sHHIQQQIHHHHHH', ident, kind, machine, 1, 0, 64, 0, 0, 64, 56, 0, 64, 0, 0)
+
+        for name in ('usr/lib/klibc/bin', 'staged/bin', 'staged/lib', 'staged/sbin',
+                     'lib/modules/vendor-release', 'staged/lib/modules/vendor-release'):
+            (self.root / name).mkdir(parents=True, exist_ok=True)
+        program = self.root / 'usr/lib/klibc/bin/cat'
+        library = self.root / 'usr/lib/klibc-test.so'
+        module = self.root / 'lib/modules/vendor-release/test.ko'
+        program.write_bytes(header(62, 2))
+        library.write_bytes(header(62, 3))
+        module.write_bytes(header(62, 1))
+        for path in (program, library, module):
+            self.fs.meta[path.relative_to(self.root).as_posix()] = (stat.S_IFREG | 0o755, 0, 0, 0)
+        mk = object.__new__(Mkinitramfs)
+        mk.r, mk.D, mk.dmeta, mk.log = self.fs, '/staged', {}, []
+        mk.arch, mk.a, mk.version = 'arm64', ARCH['arm64'], 'vendor-release'
+        with self.assertRaisesRegex(ValueError, 'klibc program.*architecture mismatch'):
+            mk.hook_klibc_utils()
+        program.write_bytes(header(183, 2))
+        with self.assertRaisesRegex(ValueError, 'klibc library.*architecture mismatch'):
+            mk.hook_klibc_utils()
+        library.write_bytes(header(183, 3))
+        mk.hook_klibc_utils()
+        self.assertEqual((self.root / 'staged/bin/cat').read_bytes(), program.read_bytes())
+        self.assertEqual((self.root / 'staged/lib/klibc-test.so').read_bytes(), library.read_bytes())
+        modprobe = SimpleNamespace(stdout=('insmod ' + str(module) + '\n').encode())
+        with patch.object(mk, 'kmod_tool', return_value=modprobe):
+            with self.assertRaisesRegex(ValueError, 'kernel module.*architecture mismatch'):
+                mk.manual_add_modules(['test'])
+        module.write_bytes(header(183, 1))
+        mk.D, mk.dmeta = '/second-staged', {}
+        (self.root / 'second-staged').mkdir()
+        with patch.object(mk, 'kmod_tool', return_value=modprobe):
+            mk.manual_add_modules(['test'])
+        self.assertEqual((self.root / 'second-staged/usr/lib/modules/vendor-release/test.ko').read_bytes(), module.read_bytes())
+        firmware = self.root / 'lib/firmware/test.bin'
+        firmware.parent.mkdir(parents=True)
+        firmware.write_bytes(b'opaque device firmware')
+        self.fs.meta['lib/firmware/test.bin'] = (stat.S_IFREG | 0o644, 0, 0, 0)
+        self.assertTrue(mk.add_firmware('test.bin'))
+        self.assertEqual((self.root / 'second-staged/usr/lib/firmware/test.bin').read_bytes(), firmware.read_bytes())
 
     def test_rootfs_boot_bytes_and_module_directory_must_match_the_producer(self):
         layer, records = self.kernel_layer('kernel')
