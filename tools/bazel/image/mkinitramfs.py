@@ -206,7 +206,6 @@ class Rootfs:
         return c.strip('/'), base
 
     def apply_layer(self, path, skip_prefixes=()):
-        created = set()
         with tarfile.open(path, 'r:*') as tf:
             members = tf.getmembers()
             for m in members:
@@ -218,6 +217,7 @@ class Rootfs:
                 base = parts[-1] if parts else ''
                 if base.startswith('.wh.') and base[4:] in ('', '.', '..'):
                     raise ValueError('invalid rootfs whiteout target: ' + m.name)
+            entries = []
             for m in members:
                 name = m.name
                 while name.startswith('./'):
@@ -227,32 +227,38 @@ class Rootfs:
                     continue
                 if any(name == p or name.startswith(p + '/') for p in skip_prefixes):
                     continue
+                entries.append((m, name))
+
+            # OCI whiteouts remove lower-layer state, regardless of where the
+            # marker appears relative to this layer's own entries.
+            for m, name in entries:
                 base = name.rsplit('/', 1)[-1]
-                if base.startswith('.wh.'):
-                    pd = name.rsplit('/', 1)[0] if '/' in name else ''
-                    pc = self.canon('/' + pd) if pd else '/'
-                    if pc is None:
-                        continue
-                    d = pc.strip('/')
-                else:
-                    d, base = self._parent(name)
-                rel = (d + '/' + base) if d else base
-                hp = self.h + '/' + rel
+                if not base.startswith('.wh.'):
+                    continue
+                pd = name.rsplit('/', 1)[0] if '/' in name else ''
+                pc = self.canon('/' + pd) if pd else '/'
+                if pc is None:
+                    continue
+                d = pc.strip('/')
                 if base == '.wh..wh..opq':
                     hd = self.h + '/' + d if d else self.h
                     for n in os.listdir(hd):
                         r = (d + '/' + n) if d else n
-                        if r not in created:
-                            self._remove(hd + '/' + n)
-                            self._drop_meta(r)
-                    continue
-                if base.startswith('.wh.'):
+                        self._remove(hd + '/' + n)
+                        self._drop_meta(r)
+                else:
                     r = (d + '/' + base[4:]) if d else base[4:]
-                    if r not in created and os.path.lexists(self.h + '/' + r):
+                    if os.path.lexists(self.h + '/' + r):
                         self._remove(self.h + '/' + r)
                         self._drop_meta(r)
+
+            # Preserve stream order for ordinary entries and hardlinks.
+            for m, name in entries:
+                if name.rsplit('/', 1)[-1].startswith('.wh.'):
                     continue
-                created.add(rel)
+                d, base = self._parent(name)
+                rel = (d + '/' + base) if d else base
+                hp = self.h + '/' + rel
                 if os.path.lexists(hp) and not (m.isdir() and os.path.isdir(hp) and not os.path.islink(hp)):
                     self._remove(hp)
                     self._drop_meta(rel)

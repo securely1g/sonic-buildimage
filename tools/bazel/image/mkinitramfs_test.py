@@ -85,6 +85,32 @@ class InitrdTest(unittest.TestCase):
         self.fs.apply_layer(layer)
         self.assertEqual(os.readlink(self.root / 'relative-link'), '../usr/bin')
 
+    def test_whiteouts_apply_before_this_layers_normal_entries(self):
+        for index, whiteout in enumerate(('d/.wh.sub', 'd/.wh..wh..opq')):
+            for order in ('first', 'last'):
+                with self.subTest(whiteout=whiteout, order=order):
+                    case = self.root / ('whiteout-' + str(index) + '-' + order)
+                    case.mkdir()
+                    fs = Rootfs(str(case))
+                    lower = Path(self.temp.name) / ('lower-' + str(index) + '-' + order + '.tar')
+                    with tarfile.open(lower, 'w') as archive:
+                        member = tarfile.TarInfo('d/sub/lower')
+                        member.size = 5
+                        archive.addfile(member, io.BytesIO(b'lower'))
+                    fs.apply_layer(lower)
+
+                    upper = Path(self.temp.name) / ('upper-' + str(index) + '-' + order + '.tar')
+                    entries = [('d/sub/new', b'first'), ('d/sub/new', b'upper')]
+                    entries.insert(0 if order == 'first' else len(entries), (whiteout, b''))
+                    with tarfile.open(upper, 'w') as archive:
+                        for name, content in entries:
+                            member = tarfile.TarInfo(name)
+                            member.size = len(content)
+                            archive.addfile(member, io.BytesIO(content))
+                    fs.apply_layer(upper)
+                    files = {path.relative_to(case).as_posix(): path.read_bytes() for path in case.rglob('*') if path.is_file()}
+                    self.assertEqual(files, {'d/sub/new': b'upper'})
+
     def test_script_prereqs_and_tsort(self):
         script = 'PREREQ="udev"\nprereqs() { echo "$PREREQ"; }\ncase "$1" in\nprereqs) prereqs\nexit 0;;\nesac\n'
         self.assertEqual(script_prereqs(script, 'synthetic-hook'), 'udev')
