@@ -50,6 +50,41 @@ class InitrdTest(unittest.TestCase):
         self.assertEqual((self.root / 'usr/lib/staged').read_bytes(), b'new bytes')
         self.assertEqual(self.fs.rmeta('/usr/lib/staged')[0], stat.S_IFREG | 0o755)
 
+    def test_layer_rejects_parent_components_before_writes(self):
+        self.root.parent.chmod(0o755)
+        (self.root / 'target').write_bytes(b'target')
+        cases = [
+            ('..', tarfile.DIRTYPE, '', 'parent component'),
+            ('linked', tarfile.LNKTYPE, '../target', 'parent component'),
+            ('var/lib/docker/../escape', tarfile.REGTYPE, '', 'parent component'),
+            ('.wh.', tarfile.REGTYPE, '', 'invalid rootfs whiteout target'),
+            ('.wh..', tarfile.REGTYPE, '', 'invalid rootfs whiteout target'),
+            ('.wh...', tarfile.REGTYPE, '', 'invalid rootfs whiteout target'),
+        ]
+        for index, (name, kind, target, error) in enumerate(cases):
+            with self.subTest(name=name, target=target):
+                layer = Path(self.temp.name) / ('parent-' + str(index) + '.tar')
+                with tarfile.open(layer, 'w') as archive:
+                    before = tarfile.TarInfo('before-invalid')
+                    before.size = 1
+                    archive.addfile(before, io.BytesIO(b'x'))
+                    member = tarfile.TarInfo(name)
+                    member.type, member.linkname, member.mode = kind, target, 0
+                    member.size = 1 if kind == tarfile.REGTYPE else 0
+                    archive.addfile(member, io.BytesIO(b'x') if member.size else None)
+                with self.assertRaisesRegex(ValueError, error):
+                    self.fs.apply_layer(layer, skip_prefixes=('var/lib/docker',))
+                self.assertEqual(stat.S_IMODE(self.root.parent.stat().st_mode), 0o755)
+                self.assertFalse((self.root / 'before-invalid').exists())
+
+        layer = Path(self.temp.name) / 'relative-symlink.tar'
+        with tarfile.open(layer, 'w') as archive:
+            member = tarfile.TarInfo('relative-link')
+            member.type, member.linkname = tarfile.SYMTYPE, '../usr/bin'
+            archive.addfile(member)
+        self.fs.apply_layer(layer)
+        self.assertEqual(os.readlink(self.root / 'relative-link'), '../usr/bin')
+
     def test_script_prereqs_and_tsort(self):
         script = 'PREREQ="udev"\nprereqs() { echo "$PREREQ"; }\ncase "$1" in\nprereqs) prereqs\nexit 0;;\nesac\n'
         self.assertEqual(script_prereqs(script, 'synthetic-hook'), 'udev')

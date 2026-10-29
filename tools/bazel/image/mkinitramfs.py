@@ -208,7 +208,17 @@ class Rootfs:
     def apply_layer(self, path, skip_prefixes=()):
         created = set()
         with tarfile.open(path, 'r:*') as tf:
-            for m in tf:
+            members = tf.getmembers()
+            for m in members:
+                if '..' in m.name.split('/'):
+                    raise ValueError('parent component in rootfs layer member: ' + m.name)
+                if m.islnk() and '..' in m.linkname.split('/'):
+                    raise ValueError('parent component in rootfs hardlink target: ' + m.linkname)
+                parts = [part for part in m.name.split('/') if part not in ('', '.')]
+                base = parts[-1] if parts else ''
+                if base.startswith('.wh.') and base[4:] in ('', '.', '..'):
+                    raise ValueError('invalid rootfs whiteout target: ' + m.name)
+            for m in members:
                 name = m.name
                 while name.startswith('./'):
                     name = name[2:]
