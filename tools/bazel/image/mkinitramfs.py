@@ -1329,9 +1329,15 @@ def build_initrd(spec, output, report):
             directory = root.host(root.canon(confdir + '/conf.d', missing='all'))
             os.makedirs(directory, exist_ok=True)
             destination = os.path.join(directory, name)
-            shutil.copyfile(extra, destination)
-            os.chmod(destination, 0o644)
-            root.meta[os.path.relpath(destination, root.h)] = (stat.S_IFREG | 0o644, 0, 0, 0)
+            relative = os.path.relpath(destination, root.h)
+            # Replace the final entry itself instead of following a rootfs symlink.
+            if os.path.lexists(destination):
+                root._remove(destination)
+            root._drop_meta(relative)
+            with open(extra, 'rb') as source, open(destination, 'xb') as target:
+                shutil.copyfileobj(source, target, 1 << 20)
+                os.fchmod(target.fileno(), 0o644)
+            root.meta[relative] = (stat.S_IFREG | 0o644, 0, 0, 0)
         mk = Mkinitramfs(root, spec, work)
         mk.build(confdir)
         spec['compression_level'] = mk.compression_level

@@ -256,6 +256,52 @@ class InitrdTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'lacks matching producer module directory'):
             build_initrd(spec, str(self.root / 'initrd'), str(self.root / 'audit.json'))
 
+    def test_extra_config_replaces_final_symlink_inside_rootfs(self):
+        sentinel = Path(self.temp.name) / 'outside-rootfs-sentinel'
+        sentinel.write_bytes(b'preserve this sentinel')
+        extra = Path(self.temp.name) / 'override'
+        extra.write_bytes(b'MODULES=list\n')
+        layer = Path(self.temp.name) / 'config-rootfs.tar'
+        records = {}
+        with tarfile.open(layer, 'w') as archive:
+            for name in ('lib/modules/vendor-release', 'etc/initramfs-tools/conf.d'):
+                member = tarfile.TarInfo(name)
+                member.type, member.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(member)
+            for kind in ('vmlinuz', 'config', 'System.map'):
+                content = (kind + ' declared bytes').encode()
+                name = 'boot/' + kind + '-vendor-release'
+                member = tarfile.TarInfo(name)
+                member.mode, member.size = 0o644, len(content)
+                archive.addfile(member, io.BytesIO(content))
+                records[kind] = {'path': name, 'sha256': hashlib.sha256(content).hexdigest()}
+            member = tarfile.TarInfo('etc/initramfs-tools/conf.d/override')
+            member.type, member.linkname = tarfile.SYMTYPE, str(sentinel)
+            archive.addfile(member)
+        metadata = Path(self.temp.name) / 'config-kernel.json'
+        metadata.write_text(json.dumps({'schema': 1, 'architecture': 'amd64', 'kernel_release': 'vendor-release',
+                                        'module_directory': 'lib/modules/vendor-release', 'boot': records}))
+        observed = {}
+
+        class ProbeAssembler:
+            def __init__(probe, root, spec, work):
+                probe.root = root
+
+            def build(probe, confdir):
+                path = probe.root.host(probe.root.canon(confdir + '/conf.d/override', follow=False))
+                observed['regular'] = stat.S_ISREG(os.lstat(path).st_mode)
+                if observed['regular']:
+                    observed['bytes'] = Path(path).read_bytes()
+                raise RuntimeError('probe stopped before assembly')
+
+        spec = {'layers': [str(layer)], 'kernel_metadata': str(metadata), 'extra_config': [str(extra)]}
+        with patch('mkinitramfs.Mkinitramfs', ProbeAssembler):
+            with self.assertRaisesRegex(RuntimeError, 'probe stopped before assembly'):
+                build_initrd(spec, str(self.root / 'initrd'), str(self.root / 'audit.json'))
+        self.assertEqual(sentinel.read_bytes(), b'preserve this sentinel')
+        self.assertTrue(observed['regular'])
+        self.assertEqual(observed['bytes'], extra.read_bytes())
+
     def test_busybox_source_identity_ignores_only_binary_rebuild_suffix(self):
         (self.root / 'var/lib/dpkg').mkdir(parents=True)
         (self.root / 'staged/bin').mkdir(parents=True)
