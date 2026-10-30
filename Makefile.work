@@ -264,6 +264,25 @@ $(shell \
 	PIP_HTTP_TIMEOUT=$(PIP_HTTP_TIMEOUT) \
 	scripts/generate_buildinfo_config.sh)
 
+# Optional host trust belongs to builder execution, not the installed SONiC image.
+# Its content digest participates in the existing native builder image tags.
+SONIC_BUILD_SLAVE_CA_SHA256 :=
+ifneq ($(filter bookworm trixie,$(BLDENV)),)
+ifneq ($(strip $(SONIC_BUILD_SLAVE_CA_BUNDLE)),)
+SONIC_BUILD_SLAVE_CA_SHA256 := $(shell python3 scripts/stage_build_ca.py \
+	--bundle "$(SONIC_BUILD_SLAVE_CA_BUNDLE)" \
+	--output "$(SLAVE_DIR)/build-ca-certificates")
+ifneq ($(.SHELLSTATUS),0)
+$(error Failed to prepare SONIC_BUILD_SLAVE_CA_BUNDLE)
+endif
+else ifneq ($(wildcard $(SLAVE_DIR)/build-ca-certificates),)
+$(shell python3 scripts/stage_build_ca.py --output "$(SLAVE_DIR)/build-ca-certificates")
+ifneq ($(.SHELLSTATUS),0)
+$(error Failed to clear native build CA certificates)
+endif
+endif
+endif
+
 # Generate the slave Dockerfile, and prepare build info for it
 $(shell CONFIGURED_ARCH=$(CONFIGURED_ARCH) \
 	MULTIARCH_QEMU_ENVIRON=$(MULTIARCH_QEMU_ENVIRON) \
@@ -276,6 +295,7 @@ $(shell CONFIGURED_ARCH=$(CONFIGURED_ARCH) \
 	FIPS_VERSION=$(FIPS_VERSION) \
 	FIPS_GOLANG_MAIN_VERSION=$(FIPS_GOLANG_MAIN_VERSION) \
 	FIPS_GOLANG_VERSION=$(FIPS_GOLANG_VERSION) \
+	SONIC_BUILD_SLAVE_CA_SHA256=$(SONIC_BUILD_SLAVE_CA_SHA256) \
 	j2 $(SLAVE_DIR)/Dockerfile.j2 > $(SLAVE_DIR)/Dockerfile)
 
 ifeq ($(CROSS_BUILD_ENVIRON), y)

@@ -94,6 +94,11 @@ enables read-only reuse; `--upload-local-results` explicitly permits writes.
 `--ca-bundle` and `--java-trust-store` supply public trust material. The source
 launcher verifies the pinned native Bazel executable and requires the kernel
 action to use `linux-sandbox`; it does not start a worker container.
+The launcher ignores system Bazel rc files. When a native builder has opted into
+host CA trust, Make detects its installed `sonic-build-trust/bazel.bazelrc` marker
+and passes the merged Debian PEM and Java trust stores through those explicit
+options. Without that marker, Make leaves trust options unset, including when
+ambient CA environment variables are present.
 
 Automatic Make preparation serializes concurrent requests and uses the existing
 `SONIC_BAZEL_CACHE_SOURCE` setting. The existing slave mount exposes this cache

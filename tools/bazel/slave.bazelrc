@@ -8,6 +8,9 @@
 # Share downloaded inputs and completed results, while each builder keeps its
 # own output base, execution directory and Bazel server state.
 
+# The native builder creates this only for an explicit execution CA bundle.
+try-import /usr/local/share/sonic-build-trust/bazel.bazelrc
+
 # Caches for the slave
 #
 # Set the disk and repository caches to a mounted volume in the slave.

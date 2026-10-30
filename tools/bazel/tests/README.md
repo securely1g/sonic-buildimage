@@ -18,12 +18,23 @@ Run the self-contained unit tests from the repository root:
 python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
 ```
 
-The suite uses Python 3, Make, Bash, Git, `j2` from `j2cli`, `jq`, a C compiler,
+The suite uses Python 3, Make, Bash, Git, OpenSSL, `j2` from `j2cli`, `jq`, a C compiler,
 `readelf` and `objcopy`. The Make tests use a controlled Bazel executable and small local
 archives. The AMD64 P4RT split-debug checks also require GNU `dwp` and GDB;
 Trixie supplies `dwp` through `binutils-gold`. Fixture generators also live here so CI's real Bazel cache and Make
 export checks use the same inputs. `oci_base_fixture.py` also supplies the OCI
 metadata and ordered tar-file builders used by the shared OCI image tests.
+
+`stage_build_ca_test.py` exercises opt-in native builder trust with synthetic public
+certificates: CA-only validation, staging, idempotence, removal, builder identity,
+runtime-image exclusion, Java rc visibility and real Make failure propagation.
+It does not change host trust, run Docker builds or contact the network. Run it
+with the adjacent Dockerfile hook regressions after changing that integration:
+
+```sh
+python3 -B -m unittest discover -s tools/bazel/tests -p 'stage_build_ca_test.py'
+python3 -B -m unittest discover -s tools/bazel/tests -p 'docker_buildinfo_test.py'
+```
 
 Two unrelated container families exercise independent runtime/debug builder
 switches with caching off and with the real Make package-cache loader. A corrupt

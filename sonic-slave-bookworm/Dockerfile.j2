@@ -34,6 +34,12 @@ COPY ["sources.list.amd64", "/etc/apt/sources.list"]
 RUN apt -o Acquire::https::Verify-Peer=false update && \
     apt -o Acquire::https::Verify-Peer=false install -y ca-certificates
 
+{%- if SONIC_BUILD_SLAVE_CA_SHA256 %}
+# Native builder CA bundle SHA256: {{ SONIC_BUILD_SLAVE_CA_SHA256 }}
+COPY ["build-ca-certificates/", "/usr/local/share/ca-certificates/sonic-build/"]
+RUN update-ca-certificates
+{%- endif %}
+
 {%- if CROSS_BUILD_ENVIRON == "y" %}
 {%- if CONFIGURED_ARCH == "armhf" %}
 ARG arch=armhf
@@ -830,6 +836,20 @@ RUN CARGO_HOME=$RUST_ROOT $RUST_ROOT/bin/cargo install --locked rust-audit-info@
 # /usr/local/bin already does.
 COPY buildinfo/cargo-wrapper /usr/local/bin/cargo
 RUN chmod 0755 /usr/local/bin/cargo
+
+
+{%- if SONIC_BUILD_SLAVE_CA_SHA256 %}
+# Use the merged Debian trust store for native build tools with custom CA paths.
+# Keep this after builder setup so existing native Docker layers remain reusable.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+RUN mkdir -p /usr/local/share/sonic-build-trust && \
+    printf '%s\n' 'startup --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts' > /usr/local/share/sonic-build-trust/bazel.bazelrc && \
+    printf '%s\n' 'try-import /usr/local/share/sonic-build-trust/bazel.bazelrc' >> /etc/bazel.bazelrc
+{%- endif %}
 
 {# Include vendor-defined rules for slave container if it exists.  Contained in ../files #}
 {% with DEBIAN_VERSION='bookworm' %}

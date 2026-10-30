@@ -4,6 +4,38 @@ These helpers validate buildimage artifacts and preserve build evidence. The
 shared container runner discovers the selected owner's Bazel CI targets;
 package expectations remain in the owner declarations and tests.
 
+For native builders behind a trusted TLS proxy, explicitly pass a CA-only PEM
+bundle containing the public roots needed by the build. For example, when the
+host's combined trust bundle is already configured:
+
+```sh
+export SONIC_BUILD_SLAVE_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+make configure PLATFORM=vs
+make target/sonic-vs.bin
+```
+
+Keep this setting for every Make invocation that prepares a builder. Make
+validates and stages individual anchors in the native Bookworm/Trixie builder
+contexts only; runtime images and the shared build-hook source tree receive no
+certificates. Other native distributions do not opt in to this setting.
+The bundle must contain only CA certificates, with no keys, leaf certificates,
+or other material, and must be at most 8 MiB. Its SHA256 participates in the
+generated builder identity. Changing the bundle rebuilds the affected builder;
+unsetting the variable removes its generated trust configuration and staging on
+the next preparation. With no opt-in, the normal builder trust configuration is
+unchanged. Do not publish the local trust bundle or derived builder images as
+public build artifacts.
+
+The templates install the anchors with `update-ca-certificates` before later
+package and Git downloads. Debian's merged system store serves apt, Git, curl and
+wget without changing inherited TLS options or the packaged wget configuration.
+The completed builders also select that store explicitly for Git, curl and
+Python/requests/pip. Debian's package hooks populate its Java store; Bazel's
+bundled JVM selects it through an optional startup rc, including when Make
+mounts its cache rc or disables that mount. These final client settings follow
+the expensive builder setup so earlier Docker layers can remain reusable;
+they precede optional vendor configuration.
+
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
 archive checks, lightweight hosted regressions and the full VS integration
