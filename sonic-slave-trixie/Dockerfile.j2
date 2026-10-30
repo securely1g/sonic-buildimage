@@ -831,6 +831,13 @@ RUN CARGO_HOME=$RUST_ROOT $RUST_ROOT/bin/cargo install --locked rust-audit-info@
 COPY buildinfo/cargo-wrapper /usr/local/bin/cargo
 RUN chmod 0755 /usr/local/bin/cargo
 
+{%- if SONIC_BUILD_SLAVE_CA_SHA256 %}
+# Keep Bazel's embedded JDK while using the builder's configured public trust.
+RUN mkdir -p /etc/bazel && \
+    printf '%s\n' 'startup --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts' > /etc/bazel/sonic-build-ca.bazelrc && \
+    printf '%s\n' 'try-import /etc/bazel/sonic-build-ca.bazelrc' >> /etc/bazel.bazelrc
+{%- endif %}
+
 {# Include vendor-defined rules for slave container if it exists.  Contained in ../files #}
 {% with DEBIAN_VERSION='trixie' %}
 {% include 'files/sonic-slave-Dockerfile.vendor.j2' ignore missing %}

@@ -115,6 +115,8 @@ class BuildCaTest(unittest.TestCase):
                 default = self.render(distro)
                 self.assertNotIn("build-ca-certificates", default)
                 self.assertNotIn("Native builder CA bundle", default)
+                self.assertNotIn("javax.net.ssl.trustStore", default)
+                self.assertNotIn("/etc/bazel/sonic-build-ca.bazelrc", default)
                 configured = self.render(distro, digest)
                 install = 'COPY ["build-ca-certificates/", "/usr/local/share/ca-certificates/sonic-build/"]'
                 self.assertIn("Native builder CA bundle SHA256: " + digest, configured)
@@ -126,6 +128,22 @@ class BuildCaTest(unittest.TestCase):
                 # must not add another TLS-verification bypass.
                 self.assertEqual(configured.count("Verify-Peer=false"), default.count("Verify-Peer=false"))
                 self.assertNotIn("GIT_SSL_NO_VERIFY", configured)
+                self.assertIn("startup --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts", configured)
+                self.assertIn("> /etc/bazel/sonic-build-ca.bazelrc", configured)
+                self.assertIn("try-import /etc/bazel/sonic-build-ca.bazelrc", configured)
+                self.assertIn(">> /etc/bazel.bazelrc", configured)
+                self.assertNotIn("--server_javabase", configured)
+                self.assertLess(configured.index("RUN chmod 0755 /usr/local/bin/cargo"),
+                                configured.index("startup --host_jvm_args=-Djavax.net.ssl.trustStore="))
+
+    def test_shared_cache_config_preserves_optional_image_owned_trust(self):
+        config = (ROOT / "tools/bazel/slave.bazelrc").read_text()
+        self.assertIn("try-import /etc/bazel/sonic-build-ca.bazelrc\n", config)
+        self.assertIn("common --repository_cache=/bazel_cache/repository_cache", config)
+        self.assertIn("common --disk_cache=/bazel_cache/disk_cache", config)
+        # The mounted file is shared with builders that have no custom CA.
+        self.assertNotIn("javax.net.ssl.trustStore", config)
+        self.assertNotRegex(config, r"(?m)^import /etc/bazel/sonic-build-ca\.bazelrc$")
 
     def make(self, bundle=None):
         scripts = self.workspace / "scripts"

@@ -72,7 +72,12 @@ If the host uses a trusted TLS inspection CA, set
 `SONIC_BUILD_SLAVE_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt` for native
 Bookworm/Trixie jobs. Make validates the public PEM bundle and installs individual
 trust anchors in those builders with `update-ca-certificates`. TLS verification
-remains enabled, and changing the bundle changes the builder tag. Leave the
+remains enabled. Their system Bazel configuration also points its embedded JDK
+at Debian's Java trust store, which receives these same certificates. Both the
+image configuration and the mounted shared-cache configuration import the optional
+image-owned `/etc/bazel/sonic-build-ca.bazelrc`, so enabling shared caches preserves
+that trust setting. Changing the bundle or builder configuration changes the
+builder tag. Leave the
 variable unset on hosts that need no additional trust. The generated certificates
 stay in ignored builder context directories; do not commit certificates or keys.
 This setting does not add host trust to the installed SONiC filesystem.
