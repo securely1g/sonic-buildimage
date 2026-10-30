@@ -135,7 +135,7 @@ class ManagerLifecycleTests(unittest.TestCase):
         finally:
             self.held.remove(path)
 
-    def make_registration(self):
+    def make_registration(self, config=CONFIG):
         self.counter += 1
         stamp = "20261010T000000Z-" + f"{self.counter:08x}"
         attempt = self.home / "attempts" / stamp
@@ -144,7 +144,10 @@ class ManagerLifecycleTests(unittest.TestCase):
         (attempt / "_diag/runner.log").write_text("keep diagnostic evidence\n")
         (attempt / "_work").mkdir()
         (attempt / "_work/build.log").write_text("keep previous checkout\n")
-        registration = {"id": 100 + self.counter, "name": "sonic-vs-master-" + stamp, "attempt": str(attempt)}
+        route = "bin" if config.get("build_target") else config["pr"] or "master"
+        label = "sonic-vs-bin" if config.get("build_target") else (
+            f"sonic-vs-source-pr-{config['pr']}" if config["pr"] else "sonic-vs-source-master")
+        registration = {"id": 100 + self.counter, "name": f"sonic-vs-{route}-" + stamp, "attempt": str(attempt)}
         data = {"agentId": registration["id"], "agentName": registration["name"], "ephemeral": True,
                 "workFolder": "_work", "gitHubUrl": "https://github.com/" + CONFIG["repo"]}
         (attempt / ".runner").write_text(json.dumps(data), encoding="utf-8-sig")
@@ -154,7 +157,7 @@ class ManagerLifecycleTests(unittest.TestCase):
         current.symlink_to(attempt)
         self.remote[registration["id"]] = {"id": registration["id"], "name": registration["name"],
                                              "status": "offline", "busy": False,
-                                             "labels": [{"name": "sonic-vs-source-master"}]}
+                                             "labels": [{"name": label}]}
         return registration
 
     def request(self, endpoint, deadline=None, method="GET"):
@@ -180,15 +183,98 @@ class ManagerLifecycleTests(unittest.TestCase):
     def register_next(self, command, token, *, env=None):
         self.assertNotIn(manager.REARM_LOCK, self.held, "Child registration owns the shared rearm lock")
         self.assertIn("--register", command)
-        self.assertIn("--master", command)
+        config = CONFIG
+        if "--build-target" in command:
+            self.assertEqual(command[-2:], ["--build-target", "sonic-vs.bin"])
+            self.assertNotIn("--master", command)
+            self.assertNotIn("--pr", command)
+            config = {**CONFIG, "build_target": "sonic-vs.bin"}
+        elif "--pr" in command:
+            config = {**CONFIG, "pr": int(command[command.index("--pr") + 1])}
+        else:
+            self.assertIn("--master", command)
         self.assertNotIn(token, repr(command))
         self.assertEqual(token, "SHORT_LIVED_REGISTRATION_SECRET")
         self.assertFalse({"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "GH_CONFIG_DIR"} & env.keys())
-        return self.make_registration()
+        return self.make_registration(config)
 
     def snapshot(self):
         return {str(path.relative_to(self.home)): path.read_bytes()
                 for path in self.home.rglob("*") if path.is_file() and not path.is_symlink()}
+
+    def test_bin_pool_recovers_then_replaces_native_runner_for_assembly(self):
+        config = {**CONFIG, "build_target": "sonic-vs.bin"}
+        # Simulate a crash after registration but before the manager clears its
+        # marker. Recovery must retain the bin route through the next job.
+        original = self.register_next
+
+        def interrupted_registration(*args, **kwargs):
+            original(*args, **kwargs)
+            raise RuntimeError("interrupted after registration")
+
+        self.register.side_effect = interrupted_registration
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            manager.reconcile(config, self.api)
+        first = manager.current_registration(config)
+        self.assertTrue(first["name"].startswith("sonic-vs-bin-"))
+        self.assertEqual(manager.read_pending(config)["build_target"], "sonic-vs.bin")
+        self.assertEqual(manager.reconcile(config, self.api), "started")
+        self.preflight.assert_called_with(config, first["attempt"])
+        self.assertFalse(manager.PENDING.exists())
+
+        del self.remote[first["id"]]
+        Path(first["attempt"], ".runner").unlink()
+        self.register.side_effect = original
+        self.assertEqual(manager.reconcile(config, self.api), "registered")
+        second = manager.current_registration(config)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertTrue(second["name"].startswith("sonic-vs-bin-"))
+        self.preflight.assert_called_with(config, None)
+        self.assertEqual(self.remote[second["id"]]["labels"], [{"name": "sonic-vs-bin"}])
+        self.assertEqual(Path(first["attempt"], "_work/build.log").read_text(), "keep previous checkout\n")
+
+    def test_bin_route_rejects_full_image_current_and_pending_identity(self):
+        config = {**CONFIG, "build_target": "sonic-vs.bin"}
+        registration = self.make_registration()
+        before = self.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "differs from manager config"):
+            manager.reconcile(config, self.api)
+        self.assertEqual(self.snapshot(), before)
+        del self.remote[registration["id"]]
+        Path(registration["attempt"], ".runner").unlink()
+
+        # Old pending files without build_target remain valid for the old pool,
+        # but cannot be adopted by the bin-only manager.
+        manager.mark_pending(CONFIG)
+        pending = json.loads(manager.PENDING.read_text())
+        pending.pop("build_target")
+        manager.PENDING.write_text(json.dumps(pending))
+        self.assertEqual(manager.read_pending(CONFIG), pending)
+        before = self.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "pending registration config differs"):
+            manager.reconcile(config, self.api)
+        self.assertEqual(self.snapshot(), before)
+        self.register.assert_not_called()
+        self.service.assert_not_called()
+
+    def test_bin_route_requires_remote_bin_label_and_detects_unpublished_runner(self):
+        config = {**CONFIG, "build_target": "sonic-vs.bin"}
+        registration = self.make_registration(config)
+        self.remote[registration["id"]]["labels"] = [{"name": "sonic-vs-source-master"}]
+        with self.assertRaisesRegex(RuntimeError, "routing label differs"):
+            manager.reconcile(config, self.api)
+        Path(registration["attempt"], ".runner").unlink()
+        with self.assertRaisesRegex(RuntimeError, "conflicts with this attempt"):
+            manager.reconcile(config, self.api)
+        self.register.assert_not_called()
+        self.service.assert_not_called()
+
+    def test_pr_route_still_registers_with_pr_selector(self):
+        config = {**CONFIG, "pr": 76}
+        self.assertEqual(manager.reconcile(config, self.api), "registered")
+        self.assertEqual(self.register.call_args.args[0][-2:], ["--pr", "76"])
+        registration = manager.current_registration(config)
+        self.assertTrue(registration["name"].startswith("sonic-vs-76-"))
 
     def test_completed_job_gets_a_fresh_runner_and_active_job_stays_untouched(self):
         self.assertEqual(manager.reconcile(CONFIG, self.api), "registered")
@@ -256,7 +342,7 @@ class ManagerLifecycleTests(unittest.TestCase):
 
     def test_pending_marker_for_different_configuration_is_preserved(self):
         self.make_registration()
-        for change in ({"repo": "another/repository"}, {"pr": 9},
+        for change in ({"repo": "another/repository"}, {"pr": 9}, {"build_target": "sonic-vs.bin"},
                        {"operator": "another-operator"}, {"github_account": "another-account"}):
             with self.subTest(change=change):
                 manager.mark_pending({**CONFIG, **change})
@@ -436,6 +522,23 @@ class ManagerLifecycleTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_bin_config_and_preflight_forward_target_without_changing_default(self):
+        config = {**CONFIG, "build_target": "sonic-vs.bin"}
+        self.assertEqual(manager.validate_config(config), config)
+        with patch.object(manager.rearm, "as_runner") as run:
+            manager.preflight(config, "/data/sonic-runner/attempts/test")
+            run.assert_called_once_with([
+                "/usr/bin/python3", manager.PREFLIGHT_PROGRAM,
+                "--workspace", "/data/sonic-runner/attempts/test",
+                "--build-target", "sonic-vs.bin"])
+            run.reset_mock()
+            manager.preflight(CONFIG)
+            run.assert_called_once_with(["/usr/bin/python3", manager.PREFLIGHT_PROGRAM])
+        for change in ({"build_target": "sonic-vs.img.gz"}, {"build_target": False},
+                       {"build_target": "sonic-vs.bin", "pr": 76}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                manager.validate_config({**CONFIG, **change})
+
     def test_generated_metadata_and_explicit_master_or_pr_are_accepted(self):
         for pr in (None, 9):
             value = {**CONFIG, "pr": pr, "_generated": {"notice": "AUTO-GENERATED. DO NOT EDIT MANUALLY."}}

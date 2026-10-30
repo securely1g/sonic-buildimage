@@ -37,7 +37,7 @@ class GitHubNotFound(rearm.GitHubApiError):
 
 def validate_config(config):
     required = {'operator', 'github_account', 'repo', 'pr'}
-    if not isinstance(config, dict) or not required <= config.keys() or config.keys() - required - {'_generated'}:
+    if not isinstance(config, dict) or not required <= config.keys() or config.keys() - required - {'_generated', 'build_target'}:
         raise RuntimeError('Manager config requires operator, github_account, repo and pr; unknown keys are rejected')
     if not isinstance(config['operator'], str) or not re.fullmatch(r'[a-z_][a-z0-9_-]*', config['operator']):
         raise RuntimeError('operator must name a normal local account')
@@ -48,9 +48,17 @@ def validate_config(config):
         raise RuntimeError('repo must be owner/name')
     if config['pr'] is not None and (type(config['pr']) is not int or config['pr'] < 1):
         raise RuntimeError('pr must be null for master, or a positive PR number')
+    if config.get('build_target') not in (None, 'sonic-vs.bin'):
+        raise RuntimeError('build_target must be null or sonic-vs.bin')
+    if config.get('build_target') == 'sonic-vs.bin' and config['pr'] is not None:
+        raise RuntimeError('sonic-vs.bin selects the shared bin-only pool; pr must be null')
     if config['operator'] in ('root', 'sonic-runner'):
         raise RuntimeError('operator must be a normal account distinct from root and sonic-runner')
     return config
+
+
+def routing_name(config):
+    return 'bin' if config.get('build_target') == 'sonic-vs.bin' else config['pr'] or 'master'
 
 
 def load_config(path=CONFIG_PATH):
@@ -175,7 +183,7 @@ def current_registration(config):
     if path.is_symlink() or not path.is_file():
         raise RuntimeError('Local .runner must be a regular file, not a symlink')
     data = json.loads(path.read_text(encoding='utf-8-sig'))
-    name = f"sonic-vs-{config['pr'] or 'master'}-{stamp}"
+    name = f"sonic-vs-{routing_name(config)}-{stamp}"
     if (not isinstance(data, dict) or data.get('ephemeral') is not True
             or type(data.get('agentId')) is not int or data['agentId'] <= 0
             or data.get('agentName') != name or data.get('workFolder') != '_work'
@@ -238,7 +246,8 @@ def read_pending(config):
     if (not isinstance(pending, dict)
             or not {'operator', 'github_account', 'repo', 'pr'} <= pending.keys()
             or any(pending.get(key) != config[key] or type(pending.get(key)) is not type(config[key])
-                   for key in ('operator', 'github_account', 'repo', 'pr'))):
+                   for key in ('operator', 'github_account', 'repo', 'pr'))
+            or pending.get('build_target') != config.get('build_target')):
         raise RuntimeError('Previous pending registration config differs from manager config; inspect before rearming')
     return pending
 
@@ -256,6 +265,7 @@ def mark_pending(config):
     fd = os.open(PENDING, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     with os.fdopen(fd, 'w') as stream:
         json.dump({**{key: config[key] for key in ('operator', 'github_account', 'repo', 'pr')},
+                   'build_target': config.get('build_target'),
                    'started_at': time.time(),
                    '_generated': {'notice': 'AUTO-GENERATED. DO NOT EDIT MANUALLY.',
                                   'generator': 'tools/ci/runner/manager.py'}}, stream)
@@ -264,10 +274,12 @@ def mark_pending(config):
         os.fsync(stream.fileno())
 
 
-def preflight(attempt=None):
+def preflight(config, attempt=None):
     command = ['/usr/bin/python3', PREFLIGHT_PROGRAM]
     if attempt:
         command += ['--workspace', attempt]
+    if config.get('build_target'):
+        command += ['--build-target', config['build_target']]
     rearm.as_runner(command)
 
 
@@ -298,7 +310,7 @@ def reconcile(config, api):
                 if (type(remote.get('id')) is not int or remote.get('id') != registration['id'] or remote.get('name') != registration['name']
                         or type(remote.get('busy')) is not bool or remote.get('status') not in ('online', 'offline')
                         or not isinstance(labels, list)
-                        or rearm.routing_label(config['pr']) not in [x.get('name') for x in labels if isinstance(x, dict)]):
+                        or rearm.routing_label(config['pr'], config.get('build_target')) not in [x.get('name') for x in labels if isinstance(x, dict)]):
                     raise RuntimeError('GitHub runner identity, status or routing label differs; no service was started')
                 if pending is not None:
                     # A verified local/remote pair proves the earlier child did
@@ -309,7 +321,7 @@ def reconcile(config, api):
                 if remote['busy']:
                     print('Deferred: GitHub reports this runner busy', flush=True)
                     return 'deferred'
-                preflight(registration['attempt'])
+                preflight(config, registration['attempt'])
                 if not host_idle():
                     return 'deferred'
                 root_command(['systemctl', 'reset-failed', rearm.SERVICE])
@@ -320,10 +332,10 @@ def reconcile(config, api):
         # after a crash between remote registration and publishing current.
         check_pending()
         known = remote_runners(config, api)
-        prefix = f"sonic-vs-{config['pr'] or 'master'}-"
+        prefix = f"sonic-vs-{routing_name(config)}-"
         if any(r['name'].startswith(prefix) or (registration and r['id'] == registration['id']) for r in known):
             raise RuntimeError('An existing repository runner conflicts with this attempt; inspect it before rearming')
-        preflight(registration['attempt'] if registration else None)
+        preflight(config, registration['attempt'] if registration else None)
         token = registration_token(config, api)
         if not host_idle():
             return 'deferred'
@@ -338,7 +350,10 @@ def reconcile(config, api):
     # The registration helper takes the same shared lock and repeats its idle
     # checks, so a manual rearm winning this race cannot produce two listeners.
     command = ['/usr/bin/python3', REARM_PROGRAM, '--register', '--repo', config['repo']]
-    command += ['--pr', str(config['pr'])] if config['pr'] else ['--master']
+    if config.get('build_target'):
+        command += ['--build-target', config['build_target']]
+    else:
+        command += ['--pr', str(config['pr'])] if config['pr'] else ['--master']
     registration = rearm.register_from_operator(command, token, env=ROOT_ENV)
     del token
     if current_registration(config) != registration:

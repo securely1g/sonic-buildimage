@@ -79,11 +79,10 @@ sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.p
 For `sonic-vs.bin` jobs, pass `--build-target sonic-vs.bin` to bootstrap,
 preflight, and manual rearm. This path accepts a real `/data` directory on a
 local ext4 block filesystem and keeps the workspace permission and capacity
-checks. It does not require `/dev/kvm` or the `kvm` group. The automatic manager
-does not carry this target selection; use manual rearm with
-`--build-target sonic-vs.bin` alone for this path. Combining that target with
-`--pr` or `--master` is rejected. Shared `--master` registration retains the
-default KVM admission.
+checks. It does not require `/dev/kvm` or the `kvm` group. Use
+`--build-target sonic-vs.bin` alone with manual rearm or the manager installer
+for this path. Combining that target with `--pr` or `--master` is rejected.
+Shared `--master` registration retains the default KVM admission.
 
 Bootstrap creates `sonic-runner` with a locked password, no administrator group,
 and `docker,kvm` membership by default. Bin-only provisioning adds only `docker`
@@ -160,6 +159,19 @@ sudo systemctl status sonic-vs-runner-manager.timer --no-pager
 sudo journalctl -u sonic-vs-runner-manager.service -n 50 --no-pager
 ```
 
+For a host prepared for bin-only builds, select that pool instead of `--master`:
+
+```sh
+python3 tools/ci/runner/install_manager.py --operator "$USER" --build-target sonic-vs.bin --dry-run
+sudo python3 tools/ci/runner/install_manager.py --operator "$USER" --build-target sonic-vs.bin
+```
+
+The manager records the build target, checks the same bin-only prerequisites
+when registering or restarting a runner, and replenishes `sonic-vs-bin` after
+each job. This allows native preparation and downstream assembly to consume
+separate ephemeral runners on the host. Existing manager configurations without
+a build target retain their full-image KVM checks and routing.
+
 For P330, the operator is `lgh`. `--master` selects the
 `sonic-vs-source-master` routing label used by push/manual VS jobs. To maintain a
 runner for one reviewed PR instead, select `--pr NUMBER`. The manager maintains
@@ -192,6 +204,7 @@ configuration at `/etc/sonic-vs-runner-manager.json`, and the manager service an
 timer. Generated configuration and units identify their generator and say
 `AUTO-GENERATED. DO NOT EDIT MANUALLY.` Rerun the installer to update the selected
 operator, GitHub account (`--github-account`), repository (`--repo`) or route.
+Select `--build-target sonic-vs.bin` to maintain the shared bin-only route.
 Use `--no-enable` to install while leaving automatic registration disabled.
 The installer updates only manager units; the separate job service keeps its
 existing lifecycle.

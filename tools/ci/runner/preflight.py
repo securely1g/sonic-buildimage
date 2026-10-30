@@ -150,9 +150,12 @@ def main():
                              if line.startswith('MemAvailable:')))
     print(f"Available memory: {available_kib / 1024**2:.1f} GiB")
     if available_kib < 10 * 1024**2:
-        parser.error("The VS installer VM alone requests 10 GiB; free memory before building")
+        requirement = ("The native VS build requires at least 10 GiB available"
+                       if args.build_target == "sonic-vs.bin"
+                       else "The VS installer VM alone requests 10 GiB")
+        parser.error(requirement + "; free memory before building")
     if available_kib < 12 * 1024**2:
-        print("NOTE: less than 2 GiB headroom beyond the 10 GiB installer VM; reduce competing work.")
+        print("NOTE: less than 2 GiB headroom beyond the 10 GiB minimum; reduce competing work.")
     if "overlay" not in Path('/proc/filesystems').read_text().split():
         parser.error("Load the overlay filesystem module on the host: sudo modprobe overlay")
     if os_release.get("ID") != "ubuntu" or os_release.get("VERSION_ID") not in ("22.04", "24.04"):

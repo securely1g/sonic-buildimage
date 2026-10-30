@@ -144,6 +144,17 @@ class InstallerTest(unittest.TestCase):
         self.assert_installed(updated)
         self.assertEqual(self.github_factory.call_args.args, (updated,))
 
+    def test_bin_install_persists_target_for_automatic_replacement(self):
+        config = subject.configuration(SimpleNamespace(
+            operator="builder", github_account="securely1g",
+            repo="securely1g/sonic-buildimage", pr=None,
+            build_target="sonic-vs.bin"))
+        subject.install(config)
+        self.assert_installed(config)
+        self.assertEqual(config["build_target"], "sonic-vs.bin")
+        self.assertIsNone(config["pr"])
+        self.github_factory.assert_called_once_with(config)
+
     def test_failed_operator_authentication_changes_no_files_or_units(self):
         subject.install(self.config)
         original = self.snapshot()
@@ -279,6 +290,25 @@ class InstallerTest(unittest.TestCase):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 subject.configuration(SimpleNamespace(**{**args, **override}))
         self.assertEqual(self.commands, [])
+
+    def test_bin_cli_is_exclusive_and_preview_uses_no_host_operations(self):
+        common = ["install_manager.py", "--operator", "builder", "--dry-run"]
+        with patch.object(sys, "argv", [*common, "--build-target", "sonic-vs.bin"]), \
+                patch.object(subject, "install", side_effect=AssertionError("preview attempted installation")), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            subject.main()
+        self.assertIn('"build_target": "sonic-vs.bin"', output.getvalue())
+        self.assertIn('"pr": null', output.getvalue())
+        for arguments in (["--master", "--build-target", "sonic-vs.bin"],
+                          ["--pr", "76", "--build-target", "sonic-vs.bin"],
+                          ["--build-target", "sonic-vs.img.gz"]):
+            with self.subTest(arguments=arguments), \
+                    patch.object(sys, "argv", [*common, *arguments]), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                subject.main()
+        self.accounts.assert_not_called()
+        self.run.assert_not_called()
+        self.github_factory.assert_not_called()
 
 
 if __name__ == "__main__":

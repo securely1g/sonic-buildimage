@@ -66,7 +66,12 @@ def configuration(args):
         raise ValueError("repo must be owner/name")
     if args.pr is not None and args.pr < 1:
         raise ValueError("pr must be positive")
-    return {
+    build_target = getattr(args, "build_target", None)
+    if build_target not in (None, "sonic-vs.bin"):
+        raise ValueError("build-target must be sonic-vs.bin")
+    if build_target and (args.pr is not None or getattr(args, "master", False)):
+        raise ValueError("sonic-vs.bin selects the shared bin-only pool; omit --pr and --master")
+    config = {
         "_generated": {
             "notice": "AUTO-GENERATED. DO NOT EDIT MANUALLY.",
             "generator": "tools/ci/runner/install_manager.py",
@@ -76,6 +81,9 @@ def configuration(args):
         "repo": args.repo,
         "pr": args.pr,
     }
+    if build_target:
+        config["build_target"] = build_target
+    return config
 
 
 def write_owned(path, content, mode):
@@ -137,7 +145,8 @@ def install(config, *, enable=True):
     else:
         subprocess.run(["systemctl", "disable", TIMER], check=True)
     print("Installed " + TIMER + (" and enabled automatic registration" if enable else " (not enabled)"))
-    print("Routing: " + config["repo"] + " / " + ("PR " + str(config["pr"]) if config["pr"] else "master"))
+    route = config.get("build_target") or ("PR " + str(config["pr"]) if config["pr"] else "master")
+    print("Routing: " + config["repo"] + " / " + route)
     print("Inspect: sudo journalctl -u " + SERVICE + " -n 50 --no-pager")
 
 
@@ -149,6 +158,7 @@ def main():
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--master", action="store_true")
     target.add_argument("--pr", type=int)
+    target.add_argument("--build-target", choices=["sonic-vs.bin"], help="Maintain the shared bin-only pool without KVM")
     parser.add_argument("--dry-run", action="store_true", help="Print configuration and units without access checks or changes")
     parser.add_argument("--no-enable", action="store_true", help="Install files but leave the timer stopped")
     args = parser.parse_args()
