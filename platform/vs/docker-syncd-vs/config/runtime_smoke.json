@@ -1,0 +1,141 @@
+{
+  "architecture": "amd64",
+  "commands": [
+    {
+      "argv": [
+        "/usr/bin/syncd",
+        "--help"
+      ],
+      "exit_codes": [
+        0,
+        1
+      ],
+      "output_pattern": "[Uu]sage"
+    },
+    {
+      "argv": [
+        "/usr/bin/syncd_dash",
+        "--help"
+      ],
+      "exit_codes": [
+        0,
+        1
+      ],
+      "output_pattern": "[Uu]sage"
+    },
+    {
+      "argv": [
+        "/usr/bin/simple_switch_grpc",
+        "--help"
+      ],
+      "exit_codes": [
+        0
+      ],
+      "output_pattern": "[Uu]sage|[Oo]ptions"
+    },
+    {
+      "argv": [
+        "/usr/bin/p4c-bm2-ss",
+        "--version"
+      ],
+      "exit_codes": [
+        0
+      ],
+      "output_pattern": "1\\.2\\.4"
+    },
+    {
+      "argv": [
+        "/usr/bin/ssh",
+        "-V"
+      ],
+      "exit_codes": [
+        0
+      ],
+      "output_pattern": "OpenSSH_10\\.0"
+    },
+    {
+      "argv": [
+        "/usr/bin/bm_CLI",
+        "--help"
+      ],
+      "exit_codes": [
+        0
+      ],
+      "output_pattern": "[Uu]sage|[Oo]ptions"
+    },
+    {
+      "argv": [
+        "/usr/bin/simple_switch_CLI",
+        "--help"
+      ],
+      "exit_codes": [
+        0
+      ],
+      "output_pattern": "[Uu]sage|[Oo]ptions"
+    }
+  ],
+  "python_imports": [
+    "swsscommon.swsscommon",
+    "sonic_py_common",
+    "sonic_yang",
+    "supervisord_dependent_startup",
+    "six",
+    "thrift",
+    "google.protobuf",
+    "bm_runtime.standard.Standard",
+    "sswitch_runtime.SimpleSwitch",
+    "p4.bm.dataplane_interface_pb2",
+    "runtime_CLI"
+  ],
+  "startup_profile": {
+    "script": "/usr/bin/start.sh",
+    "input": "/usr/share/sonic/hwsku/sai.profile",
+    "output": "/etc/sai.d/sai.profile",
+    "contents": "SAI_VS_SWITCH_TYPE=SAI_VS_SWITCH_TYPE_BCM56850\n"
+  },
+  "supervisor_config": "/etc/supervisor/conf.d/supervisord.conf",
+  "writable_paths": [
+    "/usr/share/sonic/hwsku",
+    "/etc/sai.d"
+  ],
+  "library_groups": [
+    {
+      "name": "SONiC public native libraries",
+      "paths": [
+        "/usr/lib/x86_64-linux-gnu/libswsscommon.so.0",
+        "/usr/lib/x86_64-linux-gnu/libsairedis.so.0",
+        "/usr/lib/x86_64-linux-gnu/libsaimetadata.so.0",
+        "/usr/lib/x86_64-linux-gnu/libsaimeta.so.0",
+        "/usr/lib/x86_64-linux-gnu/libsaivs.so.0",
+        "/usr/lib/x86_64-linux-gnu/libsonicdbcli.so.0"
+      ]
+    },
+    {
+      "name": "libnl CLI plugins in their consumer library context",
+      "preload": [
+        "libnl-3.so.200",
+        "libnl-route-3.so.200",
+        "libnl-cli-3.so.200"
+      ],
+      "glob": "/usr/lib/x86_64-linux-gnu/libnl-3/cli/*/*.so"
+    },
+    {
+      "name": "DASH SAI with the providers used by syncd_dash",
+      "preload": [
+        "libprotobuf.so.32",
+        "libpiprotobuf.so.0",
+        "libpiprotogrpc.so.0"
+      ],
+      "paths": [
+        "/usr/lib/x86_64-linux-gnu/libsai.so"
+      ]
+    }
+  ],
+  "p4_service": {
+    "compiler": "/usr/bin/p4c",
+    "compiler_args": ["--target", "bmv2"],
+    "compiler_output_mode": "directory",
+    "switch": "/usr/bin/simple_switch_grpc"
+  },
+  "redis_database_config": "/var/run/redis/sonic-db/database_config.json"
+}

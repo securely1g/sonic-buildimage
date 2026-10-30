@@ -4,17 +4,25 @@ on:
   pull_request:
     paths:
       - tools/bazel/ci/validate_runtime.py
+      - tools/bazel/ci/validate_syncd_image.py
+      - tools/bazel/tests/syncd_image_inputs_test.py
+      - tools/bazel/tests/runtime_validation_test.py
       - tools/bazel/oci/runtime_smoke.py
       - tools/bazel/oci/tests/runtime_smoke_test.py
       - tools/bazel/oci/RUNTIME_VALIDATION.md
+      - platform/vs/docker-syncd-vs/config/runtime_smoke.json
       - .github/workflows/runtime-image-validation.yml
   push:
     branches: [master]
     paths:
       - tools/bazel/ci/validate_runtime.py
+      - tools/bazel/ci/validate_syncd_image.py
+      - tools/bazel/tests/syncd_image_inputs_test.py
+      - tools/bazel/tests/runtime_validation_test.py
       - tools/bazel/oci/runtime_smoke.py
       - tools/bazel/oci/tests/runtime_smoke_test.py
       - tools/bazel/oci/RUNTIME_VALIDATION.md
+      - platform/vs/docker-syncd-vs/config/runtime_smoke.json
       - .github/workflows/runtime-image-validation.yml
   workflow_dispatch:
 
@@ -49,4 +57,6 @@ jobs:
         run: |
           for tool in cc objcopy readelf gdb; do command -v "$tool"; done
           env -u PYTHONSAFEPATH /usr/bin/python3 -B -m unittest tools.bazel.oci.tests.runtime_smoke_test -v
+          /usr/bin/python3 -B -m unittest tools.bazel.tests.syncd_image_inputs_test tools.bazel.tests.runtime_validation_test -v
           /usr/bin/python3 -B tools/bazel/ci/validate_runtime.py --help
+          /usr/bin/python3 -B tools/bazel/ci/validate_syncd_image.py --help
