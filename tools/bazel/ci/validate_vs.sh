@@ -6,8 +6,15 @@ if (( $# )); then
     echo 'Usage: validate_vs.sh' >&2
     exit 2
 fi
+if [[ ${NOTRIXIE:-0} != 0 ]]; then
+    echo 'VS validation requires the Trixie build environment' >&2
+    exit 1
+fi
 
 mkdir -p artifacts/vs
+# Preserve the outer Makefile's caller overrides when entering Makefile.work
+# directly. An environment value still lets it append its version-cache settings.
+export SONIC_OVERRIDE_BUILD_VARS="${SONIC_OVERRIDE_BUILD_VARS:-} ${SONIC_BUILD_VARS:-}"
 options=(
     BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y
     ENABLE_ASAN=n ENABLE_SYNCD_RPC=n
@@ -36,7 +43,14 @@ capture_end=$(clock)
 # Resolve legacy P4 debug inputs and run their checks without requesting any
 # standalone Orchagent or Syncd container archive targets again.
 p4_start=$(clock)
-make bazel-vs-oci-verify "${options[@]}"
+if [[ ${NOBOOKWORM:-0} == 0 ]]; then
+    ./scripts/run_with_retry make -f Makefile.work BLDENV=bookworm bookworm "${options[@]}"
+fi
+# Make expands its normal slave command here, including configured overrides.
+# Pass it as arguments so the verifier can reuse it without shell evaluation.
+./scripts/run_with_retry make -f Makefile.work BLDENV=trixie sonic-slave-run "${options[@]}" \
+    'SONIC_RUN_CMDS=bash tools/bazel/ci/verify_vs_oci.sh $(SONIC_BUILD_INSTRUCTION)'
+make -f Makefile.work BLDENV=bookworm docker-cleanup "${options[@]}"
 p4_end=$(clock)
 verify_start=$(clock)
 python3 -B tools/bazel/ci/vs_archive_reuse.py verify-pairs --workspace "$PWD" \
