@@ -97,7 +97,8 @@ start/end times are `null`, never a fabricated zero. Valid measured zero-second
 steps are preserved. Concluded failed/cancelled jobs may have elapsed time;
 consumers must use the outcome before plotting successful performance.
 
-Only `bazel-swss-oci.yml`, `bazel-oci.yml`, and `bazel.yml` are collected. All
+Only `bazel-swss-oci.yml`, `bazel-oci.yml`, `bazel-vs-unprivileged.yml`, and
+`bazel.yml` are collected. All
 pages and run attempts are covered. Completed attempts are reused from history;
 new, nonterminal, and changed latest attempts fetch current jobs. `--backfill`
 forces a fresh read of every available attempt, including completed history. API failures
