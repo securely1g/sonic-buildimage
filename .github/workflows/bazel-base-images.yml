@@ -126,6 +126,11 @@ jobs:
             --mount "type=bind,src=$PWD/artifacts/base-images/docker-config-engine-trixie.validation.json,dst=/probe/validation.json,readonly" \
             --entrypoint /usr/bin/python3 docker-config-engine-trixie:latest \
             -B /probe/smoke.py /probe/validation.json | tee artifacts/base-images/runtime-smoke.json
+      - name: Require the installed-image smoke receipt
+        if: always()
+        run: |
+          set -euo pipefail
+          test -e artifacts/base-images/runtime-smoke.json
       - name: Retain installed-image validation
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -134,5 +139,5 @@ jobs:
           path: |
             artifacts/base-images/installed-images.json
             artifacts/base-images/runtime-smoke.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
