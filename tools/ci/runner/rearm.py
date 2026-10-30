@@ -90,7 +90,9 @@ def register_from_operator(command, token, env=None):
     return registration
 
 
-def routing_label(pr):
+def routing_label(pr, build_target=None):
+    if build_target == "sonic-vs.bin":
+        return "sonic-vs-bin"
     return f"sonic-vs-source-pr-{pr}" if pr else "sonic-vs-source-master"
 
 
@@ -172,10 +174,11 @@ def register(args):
         token = sys.stdin.readline().strip()
         if not token or len(token) > 4096:
             raise RuntimeError("Missing or invalid registration token")
-        runner_name = f"sonic-vs-{args.pr or 'master'}-{stamp}"
+        route = "bin" if args.build_target == "sonic-vs.bin" else args.pr or "master"
+        runner_name = f"sonic-vs-{route}-{stamp}"
         as_runner([str(attempt / "config.sh"), "--unattended", "--ephemeral",
                    "--url", f"https://github.com/{args.repo}", "--name", runner_name,
-                   "--labels", routing_label(args.pr), "--work", "_work"], token=token, cwd=attempt)
+                   "--labels", routing_label(args.pr, args.build_target), "--work", "_work"], token=token, cwd=attempt)
         del token
         config = json.loads((attempt / ".runner").read_text(encoding="utf-8-sig"))
         if config.get("agentName") != runner_name or not isinstance(config.get("agentId"), int):
@@ -187,15 +190,15 @@ def register(args):
         link.replace(current)
         subprocess.run(["systemctl", "reset-failed", SERVICE], check=True)
         subprocess.run(["systemctl", "start", SERVICE], check=True)
-        print(f"Service start requested for {runner_name} with label {routing_label(args.pr)}")
+        print(f"Service start requested for {runner_name} with label {routing_label(args.pr, args.build_target)}")
         print(REGISTRATION_PREFIX + json.dumps(registration), flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="securely1g/sonic-buildimage")
-    parser.add_argument("--build-target", help="Output target; sonic-vs.bin requires --pr and does not require KVM")
-    target = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("--build-target", help="Output target; sonic-vs.bin selects the shared bin-only pool without KVM")
+    target = parser.add_mutually_exclusive_group()
     target.add_argument("--pr", type=int)
     target.add_argument("--master", action="store_true", help="Use the push/manual workflow label")
     parser.add_argument("--dry-run", action="store_true", help="Print plan; no sudo, network or writes")
@@ -205,12 +208,15 @@ def main():
         parser.error("Repository must be owner/name")
     if args.pr is not None and args.pr < 1:
         parser.error("PR number must be positive")
-    if args.build_target == "sonic-vs.bin" and args.master:
-        parser.error("sonic-vs.bin requires a PR-specific route; use --pr NUMBER")
+    if args.build_target == "sonic-vs.bin":
+        if args.pr is not None or args.master:
+            parser.error("sonic-vs.bin selects the shared bin-only pool; omit --pr and --master")
+    elif args.pr is None and not args.master:
+        parser.error("Select --pr NUMBER or --master, or use --build-target sonic-vs.bin")
     if args.master:
         args.pr = None
     if args.dry_run:
-        print(f"Repository: {args.repo}; label: {routing_label(args.pr)}")
+        print(f"Repository: {args.repo}; label: {routing_label(args.pr, args.build_target)}")
         print(f"Build target: {args.build_target or 'default (KVM required)'}")
         print("Check idle service and host prerequisites, verify archive, create a fresh attempt,")
         print("register one ephemeral runner using a short-lived token, start sonic-vs-runner.service.")
@@ -228,7 +234,10 @@ def main():
         ["gh", "api", "--method", "POST", f"repos/{args.repo}/actions/runners/registration-token"], text=True)
     token = json.loads(token_response)["token"]
     command = sudo + ["/usr/bin/python3", str(Path(__file__).resolve()), "--register", "--repo", args.repo]
-    command += ["--pr", str(args.pr)] if args.pr else ["--master"]
+    if args.pr is not None:
+        command += ["--pr", str(args.pr)]
+    elif args.master:
+        command += ["--master"]
     if args.build_target:
         command += ["--build-target", args.build_target]
     registration = register_from_operator(command, token)

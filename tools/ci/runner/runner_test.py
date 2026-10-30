@@ -313,6 +313,8 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                 if command[0].endswith("config.sh"):
                     self.assertEqual(token, "short-lived")
                     name = command[command.index("--name") + 1]
+                    self.assertTrue(name.startswith("sonic-vs-bin-"))
+                    self.assertEqual(command[command.index("--labels") + 1], "sonic-vs-bin")
                     (cwd / ".runner").write_text(json.dumps({"agentId": 42, "agentName": name,
                                                            "ephemeral": True, "workFolder": "_work"}),
                                                   encoding="utf-8-sig")
@@ -330,7 +332,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                     patch.object(rearm.subprocess, "run") as run, \
                     patch.object(rearm.sys, "stdin", io.StringIO("short-lived\n")), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
-                rearm.register(SimpleNamespace(repo="owner/repo", pr=9, build_target="sonic-vs.bin"))
+                rearm.register(SimpleNamespace(repo="owner/repo", pr=None, build_target="sonic-vs.bin"))
             metadata = json.loads(output.getvalue().split(rearm.REGISTRATION_PREFIX)[1])
             attempt = Path(metadata["attempt"])
             self.assertEqual(metadata["id"], 42)
@@ -348,7 +350,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                 patch.object(rearm, "open", side_effect=AssertionError("registration lock opened"), create=True), \
                 patch.object(rearm, "as_runner", side_effect=AssertionError("runner command launched")):
             with self.assertRaisesRegex(RuntimeError, "unsafe storage"):
-                rearm.register(SimpleNamespace(repo="owner/repo", pr=9, build_target="sonic-vs.bin"))
+                rearm.register(SimpleNamespace(repo="owner/repo", pr=None, build_target="sonic-vs.bin"))
         storage.assert_called_once_with(build_target="sonic-vs.bin")
 
     def test_extraction_exhausting_capacity_stops_before_registration(self):
@@ -500,10 +502,14 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
         with self.assertRaisesRegex(RuntimeError, "render failed"):
             preflight.output(sys.executable, "-c", "import sys; print('render failed', file=sys.stderr); sys.exit(1)")
 
-    def test_routing_is_scoped_to_the_selected_pr(self):
+    def test_bin_pool_is_separate_from_existing_kvm_routes(self):
         self.assertEqual(rearm.routing_label(9), "sonic-vs-source-pr-9")
         self.assertEqual(rearm.routing_label(10), "sonic-vs-source-pr-10")
         self.assertEqual(rearm.routing_label(None), "sonic-vs-source-master")
+        self.assertEqual(rearm.routing_label(None, "sonic-vs.bin"), "sonic-vs-bin")
+        for target in ("sonic-vs.img.gz", "other"):
+            self.assertEqual(rearm.routing_label(None, target), "sonic-vs-source-master")
+            self.assertEqual(rearm.routing_label(9, target), "sonic-vs-source-pr-9")
 
     def test_token_is_in_runner_environment_and_not_arguments(self):
         account = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_name="sonic-runner")
@@ -522,7 +528,8 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
 
     def test_dry_run_does_not_launch_processes(self):
         for selector, label in ((["--pr", "42"], "sonic-vs-source-pr-42"),
-                                (["--master"], "sonic-vs-source-master")):
+                                (["--master"], "sonic-vs-source-master"),
+                                (["--build-target", "sonic-vs.bin"], "sonic-vs-bin")):
             with self.subTest(selector=selector), \
                     patch.object(rearm.sys, "argv", ["rearm.py", "--dry-run", *selector]), \
                     patch.object(rearm.subprocess, "run", side_effect=AssertionError("process launched")), \
@@ -533,7 +540,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
 
     def test_operator_forwards_build_target_to_internal_registration(self):
         for target in (None, "sonic-vs.bin"):
-            arguments = ["rearm.py", "--pr", "76"] if target else ["rearm.py", "--master"]
+            arguments = ["rearm.py"] if target else ["rearm.py", "--master"]
             if target:
                 arguments += ["--build-target", target]
             with self.subTest(target=target), \
@@ -550,12 +557,16 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
             self.assertNotIn(token, command)
             if target:
                 self.assertEqual(command[-2:], ["--build-target", target])
+                self.assertNotIn("--pr", command)
+                self.assertNotIn("--master", command)
             else:
                 self.assertNotIn("--build-target", command)
 
     def test_missing_or_invalid_selection_fails_before_network_or_host_changes(self):
         for arguments in ([], ["--dry-run"], ["--pr", "0"], ["--pr", "9", "--master"],
-                          ["--master", "--build-target", "sonic-vs.bin"]):
+                          ["--master", "--build-target", "sonic-vs.bin"],
+                          ["--pr", "76", "--build-target", "sonic-vs.bin"],
+                          ["--build-target", "sonic-vs.img.gz"], ["--build-target", "other"]):
             with self.subTest(arguments=arguments), \
                     patch.object(rearm.sys, "argv", ["rearm.py", *arguments]), \
                     patch.object(rearm.subprocess, "run", side_effect=AssertionError("process launched")), \

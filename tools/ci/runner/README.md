@@ -25,8 +25,10 @@ Fork PRs and manual runs with `skip_vs=true` run only hosted checks, including
 the separate native AMD64/ARM64 archive jobs. They do not publish successful
 SWSS/Syncd source-package or full-image validation evidence.
 
-Use `--pr NUMBER` for pull-request jobs in `bazel-vs-unprivileged.yml` and other
-workflows that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected
+Use `--build-target sonic-vs.bin` for the shared `sonic-vs-bin` pool used by
+`bazel-vs-unprivileged.yml` across same-repository PR, push, and manual runs.
+This pool does not accept full-image jobs that require KVM. Use `--pr NUMBER`
+only for workflows that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected
 custom label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
 The optional manager below registers replacements automatically after each job.
 
@@ -78,8 +80,10 @@ For `sonic-vs.bin` jobs, pass `--build-target sonic-vs.bin` to bootstrap,
 preflight, and manual rearm. This path accepts a real `/data` directory on a
 local ext4 block filesystem and keeps the workspace permission and capacity
 checks. It does not require `/dev/kvm` or the `kvm` group. The automatic manager
-does not carry this target selection; use manual rearm with `--pr NUMBER` for
-this path. Shared `--master` registration retains the default KVM admission.
+does not carry this target selection; use manual rearm with
+`--build-target sonic-vs.bin` alone for this path. Combining that target with
+`--pr` or `--master` is rejected. Shared `--master` registration retains the
+default KVM admission.
 
 Bootstrap creates `sonic-runner` with a locked password, no administrator group,
 and `docker,kvm` membership by default. Bin-only provisioning adds only `docker`
@@ -226,14 +230,14 @@ python3 /opt/sonic-runner-tools/runner/rearm.py --master --dry-run
 python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
-For a bin-only pull-request job, select its existing PR route and target:
+For a bin-only job, select the shared bin pool without a PR number:
 
 ```sh
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr NUMBER --build-target sonic-vs.bin --dry-run
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr NUMBER --build-target sonic-vs.bin
+python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin --dry-run
+python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin
 ```
 
-Use `--master` for the shared PR/manual pool. Arm only after reviewing the PR code and
+Use `--master` for the shared full-image PR/manual pool. Arm only after reviewing the PR code and
 workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original

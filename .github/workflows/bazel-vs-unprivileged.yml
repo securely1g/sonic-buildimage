@@ -109,7 +109,7 @@ jobs:
     name: Native Make prerequisites (AMD64)
     needs: store
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, "${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}"]
+    runs-on: [self-hosted, linux, x64, sonic-vs-bin]
     timeout-minutes: 720
     env:
       BAZEL: bazel
@@ -254,7 +254,7 @@ jobs:
   assembly:
     name: Unprivileged sonic-vs.bin assembly (AMD64)
     needs: native
-    runs-on: [self-hosted, linux, x64, "${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}"]
+    runs-on: [self-hosted, linux, x64, sonic-vs-bin]
     timeout-minutes: 120
     defaults:
       run:
