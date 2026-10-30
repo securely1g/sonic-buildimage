@@ -4,8 +4,9 @@
 This local privileged action restores only its declared pre-container snapshot
 and runs native post-boundary scripts in private mount/PID/network namespaces.
 The source tar must contain rendered native service files and their inputs;
-config.json records the template environment and snapshot identity. Its Docker
-store is temporary and never becomes an output of this action.
+config.json records the template environment and snapshot identity. The default
+uses a temporary Docker store; the opt-in containerd backend finalizes from OCI
+metadata and unpacked local package files without starting a daemon.
 """
 import argparse
 import hashlib
@@ -22,7 +23,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from metadata import staging_archive
+from metadata import oci_config, project, staging_archive
 
 STATE_FIELDS = ('build_version', 'debian_version', 'kernel_version', 'asic_type',
                 'asic_subtype', 'commit_id', 'branch', 'release', 'build_date',
@@ -158,10 +159,114 @@ def validate_organization_hooks(root):
         raise ValueError('custom organization extensions are unsupported')
 
 
+def validate_runtime_versions(root, expected):
+    """Check the target binaries without starting either runtime daemon."""
+    if expected.get('docker_version') != '28.5.2':
+        raise ValueError('containerd import currently supports Docker 28.5.2 only')
+    for binary, version, pattern in (
+            ('dockerd', '28.5.2', r'^Docker version ([^\s,]+)(?:,|\s|$)'),
+            ('containerd', '1.7.28', r'^containerd\s+\S+\s+(\S+)(?:\s|$)')):
+        output = subprocess.check_output(['chroot', str(root), binary, '--version'], text=True)
+        match = re.match(pattern, output)
+        # The pinned containerd.io binary prints v1.7.28. Compare the complete
+        # version token so release suffixes and longer versions still fail.
+        if match is None or match.group(1).removeprefix('v') != version:
+            raise ValueError(f'snapshot {binary} version must be {version}; got {output.strip()!r}')
+
+
+def stage_offline_packages(root, request, env):
+    """Stage host metadata and unpack only packages that install host plugins."""
+    staging = Path(root) / 'target/.sonic-bazel-offline'
+    staging.mkdir(parents=True)
+    shutil.copyfile(request['offline_host'], staging / 'offline_host.py')
+    builtins = []
+    for value in env['installer_images'].split():
+        name, _path, machine, image = value.split('|')
+        if machine and machine != 'vs':
+            continue
+        filename = PurePosixPath(image.rsplit(':', 1)[0]).name
+        metadata = json.loads(Path(request['metadata'][filename]).read_text())
+        if metadata.get('schema') != 1 or metadata.get('purpose') != 'host-configuration-only':
+            raise ValueError('invalid host metadata projection')
+        checked = project({'architecture': metadata['architecture'], 'os': metadata['os'],
+                           'config': {'Labels': metadata['labels']}})
+        builtins.append({'name': name, 'metadata': checked})
+    local = []
+    for value in env.get('sonic_local_packages', '').split():
+        _name, image, owner, enabled = value.split('|')
+        filename = PurePosixPath(image).name
+        part = Path(request['local_images'][filename])
+        manifest = json.loads((part / 'manifest.json').read_text())
+        if manifest.get('schema') != 1 or len(manifest.get('images', [])) != 1:
+            raise ValueError('expected one local package in an OCI archive part')
+        record = manifest['images'][0]
+        archive = part / PurePosixPath(record['archive']).name
+        if archive.is_symlink() or digest(archive) != record['sha256']:
+            raise ValueError('local package OCI archive checksum mismatch')
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', record['digest']):
+            raise ValueError('invalid local package OCI manifest digest')
+        if not re.fullmatch(r'[a-z0-9][a-z0-9._:/-]*:[A-Za-z0-9_.-]+', record['reference']):
+            raise ValueError('invalid local package image reference')
+        package_dir = staging / filename.removesuffix('.gz')
+        layout = package_dir / 'oci'
+        bundle = package_dir / 'bundle'
+        package_dir.mkdir()
+        subprocess.run(['skopeo', 'copy', '--preserve-digests',
+                        'oci-archive:' + str(archive), 'oci:' + str(layout) + ':sonic'], check=True)
+        index = json.loads((layout / 'index.json').read_text())
+        if [entry['digest'] for entry in index['manifests']] != [record['digest']]:
+            raise ValueError('local package manifest changed during OCI unpack preparation')
+        original_config = oci_config(layout)
+        metadata = project(original_config)
+        # Umoci 0.4.7 cannot decode zstd OCI layers. Skopeo prepares a private
+        # gzip copy only for host-plugin extraction; the shipped store retains
+        # the smaller zstd image and its original manifest identity.
+        unpack_layout = package_dir / 'umoci-oci'
+        subprocess.run(['skopeo', 'copy', '--format', 'oci', '--dest-compress-format', 'gzip',
+                        'oci:' + str(layout) + ':sonic', 'oci:' + str(unpack_layout) + ':sonic'], check=True)
+        if oci_config(unpack_layout) != original_config:
+            raise ValueError('local package configuration changed during Umoci compression conversion')
+        subprocess.run(['umoci', 'unpack', '--rootless', '--image', str(unpack_layout) + ':sonic', str(bundle)], check=True)
+        local.append({'metadata': metadata, 'image_id': record['digest'],
+                      'reference': record['reference'], 'owner': owner or 'local',
+                      'enabled': enabled == 'y',
+                      'rootfs': '/' + str((bundle / 'rootfs').relative_to(root))})
+    (staging / 'packages.json').write_text(json.dumps({'schema': 1, 'builtin': builtins, 'local': local}))
+
+
+def prepare_backend(root, fsroot, request, env, expected):
+    """Stage only the selected backend's host inputs and runtime configuration."""
+    backend = request['image_store_backend']
+    if backend not in ('docker', 'containerd'):
+        raise ValueError('unsupported image store backend: ' + str(backend))
+    env['USE_CONTAINER_IMAGE_STORE_AS_BACKEND'] = 'y' if backend == 'containerd' else 'n'
+    if backend == 'containerd':
+        validate_runtime_versions(fsroot, expected)
+        stage_offline_packages(root, request, env)
+        subprocess.run([sys.executable, request['runtime_overlay'], '--rootfs', str(fsroot),
+                        '--architecture', 'amd64'], check=True)
+        return
+    # Preserve the PR2 host finalization path: synthetic label-only Docker
+    # archives for built-ins and complete original archives for local packages.
+    version = subprocess.check_output(['chroot', str(fsroot), 'dockerd', '--version'], text=True)
+    match = re.match(r'^Docker version ([^\s,]+)(?:,|\s|$)', version)
+    if match is None or match.group(1) != expected['docker_version']:
+        raise ValueError('snapshot Docker version does not match the declared execution environment')
+    target = Path(root) / 'target'
+    for name, path in request['metadata'].items():
+        destination = target / name
+        destination.unlink(missing_ok=True)
+        staging_archive(json.loads(Path(path).read_text()), name, destination)
+    for name, path in request['local_images'].items():
+        destination = target / name
+        destination.unlink(missing_ok=True)
+        shutil.copyfile(path, destination)
+
+
 def worker(request_path):
     request = json.loads(Path(request_path).read_text())
-    # Native start-stop-daemon double-forks dockerd. A real init must adopt and
-    # reap it; Python as namespace PID 1 leaves a zombie that makes stop fail.
+    # Native host scripts can spawn children; the pinned init reaps them while
+    # the private PID namespace ensures none can outlive this action.
     if os.getppid() != 1 or not os.path.samefile('/proc/1/exe', request['init']):
         raise ValueError('host worker requires the pinned init as namespace PID 1')
     config = load_config(request['config'])
@@ -193,22 +298,12 @@ def worker(request_path):
     if fsroot.exists() or fsroot.is_symlink():
         raise ValueError('source bundle must not contain a restored host root')
     subprocess.run(['unsquashfs', '-processors', '8', '-d', str(fsroot), request['snapshot']], check=True)
-    docker_version = subprocess.check_output(['chroot', str(fsroot), 'dockerd', '--version'], text=True)
-    if expected['docker_version'] not in docker_version:
-        raise ValueError('snapshot Docker version does not match the declared execution environment')
     state_path = fsroot / '.sonic-bazel-host-state.json'
     env.update(snapshot_state(state_path, config['identity']))
     state_path.unlink()
     target = root / 'target'
     target.mkdir(exist_ok=True)
-    for name, path in request['metadata'].items():
-        destination = target / name
-        destination.unlink(missing_ok=True)
-        staging_archive(json.loads(Path(path).read_text()), name, destination)
-    for name, path in request['local_images'].items():
-        destination = target / name
-        destination.unlink(missing_ok=True)
-        shutil.copyfile(path, destination)
+    prepare_backend(root, fsroot, request, env, expected)
     # Render the current template against precisely the declared environment,
     # even when the source bundle was prepared with an earlier template.
     template = root / 'files/build_templates/sonic_debian_extension.j2'
@@ -234,9 +329,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ('source', 'snapshot', 'config', 'build-script', 'extension-template', 'execution-environment', 'fs', 'boot', 'platform', 'receipt'):
         parser.add_argument('--' + flag, required=True)
+    parser.add_argument('--image-store-backend', choices=('docker', 'containerd'), default='docker')
+    for flag in ('runtime-overlay', 'offline-host'):
+        parser.add_argument('--' + flag)
     parser.add_argument('--metadata', action='append', default=[])
     parser.add_argument('--local-image', action='append', default=[])
     args = parser.parse_args()
+    if args.image_store_backend == 'containerd' and not (args.runtime_overlay and args.offline_host):
+        parser.error('containerd requires --runtime-overlay and --offline-host')
     started = time.monotonic()
     config = load_config(args.config)
     metadata = mappings(args.metadata)
@@ -245,10 +345,14 @@ def main():
     if names != (set(metadata), set(local)):
         raise ValueError('declared image inputs do not match the native service configuration')
     validate_archive(args.source)
-    request = {key: str(Path(getattr(args, key)).resolve()) for key in ('source', 'snapshot', 'config', 'build_script', 'extension_template', 'execution_environment', 'fs', 'boot', 'platform')}
-    request.update({'metadata': metadata, 'local_images': local, 'uid': os.getuid(), 'gid': os.getgid()})
+    paths = ('source', 'snapshot', 'config', 'build_script', 'extension_template', 'execution_environment', 'fs', 'boot', 'platform')
+    if args.image_store_backend == 'containerd':
+        paths += ('runtime_overlay', 'offline_host')
+    request = {key: str(Path(getattr(args, key)).resolve()) for key in paths}
+    request.update({'image_store_backend': args.image_store_backend, 'metadata': metadata,
+                    'local_images': local, 'uid': os.getuid(), 'gid': os.getgid()})
     prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
-    # A private PID namespace guarantees that daemon descendants disappear
+    # A private PID namespace guarantees that subprocess descendants disappear
     # before the action returns, including on build failure.
     output_parent = Path(request['fs']).parent
     output_parent.mkdir(parents=True, exist_ok=True)
@@ -268,7 +372,10 @@ def main():
         finally:
             subprocess.run(prefix + ['rm', '-rf', '--', str(Path(temp) / 'source')], check=True)
     receipt = {'schema': 1, 'status': 'passed', 'seconds': time.monotonic() - started,
-               'scope': 'Finalized native host from the pre-container snapshot; temporary metadata-only Docker store discarded',
+               'image_store_backend': args.image_store_backend,
+               'scope': ('Finalized native host from OCI metadata and local package files without loading images into a daemon'
+                         if args.image_store_backend == 'containerd' else
+                         'Finalized native host from the pre-container snapshot; temporary metadata-only Docker store discarded'),
                'snapshot_identity': config['identity'], 'builtin_metadata_images': sorted(metadata),
                'local_package_images': sorted(local),
                'outputs': {key: {'size': Path(request[key]).stat().st_size, 'sha256': digest(request[key])} for key in ('fs', 'boot', 'platform')}}

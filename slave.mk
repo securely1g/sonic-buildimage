@@ -168,6 +168,14 @@ include $(RULES_PATH)/config
 -include $(RULES_PATH)/config.organization
 -include $(RULES_PATH)/config.user
 
+ifneq ($(words $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND)),1)
+$(error USE_CONTAINER_IMAGE_STORE_AS_BACKEND must be y or n)
+endif
+ifneq ($(filter $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND),y n),$(USE_CONTAINER_IMAGE_STORE_AS_BACKEND))
+$(error USE_CONTAINER_IMAGE_STORE_AS_BACKEND must be y or n)
+endif
+
+
 ifneq ($(strip $(SONIC_EXTRA_EXPORT_VARS)),)
 export $(SONIC_EXTRA_EXPORT_VARS)
 endif
@@ -1671,6 +1679,18 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 # Only the explicit preparation goal enables the native snapshot producer.
 include tools/bazel/image/native/native.mk
+
+# Defer this check until Make reaches an installer, so a saved store choice
+# cannot block setup/component goals. Native preparation stops before assembly.
+# A recipe also works with Make 4.3, which expands secondary prerequisites early.
+ifeq ($(USE_CONTAINER_IMAGE_STORE_AS_BACKEND),y)
+ifneq ($(BAZEL_NATIVE_PREPARE),y)
+.PHONY: bazel-containerd-requires-assembly
+$(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)): | bazel-containerd-requires-assembly
+bazel-containerd-requires-assembly:
+	$(error The containerd image store requires top-level Bazel VS assembly)
+endif
+endif
 
 ifneq ($(filter $(TARGET_PATH)/sonic-vs.bin,$(MAKECMDGOALS)),)
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)

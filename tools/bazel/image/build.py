@@ -11,6 +11,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import backend
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
 from build_events import bep_outputs, named_output, output_identity
 
@@ -38,7 +41,7 @@ def replace_bytes(path, value):
         pending.unlink(missing_ok=True)
 
 
-def publish(source, destination, receipt, expected):
+def publish(source, destination, receipt, expected, *, image_store_backend="docker"):
     """Keep the previous installer until a complete replacement is available."""
     digest = hashlib.sha256()
     size = 0
@@ -61,7 +64,7 @@ def publish(source, destination, receipt, expected):
             # Write the producer marker first: an interruption can cause a
             # redundant native rebuild, but cannot reuse a Bazel image as native.
             previous = receipt.read_bytes() if receipt.exists() else None
-            record = {"schema": 1, "producer": "bazel", **identity}
+            record = {"schema": 1, "producer": "bazel", "backend": image_store_backend, **identity}
             replace_bytes(receipt, (json.dumps(record, indent=2, sort_keys=True) + "\n").encode())
             try:
                 pending.replace(destination)
@@ -86,7 +89,7 @@ def native_build(workspace, execute=subprocess.run):
         output.replace(backup)
     try:
         execute(["make", "SONIC_BAZEL_NATIVE_PUBLISH=y", "BUILD_WITH_BAZEL_WHEN_AVAILABLE=n",
-                 "target/sonic-vs.bin"],
+                 "USE_CONTAINER_IMAGE_STORE_AS_BACKEND=n", "target/sonic-vs.bin"],
                 cwd=workspace, check=True)
         if not output.is_file() or output.stat().st_size == 0:
             raise ValueError("native Make did not produce a nonempty target/sonic-vs.bin")
@@ -113,6 +116,8 @@ def bazel_build(args):
     if not (inputs / "execution-environment.json").is_file():
         raise ValueError("prepare the native VS inputs and execution worker first; "
                          "see tools/bazel/image/README.md (Declared inputs and execution)")
+    backend.select_backend(workspace, build_with_bazel_when_available="y",
+                           use_container_image_store_as_backend=args.backend)
     launcher = [sys.executable, str(workspace / "tools/bazel/image/run.py"),
                 "--workspace", str(workspace), "--mount-root", str(args.mount_root),
                 "--worker-spec", str(inputs / "execution-environment.json"),
@@ -130,13 +135,15 @@ def bazel_build(args):
         outputs = bep_outputs(events, [TARGET], args.output_user_root.resolve())
         source = named_output(outputs, TARGET, "sonic-vs.bin")
         publish(source, workspace / "target/sonic-vs.bin", workspace / RECEIPT,
-                output_identity(events, source))
+                output_identity(events, source),
+                image_store_backend="containerd" if args.backend == "y" else "docker")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--build-with-bazel-when-available", choices=("y", "n"), required=True)
+    parser.add_argument("--backend", choices=("y", "n"), default="n")
     parser.add_argument("--mount-root", type=Path)
     parser.add_argument("--output-user-root", type=Path)
     parser.add_argument("--repository-cache")
@@ -147,6 +154,7 @@ def main():
     args.mount_root = args.mount_root or args.workspace
     args.output_user_root = args.output_user_root or args.workspace / "target/bazel-image-state"
     try:
+        backend.selection(args.build_with_bazel_when_available, args.backend)
         (args.workspace / "target").mkdir(exist_ok=True)
         with (args.workspace / "target/.bazel-vs-image.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)

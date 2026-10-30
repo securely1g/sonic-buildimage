@@ -43,6 +43,23 @@ def check_file(path, magic=None):
     return path
 
 
+def store_compression(header):
+    # SONiC retains the dockerfs.tar.gz member name for both supported formats.
+    # Inspect bytes rather than the name, including when the store is in ZIP.
+    if header.startswith(b"\x1f\x8b"):
+        return "gzip"
+    if header.startswith(b"\x28\xb5\x2f\xfd"):
+        return "zstd"
+    raise ValueError("unexpected dockerfs format: expected gzip or zstd")
+
+
+def check_store(path):
+    path = check_file(path)
+    with path.open("rb") as stream:
+        store_compression(stream.read(4))
+    return path
+
+
 def zip_info(name, size, mode, epoch):
     # ZIP timestamps cannot represent Unix epoch zero. Keep them independent of
     # the local timezone and source mtimes, as with normalized tar metadata.
@@ -58,9 +75,18 @@ def zip_info(name, size, mode, epoch):
     return info
 
 
+def zip_entry_bound(name, size):
+    # zlib's conservative compressBound formula also bounds ZIP's raw deflate.
+    # Stored files need no expansion allowance. Include local/central headers
+    # and both copies of the UTF-8 filename, without relying on compression wins.
+    content = size if name.endswith(("/", ".gz", ".squashfs")) else (
+        size + (size >> 12) + (size >> 14) + (size >> 25) + 13)
+    return content + 30 + 46 + 2 * len(name.encode("utf-8"))
+
+
 def create_payload(squashfs, dockerfs, boot_tar, platform_tar, output, epoch=0):
     squashfs = check_file(squashfs, b"hsqs")
-    dockerfs = check_file(dockerfs, b"\x1f\x8b")
+    dockerfs = check_store(dockerfs)
     platform_tar = check_file(platform_tar, b"\x1f\x8b")
     boot_tar = check_file(boot_tar)
     if epoch < 0:
@@ -89,6 +115,16 @@ def create_payload(squashfs, dockerfs, boot_tar, platform_tar, output, epoch=0):
                 raise ValueError("boot archive has no kernel")
             if not any(name.startswith("boot/initrd.img-") for name in seen):
                 raise ValueError("boot archive has no initramfs")
+            files = [("platform.tar.gz", platform_tar), ("fs.squashfs", squashfs)]
+            projected = 22 + sum(zip_entry_bound(
+                member.name + ("/" if member.isdir() else ""), member.size) for member in members)
+            projected += sum(zip_entry_bound(name, path.stat().st_size) for name, path in files)
+            store_size = dockerfs.stat().st_size
+            # ZIP32 limits apply to the combined archive, not just each member.
+            # Also honor zipfile's 5% per-entry ZIP64 safety allowance.
+            if (store_size * 1.05 <= ZIP_LIMIT
+                    and projected + zip_entry_bound("dockerfs.tar.gz", store_size) < ZIP_LIMIT):
+                files.append(("dockerfs.tar.gz", dockerfs))
             with zipfile.ZipFile(output, "w", allowZip64=False) as payload:
                 for member in members:
                     name = member.name + ("/" if member.isdir() else "")
@@ -99,11 +135,6 @@ def create_payload(squashfs, dockerfs, boot_tar, platform_tar, output, epoch=0):
                     else:
                         with boot.extractfile(member) as source, payload.open(info, "w") as dest:
                             shutil.copyfileobj(source, dest, COPY_SIZE)
-                files = [("platform.tar.gz", platform_tar), ("fs.squashfs", squashfs)]
-                # Match the native installer: large stores travel alongside the
-                # payload inside the shell archive, avoiding unsupported ZIP64.
-                if dockerfs.stat().st_size < ZIP_LIMIT:
-                    files.append(("dockerfs.tar.gz", dockerfs))
                 for name, source_path in files:
                     size = source_path.stat().st_size
                     info = zip_info(name, size, stat.S_IFREG | 0o644, epoch)
@@ -195,7 +226,22 @@ def render(template, replacements):
     return template
 
 
-def create_onie(payload, files, config_file, output, dockerfs=None):
+def containerd_extraction(script):
+    command = ('sh ./extract-containerd-store.sh "$demo_mnt/$image_dir/fs.squashfs" '
+               '"$demo_mnt/$image_dir/$DOCKERFS_DIR"')
+    replacements = {
+        "tar xz $TAR_EXTRA_OPTION -f $FILESYSTEM_DOCKERFS -C $demo_mnt/$image_dir/$DOCKERFS_DIR":
+            command + ' < "$FILESYSTEM_DOCKERFS"',
+        "tar xz $TAR_EXTRA_OPTION -f - -C $demo_mnt/$image_dir/$DOCKERFS_DIR": command,
+    }
+    for old, new in replacements.items():
+        if script.count(old) != 1:
+            raise ValueError("unexpected installer dockerfs extraction contract: " + old)
+        script = script.replace(old, new)
+    return script
+
+
+def create_onie(payload, files, config_file, output, dockerfs=None, dockerfs_extractor=None):
     payload = check_file(payload, b"PK\x03\x04")
     config = load_config(config_file)
     sources = read_files(files)
@@ -208,8 +254,19 @@ def create_onie(payload, files, config_file, output, dockerfs=None):
         if "dockerfs.tar.gz" not in names:
             if dockerfs is None:
                 raise ValueError("payload requires a separate dockerfs input")
-            sources["dockerfs.tar.gz"] = (check_file(dockerfs, b"\x1f\x8b"), 0o644)
+            store = check_store(dockerfs)
+            sources["dockerfs.tar.gz"] = (store, 0o644)
+            with store.open("rb") as stream:
+                compression = store_compression(stream.read(4))
+        else:
+            with archive.open("dockerfs.tar.gz") as stream:
+                compression = store_compression(stream.read(4))
+    if compression == "zstd" and dockerfs_extractor is None:
+        raise ValueError("zstd dockerfs requires the containerd extractor")
     script = sources["install.sh"][0].read_text()
+    if dockerfs_extractor is not None:
+        script = containerd_extraction(script)
+        sources["extract-containerd-store.sh"] = (check_file(dockerfs_extractor), 0o755)
     script = render(script, {
         "DEMO_TYPE": config["demo_type"], "ARCH": config["arch"],
         "IMAGE_VERSION": config["image_version"],
@@ -387,6 +444,7 @@ def main():
     for name in ("payload", "files", "config", "output"):
         onie.add_argument("--" + name, required=True)
     onie.add_argument("--dockerfs")
+    onie.add_argument("--dockerfs-extractor")
     prepare = stages.add_parser("prepare-inputs")
     for name in ("source", "config", "output"):
         prepare.add_argument("--" + name, required=True)
@@ -394,7 +452,8 @@ def main():
     if args.stage == "payload":
         create_payload(args.squashfs, args.dockerfs, args.boot_tar, args.platform_tar, args.output, args.epoch)
     elif args.stage == "onie":
-        create_onie(args.payload, args.files, args.config, args.output, args.dockerfs)
+        create_onie(args.payload, args.files, args.config, args.output, args.dockerfs,
+                    args.dockerfs_extractor)
     else:
         prepare_inputs(args.source, args.config, args.output)
 

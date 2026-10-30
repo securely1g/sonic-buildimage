@@ -69,6 +69,7 @@ assembly worker, run:
 
 ```sh
 make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/sonic-vs.bin
+# Optional: add USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y for a compact containerd store.
 ```
 
 This explicit goal assembles an unsigned AMD64 Trixie VS ONIE installer from

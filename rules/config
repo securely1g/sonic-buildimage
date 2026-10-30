@@ -170,6 +170,9 @@ SONIC_DPKG_CACHE_SOURCE ?= /var/cache/sonic/artifacts
 # assembly from prepared inputs; see tools/bazel/image/README.md.
 BUILD_WITH_BAZEL_WHEN_AVAILABLE ?= n
 
+# Optional containerd store for Bazel VS final assembly; classic Docker is default.
+USE_CONTAINER_IMAGE_STORE_AS_BACKEND ?= n
+
 # Persist Bazel caches across slave containers for all Bazel builds, regardless
 # of BUILD_WITH_BAZEL_WHEN_AVAILABLE. The system slave.bazelrc uses:
 #   - $(SONIC_BAZEL_CACHE_SOURCE)/repository_cache for dependency downloads

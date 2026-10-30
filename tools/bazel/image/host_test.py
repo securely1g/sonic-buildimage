@@ -2,7 +2,9 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -37,6 +39,31 @@ class HostBoundaryTest(unittest.TestCase):
                 with mock.patch.object(host.os, 'getppid', return_value=parent), mock.patch.object(host.os.path, 'samefile', return_value=same_binary):
                     with self.assertRaisesRegex(ValueError, 'pinned init'):
                         host.worker(request)
+
+    def test_runtime_versions_are_checked_without_starting_a_daemon(self):
+        expected = {'docker_version': '28.5.2'}
+        for versions, valid in ((['Docker version 28.5.2, build test', 'containerd containerd.io 1.7.28 revision'], True),
+                                (['Docker version 28.5.2, build test', 'containerd containerd.io v1.7.28 b98a3aace656320842a23f4a392a33f46af97866\n'], True),
+                                (['Docker version 28.5.20, build test'], False),
+                                (['Docker version 28.5.2, build test', 'containerd containerd.io 2.0.0 revision'], False)):
+            with self.subTest(versions=versions), mock.patch.object(host.subprocess, 'check_output', side_effect=versions) as run:
+                if valid:
+                    host.validate_runtime_versions('/declared/root', expected)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'snapshot .* version'):
+                        host.validate_runtime_versions('/declared/root', expected)
+                self.assertTrue(all(call.args[0][-1] == '--version' for call in run.call_args_list))
+
+    def test_containerd_version_extensions_and_wrong_output_are_rejected(self):
+        for output in ('containerd containerd.io v1.7.280 revision',
+                       'containerd containerd.io v1.7.28-rc.1 revision',
+                       'containerd containerd.io v1.7.28+local revision',
+                       'containerd containerd.io vv1.7.28 revision',
+                       'unrecognized output mentioning v1.7.28'):
+            with self.subTest(output=output), mock.patch.object(host.subprocess, 'check_output', side_effect=[
+                    'Docker version 28.5.2, build test', output]):
+                with self.assertRaisesRegex(ValueError, 'snapshot containerd version'):
+                    host.validate_runtime_versions('/declared/root', {'docker_version': '28.5.2'})
 
     def test_declared_images_follow_machine_selection_and_local_packages(self):
         env = {'installer_images': 'swss|dockers/swss||target/docker-orchagent.gz:test other|dockers/other|other|target/docker-other.gz:test', 'sonic_local_packages': 'macsec|target/docker-macsec.gz|local|y'}
@@ -123,6 +150,65 @@ class HostBoundaryTest(unittest.TestCase):
             (templates / 'build_debian.organization.sh').write_text('echo custom')
             with self.assertRaisesRegex(ValueError, 'organization build'):
                 host.validate_organization_hooks(root)
+
+    def test_only_opted_in_bazel_host_skips_daemon_start_and_stop(self):
+        template = (Path(__file__).resolve().parents[3] / 'files/build_templates/sonic_debian_extension.j2').read_text()
+        start = template[template.index('if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host'):template.index('\ninstall_pip_package()')]
+        stop = template[template.index('sudo umount $FILESYSTEM_ROOT/target'):template.index('sudo bash -c "echo {')]
+        environment = dict(os.environ, FILESYSTEM_ROOT='/declared/root', DOCKER_CTL_SCRIPT='/usr/lib/docker/docker.sh',
+                           SONIC_BAZEL_BUILD_STAGE='', MULTIARCH_QEMU_ENVIRON='n', CROSS_BUILD_ENVIRON='n')
+        # Execute the real shell branches with a recording sudo function. No
+        # mounts, chroot, or daemons are available to this regression test.
+        for finalize in ('n', 'y'):
+            for selected in ('n', 'y'):
+                with self.subTest(finalize=finalize, selected=selected):
+                    result = subprocess.run(['bash', '-eu', '-c', 'sudo() { printf "%s\\n" "$*"; };\n' + start + stop],
+                                            env=dict(environment, SONIC_BAZEL_HOST_FINALIZE=finalize,
+                                                     USE_CONTAINER_IMAGE_STORE_AS_BACKEND=selected),
+                                            check=True, text=True, capture_output=True)
+                    for action in ('start', 'stop'):
+                        self.assertEqual(not (finalize == selected == 'y'),
+                                         '/usr/lib/docker/docker.sh ' + action in result.stdout)
+
+    def test_docker_backend_stages_archives_without_containerd_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'target').mkdir()
+            metadata = root / 'metadata.json'
+            metadata.write_text(json.dumps(host.project({
+                'architecture': 'amd64', 'os': 'linux',
+                'config': {'Labels': {'com.azure.sonic.manifest': '{"service":{"name":"swss"}}'}},
+            })))
+            local = root / 'local.gz'
+            local.write_bytes(b'original local package archive')
+            request = {'image_store_backend': 'docker', 'metadata': {'docker-swss.gz': str(metadata)},
+                       'local_images': {'docker-macsec.gz': str(local)}}
+            env = {'USE_CONTAINER_IMAGE_STORE_AS_BACKEND': 'y'}
+            with mock.patch.object(host.subprocess, 'check_output', return_value='Docker version 28.5.2, build test') as version:
+                with mock.patch.object(host, 'stage_offline_packages') as offline, mock.patch.object(host.subprocess, 'run') as run:
+                    host.prepare_backend(root, root / 'fsroot', request, env, {'docker_version': '28.5.2'})
+                    offline.assert_not_called()
+                    run.assert_not_called()
+                self.assertEqual(version.call_args.args[0][-2:], ['dockerd', '--version'])
+            self.assertEqual(env['USE_CONTAINER_IMAGE_STORE_AS_BACKEND'], 'n')
+            self.assertEqual((root / 'target/docker-macsec.gz').read_bytes(), local.read_bytes())
+            with tarfile.open(root / 'target/docker-swss.gz') as archive:
+                manifest = json.load(archive.extractfile('manifest.json'))
+                config = json.load(archive.extractfile(manifest[0]['Config']))
+                self.assertEqual(config['config']['Labels']['org.sonic.bazel.host-metadata-only'], 'true')
+
+    def test_containerd_backend_uses_offline_host_and_target_overlay(self):
+        request = {'image_store_backend': 'containerd', 'runtime_overlay': '/declared/overlay.py'}
+        env = {}
+        with mock.patch.object(host, 'validate_runtime_versions') as versions, \
+                mock.patch.object(host, 'stage_offline_packages') as offline, \
+                mock.patch.object(host.subprocess, 'run') as run:
+            host.prepare_backend('/declared/source', '/declared/fsroot', request, env, {'docker_version': '28.5.2'})
+            versions.assert_called_once_with('/declared/fsroot', {'docker_version': '28.5.2'})
+            offline.assert_called_once()
+            self.assertEqual(run.call_args.args[0], [sys.executable, '/declared/overlay.py',
+                             '--rootfs', '/declared/fsroot', '--architecture', 'amd64'])
+        self.assertEqual(env['USE_CONTAINER_IMAGE_STORE_AS_BACKEND'], 'y')
 
 
 if __name__ == '__main__':

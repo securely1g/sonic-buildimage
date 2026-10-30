@@ -12,6 +12,48 @@ The public selector remains `BUILD_WITH_BAZEL_WHEN_AVAILABLE`. With `y`,
 publishes the installer atomically. With `n`, it uses the native Make installer
 path. The default, component selection rules, and KVM image target are unchanged.
 
+## Optional containerd store
+
+After preparing the same native inputs, select the smaller content-only store:
+
+```sh
+make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y \
+  ENABLE_SBOM=n SONIC_ENABLE_IMAGE_SIGNATURE=n SECURE_UPGRADE_MODE=no_sign \
+  ENABLE_ASAN=n SONIC_INSTALL_DEBUG_TOOLS=n INSTALL_DEBUG_TOOLS=n \
+  target/sonic-vs.bin
+```
+
+`USE_CONTAINER_IMAGE_STORE_AS_BACKEND` defaults to `n` and requires the Bazel VS
+assembly path. Setting it to `n` returns to the classic Docker store. The
+publisher records the selected backend and updates only the generated graph and
+its receipt; it preserves the prepared archives, hashes and both source
+identities. Bundles lacking the native producer evidence are rejected.
+
+The opt-in converts every declared service archive with Skopeo, preserving image
+configuration and tags while compressing layers with zstd. A private containerd
+imports them with `ctr images import --no-unpack`. The cached base store contains
+the other service images; Orchagent is added to a private restored copy. An
+inventory without Orchagent uses one store action. No component source is built
+by this assembly graph.
+
+The installer ships complete shared layer blobs and image metadata without
+unpacked snapshots. Docker unpacks an image when its first container is created;
+later starts reuse those snapshots. This reduces installer size at the cost of
+first-use time on the device. Host service metadata and local-package plugins
+are prepared offline; the selected host output configures Docker to use the
+private containerd store. See [the target runtime](containerd_runtime/README.md)
+for extraction, startup and validation details.
+
+The opt-in store uses zstd while retaining SONiC's `dockerfs.tar.gz` filename.
+The installer uses its shipped GNU tar and decoder, including ownership,
+permissions, extended attributes and ACLs. The default store keeps gzip and its
+existing extraction path.
+
+Full guest boot, concurrent cold-start readiness and forwarding are not
+established by these assembly tests. OS-upgrade package migration is deferred to
+[#74](https://github.com/securely1g/sonic-buildimage/issues/74): its existing
+chroot helper does not start the selected containerd runtime.
+
 ## Declared inputs and execution
 
 Start with an initialized recursive checkout and the normal native build
@@ -111,7 +153,7 @@ using a fresh private Docker daemon. Store assembly deduplicates shared layers
 and reuses compressed layer fragments. Host finalization, store assembly, ZIP
 creation, and ONIE wrapping have separate Bazel action boundaries.
 
-The current store format is Docker 28.5.2 classic `overlay2`. Worker identity is
+The default store format is Docker 28.5.2 classic `overlay2`. Worker identity is
 an explicit action input. Host finalization and Docker import require local
 privileged execution; neither consumes the host Docker socket. Filesystem
 metadata that cannot be preserved by the store collector fails explicitly.
@@ -152,7 +194,7 @@ shutdown order. The host `libswsscommon` library was already present and unchang
 
 ## Validation scope
 
-The existing OCI archive CI job runs the focused assembly, input handoff,
+The existing OCI archive CI job runs the focused assembly, backend selection, OCI conversion, input handoff,
 source-identity, worker-lifecycle, publication, and archive tests on AMD64 and
 ARM64 runners. These are Python/Make/Git fixtures; ARM64 execution does not imply
 ARM64 installer support. The ONIE tests exercise payload checksums and shell
@@ -163,3 +205,8 @@ boot the installer, or validate forwarding. The existing component tests and
 native KVM build retain their own coverage. Real assembly validation must retain
 its producer and assembler identities, input hashes, worker identity, and output
 evidence separately from any future guest-boot results.
+
+The optional backend also has a separate privileged AMD64 acceptance job. It
+restores a populated store and verifies first-use unpacking, shared layers,
+Docker metadata, image updates, removal, save/load and daemon restart. Its small
+images exercise storage behavior; they do not establish SONiC guest readiness.

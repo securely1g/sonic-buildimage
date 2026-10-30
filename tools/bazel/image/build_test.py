@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -23,6 +24,9 @@ class BuildTest(unittest.TestCase):
         (self.root / "target").mkdir()
         self.output = self.root / "target/sonic-vs.bin"
         self.receipt = self.root / build.RECEIPT
+        selector = mock.patch.object(build.backend, "select_backend")
+        self.select_backend = selector.start()
+        self.addCleanup(selector.stop)
 
     def retained(self):
         self.output.write_bytes(b"previous-bazel-installer")
@@ -35,6 +39,7 @@ class BuildTest(unittest.TestCase):
             self.assertFalse(self.output.exists())
             self.assertIn("SONIC_BAZEL_NATIVE_PUBLISH=y", command)
             self.assertIn("BUILD_WITH_BAZEL_WHEN_AVAILABLE=n", command)
+            self.assertIn("USE_CONTAINER_IMAGE_STORE_AS_BACKEND=n", command)
             self.output.write_bytes(b"new-native-installer")
 
         build.native_build(self.root, execute)
@@ -165,7 +170,7 @@ class BuildTest(unittest.TestCase):
         source.write_bytes(b"this-build-installer")
         args = SimpleNamespace(workspace=self.root, mount_root=self.root,
                                output_user_root=state, repository_cache=None,
-                               persistent_worker=None, git_config=None)
+                               persistent_worker=None, git_config=None, backend="n")
         events = [
             {"id": {"namedSet": {"id": "output"}}, "namedSetOfFiles": {"files": [{
                 "uri": source.as_uri(), "digest": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -199,10 +204,23 @@ class BuildTest(unittest.TestCase):
                     events[-1]["finished"]["overallSuccess"] = True
                 else:
                     args.output_user_root = state
-        with mock.patch.object(build.subprocess, "run", execute):
-            build.bazel_build(args)
+        for selected in ("y", "n"):
+            args.backend = selected
+            with mock.patch.object(build.subprocess, "run", execute):
+                build.bazel_build(args)
+            self.select_backend.assert_called_with(self.root, build_with_bazel_when_available="y",
+                                                   use_container_image_store_as_backend=selected)
+            self.assertEqual(json.loads(self.receipt.read_text())["backend"],
+                             "containerd" if selected == "y" else "docker")
         self.assertEqual(self.output.read_bytes(), source.read_bytes())
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o755)
+
+    def test_public_entry_imports_local_helpers_with_python_safe_path(self):
+        environment = dict(os.environ, PYTHONSAFEPATH="1", PYTHONPATH="")
+        result = subprocess.run([sys.executable, str(Path(build.__file__).resolve()), "--help"],
+                                cwd=self.root, env=environment, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--backend", result.stdout)
 
     def make_workspace(self):
         source = Path(__file__).resolve().parents[3]
@@ -211,6 +229,7 @@ class BuildTest(unittest.TestCase):
         (self.root / "rules").mkdir()
         (self.root / "rules/config").write_text(
             "BUILD_WITH_BAZEL_WHEN_AVAILABLE ?= n\n"
+            "USE_CONTAINER_IMAGE_STORE_AS_BACKEND ?= n\n"
             'SECURE_UPGRADE_MODE ?= "no_sign"\n')
 
     def make(self, *arguments):
@@ -227,6 +246,19 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--build-with-bazel-when-available "y"', result.stdout)
         self.assertNotIn("Makefile.work", result.stdout)
+
+    def test_make_backend_requires_bazel_and_passes_the_selected_mode(self):
+        self.make_workspace()
+        result = self.make("BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--backend "y"', result.stdout)
+        for mode in ("", "true", "y n"):
+            result = self.make("BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "USE_CONTAINER_IMAGE_STORE_AS_BACKEND=" + mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+        result = self.make("BUILD_WITH_BAZEL_WHEN_AVAILABLE=n", "USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", result.stderr)
 
     def test_make_rejects_invalid_selector(self):
         self.make_workspace()
@@ -254,6 +286,78 @@ class BuildTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("Makefile.work", result.stdout)
                 self.assertNotIn("build.py", result.stdout)
+
+    def test_native_preparation_clears_backend_for_prerequisites_and_cleanup(self):
+        self.make_workspace()
+        (self.root / "scripts").mkdir()
+        retry = self.root / "scripts/run_with_retry"
+        retry.write_text('#!/bin/sh\nexec "$@"\n')
+        retry.chmod(0o755)
+        # Exercise the real outer forwarding recipe, recording the selectors
+        # received by every native prerequisite and cleanup sub-make.
+        (self.root / "Makefile.work").write_text(
+            "include rules/config\n-include rules/config.user\n"
+            ".PHONY: bookworm bazel-vs-native-inputs docker-cleanup\n"
+            "bookworm bazel-vs-native-inputs docker-cleanup:\n"
+            '\t@test "$(USE_CONTAINER_IMAGE_STORE_AS_BACKEND)" = n\n'
+            '\t@echo "$@ $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND)" >> handoff.log\n')
+        env = {key: value for key, value in os.environ.items()
+               if key not in {"MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES"}}
+        for saved in (False, True):
+            with self.subTest(saved=saved):
+                arguments = ["make", "--no-print-directory", "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y"]
+                if saved:
+                    (self.root / "rules/config.user").write_text("USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y\n")
+                else:
+                    arguments.append("USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y")
+                result = subprocess.run(arguments + ["bazel-vs-native-inputs"], cwd=self.root,
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                record = self.root / "handoff.log"
+                self.assertEqual(record.read_text().splitlines(),
+                                 ["bookworm n", "bazel-vs-native-inputs n", "docker-cleanup n"])
+                record.unlink()
+
+    def test_inner_store_guards_preserve_setup_and_component_goals(self):
+        self.make_workspace()
+        self.retained()
+        (self.root / "rules/config.user").write_text("USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y\n")
+        source = Path(__file__).resolve().parents[3]
+        work = (source / "Makefile.work").read_text()
+        slave = (source / "slave.mk").read_text()
+        start = "ifneq ($(words $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND)),1)"
+        work_guard = work[work.index(start):work.index("\nifneq ($(filter target/sonic-vs.bin,")]
+        slave_guard = slave[slave.index(start):slave.index("\nifneq ($(strip $(SONIC_EXTRA_EXPORT_VARS)),)")]
+        # Read the production deferred installer check; do not copy its logic.
+        check_start = slave.index("# Defer this check until Make reaches an installer")
+        slave_guard += slave[check_start:slave.index("\nifneq ($(filter $(TARGET_PATH)/sonic-vs.bin,", check_start)]
+        env = {key: value for key, value in os.environ.items()
+               if key not in {"MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES"}}
+        for inner, guard in (("work", work_guard), ("slave", slave_guard)):
+            (self.root / "inner.mk").write_text(
+                ".SECONDEXPANSION:\ninclude rules/config\ninclude rules/config.user\n"
+                "TARGET_PATH := target\nSONIC_INSTALLERS := sonic-vs.bin sonic-vs.img.gz\n"
+                + guard + "\nall bazel-vs-native-inputs: target/sonic-vs.bin\n"
+                "init configure target/docker-orchagent.gz target/sonic-vs.bin target/sonic-vs.img.gz:\n"
+                '\t@echo native-target:$@ component-mode:$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)\n')
+            def invoke(goal, mode="y", *options):
+                return subprocess.run(["make", "-n", "-f", "inner.mk",
+                                       "BUILD_WITH_BAZEL_WHEN_AVAILABLE=" + mode, *options, goal],
+                                      cwd=self.root, env=env, text=True, capture_output=True)
+            for mode in ("y", "n"):
+                for goal in ("init", "configure", "target/docker-orchagent.gz"):
+                    with self.subTest(inner=inner, goal=goal, mode=mode):
+                        result = invoke(goal, mode)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("component-mode:" + mode, result.stdout)
+            for goal in ("target/sonic-vs.bin", "target/sonic-vs.img.gz") + (("all",) if inner == "slave" else ()):
+                with self.subTest(inner=inner, goal=goal):
+                    result = invoke(goal)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("requires top-level Bazel VS assembly", result.stderr)
+            if inner == "slave":
+                result = invoke("bazel-vs-native-inputs", "y", "BAZEL_NATIVE_PREPARE=y")
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_make_rejects_unsupported_bazel_image_configuration(self):
         self.make_workspace()

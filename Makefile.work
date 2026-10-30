@@ -173,6 +173,21 @@ include rules/config
 -include rules/config.user
 include rules/sonic-fips.mk
 
+
+ifneq ($(words $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND)),1)
+$(error USE_CONTAINER_IMAGE_STORE_AS_BACKEND must be y or n)
+endif
+ifneq ($(filter $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND),y n),$(USE_CONTAINER_IMAGE_STORE_AS_BACKEND))
+$(error USE_CONTAINER_IMAGE_STORE_AS_BACKEND must be y or n)
+endif
+# Setup and component goals do not choose a final image store. Reject direct
+# native installer requests; aggregate requests are checked in slave.mk.
+ifeq ($(USE_CONTAINER_IMAGE_STORE_AS_BACKEND),y)
+ifneq ($(filter target/sonic-%.bin target/sonic-%.img.gz,$(MAKECMDGOALS)),)
+$(error The containerd image store requires top-level Bazel VS assembly)
+endif
+endif
+
 ifneq ($(filter target/sonic-vs.bin,$(MAKECMDGOALS)),)
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(error Bazel VS assembly must use the top-level Makefile and prepared image inputs)
@@ -797,6 +812,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 						   SBOM_STRICT=$(SBOM_STRICT) \
 						   SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 						   BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(BUILD_WITH_BAZEL_WHEN_AVAILABLE) \
+                           USE_CONTAINER_IMAGE_STORE_AS_BACKEND=$(USE_CONTAINER_IMAGE_STORE_AS_BACKEND) \
                            SONIC_BAZEL_NATIVE_PUBLISH=$(SONIC_BAZEL_NATIVE_PUBLISH) \
                            $(SONIC_OVERRIDE_BUILD_VARS)
 
