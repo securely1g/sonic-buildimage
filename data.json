@@ -1,17 +1,17 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-30T10:45:35.125234Z",
+  "generated_at": "2026-10-30T11:10:16.894918Z",
   "pull_requests": [
     {
       "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
-      "draft": true,
+      "draft": false,
       "head_branch": "babysitter/image-dashboard-unprivileged-cycle2043",
       "head_sha": "9a6ac729242ad793d953394b7bac051de55aede7",
       "merged_at": null,
       "number": 77,
       "state": "open",
       "title": "Track unprivileged VS installer builds in dashboard",
-      "updated_at": "2026-10-30T10:42:30Z",
+      "updated_at": "2026-10-30T10:54:52Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/77"
     },
     {
@@ -23,7 +23,7 @@
       "number": 76,
       "state": "open",
       "title": "Assemble sonic-vs.bin in an unprivileged sonic-slave runner",
-      "updated_at": "2026-10-30T10:32:39Z",
+      "updated_at": "2026-10-30T10:59:08Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/76"
     },
     {
@@ -1288,9 +1288,9 @@
         },
         {
           "architecture": "arm64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-30T10:57:13Z",
+          "conclusion": "success",
+          "duration_seconds": 874.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124019207786,
@@ -1298,13 +1298,13 @@
           "name": "Container archive (ARM64)",
           "phases": {
             "build": null,
-            "other": 4.0,
-            "setup": 30.0,
-            "upload": null,
-            "validation": 96.0
+            "other": 49.0,
+            "setup": 182.0,
+            "upload": 1.0,
+            "validation": 638.0
           },
           "started_at": "2026-10-30T10:42:39Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-30T10:42:41Z",
@@ -1377,104 +1377,114 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:45:34Z",
+              "conclusion": "success",
+              "duration_seconds": 44.0,
               "name": "Check shared Make rules with unrelated container targets",
               "number": 8,
               "phase": "validation",
               "started_at": "2026-10-30T10:44:50Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:53:52Z",
+              "conclusion": "success",
+              "duration_seconds": 498.0,
               "name": "Test Python packages and check startup generation",
               "number": 9,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:45:34Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:53:54Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Retain wheels and required Python test evidence",
               "number": 10,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:53:52Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:56:21Z",
+              "conclusion": "success",
+              "duration_seconds": 147.0,
               "name": "Check local cache reuse across fresh checkouts",
               "number": 11,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:53:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:56:51Z",
+              "conclusion": "success",
+              "duration_seconds": 30.0,
               "name": "Retain generated module lock and graph",
               "number": 12,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:56:21Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:56:56Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
               "name": "Prepare public artifact list",
               "number": 13,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:56:51Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:56:57Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Upload public archive evidence",
               "number": 14,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:56:56Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:57:08Z",
+              "conclusion": "success",
+              "duration_seconds": 11.0,
               "name": "Post Set up Bazel",
               "number": 26,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:56:57Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:57:09Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Post Checkout repository",
               "number": 27,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:57:08Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T10:57:10Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Stop containers",
               "number": 28,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T10:57:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-30T10:57:10Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 29,
+              "phase": "other",
+              "started_at": "2026-10-30T10:57:10Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41042723499/job/124019207786"
