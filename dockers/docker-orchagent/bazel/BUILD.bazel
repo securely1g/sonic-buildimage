@@ -1,3 +1,22 @@
+load("@rules_python//python:defs.bzl", "py_test")
+load("//tools/bazel/ci:configured_labels.bzl", "configured_labels")
+
 package(default_visibility = ["//dockers/docker-orchagent:__pkg__"])
 
 exports_files(["apt.lock.json"])
+
+configured_labels(
+    name = "shared_rust_labels",
+    testonly = True,
+    roots = [
+        "@sonic_swss//crates/countersyncd:countersyncd",
+        "@sonic_swss//crates/countersyncd:common_rust_test",
+    ],
+)
+
+py_test(
+    name = "shared_rust_graph_test",
+    srcs = ["shared_rust_graph_test.py"],
+    args = ["$(rootpath :shared_rust_labels)"],
+    data = [":shared_rust_labels"],
+)

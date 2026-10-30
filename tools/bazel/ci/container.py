@@ -133,12 +133,14 @@ def collect_test_outputs(events, artifacts, targets, labels=None):
     return collected, validations
 
 
-def run(container, *, workspace, artifacts, bazel, options, source_files=(), reuse_build=False):
+def run(container, *, workspace, artifacts, bazel, options, source_files=(),
+        architecture="amd64", test_suite="ci_tests", reuse_build=False):
     """Run the owner's Bazel CI targets and retain their outputs and failure evidence."""
     require(container.startswith("//") and ":" not in container and
             all(part not in ("", ".", "..") for part in container[2:].split("/")),
             "container must be a local Bazel package such as //dockers/docker-orchagent")
-    suite, artifact_target = container + ":ci_tests", container + ":ci_artifacts"
+    require(test_suite in ("ci_tests", "ci_source_tests"), "unknown owner CI suite")
+    suite, artifact_target = container + ":" + test_suite, container + ":ci_artifacts"
     public_artifacts.label(suite)
     require(not artifacts.exists() or not any(artifacts.iterdir()),
             "artifact directory must be empty: " + str(artifacts))
@@ -149,11 +151,17 @@ def run(container, *, workspace, artifacts, bazel, options, source_files=(), reu
                "ci_tests": suite, "ci_artifacts": artifact_target}
     started = time.monotonic()
     try:
-        require(platform.machine() == "x86_64" and
+        require(architecture in ("amd64", "arm64"), "unsupported native architecture")
+        require(architecture == "amd64" or test_suite == "ci_source_tests",
+                "ARM64 execution requires the source-only owner suite")
+        machine = {"amd64": "x86_64", "arm64": "aarch64"}[architecture]
+        require(platform.machine() == machine and
                 platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
-                "container CI requires native AMD64 Debian Trixie")
+                "container CI requires native " + architecture.upper() + " Debian Trixie")
+        native_platform = "@sonic_build_infra//platforms:" + machine + "_trixie"
+        options = [*options, "--platforms=" + native_platform, "--host_platform=" + native_platform]
         receipt["platform"] = platform.platform()
-        receipt["architecture"] = "amd64"
+        receipt["architecture"] = architecture
         receipt["revision"] = execute(["git", "rev-parse", "HEAD"], artifacts, receipt, "revision").strip()
         version = execute([bazel, "--version"], artifacts, receipt, "bazel-version").strip()
         require(version == "bazel " + (workspace / ".bazelversion").read_text().strip(),
@@ -256,6 +264,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--container", required=True, help="Owner Bazel package, e.g. //dockers/docker-orchagent")
     parser.add_argument("--bazel", default="bazel")
+    parser.add_argument("--architecture", choices=("amd64", "arm64"), default="amd64")
+    parser.add_argument("--test-suite", choices=("ci_tests", "ci_source_tests"), default="ci_tests")
     parser.add_argument("--bazel-arg", action="append", default=[])
     parser.add_argument("--source-file", action="append", default=[],
                         help="Additional workspace-relative preparation input to retain in source evidence")
@@ -266,7 +276,7 @@ def main(argv=None):
     try:
         run(args.container, workspace=ROOT, artifacts=args.artifacts.resolve(), bazel=args.bazel,
             options=[*OPTIONS, *args.bazel_arg], source_files=args.source_file,
-            reuse_build=args.reuse_build)
+            architecture=args.architecture, test_suite=args.test_suite, reuse_build=args.reuse_build)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         parser.exit(1, "container CI failed: " + str(error) + "\n")
 

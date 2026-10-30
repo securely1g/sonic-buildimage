@@ -149,7 +149,7 @@ def elf_debug(extracted, expected, prebuilt, *, readelf="readelf", objcopy="objc
 
 
 def debug_archives(runtime_archive, symbols_archive, *, expected_machine, prebuilt=(),
-                   readelf="readelf", objcopy="objcopy"):
+                   readelf="readelf", objcopy="objcopy", required_sonames=None):
     """Validate split-symbol archives; callers retain their package inventory policy."""
     runtime = payload(runtime_archive)
     symbols = payload(symbols_archive)
@@ -165,10 +165,22 @@ def debug_archives(runtime_archive, symbols_archive, *, expected_machine, prebui
     elfs = [name for name, item in combined.items() if "elf_machine" in item]
     require(elfs and all(combined[name]["elf_machine"] == expected_machine for name in elfs),
             "expected only ELF machine " + str(expected_machine))
+    require(required_sonames is None or isinstance(required_sonames, dict),
+            "invalid required runtime SONAMEs")
+    for name, soname in (required_sonames or {}).items():
+        require(isinstance(name, str) and path_name(name) == name and
+                runtime.get(name, {}).get("kind") == "file" and
+                runtime[name].get("elf_machine") == expected_machine,
+                "required SONAME library is absent: " + str(name))
+        require(isinstance(soname, str) and soname and PurePosixPath(soname).name == soname,
+                "invalid required runtime SONAME: " + str(soname))
     with tempfile.TemporaryDirectory(prefix="sonic-ci-symbols-") as temporary:
         extracted = Path(temporary)
         for path in (runtime_archive, symbols_archive):
             with tarfile.open(path) as archive:
                 archive.extractall(extracted, filter="data")
+        for name, soname in (required_sonames or {}).items():
+            info = elf_info(extracted / name, readelf=readelf, dynamic=True)
+            require(info["soname"] == soname, "runtime SONAME differs: " + name)
         pairs, gaps = elf_debug(extracted, combined, set(prebuilt), readelf=readelf, objcopy=objcopy)
     return {"elf_count": len(elfs), "debug_pairs": pairs, "prebuilt_debug_gaps": gaps}

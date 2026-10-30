@@ -55,13 +55,19 @@ def verify_layers(runtime_path, dependencies_path, configuration_path, symbols_p
     for name, library_policy in policy["libraries"].items():
         original = artifact_validation.payload(libraries[name], require_root=False)
         package_contract.validate_library_payload(dependencies, original, library_policy)
+    required_libraries = package_contract.validate_required_libraries(dependencies, policy)
+    required_sonames = {}
+    for path, links in policy.get("required_libraries", {}).items():
+        artifact_validation.require(len(links) == 1, "required library must declare one SONAME link: " + path)
+        required_sonames[path] = Path(next(iter(links))).name
     debug = artifact_validation.debug_archives(
         dependencies_path, symbols_path,
         expected_machine=package_contract.elf_machine(policy["architecture"]),
         readelf=readelf, objcopy=objcopy,
+        required_sonames=required_sonames,
     )
     artifact_validation.require(
-        set(programs) | set(policy["required_debug_paths"]) <= {pair["path"] for pair in debug["debug_pairs"]},
+        set(programs) | required_libraries | set(policy["required_debug_paths"]) <= {pair["path"] for pair in debug["debug_pairs"]},
         "incomplete declared native debug coverage",
     )
     configuration = artifact_validation.payload(configuration_path)

@@ -411,6 +411,106 @@ jobs:
         run: |
           echo 'Hosted checks cover regressions and dependency resolution; source-package and image validation run in the Make VS job.' >> "$GITHUB_STEP_SUMMARY"
 
+  source-arm64:
+    name: SWSS source layers (ARM64)
+    # Retain the native hosted path for source TARs, without the full OCI suite.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      SONIC_CI_MANIFEST_METADATA: rules/docker-orchagent.mk
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      options: --init
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates \
+            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 tar unzip zstd
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check native architecture and generated dependency state
+        run: |
+          test "$(uname -m)" = "aarch64"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+
+      - name: Record hosted source-build storage
+        run: |
+          python3 - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+          # Source-only ARM64 has a prior hosted pass, not a measured peak bound.
+          print(json.dumps({str(path): shutil.disk_usage(path)._asdict()
+                            for path in (Path.cwd(), Path.home())}, sort_keys=True))
+          PY
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: buildimage-swss-oci-arm64
+          cache-version: "8.5.1"
+
+      - name: Check Make handoff and archive validation
+        run: |
+          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
+          python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
+          python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
+
+      - name: Prepare the registered SWSS manifests
+        run: |
+          # The registered Make image profile is AMD64; source tools run natively.
+          make -f tools/bazel/prepare_manifests.mk \
+            MANIFEST_METADATA="$SONIC_CI_MANIFEST_METADATA" \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
+            ENABLE_ASAN=n DBG_IMAGE_MARK=dbg DOCKERS_PATH=dockers
+
+      - name: Test and collect declared ARM64 source artifacts
+        run: |
+          python3 -B tools/bazel/ci/container.py \
+            --container //dockers/docker-orchagent --source-file "$SONIC_CI_MANIFEST_METADATA" \
+            --architecture arm64 --test-suite ci_source_tests \
+            --bazel "$BAZEL" --artifacts artifacts/swss
+
+      - name: Prepare public artifact list
+        id: public_artifacts
+        if: always()
+        env:
+          CI_JOB_STATUS: ${{ job.status }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/public_artifacts.py source \
+            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
+            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
+            --architecture "arm64" \
+            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload public source layers and evidence
+        if: always() && steps.public_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-source-layers-arm64
+          path: ${{ steps.public_artifacts.outputs.paths }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: [checks]

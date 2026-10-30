@@ -16,7 +16,6 @@ declares the Make-generated manifests, config-engine OCI files and Scapy wheel.
 | `manifests.mk` | Register manifest outputs and render them with Make's existing generator before Bazel runs |
 | `prepare_manifests.mk` | Prepare only the registered manifests from explicitly selected Make metadata and configuration |
 | `build_helpers.py` | Persistent cache options and atomic archive publication, shared by Make recipes and cache checks |
-| `cargo-config.toml` | Empty repository-wide Cargo configuration required by the root `rules_rs` configuration |
 | [oci/](oci/README.md) | Manifest labels, Make OCI base publication and validation, and Docker archive export |
 | [tests/](tests/README.md) | Unit tests and fixture-based integration checks for the Bazel helpers and container build integration |
 | [ci/](ci/README.md) | Dependency evidence, command logs, archive/ELF inspection and cache verification |
@@ -287,6 +286,16 @@ python3 tools/bazel/ci/verify_make_archive.py \
 On native ARM64 Trixie, append
 `--bazel-arg=--platforms=@sonic_build_infra//platforms:aarch64_trixie` and
 `--bazel-arg=--host_platform=@sonic_build_infra//platforms:aarch64_trixie`.
+
+The native ARM64 source job runs the owner's `ci_source_tests` suite and exports
+the five SWSS runtime/debug TARs through the shared CI runner. It uses the
+previously supported `ubuntu-24.04-arm` path and keeps source architecture in the
+public receipt. This suite includes package/debug validation and the shared Rust
+graph checks; it does not assemble an ARM64 OCI image or installer. The AMD64
+source job retains its complete `ci_tests` suite, dedicated runner, storage
+admission and repository-input handoff to the VS job. Hosted source storage is
+recorded in the ARM64 job log; a previous native pass does not establish the peak
+storage requirement or success of updated dependency revisions.
 
 ## Registry selection
 
