@@ -68,6 +68,15 @@ installation. Install `gh` separately using its linked instructions, and verify
 that `/dev/kvm` exists after enabling CPU virtualization in the host firmware.
 `make init` uses host `wget` to download the build hooks' trusted signing keys.
 
+If the host uses a trusted TLS inspection CA, set
+`SONIC_BUILD_SLAVE_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt` for native
+Bookworm/Trixie jobs. Make validates the public PEM bundle and installs individual
+trust anchors in those builders with `update-ca-certificates`. TLS verification
+remains enabled, and changing the bundle changes the builder tag. Leave the
+variable unset on hosts that need no additional trust. The generated certificates
+stay in ignored builder context directories; do not commit certificates or keys.
+This setting does not add host trust to the installed SONiC filesystem.
+
 Use a local, persistent `/data` mount with at least 100 GiB free for workspaces.
 Budget another 100 GiB free for Docker; if they share a filesystem, preflight
 requires 200 GiB total. These are admission thresholds, not measured maximum

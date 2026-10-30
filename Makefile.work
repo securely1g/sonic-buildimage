@@ -87,6 +87,9 @@
 #  *                 action and Bazelisk caches for all Bazel builds.
 #  *                 Default: $(SONIC_DPKG_CACHE_SOURCE)/bazel, independent of
 #  *                 BUILD_WITH_BAZEL_WHEN_AVAILABLE. Empty disables the mount.
+#  * SONIC_BUILD_SLAVE_CA_BUNDLE: Optional public PEM CA bundle for Bookworm/Trixie
+#  *                 native builders. Adds trust anchors without disabling TLS
+#  *                 verification; the bundle digest participates in builder tags.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -290,6 +293,21 @@ $(shell \
 	PIP_HTTP_TIMEOUT=$(PIP_HTTP_TIMEOUT) \
 	scripts/generate_buildinfo_config.sh)
 
+# Optional host trust belongs to builder execution, not the installed SONiC image.
+# Include its content digest in the rendered Dockerfile so the existing image-tag
+# checks cannot reuse a builder with an older trust configuration.
+SONIC_BUILD_SLAVE_CA_SHA256 :=
+ifneq ($(filter bookworm trixie,$(BLDENV)),)
+ifneq ($(strip $(SONIC_BUILD_SLAVE_CA_BUNDLE)),)
+SONIC_BUILD_SLAVE_CA_SHA256 := $(shell python3 scripts/stage_build_ca.py \
+	--bundle "$(SONIC_BUILD_SLAVE_CA_BUNDLE)" \
+	--output "$(SLAVE_DIR)/build-ca-certificates" || echo invalid-ca-bundle)
+ifeq ($(SONIC_BUILD_SLAVE_CA_SHA256),invalid-ca-bundle)
+$(error Failed to prepare SONIC_BUILD_SLAVE_CA_BUNDLE)
+endif
+endif
+endif
+
 # Generate the slave Dockerfile, and prepare build info for it
 $(shell CONFIGURED_ARCH=$(CONFIGURED_ARCH) \
 	MULTIARCH_QEMU_ENVIRON=$(MULTIARCH_QEMU_ENVIRON) \
@@ -302,6 +320,7 @@ $(shell CONFIGURED_ARCH=$(CONFIGURED_ARCH) \
 	FIPS_VERSION=$(FIPS_VERSION) \
 	FIPS_GOLANG_MAIN_VERSION=$(FIPS_GOLANG_MAIN_VERSION) \
 	FIPS_GOLANG_VERSION=$(FIPS_GOLANG_VERSION) \
+	SONIC_BUILD_SLAVE_CA_SHA256=$(SONIC_BUILD_SLAVE_CA_SHA256) \
 	j2 $(SLAVE_DIR)/Dockerfile.j2 > $(SLAVE_DIR)/Dockerfile)
 
 ifeq ($(CROSS_BUILD_ENVIRON), y)

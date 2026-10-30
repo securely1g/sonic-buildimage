@@ -117,6 +117,9 @@ jobs:
       DEFAULT_CONTAINER_REGISTRY: ""
       MIRROR_URLS: https://deb.debian.org/debian/
       MIRROR_SECURITY_URLS: https://deb.debian.org/debian-security/
+      # Native builders inherit this runner's verified network trust anchors.
+      SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      SONIC_CONFIG_USE_DOCKER_CACHE: "y"
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:unprivileged-native
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
       SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages

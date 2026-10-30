@@ -34,6 +34,12 @@ COPY ["sources.list.amd64", "/etc/apt/sources.list"]
 RUN apt -o Acquire::https::Verify-Peer=false update && \
     apt -o Acquire::https::Verify-Peer=false install -y ca-certificates
 
+{%- if SONIC_BUILD_SLAVE_CA_SHA256 %}
+# Native builder CA bundle SHA256: {{ SONIC_BUILD_SLAVE_CA_SHA256 }}
+COPY ["build-ca-certificates/", "/usr/local/share/ca-certificates/sonic-build/"]
+RUN update-ca-certificates
+{%- endif %}
+
 {%- if CROSS_BUILD_ENVIRON == "y" %}
 {%- if CONFIGURED_ARCH == "armhf" %}
 ARG arch=armhf
