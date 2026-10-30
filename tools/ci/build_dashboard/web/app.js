@@ -61,8 +61,141 @@ function dateTime(value, short = false) {
 function result(item) { return item.conclusion || item.status || "unknown"; }
 function resultLabel(value) { return String(value || "unknown").replaceAll("_", " "); }
 function runKey(run) { return `${run.run_id}:${run.attempt}`; }
+function verifiedAttemptStart(run) { return run.started_at_source === "run_started_at" && timestamp(run.started_at) !== null; }
+function attemptTimeLabel(run) {
+  if (timestamp(run.started_at) === null) return `Attempt ${run.attempt} start not recorded`;
+  if (verifiedAttemptStart(run)) return `Attempt ${run.attempt} started ${dateTime(run.started_at)}`;
+  if (run.started_at_source === "created_at") return `Run created ${dateTime(run.started_at)} · attempt ${run.attempt} start not recorded`;
+  return `Recorded run time ${dateTime(run.started_at)} · attempt ${run.attempt} start unverified`;
+}
+function attemptTimeSourceLabel(run) {
+  if (verifiedAttemptStart(run)) return "Verified attempt start";
+  if (run.started_at_source === "created_at") return "Run creation; attempt start not recorded";
+  return "Attempt start unverified";
+}
 function imageJob(job) { return IMAGE_KINDS.has(job.kind); }
 function measured(job) { return imageJob(job) && job.conclusion === "success" && seconds(job.image_build_seconds) !== null; }
+function jobExecutionTimes(job) {
+  const start = timestamp(job.started_at), end = timestamp(job.completed_at);
+  if (job.status !== "completed" || typeof job.conclusion !== "string" || start === null || end === null || end < start || !Array.isArray(job.steps)) return null;
+  const executed = job.steps.some(step => {
+    const stepStart = timestamp(step.started_at), stepEnd = timestamp(step.completed_at);
+    return step.status === "completed" && typeof step.conclusion === "string" && step.conclusion !== "skipped" &&
+      stepStart !== null && stepEnd !== null && stepStart >= start && stepEnd >= stepStart && stepEnd <= end;
+  });
+  return executed ? {start, end} : null;
+}
+function executionSignature(job) {
+  const times = jobExecutionTimes(job);
+  if (times === null || typeof job.name !== "string" || !job.steps.length) return null;
+  const steps = [], numbers = new Set();
+  for (const step of job.steps) {
+    if (!Number.isSafeInteger(step.number) || step.number < 1 || numbers.has(step.number) || typeof step.name !== "string" || !step.name ||
+        step.status !== "completed" || typeof step.conclusion !== "string" ||
+        !Object.hasOwn(step, "started_at") || !Object.hasOwn(step, "completed_at")) return null;
+    const stepStart = timestamp(step.started_at), stepEnd = timestamp(step.completed_at);
+    if (step.conclusion !== "skipped" && (stepStart === null || stepEnd === null)) return null;
+    if ((step.started_at !== null && stepStart === null) || (step.completed_at !== null && stepEnd === null) ||
+        (stepStart !== null && stepStart < times.start) || (stepEnd !== null && stepEnd > times.end) ||
+        (stepStart !== null && stepEnd !== null && stepEnd < stepStart)) return null;
+    numbers.add(step.number);
+    steps.push([step.number, step.name, step.status, step.conclusion, stepStart, stepEnd]);
+  }
+  return JSON.stringify([job.name, job.kind, job.architecture || null, job.status, job.conclusion, times.start, times.end, steps]);
+}
+function imageExecution(snapshot, run, job) {
+  const execution = {originStatus: "unverified", originAttempt: null, originJobId: null, originUrl: null,
+    timeKind: "unknown", startedAt: null, completedAt: null, attemptStartedAt: verifiedAttemptStart(run) ? run.started_at : null,
+    recordedRunTime: run.started_at || null, attemptStartVerified: verifiedAttemptStart(run)};
+  const jobTimes = jobExecutionTimes(job), jobStart = jobTimes?.start ?? null, jobEnd = jobTimes?.end ?? null, attemptStart = timestamp(run.started_at);
+  const numbers = job.image_build_step_numbers;
+  if (jobTimes !== null && Array.isArray(numbers) && numbers.length && numbers.every(number => Number.isSafeInteger(number) && number > 0) && new Set(numbers).size === numbers.length) {
+    const selected = numbers.map(number => job.steps.filter(step => step.number === number));
+    if (selected.every(group => group.length === 1)) {
+      const steps = selected.map(group => group[0]);
+      const starts = steps.map(step => timestamp(step.started_at)), ends = steps.map(step => timestamp(step.completed_at));
+      if (steps.every(step => step.status === "completed") && starts.every(value => value !== null && value >= jobStart) &&
+          ends.every((value, index) => value !== null && value >= starts[index] && value <= jobEnd)) {
+        execution.timeKind = steps.length === 1 ? "image_step" : "image_steps";
+        execution.startedAt = new Date(Math.min(...starts)).toISOString();
+        execution.completedAt = new Date(Math.max(...ends)).toISOString();
+      }
+    }
+  }
+  const completed = jobTimes !== null;
+  if (execution.startedAt === null && completed) {
+    execution.timeKind = "image_job";
+    execution.startedAt = new Date(jobStart).toISOString();
+    execution.completedAt = new Date(jobEnd).toISOString();
+  }
+  if (!completed || attemptStart === null || !Number.isSafeInteger(run.run_id) || run.run_id < 1 || !Number.isSafeInteger(run.attempt) || run.attempt < 1 ||
+      !Number.isSafeInteger(job.job_id) || job.job_id < 1 || typeof run.source_sha !== "string" || !run.source_sha ||
+      typeof run.workflow_path !== "string" || !run.workflow_path) return execution;
+  const expectedUrl = `https://github.com/${snapshot.repository}/actions/runs/${run.run_id}/job/${job.job_id}`;
+  const signature = executionSignature(job);
+  if (safeGithubUrl(job.url, snapshot.repository) !== expectedUrl || signature === null) return execution;
+  if (!Array.isArray(snapshot.runs) || snapshot.runs.filter(item => item.run_id === run.run_id && item.attempt === run.attempt).length !== 1 ||
+      !Array.isArray(run.jobs) || run.jobs.filter(item => item.job_id === job.job_id).length !== 1) return execution;
+  if (run.attempt > 1 && !verifiedAttemptStart(run)) return execution;
+  if (jobStart >= attemptStart) {
+    return {...execution, originStatus: "current_attempt", originAttempt: run.attempt, originJobId: job.job_id, originUrl: job.url};
+  }
+  if (job.conclusion !== "success" || jobEnd >= attemptStart) return execution;
+  const candidates = [];
+  for (const prior of snapshot.runs) {
+    if (prior.run_id !== run.run_id || !Number.isSafeInteger(prior.attempt) || prior.attempt < 1 || prior.attempt >= run.attempt || prior.source_sha !== run.source_sha ||
+        prior.workflow_path !== run.workflow_path || prior.status !== "completed" || typeof prior.conclusion !== "string") continue;
+    if ((prior.attempt > 1 && !verifiedAttemptStart(prior)) || snapshot.runs.filter(item => item.run_id === prior.run_id && item.attempt === prior.attempt).length !== 1) continue;
+    const priorStart = timestamp(prior.started_at), priorEnd = timestamp(prior.completed_at);
+    if (priorStart === null || priorEnd === null) continue;
+    if (!Array.isArray(prior.jobs)) continue;
+    for (const earlier of prior.jobs) {
+      const times = jobExecutionTimes(earlier);
+      const expected = `https://github.com/${snapshot.repository}/actions/runs/${run.run_id}/job/${earlier.job_id}`;
+      if (Number.isSafeInteger(earlier.job_id) && earlier.job_id > 0 && times !== null && times.start >= priorStart && times.end <= priorEnd &&
+          prior.jobs.filter(item => item.job_id === earlier.job_id).length === 1 &&
+          safeGithubUrl(earlier.url, snapshot.repository) === expected &&
+          executionSignature(earlier) === signature) candidates.push({attempt: prior.attempt, jobId: earlier.job_id, url: earlier.url});
+    }
+  }
+  if (candidates.length !== 1) return execution;
+  return {...execution, originStatus: "carried", originAttempt: candidates[0].attempt,
+    originJobId: candidates[0].jobId, originUrl: candidates[0].url};
+}
+function executionTimeLabel(execution) {
+  if (execution.startedAt === null || execution.completedAt === null) return "Image execution time not recorded";
+  if (execution.timeKind === "image_steps") return `Image step window ${dateTime(execution.startedAt)} – ${dateTime(execution.completedAt)}`;
+  const label = execution.timeKind === "image_step" ? "Image step" : "Image job";
+  return `${label} executed ${dateTime(execution.startedAt)} – ${dateTime(execution.completedAt)}`;
+}
+function executionOriginLabel(execution) {
+  if (execution.originStatus === "carried") return `Carried from attempt ${execution.originAttempt}`;
+  if (execution.originStatus === "current_attempt") return `Executed in attempt ${execution.originAttempt}`;
+  return "Execution origin unverified";
+}
+function jobExecutionLabel(job) {
+  if (jobExecutionTimes(job) === null) return "Job execution time is incomplete or unverified";
+  return `Job executed ${dateTime(job.started_at)} – ${dateTime(job.completed_at)}`;
+}
+function imageMeasurements(snapshot) {
+  const unique = new Map(), ambiguous = new Set(), unverified = [];
+  for (const run of snapshot.runs) for (const job of run.jobs) {
+    if (!measured(job)) continue;
+    const execution = imageExecution(snapshot, run, job), item = {run, job, execution};
+    if (execution.originStatus === "unverified" || timestamp(execution.startedAt) === null) { unverified.push(item); continue; }
+    const key = `${run.run_id}:${execution.originAttempt}:${execution.originJobId}`;
+    if (ambiguous.has(key)) { unverified.push(item); continue; }
+    if (unique.has(key)) {
+      const previous = unique.get(key), before = executionSignature(previous.job), after = executionSignature(job);
+      if (before === null || after === null || before !== after) {
+        unique.delete(key); ambiguous.add(key); unverified.push(previous, item); continue;
+      }
+    }
+    if (!unique.has(key) || unique.get(key).run.attempt < run.attempt) unique.set(key, item);
+  }
+  const records = [...unique.values()].sort((a, b) => timestamp(b.execution.startedAt) - timestamp(a.execution.startedAt) || b.run.attempt - a.run.attempt || b.run.run_id - a.run.run_id);
+  return {records, unverified};
+}
 function imageResult(jobs) {
   const outcomes = jobs.filter(imageJob).map(result);
   if (!outcomes.length) return "unmeasured";
@@ -208,8 +341,7 @@ function matchesJob(job) {
   const arch = byId("arch-filter").value;
   return (path === "all" || job.kind === path) && (arch === "all" || (job.architecture || "unknown") === arch);
 }
-function records() { return state.data.runs.flatMap(run => run.jobs.map(job => ({run, job}))); }
-function successfulImages() { return records().filter(item => measured(item.job)).sort((a, b) => runTime(b.run) - runTime(a.run)); }
+function successfulImages() { return imageMeasurements(state.data).records; }
 function setSelected(run, jobId) {
   state.selectedRun = runKey(run);
   state.selectedJob = jobId || null;
@@ -219,12 +351,12 @@ function setSelected(run, jobId) {
 }
 
 function renderMetrics() {
-  const successes = successfulImages();
+  const measurements = imageMeasurements(state.data), successes = measurements.records;
   const latest = successes[0];
   const measuredPrs = new Set(successes.flatMap(item => prNumbers(item.run)));
   const metrics = [
-    ["Latest successful image step", latest ? duration(latest.job.image_build_seconds) : "—", latest ? `${kindLabel(latest.job)} · ${architecture(latest.job)}` : "Waiting for an image measurement"],
-    ["Successful image measurements", successes.length, "Build steps with a successful result"],
+    ["Latest successful image step", latest ? duration(latest.job.image_build_seconds) : "—", latest ? `${kindLabel(latest.job)} · ${architecture(latest.job)} · ${executionTimeLabel(latest.execution)}` : "Waiting for a verified image execution"],
+    ["Successful image executions", successes.length, `Carried retry records counted once · ${measurements.unverified.length} unverified records omitted`],
     ["PRs with image measurements", `${state.data.pull_requests.filter(pr => measuredPrs.has(pr.number)).length} / ${state.data.pull_requests.length}`, "Includes historical PR revisions"],
     ["Workflow runs retained", state.data.runs.length, "Each retry attempt is recorded separately"],
   ];
@@ -254,22 +386,24 @@ function svgEl(tag, attrs, text) {
   return node;
 }
 function renderTrend() {
-  const all = successfulImages().filter(item => matchesRun(item.run) && matchesJob(item.job));
+  const measurements = imageMeasurements(state.data);
+  const all = measurements.records.filter(item => matchesRun(item.run) && matchesJob(item.job));
+  const unverified = measurements.unverified.filter(item => matchesRun(item.run) && matchesJob(item.job)).length;
   const points = all.slice(0, 60).reverse();
   const container = byId("trend");
   container.replaceChildren();
-  byId("trend-note").textContent = `Showing ${points.length} of ${all.length} matching successful image measurements. Select a point to inspect its job. Lines join only the same build path and architecture; they do not imply a controlled comparison.`;
-  if (!points.length) { container.append(el("p", "empty", "No successful image measurements match these filters.\nFailed, skipped, and pending runs remain visible below.")); return; }
+  byId("trend-note").textContent = `Showing ${points.length} of ${all.length} matching verified image executions; carried retries count once and ${unverified} unverified records are omitted. Dates are image step or job execution starts. Select a point to inspect its job. Lines join only the same build path and architecture; they do not imply a controlled comparison.`;
+  if (!points.length) { container.append(el("p", "empty", "No verified successful image executions match these filters.\nFailed, skipped, pending, and unverified records remain visible below.")); return; }
   const padding = getComputedStyle(container);
   const width = Math.max(240, Math.round(container.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)));
   const height = width < 520 ? 250 : 265;
   const left = 55, right = 40, top = 19, bottom = 41;
   const maxSeconds = Math.max(60, ...points.map(item => item.job.image_build_seconds)) * 1.14;
-  const firstTime = Math.min(...points.map(item => runTime(item.run)));
-  const lastTime = Math.max(...points.map(item => runTime(item.run)));
-  const x = item => lastTime === firstTime ? (width + left - right) / 2 : left + (runTime(item.run) - firstTime) / (lastTime - firstTime) * (width - left - right);
+  const firstTime = Math.min(...points.map(item => timestamp(item.execution.startedAt)));
+  const lastTime = Math.max(...points.map(item => timestamp(item.execution.startedAt)));
+  const x = item => lastTime === firstTime ? (width + left - right) / 2 : left + (timestamp(item.execution.startedAt) - firstTime) / (lastTime - firstTime) * (width - left - right);
   const y = item => top + (1 - item.job.image_build_seconds / maxSeconds) * (height - top - bottom);
-  const svg = svgEl("svg", {viewBox: `0 0 ${width} ${height}`, role: "group", "aria-label": "Successful image build times, in minutes, ordered by run start time. Each point opens run details."});
+  const svg = svgEl("svg", {viewBox: `0 0 ${width} ${height}`, role: "group", "aria-label": "Successful image build times, in minutes, ordered by image execution start time. Each point opens run details."});
   for (let step = 0; step <= 4; step++) {
     const value = maxSeconds * step / 4;
     const position = top + (1 - step / 4) * (height - top - bottom);
@@ -294,7 +428,7 @@ function renderTrend() {
   }
   for (const item of points) {
     const prs = prNumbers(item.run).map(number => `PR #${number}`).join(", ") || item.run.branch || "Branch build";
-    const label = `${prs} · ${kindLabel(item.job)} · ${architecture(item.job)} · ${duration(item.job.image_build_seconds)} · ${dateTime(item.run.started_at)}`;
+    const label = `${prs} · ${kindLabel(item.job)} · ${architecture(item.job)} · ${duration(item.job.image_build_seconds)} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`;
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
@@ -333,20 +467,24 @@ function renderCoverage() {
       renderFiltered();
     });
     title.append(button, el("span", "subtext", pr.merged_at ? "Merged" : pr.draft ? "Draft" : resultLabel(pr.state)));
-    const status = el("td"), timings = el("td", "nowrap");
+    const status = el("td"), timings = el("td");
     const stack = el("div", "status-stack");
     for (const job of jobs) {
+      const execution = imageExecution(state.data, latestImageRun, job);
       const item = el("div");
       item.append(badge(result(job)), el("span", "subtext", `${kindLabel(job)} · ${architecture(job)}`));
       stack.append(item);
       const time = el("div", "", measured(job) ? duration(job.image_build_seconds) : "—");
       time.append(el("span", "subtext", measured(job) ? "successful step" : job.conclusion === "success" ? "no step timing" : "not a successful build"));
+      time.append(el("span", "subtext", executionTimeLabel(execution)));
+      const origin = el("span", "subtext");
+      origin.append(execution.originStatus === "carried" ? link(`${executionOriginLabel(execution)} ↗`, execution.originUrl) : document.createTextNode(executionOriginLabel(execution)));
+      time.append(origin);
       timings.append(time);
     }
     status.append(stack);
     const current = !!pr.head_sha && latestImageRun.source_sha === pr.head_sha;
     title.append(el("span", "subtext sha", String(latestImageRun.source_sha || "unknown").slice(0, 10)), badge(current ? "current" : "historical", current ? "Current PR head" : "Different revision"));
-    title.append(el("span", "subtext", dateTime(latestImageRun.started_at)));
     row.append(title, status, timings); rows.push(row);
   }
   byId("coverage-body").replaceChildren(...rows);
@@ -364,7 +502,9 @@ function renderRuns() {
     workflow.append(button, el("span", "subtext sha", `${String(run.source_sha || "unknown").slice(0, 10)} · ${run.branch || "unknown branch"}`));
     const prs = el("td", "", prNumbers(run).map(number => `#${number}`).join(", ") || "—");
     const status = el("td"); status.append(badge(result(run)));
-    row.append(workflow, prs, status, el("td", "", dateTime(run.started_at)), el("td", "", run.attempt));
+    const time = el("td", "", dateTime(run.started_at));
+    time.append(el("span", "subtext", attemptTimeSourceLabel(run)));
+    row.append(workflow, prs, status, time, el("td", "", run.attempt));
     return row;
   });
   byId("runs-body").replaceChildren(...rows);
@@ -459,7 +599,7 @@ function renderDetails() {
   const run = state.data.runs.find(item => runKey(item) === state.selectedRun);
   if (!run) { box.append(el("p", "empty", "Select a chart point, pull request, or workflow run to see its timing breakdown.")); return; }
   const heading = el("p", "detail-meta");
-  heading.append(link(`${run.workflow_name || "Workflow"} ↗`, run.url), badge(result(run)), el("span", "subtext", `${dateTime(run.started_at)} · Attempt ${run.attempt}`), el("span", "subtext sha", `Source ${String(run.source_sha || "unknown").slice(0, 12)} · ${run.event || "unknown event"}`));
+  heading.append(link(`${run.workflow_name || "Workflow"} ↗`, run.url), badge(result(run)), el("span", "subtext", attemptTimeLabel(run)), el("span", "subtext sha", `Source ${String(run.source_sha || "unknown").slice(0, 12)} · ${run.event || "unknown event"}`));
   box.append(heading);
   if (run.pr_association_note) box.append(el("p", "source-warning", run.pr_association_note));
   const selectedPr = Number(byId("pr-filter").value);
@@ -484,6 +624,13 @@ function renderDetails() {
   const meta = el("p", "detail-meta");
   meta.append(link(`${kindLabel(job)} · ${architecture(job)} ↗`, job.url), badge(result(job)));
   box.append(meta);
+  if (imageJob(job)) {
+    const execution = imageExecution(state.data, run, job);
+    box.append(el("p", "detail-meta", execution.timeKind === "image_job" ? "Image step time not recorded" : executionTimeLabel(execution)), el("p", "detail-meta", jobExecutionLabel(job)));
+    const origin = el("p", "detail-meta");
+    origin.append(execution.originStatus === "carried" ? link(`${executionOriginLabel(execution)} · original job ${execution.originJobId} ↗`, execution.originUrl) : document.createTextNode(executionOriginLabel(execution)));
+    box.append(origin);
+  }
   const values = el("div", "detail-values");
   for (const [name, value] of [["Successful image build step", measured(job) ? job.image_build_seconds : null], ["Total job elapsed", job.duration_seconds]]) {
     const valueBox = el("div", "detail-value"); valueBox.append(el("span", "", name), el("strong", "", duration(value))); values.append(valueBox);
@@ -543,4 +690,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};

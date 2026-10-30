@@ -2,7 +2,8 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
+const {duration, measured, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
+const pr72Fixture = require("../testdata/pr72-carried-image-execution.json");
 
 test("unmeasured and invalid durations never look like fast builds", () => {
   for (const value of [null, undefined, "12", -1, NaN, Infinity]) assert.equal(duration(value), "—");
@@ -18,6 +19,191 @@ test("only successful recognized image jobs enter the performance chart", () => 
   for (const conclusion of ["failure", "skipped", "cancelled", null]) assert.equal(measured({...job, conclusion}), false);
   for (const kind of ["container", "source", "checks", "other"]) assert.equal(measured({...job, kind}), false);
   assert.equal(measured({...job, image_build_seconds: null}), false);
+});
+
+function pr72CarriedSnapshot() {
+  const fixture = structuredClone(pr72Fixture);
+  const makeRun = value => {
+    const {job_id, observed_run_started_at, created_at, ...attempt} = value;
+    assert.equal(observed_run_started_at, attempt.started_at);
+    const job = {...structuredClone(fixture.job), job_id, image_build_step_numbers: fixture.image_build_step_numbers,
+      url: `https://github.com/${fixture.repository}/actions/runs/${fixture.run_id}/job/${job_id}`};
+    return {...attempt, started_at_source: "run_started_at", run_id: fixture.run_id, workflow_path: fixture.workflow_path, source_sha: fixture.source_sha,
+      pr_numbers: [72], jobs: [job], url: `https://github.com/${fixture.repository}/actions/runs/${fixture.run_id}/attempts/${attempt.attempt}`};
+  };
+  return {schema_version: 1, repository: fixture.repository, pull_requests: [fixture.pr],
+    runs: [makeRun(fixture.attempt1), makeRun(fixture.attempt2)]};
+}
+
+test("PR72 retry keeps the original image execution and counts it once", () => {
+  const snapshot = pr72CarriedSnapshot(), before = structuredClone(snapshot);
+  const retry = snapshot.runs[1], job = retry.jobs[0], execution = imageExecution(snapshot, retry, job);
+  assert.equal(execution.originStatus, "carried");
+  assert.equal(execution.originAttempt, 1);
+  assert.equal(execution.originJobId, 123981002106);
+  assert.equal(execution.originUrl, "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/job/123981002106");
+  assert.equal(execution.timeKind, "image_step");
+  assert.equal(execution.startedAt, "2026-10-30T11:55:36.000Z");
+  assert.equal(execution.completedAt, "2026-10-30T12:34:25.000Z");
+  assert.equal(execution.attemptStartedAt, "2026-10-30T13:36:46Z");
+  assert.equal(execution.attemptStartVerified, true);
+  assert.match(attemptTimeLabel(retry), /^Attempt 2 started /);
+  assert.match(executionTimeLabel(execution), /^Image step executed /);
+  assert.equal(executionOriginLabel(execution), "Carried from attempt 1");
+  assert.match(jobExecutionLabel(job), /^Job executed /);
+  const measurements = imageMeasurements(snapshot);
+  assert.equal(measurements.records.length, 1);
+  assert.equal(measurements.unverified.length, 0);
+  assert.equal(measurements.records[0].execution.startedAt, "2026-10-30T11:55:36.000Z");
+  assert.equal(measurements.records[0].run.attempt, 2);
+  assert.equal(prCoverage(snapshot)[0].classification, "success", "the retained image job succeeded");
+  assert.equal(prCoverage(snapshot)[0].latestImageRun.status, "in_progress", "the retry itself remains pending");
+  assert.deepEqual(snapshot, before, "display analysis must preserve raw attempts and jobs");
+});
+
+test("legacy PR72 records without image step identities stay readable", () => {
+  const snapshot = pr72CarriedSnapshot();
+  for (const run of snapshot.runs) delete run.jobs[0].image_build_step_numbers;
+  assert.equal(validateSnapshot(snapshot), snapshot);
+  const execution = imageExecution(snapshot, snapshot.runs[1], snapshot.runs[1].jobs[0]);
+  assert.equal(execution.originStatus, "carried");
+  assert.equal(execution.timeKind, "image_job");
+  assert.equal(execution.startedAt, "2026-10-30T11:50:35.000Z");
+  assert.equal(execution.completedAt, "2026-10-30T13:27:57.000Z");
+  assert.match(executionTimeLabel(execution), /^Image job executed /);
+  assert.equal(imageMeasurements(snapshot).records.length, 1);
+});
+
+test("PR72 created-at fallback and legacy retry times never prove a new execution", () => {
+  for (const source of [undefined, "created_at"]) {
+    const snapshot = pr72CarriedSnapshot(), retry = snapshot.runs[1];
+    if (source === undefined) { delete retry.started_at_source; delete snapshot.runs[0].started_at_source; }
+    else { retry.started_at_source = source; retry.started_at = pr72Fixture.attempt2.created_at; }
+    assert.equal(validateSnapshot(snapshot), snapshot);
+    const execution = imageExecution(snapshot, retry, retry.jobs[0]);
+    assert.equal(execution.originStatus, "unverified");
+    assert.equal(execution.attemptStartedAt, null);
+    assert.equal(execution.attemptStartVerified, false);
+    assert.equal(imageMeasurements(snapshot).records.length, 1);
+    assert.equal(imageMeasurements(snapshot).unverified.length, 1);
+    assert.match(attemptTimeLabel(retry), source === undefined ? /attempt 2 start unverified$/ : /attempt 2 start not recorded$/);
+    assert.equal(snapshot.runs.length, 2);
+  }
+});
+
+test("missing or ambiguous carried origins never become new image executions", () => {
+  const missing = pr72CarriedSnapshot();
+  missing.runs.shift();
+  let execution = imageExecution(missing, missing.runs[0], missing.runs[0].jobs[0]);
+  assert.equal(execution.originStatus, "unverified");
+  assert.equal(execution.originAttempt, null);
+  assert.equal(executionOriginLabel(execution), "Execution origin unverified");
+  assert.equal(imageMeasurements(missing).records.length, 0);
+  assert.equal(imageMeasurements(missing).unverified.length, 1);
+
+  const changed = pr72CarriedSnapshot();
+  changed.runs[1].jobs[0].steps[0].completed_at = "2026-10-30T11:51:01Z";
+  execution = imageExecution(changed, changed.runs[1], changed.runs[1].jobs[0]);
+  assert.equal(execution.originStatus, "unverified");
+  assert.equal(imageMeasurements(changed).records.length, 1);
+  assert.equal(imageMeasurements(changed).unverified.length, 1);
+
+  const ambiguous = pr72CarriedSnapshot();
+  const candidate = structuredClone(ambiguous.runs[0]);
+  candidate.attempt = 2; candidate.started_at = "2026-10-30T09:05:43Z"; candidate.jobs[0].job_id = 999999;
+  candidate.url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/attempts/2";
+  candidate.jobs[0].url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/job/999999";
+  ambiguous.runs[1].attempt = 3;
+  ambiguous.runs[1].url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/attempts/3";
+  ambiguous.runs.splice(1, 0, candidate);
+  execution = imageExecution(ambiguous, ambiguous.runs[2], ambiguous.runs[2].jobs[0]);
+  assert.equal(execution.originStatus, "unverified");
+  assert.equal(execution.originJobId, null);
+
+  const incomplete = pr72CarriedSnapshot();
+  incomplete.runs[1].jobs[0].started_at = null;
+  execution = imageExecution(incomplete, incomplete.runs[1], incomplete.runs[1].jobs[0]);
+  assert.equal(execution.originStatus, "unverified");
+  assert.equal(imageMeasurements(incomplete).unverified.length, 1);
+
+  const missingStep = pr72CarriedSnapshot();
+  missingStep.runs[1].jobs[0].steps[0].started_at = null;
+  execution = imageExecution(missingStep, missingStep.runs[1], missingStep.runs[1].jobs[0]);
+  assert.equal(execution.originStatus, "unverified");
+  assert.equal(imageMeasurements(missingStep).unverified.length, 1);
+});
+
+test("a genuinely new image execution remains a separate measurement", () => {
+  const snapshot = pr72CarriedSnapshot(), retry = snapshot.runs[1], job = retry.jobs[0];
+  const shift = value => value === null ? null : new Date(Date.parse(value) + 7765000).toISOString();
+  job.started_at = shift(job.started_at); job.completed_at = shift(job.completed_at);
+  for (const step of job.steps) { step.started_at = shift(step.started_at); step.completed_at = shift(step.completed_at); }
+  retry.status = "completed"; retry.conclusion = "success"; retry.completed_at = job.completed_at;
+  const execution = imageExecution(snapshot, retry, job);
+  assert.equal(execution.originStatus, "current_attempt");
+  assert.equal(execution.originAttempt, 2);
+  assert.equal(imageMeasurements(snapshot).records.length, 2);
+  const carried = structuredClone(retry);
+  carried.attempt = 3; carried.started_at = "2026-10-31T00:05:00Z"; carried.status = "in_progress"; carried.conclusion = null; carried.completed_at = null;
+  carried.url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/attempts/3";
+  carried.jobs[0].job_id = 999998; carried.jobs[0].url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/job/999998";
+  snapshot.runs.push(carried);
+  const carriedExecution = imageExecution(snapshot, carried, carried.jobs[0]);
+  assert.equal(carriedExecution.originStatus, "carried");
+  assert.equal(carriedExecution.originAttempt, 2);
+  assert.equal(imageMeasurements(snapshot).records.length, 2);
+});
+
+test("three-attempt PR72 carry chain stays on the original execution day", () => {
+  const snapshot = pr72CarriedSnapshot();
+  snapshot.runs[1].status = "completed"; snapshot.runs[1].conclusion = "success"; snapshot.runs[1].completed_at = "2026-10-30T13:55:10Z";
+  const third = structuredClone(snapshot.runs[1]);
+  third.attempt = 3; third.started_at = "2026-10-31T00:05:00Z"; third.jobs[0].job_id = 999997;
+  third.status = "in_progress"; third.conclusion = null; third.completed_at = null;
+  third.url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/attempts/3";
+  third.jobs[0].url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/job/999997";
+  snapshot.runs.push(third);
+  const execution = imageExecution(snapshot, third, third.jobs[0]);
+  assert.equal(execution.originStatus, "carried");
+  assert.equal(execution.originAttempt, 1);
+  assert.equal(execution.originJobId, 123981002106);
+  const measurements = imageMeasurements(snapshot);
+  assert.equal(measurements.records.length, 1);
+  assert.equal(measurements.records[0].run.attempt, 3);
+  assert.equal(measurements.records[0].execution.startedAt, "2026-10-30T11:55:36.000Z");
+  assert.equal(new Date(measurements.records[0].execution.startedAt).getUTCDate(), 30);
+  assert.equal(new Date(third.started_at).getUTCDate(), 31);
+  assert.equal(snapshot.runs.length, 3);
+});
+
+test("a legacy prior retry cannot become a false original when attempt 1 is missing", () => {
+  const snapshot = pr72CarriedSnapshot(); snapshot.runs.shift();
+  const prior = snapshot.runs[0]; prior.started_at = pr72Fixture.attempt2.created_at; prior.started_at_source = "created_at";
+  prior.status = "completed"; prior.conclusion = "success"; prior.completed_at = prior.jobs[0].completed_at;
+  const third = structuredClone(prior); third.attempt = 3; third.started_at = "2026-10-31T00:05:00Z"; third.started_at_source = "run_started_at";
+  third.status = "in_progress"; third.conclusion = null; third.completed_at = null; third.jobs[0].job_id = 999996;
+  third.url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/attempts/3";
+  third.jobs[0].url = "https://github.com/securely1g/sonic-buildimage/actions/runs/41030906724/job/999996"; snapshot.runs.push(third);
+  const execution = imageExecution(snapshot, third, third.jobs[0]);
+  assert.equal(execution.originStatus, "unverified");
+  assert.equal(execution.originAttempt, null);
+  assert.equal(imageMeasurements(snapshot).records.length, 0);
+  assert.equal(imageMeasurements(snapshot).unverified.length, 2);
+});
+
+test("duplicate legacy job identities keep different executions unverified", () => {
+  const snapshot = pr72CarriedSnapshot(); snapshot.runs.pop();
+  const run = snapshot.runs[0], duplicate = structuredClone(run.jobs[0]);
+  const shift = value => value === null ? null : new Date(Date.parse(value) + 60000).toISOString();
+  duplicate.started_at = shift(duplicate.started_at); duplicate.completed_at = shift(duplicate.completed_at);
+  for (const step of duplicate.steps) { step.started_at = shift(step.started_at); step.completed_at = shift(step.completed_at); }
+  run.completed_at = duplicate.completed_at; run.jobs.push(duplicate);
+  assert.equal(validateSnapshot(snapshot), snapshot);
+  assert.equal(imageExecution(snapshot, run, run.jobs[0]).originStatus, "unverified");
+  assert.equal(imageExecution(snapshot, run, run.jobs[1]).originStatus, "unverified");
+  assert.equal(imageMeasurements(snapshot).records.length, 0);
+  assert.equal(imageMeasurements(snapshot).unverified.length, 2);
+  assert.equal(run.jobs.length, 2);
 });
 
 function imageOutcome(conclusion, extra = {}) {

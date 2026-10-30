@@ -15,7 +15,7 @@ does not execute a build or execute any content from a log.
   metadata**, never the base/head that an old workflow tested.
 - `runs`: one entry per `(run_id, attempt)`, retained after Actions history expires:
   `run_id`, `attempt`, `workflow_name`, `workflow_path`, `source_sha`, `branch`,
-  `event`, `status`, `conclusion`, `pr_numbers`, `pr_association`, `pr_association_note`, `started_at`,
+  `event`, `status`, `conclusion`, `pr_numbers`, `pr_association`, `pr_association_note`, `started_at`, `started_at_source`,
   `completed_at`, `updated_at`, `url`, `jobs`.
   `source_sha` is GitHub's run `head_sha`; it is not replaced by the current PR
   head. `pr_association` is `github` (run's explicit PR links), `commit` (exact
@@ -27,9 +27,16 @@ does not execute a build or execute any content from a log.
   Other optional commit-lookup failures are disclosed as temporarily unavailable
   and retried next refresh without refetching cached jobs. Main repository, PR,
   workflow, run-attempt, and job API failures still abort collection.
+  `started_at_source` is `run_started_at` when GitHub supplied a valid attempt
+  start, `created_at` when the recorded time only falls back to run creation,
+  or `null` when unavailable. Older history may omit it. A cached latest attempt
+  gains verified start provenance only from matching fresh run ID, attempt,
+  source SHA and workflow metadata with a valid `run_started_at`; retained jobs
+  are not refetched for that upgrade. Legacy historical retry times stay
+  unverified. The run view labels fallback and legacy times accordingly.
 - Each job: `job_id`, `name`, `kind`, `architecture`, `status`, `conclusion`,
   `started_at`, `completed_at`, `duration_seconds`, `image_build_seconds`,
-  `image_build_elapsed_seconds`, `phases`, `steps`, `url`.
+  `image_build_elapsed_seconds`, `image_build_step_numbers`, `phases`, `steps`, `url`.
   `kind`: `make-vs`, `bazel-vs`, `container`, `source`, `checks`, `other`.
   `architecture`: `amd64`, `arm64`, or `null`; the classifier only uses explicit
   job-name annotations, never the physical runner's identity.
@@ -39,6 +46,12 @@ does not execute a build or execute any content from a log.
   `image_build_seconds` is populated only for successful, explicitly recognized
   image-build steps; `image_build_elapsed_seconds` also records a failed image
   build's elapsed time. A failed job is never a successful benchmark.
+  `image_build_step_numbers` identifies the exact recognized steps contributing
+  to those image durations. It is empty when no image step is recognized and
+  `null` when step numbers are missing or duplicated. Older schema-1 history
+  without this field remains readable; the next collection recomputes it from
+  retained steps. A display without verified step identities uses an explicitly
+  labeled job execution time instead of inventing an image step timestamp.
 - Each step: `number`, `name`, `status`, `conclusion`, `started_at`,
   `completed_at`, `duration_seconds`, `phase`.
   An optional `breakdown` provides nested Make build timings without changing
@@ -89,6 +102,29 @@ Durations for skipped, incomplete, missing, malformed, placeholder, or reversed
 start/end times are `null`, never a fabricated zero. Valid measured zero-second
 steps are preserved. Concluded failed/cancelled jobs may have elapsed time;
 consumers must use the outcome before plotting successful performance.
+
+Retry attempt start is separate from image execution. GitHub can assign a new
+job ID to a prior successful execution when retrying failed jobs. The display
+names an earlier origin only when one retained, completed prior attempt of the
+same run, source SHA and workflow has matching job name, kind, architecture,
+outcome, execution timestamps and every step's number, name, outcome and
+timestamps. The original job must fit that prior attempt, and the carried job
+must have completed before the retry started. Missing or ambiguous evidence
+leaves the origin unverified.
+Every retry used as the current or original attempt requires observed
+`run_started_at` provenance; a `created_at` fallback cannot establish a new
+execution. A job in attempt 1 can establish its own origin from its job and step
+evidence because there is no earlier attempt in that run. Duplicate run or job
+identities remain in raw history and are unverified. Colliding metric keys are
+deduplicated only when the execution signatures match.
+
+PR coverage and run details label image step time, job execution time and retry
+attempt start separately. Verified carried records link to the original job.
+Performance counts and trends count each verified origin once and use the image
+step's execution start, or a labeled job start when step identities are absent.
+A successful job that completed before its retry began is never counted as a new
+execution when its origin is unverified; it remains visible in raw run history
+with that limitation. These timestamps do not establish artifact publication.
 
 Only `bazel-swss-oci.yml`, `bazel-oci.yml`, and `bazel.yml` are collected. All
 pages and run attempts are covered. Completed attempts are reused from history;
