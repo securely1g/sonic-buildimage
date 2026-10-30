@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-30T12:29:26.606496Z",
+  "generated_at": "2026-10-30T13:01:18.133136Z",
   "pull_requests": [
     {
       "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
@@ -143,7 +143,7 @@
       "number": 65,
       "state": "open",
       "title": "Reuse verified archive inventories during Syncd P4 validation",
-      "updated_at": "2026-10-30T01:38:57Z",
+      "updated_at": "2026-10-30T12:59:19Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/65"
     },
     {
@@ -4305,17 +4305,17 @@
           "completed_at": null,
           "conclusion": null,
           "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2329.0,
+          "image_build_seconds": 2329.0,
           "job_id": 123981002106,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
-            "setup": 300.0,
-            "upload": null,
-            "validation": null
+            "build": 2329.0,
+            "other": 2.0,
+            "setup": 309.0,
+            "upload": 68.0,
+            "validation": 1144.0
           },
           "started_at": "2026-10-30T11:50:35Z",
           "status": "in_progress",
@@ -4413,90 +4413,90 @@
             {
               "breakdown": {
                 "duration_seconds": null,
-                "reason": "step-not-successful",
+                "reason": "pending-collection",
                 "sections": [],
                 "source": "github-job-log",
                 "status": "unavailable",
                 "version": 1
               },
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:34:25Z",
+              "conclusion": "success",
+              "duration_seconds": 2329.0,
               "name": "Build the VS image and both OCI container variants",
               "number": 10,
               "phase": "build",
               "started_at": "2026-10-30T11:55:36Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:34:27Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Retain Orchagent archive reuse evidence",
               "number": 11,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:34:25Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:44:25Z",
+              "conclusion": "success",
+              "duration_seconds": 598.0,
               "name": "Validate SWSS source packages from the Make build",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:34:27Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:44:30Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
               "name": "Prepare SWSS source artifact list",
               "number": 13,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:44:25Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:45:34Z",
+              "conclusion": "success",
+              "duration_seconds": 64.0,
               "name": "Upload public source layers and evidence",
               "number": 14,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:44:30Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:54:40Z",
+              "conclusion": "success",
+              "duration_seconds": 546.0,
               "name": "Validate Syncd source packages from the Make build",
               "number": 15,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:45:34Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:54:44Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
               "name": "Prepare Syncd source artifact list",
               "number": 16,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:54:40Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-30T12:54:48Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
               "name": "Upload public contract evidence",
               "number": 17,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:54:44Z",
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -4505,8 +4505,8 @@
               "name": "Verify source-built P4 runtime and debug TARs in both Syncd images",
               "number": 18,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-30T12:54:48Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
