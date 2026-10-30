@@ -6,6 +6,7 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/frr_draft_bazel.sh
       - .github/workflows/bazel-eventd.yml
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/frr_draft_bazel.sh
       - .github/workflows/bazel-eventd.yml
   workflow_dispatch:
 
@@ -57,7 +59,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
+          python3 -B src/sonic-eventd/bazel/ci.py --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/frr_draft_bazel.sh" --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence
         if: always()

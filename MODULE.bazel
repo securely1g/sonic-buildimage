@@ -7,12 +7,12 @@ module(
 )
 
 include("//src/sonic-supervisord-utilities-rs:deps.MODULE.bazel")
+include("//src/sonic-frr:deps.MODULE.bazel")
 
 bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "googletest", version = "1.16.0")
-bazel_dep(name = "pigz", version = "2.8.bcr.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # P4 producers retain their upstream Make/configure builds and export TARs.
@@ -24,22 +24,24 @@ bazel_dep(name = "sonic-dash", version = "0.0.2-5c9305403585a7ae54f86918219acb8e
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
 bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_pkg", version = "1.1.0")
+bazel_dep(name = "libyang", version = "3.12.2.sonic.6")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
+bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
 bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
-bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "rules_python", version = "1.8.0")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
-bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
-register_toolchains("//tools/bazel/gzip:toolchain")
+register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 
 # Build SWSS and its runtime libraries from source without changing the source
 # submodules selected by the rest of the Make image build.
@@ -245,8 +247,6 @@ apt_inputs(
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
-bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
 
 single_version_override(
     module_name = "sonic-rust-deps",
@@ -255,8 +255,23 @@ single_version_override(
 
 bazel_dep(name = "sonic-fips", version = "0.0.3-d1a2c8f692d4197295269ed445022c3890b0f1a6", repo_name = "sonic_fips")
 
-# Select the shared producer-file checks while older consumers retain
-# their previous infrastructure declarations.
+# Fixed target C/C++ runtime and JSON headers for sonic-fib.
+apt.install(
+    dependency_set = "fib_deps",
+    packages = ["libc6", "libstdc++6", "libgcc-s1", "nlohmann-json3-dev"],
+    suites = ["trixie", "trixie-updates", "trixie-security"],
+)
+use_repo(apt, "fib_deps")
+
+# Reuse the isolated Bookworm snapshot declared by the FRR dependency include.
+apt_bookworm_metadata = use_extension("@sonic_build_infra//toolchains/bookworm:apt.bzl", "apt")
+apt_bookworm_metadata.install(
+    dependency_set = "fib_bookworm_deps",
+    packages = ["libc6", "libstdc++6", "libgcc-s1", "nlohmann-json3-dev"],
+    suites = ["bookworm", "bookworm-updates", "bookworm-security"],
+)
+use_repo(apt_bookworm_metadata, "fib_bookworm_deps")
+
 single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",

@@ -46,6 +46,9 @@ jobs:
             runner: ubuntu-24.04-arm
             platform: aarch64_trixie
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    env:
+      # Draft catalog for root-module resolution; the full Make VS job is separate.
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/frr_draft_bazel.sh
     defaults:
       run:
         shell: bash
@@ -309,6 +312,9 @@ jobs:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       # Reap any Bazel processes used for dependency resolution.
       options: --init
+    env:
+      # Draft catalog for root-module resolution; the full Make VS job is separate.
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/frr_draft_bazel.sh
     defaults:
       run:
         shell: bash
