@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import stat
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -95,7 +96,30 @@ class VerifyImageTest(unittest.TestCase):
                 self.assertEqual(result["installer"]["sha256"], hashlib.sha256(self.installer.read_bytes()).hexdigest())
                 self.assertEqual(result["payload"]["kernel_versions"], ["test"])
                 self.assertEqual(result["payload"]["dockerfs_in_zip"], not separate)
-                self.assertEqual(result["archives"], {"dockerfs_members": 1, "platform_members": 1})
+                self.assertEqual(result["archives"], {"dockerfs_members": 1, "platform_members": 1,
+                                                      "dockerfs_compression": "gzip"})
+
+    def test_zstd_store_inside_and_outside_zip(self):
+        self.dockerfs.write_bytes(subprocess.check_output(
+            ["zstd", "--quiet", "--stdout"], input=gzip.decompress(self.dockerfs.read_bytes())))
+        for separate in (False, True):
+            with self.subTest(separate_store=separate):
+                self.build(separate_store=separate)
+                result = self.verify()
+                self.assertEqual(result["archives"]["dockerfs_compression"], "zstd")
+                self.assertEqual(result["archives"]["dockerfs_members"], 1)
+                self.assertEqual(result["payload"]["dockerfs_in_zip"], not separate)
+
+    def test_zstd_checksum_corruption_fails_even_after_tar_eof(self):
+        data = subprocess.check_output(
+            ["zstd", "--quiet", "--stdout"], input=gzip.decompress(self.dockerfs.read_bytes()))
+        trailer = bytearray(subprocess.check_output(
+            ["zstd", "--quiet", "--stdout"], input=b"second frame after TAR EOF"))
+        trailer[-1] ^= 1
+        self.dockerfs.write_bytes(data + trailer)
+        self.build()
+        with self.assertRaisesRegex(ValueError, "zstd archive decoding failed"):
+            self.verify()
 
     def test_declared_input_mismatch_fails_even_with_valid_archive_checksums(self):
         self.squashfs.write_bytes(b"hsqs" + b"other filesystem")

@@ -14,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prepare_inputs
+import backend
 from native import producer
 
 
@@ -118,6 +119,21 @@ class PrepareInputsTest(unittest.TestCase):
         self.assertTrue((self.assembler / "tools/bazel/image/vs/BUILD.bazel").is_file())
         (self.native / "target/docker-orchagent.gz").write_bytes(b"later component change")
         self.assertEqual(b"orchagent archive bytes", (self.output / "images/docker-orchagent.gz").read_bytes())
+
+    def test_verified_producer_bundle_can_select_either_store_without_repreparing(self):
+        package = self.assembler / "tools/bazel/image/vs"
+        (package / "BUILD.bazel.in").write_text("sonic_vs_image(\n" + backend.BUILD_LINE + ")\n")
+        original = self.prepare()
+        files = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                 for path in self.output.rglob("*") if path.is_file()
+                 and path not in (self.output / "inputs.bzl", self.output / "provenance.json")}
+        for selected in ("y", "n"):
+            backend.select_backend(self.assembler, build_with_bazel_when_available="y",
+                                   use_container_image_store_as_backend=selected)
+            receipt = json.loads((self.output / "provenance.json").read_text())
+            self.assertEqual(receipt.pop(backend.KEY), selected == "y")
+            self.assertEqual(receipt, original)
+            self.assertEqual(files, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in files})
 
     def test_missing_producer_provenance_is_rejected(self):
         (self.directory / "provenance.json").unlink()

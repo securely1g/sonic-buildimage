@@ -7,6 +7,7 @@ it does not execute the installer, decode SquashFS, or claim boot coverage.
 """
 
 import argparse
+from contextlib import contextmanager
 import datetime
 import gzip
 import hashlib
@@ -15,8 +16,10 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import struct
+import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import zipfile
 
@@ -62,10 +65,45 @@ def small_member(archive, member):
     return archive.extractfile(member).read()
 
 
+def archive_compression(path):
+    with Path(path).open("rb") as stream:
+        header = stream.read(4)
+    if header.startswith(b"\x1f\x8b"):
+        return "gzip"
+    require(header == b"\x28\xb5\x2f\xfd", "unexpected compressed archive format: " + str(path))
+    return "zstd"
+
+
+@contextmanager
+def archive_stream(path, compressed):
+    if not compressed:
+        with Path(path).open("rb") as stream:
+            yield stream
+    elif archive_compression(path) == "gzip":
+        with gzip.open(path, "rb") as stream:
+            yield stream
+    else:
+        # Use the standard decoder and check its exit status after draining the
+        # stream: a valid TAR ending must not hide a bad compressed checksum.
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen(["zstd", "--decompress", "--quiet", "--stdout", "--", str(path)],
+                                       stdout=subprocess.PIPE, stderr=errors)
+            try:
+                yield process.stdout
+                status = process.wait(timeout=60)
+                errors.seek(0)
+                require(status == 0, "zstd archive decoding failed: " + errors.read(4096).decode(errors="replace"))
+            finally:
+                process.stdout.close()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+
+
 def inspect_tar(path, compressed=False, boot=False):
-    """Read every tar body and every gzip member, including the gzip trailer."""
+    """Read every TAR body and validate the complete gzip or zstd stream."""
     members = {}
-    with (gzip.open(path, "rb") if compressed else Path(path).open("rb")) as stream:
+    with archive_stream(path, compressed) as stream:
         with tarfile.open(fileobj=stream, mode="r|", bufsize=CHUNK) as archive:
             for member in archive:
                 name = member.name.removeprefix("./").rstrip("/") or "."
@@ -87,8 +125,8 @@ def inspect_tar(path, compressed=False, boot=False):
                     if boot:
                         value.update(info)
                 members[name] = value
-        # Tar EOF precedes the gzip footer. Draining validates the CRC/length
-        # even when tarfile stopped before the final compressed member ended.
+        # TAR EOF precedes the compression footer. Drain through the checksum
+        # even when tarfile stopped before the compressed stream ended.
         while stream.read(CHUNK):
             pass
     require(members, "empty tar archive: " + str(path))
@@ -219,12 +257,14 @@ def inspect_onie(path, payload, dockerfs, dockerfs_in_zip):
 
 
 def verify(installer, payload, dockerfs, squashfs, boot=None, platform=None):
+    compression = archive_compression(dockerfs)
     inputs = {
         "fs.zip": file_info(payload, b"PK\x03\x04"),
         "fs.squashfs": file_info(squashfs, b"hsqs"),
-        "dockerfs.tar.gz": file_info(dockerfs, b"\x1f\x8b"),
+        "dockerfs.tar.gz": file_info(dockerfs),
     }
-    archives = {"dockerfs_members": len(inspect_tar(dockerfs, compressed=True))}
+    archives = {"dockerfs_members": len(inspect_tar(dockerfs, compressed=True)),
+                "dockerfs_compression": compression}
     if platform is not None:
         inputs["platform.tar.gz"] = file_info(platform, b"\x1f\x8b")
         archives["platform_members"] = len(inspect_tar(platform, compressed=True))
@@ -247,7 +287,7 @@ def main(argv=None):
     started = time.monotonic()
     report = {"schema": 1, "status": "failed", "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "scope": "Full ONIE checksum and member hashes; complete ZIP CRC/member byte chain; "
-                       "Docker/platform tar and gzip decoding; optional exact boot/platform comparison. "
+                       "Docker/platform TAR and gzip/zstd decoding; optional exact boot/platform comparison. "
                        "SquashFS magic/hash only. No Docker runtime, filesystem decode, boot or forwarding claim."}
     try:
         report.update(verify(args.installer, args.payload, args.dockerfs, args.squashfs, args.boot, args.platform))
