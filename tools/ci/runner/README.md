@@ -1,10 +1,10 @@
 # One-job VS build runner
 
 These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
-runner for one full VS image job. The default repository is
+runner for one VS build job. The default repository is
 `securely1g/sonic-buildimage`; use `--master` for the current shared VS pool,
-and pass `--repo owner/name` to select another repository. Same-repository PR
-builds and enabled manual builds use its existing `sonic-vs-source-master`
+and pass `--repo owner/name` to select another repository. The full VS workflow's
+same-repository PR builds and enabled manual builds use its existing `sonic-vs-source-master`
 label. The workflow's event selects the source revision; the pool name does not
 force PR builds onto master. GitHub assigns an eligible queued job when the
 single runner becomes available.
@@ -25,9 +25,9 @@ Fork PRs and manual runs with `skip_vs=true` run only hosted checks, including
 the separate native AMD64/ARM64 archive jobs. They do not publish successful
 SWSS/Syncd source-package or full-image validation evidence.
 
-`--pr NUMBER` remains available for older or separately configured workflows
-that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected custom
-label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
+Use `--pr NUMBER` for pull-request jobs in `bazel-vs-unprivileged.yml` and other
+workflows that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected
+custom label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
 The optional manager below registers replacements automatically after each job.
 
 ## Prepare a host once
@@ -74,9 +74,17 @@ sudo bash tools/ci/runner/bootstrap.sh
 sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.py
 ```
 
+For `sonic-vs.bin` jobs, pass `--build-target sonic-vs.bin` to bootstrap,
+preflight, and manual rearm. This path accepts a real `/data` directory on a
+local ext4 block filesystem and keeps the workspace permission and capacity
+checks. It does not require `/dev/kvm` or the `kvm` group. The automatic manager
+does not carry this target selection; use manual rearm with `--pr NUMBER` for
+this path. Shared `--master` registration retains the default KVM admission.
+
 Bootstrap creates `sonic-runner` with a locked password, no administrator group,
-and `docker,kvm` membership. It verifies the pinned runner 2.337.0 archive using
-its SHA-256, installs `jinjanator==25.3.1` in a root-owned virtual environment,
+and `docker,kvm` membership by default. Bin-only provisioning adds only `docker`
+and preserves any existing memberships. It verifies the pinned runner 2.337.0
+archive using its SHA-256, installs `jinjanator==25.3.1` in a root-owned virtual environment,
 and exposes `j2` to systemd builds. It installs the operator scripts in a
 root-owned location accessible to the runner. Runner runtime dependencies must
 also be available; if `config.sh` reports a missing library, review and run the
@@ -216,6 +224,13 @@ gh auth status
 gh run list --repo securely1g/sonic-buildimage --workflow bazel-oci.yml --limit 10
 python3 /opt/sonic-runner-tools/runner/rearm.py --master --dry-run
 python3 /opt/sonic-runner-tools/runner/rearm.py --master
+```
+
+For a bin-only pull-request job, select its existing PR route and target:
+
+```sh
+python3 /opt/sonic-runner-tools/runner/rearm.py --pr NUMBER --build-target sonic-vs.bin --dry-run
+python3 /opt/sonic-runner-tools/runner/rearm.py --pr NUMBER --build-target sonic-vs.bin
 ```
 
 Use `--master` for the shared PR/manual pool. Arm only after reviewing the PR code and

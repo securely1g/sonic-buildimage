@@ -109,7 +109,7 @@ jobs:
     name: Native Make prerequisites (AMD64)
     needs: store
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
+    runs-on: [self-hosted, linux, x64, "${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}"]
     timeout-minutes: 720
     env:
       BAZEL: bazel
@@ -135,7 +135,7 @@ jobs:
           submodules: recursive
       - name: Check native build capacity and prepare caches
         run: |
-          python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
+          python3 -B tools/ci/runner/preflight.py --workspace "$PWD" --build-target sonic-vs.bin
           python3 - <<'PY'
           import shutil
           if shutil.disk_usage('.').free < 100 * 1024**3:
@@ -254,7 +254,7 @@ jobs:
   assembly:
     name: Unprivileged sonic-vs.bin assembly (AMD64)
     needs: native
-    runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
+    runs-on: [self-hosted, linux, x64, "${{ github.event_name == 'pull_request' && format('sonic-vs-source-pr-{0}', github.event.pull_request.number) || 'sonic-vs-source-master' }}"]
     timeout-minutes: 120
     defaults:
       run:

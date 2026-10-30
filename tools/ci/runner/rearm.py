@@ -14,6 +14,8 @@ import sys
 import time
 import uuid
 
+import preflight
+
 RUNNER_HOME = Path("/data/sonic-runner")
 ARCHIVE = Path("/opt/sonic-runner-tools/releases/actions-runner-linux-x64-2.337.0.tar.gz")
 SHA256 = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
@@ -141,8 +143,8 @@ def idle_host():
 def register(args):
     if os.geteuid() != 0:
         raise RuntimeError("Internal registration requires sudo")
-    if not os.path.ismount("/data"):
-        raise RuntimeError("/data must be mounted")
+    preflight.check_data_storage(build_target=args.build_target)
+    preflight_args = ["--build-target", args.build_target] if args.build_target else []
     # Serialize operator attempts without trusting a runner-writable lock path.
     with open("/run/lock/sonic-vs-runner.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -152,7 +154,7 @@ def register(args):
         current = RUNNER_HOME / "current"
         if current.exists() and (current / ".runner").exists():
             raise RuntimeError("Previous registration remains. Inspect/remove it using the README recovery steps first")
-        as_runner(["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py"])
+        as_runner(["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py", *preflight_args])
         if archive_digest(ARCHIVE) != SHA256:
             raise RuntimeError("Cached runner archive failed SHA-256 verification; rerun bootstrap.sh")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
@@ -165,7 +167,7 @@ def register(args):
         # Extraction consumes workspace capacity. Recheck the actual attempt
         # before registering a runner that could immediately accept a job.
         as_runner(["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py",
-                   "--workspace", str(attempt)])
+                   "--workspace", str(attempt), *preflight_args])
         # The caller sends only a short-lived registration token through stdin.
         token = sys.stdin.readline().strip()
         if not token or len(token) > 4096:
@@ -192,6 +194,7 @@ def register(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="securely1g/sonic-buildimage")
+    parser.add_argument("--build-target", help="Output target; sonic-vs.bin requires --pr and does not require KVM")
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--pr", type=int)
     target.add_argument("--master", action="store_true", help="Use the push/manual workflow label")
@@ -202,10 +205,13 @@ def main():
         parser.error("Repository must be owner/name")
     if args.pr is not None and args.pr < 1:
         parser.error("PR number must be positive")
+    if args.build_target == "sonic-vs.bin" and args.master:
+        parser.error("sonic-vs.bin requires a PR-specific route; use --pr NUMBER")
     if args.master:
         args.pr = None
     if args.dry_run:
         print(f"Repository: {args.repo}; label: {routing_label(args.pr)}")
+        print(f"Build target: {args.build_target or 'default (KVM required)'}")
         print("Check idle service and host prerequisites, verify archive, create a fresh attempt,")
         print("register one ephemeral runner using a short-lived token, start sonic-vs-runner.service.")
         print("Keep prior attempt directories; do not store gh credentials in the runner account.")
@@ -223,6 +229,8 @@ def main():
     token = json.loads(token_response)["token"]
     command = sudo + ["/usr/bin/python3", str(Path(__file__).resolve()), "--register", "--repo", args.repo]
     command += ["--pr", str(args.pr)] if args.pr else ["--master"]
+    if args.build_target:
+        command += ["--build-target", args.build_target]
     registration = register_from_operator(command, token)
     del token, token_response
     wait_until_ready(args.repo, registration)

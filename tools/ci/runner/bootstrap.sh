@@ -5,12 +5,32 @@ version=2.337.0
 sha256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
 runner_home=/data/sonic-runner
 tool_root=/opt/sonic-runner-tools
+build_target=
+preview=
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build-target)
+            [[ $# -ge 2 && $2 != --* ]] || { echo '--build-target requires a value.' >&2; exit 2; }
+            build_target=$2
+            shift 2
+            ;;
+        --help|--dry-run)
+            preview=$1
+            shift
+            ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+runner_groups=docker
+if [[ $build_target != sonic-vs.bin ]]; then runner_groups+=,kvm; fi
 
-if [[ ${1:-} == --help || ${1:-} == --dry-run ]]; then
+if [[ -n $preview ]]; then
     cat <<'EOF'
-Usage: sudo bash tools/ci/runner/bootstrap.sh
-Requires Linux x86_64, systemd, mounted /data, Docker + buildx, git, make,
-curl, wget, Python 3 with venv, and working /dev/kvm with a kvm group.
+Usage: sudo bash tools/ci/runner/bootstrap.sh [--build-target TARGET]
+Requires Linux x86_64, systemd, Docker + buildx, git, make, curl, wget, and
+Python 3 with venv. /data must be mounted; --build-target sonic-vs.bin also
+accepts a real /data directory on a local ext4 block filesystem. Working
+/dev/kvm with a kvm group is required unless sonic-vs.bin is selected.
 Creates the non-sudo sonic-runner account, downloads and verifies runner
 2.337.0, installs jinjanator 25.3.1 in /opt/sonic-runner-tools, and enables
 sonic-vs-runner.service. It does not register a runner or start a build.
@@ -21,16 +41,21 @@ adds owner access only to /sonic/**/*.ps and *.pdf, and reloads that profile.
 Loads iptable_nat and persists it for nested Docker's legacy IPv4 NAT support.
 --dry-run and --help only print this plan; they change nothing.
 EOF
+    printf 'Build target: %s; runner groups: %s\n' "${build_target:-default (KVM required)}" "$runner_groups"
     exit 0
 fi
 [[ $# == 0 && $EUID == 0 && $(uname -m) == x86_64 ]] || { echo 'Run as root on Linux x86_64.' >&2; exit 1; }
-mountpoint -q /data || { echo '/data must be mounted before provisioning.' >&2; exit 1; }
+storage_args=(--check-data-only)
+if [[ -n $build_target ]]; then storage_args+=(--build-target "$build_target"); fi
+python3 "$(dirname "$0")/preflight.py" "${storage_args[@]}"
 for command in docker git make curl wget python3 systemctl; do command -v "$command" > /dev/null; done
 docker info > /dev/null
 docker buildx version > /dev/null
 getent group docker > /dev/null
-getent group kvm > /dev/null
-[[ -c /dev/kvm ]] || { echo 'Enable host KVM before provisioning.' >&2; exit 1; }
+if [[ $build_target != sonic-vs.bin ]]; then
+    getent group kvm > /dev/null
+    [[ -c /dev/kvm ]] || { echo 'Enable host KVM before provisioning.' >&2; exit 1; }
+fi
 if id sonic-runner > /dev/null 2>&1; then
     [[ $(getent passwd sonic-runner | cut -d: -f6) == "$runner_home" ]] || { echo 'Existing sonic-runner has a different home.' >&2; exit 1; }
     if pgrep -u sonic-runner -f 'Runner\.(Listener|Worker)' > /dev/null; then
@@ -40,7 +65,7 @@ else
     useradd --create-home --user-group --home-dir "$runner_home" --shell /bin/bash sonic-runner
     passwd --lock sonic-runner
 fi
-usermod --append --groups docker,kvm sonic-runner
+usermod --append --groups "$runner_groups" sonic-runner
 if id -nG sonic-runner | tr ' ' '\n' | grep -Eq '^(sudo|wheel|admin)$'; then
     echo 'Remove sonic-runner from administrator groups before provisioning.' >&2; exit 1
 fi
@@ -105,7 +130,7 @@ else
 fi
 install -d -m 0755 -o root -g root "$tool_root/runner"
 install -m 0755 -o root -g root "$(dirname "$0")/preflight.py" "$(dirname "$0")/rearm.py" "$(dirname "$0")/apparmor_gs.py" "$tool_root/runner/"
-cat > /etc/systemd/system/sonic-vs-runner.service <<'EOF'
+cat > /etc/systemd/system/sonic-vs-runner.service <<EOF
 [Unit]
 Description=One-job SONiC VS GitHub Actions runner
 Wants=network-online.target systemd-modules-load.service
@@ -117,7 +142,7 @@ ConditionPathExists=/data/sonic-runner/current/.runner
 [Service]
 User=sonic-runner
 Group=sonic-runner
-SupplementaryGroups=docker kvm
+SupplementaryGroups=${runner_groups//,/ }
 WorkingDirectory=/data/sonic-runner/current
 Environment=HOME=/data/sonic-runner
 Environment=PATH=/usr/local/bin:/usr/bin:/bin

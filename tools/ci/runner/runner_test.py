@@ -3,6 +3,7 @@ import contextlib
 import gzip
 import io
 import json
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,126 @@ import apparmor_gs
 
 class RunnerTests(unittest.TestCase):
     registration = {"id": 42, "name": "sonic-vs-9-unique", "attempt": "/data/sonic-runner/attempts/unique"}
+
+    def test_bin_preflight_skips_only_the_kvm_device_check(self):
+        def read_text(path, *args, **kwargs):
+            if str(path) == "/proc/meminfo":
+                return "MemAvailable: 20971520 kB\n"
+            if str(path) == "/proc/filesystems":
+                return "nodev\toverlay\n"
+            raise AssertionError(f"Unexpected file read: {path}")
+
+        def command_output(*command):
+            if command[0] == "findmnt":
+                return "rw,relatime"
+            if command[:2] == ("docker", "info"):
+                return "/docker"
+            if command[0] == "j2":
+                return "42"
+            return "ok"
+
+        for target in (None, "sonic-vs.bin", "sonic-vs.img.gz"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as workspace:
+                arguments = ["preflight.py", "--workspace", workspace]
+                if target:
+                    arguments += ["--build-target", target]
+                with patch.object(sys, "argv", arguments), \
+                        patch.object(preflight.os, "geteuid", return_value=1001), \
+                        patch.object(preflight.platform, "machine", return_value="x86_64"), \
+                        patch.object(preflight.platform, "freedesktop_os_release", return_value={"ID": "ubuntu", "VERSION_ID": "24.04"}), \
+                        patch.object(preflight, "check_worker_umasks") as umasks, \
+                        patch.object(preflight, "check_ghostscript") as ghostscript, \
+                        patch.object(preflight, "check_legacy_nat") as nat, \
+                        patch.object(preflight.os.path, "ismount", return_value=True), \
+                        patch.object(preflight.shutil, "which", return_value="/usr/bin/tool"), \
+                        patch.object(preflight.Path, "read_text", autospec=True, side_effect=read_text) as reads, \
+                        patch.object(preflight, "output", side_effect=command_output) as output, \
+                        patch.object(preflight, "check_disk") as disk, \
+                        patch("builtins.open", side_effect=FileNotFoundError("missing KVM")) as device, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    if target == "sonic-vs.bin":
+                        preflight.main()
+                        device.assert_not_called()
+                    else:
+                        with self.assertRaisesRegex(FileNotFoundError, "missing KVM"):
+                            preflight.main()
+                        device.assert_called_once_with("/dev/kvm", "r+b", buffering=0)
+                umasks.assert_called_once_with()
+                ghostscript.assert_called_once_with()
+                nat.assert_called_once_with()
+                disk.assert_called_once_with(Path(workspace), Path("/docker"), 100, 100)
+                self.assertEqual([str(call.args[0]) for call in reads.call_args_list],
+                                 ["/proc/meminfo", "/proc/filesystems"])
+                self.assertIn(("docker", "version", "--format", "Docker server {{.Server.Version}}"),
+                              [call.args for call in output.call_args_list])
+
+    def test_bootstrap_preview_omits_kvm_group_only_for_bin(self):
+        script = Path(__file__).with_name("bootstrap.sh")
+        for arguments, groups in (([], "docker,kvm"), (["--build-target", "sonic-vs.bin"], "docker")):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(["bash", str(script), "--dry-run", *arguments],
+                                        check=True, text=True, capture_output=True)
+            self.assertIn(f"runner groups: {groups}\n", result.stdout)
+            self.assertIn("Docker + buildx", result.stdout)
+            self.assertIn("/data must be mounted", result.stdout)
+            self.assertIn("real /data directory on a local ext4 block filesystem", result.stdout)
+
+    def test_bin_data_directory_requires_local_ext4_block_storage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            original_stat = preflight.os.stat
+
+            def storage_stat(candidate, *args, **kwargs):
+                if str(candidate) == "/dev/vda1":
+                    return SimpleNamespace(st_mode=stat.S_IFBLK | 0o660)
+                return original_stat(candidate, *args, **kwargs)
+
+            local = json.dumps({"filesystems": [{"source": "/dev/vda1", "fstype": "ext4"}]})
+            with patch.object(preflight.os.path, "ismount", return_value=False), \
+                    patch.object(preflight, "output", return_value=local), \
+                    patch.object(preflight.os, "stat", side_effect=storage_stat), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                preflight.check_data_storage(path, build_target="sonic-vs.bin")
+
+            for target in (None, "sonic-vs.img.gz", "other"):
+                with self.subTest(target=target), \
+                        patch.object(preflight.os.path, "ismount", return_value=False), \
+                        patch.object(preflight, "output", side_effect=AssertionError("filesystem probe ran")):
+                    with self.assertRaisesRegex(RuntimeError, "must be mounted"):
+                        preflight.check_data_storage(path, build_target=target)
+
+            for filesystem in ("xfs", "btrfs", "tmpfs"):
+                value = json.dumps({"filesystems": [{"source": "/dev/vda1", "fstype": filesystem}]})
+                with self.subTest(filesystem=filesystem), \
+                        patch.object(preflight.os.path, "ismount", return_value=False), \
+                        patch.object(preflight, "output", return_value=value):
+                    with self.assertRaisesRegex(RuntimeError, "local ext4 block filesystem"):
+                        preflight.check_data_storage(path, build_target="sonic-vs.bin")
+
+            def regular_source(candidate, *args, **kwargs):
+                if str(candidate) == "/dev/vda1":
+                    return SimpleNamespace(st_mode=stat.S_IFREG | 0o600)
+                return original_stat(candidate, *args, **kwargs)
+
+            with patch.object(preflight.os.path, "ismount", return_value=False), \
+                    patch.object(preflight, "output", return_value=local), \
+                    patch.object(preflight.os, "stat", side_effect=regular_source):
+                with self.assertRaisesRegex(RuntimeError, "not a block device"):
+                    preflight.check_data_storage(path, build_target="sonic-vs.bin")
+
+            link = path / "link"
+            link.symlink_to(path)
+            with patch.object(preflight.os.path, "ismount", return_value=False), \
+                    patch.object(preflight, "output", side_effect=AssertionError("filesystem probe ran")):
+                with self.assertRaisesRegex(RuntimeError, "real directory"):
+                    preflight.check_data_storage(link, build_target="sonic-vs.bin")
+
+            for target in (None, "sonic-vs.img.gz", "sonic-vs.bin"):
+                with self.subTest(mounted_target=target), \
+                        patch.object(preflight.os.path, "ismount", return_value=True), \
+                        patch.object(preflight, "output", side_effect=AssertionError("filesystem probe ran")), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    preflight.check_data_storage(path, build_target=target)
 
     def test_legacy_nat_checks_loaded_and_builtin_support_not_only_nft_nat(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -184,8 +305,11 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
             (home / "attempts").mkdir()
             lock = home / "register.lock"
             account = SimpleNamespace(pw_uid=1001, pw_gid=1001)
+            preflight_commands = []
 
             def configure(command, *, token=None, cwd=None):
+                if command[:2] == ["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py"]:
+                    preflight_commands.append(command)
                 if command[0].endswith("config.sh"):
                     self.assertEqual(token, "short-lived")
                     name = command[command.index("--name") + 1]
@@ -206,7 +330,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                     patch.object(rearm.subprocess, "run") as run, \
                     patch.object(rearm.sys, "stdin", io.StringIO("short-lived\n")), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
-                rearm.register(SimpleNamespace(repo="owner/repo", pr=9))
+                rearm.register(SimpleNamespace(repo="owner/repo", pr=9, build_target="sonic-vs.bin"))
             metadata = json.loads(output.getvalue().split(rearm.REGISTRATION_PREFIX)[1])
             attempt = Path(metadata["attempt"])
             self.assertEqual(metadata["id"], 42)
@@ -214,6 +338,18 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
             self.assertTrue((attempt / ".runner").read_bytes().startswith(b"\xef\xbb\xbf"))
             self.assertNotIn("short-lived", output.getvalue())
             self.assertEqual(run.call_args.args[0], ["systemctl", "start", rearm.SERVICE])
+            self.assertEqual(len(preflight_commands), 2)
+            for command in preflight_commands:
+                self.assertEqual(command[-2:], ["--build-target", "sonic-vs.bin"])
+
+    def test_register_rejects_storage_before_touching_an_attempt(self):
+        with patch.object(rearm.os, "geteuid", return_value=0), \
+                patch.object(rearm.preflight, "check_data_storage", side_effect=RuntimeError("unsafe storage")) as storage, \
+                patch.object(rearm, "open", side_effect=AssertionError("registration lock opened"), create=True), \
+                patch.object(rearm, "as_runner", side_effect=AssertionError("runner command launched")):
+            with self.assertRaisesRegex(RuntimeError, "unsafe storage"):
+                rearm.register(SimpleNamespace(repo="owner/repo", pr=9, build_target="sonic-vs.bin"))
+        storage.assert_called_once_with(build_target="sonic-vs.bin")
 
     def test_extraction_exhausting_capacity_stops_before_registration(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -238,6 +374,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                     extracted_attempts.append(attempt)
                     workspace_gib -= 1
                 elif command[:2] == ["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py"]:
+                    self.assertNotIn("--build-target", command)
                     workspace = Path(command[command.index("--workspace") + 1]) if "--workspace" in command else home
                     checked_workspaces.append(workspace)
                     # Exercise real budget accounting on separate filesystems;
@@ -264,7 +401,7 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                     patch.object(rearm.sys, "stdin", token_input), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
                 with self.assertRaisesRegex(RuntimeError, "100 GiB workspace"):
-                    rearm.register(SimpleNamespace(repo="owner/repo", pr=9))
+                    rearm.register(SimpleNamespace(repo="owner/repo", pr=9, build_target=None))
 
             self.assertEqual(len(extracted_attempts), 1)
             attempt = extracted_attempts[0]
@@ -394,8 +531,31 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                 rearm.main()
             self.assertIn(label, result.getvalue())
 
+    def test_operator_forwards_build_target_to_internal_registration(self):
+        for target in (None, "sonic-vs.bin"):
+            arguments = ["rearm.py", "--pr", "76"] if target else ["rearm.py", "--master"]
+            if target:
+                arguments += ["--build-target", target]
+            with self.subTest(target=target), \
+                    patch.object(rearm.sys, "argv", arguments), \
+                    patch.object(rearm.os, "geteuid", return_value=1001), \
+                    patch.object(rearm, "sudo_command", return_value=["sudo", "-n", "--"]), \
+                    patch.object(rearm.subprocess, "check_output", side_effect=["operator\n", '{"token":"short-lived"}']), \
+                    patch.object(rearm, "register_from_operator", return_value=self.registration) as register, \
+                    patch.object(rearm, "wait_until_ready"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rearm.main()
+            command, token = register.call_args.args
+            self.assertEqual(token, "short-lived")
+            self.assertNotIn(token, command)
+            if target:
+                self.assertEqual(command[-2:], ["--build-target", target])
+            else:
+                self.assertNotIn("--build-target", command)
+
     def test_missing_or_invalid_selection_fails_before_network_or_host_changes(self):
-        for arguments in ([], ["--dry-run"], ["--pr", "0"], ["--pr", "9", "--master"]):
+        for arguments in ([], ["--dry-run"], ["--pr", "0"], ["--pr", "9", "--master"],
+                          ["--master", "--build-target", "sonic-vs.bin"]):
             with self.subTest(arguments=arguments), \
                     patch.object(rearm.sys, "argv", ["rearm.py", *arguments]), \
                     patch.object(rearm.subprocess, "run", side_effect=AssertionError("process launched")), \

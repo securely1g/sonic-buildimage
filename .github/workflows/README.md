@@ -79,6 +79,9 @@ native source production and final assembly:
 
 Native prerequisites and final assembly use separate GitHub jobs and exchange
 an explicit artifact, so they do not depend on scheduling onto the same machine.
+Pull-request runs use `sonic-vs-source-pr-NUMBER` for both jobs; push and manual
+runs use `sonic-vs-source-master`. The native preflight selects `sonic-vs.bin`,
+which does not require KVM because this workflow does not boot the installer.
 The transfer includes the worker image and service archives and can be large;
 its time is not a final-assembly speed measurement. The runtime test uses small
 storage fixtures, while the full job uses native source-produced SONiC inputs.
