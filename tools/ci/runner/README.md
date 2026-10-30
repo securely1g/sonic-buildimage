@@ -115,6 +115,50 @@ parser when required. Preflight detects a loaded `gs` profile without the
 managed configuration. This checks configuration files; after policy edits,
 reload the profile and validate actual Ghostscript execution in the builder.
 
+Ubuntu's AppArmor restriction on unprivileged user namespaces can also block
+Bazel's kernel build, even in the privileged Trixie builder. For example,
+`@sonic_linux_kernel//:kernel_packages` requests the `linux-sandbox` strategy.
+Before the fix, Bazel's sandbox self-test fails with `mount: Permission denied`,
+and the host audit log records a denied mount under `unprivileged_userns`.
+Bazel then reports that no `linux-sandbox` strategy was registered, before
+compiling any kernel code.
+
+When that restriction is enabled, bootstrap installs
+`/etc/apparmor.d/sonic-vs-kernel-sandbox` and loads only that profile. It allows
+user namespaces for the sandbox executable at
+`/sonic/target/bazel-kernel-state/*/build/output/install/*/linux-sandbox`.
+AppArmor and the host-wide namespace restriction remain enabled. This is an
+allowance for trusted builds on the dedicated runner: the executable runs
+arbitrary build commands, so its profile is not a security boundary for
+untrusted code. Existing administrator policy at that filename is preserved;
+the installer refuses to replace different content or a symlink.
+
+An already provisioned host can install just this policy, without restarting a
+runner or rebuilding its Docker images:
+
+```sh
+sudo python3 tools/ci/runner/apparmor_kernel.py --install
+```
+
+Preflight checks the managed policy and, when readable, its loaded state. That
+does not replace execution validation: inside the selected builder, as the
+non-root build user and from its kernel execution directory, run the actual
+installed `linux-sandbox` executable with an empty environment:
+
+```sh
+env -i "$sandbox" -T 15 -D /tmp/kernel-sandbox.log -- /bin/true
+```
+
+The command must exit zero. Use a fresh Bazel server/output directory after a
+policy repair because Bazel caches a failed sandbox availability check. Keep
+the required `SonicKernelBuild=linux-sandbox` strategy; do not substitute a
+weaker execution strategy or disable the host-wide AppArmor restriction.
+The [P330 before/after probe](https://github.com/securely1g/sonic-buildimage/actions/runs/40263017467)
+used the same Trixie builder, Bazel 8.5.1 and build user: sandbox exit status
+changed from 1 to 0 with this policy, while the host restriction remained 1
+and an unrelated `unshare` command was still denied. That probe verifies
+sandbox startup; it does not establish a completed kernel or VS image build.
+
 The builder selects `iptables-legacy` for its nested Docker daemon. Host Docker
 may use nftables, so a working host daemon does not establish legacy NAT support.
 Bootstrap loads `iptable_nat` (including its kernel dependencies), persists it
