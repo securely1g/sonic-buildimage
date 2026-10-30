@@ -1,6 +1,11 @@
 SONIC_BUILD_HOOKS = sonic-build-hooks
 SONIC_BUILD_HOOKS_VERSION = 1.0
 SONIC_BUILD_HOOKS_PACKAGE = $(SONIC_BUILD_HOOKS)_$(SONIC_BUILD_HOOKS_VERSION)_all.deb
+# This package has no release changelog. Use a fixed package epoch rather than
+# the parent image's commit time: unchanged hooks must keep identical .deb bytes
+# across fresh checkouts so the early Docker COPY can reuse its cached layers.
+# dpkg-deb uses this epoch for ar headers and clamps tar member timestamps.
+SONIC_BUILD_HOOKS_SOURCE_DATE_EPOCH = 0
 
 BUILDINFO_DIR = buildinfo
 TMP_DIR = tmp
@@ -19,12 +24,12 @@ DPKGTOOL = $(shell which dpkg-deb)
 
 # If the depk-deb not installed, use the docker container to make the debian package
 ifeq ($(shell which dpkg-deb),)
-BUILD_COMMAND=docker run --user $(shell id -u):$(shell id -g) --rm -v $(shell pwd):/build debian:buster bash -c 'cd /build; dpkg-deb --build $(TMP_DIR)/$(SONIC_BUILD_HOOKS) $(SONIC_BUILD_HOOKS_TARGET)'
+BUILD_COMMAND=docker run --user $(shell id -u):$(shell id -g) --rm -e SOURCE_DATE_EPOCH=$(SONIC_BUILD_HOOKS_SOURCE_DATE_EPOCH) -v $(shell pwd):/build debian:buster bash -c 'cd /build; dpkg-deb -Zxz --build $(TMP_DIR)/$(SONIC_BUILD_HOOKS) $(SONIC_BUILD_HOOKS_TARGET)'
 else
-BUILD_COMMAND=dpkg-deb -Zxz --build $(TMP_DIR)/$(SONIC_BUILD_HOOKS) $(SONIC_BUILD_HOOKS_TARGET)
+BUILD_COMMAND=SOURCE_DATE_EPOCH=$(SONIC_BUILD_HOOKS_SOURCE_DATE_EPOCH) dpkg-deb -Zxz --build $(TMP_DIR)/$(SONIC_BUILD_HOOKS) $(SONIC_BUILD_HOOKS_TARGET)
 endif
 
-DEPENDS := $(shell find scripts hooks debian -type f)
+DEPENDS := Makefile $(shell find scripts hooks debian -type f)
 $(SONIC_BUILD_HOOKS_TARGET): $(DEPENDS)
 	@rm -rf $(BUILDINFO_DIR)/$(SONIC_BUILD_HOOKS) $(TMP_DIR)
 	@mkdir -p $(DEBIAN_DIR) $(SCRIPTS_PATH) $(HOOKS_PATH) $(SYMBOL_LINK_PATH) $(TRUSTED_GPG_PATH) $(BUILDINFO_DIR)
