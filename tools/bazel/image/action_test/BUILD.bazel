@@ -1,0 +1,105 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("//tools/bazel/image:defs.bzl", "docker_overlay2_store", "onie_installer", "sonic_disk_image", "sonic_squashfs")
+load(":fixture.bzl", "image_action_fixture")
+
+package(default_testonly = True)
+
+config_setting(name = "arm64", constraint_values = ["@platforms//cpu:aarch64"])
+
+py_binary(name = "fixture_generator", srcs = ["fixture.py"], main = "fixture.py")
+py_binary(name = "tool", srcs = ["tool.py"])
+
+image_action_fixture(
+    name = "inputs",
+    architecture = select({":arm64": "arm64", "//conditions:default": "amd64"}),
+)
+
+[
+    filegroup(name = name, srcs = [":inputs"], output_group = name)
+    for name in [
+        "arch_image_conf", "boot_files", "default_platform_conf", "efi_sbatlevel",
+        "grub_assets", "grub_config", "initrd", "install_sh", "kernel_metadata",
+        "layer", "machine_conf", "oci", "onie_boot", "onie_image_conf",
+        "partition_layout", "platform_archive", "platforms_asic", "sharch_body", "version",
+    ]
+]
+
+sonic_squashfs(
+    name = "squashfs",
+    layers = [":layer"],
+    compression = "gzip",
+    block_size = 131072,
+    out = "root.squashfs",
+    mksquashfs = ":tool",
+)
+
+docker_overlay2_store(
+    name = "docker_store",
+    images = {":oci": "action-probe:{version}"},
+    platform = select({":arm64": "linux/arm64", "//conditions:default": "linux/amd64"}),
+    version_file = ":version",
+    tar_split = ":tool",
+    out = "docker-store.tar.gz",
+)
+
+onie_installer(
+    name = "installer",
+    squashfs = ":squashfs",
+    boot_files = ":boot_files",
+    kernel_metadata = ":kernel_metadata",
+    initrd = ":initrd",
+    platform_archive = ":platform_archive",
+    dockerfs = ":docker_store",
+    install_sh = ":install_sh",
+    sharch_body = ":sharch_body",
+    machine_conf = ":machine_conf",
+    default_platform_conf = ":default_platform_conf",
+    onie_image_conf = ":onie_image_conf",
+    arch_image_conf = ":arch_image_conf",
+    platforms_asic = ":platforms_asic",
+    efi_sbatlevel = ":efi_sbatlevel",
+    installer_variables = select({
+        ":arm64": {"ARCH": "arm64", "IMAGE_VERSION": "action-probe"},
+        "//conditions:default": {"ARCH": "amd64", "IMAGE_VERSION": "action-probe"},
+    }),
+    out = "installer.bin",
+)
+
+sonic_disk_image(
+    name = "disk",
+    squashfs = ":squashfs",
+    boot_files = ":boot_files",
+    kernel_metadata = ":kernel_metadata",
+    initrd = ":initrd",
+    docker_store = ":docker_store",
+    onie_boot = ":onie_boot",
+    platform_layers = [":platform_archive"],
+    grub_assets = ":grub_assets",
+    grub_config = ":grub_config",
+    machine_conf = ":machine_conf",
+    image_version_file = ":version",
+    partition_layout = ":partition_layout",
+    disk_size_mib = 64,
+    sparse_threshold_bytes = 4096,
+    mke2fs = ":tool",
+    debugfs = ":tool",
+    sgdisk = ":tool",
+    qemu_img = ":tool",
+    grub_mkimage = ":tool",
+    grub_bios_setup = ":tool",
+    grub_editenv = ":tool",
+    out = "disk.qcow2",
+)
+
+py_test(
+    name = "action_test",
+    srcs = ["test.py"],
+    main = "test.py",
+    data = [":squashfs", ":docker_store", ":installer", ":disk"],
+    args = [
+        "--squashfs=$(rootpath :squashfs)",
+        "--docker-store=$(rootpath :docker_store)",
+        "--installer=$(rootpath :installer)",
+        "--disk=$(rootpath :disk)",
+    ] + select({":arm64": ["--architecture=arm64"], "//conditions:default": ["--architecture=amd64"]}),
+)
