@@ -40,6 +40,94 @@ request once and requires the runtime archive to remain identical. The local
 validation cost and their difference. This measures the removed request, not a
 paired full-job speedup. Normal PR runs omit the request. Existing source,
 installed-image, debug-symbol and firmware boot checks remain required.
+## Supplementary validation of an exact PR pair
+
+Manual Bazel OCI runs can validate a same-repository PR head together with its
+current selected base without changing the PR branch. Supply all five pair
+inputs: `pr_number`, `expected_head`, `expected_base_ref`, `expected_base`, and
+`expected_merge`. Leaving every pair input empty keeps the ordinary manual
+checkout. Partial inputs fail. The `skip_vs` option retains its existing meaning.
+
+First run the local planner, using the authorized GitHub CLI when one is required
+by the caller. For example, PR33 was observed on October 29, 2026 with head
+`c0abb978e81b204611c81a1c0de40904347f2829` and selected
+`master@2dc503aaecfb0d3c317608aaeabc68a108e32b97`:
+
+`GH` below names that authorized executable. Omit `--github-cli` to use the
+built-in public API client.
+
+```sh
+python3 -B tools/bazel/ci/checkout_pair.py plan \
+  --temporary-directory /tmp --output /tmp/pr33-pair-plan.json \
+  --github-cli "$GH" --pr-number 33 \
+  --expected-head c0abb978e81b204611c81a1c0de40904347f2829 \
+  --expected-base-ref master \
+  --expected-base 2dc503aaecfb0d3c317608aaeabc68a108e32b97
+```
+
+Set the dispatch's `expected_merge` to `result.merge_sha` from that plan and
+set `skip_vs=false` for the full VS job. Select the validator checkout with
+`bazel-oci.yml --ref <branch-or-tag>`; `expected_merge` is an input, not that
+workflow ref. A published companion branch can validate its own pair
+supplementarily before integration. Ready consumers use `--ref master` after
+the validator lands on the maintained branch. The planner fetches the exact named
+refs into a temporary bare repository and creates a deterministic local merge;
+it does not check out source, push a branch, or run a build. PR33's hosted
+`refs/pull/33/merge` still used base `9620e16baf9dbb3a67a93120d3619858acdcdb70`
+at that observation, so the helper does not use hosted merge refs as input.
+
+Each executing job verifies that the PR is open, both repositories are
+`securely1g/sonic-buildimage`, the named head and base refs still match, and its
+locally constructed merge equals the planned SHA. A conflict or moved input
+fails before build execution. Fixed commit metadata makes the merge SHA stable;
+the explicit planned SHA also rejects a different tree from another Git version.
+Each pair dispatch has a unique concurrency group and disables cancellation, so
+another dispatch cannot replace an active or queued run. The caller must check
+for an active duplicate before submission. Ordinary PR and push concurrency
+remains the same.
+
+The helper extracts itself and `public_artifacts.py` from the verified validator
+checkout revision (`GITHUB_SHA`) into a private temporary directory before
+switching the source checkout.
+Only checkout and receipt validation use that copy. Build helpers and sources
+come from the requested merge. The receipt records both revisions, the source
+parents and tree, and the validator file hashes. VS refreshes and records a
+verified recursive submodule snapshot after exact checkout and before building.
+The preparation step emits the completed receipt's SHA256; every collector
+requires that digest before parsing the receipt.
+
+Artifact collection verifies the receipt against the requested inputs, local
+HEAD, parents, tree, and validator files, and validates the checkout-time
+submodule snapshot's schema and binding.
+It retains a sanitized checkout projection in the public summaries. The hosted
+checks add the same projection to `bazel-repository-inputs`; VS compares its
+immutable identity before consuming those downloads. Remote observations prove
+the refs at checkout preparation time. Receipt collection does not claim that
+the refs are still current after a long build or that every working file or
+submodule HEAD remained unchanged. Legacy Make can change nested checkouts while
+preparing packages; the existing declared-input checks and later babysitter
+readback retain those roles.
+If hosted checks fail after checkout, they may retain a receipt-only artifact;
+incomplete source downloads are not passed to VS. Exact-mode direct installed
+evidence and image uploads also include a verified checkout projection. That
+projection identifies the checkout; the existing build validation and upload
+artifact digest retain their separate semantic-validation and archive-integrity
+roles. An installed-evidence artifact can contain only the checkout projection
+after a failure; its presence does not establish installed validation. Consumers
+must also check the job result and expected installed-evidence files.
+
+These manual runs are supplementary validation. GitHub does not evaluate
+`workflow_dispatch` job checks as PR or required branch-ruleset checks; see
+[GitHub's required-check guidance](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated).
+The run and artifact API `head_sha` identify the validator revision, while the
+receipt identifies the tested source pair. The current image dashboard uses run
+metadata for PR association, so a companion-branch run can appear under the
+companion PR and a master run can remain unassociated. Receipt-aware dashboard
+association is separate work on top of [PR41](https://github.com/securely1g/sonic-buildimage/pull/41).
+Use a validator landed on the maintained branch for Ready consumers; an unmerged
+validator is an unlanded external CI input under the existing readiness policy.
+
+## Helper responsibilities
 
 - `container.py` runs an owner's `:ci_tests` test suite and builds its
   `:ci_artifacts` filegroup. Tests and exported files are declared in the
