@@ -194,7 +194,7 @@ def main():
     parser.add_argument("--repo", default="securely1g/sonic-buildimage")
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--pr", type=int)
-    target.add_argument("--master", action="store_true", help="Use the push/manual workflow label")
+    target.add_argument("--master", action="store_true", help="Use the shared repository PR/manual workflow label")
     parser.add_argument("--dry-run", action="store_true", help="Print plan; no sudo, network or writes")
     parser.add_argument("--register", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()

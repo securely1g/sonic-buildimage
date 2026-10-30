@@ -30,6 +30,11 @@ that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected custom
 label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
 The optional manager below registers replacements automatically after each job.
 
+Manual `Bazel OCI` runs include the full VS image build by default. Select
+`skip_vs=true` to run only source and archive checks. Master pushes and
+same-repository PRs, including drafts, retain the existing full-image behavior
+and both source-check prerequisites. Fork PRs retain their hosted checks.
+
 ## Prepare a host once
 
 Use Ubuntu 22.04 or 24.04 for the documented SONiC host baseline. The initial
@@ -208,7 +213,8 @@ does not clear it. The marker contains configuration and time, never tokens.
 
 Run these as the normal operator who is already authenticated to GitHub with
 repository runner administration access. Keep that login out of `sonic-runner`.
-Inspect the queued runs and cancel obsolete attempts before arming. The shared
+Inspect the queued runs before arming. Preserve active builds and cancel
+obsolete attempts only when authorized. The shared
 label selects the pool, not an individual PR, commit or run.
 
 ```sh
