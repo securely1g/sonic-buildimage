@@ -49,6 +49,7 @@ if os.environ.get("FAIL") == kind or os.environ.get("FAIL") == sys.argv[1]:
         self.assertEqual([call[0] for call in calls], ["make", "capture", "make", "verify"])
         make = [call[1:] for call in calls if call[0] == "make"]
         self.assertEqual(make[0][0], "target/sonic-vs.img.gz")
+        self.assertIn("VS_VALIDATE_SERVICES=y", make[0])
         self.assertFalse(any("target/docker-orchagent.gz" in call for call in make))
         self.assertEqual(make[1][:5], [
             "target/docker-orchagent-dbg.gz", "target/docker-syncd-vs.gz", "target/docker-syncd-vs-dbg.gz",
