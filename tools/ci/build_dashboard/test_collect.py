@@ -135,6 +135,26 @@ class TimingTests(unittest.TestCase):
         value["steps"][0]["name"] = "Build the VS image and both OCI container variants"
         self.assertEqual(collector.normalize_job(value, REPO, 10)["image_build_seconds"], 600)
 
+    def test_separate_validation_does_not_count_as_image_build_time(self):
+        for conclusion in ("success", "failure"):
+            with self.subTest(validation=conclusion):
+                value = job(conclusion)
+                value["steps"] = [
+                    {"number": 1, "name": "Build the VS image", "status": "completed",
+                     "conclusion": "success", "started_at": START,
+                     "completed_at": "2026-10-10T00:06:00Z"},
+                    {"number": 2, "name": "Validate VS container pairs and P4 debug symbols",
+                     "status": "completed", "conclusion": conclusion,
+                     "started_at": "2026-10-10T00:06:00Z", "completed_at": END},
+                ]
+                normalized = collector.normalize_job(value, REPO, 10)
+                self.assertEqual(normalized["image_build_seconds"], 360)
+                self.assertEqual(normalized["image_build_elapsed_seconds"], 360)
+                self.assertEqual(normalized["phases"]["build"], 360)
+                self.assertEqual(normalized["phases"]["validation"], 240)
+                self.assertEqual(normalized["duration_seconds"], 600)
+                self.assertEqual(normalized["conclusion"], conclusion)
+
     def test_fields_and_urls_are_allowlisted(self):
         value = job()
         value["html_url"] = "https://malicious.invalid"

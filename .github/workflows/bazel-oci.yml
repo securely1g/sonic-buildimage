@@ -10,10 +10,6 @@ on:
         description: Skip the full VS image build
         type: boolean
         default: true
-      measure_orchagent_reuse:
-        description: Time the old redundant Orchagent request after the VS build
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -530,17 +526,17 @@ jobs:
               2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
           done
 
-      - name: Build the VS image and both OCI container variants
+      - name: Build the VS image
         id: vs_build
-        env:
-          MEASURE_ORCHAGENT_REUSE: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_orchagent_reuse }}
         run: |
-          measurement=()
-          if [[ "$MEASURE_ORCHAGENT_REUSE" == true ]]; then
-            measurement+=(--measure-redundant-request)
-          fi
-          bash tools/bazel/ci/build_vs_with_reused_orchagent.sh "${measurement[@]}" \
-            2>&1 | tee artifacts/vs/build.log
+          set -o pipefail
+          bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
+
+      - name: Validate VS container pairs and P4 debug symbols
+        id: vs_validation
+        run: |
+          set -o pipefail
+          bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
 
       - name: Retain VS runtime and debug archive reuse evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -548,7 +544,6 @@ jobs:
           name: sonic-vs-orchagent-reuse-amd64
           path: |
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/orchagent-reuse.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/orchagent-reuse-timing.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs-timing.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.img.gz.dockers

@@ -155,7 +155,8 @@ class SourceWorkflowTest(unittest.TestCase):
         lock.write_text("already-resolved Make build\n")
         for family, owner, source, artifacts, dash in families:
             name = "Validate " + family + " source packages from the Make build"
-            self.assertLess(names.index("Build the VS image and both OCI container variants"), names.index(name))
+            self.assertLess(names.index("Build the VS image"), names.index(name))
+            self.assertIn("if: ${{ !cancelled() && steps.vs_build.outcome == 'success' }}", workflow_steps[name])
             for source_exit, make_exit in ((0, 0), (19, 0), (0, 23)):
                 with self.subTest(family=family, source_exit=source_exit, make_exit=make_exit):
                     self.calls.unlink(missing_ok=True)

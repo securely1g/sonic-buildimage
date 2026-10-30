@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
+const {duration, measured, imageMeasurement, imageTrendGroups, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
 
 test("unmeasured and invalid durations never look like fast builds", () => {
   for (const value of [null, undefined, "12", -1, NaN, Infinity]) assert.equal(duration(value), "—");
@@ -18,6 +18,57 @@ test("only successful recognized image jobs enter the performance chart", () => 
   for (const conclusion of ["failure", "skipped", "cancelled", null]) assert.equal(measured({...job, conclusion}), false);
   for (const kind of ["container", "source", "checks", "other"]) assert.equal(measured({...job, kind}), false);
   assert.equal(measured({...job, image_build_seconds: null}), false);
+});
+
+function timingPoint(name, extra = {}) {
+  return {job: {kind: "make-vs", architecture: "amd64", conclusion: "success",
+    image_build_seconds: 120, steps: [{name}], ...extra}};
+}
+
+test("moving validation out of the build step starts a separate trend series", () => {
+  const old = timingPoint("Build the VS image and both OCI container variants");
+  const current = timingPoint("Build the VS image");
+  const next = timingPoint("Build the VS image", {image_build_seconds: 110});
+  const points = [old, current, next], before = structuredClone(points);
+  assert.deepEqual(imageTrendGroups(points), [[old], [current, next]]);
+  assert.notEqual(imageMeasurement(old.job).signature, imageMeasurement(current.job).signature);
+  assert.match(imageMeasurement(old.job).label, /follow-up and archive validation/);
+  assert.match(imageMeasurement(current.job).label, /embedded boot checks; post-build validation excluded/);
+  assert.deepEqual(points, before, "grouping must preserve historical durations and metadata");
+});
+
+test("trend grouping retains architecture and build-path boundaries", () => {
+  const amd64 = timingPoint("Build the VS image");
+  const arm64 = timingPoint("Build the VS image", {architecture: "arm64"});
+  const otherPath = timingPoint("Build the VS image", {kind: "bazel-vs"});
+  const repeated = timingPoint("Build the VS image");
+  assert.deepEqual(imageTrendGroups([amd64, arm64, otherPath, repeated]),
+    [[amd64, repeated], [arm64], [otherPath]]);
+});
+
+test("missing and unknown measurement identities remain isolated", () => {
+  const points = [timingPoint("Renamed image build"), timingPoint("Renamed image build"),
+    timingPoint("<script>"), timingPoint("__proto__"), timingPoint(null, {steps: []}),
+    timingPoint(null, {steps: undefined})];
+  assert.deepEqual(imageTrendGroups(points), points.map(point => [point]));
+  for (const {job} of points) {
+    assert.deepEqual(imageMeasurement(job), {signature: null, label: "Image step boundary not recorded"});
+  }
+});
+
+test("measurement signatures include every counted image step but exclude separate checks", () => {
+  const point = timingPoint("Build the VS image");
+  const validated = timingPoint("Build the VS image", {steps: [
+    {name: "Build the VS image"}, {name: "Validate VS container pairs and P4 debug symbols"},
+  ]});
+  assert.deepEqual(imageMeasurement(point.job), imageMeasurement(validated.job));
+  const combined = timingPoint(null, {steps: [
+    {name: "Build the VS image"}, {name: "Build the VS image and both OCI container variants"},
+  ]});
+  assert.notEqual(imageMeasurement(point.job).signature, imageMeasurement(combined.job).signature);
+  assert.equal(imageMeasurement(combined.job).signature,
+    imageMeasurement({...combined.job, steps: [...combined.job.steps].reverse()}).signature);
+  assert.deepEqual(imageTrendGroups([point, combined, validated]), [[point, validated], [combined]]);
 });
 
 function imageOutcome(conclusion, extra = {}) {

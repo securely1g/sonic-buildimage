@@ -354,7 +354,8 @@ automatically builds both runtime and debug archives for supported Bazel
 containers in the VS builder. Each pair shares one Bazel build invocation.
 The normal VS image still installs runtime containers; `INSTALL_DEBUG_TOOLS=y`
 selects debug containers for installation. The additional debug archives remain
-available under `target/` for debugging and CI validation. See the
+available under `target/` for debugging and CI validation. CI reports this build
+separately from the archive and P4 validation that follows it. See the
 [Bazel Make bridge](tools/bazel/README.md#build-runtime-and-debug-archives-with-the-vs-image)
 for the supported scope.
 

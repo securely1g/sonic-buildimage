@@ -34,6 +34,7 @@ IMAGE_JOBS = {
     "Bazel VS installer (AMD64)": "bazel-vs",
 }
 IMAGE_STEPS = {
+    "Build the VS image",
     "Build the VS image with Bazel SWSS archives",
     "Build the VS image and both OCI container variants",
     "Build the Bazel VS installer",
