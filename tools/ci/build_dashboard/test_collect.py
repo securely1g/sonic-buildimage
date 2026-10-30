@@ -23,7 +23,7 @@ END = "2026-10-10T00:10:00Z"
 def pr(number=1, branch="feature", sha=SHA, repo=REPO):
     return {"number": number, "title": "A public change", "state": "open", "draft": True,
             "head": {"ref": branch, "sha": sha, "repo": {"full_name": repo}},
-            "base": {"sha": OTHER_SHA}, "updated_at": END, "merged_at": None}
+            "base": {"ref": "master", "sha": OTHER_SHA}, "updated_at": END, "merged_at": None}
 
 
 def run(attempt=1, run_id=10, status="completed", conclusion="success", **extra):
@@ -66,6 +66,8 @@ class FakeAPI:
         self.calls.append(endpoint)
         if endpoint == f"repos/{REPO}":
             return {"full_name": REPO, "private": False, "default_branch": "master"}
+        if endpoint == f"repos/{REPO}/git/ref/heads/master":
+            return {"ref": "refs/heads/master", "object": {"type": "commit", "sha": "c" * 40}}
         if endpoint in self.attempts:
             return self.attempts[endpoint]
         if endpoint.startswith(f"repos/{REPO}/actions/runs/"):
@@ -134,6 +136,14 @@ class TimingTests(unittest.TestCase):
         value = job()
         value["steps"][0]["name"] = "Build the VS image and both OCI container variants"
         self.assertEqual(collector.normalize_job(value, REPO, 10)["image_build_seconds"], 600)
+    def test_current_vs_and_oci_step_preserves_image_outcomes(self):
+        for conclusion in ("success", "failure", "cancelled", "skipped"):
+            with self.subTest(conclusion=conclusion):
+                value = job(conclusion)
+                value["steps"][0]["name"] = "Build the VS image and both OCI container variants"
+                normalized = collector.normalize_job(value, REPO, 10)
+                self.assertEqual(normalized["image_build_seconds"], 600 if conclusion == "success" else None)
+                self.assertEqual(normalized["image_build_elapsed_seconds"], None if conclusion == "skipped" else 600)
 
     def test_fields_and_urls_are_allowlisted(self):
         value = job()
@@ -208,8 +218,107 @@ class AssociationTests(unittest.TestCase):
         self.assertEqual(self.identify(run(pull_requests=[], head_branch="master"), [pr(branch="master")]), ([], "none"))
         self.assertEqual(self.identify(run(pull_requests=[], head_repository={"full_name": "someone/fork"}), [pr()]), ([], "none"))
 
+    def test_fork_pr_requires_unique_exact_repository_branch_and_head(self):
+        value = run(pull_requests=[], head_repository={"full_name": "contributor/sonic-buildimage"})
+        current = pr(repo="contributor/sonic-buildimage")
+        self.assertEqual(self.identify(value, [pr(number=2), current]), ([1], "commit"))
+        for changed in (dict(sha=OTHER_SHA), dict(branch="different"), dict(repo="another/sonic-buildimage")):
+            with self.subTest(changed=changed):
+                self.assertEqual(self.identify(value, [pr(**({"repo": "contributor/sonic-buildimage"} | changed))]), ([], "none"))
+        self.assertEqual(self.identify(value, [current, pr(number=2, repo="contributor/sonic-buildimage")]), ([], "none"))
+        for event in ("push", "workflow_dispatch", "pull_request_target"):
+            with self.subTest(event=event):
+                self.assertEqual(self.identify(dict(value, event=event), [current]), ([], "none"))
+
+    def test_fork_default_branch_and_case_insensitive_repository_match(self):
+        value = run(pull_requests=[], head_branch="master",
+                    head_repository={"full_name": "Contributor/sonic-buildimage"})
+        self.assertEqual(self.identify(value, [pr(branch="master", repo="contributor/sonic-buildimage")]),
+                         ([1], "commit"))
+
+    def test_completed_unassociated_fork_attempt_refreshes_without_job_reads(self):
+        value = run(pull_requests=[], conclusion="action_required",
+                    head_repository={"full_name": "contributor/sonic-buildimage"})
+        api = FakeAPI(latest=[value], pulls=[pr(repo="contributor/sonic-buildimage")])
+        api.jobs[f"repos/{REPO}/actions/runs/10/attempts/1/jobs"] = []
+        initial = collector.collect(api, REPO, empty())
+        initial["runs"][0].update(pr_numbers=[], pr_association="none")
+        retry = FakeAPI(latest=[value], pulls=api.pulls)
+        result = collector.collect(retry, REPO, initial)
+        self.assertEqual(result["runs"][0]["pr_numbers"], [1])
+        self.assertEqual(result["runs"][0]["conclusion"], "action_required")
+        self.assertEqual(result["runs"][0]["jobs"], [])
+        self.assertEqual(result["runs"][0]["event_bases"], [])
+        self.assertFalse(any(endpoint.endswith("/jobs") for endpoint in retry.calls))
+        mismatch = FakeAPI(latest=[dict(value, head_repository={"full_name": "other/fork"})], pulls=api.pulls)
+        self.assertEqual(collector.collect(mismatch, REPO, initial)["runs"][0]["pr_numbers"], [])
+
+    def test_cached_association_rejects_changed_attempt_source(self):
+        initial = collector.collect(FakeAPI(), REPO, empty())
+        initial["runs"][0].update(pr_numbers=[], pr_association="none")
+        api = FakeAPI(latest=[run(head_sha=OTHER_SHA)])
+        with self.assertRaises(collector.CollectionError):
+            collector.collect(api, REPO, initial)
+
+    def test_prior_unassociated_attempt_uses_its_own_fork_metadata(self):
+        old = run(pull_requests=[], conclusion="action_required",
+                  head_repository={"full_name": "contributor/sonic-buildimage"})
+        first = FakeAPI(latest=[old], pulls=[pr(repo="contributor/sonic-buildimage")])
+        endpoint = f"repos/{REPO}/actions/runs/10/attempts/1/jobs"
+        first.jobs[endpoint] = []
+        initial = collector.collect(first, REPO, empty())
+        initial["runs"][0].update(pr_numbers=[], pr_association="none")
+        retry = FakeAPI(latest=[dict(old, run_attempt=2, head_repository={"full_name": "another/fork"})],
+                        pulls=first.pulls)
+        attempt = f"repos/{REPO}/actions/runs/10/attempts/1"
+        retry.attempts[attempt] = old
+        result = collector.collect(retry, REPO, initial)
+        self.assertIn(attempt, retry.calls)
+        self.assertNotIn(endpoint, retry.calls)
+        self.assertEqual(result["runs"][0]["pr_numbers"], [])
+        self.assertEqual(result["runs"][1]["pr_numbers"], [1])
+
+        # Unrelated historical commits need no extra lookup on every refresh.
+        initial["runs"][0]["source_sha"] = OTHER_SHA
+        retry.calls.clear()
+        collector.collect(retry, REPO, initial)
+        self.assertNotIn(attempt, retry.calls)
+
 
 class CollectionTests(unittest.TestCase):
+    def test_selected_base_is_separate_from_historical_and_event_bases(self):
+        event_pr = {"number": 1, "base": {"ref": "master", "sha": "d" * 40}}
+        api = FakeAPI(latest=[run(pull_requests=[event_pr])], pulls=[pr(), pr(number=2)])
+        result = collector.collect(api, REPO, empty())
+        self.assertEqual(result["pull_requests"][0]["base_sha"], OTHER_SHA)
+        self.assertEqual(result["pull_requests"][0]["base_target_sha"], "c" * 40)
+        self.assertEqual(api.calls.count(f"repos/{REPO}/git/ref/heads/master"), 1)
+        self.assertEqual(result["runs"][0]["event_bases"], [{"number": 1, "ref": "master", "sha": "d" * 40}])
+        # A matching source head still provides no independently verified checkout base.
+        self.assertNotIn("checkout_base_sha", result["runs"][0])
+
+    def test_selected_base_ref_is_encoded_and_missing_is_not_historical_fallback(self):
+        value = pr()
+        value["base"]["ref"] = "stack/feature"
+        api = FakeAPI(pulls=[value])
+        with mock.patch.object(api, "get", side_effect=collector.CollectionError("Gone", http_status=404)) as get:
+            self.assertEqual(collector.selected_bases(api, REPO, [value]), {"stack/feature": None})
+        get.assert_called_once_with(f"repos/{REPO}/git/ref/heads/stack%2Ffeature")
+        normalized = collector.normalize_pr(value, REPO, {"stack/feature": None}, END)
+        self.assertIsNone(normalized["base_target_sha"])
+        self.assertEqual(normalized["base_sha"], OTHER_SHA)
+        with mock.patch.object(api, "get", side_effect=collector.CollectionError("Unavailable", http_status=503)):
+            with self.assertRaises(collector.CollectionError):
+                collector.selected_bases(api, REPO, [value])
+
+    def test_cached_history_gets_event_metadata_without_current_base_substitution(self):
+        initial = collector.collect(FakeAPI(), REPO, empty())
+        del initial["runs"][0]["event_bases"]
+        api = FakeAPI(latest=[run(pull_requests=[{"number": 1, "base": {"ref": "old-base", "sha": "d" * 40}}])])
+        result = collector.collect(api, REPO, initial)
+        self.assertEqual(result["runs"][0]["event_bases"][0]["sha"], "d" * 40)
+        self.assertFalse(any(endpoint.endswith("/jobs") for endpoint in api.calls))
+
     def test_new_attempt_preserves_prior_and_collects_all(self):
         api = FakeAPI(latest=[run(attempt=3)])
         api.attempts[f"repos/{REPO}/actions/runs/10/attempts/1"] = run(conclusion="failure")
@@ -235,6 +344,39 @@ class CollectionTests(unittest.TestCase):
         api.attempts[f"repos/{REPO}/actions/runs/10/attempts/1"] = run()
         collector.collect(api, REPO, initial, backfill=True)
         self.assertEqual(sum(call.endswith("/jobs") for call in api.calls), 2)
+
+    def test_completed_run_refreshes_unfinished_job_details(self):
+        for unfinished in ("job", "step"):
+            with self.subTest(unfinished=unfinished):
+                first = FakeAPI()
+                stale_job = job()
+                target = stale_job if unfinished == "job" else stale_job["steps"][0]
+                target.update(status="in_progress", conclusion=None, completed_at=None)
+                endpoint = f"repos/{REPO}/actions/runs/10/attempts/1/jobs"
+                first.jobs[endpoint] = [stale_job]
+                initial = collector.collect(first, REPO, empty())
+                refresh = FakeAPI()
+                result = collector.collect(refresh, REPO, initial)
+                self.assertIn(endpoint, refresh.calls)
+                refreshed = result["runs"][0]["jobs"][0]
+                self.assertEqual(refreshed["status"], "completed")
+                self.assertEqual(refreshed["steps"][0]["status"], "completed")
+                self.assertEqual(refreshed["image_build_seconds"], 600)
+                cached = FakeAPI()
+                collector.collect(cached, REPO, result)
+                self.assertNotIn(endpoint, cached.calls)
+
+    def test_prior_attempt_refreshes_unfinished_jobs(self):
+        first = FakeAPI()
+        endpoint = f"repos/{REPO}/actions/runs/10/attempts/1/jobs"
+        first.jobs[endpoint] = [job(status="queued", conclusion=None)]
+        initial = collector.collect(first, REPO, empty())
+        refresh = FakeAPI(latest=[run(attempt=2)])
+        refresh.attempts[f"repos/{REPO}/actions/runs/10/attempts/1"] = run()
+        result = collector.collect(refresh, REPO, initial)
+        self.assertIn(endpoint, refresh.calls)
+        self.assertEqual([r["attempt"] for r in result["runs"]], [2, 1])
+        self.assertEqual(result["runs"][1]["jobs"][0]["status"], "completed")
 
     def test_nonterminal_always_refetches_and_expired_history_is_retained(self):
         api = FakeAPI(latest=[run(status="in_progress", conclusion=None)])
