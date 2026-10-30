@@ -54,15 +54,39 @@ PLATFORM_DIR=platform
 # Build-time APT routing must not become installed SONiC configuration.
 sonic_configure_build_apt()
 {
+    local builder_ca=/etc/ssl/certs/ca-certificates.crt
+    local rootfs_ca="$FILESYSTEM_ROOT/etc/ssl/certs/ca-certificates.crt"
+    # minbase does not install ca-certificates. Supply temporary trust before
+    # buildinfo hooks or the first update can contact an HTTPS package mirror.
+    # The normal version-controlled package installation below owns final trust.
+    if [[ ! -r "$rootfs_ca" || ! -s "$rootfs_ca" ]]; then
+        [[ -r "$builder_ca" && -s "$builder_ca" ]] || die "Builder CA bundle is unavailable for rootfs APT bootstrap"
+        sudo install -m 0644 "$builder_ca" "$FILESYSTEM_ROOT/etc/apt/sonic-build-bootstrap-ca.crt"
+        printf '%s\n' 'Acquire::https::CaInfo "/etc/apt/sonic-build-bootstrap-ca.crt";' | \
+            sudo tee "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-bootstrap-ca" > /dev/null
+    fi
     if [[ ${SONIC_BUILD_APT_DISABLE_SRV:-n} == y ]]; then
         printf '%s\n' 'Acquire::EnableSrvRecords "false";' | \
             sudo tee "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-disable-srv" > /dev/null
     fi
 }
 
+sonic_cleanup_build_apt_ca()
+{
+    local path
+    for path in "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-bootstrap-ca" \
+                "$FILESYSTEM_ROOT/etc/apt/sonic-build-bootstrap-ca.crt"; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            sudo rm -f -- "$path"
+        fi
+    done
+}
+
 sonic_cleanup_build_apt()
 {
-    if [[ ${SONIC_BUILD_APT_DISABLE_SRV:-n} == y ]]; then
+    sonic_cleanup_build_apt_ca
+    if [[ -e "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-disable-srv" ||
+          -L "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-disable-srv" ]]; then
         sudo rm -f "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-disable-srv"
     fi
 }
@@ -282,6 +306,7 @@ sudo LANG=C chroot $FILESYSTEM_ROOT apt-get -y install apparmor
 sudo LANG=C chroot $FILESYSTEM_ROOT apt-get -y install apt-transport-https \
                                                        ca-certificates \
                                                        curl
+sonic_cleanup_build_apt_ca
 if [[ $CONFIGURED_ARCH == armhf ]]; then
     # update ssl ca certificates for secure pem
     sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT c_rehash

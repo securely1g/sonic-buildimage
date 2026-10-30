@@ -82,6 +82,13 @@ variable unset on hosts that need no additional trust. The generated certificate
 stay in ignored builder context directories; do not commit certificates or keys.
 This setting does not add host trust to the installed SONiC filesystem.
 
+A fresh minbase rootfs has no CA bundle. Before its first HTTPS APT operation,
+the build temporarily supplies the builder's CA bundle through APT's `CaInfo`
+setting. The existing version-controlled `ca-certificates` installation replaces
+that bootstrap trust; the temporary bundle and setting are removed immediately
+after installation and at every rootfs snapshot boundary. TLS verification stays
+enabled, and build-only trust is not included in the installed image.
+
 If APT stalls on a mirror's DNS SRV service hostname while the configured HTTPS
 mirror URL works, set `SONIC_BUILD_APT_DISABLE_SRV=y` for native
 Bookworm/Trixie jobs. This makes builder and rootfs APT use the configured mirror

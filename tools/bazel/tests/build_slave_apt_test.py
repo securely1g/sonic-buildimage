@@ -94,6 +94,10 @@ class BuildSlaveAptTest(unittest.TestCase):
         config.parent.mkdir(parents=True)
         unrelated = config.with_name("local-policy")
         unrelated.write_text("preserve unrelated configuration\n")
+        builder_ca = self.workspace / "builder-ca.crt"
+        builder_ca.write_text("fixture builder CA bundle\n")
+        helpers = helpers.replace("local builder_ca=/etc/ssl/certs/ca-certificates.crt",
+                                  "local builder_ca=" + repr(str(builder_ca)))
         for value in (None, "n", "y"):
             with self.subTest(value=value):
                 environment = {key: value for key, value in os.environ.items() if key != SETTING}
@@ -111,7 +115,87 @@ sonic_cleanup_build_apt
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, 'Acquire::EnableSrvRecords "false";\n' if value == "y" else "")
                 self.assertFalse(config.exists())
+                self.assertFalse(config.with_name("99sonic-build-bootstrap-ca").exists())
+                self.assertFalse(rootfs.joinpath("etc/apt/sonic-build-bootstrap-ca.crt").exists())
                 self.assertEqual(unrelated.read_text(), "preserve unrelated configuration\n")
+
+    def rootfs_helpers(self, builder_ca):
+        source = (ROOT / "build_debian.sh").read_text()
+        start = source.index("# Build-time APT routing must not become installed SONiC configuration.")
+        helpers = source[start:source.index("## Hostname for the linux image", start)]
+        # Substitute only the builder's absolute system path; execute the real
+        # helper functions against an isolated rootfs and fixture trust bundle.
+        return helpers.replace("local builder_ca=/etc/ssl/certs/ca-certificates.crt",
+                               "local builder_ca=" + repr(str(builder_ca)))
+
+    def run_rootfs_helpers(self, rootfs, builder_ca, commands, *, sudo='"$@"', setting="n"):
+        environment = dict(os.environ, FILESYSTEM_ROOT=str(rootfs), **{SETTING: setting})
+        script = ("set -eu\nsudo() { " + sudo + "; }\n"
+                  "die() { printf '%s\\n' \"$*\" >&2; exit 1; }\n"
+                  + self.rootfs_helpers(builder_ca) + commands)
+        return subprocess.run(["bash", "-c", script], env=environment, text=True, capture_output=True)
+
+    def test_minbase_uses_temporary_trust_until_versioned_ca_installation(self):
+        builder_ca = self.workspace / "builder bundle.crt"
+        builder_ca.write_bytes(b"fixture builder CA bundle\n")
+        for initial_ca in (None, b""):
+            with self.subTest(initial_ca=initial_ca), tempfile.TemporaryDirectory(dir=self.workspace) as directory:
+                rootfs = Path(directory)
+                config = rootfs / "etc/apt/apt.conf.d/99sonic-build-bootstrap-ca"
+                temporary_ca = rootfs / "etc/apt/sonic-build-bootstrap-ca.crt"
+                installed_ca = rootfs / "etc/ssl/certs/ca-certificates.crt"
+                srv = config.with_name("99sonic-build-disable-srv")
+                config.parent.mkdir(parents=True)
+                installed_ca.parent.mkdir(parents=True)
+                if initial_ca is not None:
+                    installed_ca.write_bytes(initial_ca)
+
+                result = self.run_rootfs_helpers(rootfs, builder_ca, "sonic_configure_build_apt\n", setting="y")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(temporary_ca.read_bytes(), builder_ca.read_bytes())
+                self.assertEqual(temporary_ca.stat().st_mode & 0o777, 0o644)
+                self.assertEqual(config.read_text(),
+                                 'Acquire::https::CaInfo "/etc/apt/sonic-build-bootstrap-ca.crt";\n')
+                self.assertEqual(installed_ca.read_bytes() if installed_ca.exists() else None, initial_ca)
+
+                # The unchanged version-controlled package installation creates
+                # final trust. Its immediate cleanup must leave SRV routing on.
+                installed_ca.write_bytes(b"version-controlled CA package bundle\n")
+                result = self.run_rootfs_helpers(rootfs, builder_ca, "sonic_cleanup_build_apt_ca\n", setting="y")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(config.exists())
+                self.assertFalse(temporary_ca.exists())
+                self.assertTrue(srv.exists())
+                self.assertEqual(installed_ca.read_bytes(), b"version-controlled CA package bundle\n")
+
+                result = self.run_rootfs_helpers(rootfs, builder_ca, "sonic_cleanup_build_apt\n", setting="y")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(srv.exists())
+
+    def test_existing_rootfs_trust_and_empty_cleanup_need_no_sudo(self):
+        rootfs = self.workspace / "trusted rootfs"
+        installed_ca = rootfs / "etc/ssl/certs/ca-certificates.crt"
+        installed_ca.parent.mkdir(parents=True)
+        installed_ca.write_bytes(b"existing rootfs package trust\n")
+        missing_builder = self.workspace / "missing-builder-ca.crt"
+        for setting, commands in (("n", "sonic_configure_build_apt\nsonic_cleanup_build_apt\n"),
+                                  ("y", "sonic_cleanup_build_apt\n")):
+            with self.subTest(setting=setting):
+                result = self.run_rootfs_helpers(rootfs, missing_builder, commands,
+                                                sudo="echo unexpected-sudo >&2; return 99", setting=setting)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("unexpected-sudo", result.stderr)
+                self.assertEqual(installed_ca.read_bytes(), b"existing rootfs package trust\n")
+
+    def test_missing_builder_trust_stops_before_configuring_https(self):
+        rootfs = self.workspace / "untrusted rootfs"
+        result = self.run_rootfs_helpers(rootfs, self.workspace / "absent-ca.crt",
+                                        "sonic_configure_build_apt\n",
+                                        sudo="echo unexpected-sudo >&2; return 99")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Builder CA bundle is unavailable", result.stderr)
+        self.assertNotIn("unexpected-sudo", result.stderr)
+        self.assertFalse(rootfs.exists())
 
     def test_rootfs_setup_and_cleanup_cover_both_stages_and_every_capture_boundary(self):
         source = (ROOT / "build_debian.sh").read_text()
@@ -120,6 +204,13 @@ sonic_cleanup_build_apt
         self.assertLess(source.index("scripts/build_debian_base_system.sh"), source.index(setup))
         self.assertLess(source.index(setup), source.index("scripts/prepare_debian_image_buildinfo.sh"))
         self.assertLess(source.index(setup), source.index("chroot $FILESYSTEM_ROOT apt-get -y update"))
+        install = source.index("apt-get -y install apt-transport-https")
+        installed = source.index("sonic_cleanup_build_apt_ca\n", install)
+        self.assertIn("ca-certificates", source[install:installed])
+        self.assertLess(installed, source.index("curl -o /tmp/docker.asc", install))
+        cleanup_function = source[source.index("sonic_cleanup_build_apt()"):
+                                  source.index("## Hostname for the linux image")]
+        self.assertIn("sonic_cleanup_build_apt_ca\n", cleanup_function)
         first = source.index("if [[ $RFS_SPLIT_FIRST_STAGE == y ]]; then")
         last = source.index("if [[ $RFS_SPLIT_LAST_STAGE == y ]]; then", first)
         first_stage = source[first:last]
