@@ -21,6 +21,9 @@ class BuildTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        worker_record = mock.patch.object(build, "WORKER_RECORD", self.root / "absent-worker.json")
+        worker_record.start()
+        self.addCleanup(worker_record.stop)
         (self.root / "target").mkdir()
         self.output = self.root / "target/sonic-vs.bin"
         self.receipt = self.root / build.RECEIPT
@@ -164,6 +167,8 @@ class BuildTest(unittest.TestCase):
         inputs = self.root / "target/bazel-image-inputs"
         inputs.mkdir()
         (inputs / "execution-environment.json").write_text("{}")
+        (inputs / "prepared-host").mkdir()
+        (inputs / "prepared-host/receipt.json").write_text("{}")
         state = self.root / "state"
         source = state / "execroot/project/bazel-out/bin/sonic-vs.bin"
         source.parent.mkdir(parents=True)
@@ -212,6 +217,27 @@ class BuildTest(unittest.TestCase):
                                                    use_container_image_store_as_backend=selected)
             self.assertEqual(json.loads(self.receipt.read_text())["backend"],
                              "containerd" if selected == "y" else "docker")
+        # The same public publisher executes Bazel directly inside a restricted
+        # runner; no launcher or Docker client is used there.
+        worker_record = self.root / 'worker.json'
+        worker_record.write_text('{}')
+        args.backend = 'y'
+        with mock.patch.object(build, 'WORKER_RECORD', worker_record), \
+                mock.patch.object(build.privileges, 'check') as guard, \
+                mock.patch.object(build.subprocess, 'run', side_effect=execute) as invoked:
+            build.bazel_build(args)
+            guard.assert_called_once_with()
+            argv = invoked.call_args.args[0]
+            self.assertEqual(argv[0], '/usr/local/bin/bazel')
+            self.assertIn('--spawn_strategy=processwrapper-sandbox', argv)
+            self.assertNotIn('docker', argv)
+        worker_record.write_text('{"worker_image":"wrong"}')
+        with mock.patch.object(build, 'WORKER_RECORD', worker_record), \
+                mock.patch.object(build.privileges, 'check'), \
+                mock.patch.object(build.subprocess, 'run') as invoked:
+            with self.assertRaisesRegex(ValueError, 'runner differs'):
+                build.bazel_build(args)
+            invoked.assert_not_called()
         self.assertEqual(self.output.read_bytes(), source.read_bytes())
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o755)
 
@@ -221,6 +247,16 @@ class BuildTest(unittest.TestCase):
                                 cwd=self.root, env=environment, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--backend", result.stdout)
+
+    def test_containerd_without_host_handoff_cannot_fall_back_to_privileged_worker(self):
+        inputs = self.root / 'target/bazel-image-inputs'
+        inputs.mkdir()
+        (inputs / 'execution-environment.json').write_text('{}')
+        args = SimpleNamespace(workspace=self.root, backend='y')
+        with mock.patch.object(build.subprocess, 'run') as execute:
+            with self.assertRaisesRegex(ValueError, 'separate native job'):
+                build.bazel_build(args)
+            execute.assert_not_called()
 
     def make_workspace(self):
         source = Path(__file__).resolve().parents[3]

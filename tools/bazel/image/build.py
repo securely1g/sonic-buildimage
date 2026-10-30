@@ -7,12 +7,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backend
+import privileges
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
 from build_events import bep_outputs, named_output, output_identity
@@ -20,6 +22,7 @@ from build_events import bep_outputs, named_output, output_identity
 TARGET = "//tools/bazel/image/vs:sonic-vs.bin"
 RECEIPT = "target/.bazel-vs-image.json"
 BACKUP = "target/.sonic-vs.bin.bazel-previous"
+WORKER_RECORD = Path("/run/sonic-image-worker.json")
 
 
 def check_transition(workspace):
@@ -118,20 +121,40 @@ def bazel_build(args):
                          "see tools/bazel/image/README.md (Declared inputs and execution)")
     backend.select_backend(workspace, build_with_bazel_when_available="y",
                            use_container_image_store_as_backend=args.backend)
+    if args.backend == "y" and not (inputs / "prepared-host/receipt.json").is_file():
+        raise ValueError("containerd final assembly requires a prepared host from the separate native job; see tools/bazel/image/README.md")
     launcher = [sys.executable, str(workspace / "tools/bazel/image/run.py"),
                 "--workspace", str(workspace), "--mount-root", str(args.mount_root),
                 "--worker-spec", str(inputs / "execution-environment.json"),
                 "--output-user-root", str(args.output_user_root)]
+    if args.backend == "y":
+        launcher += ["--unprivileged"]
     for option in ("repository_cache", "persistent_worker", "git_config"):
         value = getattr(args, option)
         if value:
             launcher += ["--" + option.replace("_", "-"), str(value)]
+    worker_record = WORKER_RECORD
+    inside_worker = worker_record.is_file()
+    if inside_worker:
+        if args.backend != "y":
+            raise ValueError("in-container final assembly requires the containerd backend")
+        privileges.check()
+        if json.loads(worker_record.read_text()) != json.loads((inputs / "execution-environment.json").read_text()):
+            raise ValueError("assembly runner differs from the prepared execution environment")
     # This directory is visible in the worker's declared workspace mount. Its
     # fresh BEP cannot accidentally identify an earlier output-base symlink.
     with tempfile.TemporaryDirectory(prefix=".vs-publish-", dir=workspace / "target") as directory:
         events = Path(directory) / "events.jsonl"
-        subprocess.run([*launcher, "--", "build", TARGET,
-                        "--build_event_json_file=" + str(events)], cwd=workspace, check=True)
+        extra_args = shlex.split(os.environ.get("BAZEL_IMAGE_ARGS", ""))
+        command = [*launcher, "--", "build", TARGET, *extra_args, "--build_event_json_file=" + str(events)]
+        if inside_worker:
+            command = ["/usr/local/bin/bazel", "--output_user_root=" + str(args.output_user_root),
+                       "build", "--jobs=4", "--local_resources=cpu=4",
+                       "--spawn_strategy=processwrapper-sandbox", TARGET, *extra_args,
+                       "--build_event_json_file=" + str(events)]
+            if args.repository_cache:
+                command += ["--repository_cache=" + str(args.repository_cache)]
+        subprocess.run(command, cwd=workspace, check=True)
         outputs = bep_outputs(events, [TARGET], args.output_user_root.resolve())
         source = named_output(outputs, TARGET, "sonic-vs.bin")
         publish(source, workspace / "target/sonic-vs.bin", workspace / RECEIPT,

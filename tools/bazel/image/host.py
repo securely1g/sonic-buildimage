@@ -44,6 +44,60 @@ def digest(path):
     return result.hexdigest()
 
 
+def file_identity(path):
+    """Identify file bytes independently of their build-machine location."""
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError('host input must be a regular file: ' + str(path))
+    return {'size': path.stat().st_size, 'sha256': digest(path)}
+
+
+def local_image_identity(path):
+    """Include every OCI-part file; archive contents carry their own modes."""
+    path = Path(path)
+    if path.is_file():
+        return {'file': file_identity(path)}
+    if not path.is_dir():
+        raise ValueError('local host image must be a file or OCI directory')
+    files = {}
+    for child in sorted(path.rglob('*')):
+        # Bazel's processwrapper sandbox materializes TreeArtifact inputs as
+        # real directories containing file symlinks. Bind their declared names
+        # and resolved bytes, so preparation and verification agree across jobs.
+        if (child.is_symlink() and not child.is_file()) or not (child.is_dir() or child.is_file()):
+            raise ValueError('unsupported local host image entry: ' + str(child))
+        if child.is_file():
+            files[child.relative_to(path).as_posix()] = file_identity(child)
+    if not files:
+        raise ValueError('local host image directory is empty')
+    return {'files': files}
+
+
+def input_identity(request):
+    """Bind prepared host outputs to exactly the inputs of host finalization.
+
+    Absolute worker paths are deliberately absent so a separately scheduled
+    unprivileged job can verify the handoff. Builtin service metadata remains
+    the dependency boundary; local packages include their complete OCI parts.
+    """
+    backend = request['image_store_backend']
+    if backend not in ('docker', 'containerd'):
+        raise ValueError('unsupported host backend')
+    keys = ['source', 'snapshot', 'config', 'execution_environment',
+            'build_script', 'extension_template']
+    if backend == 'containerd':
+        keys += ['runtime_overlay', 'offline_host']
+    return {
+        'schema': 1,
+        'image_store_backend': backend,
+        'files': {key: file_identity(request[key]) for key in keys},
+        'metadata': {name: file_identity(path) for name, path in sorted(request['metadata'].items())},
+        'local_images': {name: local_image_identity(path) for name, path in sorted(request['local_images'].items())},
+        'implementation': {name: file_identity(Path(__file__).with_name(name))
+                           for name in ('host.py', 'metadata.py')},
+    }
+
+
 def load_config(path):
     config = json.loads(Path(path).read_text())
     if set(config) != {'schema', 'environment', 'identity'} or config['schema'] != 1:
@@ -351,6 +405,7 @@ def main():
     request = {key: str(Path(getattr(args, key)).resolve()) for key in paths}
     request.update({'image_store_backend': args.image_store_backend, 'metadata': metadata,
                     'local_images': local, 'uid': os.getuid(), 'gid': os.getgid()})
+    inputs = input_identity(request)
     prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
     # A private PID namespace guarantees that subprocess descendants disappear
     # before the action returns, including on build failure.
@@ -371,7 +426,10 @@ def main():
             subprocess.run(prefix + ['unshare', '--mount', '--pid', '--fork', '--kill-child', '--mount-proc', '--net', str(init), '--', sys.executable, str(Path(__file__).resolve()), '_worker', str(request_path)], check=True)
         finally:
             subprocess.run(prefix + ['rm', '-rf', '--', str(Path(temp) / 'source')], check=True)
+    if input_identity(request) != inputs:
+        raise ValueError('host inputs changed during finalization')
     receipt = {'schema': 1, 'status': 'passed', 'seconds': time.monotonic() - started,
+               'inputs': inputs,
                'image_store_backend': args.image_store_backend,
                'scope': ('Finalized native host from OCI metadata and local package files without loading images into a daemon'
                          if args.image_store_backend == 'containerd' else

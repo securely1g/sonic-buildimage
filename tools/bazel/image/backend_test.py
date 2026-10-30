@@ -57,6 +57,21 @@ class BackendTest(unittest.TestCase):
                 self.assertEqual(before, (self.archive.read_bytes(), self.archive.stat().st_mtime_ns))
                 self.assertEqual((self.package / "BUILD.bazel").read_text(), self.template)
 
+    def test_prepared_host_selected_only_for_containerd_and_requires_complete_files(self):
+        directory = self.inputs / 'prepared-host'
+        directory.mkdir()
+        for name in ('fs.squashfs', 'boot.tar', 'platform.tar.gz', 'receipt.json'):
+            (directory / name).write_bytes(b'prepared')
+        self.select('y')
+        attributes = ast.literal_eval(ast.parse((self.inputs / 'inputs.bzl').read_text()).body[0].value)
+        self.assertEqual(set(attributes['prepared_host']), {'fs', 'boot', 'platform', 'receipt'})
+        self.select('n')
+        attributes = ast.literal_eval(ast.parse((self.inputs / 'inputs.bzl').read_text()).body[0].value)
+        self.assertNotIn('prepared_host', attributes)
+        (directory / 'receipt.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'incomplete'):
+            self.select('y')
+
     def test_repeated_selection_does_not_rewrite_metadata(self):
         self.select("y")
         paths = [self.inputs / "inputs.bzl", self.inputs / "provenance.json", self.package / "BUILD.bazel"]

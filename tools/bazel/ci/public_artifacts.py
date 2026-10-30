@@ -74,7 +74,7 @@ FILES = {
 }
 BEP = {
     "archive": [
-        ("archive-tests", "artifacts/archive/test-events.jsonl", 29),
+        ("archive-tests", "artifacts/archive/test-events.jsonl", 32),
         ("python-tests", "artifacts/config-engine/test-events.jsonl", 18),
     ],
     "source": [("source-tests", "artifacts/swss/test-events.jsonl", None)],

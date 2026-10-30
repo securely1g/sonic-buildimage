@@ -50,8 +50,9 @@ PY
 no host Docker socket, and an optional shared repository-download cache. The
 build and cache directories must be writable by worker UID/GID 1000. Docker
 scratch storage belongs on the mounted build filesystem with working overlay2
-support. Host finalization and image imports create private mount, PID, and
-network namespaces inside the privileged worker.
+support. Host finalization and legacy Docker imports create private mount, PID, and
+network namespaces inside the privileged worker. Containerd content imports
+and the final ZIP/ONIE assembly run with `--unprivileged` after host preparation.
 
 The launcher supports a disposable worker or a named persistent worker retaining
 its Bazel server. Lifecycle operations verify worker identity and serialize
@@ -63,3 +64,13 @@ For the optional containerd backend, Skopeo converts the declared service
 archives and containerd imports them without unpacking. Umoci extracts only
 local-package files needed for host plugins. The same worker supports both
 backends; its image ID remains an explicit action input.
+
+To extend an existing sonic-slave image, pass
+`--build-arg BASE_IMAGE=sonic-slave-trixie:<tag>` to `docker build`. The native CI
+job uses its actual Make-produced sonic-slave image and checks the derived
+worker layer ancestry. Both jobs use the resulting immutable worker ID.
+
+For an assembly CI runner, use `run.py --unprivileged` or the documented
+restricted `docker run` command, then invoke the public Make target inside the
+container. The worker account and `/run/containerd` parent are created at image
+build time. Final assembly needs no root bootstrap or host Docker socket.

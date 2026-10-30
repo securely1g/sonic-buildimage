@@ -14,7 +14,7 @@ path. The default, component selection rules, and KVM image target are unchanged
 
 ## Optional containerd store
 
-After preparing the same native inputs, select the smaller content-only store:
+After preparing the native inputs **and the finalized-host handoff below**, select the smaller content-only store:
 
 ```sh
 make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y \
@@ -119,6 +119,70 @@ The prepared bundle records two identities separately:
   A newer assembler does
   not relabel an older producer's snapshot or image version.
 
+For the containerd backend, the native preparation job also finalizes the host.
+The CI workflow first downloads the `unprivileged-repository-inputs` artifact,
+which contains the five GitLab-hosted build-tool sources selected by the module
+graph. Verify and carry those source archives into the final handoff so a fresh
+runner does not depend on a warmed download cache:
+
+```sh
+python3 tools/bazel/gzip/source_archive.py \
+  --archives-dir artifacts/unprivileged/repository-inputs \
+  --output target/bazel-image-inputs/source-downloads
+python3 tools/bazel/image/ci_unprivileged.py prepare-host --workspace "$PWD"
+```
+
+The CI helper rechecks their BCR SHA512 values before both host preparation and
+final assembly, and supplies their locations to Bazel with `--distdir`.
+
+
+This privileged preparation builds only the host target, then exports
+`target/bazel-image-inputs/prepared-host/`: the SquashFS, boot and platform
+archives, plus a receipt binding them to the source/configuration, worker,
+implementation files, service metadata and local package bytes. Changed host
+inputs require a new handoff. Final assembly verifies the receipt and every
+output hash; it cannot silently fall back to privileged host finalization.
+
+### Run Make inside an unprivileged CI runner
+
+Use the prepared execution image as the runner container, with a writable
+checkout/input bundle and Bazel output directory owned by UID/GID 1000. Keep
+native Make production and host finalization in the separate preparation job.
+The runner must have the same immutable execution image recorded by preparation.
+For example, from the host after preparing the inputs:
+
+```sh
+worker=$(python3 -c 'import json; print(json.load(open("target/bazel-image-inputs/execution-environment.json"))["worker_image"])')
+docker run --rm --init --user 1000:1000 --cap-drop=ALL \
+  --security-opt=no-new-privileges:true -e HOME=/var/sonic-builder \
+  --mount "type=bind,src=$PWD,dst=$PWD" \
+  --mount "type=bind,src=$PWD/target/bazel-image-inputs/execution-environment.json,dst=/run/sonic-image-worker.json,readonly" \
+  -w "$PWD" "$worker" \
+  make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y \
+    ENABLE_SBOM=n SONIC_ENABLE_IMAGE_SIGNATURE=n SECURE_UPGRADE_MODE=no_sign \
+    ENABLE_ASAN=n SONIC_INSTALL_DEBUG_TOOLS=n INSTALL_DEBUG_TOOLS=n \
+    target/sonic-vs.bin
+```
+
+No Docker socket, KVM device, capability additions, privileged mode or relaxed
+seccomp profile is passed. Inside this runner, Make invokes Bazel directly;
+it does not launch Docker or run native prerequisites. It rejects root,
+nonzero effective/permitted/bounding capabilities, missing no-new-privileges,
+a missing seccomp filter, exposed runtime sockets or a mismatched worker identity.
+Bazel uses process-wrapper sandboxes because the runner cannot create privileged
+Linux namespaces. Containerd only imports compressed content and metadata;
+it does not mount layers or run service containers. The stored daemon files
+have root ownership in the archive while image layer metadata remains intact.
+The output is the ordinary executable `target/sonic-vs.bin`.
+
+The new `Bazel VS unprivileged assembly` workflow transfers checksummed native
+inputs and the exact execution image between separate preparation and assembly
+jobs. It runs the public Make command inside the restricted runner, records
+Docker configuration and in-container privilege evidence, and checks the final
+installer's payload byte chain. Its hosted storage test also restores the
+rootless-produced store in a separate privileged runtime container; running
+containers is validation and is not part of installer assembly.
+
 The public build command consumes this prepared bundle; it does not run native
 production or regenerate inputs automatically. The build's successful Bazel
 events identify the final output and its digest before publication to
@@ -154,8 +218,8 @@ and reuses compressed layer fragments. Host finalization, store assembly, ZIP
 creation, and ONIE wrapping have separate Bazel action boundaries.
 
 The default store format is Docker 28.5.2 classic `overlay2`. Worker identity is
-an explicit action input. Host finalization and Docker import require local
-privileged execution; neither consumes the host Docker socket. Filesystem
+an explicit action input. Native host finalization and the default Docker import require local
+privileged execution; the prepared-host containerd final graph runs unprivileged; neither consumes the host Docker socket. Filesystem
 metadata that cannot be preserved by the store collector fails explicitly.
 
 For direct investigation or repeated Bazel requests, use the launcher:
@@ -174,6 +238,13 @@ downloads. The named worker retains its Bazel server and output state. Use the
 same arguments with `--worker-action stop` and omit the trailing Bazel command
 to stop it. Direct Bazel requests produce Bazel outputs; the public Make command
 owns publication to `target/sonic-vs.bin`.
+
+Launcher locks and ownership receipts live in a private sibling directory named
+`.<output-directory>.sonic-image-worker`, owned by the invoking host account.
+The parent directory must be writable by that account. This keeps lifecycle
+updates working when Bazel changes its own output directory permissions. A live
+worker recorded by an older launcher must be stopped with that launcher before
+using the new control-state location.
 
 ### SWSS example: snapshot to finalized host
 
@@ -200,8 +271,9 @@ ARM64 runners. These are Python/Make/Git fixtures; ARM64 execution does not impl
 ARM64 installer support. The ONIE tests exercise payload checksums and shell
 extraction with synthetic payloads.
 
-This CI coverage does not perform a complete native-producer-to-ONIE build,
-boot the installer, or validate forwarding. The existing component tests and
+The focused archive tests alone do not perform a complete native-producer-to-ONIE
+build. The separate unprivileged workflow covers that producer/assembly handoff;
+neither workflow boots the installer or validates forwarding. The existing component tests and
 native KVM build retain their own coverage. Real assembly validation must retain
 its producer and assembler identities, input hashes, worker identity, and output
 evidence separately from any future guest-boot results.
@@ -210,3 +282,7 @@ The optional backend also has a separate privileged AMD64 acceptance job. It
 restores a populated store and verifies first-use unpacking, shared layers,
 Docker metadata, image updates, removal, save/load and daemon restart. Its small
 images exercise storage behavior; they do not establish SONiC guest readiness.
+
+Inside the runner, `BAZEL_IMAGE_ARGS` accepts additional Bazel build flags. CI
+sets `--remote_cache= --disk_cache=` with a fresh output root to demonstrate
+that final assembly actions actually execute under the restricted account.

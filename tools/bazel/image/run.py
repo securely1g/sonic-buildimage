@@ -9,7 +9,9 @@ Example:
     -- build //tools/bazel/image/vs:sonic-vs.bin
 
 The explicit mount root must contain every locally overridden source worktree.
-The worker receives no host Docker socket. Host filesystem finalization uses
+The worker receives no host Docker socket. With --unprivileged, it runs as
+UID1000 with no Linux capabilities, no-new-privileges and default seccomp.
+Native host filesystem preparation uses
 privileged mount/PID/network namespaces. The default graph uses the classic
 Docker store. The containerd opt-in caches the fixed images, restores a private
 base copy, and imports SWSS without unpacking before archiving the store.
@@ -21,7 +23,8 @@ Add --persistent-worker NAME to retain this isolated worker and its Bazel server
 The run action creates or reuses it; --worker-action start initializes it without
 running Bazel, status inspects it, and stop shuts down Bazel and removes only that
 verified worker. Use identical worker arguments for every lifecycle operation.
-An output-root lock serializes operations, including builds. Startup option
+Host-owned sibling control state serializes operations on each output root,
+including builds. Startup option
 changes use Bazel's normal server restart; output-root overrides and batch mode
 are rejected in persistent mode.
 """
@@ -49,6 +52,13 @@ usermod -g 1000 -a -G sudo,docker "$sonic_builder_user"
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$sonic_builder_user" >/etc/sudoers.d/sonic-image-worker
 chmod 0440 /etc/sudoers.d/sonic-image-worker
 exec runuser -u "$sonic_builder_user" -- "$@"
+'''
+
+
+UNPRIVILEGED_BOOTSTRAP = r'''
+set -eu
+python3 "$SONIC_ASSEMBLY_GUARD" --receipt "$SONIC_ASSEMBLY_RECEIPT"
+exec "$@"
 '''
 
 
@@ -122,7 +132,13 @@ def build_plan(args):
     memory_gib = getattr(args, "worker_memory_gib", 24)
     if type(cpus) is not int or cpus <= 0 or type(memory_gib) is not int or memory_gib <= 0:
         raise ValueError("worker CPU count and memory GiB must be positive integers")
-    bootstrap = PERSISTENT_BOOTSTRAP
+    unprivileged = getattr(args, "unprivileged", False)
+    if unprivileged and user:
+        raise ValueError("unprivileged assembly uses the worker's prepared UID 1000 account")
+    disposable_bootstrap = UNPRIVILEGED_BOOTSTRAP if unprivileged else BOOTSTRAP
+    bootstrap = (UNPRIVILEGED_BOOTSTRAP.replace('exec "$@"',
+                 'touch /tmp/sonic-image-worker-ready\nexec /bin/sleep infinity')
+                 if unprivileged else PERSISTENT_BOOTSTRAP)
     if user:
         # Substitute template values once, without rewriting the supplied values.
         bootstrap = re.sub(
@@ -139,12 +155,19 @@ def build_plan(args):
     docker = [
         "docker", "run", "--rm", "--init", "--pull=never",
         "--platform", "linux/amd64",
-        "--privileged", "--cpus=" + str(cpus), "--memory=" + str(memory_gib) + "g",
+        "--cpus=" + str(cpus), "--memory=" + str(memory_gib) + "g",
         "--memory-swap=" + str(memory_gib) + "g",
-        "--user", "0:0", "--ulimit", "nofile=524288:524288",
+        "--user", "1000:1000" if unprivileged else "0:0", "--ulimit", "nofile=524288:524288",
         "--mount", "type=bind,source=" + str(root) + ",target=" + str(root),
         "--mount", "type=bind,source=" + str(worker_spec) + ",target=/run/sonic-image-worker.json,readonly",
     ]
+    if unprivileged:
+        docker += ["--cap-drop=ALL", "--security-opt=no-new-privileges:true",
+                   "--env", "HOME=/var/sonic-builder",
+                   "--env", "SONIC_ASSEMBLY_GUARD=" + str(workspace / "tools/bazel/image/privileges.py"),
+                   "--env", "SONIC_ASSEMBLY_RECEIPT=" + str(output_root / "unprivileged-worker.json")]
+    else:
+        docker += ["--privileged"]
     git_config = getattr(args, "git_config", None)
     git_options = []
     if git_config:
@@ -184,6 +207,8 @@ def build_plan(args):
             defaults += git_options
         if verb in {"build", "test", "run", "coverage"}:
             defaults += ["--jobs=" + str(cpus), "--local_resources=cpu=" + str(cpus)]
+            if unprivileged:
+                defaults += ["--spawn_strategy=processwrapper-sandbox"]
             if persistent:
                 defaults += ["--cache_computed_file_digests=200000"]
         command[command_index + 1:command_index + 1] = defaults
@@ -209,6 +234,8 @@ def build_plan(args):
         "cpu_count": cpus,
         "memory_bytes": memory_gib * 1024 ** 3,
     }
+    if unprivileged:
+        identity["unprivileged"] = True
     if bazel.exists() and bazel.is_relative_to(root):
         identity["bazel_sha256"] = hashlib.sha256(bazel.read_bytes()).hexdigest()
     if git_config:
@@ -229,7 +256,7 @@ def build_plan(args):
               "-ec", bootstrap, "sonic-image-worker"]
     docker += [
         "--workdir", str(workspace), "--entrypoint", "/bin/bash", image,
-        "-ec", BOOTSTRAP, "sonic-image-bootstrap", str(bazel), "--batch",
+        "-ec", disposable_bootstrap, "sonic-image-bootstrap", str(bazel), "--batch",
         "--output_user_root=" + str(output_root), *command,
     ]
     return {
@@ -279,9 +306,9 @@ def validate_worker(worker, plan):
         "entrypoint": (config.get("Entrypoint"), ["/bin/bash"]),
         "command": (config.get("Cmd"), ["-ec", plan["bootstrap"], "sonic-image-worker"]),
         "working directory": (config.get("WorkingDir"), identity["workspace"]),
-        "user": (config.get("User"), "0:0"),
+        "user": (config.get("User"), "1000:1000" if identity.get("unprivileged") else "0:0"),
         "init": (host.get("Init"), True),
-        "privileged": (host.get("Privileged"), True),
+        "privileged": (host.get("Privileged"), not identity.get("unprivileged", False)),
         "CPU limit": (host.get("NanoCpus"), identity["cpu_count"] * 1_000_000_000),
         "memory limit": (host.get("Memory"), identity["memory_bytes"]),
         "swap limit": (host.get("MemorySwap"), identity["memory_bytes"]),
@@ -293,6 +320,11 @@ def validate_worker(worker, plan):
         "port bindings": (host.get("PortBindings") or {}, {}),
         "restart policy": ((host.get("RestartPolicy") or {}).get("Name", "no"), "no"),
     }
+    if identity.get("unprivileged"):
+        expected.update({"capability additions": (host.get("CapAdd") or [], []),
+                         "capability drops": (host.get("CapDrop"), ["ALL"]),
+                         "security options": (host.get("SecurityOpt"), ["no-new-privileges:true"]),
+                         "devices": (host.get("Devices") or [], [])})
     for label, (actual, wanted) in expected.items():
         if actual != wanted:
             raise ValueError("refusing mismatched persistent worker " + identity["name"] + ": " + label)
@@ -315,22 +347,48 @@ def validate_worker(worker, plan):
 
 
 def exec_command(container_id, plan, bazel_command=None):
-    return ["docker", "exec", "--user", "0:0", "--workdir", plan["identity"]["workspace"],
-            container_id, "/bin/bash", "-ec", EXEC_USER, "sonic-image-command",
+    unprivileged = plan["identity"].get("unprivileged", False)
+    return ["docker", "exec", "--user", "1000:1000" if unprivileged else "0:0", "--workdir", plan["identity"]["workspace"],
+            container_id, "/bin/bash", "-ec", UNPRIVILEGED_BOOTSTRAP if unprivileged else EXEC_USER, "sonic-image-command",
             *(bazel_command or plan["bazel_command"])]
 
 
 @contextlib.contextmanager
 def output_lock(output_root):
-    """Serialize worker lifecycle and Bazel clients without stale PID lock files."""
-    root = Path(output_root)
+    """Keep host control files outside the directory Bazel changes to 0755."""
+    root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    fd = os.open(root / ".sonic-image-worker.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    control = root.with_name("." + root.name + ".sonic-image-worker")
+    if control.is_symlink():
+        raise ValueError("worker control directory must not be a symlink")
+    control.mkdir(mode=0o700, exist_ok=True)
+    if control.stat().st_uid != os.getuid():
+        raise ValueError("worker control directory must belong to the invoking host user")
+    control.chmod(0o700)
+    descriptors = []
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield root / ".sonic-image-worker-owner.json"
+        locks = [(control / ".sonic-image-worker.lock", os.O_CREAT)]
+        legacy_lock = root / ".sonic-image-worker.lock"
+        if legacy_lock.exists() or legacy_lock.is_symlink():
+            locks.append((legacy_lock, 0))
+        for path, create in locks:
+            fd = os.open(path, create | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            descriptors.append(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        # Do not bypass a worker created by an older launcher, nor require
+        # writes beneath a legacy output root just to inspect stale receipts.
+        legacy_owner = root / ".sonic-image-worker-owner.json"
+        if legacy_owner.is_symlink():
+            raise ValueError("legacy worker ownership receipt must not be a symlink")
+        if legacy_owner.exists():
+            owner = json.loads(legacy_owner.read_text())
+            if inspect_worker(owner["container_id"]) is not None:
+                raise ValueError("legacy output root belongs to persistent worker " + owner["name"] +
+                                 "; stop it with the previous launcher before using relocated control state")
+        yield control / ".sonic-image-worker-owner.json"
     finally:
-        os.close(fd)
+        for fd in reversed(descriptors):
+            os.close(fd)
 
 
 def check_owner(owner_file, plan):
@@ -358,7 +416,7 @@ def ready_worker(container_id, plan):
     started = time.monotonic()
     while True:
         result = subprocess.run(["docker", "exec", container_id, "test", "-f",
-                                 "/run/sonic-image-worker-ready"], capture_output=True)
+                                 ("/tmp/sonic-image-worker-ready" if plan["identity"].get("unprivileged") else "/run/sonic-image-worker-ready")], capture_output=True)
         if result.returncode == 0:
             break
         if time.monotonic() - started >= 30:
@@ -471,6 +529,7 @@ def main():
     parser.add_argument("--worker-cpus", type=int, default=8, help="positive worker CPU limit (default: 8)")
     parser.add_argument("--worker-memory-gib", type=int, default=24, help="positive worker memory limit in GiB (default: 24)")
     parser.add_argument("--worker-action", choices=("run", "start", "status", "stop"), default="run")
+    parser.add_argument("--unprivileged", action="store_true", help="nonroot final assembly with no capabilities or runtime sockets")
     parser.add_argument("--dry-run", action="store_true", help="print the command/worker contract without running it")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()

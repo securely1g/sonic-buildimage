@@ -89,9 +89,42 @@ py_test(
         "backend.py",
         "build.py",
         "build_test.py",
+        "privileges.py",
         "//tools/bazel/ci:build_events.py",
     ],
     data = ["//:image_build_test_data"],
+    imports = ["."],
+)
+
+py_test(
+    name = "prepared_host_test",
+    srcs = [
+        "host.py",
+        "metadata.py",
+        "prepared_host.py",
+        "prepared_host_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "privileges_test",
+    srcs = [
+        "privileges.py",
+        "privileges_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "ci_unprivileged_test",
+    srcs = [
+        "backend.py",
+        "ci_unprivileged.py",
+        "ci_unprivileged_test.py",
+        "//tools/bazel/ci:build_events.py",
+        "//tools/bazel/gzip:source_archive.py",
+    ],
     imports = ["."],
 )
 

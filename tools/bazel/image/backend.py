@@ -83,6 +83,13 @@ def select_backend(workspace, *, build_with_bazel_when_available, use_container_
     for value in (attributes.get(KEY, False), receipt.get(KEY, False)):
         if type(value) is not bool:
             raise ValueError("recorded image store selection must be a boolean")
+    prepared = output / "prepared-host"
+    attributes.pop("prepared_host", None)
+    if enabled and prepared.exists():
+        names = {"fs": "fs.squashfs", "boot": "boot.tar", "platform": "platform.tar.gz", "receipt": "receipt.json"}
+        if prepared.is_symlink() or any(not (prepared / name).is_file() or (prepared / name).is_symlink() for name in names.values()):
+            raise ValueError("incomplete or linked prepared host; rerun the separate native preparation job")
+        attributes["prepared_host"] = {key: "//target/bazel-image-inputs:prepared-host/" + name for key, name in names.items()}
     attributes[KEY] = enabled
     receipt[KEY] = enabled
     # Python literals retain Starlark booleans; JSON's true/false are invalid.

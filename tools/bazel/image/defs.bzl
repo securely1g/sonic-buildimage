@@ -2,8 +2,9 @@
 
 The default keeps the classic Docker/overlay2 store. The opt-in containerd
 backend converts service archives with Skopeo and imports complete content
-without unpacking snapshots. Both paths use isolated privileged workers and
-metadata projections to keep binary edits off the host dependency edge.
+without unpacking snapshots. The containerd final graph verifies the host
+prepared by the native job and runs unprivileged. Metadata projections keep
+binary edits off the host dependency edge.
 """
 
 ContainerdStoreInfo = provider("Stopped containerd store and verified inventory.", fields = ["archive", "receipt"])
@@ -166,14 +167,14 @@ def _containerd_store_impl(ctx):
         args.add("--base-receipt", base.receipt)
         inputs += [base.archive, base.receipt]
     ctx.actions.run_shell(
-        command = 'exec sudo -n unshare --mount --pid --fork --kill-child --mount-proc --net /usr/bin/python3 "$@" --uid "$(id -u)" --gid "$(id -g)"',
+        command = 'exec /usr/bin/python3 "$@" --uid "$(id -u)" --gid "$(id -g)"',
         arguments = [args],
         inputs = depset(inputs),
         outputs = [archive, receipt],
         mnemonic = "SonicContainerdStore",
         resource_set = _host_resources,
         env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "TZ": "UTC"},
-        execution_requirements = {"no-sandbox": "1", "no-remote-exec": "1"},
+        execution_requirements = {"no-remote-exec": "1"},
     )
     return [
         DefaultInfo(files = depset([archive])),
@@ -225,7 +226,17 @@ def _host_impl(ctx):
             inputs += image_files
     for name, output in outputs.items():
         args += ["--" + name, output.path]
-    _python_action(ctx, ctx.file._script, args, inputs, outputs.values(), "SonicHostFilesystem", privileged = True)
+    prepared = {"fs": ctx.file.prepared_fs, "boot": ctx.file.prepared_boot, "platform": ctx.file.prepared_platform, "receipt": ctx.file.prepared_receipt}
+    if any(prepared.values()):
+        if not all(prepared.values()) or not ctx.attr.use_container_image_store_as_backend:
+            fail("prepared host requires all four files and the containerd backend")
+        for name, file in prepared.items():
+            args += ["--prepared-" + name, file.path]
+            inputs.append(file)
+        inputs += [ctx.file._script, ctx.file._metadata]
+        _python_action(ctx, ctx.file._prepared, ["verify"] + args, inputs, outputs.values(), "SonicPreparedHost")
+    else:
+        _python_action(ctx, ctx.file._script, args, inputs, outputs.values(), "SonicHostFilesystem", privileged = True)
     return [
         DefaultInfo(files = depset(outputs.values())),
         HostInfo(fs = outputs["fs"], boot = outputs["boot"], platform = outputs["platform"]),
@@ -246,6 +257,11 @@ host_filesystem = rule(
         "extension_template": attr.label(default = Label("//files/build_templates:sonic_debian_extension.j2"), allow_single_file = True),
         "_script": attr.label(default = Label(":host.py"), allow_single_file = True),
         "_metadata": attr.label(default = Label(":metadata.py"), allow_single_file = True),
+        "_prepared": attr.label(default = Label(":prepared_host.py"), allow_single_file = True),
+        "prepared_fs": attr.label(allow_single_file = True),
+        "prepared_boot": attr.label(allow_single_file = True),
+        "prepared_platform": attr.label(allow_single_file = True),
+        "prepared_receipt": attr.label(allow_single_file = True),
         "_offline_host": attr.label(default = Label(":offline_host.py"), allow_single_file = True),
         "_runtime_overlay": attr.label(default = Label("//tools/bazel/image/containerd_runtime:overlay.py"), allow_single_file = True),
         "_runtime_files": attr.label(default = Label("//tools/bazel/image/containerd_runtime:files")),
@@ -355,7 +371,8 @@ def sonic_vs_image(
         image_version,
         epoch = 0,
         installer_modes = {},
-        use_container_image_store_as_backend = False):
+        use_container_image_store_as_backend = False,
+        prepared_host = {}):
     """Assemble a VS ONIE installer from declared native predecessors.
 
     Args:
@@ -372,6 +389,7 @@ def sonic_vs_image(
         epoch: Reproducible ZIP timestamp in Unix seconds.
         installer_modes: Optional payload path to decimal mode mapping.
         use_container_image_store_as_backend: Select containerd instead of the default Docker store.
+        prepared_host: Verified host outputs exported by the separate native preparation job.
     """
     if type(use_container_image_store_as_backend) != "bool":
         fail("use_container_image_store_as_backend must be a boolean")
@@ -421,6 +439,10 @@ def sonic_vs_image(
             metadata[":" + projection] = archive
     host_filesystem(
         name = name + "_host",
+        prepared_fs = prepared_host.get("fs"),
+        prepared_boot = prepared_host.get("boot"),
+        prepared_platform = prepared_host.get("platform"),
+        prepared_receipt = prepared_host.get("receipt"),
         source = source,
         snapshot = snapshot,
         config = host_config,

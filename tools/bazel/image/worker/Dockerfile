@@ -1,4 +1,5 @@
-FROM debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+ARG BASE_IMAGE=debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+FROM ${BASE_IMAGE}
 
 # Public tools are fetched by prepare-worker-inputs.sh. Host filesystems,
 # service archives, source trees and credentials are not worker inputs.
@@ -12,7 +13,7 @@ RUN printf '%s\n' \
     && printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
     && chmod 755 /usr/sbin/policy-rc.d \
     && apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades --no-install-recommends \
        autoconf automake binutils build-essential busybox ca-certificates \
        acl curl diffutils file findutils gawk git grep gzip iproute2 iptables \
        j2cli=0.3.12b-5 jq kmod libtool make mount passwd pigz pkg-config \
@@ -28,6 +29,13 @@ RUN echo '61d89402f0368e64b6c827be5de79d8e65382e8124c3cbb97325611a1851392e  /usr
     && test "$(dockerd --version)" = 'Docker version 28.5.2, build 89c5e8f' \
     && test "$(docker buildx version | awk '{print $2}')" = 'v0.29.1' \
     && test "$(bazel --version)" = 'bazel 8.5.1'
+
+# Provision the account and containerd's runtime parent while building the
+# worker. Final assembly cannot create accounts or write root-owned /run.
+RUN (getent group 1000 || groupadd -g 1000 sonic-builder) \
+    && (getent passwd 1000 || useradd -u 1000 -g 1000 -m -d /var/sonic-builder -s /bin/bash sonic-builder) \
+    && mkdir -p /var/sonic-builder && chown 1000:1000 /var/sonic-builder \
+    && mkdir -p /run/containerd && chmod 0711 /run/containerd
 
 ENV LANG=C.UTF-8
 CMD ["/bin/bash"]

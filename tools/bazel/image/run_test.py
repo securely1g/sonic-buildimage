@@ -53,6 +53,30 @@ class WorkerTest(unittest.TestCase):
                            for source, target, writable in plan['mounts']],
                 'State': {'Running': True, 'Status': 'running'}}
 
+    def test_unprivileged_worker_preserves_enforced_isolation_on_reuse(self):
+        self.args.unprivileged = True
+        plan = self.plan()
+        self.assertNotIn('--privileged', plan['create'])
+        self.assertIn('--cap-drop=ALL', plan['create'])
+        self.assertIn('--security-opt=no-new-privileges:true', plan['create'])
+        self.assertIn('--spawn_strategy=processwrapper-sandbox', plan['bazel_command'])
+        worker = self.worker(plan)
+        worker['Config']['User'] = '1000:1000'
+        worker['HostConfig'].update(Privileged=False, CapDrop=['ALL'], CapAdd=None,
+                                    SecurityOpt=['no-new-privileges:true'], Devices=[])
+        self.assertEqual(image_run.validate_worker(worker, plan), 'b' * 64)
+        for field, value in [('Privileged', True), ('CapAdd', ['SYS_ADMIN']),
+                             ('CapDrop', []), ('SecurityOpt', ['seccomp=unconfined']),
+                             ('Devices', [{'PathOnHost': '/dev/kvm'}])]:
+            old = worker['HostConfig'][field]
+            worker['HostConfig'][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'mismatched'):
+                image_run.validate_worker(worker, plan)
+            worker['HostConfig'][field] = old
+        command = image_run.exec_command('b' * 64, plan)
+        self.assertEqual(command[command.index('--user') + 1], '1000:1000')
+        self.assertNotIn('runuser', command)
+
     def test_disposable_default_preserved(self):
         self.args.persistent_worker = None
         command = image_run.build_command(self.args)
@@ -425,7 +449,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_lock_serializes_processes_and_releases_after_exit(self):
         root = self.root / 'lock-test'
-        with image_run.output_lock(root):
+        with image_run.output_lock(root) as owner:
             code = '''import fcntl, os, sys
 fd = os.open(sys.argv[1], os.O_RDWR)
 try:
@@ -433,9 +457,68 @@ try:
 except BlockingIOError:
     sys.exit(23)
 '''
-            command = [os.sys.executable, '-c', code, str(root / '.sonic-image-worker.lock')]
+            command = [os.sys.executable, '-c', code, str(owner.parent / '.sonic-image-worker.lock')]
             self.assertEqual(subprocess.run(command).returncode, 23)
         self.assertEqual(subprocess.run(command).returncode, 0)
+
+    def test_host_control_survives_loss_of_write_access_to_bazel_root(self):
+        root = Path(self.args.output_user_root)
+        plan = self.plan()
+        with image_run.output_lock(root) as owner:
+            self.assertFalse(owner.is_relative_to(root))
+            image_run.save_owner(owner, plan, 'b' * 64)
+        # With a different owner, Bazel's 0755 grants the host only r-x.
+        # Removing every write bit reproduces that access for this test UID.
+        root.chmod(0o555)
+        try:
+            with image_run.output_lock(root) as owner:
+                image_run.save_owner(owner, plan, 'b' * 64)
+                owner.unlink()
+            self.assertEqual(root.stat().st_mode & 0o777, 0o555)
+        finally:
+            root.chmod(0o755)
+
+    def test_live_legacy_worker_is_not_silently_bypassed(self):
+        root = Path(self.args.output_user_root)
+        root.mkdir()
+        (root / '.sonic-image-worker.lock').touch()
+        legacy = root / '.sonic-image-worker-owner.json'
+        legacy.write_text(json.dumps({'name': 'legacy-worker', 'container_id': 'f' * 64}))
+        with mock.patch.object(image_run, 'inspect_worker', return_value={'Id': 'f' * 64}), \
+                self.assertRaisesRegex(ValueError, 'legacy-worker.*previous launcher'), \
+                image_run.output_lock(root):
+            self.fail('a live legacy owner must block relocated control state')
+        self.assertTrue(legacy.exists())
+
+    def test_stale_legacy_metadata_is_checked_without_bazel_root_writes(self):
+        root = Path(self.args.output_user_root)
+        root.mkdir()
+        (root / '.sonic-image-worker.lock').touch()
+        legacy = root / '.sonic-image-worker-owner.json'
+        contents = json.dumps({'name': 'legacy-worker', 'container_id': 'f' * 64})
+        legacy.write_text(contents)
+        root.chmod(0o555)
+        try:
+            with mock.patch.object(image_run, 'inspect_worker', return_value=None) as inspect, \
+                    image_run.output_lock(root) as owner:
+                image_run.save_owner(owner, self.plan(), 'b' * 64)
+            inspect.assert_called_once_with('f' * 64)
+            self.assertEqual(legacy.read_text(), contents)
+        finally:
+            root.chmod(0o755)
+
+    def test_existing_legacy_lock_is_also_held(self):
+        root = Path(self.args.output_user_root)
+        root.mkdir()
+        legacy = root / '.sonic-image-worker.lock'
+        legacy.touch()
+        with image_run.output_lock(root):
+            fd = os.open(legacy, os.O_RDWR)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    image_run.fcntl.flock(fd, image_run.fcntl.LOCK_EX | image_run.fcntl.LOCK_NB)
+            finally:
+                os.close(fd)
 
     def test_lock_and_owner_symlinks_rejected(self):
         root = self.root / 'lock-test'
@@ -447,6 +530,12 @@ except BlockingIOError:
         owner.symlink_to(self.spec)
         with self.assertRaisesRegex(ValueError, 'symlink'):
             image_run.check_owner(owner, self.plan())
+
+    def test_sibling_control_directory_symlink_is_rejected(self):
+        root = Path(self.args.output_user_root)
+        root.with_name('.' + root.name + '.sonic-image-worker').symlink_to(self.workspace)
+        with self.assertRaisesRegex(ValueError, 'control directory.*symlink'), image_run.output_lock(root):
+            pass
 
 
 if __name__ == '__main__':

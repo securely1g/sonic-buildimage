@@ -1,6 +1,11 @@
 load("@rules_multirun//:defs.bzl", "command")
 load("@toolchain_utils//toolchain/info:defs.bzl", "toolchain_info")
 
+exports_files(
+    ["source_archive.py"],
+    visibility = ["//tools/bazel/image:__pkg__"],
+)
+
 # rules_gzip 1.0.0 has no extra-arguments attribute. Configure its executable
 # with standard rules so it always omits input filenames and timestamps.
 # Keep the pinned parallel compressor already used for SONiC container tars.

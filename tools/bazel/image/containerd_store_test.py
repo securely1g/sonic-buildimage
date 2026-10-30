@@ -2,11 +2,14 @@
 """Integrity, cache compatibility, and containerd inventory regressions."""
 
 import copy
+import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -61,10 +64,32 @@ class StoreContractTest(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             store.parts_inventory([self.part], "amd64")
 
-    def test_symlink_archive_is_rejected(self):
-        self.archive.unlink()
-        self.archive.symlink_to(self.image["oci-archive"])
+    def test_sandbox_tree_links_preserve_integrity_checks(self):
+        sandbox = self.root / "sandbox-part"
+        sandbox.mkdir()
+        for source in self.part.iterdir():
+            (sandbox / source.name).symlink_to(source)
+        records, sources = store.parts_inventory([sandbox], "amd64")
+        self.assertEqual(records, [self.record])
+        self.assertEqual(sources[self.record["archive"]], self.archive)
+        # The runtime manifest reader remains strict; only the Bazel consumer
+        # resolves its declared inputs before calling it.
         with self.assertRaisesRegex(ValueError, "regular file"):
+            ci.read_manifest(sandbox / "manifest.json", "amd64")
+        self.archive.write_bytes(b"changed through sandbox link")
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            store.parts_inventory([sandbox], "amd64")
+
+    def test_sandbox_link_to_directory_is_rejected(self):
+        self.archive.unlink()
+        self.archive.symlink_to(self.root)
+        with self.assertRaisesRegex(ValueError, "regular file"):
+            store.parts_inventory([self.part], "amd64")
+
+    def test_dangling_sandbox_link_is_rejected(self):
+        self.archive.unlink()
+        self.archive.symlink_to(self.root / "missing")
+        with self.assertRaises(FileNotFoundError):
             store.parts_inventory([self.part], "amd64")
 
     def test_descriptor_and_actual_platform_must_match(self):
@@ -185,6 +210,35 @@ class CtrInventoryTest(unittest.TestCase):
     def test_partial_failed_check_retains_usable_rows(self):
         row = f"{self.tag} manifest {self.digest} incomplete 10 B false\n"
         self.assertEqual(self.ctr(self.header+row, 1).ready_images({self.tag}), {})
+
+
+@unittest.skipUnless(shutil.which("tar") and shutil.which("zstd"), "GNU tar and zstd are required")
+class StoreOwnershipTest(unittest.TestCase):
+    def test_archive_owns_daemon_files_as_root_without_changing_layer_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            for name in ("io.containerd.metadata.v1.bolt", "io.containerd.content.v1.content",
+                         "io.containerd.snapshotter.v1.overlayfs"):
+                (source / "containerd-store" / name).mkdir(parents=True)
+            image = fixture(root / "image")
+            blob = source / "containerd-store/io.containerd.content.v1.content/image.tar"
+            blob.write_bytes(image["oci-archive"].read_bytes())
+            blob.chmod(0o600)
+            original = (blob.stat().st_uid, blob.stat().st_gid, blob.read_bytes())
+            archive = root / "store.tar.zst"
+            store.pack(source, archive, 1)
+            raw = subprocess.check_output(["zstd", "-dc", str(archive)])
+            with tarfile.open(fileobj=io.BytesIO(raw)) as stream:
+                self.assertTrue(all(member.uid == member.gid == 0 for member in stream))
+            restored = root / "restored"
+            restored.mkdir()
+            store.restore(archive, restored)
+            restored_blob = restored / blob.relative_to(source)
+            self.assertEqual(restored_blob.read_bytes(), original[2])
+            self.assertEqual((restored_blob.stat().st_uid, restored_blob.stat().st_gid), (os.getuid(), os.getgid()))
+            self.assertEqual(restored_blob.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((blob.stat().st_uid, blob.stat().st_gid, blob.read_bytes()), original)
 
 
 if __name__ == "__main__":

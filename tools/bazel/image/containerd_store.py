@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Build a stopped containerd image store from declared OCI archive parts.
 
-Run as PID1 in the image worker's private mount/PID/network namespace. A cached
-base is always extracted into a new writable copy; no running daemon or mutable
-store is shared between actions. Images retain complete compressed content and
-metadata; Docker unpacks their overlayfs snapshots on the target before first
-use. The installer restores the resulting TAR with ownership, xattrs and ACLs.
+Run as an ordinary user in the image worker. A cached base is always extracted
+into a new writable copy; no running daemon or mutable store is shared between
+actions. Images retain complete compressed content and metadata; Docker unpacks
+their overlayfs snapshots on the target before first use. Store files are owned
+by root in the TAR, while ownership inside compressed image layers is unchanged.
 """
 
 import argparse
@@ -47,15 +47,18 @@ def containerd_version(version):
 def parts_inventory(parts, architecture):
     records, sources = [], {}
     for part in sorted(map(Path, parts)):
-        manifest = ci.read_manifest(part / "manifest.json", architecture)
+        # Processwrapper presents declared TreeArtifact files as symlink leaves.
+        # Resolve those build inputs before the runtime reader's strict regular
+        # file checks; archive checksums and descriptor validation still apply.
+        manifest = ci.read_manifest((part / "manifest.json").resolve(strict=True), architecture)
         for record in manifest["images"]:
-            source = part / Path(record["archive"]).name
+            source = (part / Path(record["archive"]).name).resolve(strict=True)
             ci.require(stat.S_ISREG(source.lstat().st_mode), "OCI archive must be a regular file")
             ci.require(ci.sha256(source) == record["sha256"], "OCI archive checksum mismatch")
             digest, _config = oci_bundle.inspect_oci(source, architecture, record["reference"])
             ci.require(digest == record["digest"], "OCI descriptor does not match the import record")
             records.append(record)
-            sources[record["archive"]] = source.resolve()
+            sources[record["archive"]] = source
     ci.validate_records(records)
     return records, sources
 
@@ -95,6 +98,7 @@ def pack(root, output, jobs):
         try:
             subprocess.run(["tar", "--create", "--file=-", "--directory", str(root),
                             "--xattrs", "--xattrs-include=*", "--acls", "--numeric-owner", "--sparse",
+                            "--owner=0", "--group=0",
                             "--sort=name", "--pax-option=delete=atime,delete=ctime", "containerd-store"],
                            stdout=compressor.stdin, check=True)
             compressor.stdin.close()
@@ -109,12 +113,14 @@ def pack(root, output, jobs):
 
 def restore(archive, root):
     # GNU tar rejects parent traversal and does not follow archive-created
-    # directory symlinks. Preserve absolute symlink *targets* inside image
-    # snapshots; they are legitimate container filesystem content.
+    # directory symlinks. This store has no unpacked image snapshots: ownership
+    # in compressed layer blobs remains untouched. Restore the daemon's own
+    # content and metadata files as the invoking user; pack() restores their
+    # target root ownership in the final archive without requiring chown.
     # GNU tar detects compression from the file header, including cached gzip
     # archives. The public dockerfs.tar.gz name is SONiC's legacy interface.
     subprocess.run(["tar", "--extract", "--file", str(archive), "--directory", str(root),
-                    "--xattrs", "--xattrs-include=*", "--acls", "--numeric-owner", "--same-owner",
+                    "--xattrs", "--xattrs-include=*", "--acls", "--numeric-owner", "--no-same-owner",
                     "--same-permissions"], check=True)
     ci.require(sorted(path.name for path in root.iterdir()) == ["containerd-store"], "unexpected base store root")
     store = root / "containerd-store"
@@ -124,9 +130,17 @@ def restore(archive, root):
         ci.require((store / name).is_dir() and not (store / name).is_symlink(), "invalid containerd data directory")
 
 
+def daemon_configuration(uid, gid):
+    # No container is executed and no layer is unpacked. CRI and the optional
+    # /opt/containerd installer are unnecessary; local sockets belong to the
+    # invoking user. Containerd 1.7 also expects /run/containerd to exist, which
+    # the worker creates when its image is built, not at action execution time.
+    return ('version = 2\n'
+            'disabled_plugins = ["io.containerd.grpc.v1.cri", "io.containerd.internal.v1.opt"]\n'
+            '[grpc]\nuid = ' + str(uid) + '\ngid = ' + str(gid) + '\n')
+
+
 def run(args):
-    ci.require(os.geteuid() == 0 and os.getpid() == 1, "requires the private privileged unshare PID1 worker")
-    subprocess.run(["mount", "--make-rprivate", "/"], check=True)
     expected = json.loads(args.execution_environment.read_text())
     actual = json.loads(Path("/run/sonic-image-worker.json").read_text())
     architecture = environment(expected, actual)
@@ -134,6 +148,8 @@ def run(args):
     containerd_version(version)
     ci.require(bool(args.base) == bool(args.base_receipt), "base store and receipt must be supplied together")
     ci.require(args.jobs > 0 and args.uid >= 0 and args.gid >= 0, "invalid ownership or compression settings")
+    ci.require(os.geteuid() == 0 or (args.uid, args.gid) == (os.getuid(), os.getgid()),
+               "an unprivileged producer must retain its own output ownership")
     output, receipt_path = args.output.resolve(), args.receipt.resolve()
     ci.require(output != receipt_path and not output.exists() and not receipt_path.exists(), "store outputs must be new files")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -144,7 +160,8 @@ def run(args):
     all_records = sorted((base["images"] if base else []) + records, key=lambda item: item["archive"])
     tags = ci.validate_records(all_records)
     phases = {"verify_inputs": time.monotonic() - started}
-    # Overlay upperdirs need the worker's bind-mounted build filesystem.
+    # Keep every writable daemon file private to this action. No overlay mount
+    # or user namespace is needed for content-only import.
     root = Path(tempfile.mkdtemp(prefix=".sonic-containerd-", dir=output.parent))
     runtime = Path(tempfile.mkdtemp(prefix="sonic-containerd-"))
     process = None
@@ -162,7 +179,7 @@ def run(args):
             begin = time.monotonic()
             restore(args.base.resolve(), data)
             phases["restore_base"] = time.monotonic() - begin
-        (runtime / "containerd.toml").write_text('version = 2\ndisabled_plugins = ["io.containerd.grpc.v1.cri"]\n')
+        (runtime / "containerd.toml").write_text(daemon_configuration(os.getuid(), os.getgid()))
         socket = runtime / "containerd.sock"
         ctr = ci.Ctr(address=str(socket))
         with (runtime / "containerd.log").open("w") as log:
@@ -185,6 +202,8 @@ def run(args):
                     if tag != record["reference"]:
                         ctr.command("images", "tag", record["reference"], tag)
             ctr.inventory(tags, unpacked=False)
+            ci.require(not ctr.command("tasks", "list", "--quiet").strip(),
+                       "content-only store must not have running container tasks")
             phases["import_and_verify"] = time.monotonic() - begin
             stop(process)
             process = None
@@ -197,12 +216,14 @@ def run(args):
             "containerd_build": version, "execution_environment": expected, "root": "containerd-store",
             "sha256": ci.sha256(temporary_output), "bytes": temporary_output.stat().st_size,
             "compression": "zstd", "compression_level": 6, "unpacked": False,
+            "producer_uid": os.getuid(), "producer_gid": os.getgid(), "archive_owner": "0:0",
             "images": all_records, "tags": tags, "imported_images": len(records),
             "base_sha256": base["sha256"] if base else None, "phases_seconds": phases}
         temporary_receipt = root / "receipt.json"
         temporary_receipt.write_bytes(oci_bundle.canonical(receipt))
         for source, destination in ((temporary_output, output), (temporary_receipt, receipt_path)):
-            os.chown(source, args.uid, args.gid)
+            if (source.stat().st_uid, source.stat().st_gid) != (args.uid, args.gid):
+                os.chown(source, args.uid, args.gid)
             os.chmod(source, 0o555)
             os.replace(source, destination)
         print(json.dumps({"action": "SonicContainerdStore", "images": len(all_records),
@@ -217,14 +238,6 @@ def run(args):
                     process.wait()
         shutil.rmtree(root)
         shutil.rmtree(runtime)
-        # PID1 also reaps descendants orphaned during containerd shutdown.
-        while True:
-            try:
-                pid, _status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if pid == 0:
-                break
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 

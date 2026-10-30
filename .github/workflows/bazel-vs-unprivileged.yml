@@ -1,0 +1,308 @@
+name: Bazel VS unprivileged assembly
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BAZEL: bazel
+
+concurrency:
+  group: bazel-vs-unprivileged-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  store:
+    name: Unprivileged containerd store (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Bazel for source downloads
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: false
+          cache-version: "8.5.1"
+      - name: Fetch and verify the GitLab source archives
+        run: |
+          mkdir -p artifacts/repository-inputs
+          test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
+          "$BAZEL" fetch --repo=@@ape+ --repo=@@download_utils+ \
+            --repo=@@rules_coreutils+ --repo=@@rules_gzip+ --repo=@@toolchain_utils+
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          from tools.bazel.ci import resolution
+          import os
+          resolution.collect(Path.cwd(), Path("artifacts/repository-inputs"), bazel=[os.environ["BAZEL"]])
+          PYCODE
+          python3 -B tools/bazel/gzip/source_archive.py \
+            --repository-cache "$("$BAZEL" info repository_cache)" \
+            --module-graph artifacts/repository-inputs/module-graph.json \
+            --output artifacts/repository-inputs \
+            > artifacts/repository-inputs/receipt.json
+      - name: Transfer verified source archives to native preparation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unprivileged-repository-inputs
+          path: artifacts/repository-inputs/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Build the declared assembly worker
+        run: |
+          bash tools/bazel/image/worker/prepare-worker-inputs.sh
+          docker build --iidfile "$RUNNER_TEMP/worker.id" tools/bazel/image/worker
+          mkdir "$RUNNER_TEMP/rootless-store"
+          sudo chown 1000:1000 "$RUNNER_TEMP/rootless-store"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          (root / 'worker.json').write_text(json.dumps({
+              'schema': 1, 'platform': 'linux/amd64', 'distribution': 'trixie',
+              'worker_image': (root / 'worker.id').read_text().strip(),
+              'docker_version': '28.5.2', 'containerd_version': '1.7.28',
+              'storage_driver': 'overlay2',
+          }))
+          PY
+      - name: Import and cache actual image content without privileges
+        run: |
+          docker run --rm --init --network none --user 1000:1000 \
+            --cap-drop ALL --security-opt no-new-privileges --cpus=4 --memory=8g \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/source,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/rootless-store,dst=/results" \
+            --mount "type=bind,src=$RUNNER_TEMP/worker.json,dst=/run/sonic-image-worker.json,readonly" \
+            "$(cat "$RUNNER_TEMP/worker.id")" \
+            python3 /source/tools/bazel/image/containerd_rootless_test.py \
+            build --work-directory /results/store
+      - name: Check the resulting store in a separate privileged runtime
+        run: |
+          docker run --rm --init --privileged --network none --cpus=4 --memory=8g \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/source,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/rootless-store,dst=/results" \
+            "$(cat "$RUNNER_TEMP/worker.id")" \
+            python3 /source/tools/bazel/image/containerd_rootless_test.py \
+            check-runtime --work-directory /results/store
+      - name: Retain privilege and installed-runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rootless-containerd-evidence-amd64
+          path: |
+            ${{ runner.temp }}/rootless-store/store/*report.json
+            ${{ runner.temp }}/rootless-store/store/dockerfs.json
+            ${{ runner.temp }}/rootless-store/store/base-store.json
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
+    name: Native Make prerequisites (AMD64)
+    needs: store
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
+    timeout-minutes: 720
+    env:
+      BAZEL: bazel
+      SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:unprivileged-native
+      SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
+      SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
+      SONIC_DPKG_CACHE_METHOD: rwcache
+      BAZEL_CONTAINER_ARGS: >-
+        --distdir=/bazel_cache/distdir/ape-1.0.1
+        --distdir=/bazel_cache/distdir/download_utils-1.0.1
+        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
+        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
+        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+    defaults:
+      run:
+        shell: bash
+        working-directory: native-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: native-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Check native build capacity and prepare caches
+        run: |
+          python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
+          python3 - <<'PY'
+          import shutil
+          if shutil.disk_usage('.').free < 100 * 1024**3:
+              raise SystemExit('Native preparation requires the existing Make VS minimum of 100 GiB free')
+          PY
+          SONIC_BAZEL_CACHE_SOURCE="$SONIC_BAZEL_CACHE_SOURCE/make-uid-$(id -u)"
+          install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
+          test -w "$SONIC_BAZEL_CACHE_SOURCE"
+          test -w "$SONIC_DPKG_CACHE_SOURCE"
+          printf 'SONIC_BAZEL_CACHE_SOURCE=%s\n' "$SONIC_BAZEL_CACHE_SOURCE" >> "$GITHUB_ENV"
+      - name: Download verified sources from the hosted job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unprivileged-repository-inputs
+          path: native-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/repository-inputs
+      - name: Prepare the native Bazel source-download directory
+        run: |
+          mkdir -p artifacts/unprivileged
+          python3 -B tools/bazel/gzip/source_archive.py \
+            --archives-dir artifacts/repository-inputs \
+            --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" \
+            > artifacts/unprivileged/source-download-receipt.json
+      - name: Build native source inputs and capture the host before container loading
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/unprivileged
+          make init 2>&1 | tee artifacts/unprivileged/init.log
+          make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
+            2>&1 | tee artifacts/unprivileged/configure.log
+          make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+            ENABLE_SBOM=n SONIC_ENABLE_IMAGE_SIGNATURE=n SECURE_UPGRADE_MODE=no_sign \
+            ENABLE_ASAN=n SONIC_INSTALL_DEBUG_TOOLS=n INSTALL_DEBUG_TOOLS=n \
+            INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y ENABLE_SYNCD_RPC=n \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
+            bazel-vs-native-inputs 2>&1 | tee artifacts/unprivileged/native.log
+      - name: Build the worker and freeze native input identities
+        run: |
+          bash tools/bazel/image/worker/prepare-worker-inputs.sh
+          make -s -f Makefile.work BLDENV=trixie showtag > target/sonic-slave-tag.log
+          python3 - <<'PY'
+          import json, re, subprocess
+          from pathlib import Path
+          names = re.findall(r'^sonic-slave-trixie:[0-9a-f]{11}$',
+                             Path('target/sonic-slave-tag.log').read_text(), re.M)
+          if len(names) != 1:
+              raise SystemExit('Expected exactly one native Trixie sonic-slave image tag')
+          base = json.loads(subprocess.check_output(['docker', 'image', 'inspect', names[0]], text=True))[0]
+          # Derive the assembly container from the actual native sonic-slave.
+          # Record its immutable identity and verify the resulting layer ancestry.
+          subprocess.run(['docker', 'build', '--build-arg', 'BASE_IMAGE=' + names[0],
+                          '--iidfile', 'target/bazel-image-worker.id',
+                          'tools/bazel/image/worker'], check=True)
+          worker_id = Path('target/bazel-image-worker.id').read_text().strip()
+          worker = json.loads(subprocess.check_output(['docker', 'image', 'inspect', worker_id], text=True))[0]
+          layers = base['RootFS']['Layers']
+          if worker['RootFS']['Layers'][:len(layers)] != layers:
+              raise SystemExit('Assembly worker does not retain the native sonic-slave layers')
+          Path('target/bazel-image-worker.json').write_text(json.dumps({
+              'schema': 1, 'platform': 'linux/amd64', 'distribution': 'trixie',
+              'worker_image': worker_id, 'sonic_slave_image': base['Id'],
+              'docker_version': '28.5.2', 'containerd_version': '1.7.28',
+              'storage_driver': 'overlay2',
+          }))
+          PY
+          python3 tools/bazel/image/prepare_inputs.py \
+            --native-directory target/bazel-native --installer-source "$PWD" \
+            --execution-environment target/bazel-image-worker.json \
+            --output target/bazel-image-inputs
+          python3 -B tools/bazel/gzip/source_archive.py \
+            --archives-dir artifacts/repository-inputs \
+            --output target/bazel-image-inputs/source-downloads \
+            > artifacts/unprivileged/assembly-source-download-receipt.json
+      - name: Finalize host files in the native job and export the verified handoff
+        run: |
+          set -o pipefail
+          python3 tools/bazel/image/ci_unprivileged.py prepare-host \
+            2>&1 | tee artifacts/unprivileged/host.log
+          python3 tools/bazel/image/ci_unprivileged.py pack \
+            --handoff "$RUNNER_TEMP/sonic-native-handoff"
+      - name: Stop this job's host-preparation worker
+        if: always()
+        run: |
+          if [[ -f target/bazel-image-inputs/execution-environment.json && -d target/bazel-host-state ]]; then
+            python3 tools/bazel/image/run.py --workspace "$PWD" --mount-root "$PWD" \
+              --worker-spec "$PWD/target/bazel-image-inputs/execution-environment.json" \
+              --output-user-root "$PWD/target/bazel-host-state" \
+              --persistent-worker "sonic-host-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --worker-action stop
+          fi
+      - name: Transfer source-produced inputs and the exact worker image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-native-handoff-amd64
+          path: ${{ runner.temp }}/sonic-native-handoff/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain native preparation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-native-preparation-evidence-amd64
+          path: |
+            native-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/unprivileged/
+            native-${{ github.run_id }}-${{ github.run_attempt }}/target/bazel-native/provenance.json
+            native-${{ github.run_id }}-${{ github.run_attempt }}/target/bazel-image-inputs/prepared-host/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Stop only this native job's remaining build containers
+        if: always()
+        run: |
+          containers=$(docker ps -aq --filter "label=$SONIC_CI_CONTAINER_LABEL")
+          if [[ -n "$containers" ]]; then docker rm -f $containers; fi
+
+  assembly:
+    name: Unprivileged sonic-vs.bin assembly (AMD64)
+    needs: native
+    runs-on: [self-hosted, linux, x64, sonic-vs-source-master]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+        working-directory: assembly-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: assembly-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+      - name: Download this run's native inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sonic-native-handoff-amd64
+          path: ${{ runner.temp }}/sonic-native-handoff
+      - name: Verify and restore the independent-job handoff
+        run: |
+          python3 tools/bazel/image/ci_unprivileged.py restore \
+            --handoff "$RUNNER_TEMP/sonic-native-handoff"
+      - name: Run Make inside an unprivileged SONiC builder and verify the installer
+        run: |
+          set -o pipefail
+          python3 tools/bazel/image/ci_unprivileged.py assemble \
+            --worker "sonic-unprivileged-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            2>&1 | tee artifacts/unprivileged/assembly.log
+      - name: Stop this job's unprivileged worker
+        if: always()
+        run: |
+          if [[ -f target/bazel-image-inputs/execution-environment.json && -d target/bazel-unprivileged-state ]]; then
+            python3 tools/bazel/image/run.py --workspace "$PWD" --mount-root "$PWD" \
+              --worker-spec "$PWD/target/bazel-image-inputs/execution-environment.json" \
+              --output-user-root "$PWD/target/bazel-unprivileged-state" --unprivileged \
+              --persistent-worker "sonic-unprivileged-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --worker-action stop
+          fi
+      - name: Retain unprivileged assembly evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-unprivileged-assembly-evidence-amd64
+          path: assembly-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/unprivileged/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish the validated ONIE installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-bin-unprivileged-amd64
+          path: assembly-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
