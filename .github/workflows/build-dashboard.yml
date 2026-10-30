@@ -21,7 +21,11 @@ on:
       - 'scripts/build_kvm_image.sh'
       - 'scripts/image_timing.py'
   workflow_run:
-    workflows: ['Bazel SWSS OCI', 'Bazel OCI', 'Bazel']
+    workflows:
+      - Bazel SWSS OCI
+      - Bazel OCI
+      - Bazel VS unprivileged assembly
+      - Bazel
     types: [completed]
   schedule:
     - cron: '7,22,37,52 * * * *'

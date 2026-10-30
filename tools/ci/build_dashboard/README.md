@@ -37,8 +37,14 @@ least one successful image job and all other image jobs successful or skipped;
 evidence is **Unmeasured**, never an inferred success or skip. Historical results
 retain their source revision and current-head annotation.
 
-The initial collector covers `bazel-swss-oci.yml`, `bazel-oci.yml`, and
-`bazel.yml`. It can report observed durations from earlier builds, but their
+The collector covers `bazel-swss-oci.yml`, `bazel-oci.yml`,
+`bazel-vs-unprivileged.yml`, and `bazel.yml`. The unprivileged workflow's final
+`sonic-vs.bin` assembly job uses the Bazel installer path; its explicit build
+step includes installer verification. Native preparation remains a separate
+job and does not supply an image result. Cancelled jobs retain their status and
+have no successful image timing.
+
+The dashboard can report observed durations from earlier builds, but their
 cache state, hardware/configuration match, and historical tested base are not
 recorded. It therefore makes **no improvement or regression percentage claim**.
 Controlled baseline/head benchmarking is a separate change and must preserve

@@ -78,7 +78,9 @@ class FakeAPI:
         if "/pulls?state=" in endpoint:
             return self.pulls
         if "/workflows/" in endpoint:
-            return self.latest if "bazel-swss-oci.yml" in endpoint else []
+            workflow = endpoint.split("/workflows/", 1)[1].split("/", 1)[0]
+            return [item for item in self.latest
+                    if item["path"].split("@", 1)[0].rsplit("/", 1)[-1] == workflow]
         if "/commits/" in endpoint:
             return self.linked
         if endpoint.endswith("/jobs"):
@@ -124,9 +126,17 @@ class TimingTests(unittest.TestCase):
         value = job()
         value["name"] = "SWSS source layers (AMD64)"
         self.assertIsNone(collector.normalize_job(value, REPO, 10)["image_build_seconds"])
-        value["name"] = "Bazel VS installer (AMD64)"
-        value["steps"][0]["name"] = "Build and verify sonic-vs.bin with Bazel"
-        self.assertEqual(collector.normalize_job(value, REPO, 10)["image_build_seconds"], 600)
+        for name, step in [
+            ("Bazel VS installer (AMD64)", "Build and verify sonic-vs.bin with Bazel"),
+            ("Unprivileged sonic-vs.bin assembly (AMD64)",
+             "Run Make inside an unprivileged SONiC builder and verify the installer"),
+        ]:
+            value["name"] = name
+            value["steps"][0]["name"] = step
+            normalized = collector.normalize_job(value, REPO, 10)
+            self.assertEqual(normalized["kind"], "bazel-vs")
+            self.assertEqual(normalized["image_build_seconds"], 600)
+            self.assertEqual(normalized["phases"]["build"], 600)
         value["name"] = "Something containing VS"
         self.assertEqual(collector.job_kind(value["name"]), "other")
 
@@ -134,6 +144,19 @@ class TimingTests(unittest.TestCase):
         value = job()
         value["steps"][0]["name"] = "Build the VS image and both OCI container variants"
         self.assertEqual(collector.normalize_job(value, REPO, 10)["image_build_seconds"], 600)
+
+    def test_pr64_short_make_step_preserves_observed_duration(self):
+        # PR64 job 123845988910 reported this exact successful 1,738-second step.
+        value = job()
+        value.update(id=123845988910, started_at="2026-10-30T09:00:27Z",
+                     completed_at="2026-10-30T10:28:48Z")
+        value["steps"] = [{"number": 10, "name": "Build the VS image", "status": "completed",
+                           "conclusion": "success", "started_at": "2026-10-30T09:04:56Z",
+                           "completed_at": "2026-10-30T09:33:54Z"}]
+        normalized = collector.normalize_job(value, REPO, 40988556063)
+        self.assertEqual(normalized["image_build_seconds"], 1738)
+        self.assertEqual(normalized["image_build_elapsed_seconds"], 1738)
+        self.assertEqual(normalized["phases"]["build"], 1738)
 
     def test_fields_and_urls_are_allowlisted(self):
         value = job()
@@ -210,6 +233,44 @@ class AssociationTests(unittest.TestCase):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_cancelled_unprivileged_attempt_keeps_its_historical_revision(self):
+        # Public PR76 fields for the two cancelled jobs in run 41033358115.
+        historical_sha = "c2b124fb1b66d338ada38d1bcbb2abdb89b98831"
+        current_sha = "4fec0d72939a226641a708293425b288871ce380"
+        branch = "codex/bazel-vs-unprivileged-assembly"
+        attempt = run(run_id=41033358115, conclusion="cancelled", head_branch=branch,
+                      head_sha=historical_sha, path=".github/workflows/bazel-vs-unprivileged.yml",
+                      name="Bazel VS unprivileged assembly", pull_requests=[{"number": 76}],
+                      run_started_at="2026-10-30T09:25:46Z", updated_at="2026-10-30T10:20:53Z")
+        current = pr(number=76, branch=branch, sha=current_sha)
+        current["base"]["sha"] = "8fb9a93de16bfed545ae148d84943da14d5de2d2"
+        api = FakeAPI(latest=[attempt], pulls=[current])
+        api.jobs[f"repos/{REPO}/actions/runs/41033358115/attempts/1/jobs"] = [
+            {"id": 123989169804, "name": "Native Make prerequisites (AMD64)",
+             "status": "completed", "conclusion": "cancelled", "started_at": "2026-10-30T09:28:20Z",
+             "completed_at": "2026-10-30T10:20:52Z", "steps": []},
+            {"id": 124010400469, "name": "Unprivileged sonic-vs.bin assembly (AMD64)",
+             "status": "completed", "conclusion": "cancelled", "started_at": "2026-10-30T10:20:52Z",
+             "completed_at": "2026-10-30T10:20:52Z", "steps": []},
+        ]
+        result = collector.collect(api, REPO, empty(), workers=1, log_jobs=0)
+        self.assertEqual(result["pull_requests"][0]["head_sha"], current_sha)
+        self.assertEqual(len(result["runs"]), 1)
+        saved = result["runs"][0]
+        self.assertEqual((saved["run_id"], saved["attempt"], saved["source_sha"]),
+                         (41033358115, 1, historical_sha))
+        self.assertEqual(saved["workflow_path"], ".github/workflows/bazel-vs-unprivileged.yml")
+        self.assertEqual(saved["started_at"], "2026-10-30T09:25:46Z")
+        self.assertEqual(saved["pr_numbers"], [76])
+        self.assertEqual((saved["status"], saved["conclusion"]), ("completed", "cancelled"))
+        self.assertEqual([item["kind"] for item in saved["jobs"]], ["other", "bazel-vs"])
+        for item in saved["jobs"]:
+            self.assertEqual((item["status"], item["conclusion"]), ("completed", "cancelled"))
+            self.assertIsNone(item["image_build_seconds"])
+            self.assertEqual(item["steps"], [])
+        self.assertEqual(saved["jobs"][1]["url"],
+                         f"https://github.com/{REPO}/actions/runs/41033358115/job/124010400469")
+
     def test_new_attempt_preserves_prior_and_collects_all(self):
         api = FakeAPI(latest=[run(attempt=3)])
         api.attempts[f"repos/{REPO}/actions/runs/10/attempts/1"] = run(conclusion="failure")
