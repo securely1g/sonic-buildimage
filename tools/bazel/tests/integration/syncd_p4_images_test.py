@@ -13,7 +13,10 @@ from tools.bazel.oci.source_base_validation import validate_source_base
 IMAGE_INPUTS = (
     "runtime_path", "debug_path",
     "runtime_manifest_path", "debug_manifest_path", "source_contract_path",
-    "apt_lock_path", "dpkg_filter_path", "base_path", "apt_layer", "debug_tools_layer", "runtime_links_layer",
+    "apt_lock_path", "dpkg_filter_path", "base_path",
+    "configured_runtime_tar", "configured_debug_tar", "runtime_rootfs_tar",
+    "runtime_installation", "debug_installation", "runtime_package_metadata",
+    "runtime_source_layer",
     "runtime_apt_selection", "debug_apt_selection",
     "runtime_archive", "debug_archive", "source_runtime_tar", "source_debug_tar",
     "source_receipt",
@@ -45,7 +48,7 @@ def check_p4_inputs(contract_path, receipt_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in (*IMAGE_INPUTS, *SOURCE_BASE_INPUTS, "policy", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy"):
+    for name in (*IMAGE_INPUTS, *SOURCE_BASE_INPUTS, "policy", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy", "debug_package_metadata"):
         parser.add_argument("--" + name.replace("_", "-"), required=True, type=Path)
     inputs = vars(parser.parse_args())
     policy = read_policy(inputs["policy"])
@@ -55,6 +58,7 @@ def main():
                 variant + " Make archive differs from the Bazel output")
     images = image_validation.validate_images(
         source_root=Path.cwd(), policy=policy, runtime_handoff=None, debug_handoff=None,
+        debug_metadata_files={"usr/share/sonic/bazel/syncd-packages.json": inputs["debug_package_metadata"]},
         **{name: inputs[name] for name in IMAGE_INPUTS})
     native = native_packages.validate_native(
         None, None, policy=policy,

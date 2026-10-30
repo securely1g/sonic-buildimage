@@ -57,19 +57,25 @@ def retained_packages(path, *, policy, variant):
         for field in ("make_manifest_sha256", "source_receipt_sha256"):
             require(isinstance(make.get(field), str) and re.fullmatch(r"[0-9a-f]{64}", make[field]),
                     "mixed package manifest lacks " + field)
+        source_names = set()
         for item in sources:
             require(isinstance(item, dict), "invalid source package record")
             name = item.get("package")
-            require(isinstance(name, str) and name and name not in retained,
+            require(isinstance(name, str) and name and name not in retained and name not in source_names,
                     "duplicate imported/source package identity: " + str(name))
+            source_names.add(name)
             fields, source = item.get("control_fields"), item.get("source")
-            require(isinstance(fields, dict) and all(fields.get(field) == item.get(key) for field, key in
-                    (("Package", "package"), ("Version", "version"), ("Architecture", "architecture"))),
-                    "source package lacks dependency controls: " + name)
             source_identity(source, name=name)
             require(isinstance(item.get("input_tar_sha256"), str) and
                     re.fullmatch(r"[0-9a-f]{64}", item["input_tar_sha256"]),
                     "source package lacks build provenance: " + name)
+            if item.get("kind") == "runtime-layer":
+                require(not {"control_fields", "deb", "deb_target"}.intersection(item),
+                        "ordinary source layer must not satisfy Debian dependencies: " + name)
+                continue
+            require(isinstance(fields, dict) and all(fields.get(field) == item.get(key) for field, key in
+                    (("Package", "package"), ("Version", "version"), ("Architecture", "architecture"))),
+                    "source package lacks dependency controls: " + name)
             retained[name] = {
                 "control": dependencies.control_fields(
                     dependencies.package_from_fields(fields, origin="Bazel source " + name)),
@@ -92,7 +98,7 @@ def source_packages(path, *, policy):
         "control": dependencies.control_fields(dependencies.package_from_fields(
             item["control_fields"], origin="Bazel source " + item["package"])),
         "source_sha256": item["input_tar_sha256"],
-    } for item in records}
+    } for item in records if item.get("kind") != "runtime-layer"}
     return retained, receipt, hashlib.sha256(raw).hexdigest()
 
 
@@ -168,7 +174,7 @@ def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
             receipt["source_receipt_sha256"] = make["source_receipt_sha256"]
             receipt["retained_manifest_sha256"] = hashlib.sha256(retained_manifest.read_bytes()).hexdigest()
             receipt["source_packages"] = [{key: item[key] for key in
-                ("package", "version", "architecture", "source", "input_tar_sha256")}
+                ("package", "version", "architecture", "source", "input_tar_sha256", "kind") if key in item}
                 for item in make["source_packages"]]
     elif policy["retained_source"] == "source":
         receipt["variant"] = receipt.pop("group")
@@ -177,7 +183,7 @@ def select(base, lock, policy_path, mapping, *, variant, retained_manifest=None,
         receipt["make_manifest_sha256"] = None
         receipt["source_receipt_sha256"] = source_digest
         receipt["source_packages"] = [{key: item[key] for key in
-            ("package", "version", "architecture", "source", "input_tar_sha256")}
+            ("package", "version", "architecture", "source", "input_tar_sha256", "kind") if key in item}
             for item in source["packages"]]
         receipt["provided_package_replacements"] = []
     else:

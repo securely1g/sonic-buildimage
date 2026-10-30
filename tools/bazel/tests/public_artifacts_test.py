@@ -137,8 +137,9 @@ def seed(root, kind, architecture="amd64"):
     if kind == "syncd":
         value["module_lock_sha256"] = hashlib.sha256((root / "artifacts/syncd-vs/bazel/MODULE.bazel.lock").read_bytes()).hexdigest()
     write_json(root, name, value)
-    if kind == "syncd":
-        write_json(root, "artifacts/syncd-vs/bazel/execution-gate-audit.json",
+    if kind in {"source", "syncd"}:
+        directory = "artifacts/swss" if kind == "source" else "artifacts/syncd-vs/bazel"
+        write_json(root, directory + "/execution-gate-audit.json",
                    {"action_count": 12, "output_count": 24, "deb_outputs": [], "packaging_wrappers": [], "raw": SENTINEL})
     if kind == "vs":
         for source_kind in ("source", "syncd"):
@@ -272,6 +273,113 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(any(path.endswith((".log", ".jsonl", ".xml", "receipt.json")) for path in paths))
                 self.assertNotIn(SENTINEL, json.dumps(summary))
                 self.assertEqual(summary["architecture"], "amd64")
+
+    def test_old_deb_authorization_cannot_bypass_tar_only_publication(self):
+        seed(self.root, "syncd")
+        write_json(self.root, "artifacts/syncd-vs/bazel/execution-gate-audit.json", {
+            "action_count": 12, "output_count": 24,
+            "deb_outputs": ["swss.deb"],
+            "deb_packaging_actions": [{"mnemonic": "DebAssemble", "command": SENTINEL}],
+            "deb_generation_authorized": True, "packaging_wrappers": [],
+        })
+        summary, _paths, ready = self.prepare("syncd")
+        self.assertFalse(ready)
+        audit = summary["receipts"]["execution_audit"]
+        self.assertEqual(audit["deb_output_count"], 1)
+        self.assertEqual(audit["deb_packaging_action_count"], 1)
+        self.assertIs(audit["deb_generation_authorized"], True)
+        self.assertEqual(audit["packaging_wrapper_count"], 0)
+        self.assertNotIn(SENTINEL, json.dumps(summary))
+
+    def test_deb_actions_are_rejected_regardless_of_old_authorization(self):
+        for authorized in (None, False, True, "true", 1):
+            for key in ("deb_outputs", "deb_packaging_actions"):
+                with self.subTest(authorized=authorized, key=key):
+                    seed(self.root, "syncd")
+                    write_json(self.root, "artifacts/syncd-vs/bazel/execution-gate-audit.json", {
+                        "action_count": 12, "output_count": 24, key: [SENTINEL],
+                        "deb_generation_authorized": authorized, "packaging_wrappers": [],
+                    })
+                    summary, _paths, ready = self.prepare("syncd")
+                    self.assertFalse(ready)
+                    self.assertFalse(summary["complete"])
+
+    def test_deb_authorization_does_not_allow_make_packaging_wrappers(self):
+        seed(self.root, "syncd")
+        write_json(self.root, "artifacts/syncd-vs/bazel/execution-gate-audit.json", {
+            "action_count": 12, "output_count": 24,
+            "deb_outputs": ["swss.deb"], "deb_packaging_actions": [],
+            "deb_generation_authorized": True, "packaging_wrappers": ["dpkg-buildpackage"],
+        })
+        summary, _paths, ready = self.prepare("syncd")
+        self.assertFalse(ready)
+        self.assertFalse(summary["complete"])
+
+    def test_both_container_summaries_retain_only_rejected_action_identities(self):
+        identity = {"owner": "@@producer++source+repo//:build", "mnemonic": "FileWrite",
+                    "outputs": ["bazel-out/k8-fastbuild/bin/external/producer+/build_script.sh"],
+                    "arguments_sha256": DIGEST}
+        action = {**identity, "arguments": [SENTINEL], "fileContents": SENTINEL,
+                  "environmentVariables": [{"key": "PRIVATE", "value": SENTINEL}]}
+        expected = {key: value for key, value in identity.items() if key != "arguments_sha256"}
+        expected["sha256"] = DIGEST
+        for kind, directory in (("source", "artifacts/swss"), ("syncd", "artifacts/syncd-vs/bazel")):
+            seed(self.root, kind)
+            write_json(self.root, directory + "/execution-gate-audit.json", {
+                "action_count": 12, "output_count": 24, "deb_outputs": [],
+                "packaging_wrappers": [action], "deb_packaging_actions": [action],
+                "deb_generation_authorized": False,
+            })
+            with self.subTest(kind=kind):
+                summary, paths, ready = self.prepare(kind, status="failure")
+                self.assertTrue(ready)
+                self.assertFalse(summary["complete"])
+                self.assertIn(artifacts.SUMMARY[kind], paths)
+                audit = summary["receipts"]["execution_audit"]
+                self.assertEqual(audit["packaging_wrappers"], [expected])
+                self.assertEqual(audit["deb_packaging_actions"], [expected])
+                self.assertEqual(audit["packaging_wrapper_count"], 1)
+                self.assertNotIn(SENTINEL, json.dumps(summary))
+                self.assertNotIn("environmentVariables", json.dumps(summary))
+                self.assertFalse(self.prepare(kind, status="success")[2])
+
+    def test_unsafe_rejected_action_identities_block_publication(self):
+        action = {"owner": "@@producer+//:build", "mnemonic": "FileWrite",
+                  "outputs": ["bazel-out/k8-fastbuild/bin/script.sh"], "arguments_sha256": DIGEST}
+        bad_fields = [
+            {"owner": "/home/runner/code/private"},
+            {"owner": "//package/../private:build"},
+            {"owner": "//:" + SYNTHETIC_JOB_TOKEN},
+            {"owner": "//:" + "a" * 1024},
+            {"mnemonic": "FileWrite\n" + SENTINEL},
+            {"mnemonic": SYNTHETIC_JOB_TOKEN},
+            {"outputs": ["/home/runner/code/private.sh"]},
+            {"outputs": ["bazel-out/../../private.sh"]},
+            {"outputs": ["bazel-out/./script.sh"]},
+            {"outputs": ["bazel-out//script.sh"]},
+            {"outputs": ["bazel-out/" + SYNTHETIC_JOB_TOKEN]},
+            {"outputs": ["a" * 4097]},
+            {"outputs": ["script.sh"] * 65},
+            {"outputs": "script.sh"},
+            {"arguments_sha256": "not-a-digest"},
+        ]
+        for kind, directory in (("source", "artifacts/swss"), ("syncd", "artifacts/syncd-vs/bazel")):
+            seed(self.root, kind)
+            for change in bad_fields:
+                with self.subTest(kind=kind, change=change):
+                    write_json(self.root, directory + "/execution-gate-audit.json", {
+                        "action_count": 12, "output_count": 24, "deb_outputs": [],
+                        "packaging_wrappers": [action | change], "deb_packaging_actions": [],
+                    })
+                    summary, paths, ready = self.prepare(kind, status="failure")
+                    self.assertFalse(ready)
+                    self.assertEqual(paths, [])
+                    self.assertIn({"input": "execution-audit", "reason": "invalid-execution-audit"},
+                                  summary["blocked"])
+                    self.assertNotIn("packaging_wrappers", summary["receipts"]["execution_audit"])
+                    self.assertNotIn(SYNTHETIC_JOB_TOKEN, json.dumps(summary))
+        with self.assertRaises(artifacts.PublicArtifactError):
+            artifacts.rejected_action_identities([action] * 65)
 
     def test_vs_success_reports_both_container_variants_and_the_installer(self):
         """A passing VS publication must account for runtime/debug archives from both OCI owners."""
@@ -583,23 +691,31 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(ready, summary)
                 self.assertEqual(paths, [])
 
-    def test_archive_requires_all_twelve_native_workflow_tests(self):
+    def test_archive_requires_all_fifteen_native_workflow_tests(self):
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture):
                 seed(self.root, "archive", architecture)
                 event_path = "artifacts/archive/test-events.jsonl"
-                write(self.root, event_path, events(12))
+                write(self.root, event_path, events(15))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertTrue(ready)
-                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 12)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 15)
                 self.assertTrue(paths)
 
-                write(self.root, event_path, events(11))
+                write(self.root, event_path, events(14))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])
                 self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
                               summary["blocked"])
+
+    def test_archive_result_count_matches_workflow_test_targets(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        command = workflow.split('"$BAZEL" test ', 1)[1].split("2>&1", 1)[0]
+        targets = [line.strip().removesuffix("\\").strip() for line in command.splitlines()
+                   if line.strip().startswith("//")]
+        self.assertEqual(len(targets), len(set(targets)))
+        self.assertEqual(artifacts.BEP["archive"][0][2], len(targets))
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")

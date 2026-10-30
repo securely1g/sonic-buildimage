@@ -34,6 +34,32 @@ sh_test(
     ],
 )
 
+py_test(
+    name = "single_layer_rootfs_test",
+    srcs = ["single_layer_rootfs_test.py"],
+    deps = ["//tools/bazel/oci:single_layer_rootfs_lib"],
+)
+
+py_test(
+    name = "apt_install_inputs_test",
+    srcs = ["apt_install_inputs_test.py"],
+    deps = ["//tools/bazel/oci:apt_install_inputs_lib"],
+)
+
+py_test(
+    name = "dpkg_state_validation_test",
+    srcs = ["dpkg_state_validation_test.py"],
+    data = ["dpkg_transactions.lock.json"],
+    deps = ["//tools/bazel/ci:validate_dpkg_state"],
+)
+
+# Pure orchestration tests use fake archive bytes and never build DEBs/images.
+py_test(
+    name = "service_dpkg_validation_test",
+    srcs = ["service_dpkg_validation_test.py"],
+    deps = ["//tools/bazel/ci:service_image_validation"],
+)
+
 _OCI_OWNER_POLICIES = [
     "//dockers/docker-orchagent:package_policy",
     "//platform/vs/docker-syncd-vs:package_policy",
@@ -969,9 +995,12 @@ py_binary(
 
 run_binary(
     name = "oci_license_fixture_tar",
-    tool = ":oci_license_fixture",
-    args = ["--write", "$(location oci-license-fixture.tar)"],
     outs = ["oci-license-fixture.tar"],
+    args = [
+        "--write",
+        "$(location oci-license-fixture.tar)",
+    ],
+    tool = ":oci_license_fixture",
 )
 
 dpkg_filter(
@@ -987,12 +1016,15 @@ sonic_layer(
 py_test(
     name = "oci_license_filter_test",
     srcs = ["integration/oci_license_filter_test.py"],
-    main = "integration/oci_license_filter_test.py",
     args = [
         "$(rootpath :oci_license_filtered)",
         "$(rootpath :oci_license_refiltered)",
     ],
-    data = [":oci_license_filtered", ":oci_license_refiltered"],
+    data = [
+        ":oci_license_filtered",
+        ":oci_license_refiltered",
+    ],
+    main = "integration/oci_license_filter_test.py",
 )
 
 # Rust links Common's shared library; its indirect runtime imports need the
@@ -1014,7 +1046,6 @@ py_library(
 _OCI_TEST_DEPS = [
     ":oci_contract_fixture",
     "//tools/bazel/oci:package_contract_lib",
-    "//tools/bazel/oci:package_state_lib",
     "//tools/bazel/oci:container_validation",
     "//tools/bazel/tests:oci_base_fixture_lib",
     "@sonic_build_infra//apt:lib",
@@ -1045,7 +1076,6 @@ py_test(
         "//platform/vs/docker-syncd-vs:critical_processes",
         "//platform/vs/docker-syncd-vs:start.sh",
         "//platform/vs/docker-syncd-vs:supervisord.conf",
-        "//platform/vs/docker-syncd-vs/config:openssh-client.conf",
     ] + _OCI_OWNER_POLICIES,
     main = "integration/oci_image_test.py",
     python_version = "3.11",
@@ -1064,18 +1094,6 @@ py_test(
     main = "integration/oci_apt_overlay_test.py",
     python_version = "3.11",
     deps = _OCI_TEST_DEPS + ["//tools/bazel/oci:apt_selection"],
-)
-
-py_test(
-    name = "oci_package_state_layer_test",
-    srcs = [
-        "integration/oci_package_state_layer_test.py",
-    ],
-    args = _OCI_POLICY_ARGS,
-    data = _OCI_OWNER_POLICIES,
-    main = "integration/oci_package_state_layer_test.py",
-    python_version = "3.11",
-    deps = _OCI_TEST_DEPS,
 )
 
 py_test(
@@ -1133,6 +1151,14 @@ py_test(
 _SYNCD_OWNER = "//platform/vs/docker-syncd-vs"
 
 _SYNCD_P4_IMAGE_INPUTS = {
+    "runtime_package_metadata": _SYNCD_OWNER + ":runtime_package_metadata",
+    "debug_package_metadata": _SYNCD_OWNER + ":debug_package_metadata",
+    "debug_installation": _SYNCD_OWNER + ":debug_installation_receipt",
+    "runtime_installation": _SYNCD_OWNER + ":installation_receipt",
+    "runtime_rootfs_tar": _SYNCD_OWNER + ":rootfs",
+    "configured_debug_tar": _SYNCD_OWNER + ":configured_debug",
+    "configured_runtime_tar": _SYNCD_OWNER + ":configured_debian",
+    "runtime_source_layer": _SYNCD_OWNER + ":source_runtime_layer",
     "runtime_path": _SYNCD_OWNER + ":docker-syncd-vs",
     "debug_path": _SYNCD_OWNER + ":docker-syncd-vs-dbg",
     "runtime_manifest_path": "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
@@ -1141,9 +1167,6 @@ _SYNCD_P4_IMAGE_INPUTS = {
     "apt_lock_path": _SYNCD_OWNER + "/bazel:apt.lock.json",
     "dpkg_filter_path": "//dockers/docker-base-trixie:dpkg_01_drop",
     "base_path": _SYNCD_OWNER + ":config_engine_base_layout",
-    "apt_layer": _SYNCD_OWNER + ":apt_deps",
-    "debug_tools_layer": _SYNCD_OWNER + ":debug_tools",
-    "runtime_links_layer": _SYNCD_OWNER + ":installation_links",
     "runtime_apt_selection": _SYNCD_OWNER + ":runtime_apt_selection",
     "debug_apt_selection": _SYNCD_OWNER + ":debug_apt_selection",
     "runtime_archive": _SYNCD_OWNER + ":docker-syncd-vs.gz",
@@ -1171,7 +1194,6 @@ py_test(
         _SYNCD_OWNER + ":start.sh",
         _SYNCD_OWNER + ":supervisord.conf",
         _SYNCD_OWNER + ":critical_processes",
-        _SYNCD_OWNER + "/config:openssh-client.conf",
     ],
     main = "integration/syncd_p4_images_test.py",
     tags = ["manual"],
@@ -1184,6 +1206,76 @@ py_test(
         "//tools/bazel/oci:container_validation",
         "//tools/bazel/oci:source_base_validation",
     ],
+)
+
+# Source TAR and real package-state fixtures do not create Debian packages.
+py_test(
+    name = "installed_source_metadata_test",
+    srcs = ["installed_source_metadata_test.py"],
+    data = [
+        "//dockers/docker-config-engine-trixie/bazel:dpkg_02_source_libnl",
+        "//dockers/docker-config-engine-trixie/bazel:source_paths.json",
+    ],
+    deps = [
+        "//tools/bazel/oci:installed_source_metadata_lib",
+        "//tools/bazel/oci:normalize_layer_lib",
+        "//tools/bazel/oci:source_contract_lib",
+    ],
+)
+
+# Native root-container test: umoci must preserve the actual numeric ownership.
+py_test(
+    name = "unpack_oci_test",
+    srcs = ["unpack_oci_test.py"],
+    args = [
+        "$(rootpath //tools/bazel/oci:umoci)",
+        "$(BSDTAR_BIN)",
+    ],
+    data = [
+        "//tools/bazel/oci:umoci",
+        "@bsd_tar_toolchains//:resolved_toolchain",
+    ],
+    env = {"APT_INSTALL_BUILD_CONTAINER": "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c"},
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
+    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:unpack_oci_lib",
+    ],
+)
+
+py_test(
+    name = "repack_oci_test",
+    srcs = ["repack_oci_test.py"],
+    args = [
+        "$(rootpath //tools/bazel/oci:umoci)",
+        "$(BSDTAR_BIN)",
+    ],
+    data = [
+        "//tools/bazel/oci:umoci",
+        "@bsd_tar_toolchains//:resolved_toolchain",
+    ],
+    env = {"APT_INSTALL_BUILD_CONTAINER": "debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c"},
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
+    toolchains = ["@bsd_tar_toolchains//:resolved_toolchain"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:oci_inventory",
+        "//tools/bazel/oci:repack_oci_lib",
+    ],
+)
+
+# Source declaration validation needs no archive-producing fixtures.
+py_test(
+    name = "source_package_contract_test",
+    srcs = ["source_package_contract_test.py"],
+    deps = ["//tools/bazel/oci:source_package_contract_lib"],
 )
 
 py_test(

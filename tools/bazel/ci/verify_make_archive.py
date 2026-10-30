@@ -62,8 +62,11 @@ def main():
         "SONIC_BAZEL_DOCKER_IMAGES = docker-fixture.gz docker-overlay.gz",
         "SONIC_BAZEL_DBG_DOCKER_IMAGES = docker-fixture-dbg.gz",
         "SONIC_BAZEL_OCI_BASES = " + " ".join(BASES),
-        ".PHONY: .platform",
+        # This fixture uses Bazel directly; production starts Docker for its
+        # native installer, but these archive-only targets need no daemon.
+        ".PHONY: .platform docker-start",
         ".platform:",
+        "docker-start:",
     ]
     for name, architecture in BASES.items():
         # Existing archives model a Make package-cache hit: no Docker rebuild
@@ -79,7 +82,11 @@ def main():
                   f"{archive}_BAZEL_DEPENDS = $(TARGET_PATH)/{base}"]
     lines.append("include tools/bazel/docker.mk")
     makefile.write_text("\n".join(lines) + "\n")
+    # These sample targets only assemble archives. They do not run APT or
+    # maintainer scripts, so use the supplied Bazel directly even when the
+    # production Make rule defaults to the native installation environment.
     environment = dict(os.environ, BAZEL=args.bazel,
+                       BAZEL_IMAGE_RUNNER=shlex.quote(args.bazel),
                        BAZEL_CONTAINER_ARGS=shlex.join(args.bazel_arg),
                        BAZEL_CONTAINER_CACHE_DIR="")
     command = ["make", "--no-print-directory", "-f", str(makefile),

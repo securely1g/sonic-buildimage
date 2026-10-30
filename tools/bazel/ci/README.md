@@ -8,8 +8,8 @@ package expectations remain in the owner declarations and tests.
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
 archive checks, lightweight hosted regressions and the full VS integration
 job. SWSS and Syncd source-package checks run after Make in that VS job, using
-its checkout, Trixie builder, platform/feature flags and persistent Bazel action
-cache. The private builder output bases remain separate; cached outputs can
+its checkout, native image launcher, platform/feature flags and root-private
+Bazel action cache. The private builder output bases remain separate; cached outputs can
 be restored without recompiling the same source packages. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.
 Keep checks that compile image inputs in the full build job so they can reuse
@@ -44,15 +44,16 @@ installed-image, debug-symbol and firmware boot checks remain required.
 - `container.py` runs an owner's `:ci_tests` test suite and builds its
   `:ci_artifacts` filegroup. Tests and exported files are declared in the
   container's `BUILD.bazel`; no Python CI configuration or callback is loaded.
-  For example, for separate cold runs after preparing the matching Make
-  manifests (use separate clean workspaces for these examples):
+  For example, for separate cold runs with Docker available and the matching
+  Make manifests prepared (use separate clean workspaces for these examples):
 
   ```sh
   python3 -B tools/bazel/ci/container.py \
-    --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk --bazel bazel --artifacts artifacts/swss
+    --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk \
+    --bazel "$PWD/tools/bazel/oci/native_build.py" --artifacts artifacts/swss
   python3 -B tools/bazel/ci/container.py \
     --container //platform/vs/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk \
-    --bazel-arg=--config=syncd-dash --bazel bazel --artifacts artifacts/syncd-vs/bazel
+    --bazel-arg=--config=syncd-dash --bazel "$PWD/tools/bazel/oci/native_build.py" --artifacts artifacts/syncd-vs/bazel
   ```
 
   Start from native AMD64 Trixie without `MODULE.bazel.lock` and use an empty
@@ -62,7 +63,9 @@ installed-image, debug-symbol and firmware boot checks remain required.
   the lock, clears outputs or disables package/source checks. Use Make's exact
   feature flags (currently `--//dockers/docker-orchagent:source_config_engine=true`
   for FIPS SWSS, `--config=syncd-dash` for Syncd), both native platform flags,
-  and the same cache/download options. In this mode, the Git cleanliness check
+  and the same explicit cache/download options. The launcher supplies the native
+  APT environment and root-private cache defaults; do not replace them with the
+  ordinary Make user's cache paths. In this mode, the Git cleanliness check
   covers the declared Bazel inputs and their containing submodules, allowing
   unrelated legacy Make submodules to create their normal build patches.
   Changes to validated inputs or their submodule commits still fail.

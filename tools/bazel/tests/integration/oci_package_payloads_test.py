@@ -73,7 +73,7 @@ class ValidatePayloadsTest(unittest.TestCase):
         function(manifest)
         path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-    def merged_base(self, *, lib_target="usr/lib"):
+    def merged_base(self, *, lib_target="usr/lib", relative_prefix="", lib_metadata=None):
         path = self.root / "base.oci"
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w", format=tarfile.GNU_FORMAT) as archive:
@@ -84,6 +84,11 @@ class ValidatePayloadsTest(unittest.TestCase):
                 alias = tarfile.TarInfo(name)
                 alias.type, alias.mode = tarfile.SYMTYPE, 0o777
                 alias.linkname = lib_target if name == "lib" else value["linkname"]
+                if not alias.linkname.startswith("/"):
+                    alias.linkname = relative_prefix + alias.linkname
+                if name == "lib":
+                    for field, value in (lib_metadata or {}).items():
+                        setattr(alias, field, value)
                 archive.addfile(alias)
         layer = data.getvalue()
         config = {"architecture": "amd64", "os": "linux",
@@ -278,11 +283,81 @@ class ValidatePayloadsTest(unittest.TestCase):
             self.assertEqual(entries["usr/lib/example/hardlink"].linkname, "./usr/lib/example/libexample.so.1")
             self.assertEqual(archive.extractfile(entries["run/redis/config"]).read(), b"config")
 
+    def test_rootfs_metadata_preserves_installed_ssh_agent_group_and_mode(self):
+        """Keep Debian's allocated group/setgid bit while installing source bytes."""
+        from tools.bazel.oci.normalize_layer import normalize
+        baseline, payload, output = [self.root / name for name in ("baseline.tar", "source.tar", "normalized.tar")]
+        for path, data, uid, gid, mode in (
+                (baseline, b"distro", 0, 987, 0o2755),
+                (payload, b"source", 123, 456, 0o755)):
+            with tarfile.open(path, "w") as archive:
+                entry = tarfile.TarInfo("usr/bin/ssh-agent")
+                entry.size, entry.uid, entry.gid, entry.mode = len(data), uid, gid, mode
+                archive.addfile(entry, io.BytesIO(data))
+        receipt = normalize(payload, baseline, output, expected_platform="linux/amd64",
+                            directory_aliases={}, root_owned=True,
+                            preserve_metadata=["usr/bin/ssh-agent"])
+        self.assertEqual(receipt["base_manifest_digest"], "sha256:" + hashlib.sha256(baseline.read_bytes()).hexdigest())
+        with tarfile.open(output) as archive:
+            entry = archive.getmember("./usr/bin/ssh-agent")
+            self.assertEqual((entry.uid, entry.gid, entry.mode), (0, 987, 0o2755))
+            self.assertEqual(archive.extractfile(entry).read(), b"source")
+        self.assertEqual(receipt["preserved_metadata"], {"usr/bin/ssh-agent": {"uid": 0, "gid": 987, "mode": 0o2755}})
+        with self.assertRaisesRegex(ValueError, "mode override conflicts"):
+            normalize(payload, baseline, output, expected_platform="linux/amd64",
+                      directory_aliases={}, preserve_metadata=["usr/bin/ssh-agent"],
+                      modes={"usr/bin/ssh-agent": "0755"})
+        with self.assertRaisesRegex(ValueError, "baseline must supply a regular file"):
+            normalize(payload, baseline, output, expected_platform="linux/amd64",
+                      directory_aliases={}, preserve_metadata=["usr/bin/missing"])
+        with tarfile.open(payload, "w"):
+            pass
+        with self.assertRaisesRegex(ValueError, "source TAR lacks"):
+            normalize(payload, baseline, output, expected_platform="linux/amd64",
+                      directory_aliases={}, preserve_metadata=["usr/bin/ssh-agent"])
+
     def test_merged_usr_normalization_rejects_a_changed_base_alias(self):
         """Normalize only against a base whose directory aliases match the expected layout."""
         _, payload = self.fixture()
         with self.assertRaisesRegex(ValueError, "unsupported directory alias: lib"):
             subject.normalize(payload, self.merged_base(lib_target="elsewhere"), self.root / "normalized.tar", expected_platform="linux/amd64")
+
+    def test_merged_usr_aliases_accept_equivalent_relative_prefixes(self):
+        """umoci's ./usr/bin spelling has the same target as the checked usr/bin alias."""
+        payload = self.root / "aliases.tar"
+        for prefix in ("./", "././"):
+            with self.subTest(prefix=prefix):
+                with tarfile.open(payload, "w") as archive:
+                    alias = tarfile.TarInfo("lib")
+                    alias.type, alias.mode, alias.linkname = tarfile.SYMTYPE, 0o777, prefix + "usr/lib"
+                    archive.addfile(alias)
+                result = subject.normalize(payload, self.merged_base(relative_prefix=prefix),
+                                           self.root / "normalized.tar", expected_platform="linux/amd64")
+                self.assertEqual(result["skipped_alias_entries"], 1)
+
+    def test_merged_usr_aliases_reject_changed_absolute_and_parent_targets(self):
+        """Equivalent prefixes must not authorize another destination or a parent traversal."""
+        _, payload = self.fixture()
+        for target in ("usr/bin", "../usr/lib", "./../usr/lib", "usr/../usr/lib", "/usr/lib", ".//usr/lib"):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(ValueError, "unsupported directory alias: lib"):
+                    subject.normalize(payload, self.merged_base(lib_target=target),
+                                      self.root / "normalized.tar", expected_platform="linux/amd64")
+                with tarfile.open(payload, "w") as archive:
+                    alias = tarfile.TarInfo("lib")
+                    alias.type, alias.mode, alias.linkname = tarfile.SYMTYPE, 0o777, target
+                    archive.addfile(alias)
+                with self.assertRaisesRegex(ValueError, "changes a directory alias: lib"):
+                    subject.normalize(payload, self.merged_base(), self.root / "normalized.tar", expected_platform="linux/amd64")
+
+    def test_equivalent_alias_targets_still_require_original_ownership_and_mode(self):
+        """Normalizing the target spelling must leave the base metadata checks intact."""
+        _, payload = self.fixture()
+        for metadata in ({"uid": 123}, {"gid": 456}, {"mode": 0o755}):
+            with self.subTest(metadata=metadata):
+                with self.assertRaisesRegex(ValueError, "unsupported directory alias: lib"):
+                    subject.normalize(payload, self.merged_base(relative_prefix="./", lib_metadata=metadata),
+                                      self.root / "normalized.tar", expected_platform="linux/amd64")
 
     def test_reserved_whiteout_is_rejected(self):
         """Imported package archives must not use OCI whiteouts to remove inherited files."""

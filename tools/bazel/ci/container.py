@@ -180,14 +180,15 @@ def run(container, *, workspace, artifacts, bazel, options, source_files=(), reu
         actions.touch(mode=0o600, exist_ok=False)
         try:
             execute([bazel, "aquery", *options, "deps(set(" + " ".join(targets) + "))",
-                     "--output=jsonproto"], artifacts, receipt, "actions", output_path=actions)
+                     "--include_file_write_contents", "--output=jsonproto"], artifacts, receipt, "actions", output_path=actions)
             audit = inspect_actions(actions)
         finally:
             actions.unlink(missing_ok=True)
         audit["targets"] = targets
+        audit["deb_generation_authorized"] = False
         (artifacts / "execution-gate-audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
         receipt["action_audit"] = audit
-        require(not audit["deb_outputs"] and not audit["packaging_wrappers"],
+        require(not (audit["deb_outputs"] or audit["deb_packaging_actions"] or audit["packaging_wrappers"]),
                 "container CI contains a DEB or packaging wrapper action")
 
         exported = None

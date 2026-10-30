@@ -1,7 +1,28 @@
 load("@rules_python//python:defs.bzl", "py_library")
 
 py_library(
+    name = "validate_dpkg_state",
+    srcs = ["validate_dpkg_state.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_library(
     name = "artifact_validation",
     srcs = ["artifact_validation.py"],
     visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "service_image_validation",
+    srcs = [
+        "bazel_commands.py",
+        "validate_service_dpkg.py",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":artifact_validation",
+        ":validate_dpkg_state",
+        "//tools/bazel/oci:container_validation",
+        "//tools/bazel/oci:source_base_validation",
+    ],
 )
