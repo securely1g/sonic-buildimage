@@ -1,0 +1,23 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "extract_store.sh",
+    "overlay.py",
+])
+
+filegroup(
+    name = "files",
+    srcs = ["overlay.py"],
+)
+
+py_test(
+    name = "runtime_test",
+    srcs = [
+        "overlay.py",
+        "runtime_test.py",
+    ],
+    data = ["extract_store.sh"],
+    imports = ["."],
+)

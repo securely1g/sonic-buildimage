@@ -44,29 +44,32 @@ PLATFORM_CHECKOUT := platform/checkout
 PLATFORM_CHECKOUT_FILE := $(PLATFORM_CHECKOUT)/$(PLATFORM).ini
 PLATFORM_CHECKOUT_CMD := $(shell if [ -f $(PLATFORM_CHECKOUT_FILE) ]; then PLATFORM_REPO=$(PLATFORM_REPO) PLATFORM_REF=$(PLATFORM_REF) PLATFORM_PATH=$(PLATFORM_PATH) j2 $(PLATFORM_CHECKOUT)/template.j2 $(PLATFORM_CHECKOUT_FILE); fi)
 MAKE_WITH_RETRY := ./scripts/run_with_retry $(MAKE)
+# Native preparation builds predecessors only; store selection belongs to the
+# final assembler. Clear a CLI or saved backend setting for every sub-make.
+SONIC_NATIVE_INPUT_OPTIONS = $(if $(filter bazel-vs-native-inputs,$@),USE_CONTAINER_IMAGE_STORE_AS_BACKEND=n)
 
 %::
 	@echo "+++ --- Making $@ --- +++"
 ifeq ($(NOJESSIE), 0)
-	$(MAKE_WITH_RETRY) EXTRA_DOCKER_TARGETS=$(notdir $@) -f Makefile.work jessie
+	$(MAKE_WITH_RETRY) $(SONIC_NATIVE_INPUT_OPTIONS) EXTRA_DOCKER_TARGETS=$(notdir $@) -f Makefile.work jessie
 endif
 ifeq ($(NOSTRETCH), 0)
-	$(MAKE_WITH_RETRY) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=stretch -f Makefile.work stretch
+	$(MAKE_WITH_RETRY) $(SONIC_NATIVE_INPUT_OPTIONS) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=stretch -f Makefile.work stretch
 endif
 ifeq ($(NOBUSTER), 0)
-	$(MAKE_WITH_RETRY) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=buster -f Makefile.work buster
+	$(MAKE_WITH_RETRY) $(SONIC_NATIVE_INPUT_OPTIONS) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=buster -f Makefile.work buster
 endif
 ifeq ($(NOBULLSEYE), 0)
-	$(MAKE_WITH_RETRY) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=bullseye -f Makefile.work bullseye
+	$(MAKE_WITH_RETRY) $(SONIC_NATIVE_INPUT_OPTIONS) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=bullseye -f Makefile.work bullseye
 endif
 ifeq ($(NOBOOKWORM), 0)
-	$(MAKE_WITH_RETRY) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=bookworm -f Makefile.work bookworm
+	$(MAKE_WITH_RETRY) $(SONIC_NATIVE_INPUT_OPTIONS) EXTRA_DOCKER_TARGETS=$(notdir $@) BLDENV=bookworm -f Makefile.work bookworm
 endif
 ifeq ($(NOTRIXIE), 0)
-	$(MAKE_WITH_RETRY) BLDENV=trixie -f Makefile.work $@
+	$(MAKE_WITH_RETRY) $(SONIC_NATIVE_INPUT_OPTIONS) BLDENV=trixie -f Makefile.work $@
 endif
 
-	BLDENV=bookworm $(MAKE) -f Makefile.work docker-cleanup
+	BLDENV=bookworm $(MAKE) $(SONIC_NATIVE_INPUT_OPTIONS) -f Makefile.work docker-cleanup
 
 jessie:
 	@echo "+++ Making $@ +++"
@@ -159,6 +162,17 @@ endif
 ifneq ($(filter $(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y n),$(BUILD_WITH_BAZEL_WHEN_AVAILABLE))
 $(error BUILD_WITH_BAZEL_WHEN_AVAILABLE must be y or n)
 endif
+ifneq ($(words $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND)),1)
+$(error USE_CONTAINER_IMAGE_STORE_AS_BACKEND must be y or n)
+endif
+ifneq ($(filter $(USE_CONTAINER_IMAGE_STORE_AS_BACKEND),y n),$(USE_CONTAINER_IMAGE_STORE_AS_BACKEND))
+$(error USE_CONTAINER_IMAGE_STORE_AS_BACKEND must be y or n)
+endif
+ifeq ($(USE_CONTAINER_IMAGE_STORE_AS_BACKEND),y)
+ifneq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+$(error USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y requires BUILD_WITH_BAZEL_WHEN_AVAILABLE=y)
+endif
+endif
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 ifneq ($(strip $(MAKECMDGOALS)),target/sonic-vs.bin)
 $(error Bazel VS assembly supports only the explicit target/sonic-vs.bin goal)
@@ -213,6 +227,6 @@ BAZEL_VS_LAUNCHER_OPTIONS = \
     $(if $(BAZEL_IMAGE_GIT_CONFIG),--git-config "$(BAZEL_IMAGE_GIT_CONFIG)")
 .PHONY: target/sonic-vs.bin
 target/sonic-vs.bin:
-	python3 tools/bazel/image/build.py --build-with-bazel-when-available "$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)" $(BAZEL_VS_LAUNCHER_OPTIONS)
+	python3 tools/bazel/image/build.py --build-with-bazel-when-available "$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)" --backend "$(USE_CONTAINER_IMAGE_STORE_AS_BACKEND)" $(BAZEL_VS_LAUNCHER_OPTIONS)
 endif
 endif

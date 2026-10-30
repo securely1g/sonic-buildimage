@@ -70,6 +70,23 @@ def from_archive(path):
 
 
 
+def oci_config(path):
+    root = Path(path)
+    index = json.loads((root / 'index.json').read_text())
+    manifests = index.get('manifests', [])
+    if len(manifests) != 1:
+        raise ValueError('expected one image in OCI layout')
+    def blob(descriptor):
+        digest = descriptor['digest']
+        if not isinstance(digest, str) or len(digest) != 71 or not digest.startswith('sha256:') or any(c not in '0123456789abcdef' for c in digest[7:]):
+            raise ValueError('invalid OCI digest')
+        data = (root / 'blobs/sha256' / digest[7:]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest[7:]:
+            raise ValueError('OCI blob digest mismatch')
+        return json.loads(data)
+    return blob(blob(manifests[0])['config'])
+
+
 def staging_archive(metadata, name, output):
     if metadata.get('schema') != 1 or metadata.get('purpose') != 'host-configuration-only':
         raise ValueError('invalid host metadata projection')

@@ -72,8 +72,9 @@ sudo bash -c "echo \"DOCKER_OPTS=\"--storage-driver=overlay2\"\" >> $FILESYSTEM_
 sudo mkdir -p "$FILESYSTEM_ROOT/$DOCKER_CTL_DIR"
 sudo cp $DOCKER_SCRIPTS_DIR/docker "$FILESYSTEM_ROOT/$DOCKER_CTL_SCRIPT"
 fi
-if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
-    : # Snapshot contains host packages only; do not start a container daemon.
+if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ||
+      ( ${SONIC_BAZEL_HOST_FINALIZE:-n} == y && ${USE_CONTAINER_IMAGE_STORE_AS_BACKEND:-n} == y ) ]]; then
+    : # The native snapshot and containerd host backend do not start Docker.
 elif [[ $MULTIARCH_QEMU_ENVIRON == y  || $CROSS_BUILD_ENVIRON == y ]]; then
     DOCKER_HOST="unix:///dockerfs/var/run/docker.sock"
     SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID="cat `pwd`/dockerfs/var/run/docker.pid"
@@ -1006,9 +1007,10 @@ fi
 
 sudo mkdir $FILESYSTEM_ROOT/target
 sudo mount --bind target $FILESYSTEM_ROOT/target
-if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y ]]; then
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y && ${USE_CONTAINER_IMAGE_STORE_AS_BACKEND:-n} != y ]]; then
     sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot "$FILESYSTEM_ROOT" /bin/bash -s -- 60 < scripts/wait_for_docker.sh
 fi
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} != y || ${USE_CONTAINER_IMAGE_STORE_AS_BACKEND:-n} != y ]]; then
 sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT docker info
 
 {% for docker_installation_target in installer_images.strip().split() -%}
@@ -1033,6 +1035,7 @@ sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT docker tag {{imag
 {% endif %}
 fi
 {% endfor %}
+fi
 
 if [[ $CONFIGURED_PLATFORM == pensando ]]; then
 #Disable rc.local
@@ -1059,7 +1062,9 @@ sudo mkdir -p $FILESYSTEM_ROOT/$SONIC_PACKAGE_MANAGER_FOLDER/manifests
 sudo cp $BUILD_TEMPLATES/docker_image_ctl.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/docker_image_ctl.j2
 
 # Generate shutdown order
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} != y || ${USE_CONTAINER_IMAGE_STORE_AS_BACKEND:-n} != y ]]; then
 sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT /usr/local/bin/generate_shutdown_order.py
+fi
 
 {% if include_kubernetes == "y" %}
 ## Pull in kubernetes docker images
@@ -1140,6 +1145,13 @@ sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT sonic-package-man
 sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT sonic-package-manager install {{ name }}=={{ version }} {{ get_install_options(set_owner, enabled) }}
 {% endfor -%}
 
+if [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} == y && ${USE_CONTAINER_IMAGE_STORE_AS_BACKEND:-n} == y ]]; then
+    # Use SONiC's service/configuration APIs and OCI-unpacked CLI plugins. The
+    # actual container images are imported into the preloaded containerd store during the build.
+    sudo LANG=C CONFIGURED_PLATFORM="$CONFIGURED_PLATFORM" chroot "$FILESYSTEM_ROOT" \
+        python3 /target/.sonic-bazel-offline/offline_host.py \
+        --input /target/.sonic-bazel-offline/packages.json
+else
 {% for package in sonic_local_packages.strip().split() -%}
 {% set name, path, set_owner, enabled = package.split('|') -%}
 sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT sonic-package-manager install --from-tarball {{ path }} {{ get_install_options(set_owner, enabled) }}
@@ -1157,6 +1169,7 @@ else
     fi
 fi
 {% endfor -%}
+fi
 
 sudo umount $FILESYSTEM_ROOT/target
 sudo rm -r $FILESYSTEM_ROOT/target
@@ -1164,7 +1177,7 @@ if [[ $MULTIARCH_QEMU_ENVIRON == y || $CROSS_BUILD_ENVIRON == y ]]; then
     sudo umount $FILESYSTEM_ROOT/dockerfs
     sudo rm -fr $FILESYSTEM_ROOT/dockerfs
     sudo kill -9 `sudo $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID` || true
-else
+elif [[ ${SONIC_BAZEL_HOST_FINALIZE:-n} != y || ${USE_CONTAINER_IMAGE_STORE_AS_BACKEND:-n} != y ]]; then
     sudo chroot $FILESYSTEM_ROOT $DOCKER_CTL_SCRIPT stop
 fi
 

@@ -23,6 +23,7 @@ py_test(
         "host_test.py",
         "metadata.py",
     ],
+    data = ["//files/build_templates:sonic_debian_extension.j2"],
     imports = ["."],
 )
 
@@ -50,7 +51,10 @@ py_test(
         "installer.py",
         "installer_test.py",
     ],
-    data = ["//:image_installer_test_data"],
+    data = [
+        "//:image_installer_test_data",
+        "//tools/bazel/image/containerd_runtime:extract_store.sh",
+    ],
     imports = ["."],
 )
 
@@ -66,6 +70,7 @@ py_test(
 py_test(
     name = "prepare_inputs_test",
     srcs = [
+        "backend.py",
         "host.py",
         "installer.py",
         "metadata.py",
@@ -81,10 +86,50 @@ py_test(
 py_test(
     name = "build_test",
     srcs = [
+        "backend.py",
         "build.py",
         "build_test.py",
         "//tools/bazel/ci:build_events.py",
     ],
     data = ["//:image_build_test_data"],
+    imports = ["."],
+)
+
+py_test(
+    name = "backend_test",
+    srcs = [
+        "backend.py",
+        "backend_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "oci_bundle_test",
+    srcs = [
+        "oci_bundle.py",
+        "oci_bundle_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "offline_host_test",
+    srcs = [
+        "offline_host.py",
+        "offline_host_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "containerd_store_test",
+    srcs = [
+        "containerd_import.py",
+        "containerd_store.py",
+        "containerd_store_test.py",
+        "oci_bundle.py",
+        "oci_bundle_test.py",
+    ],
     imports = ["."],
 )

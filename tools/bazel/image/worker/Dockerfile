@@ -16,8 +16,8 @@ RUN printf '%s\n' \
        autoconf automake binutils build-essential busybox ca-certificates \
        acl curl diffutils file findutils gawk git grep gzip iproute2 iptables \
        j2cli=0.3.12b-5 jq kmod libtool make mount passwd pigz pkg-config \
-       procps psmisc python3 sed squashfs-tools=1:4.6.1-1 sudo tar unzip \
-       util-linux wget xz-utils zip zstd /tmp/packages/*.deb \
+       procps psmisc python3 sed skopeo=1.18.0+ds1-1+b5 squashfs-tools=1:4.6.1-1 sudo tar unzip \
+       umoci=0.4.7+ds-4+b10 util-linux wget xz-utils zip zstd /tmp/packages/*.deb \
     && dpkg-query -W -f='${binary:Package}=${Version}\n' > /usr/share/sonic-image-worker-packages.txt \
     && rm -rf /var/lib/apt/lists/* /tmp/packages
 

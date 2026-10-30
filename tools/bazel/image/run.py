@@ -9,9 +9,13 @@ Example:
     -- build //tools/bazel/image/vs:sonic-vs.bin
 
 The explicit mount root must contain every locally overridden source worktree.
-The worker receives no host Docker socket; privileged image actions create their
-own isolated daemon and mount/PID/network namespaces. No host users or Docker
-configuration are modified. The worker image must already be available locally.
+The worker receives no host Docker socket. Host filesystem finalization uses
+privileged mount/PID/network namespaces. The default graph uses the classic
+Docker store. The containerd opt-in caches the fixed images, restores a private
+base copy, and imports SWSS without unpacking before archiving the store.
+Skopeo conversions and ZIP/ONIE packaging use ordinary sandboxable actions. The
+target starts with preloaded images. Native Make prerequisites keep their
+separate private Docker daemon. The worker image must already be available locally.
 
 Add --persistent-worker NAME to retain this isolated worker and its Bazel server.
 The run action creates or reuses it; --worker-action start initializes it without
