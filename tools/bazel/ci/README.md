@@ -62,67 +62,67 @@ for each pair. The normal installer still selects runtime containers;
 `INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
 not add it to the installer.
 
-`build_vs_with_reused_orchagent.sh` checks both Orchagent and Syncd pairs
-immediately after the VS build, before another builder can produce a missing
-archive. It checks their Linux/AMD64 configuration, Make manifests and Bazel
-producer stamps, and requires every debug image to extend its exact runtime
-layers. It also checks `target/sonic-vs.img.gz.dockers`, the archive list Make
-emits from the installer's actual inputs, contains runtime Orchagent and Syncd
-and no debug archives for this normal VS configuration. This list establishes
-Make's selection; the existing installed-image and firmware boot checks remain
-separate validation of the resulting image. A final check requires all four
-archives and their manifests to remain unchanged after the follow-up work.
-Missing, changed or incompatible outputs fail the job without an unnoticed
-archive rebuild. Standalone Make archive targets retain their normal checks.
+[`build_vs.sh`](build_vs.sh) runs one `make target/sonic-vs.img.gz` request
+with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
+The **Build the VS image** workflow step ends
+when Make finishes producing the image and its runtime/debug archive pairs.
+It does not request those archives again or run the post-build validators.
+The installer's existing BIOS/UEFI build and boot checks remain inside Make.
+The build records its starting Git revision; validation requires that revision
+before checks and again before writing its timing summary.
 
-To measure the avoided request on the same revision, runner, configuration and
-warmed caches, dispatch `Bazel OCI` with `skip_vs=false` and
-`measure_orchagent_reuse=true`. This calibration deliberately executes the old
-request once and requires the runtime archive to remain identical. The local
-`artifacts/vs/orchagent-reuse-timing.json` reports its measured wall time, the new
-validation cost and their difference. This measures the removed request, not a
-paired full-job speedup. Normal PR runs omit the request. Existing source,
-installed-image, debug-symbol and firmware boot checks remain required.
+[`validate_vs.sh`](validate_vs.sh) runs in the separate **Validate VS container
+pairs and P4 debug symbols** step after a successful build, using the same
+checkout and configuration. It first checks
+both Orchagent and Syncd pairs before another builder can produce a missing
+archive. The checks cover Linux/AMD64 configuration, Make manifests, Bazel
+producer stamps and each debug image's runtime layers. They also check that
+`target/sonic-vs.img.gz.dockers`, emitted from the installer's actual inputs,
+selects runtime Orchagent and Syncd rather than debug archives for this normal
+VS configuration. Installed-image validation remains a separate check of the
+resulting image.
 
-After capturing both pairs, the helper requests `bazel-vs-oci-verify` with the
-same build options. This aggregate builds the two existing P4RT Debian packages
-and runs the P4 image/package checks in one Trixie builder. It deliberately has
-no image archive prerequisites, because the VS build already produced and
-validated those files.
+The validator then requests `bazel-vs-oci-verify` with the same build options.
+This aggregate prepares the two existing P4RT Debian packages and runs the
+Syncd P4 image/package checks and offline P4RT split-debug-symbol check in one
+Trixie builder. It has no image archive prerequisites: Make already produced
+those files in the build step. The final pair check requires all four archives
+and their manifests to remain unchanged. Missing, changed or incompatible
+outputs fail validation; failures are not hidden by rebuilding an archive.
 
 The P4 image test still declares the native Syncd OCI images and Bazel archive
-outputs as inputs, and compares them with the retained Make archives. Bazel
-therefore evaluates that graph and may restore outputs or rebuild on a cache
-miss in the verification builder. Removing the repeated Make archive recipes
-does not disable those source/identity checks or guarantee zero subsequent
-Bazel image work.
+outputs as inputs and compares them with the retained Make archives. Bazel may
+restore those inputs or rebuild them on a cache miss in the validation builder.
+The build and validation steps share persistent action/download caches; their
+private builder output bases are separate. Splitting the workflow steps does
+not remove this work or claim a speedup. SWSS and Syncd source-package checks
+continue in their existing later steps, and installed-container and firmware
+boot checks retain their coverage.
 
-Both `bazel-vs-oci-verify` and the original `bazel-vs-oci` aggregate are limited to
-native AMD64/Trixie VS with those features. The original aggregate continues
-to build the follow-up archives for standalone callers that need them. Each
-container uses its owner's dependencies and Bazel options; the aggregates
-serialize their prerequisites and stop on a failed build or check. Standalone
-archive requests and other configurations retain their existing rules.
+Both `bazel-vs-oci-verify` and the standalone `bazel-vs-oci` aggregate are limited
+to native AMD64/Trixie VS with FIPS and DASH enabled, without ASAN or Syncd RPC.
+The standalone aggregate still builds the follow-up archives for callers that
+need them. Each container uses its owner's dependencies and Bazel options;
+the aggregates serialize their prerequisites and stop on a failed build or
+check. Standalone archive requests and other configurations retain their rules.
 
-The existing `sonic-vs-orchagent-reuse-amd64` CI artifact also retains
-`runtime-debug-pairs.json`, the installer's `.dockers` list, and
-`runtime-debug-pairs-timing.json`. The timing file records the tested revision,
-configuration and monotonic wall times for the VS build (including pair
-production and the installer's BIOS/UEFI boot checks), pair validation and
-required follow-up work. Its total excludes the optional redundant-request
-calibration, subsequent source/installed-container validation and artifact
-uploads. Compare that complete measured scope against a separately
-recorded baseline with the same runner, inputs and cache policy; shorter
-follow-up steps alone do not establish a speedup if work moved into VS assembly.
+`verify_vs_oci.sh` runs the uncached P4 image test and offline split-debug package
+check before the validation builder exits. It preserves
+`artifacts/vs/syncd-p4-images/`, `syncd-p4-images.log`,
+`p4rt-debug-verification.log` and `p4rt-debug-verification.json`. The archive
+checker retains `runtime-debug-pairs.json` and `orchagent-reuse.json`; these
+are validation receipts, not inputs needed to assemble the image.
+`runtime-debug-pairs-timing.json` (schema 2) records the revision and profile,
+P4 validation time, pair validation time and their total. It does not include
+the image build duration.
+Do not parallelize top-level Make goals that share Docker state.
 
-`verify_vs_oci.sh` runs the same uncached P4 image test and split-debug package
-check before the builder exits. It preserves `artifacts/vs/syncd-p4-images/`,
-`syncd-p4-images.log`, `p4rt-debug-verification.log` and
-`p4rt-debug-verification.json`. Repository and action caches may still be shared
-through the existing cache mount; Bazel server/output state stays inside this
-one builder. Do not parallelize top-level Make goals that share Docker state.
-The tests below exercise dispatch, ordering, configuration and failure behavior
-without Docker; a full VS CI run is needed to measure actual time savings.
+GitHub Actions reports build and validation as separate step durations. Compare
+the complete job, including later source checks and artifact uploads, when
+measuring an improvement. Moving validation out of the build step changes the
+timing boundary, not the total work. Helper tests exercise dispatch, ordering,
+configuration and failure behavior without Docker; full VS CI is needed to
+validate the resulting image and measure end-to-end time.
 
 - `container.py` runs an owner's `:ci_tests` test suite and builds its
   `:ci_artifacts` filegroup. Tests and exported files are declared in the

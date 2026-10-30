@@ -16,10 +16,19 @@ generate a package, modify a runner, or clear a cache.
 - Show the explicit image-build step separately from job setup, checks, uploads,
   and the complete job duration. Parallel job times must not be added together
   to claim elapsed workflow time.
-- Keep the Make VS and Bazel installer paths separate. The Make VS step builds
-  `sonic-vs.img.gz` and the SWSS debug container archive together.
+- Keep the Make VS and Bazel installer paths separate. The current Make VS step
+  builds `sonic-vs.img.gz` and the Orchagent/Syncd runtime and debug archives,
+  including Make's embedded boot checks. Post-build archive and P4 validation
+  have their own CI step and are excluded from the image-build duration.
 - Record the run's source commit separately from the current PR head. Historical
   evidence does not establish that the latest PR revision passed.
+
+Trend lines also separate exact measured step names. Historical combined
+VS/OCI steps included follow-up work and archive validation; the current
+**Build the VS image** step ends when Make completes. Moving validation to its
+own step is not a measured build speedup. Point tooltips, job details and the
+latest measurement identify the timing boundary. Unknown boundaries remain
+isolated points, and historical durations are preserved.
 
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was

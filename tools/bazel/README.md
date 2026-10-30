@@ -72,9 +72,12 @@ Standalone archive requests and unsupported Make configurations retain their
 existing behavior. A selected pair fails if either build/export fails or the
 owner declares different Bazel arguments for its two variants.
 
-CI verifies both pairs immediately after the VS build, checks the installer's
-`.dockers` selection, then runs the remaining package and image checks without
-requesting the container archives again. See [CI evidence and timing](ci/README.md).
+CI uses `build_vs.sh` for that single Make request and `validate_vs.sh` in a
+separate step after the build. Validation checks both pairs and the installer's
+`.dockers` selection, runs the remaining P4 package and image checks, then
+requires the retained archives to remain unchanged. It does not issue another
+Make container-archive request. SWSS/Syncd source checks retain their separate
+workflow steps. See [CI evidence and timing](ci/README.md).
 
 ### Register container targets
 
