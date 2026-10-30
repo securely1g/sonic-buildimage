@@ -146,3 +146,73 @@ target/sonic-vs.bin target/sonic-vs.img.gz target/sonic-vs.raw: sonic-swss-forwa
 $(filter target/debs/trixie/linux-%.deb target/debs/trixie/linux-%.deb-install \
     target/debs/trixie/genl-packet-module_%.deb target/debs/trixie/genl-packet-module_%.deb-install \
     target/files/trixie/ixgbe.ko target/%rfs.squashfs,$(MAKECMDGOALS)): sonic-swss-forward
+
+# Select only the explicit VS ONIE goal here. Other component and KVM goals keep
+# the existing BUILD_WITH_BAZEL_WHEN_AVAILABLE behavior in Makefile.work.
+ifneq ($(filter target/sonic-vs.bin,$(MAKECMDGOALS)),)
+SONIC_IMAGE_CONFIG_FILES := rules/config $(wildcard rules/config.organization rules/config.user)
+$(SONIC_IMAGE_CONFIG_FILES): ;
+include $(SONIC_IMAGE_CONFIG_FILES)
+ifneq ($(words $(BUILD_WITH_BAZEL_WHEN_AVAILABLE)),1)
+$(error BUILD_WITH_BAZEL_WHEN_AVAILABLE must be y or n)
+endif
+ifneq ($(filter $(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y n),$(BUILD_WITH_BAZEL_WHEN_AVAILABLE))
+$(error BUILD_WITH_BAZEL_WHEN_AVAILABLE must be y or n)
+endif
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+ifneq ($(strip $(MAKECMDGOALS)),target/sonic-vs.bin)
+$(error Bazel VS assembly supports only the explicit target/sonic-vs.bin goal)
+endif
+ifneq ($(filter-out amd64,$(PLATFORM_ARCH)),)
+$(error Bazel VS assembly requires PLATFORM_ARCH=amd64)
+endif
+ifneq ($(filter-out vs,$(PLATFORM)),)
+$(error Bazel VS assembly requires PLATFORM=vs)
+endif
+ifneq ($(filter-out trixie,$(BLDENV)),)
+$(error Bazel VS assembly requires BLDENV=trixie)
+endif
+# A separate assembler checkout may be unconfigured. If it has a saved native
+# configuration, do not publish an older VS bundle for a conflicting target.
+ifneq ($(wildcard .arch),)
+ifneq ($(strip $(shell cat .arch)),amd64)
+$(error Bazel VS assembly requires saved .arch=amd64)
+endif
+endif
+ifneq ($(wildcard .platform),)
+ifneq ($(strip $(shell cat .platform)),vs)
+$(error Bazel VS assembly requires saved .platform=vs)
+endif
+endif
+# Assembly uses frozen native inputs, so current Make options cannot silently
+# request signing, debug payloads or other features absent from that bundle.
+BAZEL_VS_UNSUPPORTED_OPTIONS := $(foreach option,ENABLE_SBOM ENABLE_ASAN \
+    SONIC_INSTALL_DEBUG_TOOLS INSTALL_DEBUG_TOOLS BUILD_MULTIASIC_KVM \
+    MULTIARCH_QEMU_ENVIRON CROSS_BUILD_ENVIRON BUILD_REDUCE_IMAGE_SIZE \
+    INCLUDE_KUBERNETES INCLUDE_KUBERNETES_MASTER SONIC_ENABLE_IMAGE_SIGNATURE \
+    ENABLE_IMAGE_SIGNATURE,$(if $(filter-out n,$($(option))),$(option)))
+ifneq ($(strip $(BAZEL_VS_UNSUPPORTED_OPTIONS)),)
+$(error Bazel VS assembly requires these options disabled: $(strip $(BAZEL_VS_UNSUPPORTED_OPTIONS)))
+endif
+ifneq ($(subst ",,$(strip $(SECURE_UPGRADE_MODE))),no_sign)
+$(error Bazel VS assembly requires SECURE_UPGRADE_MODE=no_sign)
+endif
+ifneq ($(strip $(SONIC_PACKAGES) $(sonic-vs.bin_POST_BUILD_HOOK)),)
+$(error Bazel VS assembly does not support remote packages or installer post-build hooks)
+endif
+endif
+
+# Serialize publication and safely replace a previous Bazel image when switching
+# back to Make. The native child uses the existing forwarding recipe above.
+ifneq ($(SONIC_BAZEL_NATIVE_PUBLISH),y)
+BAZEL_VS_LAUNCHER_OPTIONS = \
+    $(if $(BAZEL_IMAGE_MOUNT_ROOT),--mount-root "$(BAZEL_IMAGE_MOUNT_ROOT)") \
+    $(if $(BAZEL_IMAGE_OUTPUT_USER_ROOT),--output-user-root "$(BAZEL_IMAGE_OUTPUT_USER_ROOT)") \
+    $(if $(BAZEL_IMAGE_REPOSITORY_CACHE),--repository-cache "$(BAZEL_IMAGE_REPOSITORY_CACHE)") \
+    $(if $(BAZEL_IMAGE_WORKER),--persistent-worker "$(BAZEL_IMAGE_WORKER)") \
+    $(if $(BAZEL_IMAGE_GIT_CONFIG),--git-config "$(BAZEL_IMAGE_GIT_CONFIG)")
+.PHONY: target/sonic-vs.bin
+target/sonic-vs.bin:
+	python3 tools/bazel/image/build.py --build-with-bazel-when-available "$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)" $(BAZEL_VS_LAUNCHER_OPTIONS)
+endif
+endif
