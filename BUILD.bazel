@@ -40,3 +40,25 @@ exports_files([
     "target/docker-syncd-vs.gz",
     "target/docker-syncd-vs-dbg.gz",
 ])
+
+# Final-image assembly consumes current host-finalization code explicitly.
+exports_files(["build_debian.sh"])
+
+filegroup(
+    name = "image_installer_test_data",
+    srcs = [
+        "installer/default_platform.conf",
+        "installer/efi_sbatlevel.py",
+        "installer/install.sh",
+        "installer/sharch_body.sh",
+        "onie-image.conf",
+        "platform/vs/platform.conf",
+    ],
+    visibility = ["//tools/bazel/image:__pkg__"],
+)
+
+filegroup(
+    name = "image_build_test_data",
+    srcs = ["Makefile"],
+    visibility = ["//tools/bazel/image:__pkg__"],
+)

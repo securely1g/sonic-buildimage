@@ -583,23 +583,26 @@ class PublicArtifactsTest(unittest.TestCase):
                 self.assertFalse(ready, summary)
                 self.assertEqual(paths, [])
 
-    def test_archive_requires_all_twelve_native_workflow_tests(self):
+    def test_archive_requires_the_complete_native_workflow_test_set(self):
+        event_path, count = next((path, count) for logical, path, count in artifacts.BEP["archive"]
+                                if logical == "archive-tests")
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture):
                 seed(self.root, "archive", architecture)
-                event_path = "artifacts/archive/test-events.jsonl"
-                write(self.root, event_path, events(12))
+                write(self.root, event_path, events(count))
                 summary, paths, ready = self.prepare("archive", architecture=architecture)
                 self.assertTrue(ready)
-                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), 12)
+                self.assertEqual(len(summary["builds"]["archive-tests"]["tests"]), count)
                 self.assertTrue(paths)
 
-                write(self.root, event_path, events(11))
-                summary, paths, ready = self.prepare("archive", architecture=architecture)
-                self.assertFalse(ready)
-                self.assertEqual(paths, [])
-                self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
-                              summary["blocked"])
+                for wrong_count in (count - 1, count + 1):
+                    with self.subTest(count=wrong_count):
+                        write(self.root, event_path, events(wrong_count))
+                        summary, paths, ready = self.prepare("archive", architecture=architecture)
+                        self.assertFalse(ready)
+                        self.assertEqual(paths, [])
+                        self.assertIn({"input": "archive-tests", "reason": "invalid-bep-summary"},
+                                      summary["blocked"])
 
     def test_failure_publishes_only_a_safe_partial_summary(self):
         seed(self.root, "archive")

@@ -12,3 +12,6 @@ filegroup(
     srcs = glob(["*.j2"]),
     visibility = ["//tools/bazel/tests:__pkg__"],
 )
+
+# Native host finalization uses the current template as an explicit input.
+exports_files(["sonic_debian_extension.j2"])

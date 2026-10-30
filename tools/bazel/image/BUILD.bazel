@@ -1,0 +1,90 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob([
+    "*.py",
+    "*.bzl",
+]))
+
+py_test(
+    name = "metadata_test",
+    srcs = [
+        "metadata.py",
+        "metadata_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "host_test",
+    srcs = [
+        "host.py",
+        "host_test.py",
+        "metadata.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "store_test",
+    srcs = [
+        "store.py",
+        "store_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "import_store_test",
+    srcs = [
+        "import_store.py",
+        "import_store_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "installer_test",
+    srcs = [
+        "installer.py",
+        "installer_test.py",
+    ],
+    data = ["//:image_installer_test_data"],
+    imports = ["."],
+)
+
+py_test(
+    name = "run_test",
+    srcs = [
+        "run.py",
+        "run_test.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "prepare_inputs_test",
+    srcs = [
+        "host.py",
+        "installer.py",
+        "metadata.py",
+        "prepare_host_inputs.py",
+        "prepare_inputs.py",
+        "prepare_inputs_test.py",
+        "//tools/bazel/image/native:producer.py",
+        "//tools/bazel/image/native:source_identity.py",
+    ],
+    imports = ["."],
+)
+
+py_test(
+    name = "build_test",
+    srcs = [
+        "build.py",
+        "build_test.py",
+        "//tools/bazel/ci:build_events.py",
+    ],
+    data = ["//:image_build_test_data"],
+    imports = ["."],
+)
