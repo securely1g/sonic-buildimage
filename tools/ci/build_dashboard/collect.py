@@ -25,20 +25,23 @@ _breakdown_spec = importlib.util.spec_from_file_location(
 breakdown = importlib.util.module_from_spec(_breakdown_spec)
 _breakdown_spec.loader.exec_module(breakdown)
 
-WORKFLOWS = ("bazel-swss-oci.yml", "bazel-oci.yml", "bazel.yml")
+WORKFLOWS = ("bazel-swss-oci.yml", "bazel-oci.yml", "bazel-vs-unprivileged.yml", "bazel.yml")
 PHASES = ("setup", "build", "validation", "upload", "other")
 REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 IMAGE_JOBS = {
     "Make VS with Bazel SWSS (AMD64)": "make-vs",
     "Bazel VS installer (AMD64)": "bazel-vs",
+    "Unprivileged sonic-vs.bin assembly (AMD64)": "bazel-vs",
 }
 IMAGE_STEPS = {
+    "Build the VS image",
     "Build the VS image with Bazel SWSS archives",
     "Build the VS image and both OCI container variants",
     "Build the Bazel VS installer",
     "Build Bazel VS installer",
     "Build and verify sonic-vs.bin with Bazel",
+    "Run Make inside an unprivileged SONiC builder and verify the installer",
 }
 MAX_LOG_JOBS = 20
 LOG_TIMEOUT_SECONDS = 45
@@ -91,6 +94,8 @@ def seconds(item):
 
 def phase(name):
     lower = name.lower()
+    if name in IMAGE_STEPS:
+        return "build"
     if lower.startswith(("post ", "remove ", "complete job")):
         return "other"
     if "upload" in lower:
