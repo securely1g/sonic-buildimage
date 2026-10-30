@@ -24,13 +24,24 @@ job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
 
-The native VS job reuses `target/docker-orchagent.gz` produced as an installer
-dependency. `build_vs_with_reused_orchagent.sh` captures that archive after the
-successful VS build, requests the remaining artifacts, and verifies the retained
-runtime archive against its Make metadata and the matching debug image. Missing,
-changed or incompatible archives fail the job; the script does not fall back to
-an unnoticed rebuild. Standalone Make archive targets keep their normal input
-and builder-switch checks.
+The native VS Make build produces the runtime and debug archives together for
+each registered Bazel container, using the same builder and Bazel invocation
+for each pair. The normal installer still selects runtime containers;
+`INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
+not add it to the installer.
+
+`build_vs_with_reused_orchagent.sh` checks both Orchagent and Syncd pairs
+immediately after the VS build, before another builder can produce a missing
+archive. It checks their Linux/AMD64 configuration, Make manifests and Bazel
+producer stamps, and requires every debug image to extend its exact runtime
+layers. It also checks `target/sonic-vs.img.gz.dockers`, the archive list Make
+emits from the installer's actual inputs, contains runtime Orchagent and Syncd
+and no debug archives for this normal VS configuration. This list establishes
+Make's selection; the existing installed-image and firmware boot checks remain
+separate validation of the resulting image. A final check requires all four
+archives and their manifests to remain unchanged after the follow-up work.
+Missing, changed or incompatible outputs fail the job without an unnoticed
+archive rebuild. Standalone Make archive targets retain their normal checks.
 
 To measure the avoided request on the same revision, runner, configuration and
 warmed caches, dispatch `Bazel OCI` with `skip_vs=false` and
@@ -41,19 +52,36 @@ validation cost and their difference. This measures the removed request, not a
 paired full-job speedup. Normal PR runs omit the request. Existing source,
 installed-image, debug-symbol and firmware boot checks remain required.
 
-After capturing the installer's runtime archive, the helper requests the
-`bazel-vs-oci` aggregate with the same build options. It verifies the retained
-archive again after the aggregate succeeds.
+After capturing both pairs, the helper requests `bazel-vs-oci-verify` with the
+same build options. This aggregate builds the two existing P4RT Debian packages
+and runs the P4 image/package checks in one Trixie builder. It deliberately has
+no image archive prerequisites, because the VS build already produced and
+validated those files.
 
-This aggregate is limited to native AMD64/Trixie VS with those features. It
-uses the release Orchagent archive verified by the VS build helper,
-checks Bookworm prerequisites once, then keeps the existing Orchagent debug and
-Syncd release/debug archive recipes, both existing P4RT Debian package targets,
-and the P4 image/package checks in one Trixie container. Each archive still uses
-its owner's dependencies and Bazel options; compatible calls reuse that
-container's private Bazel server and output tree. The aggregate serializes its
-prerequisites and stops on a failed build or check. Standalone archive requests
-and other build configurations retain their existing rules.
+The P4 image test still declares the native Syncd OCI images and Bazel archive
+outputs as inputs, and compares them with the retained Make archives. Bazel
+therefore evaluates that graph and may restore outputs or rebuild on a cache
+miss in the verification builder. Removing the repeated Make archive recipes
+does not disable those source/identity checks or guarantee zero subsequent
+Bazel image work.
+
+Both `bazel-vs-oci-verify` and the original `bazel-vs-oci` aggregate are limited to
+native AMD64/Trixie VS with those features. The original aggregate continues
+to build the follow-up archives for standalone callers that need them. Each
+container uses its owner's dependencies and Bazel options; the aggregates
+serialize their prerequisites and stop on a failed build or check. Standalone
+archive requests and other configurations retain their existing rules.
+
+The existing `sonic-vs-orchagent-reuse-amd64` CI artifact also retains
+`runtime-debug-pairs.json`, the installer's `.dockers` list, and
+`runtime-debug-pairs-timing.json`. The timing file records the tested revision,
+configuration and monotonic wall times for the VS build (including pair
+production and the installer's BIOS/UEFI boot checks), pair validation and
+required follow-up work. Its total excludes the optional redundant-request
+calibration, subsequent source/installed-container validation and artifact
+uploads. Compare that complete measured scope against a separately
+recorded baseline with the same runner, inputs and cache policy; shorter
+follow-up steps alone do not establish a speedup if work moved into VS assembly.
 
 `verify_vs_oci.sh` runs the same uncached P4 image test and split-debug package
 check before the builder exits. It preserves `artifacts/vs/syncd-p4-images/`,

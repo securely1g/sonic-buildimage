@@ -83,7 +83,7 @@ sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
         result = self.run_verifier(DEBUG_STATUS="9")
         self.assertEqual(result.returncode, 9, result.stdout + result.stderr)
 
-    def run_make(self, **overrides):
+    def run_make(self, *, goal="bazel-vs-oci", **overrides):
         settings = {
             "BUILD_WITH_BAZEL_WHEN_AVAILABLE": "y", "BLDENV": "trixie", "CONFIGURED_PLATFORM": "vs",
             "CONFIGURED_ARCH": "amd64", "INCLUDE_FIPS": "y", "INCLUDE_VS_DASH_SAI": "y",
@@ -101,7 +101,7 @@ sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
         recipe += " ".join(OUTPUTS) + ":\n"
         recipe += "\t@mkdir recipe-lock && printf '%s\\n' '$@' >> producers.log && sleep 0.01 && rmdir recipe-lock\n"
         recipe += "\t@test '$@' != '$(FAIL_TARGET)'\n"
-        return subprocess.run(["make", "--no-print-directory", "-j8", "-f", "-", "bazel-vs-oci",
+        return subprocess.run(["make", "--no-print-directory", "-j8", "-f", "-", goal,
                                *[key + "=" + value for key, value in settings.items()]],
                               input=recipe, cwd=self.directory, env=self.environment,
                               text=True, capture_output=True, check=False)
@@ -111,6 +111,12 @@ sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
             result = self.run_make()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((self.directory / "producers.log").read_text().splitlines(), OUTPUTS * (repetition + 1))
+        self.assertTrue((self.directory / "debug-arguments.json").is_file())
+
+    def test_verification_only_builds_p4_packages_without_requesting_archives(self):
+        result = self.run_make(goal="bazel-vs-oci-verify")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.directory / "producers.log").read_text().splitlines(), DEB_PATHS)
         self.assertTrue((self.directory / "debug-arguments.json").is_file())
 
     def test_build_failure_stops_later_outputs_and_verification(self):

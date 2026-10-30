@@ -51,6 +51,33 @@ enabled them for the selected architecture, platform and features. Make does
 not probe for a Bazel executable or retry a failed Bazel build with Make.
 Invalid metadata for a selected target and Bazel build errors remain failures.
 
+### Build runtime and debug archives with the VS image
+
+During `make target/sonic-vs.img.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`,
+the Trixie builder builds each selected, supported runtime/debug pair in one
+Bazel invocation. The two targets share the owner's configuration and declared
+inputs. This retains the runtime layers and Bazel state while producing the
+matching debug image, before the VS builder exits. Both complete Docker archives
+are exported to `target/`; each archive remains independently cacheable.
+
+For the native AMD64 FIPS/DASH CI configuration, this produces
+`docker-orchagent.gz`, `docker-orchagent-dbg.gz`, `docker-syncd-vs.gz` and
+`docker-syncd-vs-dbg.gz` during the VS build. The existing owner guards determine
+which pairs are available in other configurations.
+
+Building a debug archive does not select it for installation.
+`INSTALL_DEBUG_TOOLS=y` selects the debug containers through the existing VS
+installer list; a normal image continues to install the runtime containers.
+Standalone archive requests and unsupported Make configurations retain their
+existing behavior. A selected pair fails if either build/export fails or the
+owner declares different Bazel arguments for its two variants.
+
+CI verifies both pairs immediately after the VS build, checks the installer's
+`.dockers` selection, then runs the remaining package and image checks without
+requesting the container archives again. See [CI evidence and timing](ci/README.md).
+
+### Register container targets
+
 Keep the container's Make declarations in their existing location, such as
 `rules/docker-orchagent.mk` or `platform/vs/docker-syncd-vs.mk`.
 Select Bazel only under that owner's feature and build-environment guards. The
