@@ -32,6 +32,15 @@ only for workflows that request `sonic-vs-source-pr-NUMBER`. A runner gets only 
 custom label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
 The optional manager below registers replacements automatically after each job.
 
+When several hosts share a pool, pass a unique, stable `--runner-host` value to
+the manager installer and manual rearm, for example `--runner-host lgh102`.
+This names registrations `sonic-vs-host-lgh102-<attempt>` without changing their
+routing label. The manager checks for conflicting registrations from that host
+while allowing other hosts in the same pool. Names must be lowercase DNS-style
+strings of 1–24 characters. Reuse the same value when reinstalling; changing or
+omitting an assigned host identity is rejected. Existing configurations without
+this option retain their legacy runner names and conflict checks.
+
 ## Prepare a host once
 
 Use Ubuntu 22.04 or 24.04 for the documented SONiC host baseline. The initial
@@ -162,8 +171,8 @@ sudo journalctl -u sonic-vs-runner-manager.service -n 50 --no-pager
 For a host prepared for bin-only builds, select that pool instead of `--master`:
 
 ```sh
-python3 tools/ci/runner/install_manager.py --operator "$USER" --build-target sonic-vs.bin --dry-run
-sudo python3 tools/ci/runner/install_manager.py --operator "$USER" --build-target sonic-vs.bin
+python3 tools/ci/runner/install_manager.py --operator "$USER" --build-target sonic-vs.bin --runner-host lgh102 --dry-run
+sudo python3 tools/ci/runner/install_manager.py --operator "$USER" --build-target sonic-vs.bin --runner-host lgh102
 ```
 
 The manager records the build target, checks the same bin-only prerequisites
@@ -171,6 +180,7 @@ when registering or restarting a runner, and replenishes `sonic-vs-bin` after
 each job. This allows native preparation and downstream assembly to consume
 separate ephemeral runners on the host. Existing manager configurations without
 a build target retain their full-image KVM checks and routing.
+Replace `lgh102` with the chosen unique identity when preparing another host.
 
 For P330, the operator is `lgh`. `--master` selects the
 `sonic-vs-source-master` routing label used by push/manual VS jobs. To maintain a
@@ -246,8 +256,8 @@ python3 /opt/sonic-runner-tools/runner/rearm.py --master
 For a bin-only job, select the shared bin pool without a PR number:
 
 ```sh
-python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin --dry-run
-python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin
+python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin --runner-host lgh102 --dry-run
+python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin --runner-host lgh102
 ```
 
 Use `--master` for the shared full-image PR/manual pool. Arm only after reviewing the PR code and

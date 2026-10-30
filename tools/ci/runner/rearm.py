@@ -96,6 +96,22 @@ def routing_label(pr, build_target=None):
     return f"sonic-vs-source-pr-{pr}" if pr else "sonic-vs-source-master"
 
 
+def validate_runner_host(value):
+    # Keep the complete host-specific runner name within 64 characters.
+    if value is not None and (not isinstance(value, str)
+            or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?", value)):
+        raise ValueError("runner-host must be a lowercase DNS-style name of 1-24 characters")
+    return value
+
+
+def runner_prefix(pr, build_target=None, runner_host=None):
+    validate_runner_host(runner_host)
+    if runner_host is not None:
+        return f"sonic-vs-host-{runner_host}-"
+    route = "bin" if build_target == "sonic-vs.bin" else pr or "master"
+    return f"sonic-vs-{route}-"
+
+
 def runner_environment(token=None):
     # Do not inherit gh, SSH-agent, operator credential, or proxy environments.
     environment = {"HOME": str(RUNNER_HOME), "USER": "sonic-runner", "LOGNAME": "sonic-runner",
@@ -145,6 +161,7 @@ def idle_host():
 def register(args):
     if os.geteuid() != 0:
         raise RuntimeError("Internal registration requires sudo")
+    prefix = runner_prefix(args.pr, args.build_target, getattr(args, "runner_host", None))
     preflight.check_data_storage(build_target=args.build_target)
     preflight_args = ["--build-target", args.build_target] if args.build_target else []
     # Serialize operator attempts without trusting a runner-writable lock path.
@@ -174,8 +191,7 @@ def register(args):
         token = sys.stdin.readline().strip()
         if not token or len(token) > 4096:
             raise RuntimeError("Missing or invalid registration token")
-        route = "bin" if args.build_target == "sonic-vs.bin" else args.pr or "master"
-        runner_name = f"sonic-vs-{route}-{stamp}"
+        runner_name = prefix + stamp
         as_runner([str(attempt / "config.sh"), "--unattended", "--ephemeral",
                    "--url", f"https://github.com/{args.repo}", "--name", runner_name,
                    "--labels", routing_label(args.pr, args.build_target), "--work", "_work"], token=token, cwd=attempt)
@@ -198,6 +214,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="securely1g/sonic-buildimage")
     parser.add_argument("--build-target", help="Output target; sonic-vs.bin selects the shared bin-only pool without KVM")
+    parser.add_argument("--runner-host", help="Stable host name for independent registrations in a shared pool")
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--pr", type=int)
     target.add_argument("--master", action="store_true", help="Use the push/manual workflow label")
@@ -208,6 +225,10 @@ def main():
         parser.error("Repository must be owner/name")
     if args.pr is not None and args.pr < 1:
         parser.error("PR number must be positive")
+    try:
+        validate_runner_host(args.runner_host)
+    except ValueError as error:
+        parser.error(str(error))
     if args.build_target == "sonic-vs.bin":
         if args.pr is not None or args.master:
             parser.error("sonic-vs.bin selects the shared bin-only pool; omit --pr and --master")
@@ -218,6 +239,8 @@ def main():
     if args.dry_run:
         print(f"Repository: {args.repo}; label: {routing_label(args.pr, args.build_target)}")
         print(f"Build target: {args.build_target or 'default (KVM required)'}")
+        if args.runner_host is not None:
+            print(f"Runner host: {args.runner_host}")
         print("Check idle service and host prerequisites, verify archive, create a fresh attempt,")
         print("register one ephemeral runner using a short-lived token, start sonic-vs-runner.service.")
         print("Keep prior attempt directories; do not store gh credentials in the runner account.")
@@ -240,6 +263,8 @@ def main():
         command += ["--master"]
     if args.build_target:
         command += ["--build-target", args.build_target]
+    if args.runner_host is not None:
+        command += ["--runner-host", args.runner_host]
     registration = register_from_operator(command, token)
     del token, token_response
     wait_until_ready(args.repo, registration)
@@ -248,5 +273,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         raise SystemExit(f"Rearm failed: {error}")

@@ -300,49 +300,54 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
     def test_register_reads_runner_written_bom_identity_before_starting_service(self):
         # Runner.Listener writes this JSON using a UTF-8 BOM. Exercise the real
         # register stage and filesystem, replacing only privileged/external work.
-        with tempfile.TemporaryDirectory() as temporary:
-            home = Path(temporary)
-            (home / "attempts").mkdir()
-            lock = home / "register.lock"
-            account = SimpleNamespace(pw_uid=1001, pw_gid=1001)
-            preflight_commands = []
+        for runner_host in (None, "lgh102"):
+            with tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary)
+                (home / "attempts").mkdir()
+                lock = home / "register.lock"
+                account = SimpleNamespace(pw_uid=1001, pw_gid=1001)
+                preflight_commands = []
 
-            def configure(command, *, token=None, cwd=None):
-                if command[:2] == ["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py"]:
-                    preflight_commands.append(command)
-                if command[0].endswith("config.sh"):
-                    self.assertEqual(token, "short-lived")
-                    name = command[command.index("--name") + 1]
-                    self.assertTrue(name.startswith("sonic-vs-bin-"))
-                    self.assertEqual(command[command.index("--labels") + 1], "sonic-vs-bin")
-                    (cwd / ".runner").write_text(json.dumps({"agentId": 42, "agentName": name,
-                                                           "ephemeral": True, "workFolder": "_work"}),
-                                                  encoding="utf-8-sig")
+                def configure(command, *, token=None, cwd=None):
+                    if command[:2] == ["/usr/bin/python3", "/opt/sonic-runner-tools/runner/preflight.py"]:
+                        preflight_commands.append(command)
+                    if command[0].endswith("config.sh"):
+                        self.assertEqual(token, "short-lived")
+                        name = command[command.index("--name") + 1]
+                        expected_prefix = "sonic-vs-host-lgh102-" if runner_host else "sonic-vs-bin-"
+                        self.assertTrue(name.startswith(expected_prefix))
+                        self.assertEqual(command[command.index("--labels") + 1], "sonic-vs-bin")
+                        (cwd / ".runner").write_text(json.dumps({"agentId": 42, "agentName": name,
+                                                               "ephemeral": True, "workFolder": "_work"}),
+                                                      encoding="utf-8-sig")
 
-            with patch.object(rearm, "RUNNER_HOME", home), \
-                    patch.object(rearm.os, "geteuid", return_value=0), \
-                    patch.object(rearm.os.path, "ismount", return_value=True), \
-                    patch.object(rearm.os, "chown"), \
-                    patch.object(rearm, "open", side_effect=lambda *args: lock.open("w"), create=True), \
-                    patch.object(rearm, "idle_host"), \
-                    patch.object(rearm.pwd, "getpwnam", return_value=account), \
-                    patch.object(rearm, "archive_digest", return_value=rearm.SHA256), \
-                    patch.object(rearm, "as_runner", side_effect=configure), \
-                    patch.object(rearm.subprocess, "check_output", return_value="loaded\n"), \
-                    patch.object(rearm.subprocess, "run") as run, \
-                    patch.object(rearm.sys, "stdin", io.StringIO("short-lived\n")), \
-                    contextlib.redirect_stdout(io.StringIO()) as output:
-                rearm.register(SimpleNamespace(repo="owner/repo", pr=None, build_target="sonic-vs.bin"))
-            metadata = json.loads(output.getvalue().split(rearm.REGISTRATION_PREFIX)[1])
-            attempt = Path(metadata["attempt"])
-            self.assertEqual(metadata["id"], 42)
-            self.assertEqual((home / "current").resolve(), attempt)
-            self.assertTrue((attempt / ".runner").read_bytes().startswith(b"\xef\xbb\xbf"))
-            self.assertNotIn("short-lived", output.getvalue())
-            self.assertEqual(run.call_args.args[0], ["systemctl", "start", rearm.SERVICE])
-            self.assertEqual(len(preflight_commands), 2)
-            for command in preflight_commands:
-                self.assertEqual(command[-2:], ["--build-target", "sonic-vs.bin"])
+                with patch.object(rearm, "RUNNER_HOME", home), \
+                        patch.object(rearm.os, "geteuid", return_value=0), \
+                        patch.object(rearm.os.path, "ismount", return_value=True), \
+                        patch.object(rearm.os, "chown"), \
+                        patch.object(rearm, "open", side_effect=lambda *args: lock.open("w"), create=True), \
+                        patch.object(rearm, "idle_host"), \
+                        patch.object(rearm.pwd, "getpwnam", return_value=account), \
+                        patch.object(rearm, "archive_digest", return_value=rearm.SHA256), \
+                        patch.object(rearm, "as_runner", side_effect=configure), \
+                        patch.object(rearm.subprocess, "check_output", return_value="loaded\n"), \
+                        patch.object(rearm.subprocess, "run") as run, \
+                        patch.object(rearm.sys, "stdin", io.StringIO("short-lived\n")), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    arguments = {"repo": "owner/repo", "pr": None, "build_target": "sonic-vs.bin"}
+                    if runner_host is not None:
+                        arguments["runner_host"] = runner_host
+                    rearm.register(SimpleNamespace(**arguments))
+                metadata = json.loads(output.getvalue().split(rearm.REGISTRATION_PREFIX)[1])
+                attempt = Path(metadata["attempt"])
+                self.assertEqual(metadata["id"], 42)
+                self.assertEqual((home / "current").resolve(), attempt)
+                self.assertTrue((attempt / ".runner").read_bytes().startswith(b"\xef\xbb\xbf"))
+                self.assertNotIn("short-lived", output.getvalue())
+                self.assertEqual(run.call_args.args[0], ["systemctl", "start", rearm.SERVICE])
+                self.assertEqual(len(preflight_commands), 2)
+                for command in preflight_commands:
+                    self.assertEqual(command[-2:], ["--build-target", "sonic-vs.bin"])
 
     def test_register_rejects_storage_before_touching_an_attempt(self):
         with patch.object(rearm.os, "geteuid", return_value=0), \
@@ -511,6 +516,18 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
             self.assertEqual(rearm.routing_label(None, target), "sonic-vs-source-master")
             self.assertEqual(rearm.routing_label(9, target), "sonic-vs-source-pr-9")
 
+    def test_runner_host_names_keep_legacy_prefixes_and_bound_names(self):
+        self.assertEqual(rearm.runner_prefix(9), "sonic-vs-9-")
+        self.assertEqual(rearm.runner_prefix(None), "sonic-vs-master-")
+        self.assertEqual(rearm.runner_prefix(None, "sonic-vs.bin"), "sonic-vs-bin-")
+        for target in (None, "sonic-vs.bin"):
+            self.assertEqual(rearm.runner_prefix(None, target, "lgh102"), "sonic-vs-host-lgh102-")
+        name = rearm.runner_prefix(None, "sonic-vs.bin", "a" * 24) + "20261030T204132Z-9f9d077c"
+        self.assertLessEqual(len(name), 64)
+        for invalid in ("", "../lgh102", "lgh102/name", "lgh102\n", "LGH102", "-lgh102", "lgh102-", "a" * 25, False):
+            with self.subTest(host=invalid), self.assertRaises(ValueError):
+                rearm.runner_prefix(None, "sonic-vs.bin", invalid)
+
     def test_token_is_in_runner_environment_and_not_arguments(self):
         account = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_name="sonic-runner")
         with patch.dict(rearm.os.environ, {"GH_TOKEN": "operator-secret", "SSH_AUTH_SOCK": "/operator/agent"}), \
@@ -561,6 +578,29 @@ print(json.dumps({'accepted': accepted, 'file': config.stat().st_mode & 0o777,
                 self.assertNotIn("--master", command)
             else:
                 self.assertNotIn("--build-target", command)
+
+    def test_operator_forwards_runner_host_without_changing_pool(self):
+        with patch.object(rearm.sys, "argv", ["rearm.py", "--build-target", "sonic-vs.bin", "--runner-host", "lgh102"]), \
+                patch.object(rearm.os, "geteuid", return_value=1001), \
+                patch.object(rearm, "sudo_command", return_value=["sudo", "-n", "--"]), \
+                patch.object(rearm.subprocess, "check_output", side_effect=["operator\n", '{"token":"short-lived"}']), \
+                patch.object(rearm, "register_from_operator", return_value=self.registration) as register, \
+                patch.object(rearm, "wait_until_ready"), contextlib.redirect_stdout(io.StringIO()):
+            rearm.main()
+        command, token = register.call_args.args
+        self.assertEqual(command[-4:], ["--build-target", "sonic-vs.bin", "--runner-host", "lgh102"])
+        self.assertEqual(token, "short-lived")
+        self.assertNotIn(token, command)
+
+    def test_invalid_runner_host_fails_before_network_or_host_changes(self):
+        for host in ("", "../lgh102", "lgh102/name", "lgh102\n", "LGH102", "-lgh102", "lgh102-", "a" * 25):
+            with self.subTest(host=host), \
+                    patch.object(rearm.sys, "argv", ["rearm.py", "--build-target", "sonic-vs.bin", "--runner-host=" + host]), \
+                    patch.object(rearm.subprocess, "run", side_effect=AssertionError("process launched")), \
+                    patch.object(rearm.subprocess, "check_output", side_effect=AssertionError("process launched")), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                rearm.main()
+            self.assertEqual(result.exception.code, 2)
 
     def test_missing_or_invalid_selection_fails_before_network_or_host_changes(self):
         for arguments in ([], ["--dry-run"], ["--pr", "0"], ["--pr", "9", "--master"],

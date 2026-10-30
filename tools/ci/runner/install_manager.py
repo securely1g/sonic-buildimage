@@ -7,8 +7,11 @@ import os
 from pathlib import Path
 import pwd
 import re
+import stat
 import subprocess
 import tempfile
+
+import rearm
 
 TOOL_ROOT = Path("/opt/sonic-runner-tools/runner")
 UNIT_ROOT = Path("/etc/systemd/system")
@@ -71,6 +74,7 @@ def configuration(args):
         raise ValueError("build-target must be sonic-vs.bin")
     if build_target and (args.pr is not None or getattr(args, "master", False)):
         raise ValueError("sonic-vs.bin selects the shared bin-only pool; omit --pr and --master")
+    runner_host = rearm.validate_runner_host(getattr(args, "runner_host", None))
     config = {
         "_generated": {
             "notice": "AUTO-GENERATED. DO NOT EDIT MANUALLY.",
@@ -83,6 +87,8 @@ def configuration(args):
     }
     if build_target:
         config["build_target"] = build_target
+    if runner_host:
+        config["runner_host"] = runner_host
     return config
 
 
@@ -99,6 +105,24 @@ def write_owned(path, content, mode):
         Path(temporary).unlink(missing_ok=True)
 
 
+def preserve_runner_host(config):
+    """Do not forget an assigned host identity during a routine reinstall."""
+    try:
+        descriptor = os.open(CONFIG, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return
+    with os.fdopen(descriptor) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError("Existing manager config must be a root-owned regular file, not writable by group or others")
+        previous = json.load(stream)
+    if not isinstance(previous, dict):
+        raise RuntimeError("Existing manager config is invalid; inspect it before installing")
+    previous_host = rearm.validate_runner_host(previous.get("runner_host"))
+    if previous_host is not None and previous_host != config.get("runner_host"):
+        raise RuntimeError("The assigned runner-host cannot change during reinstall; inspect the existing host registration first")
+
+
 def install(config, *, enable=True):
     if os.geteuid() != 0:
         raise RuntimeError("Install with sudo; the manager needs systemd and runner-account access")
@@ -111,6 +135,7 @@ def install(config, *, enable=True):
     ).strip()
     if state != "loaded":
         raise RuntimeError("Prepare this host with bootstrap.sh first")
+    preserve_runner_host(config)
 
     # Validate the existing operator login before enabling unattended registration.
     # No credential is placed in the generated configuration or runner account.
@@ -147,6 +172,8 @@ def install(config, *, enable=True):
     print("Installed " + TIMER + (" and enabled automatic registration" if enable else " (not enabled)"))
     route = config.get("build_target") or ("PR " + str(config["pr"]) if config["pr"] else "master")
     print("Routing: " + config["repo"] + " / " + route)
+    if config.get("runner_host"):
+        print("Runner host: " + config["runner_host"])
     print("Inspect: sudo journalctl -u " + SERVICE + " -n 50 --no-pager")
 
 
@@ -155,6 +182,7 @@ def main():
     parser.add_argument("--operator", required=True, help="Local user with an existing noninteractive gh login")
     parser.add_argument("--github-account", default="securely1g")
     parser.add_argument("--repo", default="securely1g/sonic-buildimage")
+    parser.add_argument("--runner-host", help="Stable host name for independent runners sharing a pool")
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--master", action="store_true")
     target.add_argument("--pr", type=int)

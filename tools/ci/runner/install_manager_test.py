@@ -33,6 +33,7 @@ class InstallerTest(unittest.TestCase):
             repo="securely1g/sonic-buildimage", pr=9))
         self.operator = SimpleNamespace(pw_uid=1000, pw_name="builder")
         self.tool_owner = 0
+        self.config_owner = 0
         self.states = {subject.SERVICE: "not-found", subject.TIMER: "not-found"}
         self.commands = []
         self.github = Mock()
@@ -59,6 +60,14 @@ class InstallerTest(unittest.TestCase):
         stack.enter_context(patch.object(subject.Path, "stat", directory_stat))
         self.euid = stack.enter_context(patch.object(subject.os, "geteuid", return_value=0))
         self.fchown = stack.enter_context(patch.object(subject.os, "fchown"))
+        original_fstat = os.fstat
+
+        def config_stat(descriptor):
+            fields = list(original_fstat(descriptor))
+            fields[4] = self.config_owner
+            return os.stat_result(fields)
+
+        stack.enter_context(patch.object(subject.os, "fstat", side_effect=config_stat))
         self.accounts = stack.enter_context(patch.object(subject.pwd, "getpwnam", return_value=self.operator))
         self.inspect = stack.enter_context(patch.object(subject.subprocess, "check_output", side_effect=self.inspect_job))
         self.run = stack.enter_context(patch.object(subject.subprocess, "run", side_effect=self.systemctl))
@@ -154,6 +163,34 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(config["build_target"], "sonic-vs.bin")
         self.assertIsNone(config["pr"])
         self.github_factory.assert_called_once_with(config)
+
+    def test_host_identity_is_optional_but_persists_across_reinstall(self):
+        subject.install(self.config)
+        args = SimpleNamespace(operator="builder", github_account="securely1g",
+                               repo="securely1g/sonic-buildimage", pr=None,
+                               build_target="sonic-vs.bin", runner_host="lgh102")
+        config = subject.configuration(args)
+        subject.install(config)
+        self.assert_installed(config)
+        self.assertEqual(config["runner_host"], "lgh102")
+        subject.install(config)
+        original = self.snapshot()
+        for change in ({"runner_host": "p330"}, {"runner_host": None}):
+            self.commands.clear()
+            with self.subTest(change=change), self.assertRaisesRegex(RuntimeError, "cannot change during reinstall"):
+                subject.install({**config, **change})
+            self.assertEqual(self.snapshot(), original)
+            self.assertEqual(self.changes(), [])
+
+    def test_reinstall_rejects_unsafe_existing_config_before_mutation(self):
+        subject.install(self.config)
+        original = self.snapshot()
+        self.commands.clear()
+        self.config_owner = 1000
+        with self.assertRaisesRegex(RuntimeError, "root-owned regular file"):
+            subject.install(self.config)
+        self.assertEqual(self.snapshot(), original)
+        self.assertEqual(self.changes(), [])
 
     def test_failed_operator_authentication_changes_no_files_or_units(self):
         subject.install(self.config)
@@ -293,12 +330,13 @@ class InstallerTest(unittest.TestCase):
 
     def test_bin_cli_is_exclusive_and_preview_uses_no_host_operations(self):
         common = ["install_manager.py", "--operator", "builder", "--dry-run"]
-        with patch.object(sys, "argv", [*common, "--build-target", "sonic-vs.bin"]), \
+        with patch.object(sys, "argv", [*common, "--build-target", "sonic-vs.bin", "--runner-host", "lgh102"]), \
                 patch.object(subject, "install", side_effect=AssertionError("preview attempted installation")), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             subject.main()
         self.assertIn('"build_target": "sonic-vs.bin"', output.getvalue())
         self.assertIn('"pr": null', output.getvalue())
+        self.assertIn('"runner_host": "lgh102"', output.getvalue())
         for arguments in (["--master", "--build-target", "sonic-vs.bin"],
                           ["--pr", "76", "--build-target", "sonic-vs.bin"],
                           ["--build-target", "sonic-vs.img.gz"]):
@@ -309,6 +347,14 @@ class InstallerTest(unittest.TestCase):
         self.accounts.assert_not_called()
         self.run.assert_not_called()
         self.github_factory.assert_not_called()
+
+    def test_invalid_runner_host_fails_configuration_without_host_operations(self):
+        for host in ("../lgh102", "lgh102;echo", "LGH102", "", False, "a" * 25):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                subject.configuration(SimpleNamespace(operator="builder", github_account="securely1g",
+                                                       repo="securely1g/sonic-buildimage", pr=None,
+                                                       build_target="sonic-vs.bin", runner_host=host))
+        self.assertEqual(self.commands, [])
 
 
 if __name__ == "__main__":

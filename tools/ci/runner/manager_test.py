@@ -147,7 +147,8 @@ class ManagerLifecycleTests(unittest.TestCase):
         route = "bin" if config.get("build_target") else config["pr"] or "master"
         label = "sonic-vs-bin" if config.get("build_target") else (
             f"sonic-vs-source-pr-{config['pr']}" if config["pr"] else "sonic-vs-source-master")
-        registration = {"id": 100 + self.counter, "name": f"sonic-vs-{route}-" + stamp, "attempt": str(attempt)}
+        prefix = f"sonic-vs-host-{config['runner_host']}-" if config.get("runner_host") else f"sonic-vs-{route}-"
+        registration = {"id": 100 + self.counter, "name": prefix + stamp, "attempt": str(attempt)}
         data = {"agentId": registration["id"], "agentName": registration["name"], "ephemeral": True,
                 "workFolder": "_work", "gitHubUrl": "https://github.com/" + CONFIG["repo"]}
         (attempt / ".runner").write_text(json.dumps(data), encoding="utf-8-sig")
@@ -193,6 +194,8 @@ class ManagerLifecycleTests(unittest.TestCase):
             config = {**CONFIG, "pr": int(command[command.index("--pr") + 1])}
         else:
             self.assertIn("--master", command)
+        if "--runner-host" in command:
+            config = {**config, "runner_host": command[command.index("--runner-host") + 1]}
         self.assertNotIn(token, repr(command))
         self.assertEqual(token, "SHORT_LIVED_REGISTRATION_SECRET")
         self.assertFalse({"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "GH_CONFIG_DIR"} & env.keys())
@@ -201,6 +204,61 @@ class ManagerLifecycleTests(unittest.TestCase):
     def snapshot(self):
         return {str(path.relative_to(self.home)): path.read_bytes()
                 for path in self.home.rglob("*") if path.is_file() and not path.is_symlink()}
+
+    def test_host_runner_coexists_with_shared_pool_and_replenishes_after_job(self):
+        config = {**CONFIG, "build_target": "sonic-vs.bin", "runner_host": "lgh102"}
+        for identifier, name in ((300, "sonic-vs-bin-20261030T204132Z-9f9d077c"),
+                                 (301, "sonic-vs-host-p330-20261030T204132Z-9f9d077c"),
+                                 (302, "sonic-vs-host-lgh102-build-20261030T204132Z-9f9d077c")):
+            self.remote[identifier] = {"id": identifier, "name": name, "status": "online", "busy": False,
+                                       "labels": [{"name": "sonic-vs-bin"}]}
+        other_runners = dict(self.remote)
+        self.assertEqual(manager.reconcile(config, self.api), "registered")
+        first = manager.current_registration(config)
+        self.assertTrue(first["name"].startswith("sonic-vs-host-lgh102-"))
+        self.assertEqual(self.remote[first["id"]]["labels"], [{"name": "sonic-vs-bin"}])
+        # Recover the state left by a crash before clearing a successful
+        # registration's marker, without confusing another host's runner.
+        manager.mark_pending(config)
+        self.assertEqual(manager.reconcile(config, self.api), "started")
+        self.assertFalse(manager.PENDING.exists())
+        del self.remote[first["id"]]
+        Path(first["attempt"], ".runner").unlink()
+        self.assertEqual(manager.reconcile(config, self.api), "registered")
+        second = manager.current_registration(config)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertTrue(second["name"].startswith("sonic-vs-host-lgh102-"))
+        self.assertEqual({key: self.remote[key] for key in other_runners}, other_runners)
+
+    def test_same_host_remote_registration_blocks_registration_and_restart(self):
+        config = {**CONFIG, "build_target": "sonic-vs.bin", "runner_host": "lgh102"}
+        duplicate = {"id": 300, "name": "sonic-vs-host-lgh102-20261030T204132Z-9f9d077c",
+                     "status": "online", "busy": False, "labels": [{"name": "sonic-vs-bin"}]}
+        self.remote[300] = duplicate
+        with self.assertRaisesRegex(RuntimeError, "conflicts with this attempt"):
+            manager.reconcile(config, self.api)
+        self.preflight.assert_not_called()
+        self.register.assert_not_called()
+        self.make_registration(config)
+        before = self.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "conflicts with this attempt"):
+            manager.reconcile(config, self.api)
+        self.service.assert_not_called()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_host_identity_is_bound_to_pending_and_local_registration(self):
+        config = {**CONFIG, "build_target": "sonic-vs.bin", "runner_host": "lgh102"}
+        manager.mark_pending(config)
+        self.assertEqual(manager.read_pending(config)["runner_host"], "lgh102")
+        for changed in ({**config, "runner_host": "p330"}, {**config, "runner_host": None}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(RuntimeError, "config differs"):
+                manager.read_pending(changed)
+        manager.PENDING.unlink()
+        self.make_registration(config)
+        with self.assertRaisesRegex(RuntimeError, "differs from manager config"):
+            manager.current_registration({**config, "runner_host": "p330"})
+        self.register.assert_not_called()
+        self.service.assert_not_called()
 
     def test_bin_pool_recovers_then_replaces_native_runner_for_assembly(self):
         config = {**CONFIG, "build_target": "sonic-vs.bin"}
@@ -343,6 +401,7 @@ class ManagerLifecycleTests(unittest.TestCase):
     def test_pending_marker_for_different_configuration_is_preserved(self):
         self.make_registration()
         for change in ({"repo": "another/repository"}, {"pr": 9}, {"build_target": "sonic-vs.bin"},
+                       {"runner_host": "lgh102"},
                        {"operator": "another-operator"}, {"github_account": "another-account"}):
             with self.subTest(change=change):
                 manager.mark_pending({**CONFIG, **change})
@@ -522,6 +581,16 @@ class ManagerLifecycleTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_optional_host_config_validates_safe_names_and_preserves_legacy(self):
+        self.assertEqual(manager.validate_config(CONFIG), CONFIG)
+        config = {**CONFIG, "build_target": "sonic-vs.bin", "runner_host": "lgh102"}
+        self.assertEqual(manager.validate_config(config), config)
+        self.assertEqual(manager.runner_prefix(config), "sonic-vs-host-lgh102-")
+        self.assertEqual(manager.runner_prefix(CONFIG), "sonic-vs-master-")
+        for host in ("../lgh102", "lgh102;echo", "LGH102", "", False, "a" * 25):
+            with self.subTest(host=host), self.assertRaises(RuntimeError):
+                manager.validate_config({**CONFIG, "runner_host": host})
+
     def test_bin_config_and_preflight_forward_target_without_changing_default(self):
         config = {**CONFIG, "build_target": "sonic-vs.bin"}
         self.assertEqual(manager.validate_config(config), config)
