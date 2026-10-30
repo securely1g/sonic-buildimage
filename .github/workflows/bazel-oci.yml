@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       skip_vs:
-        description: Skip the full VS image build
+        description: Skip the VS installer and source-package build
         type: boolean
         default: true
       measure_orchagent_reuse:
@@ -491,12 +491,12 @@ jobs:
 
       - name: Report validation scope
         run: |
-          echo 'Hosted checks cover regressions and dependency resolution; source-package and image validation run in the Make VS job.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Hosted checks cover regressions and dependency resolution; source-package and ONIE installer validation run in the Make VS job. This workflow does not boot a guest VM.' >> "$GITHUB_STEP_SUMMARY"
 
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: [checks]
-    # Build full VS images for master pushes and same-repository pull requests
+    # Build VS ONIE installers for master pushes and same-repository pull requests
     # after hosted regression and dependency-resolution checks.
     # Manual runs retain their skip option; external-fork PRs use hosted checks.
     if: >-
@@ -504,14 +504,18 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    # Share the existing P330 pool; checkout still uses this event's ref and SHA.
+    # Installer assembly and source-package validation do not boot a guest VM.
     runs-on:
       - self-hosted
       - linux
       - x64
-      - sonic-vs-source-master
+      - sonic-vs-bin
     timeout-minutes: 720
     env:
+      # Pull official images directly while retaining versions-docker digest pins.
+      DEFAULT_CONTAINER_REGISTRY: ""
+      MIRROR_URLS: https://deb.debian.org/debian/
+      MIRROR_SECURITY_URLS: https://deb.debian.org/debian-security/
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
       # Keep build results outside run-specific checkouts and disposable builders.
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
@@ -541,7 +545,7 @@ jobs:
           print(f'Workspace: {workspace}; available: {free_gib:.1f} GiB; '
                 f'total: {usage.total / 1024**3:.1f} GiB', flush=True)
           if usage.free < 100 * 1024**3:
-              raise SystemExit(f'The full Make VS build needs at least 100 GiB free; '
+              raise SystemExit(f'The Make VS installer build needs at least 100 GiB free; '
                                f'{workspace} has {free_gib:.1f} GiB available')
           PY
 
@@ -555,7 +559,7 @@ jobs:
           submodules: recursive
 
       - name: Check VS build prerequisites
-        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
+        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD" --build-target sonic-vs.bin
 
       - name: Prepare persistent agent caches
         run: |
@@ -594,7 +598,7 @@ jobs:
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" \
             > artifacts/vs/source-download-receipt.json
 
-      - name: Configure the native VS image
+      - name: Configure the native VS installer
         run: |
           mkdir -p artifacts/vs
           make init 2>&1 | tee artifacts/vs/init.log
@@ -612,7 +616,7 @@ jobs:
               2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
           done
 
-      - name: Build the VS image and both OCI container variants
+      - name: Build and verify the VS installer and both OCI container variants
         id: vs_build
         env:
           MEASURE_ORCHAGENT_REUSE: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_orchagent_reuse }}
@@ -623,6 +627,17 @@ jobs:
           fi
           bash tools/bazel/ci/build_vs_with_reused_orchagent.sh "${measurement[@]}" \
             2>&1 | tee artifacts/vs/build.log
+
+      - name: Retain VS installer validation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-installer-validation-amd64
+          path: |
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/unprivileged/byte-chain.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/unprivileged/result.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/unprivileged/privileges.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Retain Orchagent archive reuse evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -778,6 +793,30 @@ jobs:
               --output artifacts/vs/p4rt-debug-verification.json" \
             2>&1 | tee artifacts/vs/p4rt-debug-verification.log
 
+      - name: Stop this job's VS host-preparation worker
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if [[ -f target/bazel-image-inputs/execution-environment.json && -d target/bazel-host-state ]]; then
+            python3 tools/bazel/image/run.py --workspace "$PWD" --mount-root "$PWD" \
+              --worker-spec "$PWD/target/bazel-image-inputs/execution-environment.json" \
+              --output-user-root "$PWD/target/bazel-host-state" \
+              --persistent-worker "sonic-host-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --worker-action stop
+          fi
+
+      - name: Stop this job's VS assembly worker
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if [[ -f target/bazel-image-inputs/execution-environment.json && -d target/bazel-unprivileged-state ]]; then
+            python3 tools/bazel/image/run.py --workspace "$PWD" --mount-root "$PWD" \
+              --worker-spec "$PWD/target/bazel-image-inputs/execution-environment.json" \
+              --output-user-root "$PWD/target/bazel-unprivileged-state" --unprivileged \
+              --persistent-worker "sonic-vs-bin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --worker-action stop
+          fi
+
       - name: Remove this job's remaining build containers
         if: always()
         timeout-minutes: 2
@@ -842,12 +881,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload VS image and OCI container archives
+      - name: Upload VS installer and OCI container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-make-bazel-swss-amd64
           path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.img.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz

@@ -6,31 +6,40 @@ package expectations remain in the owner declarations and tests.
 
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
-archive checks, lightweight hosted regressions and the full VS integration
-job. SWSS and Syncd source-package checks run after Make in that VS job, using
-its checkout, Trixie builder, platform/feature flags and persistent Bazel action
+archive checks, lightweight hosted regressions and the VS installer integration
+job. That job builds `target/sonic-vs.bin` on the `sonic-vs-bin` runner pool,
+without KVM or guest installation and boot checks. SWSS and Syncd source-package
+checks run after Make in that VS job, using its checkout, Trixie builder,
+platform/feature flags and persistent Bazel action
 cache. The private builder output bases remain separate; cached outputs can
 be restored without recompiling the same source packages. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.
-Keep checks that compile image inputs in the full build job so they can reuse
+Keep checks that compile image inputs in the installer build job so they can reuse
 its action outputs.
 The owning BUILD files sit beside the original container inputs:
 [`dockers/docker-orchagent/BUILD.bazel`](../../../dockers/docker-orchagent/BUILD.bazel)
 and [`platform/vs/docker-syncd-vs/BUILD.bazel`](../../../platform/vs/docker-syncd-vs/BUILD.bazel).
 The shared runner accepts either package path; it does not require owners to
 live under `dockers/`.
-Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
+Manual runs default to `skip_vs=true`; same-repository PRs retain the VS installer
 job after hosted regressions and dependency resolution pass. Fork PRs and
-manual `skip_vs=true` runs omit source-package/full-image validation; hosted
+manual `skip_vs=true` runs omit source-package/installer validation; hosted
 success alone does not establish those results.
 
-The native VS job reuses `target/docker-orchagent.gz` produced as an installer
-dependency. `build_vs_with_reused_orchagent.sh` captures that archive after the
-successful VS build, requests the remaining artifacts, and verifies the retained
-runtime archive against its Make metadata and the matching debug image. Missing,
+The native VS job reuses `target/docker-orchagent.gz` produced among installer
+prerequisites. `build_vs_with_reused_orchagent.sh` captures that archive after
+building the native prerequisites, requests the remaining artifacts, and
+verifies the retained runtime archive against its Make metadata and the matching
+debug image. Missing,
 changed or incompatible archives fail the job; the script does not fall back to
 an unnoticed rebuild. Standalone Make archive targets keep their normal input
 and builder-switch checks.
+
+The helper then runs host preparation and unprivileged installer assembly in
+the declared worker, with the same ONIE/ZIP byte-chain verifier used by
+`bazel-vs-unprivileged.yml`. The workflow retains only the explicit
+`byte-chain.json`, `result.json`, and `privileges.json` assembly receipts and
+publishes `target/sonic-vs.bin` after verification succeeds.
 
 To measure the avoided request on the same revision, runner, configuration and
 warmed caches, dispatch `Bazel OCI` with `skip_vs=false` and
@@ -39,7 +48,8 @@ request once and requires the runtime archive to remain identical. The local
 `artifacts/vs/orchagent-reuse-timing.json` reports its measured wall time, the new
 validation cost and their difference. This measures the removed request, not a
 paired full-job speedup. Normal PR runs omit the request. Existing source,
-installed-image, debug-symbol and firmware boot checks remain required.
+installed-image and debug-symbol checks remain required. Installer verification
+does not establish guest boot or forwarding coverage.
 
 - `container.py` runs an owner's `:ci_tests` test suite and builds its
   `:ci_artifacts` filegroup. Tests and exported files are declared in the

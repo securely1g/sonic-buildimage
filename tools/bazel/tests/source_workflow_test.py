@@ -144,6 +144,45 @@ class SourceWorkflowTest(unittest.TestCase):
                               any(arg in ("build", "test") for arg in call["args"]))
                              for call in calls))
 
+    def test_vs_cleanup_stops_only_this_jobs_prepared_assembly_workers(self):
+        workflow_steps = steps(jobs()["vs"])
+        spec = self.directory / "target/bazel-image-inputs/execution-environment.json"
+        spec.parent.mkdir(parents=True)
+        for title, state_name, worker, unprivileged in (
+                ("Stop this job's VS host-preparation worker", "bazel-host-state", "sonic-host-123-2", False),
+                ("Stop this job's VS assembly worker", "bazel-unprivileged-state", "sonic-vs-bin-123-2", True)):
+            step = workflow_steps[title]
+            self.assertRegex(step, r"(?m)^        if: always\(\)$")
+            state = self.directory / "target" / state_name
+            for have_spec, have_state in ((False, False), (True, False), (False, True), (True, True)):
+                with self.subTest(worker=worker, spec=have_spec, state=have_state):
+                    self.calls.unlink(missing_ok=True)
+                    if have_spec:
+                        spec.write_text("{}")
+                    else:
+                        spec.unlink(missing_ok=True)
+                    if have_state:
+                        state.mkdir(exist_ok=True)
+                    elif state.exists():
+                        state.rmdir()
+                    result = self.execute(shell(step), GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2")
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    if not (have_spec and have_state):
+                        self.assertFalse(self.calls.exists())
+                        continue
+                    calls = self.recorded()
+                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(calls[0]["name"], "python3")
+                    args = calls[0]["args"]
+                    self.assertEqual(args[0], "tools/bazel/image/run.py")
+                    for flag, value in (("--workspace", str(self.directory.resolve())),
+                                        ("--mount-root", str(self.directory.resolve())),
+                                        ("--worker-spec", str(spec.resolve())),
+                                        ("--output-user-root", str(state.resolve())),
+                                        ("--persistent-worker", worker), ("--worker-action", "stop")):
+                        self.assertEqual(args[args.index(flag) + 1], value)
+                    self.assertEqual("--unprivileged" in args, unprivileged)
+
     def test_make_source_validation_reuses_outputs_and_propagates_failures(self):
         workflow_steps = steps(jobs()["vs"])
         names = list(workflow_steps)
@@ -155,7 +194,7 @@ class SourceWorkflowTest(unittest.TestCase):
         lock.write_text("already-resolved Make build\n")
         for family, owner, source, artifacts, dash in families:
             name = "Validate " + family + " source packages from the Make build"
-            self.assertLess(names.index("Build the VS image and both OCI container variants"), names.index(name))
+            self.assertLess(names.index("Build and verify the VS installer and both OCI container variants"), names.index(name))
             for source_exit, make_exit in ((0, 0), (19, 0), (0, 23)):
                 with self.subTest(family=family, source_exit=source_exit, make_exit=make_exit):
                     self.calls.unlink(missing_ok=True)

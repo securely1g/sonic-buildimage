@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the fixed native VS CI profile and retain its verified Orchagent archive.
+# Build and verify the VS installer and retain its native Orchagent archive.
 set -euo pipefail
 
 measure=false
@@ -12,12 +12,15 @@ fi
 
 mkdir -p artifacts/vs
 options=(
-    BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y
+    BUILD_WITH_BAZEL_WHEN_AVAILABLE=y USE_CONTAINER_IMAGE_STORE_AS_BACKEND=n
+    INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y
     ENABLE_ASAN=n ENABLE_SYNCD_RPC=n
+    ENABLE_SBOM=n SONIC_ENABLE_IMAGE_SIGNATURE=n SECURE_UPGRADE_MODE=no_sign
+    SONIC_INSTALL_DEBUG_TOOLS=n INSTALL_DEBUG_TOOLS=n
     "SONIC_BUILDER_EXTRA_CMDLINE=--label ${SONIC_CI_CONTAINER_LABEL:?} -e BAZEL=${BAZEL:?} -e BAZEL_CONTAINER_ARGS"
 )
 receipt=artifacts/vs/orchagent-reuse.json
-make target/sonic-vs.img.gz "${options[@]}"
+make bazel-vs-native-inputs "${options[@]}"
 capture_start=$EPOCHREALTIME
 python3 -B tools/bazel/ci/vs_archive_reuse.py capture --workspace "$PWD" --receipt "$receipt"
 capture_end=$EPOCHREALTIME
@@ -45,6 +48,16 @@ make target/docker-orchagent-dbg.gz \
 verify_start=$EPOCHREALTIME
 python3 -B tools/bazel/ci/vs_archive_reuse.py verify --workspace "$PWD" --receipt "$receipt"
 verify_end=$EPOCHREALTIME
+
+# Finish all native component production before freezing the assembly inputs.
+# The shared assembler invokes the public sonic-vs.bin Make target and verifies
+# the complete installer byte chain without booting a guest or requiring KVM.
+python3 -B tools/bazel/image/prepare_native_worker.py \
+    --archives-dir artifacts/vs/repository-inputs
+python3 -B tools/bazel/image/ci_unprivileged.py prepare-host
+python3 -B tools/bazel/image/ci_unprivileged.py assemble \
+    --worker "sonic-vs-bin-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-$$}"
+
 python3 - "$capture_start" "$capture_end" "$verify_start" "$verify_end" "$baseline_seconds" <<'PY'
 import json
 from pathlib import Path

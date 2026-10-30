@@ -150,7 +150,7 @@ def seed(root, kind, architecture="amd64"):
             _, _, ready = artifacts.prepare(source_kind, root, root, "success", REVISION, architecture,
                                             head_sha="3" * 40, base_sha="4" * 40)
             assert ready, source_kind
-        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+        for name in ("sonic-vs.bin", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
                      "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
             write(root, "target/" + name, b"validated image output\n")
     write(root, "artifacts/unexpected.log", SENTINEL)
@@ -287,7 +287,7 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertEqual(summary["receipts"]["outputs"], {
             name: {"bytes": len(b"validated image output\n")}
             for name in (
-                "sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                "sonic-vs.bin", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
                 "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz",
             )
         })
@@ -297,6 +297,15 @@ class PublicArtifactsTest(unittest.TestCase):
                          }} for kind in ("source", "syncd")})
         self.assertEqual(paths, [artifacts.SUMMARY["vs"]])
         self.assertNotIn(SENTINEL, json.dumps(summary))
+
+    def test_vs_requires_bin_even_when_a_vm_image_exists(self):
+        seed(self.root, "vs")
+        (self.root / "target/sonic-vs.bin").unlink()
+        write(self.root, "target/sonic-vs.img.gz", b"old VM image\n")
+        summary, _paths, ready = self.prepare("vs")
+        self.assertFalse(ready)
+        self.assertFalse(summary["complete"])
+        self.assertIn("output-sonic-vs.bin", summary["missing"])
 
     def test_vs_requires_both_completed_source_summaries(self):
         """An installer and P4RT pass cannot replace the moved SWSS or Syncd checks."""

@@ -2,19 +2,20 @@
 
 These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
 runner for one VS build job. The default repository is
-`securely1g/sonic-buildimage`; use `--master` for the current shared VS pool,
-and pass `--repo owner/name` to select another repository. The full VS workflow's
-same-repository PR builds and enabled manual builds use its existing `sonic-vs-source-master`
-label. The workflow's event selects the source revision; the pool name does not
-force PR builds onto master. GitHub assigns an eligible queued job when the
-single runner becomes available.
+`securely1g/sonic-buildimage`; use `--build-target sonic-vs.bin` for the current
+shared VS installer pool, and pass `--repo owner/name` to select another
+repository. Both `bazel-oci.yml` and `bazel-vs-unprivileged.yml` use the
+`sonic-vs-bin` label for same-repository PR, push, and enabled manual builds.
+The workflow's event selects the source revision. GitHub assigns an eligible
+queued job when the single runner becomes available.
 
 GitHub-hosted `ubuntu-24.04` runs lightweight OCI regressions, checks clean
 Bazel dependency resolution, and retains verified source downloads plus the
 Redis test helper. It does not compile SWSS or Syncd packages.
 
-The full VS job builds the images on P330, then runs both owners' source-package
-validation in the same checkout through the Trixie Make builder. The validation
+The Bazel OCI VS job builds the installer and OCI archives, then runs both
+owners' source-package validation in the same checkout through the Trixie Make
+builder. The validation
 uses the same platform/feature options and persistent Bazel action cache as
 Make. Each disposable builder still has its own output base; cached action
 outputs are restored rather than recompiling the source packages. Test-only
@@ -23,10 +24,10 @@ retain their existing artifact names and validation requirements.
 
 Fork PRs and manual runs with `skip_vs=true` run only hosted checks, including
 the separate native AMD64/ARM64 archive jobs. They do not publish successful
-SWSS/Syncd source-package or full-image validation evidence.
+SWSS/Syncd source-package or installer validation evidence.
 
 Use `--build-target sonic-vs.bin` for the shared `sonic-vs-bin` pool used by
-`bazel-vs-unprivileged.yml` across same-repository PR, push, and manual runs.
+both workflows across same-repository PR, push, and manual runs.
 This pool does not accept full-image jobs that require KVM. Use `--pr NUMBER`
 only for workflows that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected
 custom label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
@@ -182,10 +183,10 @@ separate ephemeral runners on the host. Existing manager configurations without
 a build target retain their full-image KVM checks and routing.
 Replace `lgh102` with the chosen unique identity when preparing another host.
 
-For P330, the operator is `lgh`. `--master` selects the
-`sonic-vs-source-master` routing label used by push/manual VS jobs. To maintain a
-runner for one reviewed PR instead, select `--pr NUMBER`. The manager maintains
-only the configured route; it does not dispatch workflows, cancel queued runs,
+For full-image workflows, `--master` selects the
+`sonic-vs-source-master` routing label. To maintain a runner for one reviewed PR
+using the corresponding full-image label instead, select `--pr NUMBER`.
+The manager maintains only the configured route; it does not dispatch workflows, cancel queued runs,
 or change the source revision of an existing job.
 
 The systemd timer checks 30 seconds after boot and one minute after each check
@@ -249,19 +250,13 @@ label selects the pool, not an individual PR, commit or run.
 ```sh
 gh auth status
 gh run list --repo securely1g/sonic-buildimage --workflow bazel-oci.yml --limit 10
-python3 /opt/sonic-runner-tools/runner/rearm.py --master --dry-run
-python3 /opt/sonic-runner-tools/runner/rearm.py --master
-```
-
-For a bin-only job, select the shared bin pool without a PR number:
-
-```sh
 python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin --runner-host lgh102 --dry-run
 python3 /opt/sonic-runner-tools/runner/rearm.py --build-target sonic-vs.bin --runner-host lgh102
 ```
 
-Use `--master` for the shared full-image PR/manual pool. Arm only after reviewing the PR code and
-workflow that will run. For a failed attempt, retry the workflow with
+Replace `lgh102` with the host's configured identity. Use `--master` only for
+workflows requesting the shared full-image pool. Arm only after reviewing the
+PR code and workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
 run's workflow. A new registration is required after each consumed job.

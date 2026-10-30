@@ -38,6 +38,23 @@ B2 -- NO --> STOP
 ```
 
 
+## VS installer and OCI validation
+
+`bazel-oci.yml` builds `target/sonic-vs.bin` and the runtime/debug Orchagent
+and Syncd OCI archives. Its Make job retains SWSS and Syncd source-package
+validation, P4 image tests, split-debug checks, and archive reuse evidence.
+Installer assembly uses the same declared worker and ONIE/ZIP byte-chain
+verifier as the unprivileged assembly workflow, retaining byte-chain, result,
+and privilege evidence.
+The job publishes an ONIE installer; it does not construct `sonic-vs.img.gz`
+or run guest installation and boot checks.
+
+Both this job and the unprivileged assembly workflow use the shared
+`sonic-vs-bin` pool. Their preflight selects `--build-target sonic-vs.bin`,
+so runners such as `lgh102` can build without `/dev/kvm`. Native preparation
+uses the official container registry and Debian mirrors through existing
+Make overrides; the existing version-control inputs still apply.
+
 ## Unprivileged VS installer assembly
 
 The self-hosted runner does not need host `sudo`. A short setup container uses
@@ -62,7 +79,7 @@ native source production and final assembly:
    all capabilities dropped, no new privileges, default seccomp and no Docker
    socket. A separate privileged container checks that the exact output still
    supports image unpacking and runtime filesystem behavior.
-2. `Native Make prerequisites (AMD64)` uses the existing source-build runner
+2. `Native Make prerequisites (AMD64)` uses the shared bin-only runner
    pool to run `bazel-vs-native-inputs`. It finalizes the host filesystem and
    exports the host receipt, service archives and their producer identities.
    Its assembly worker derives from the actual Trixie `sonic-slave` image;
@@ -80,8 +97,7 @@ native source production and final assembly:
 Native prerequisites and final assembly use separate GitHub jobs and exchange
 an explicit artifact, so they do not depend on scheduling onto the same machine.
 Both jobs use the shared `sonic-vs-bin` label for same-repository PR, push, and
-manual runs. This bin-only pool is separate from the full-image pool that
-requires KVM. The native preflight selects `sonic-vs.bin`,
+manual runs. The native preflight selects `sonic-vs.bin`,
 which does not require KVM because this workflow does not boot the installer.
 The transfer includes the worker image and service archives and can be large;
 its time is not a final-assembly speed measurement. The runtime test uses small

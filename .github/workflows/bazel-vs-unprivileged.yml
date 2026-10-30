@@ -178,41 +178,8 @@ jobs:
             bazel-vs-native-inputs 2>&1 | tee artifacts/unprivileged/native.log
       - name: Build the worker and freeze native input identities
         run: |
-          bash tools/bazel/image/worker/prepare-worker-inputs.sh
-          make -s -f Makefile.work BLDENV=trixie showtag > target/sonic-slave-tag.log
-          python3 - <<'PY'
-          import json, re, subprocess
-          from pathlib import Path
-          names = re.findall(r'^sonic-slave-trixie:[0-9a-f]{11}$',
-                             Path('target/sonic-slave-tag.log').read_text(), re.M)
-          if len(names) != 1:
-              raise SystemExit('Expected exactly one native Trixie sonic-slave image tag')
-          base = json.loads(subprocess.check_output(['docker', 'image', 'inspect', names[0]], text=True))[0]
-          # Derive the assembly container from the actual native sonic-slave.
-          # Record its immutable identity and verify the resulting layer ancestry.
-          subprocess.run(['docker', 'build', '--build-arg', 'BASE_IMAGE=' + names[0],
-                          '--iidfile', 'target/bazel-image-worker.id',
-                          'tools/bazel/image/worker'], check=True)
-          worker_id = Path('target/bazel-image-worker.id').read_text().strip()
-          worker = json.loads(subprocess.check_output(['docker', 'image', 'inspect', worker_id], text=True))[0]
-          layers = base['RootFS']['Layers']
-          if worker['RootFS']['Layers'][:len(layers)] != layers:
-              raise SystemExit('Assembly worker does not retain the native sonic-slave layers')
-          Path('target/bazel-image-worker.json').write_text(json.dumps({
-              'schema': 1, 'platform': 'linux/amd64', 'distribution': 'trixie',
-              'worker_image': worker_id, 'sonic_slave_image': base['Id'],
-              'docker_version': '28.5.2', 'containerd_version': '1.7.28',
-              'storage_driver': 'overlay2',
-          }))
-          PY
-          python3 tools/bazel/image/prepare_inputs.py \
-            --native-directory target/bazel-native --installer-source "$PWD" \
-            --execution-environment target/bazel-image-worker.json \
-            --output target/bazel-image-inputs
-          python3 -B tools/bazel/gzip/source_archive.py \
-            --archives-dir artifacts/repository-inputs \
-            --output target/bazel-image-inputs/source-downloads \
-            > artifacts/unprivileged/assembly-source-download-receipt.json
+          python3 tools/bazel/image/prepare_native_worker.py \
+            --archives-dir artifacts/repository-inputs
       - name: Finalize host files in the native job and export the verified handoff
         run: |
           set -o pipefail

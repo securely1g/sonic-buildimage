@@ -88,7 +88,7 @@ class LegacyP4rtDockerTest(unittest.TestCase):
         steps = workflow.split("  vs:\n", 1)[1]
         def command(name):
             return steps.split("      - name: " + name + "\n", 1)[1].split("      - name:", 1)[0]
-        build = command("Build the VS image and both OCI container variants")
+        build = command("Build and verify the VS installer and both OCI container variants")
         verifier = command("Verify P4RT packaged split debug symbols")
         helper = "tools/bazel/ci/build_vs_with_reused_orchagent.sh"
         self.assertIn(helper, build)
