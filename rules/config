@@ -166,6 +166,8 @@ SONIC_DPKG_CACHE_SOURCE ?= /var/cache/sonic/artifacts
 # kernel rule enables native Trixie VS with its default unsigned configuration.
 # Owners register only configurations with Bazel support; all others use Make.
 # When disabled, containers and kernel packages use their normal Make build.
+# For the explicit top-level target/sonic-vs.bin goal, also select Bazel final
+# assembly from prepared inputs; see tools/bazel/image/README.md.
 BUILD_WITH_BAZEL_WHEN_AVAILABLE ?= n
 
 # Persist Bazel caches across slave containers for all Bazel builds, regardless

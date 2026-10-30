@@ -173,6 +173,17 @@ include rules/config
 -include rules/config.user
 include rules/sonic-fips.mk
 
+ifneq ($(filter target/sonic-vs.bin,$(MAKECMDGOALS)),)
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+$(error Bazel VS assembly must use the top-level Makefile and prepared image inputs)
+endif
+ifneq ($(wildcard target/.bazel-vs-image.json),)
+ifneq ($(SONIC_BAZEL_NATIVE_PUBLISH),y)
+$(error Use the top-level Makefile to switch final VS image producers)
+endif
+endif
+endif
+
 ifneq ($(DEFAULT_CONTAINER_REGISTRY),)
 override DEFAULT_CONTAINER_REGISTRY := $(DEFAULT_CONTAINER_REGISTRY)/
 endif
@@ -786,6 +797,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 						   SBOM_STRICT=$(SBOM_STRICT) \
 						   SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 						   BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(BUILD_WITH_BAZEL_WHEN_AVAILABLE) \
+                           SONIC_BAZEL_NATIVE_PUBLISH=$(SONIC_BAZEL_NATIVE_PUBLISH) \
                            $(SONIC_OVERRIDE_BUILD_VARS)
 
 .PHONY: sonic-slave-build sonic-slave-bash sonic-slave-run init reset

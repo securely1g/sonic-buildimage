@@ -1,7 +1,21 @@
-load("@rules_python//python:defs.bzl", "py_library")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
 
 py_library(
     name = "artifact_validation",
     srcs = ["artifact_validation.py"],
     visibility = ["//visibility:public"],
+)
+
+exports_files([
+    "build_events.py",
+    "verify_image.py",
+])
+
+py_test(
+    name = "verify_image_test",
+    srcs = [
+        "verify_image.py",
+        "verify_image_test.py",
+    ],
+    imports = ["."],
 )

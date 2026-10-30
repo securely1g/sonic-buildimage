@@ -62,6 +62,22 @@ Every **platform/[VENDOR]/** directory is a derived part of buildimage frontend,
 ### Build output
 **target/** is basically a build output. You can find all build artifacts there.  
 
+### Bazel VS installer assembly
+
+After preparing the native host snapshot, all service archives and the declared
+assembly worker, run:
+
+```sh
+make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y target/sonic-vs.bin
+```
+
+This explicit goal assembles an unsigned AMD64 Trixie VS ONIE installer from
+prepared inputs. It reuses the existing component producers; selecting the
+assembler does not rebuild components or prepare inputs. See the
+[preparation and validation steps](tools/bazel/image/README.md).
+The default remains native Make, and the switch's existing component and KVM
+behavior is unchanged.
+
 ## Recipes and target groups
 Now let's go over a definition of recipes and target groups.  
 **Recipe** is a small makefile that defines a target and set of variables for building it.

@@ -12,10 +12,10 @@ ROOT = Path(__file__).resolve().parents[3]
 ARTIFACTS = (
     "target/docker-orchagent.gz",
     "target/docker-orchagent-dbg.gz",
-    "target/sonic-vs.bin",
     "target/sonic-vs.img.gz",
     "target/sonic-vs.raw",
 )
+VS_INSTALLER = "target/sonic-vs.bin"
 
 
 class MakeForwardingTest(unittest.TestCase):
@@ -26,16 +26,21 @@ class MakeForwardingTest(unittest.TestCase):
         (self.directory / "target").mkdir()
         (self.directory / "scripts").mkdir()
         (self.directory / "scripts/run_with_retry").symlink_to(ROOT / "scripts/run_with_retry")
+        (self.directory / "Makefile").symlink_to(ROOT / "Makefile")
+        publisher = self.directory / "tools/bazel/image/build.py"
+        publisher.parent.mkdir(parents=True)
+        publisher.symlink_to(ROOT / "tools/bazel/image/build.py")
         self.log = self.directory / "forwarded.log"
-        targets = " ".join((*ARTIFACTS, "jessie", "bookworm", "docker-cleanup"))
+        targets = " ".join((*ARTIFACTS, VS_INSTALLER, "jessie", "bookworm", "docker-cleanup"))
         # This controlled inner Make records dispatch only. Its phony targets
         # ensure it never masks a successful handoff from the real outer file.
         (self.directory / "Makefile.work").write_text(f""".PHONY: {targets}
 {targets}:
 	@printf '%s|%s|%s|%s\\n' '$@' '$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)' '$(BLDENV)' '$(EXTRA_DOCKER_TARGETS)' >> forwarded.log
 	@test '$@' != '$(FAIL_TARGET)'
+	@if test '$@' = '{VS_INSTALLER}' && ! test -e '$@'; then printf 'native installer' > '$@'; fi
 """)
-        for target in ARTIFACTS:
+        for target in (*ARTIFACTS, VS_INSTALLER):
             (self.directory / target).write_bytes(b"previously built artifact")
 
     def make(self, *targets, mode="y", **settings):
@@ -87,6 +92,38 @@ class MakeForwardingTest(unittest.TestCase):
                 result, calls = self.make(target)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(calls[0], [target, "y", "trixie", ""])
+
+    def test_vs_native_publisher_forwards_missing_and_retained_installers(self):
+        """The native publisher must reach inner Make on every invocation."""
+        (self.directory / VS_INSTALLER).unlink()
+        previous = None
+        for _ in range(3):
+            result, calls = self.make(VS_INSTALLER, mode="n")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(calls, [[VS_INSTALLER, "n", "trixie", ""],
+                                     ["docker-cleanup", "n", "bookworm", ""]])
+            current = self.state(VS_INSTALLER)
+            self.assertEqual(current[0], b"native installer")
+            if previous is not None:
+                self.assertEqual(current, previous)
+            previous = current
+
+    def test_vs_bazel_publisher_requires_inputs_even_with_retained_installer(self):
+        """A retained file cannot bypass declared inputs or fall back to native Make."""
+        previous = self.state(VS_INSTALLER)
+        for retained in (True, True, False):
+            with self.subTest(retained=retained):
+                if not retained:
+                    (self.directory / VS_INSTALLER).unlink()
+                result, calls = self.make(VS_INSTALLER, SECURE_UPGRADE_MODE="no_sign")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('build.py --build-with-bazel-when-available "y"', result.stdout)
+                self.assertIn("prepare the native VS inputs", result.stderr)
+                self.assertEqual(calls, [])
+                if retained:
+                    self.assertEqual(self.state(VS_INSTALLER), previous)
+                else:
+                    self.assertFalse((self.directory / VS_INSTALLER).exists())
 
     def test_unrelated_existing_output_is_not_forced(self):
         """Leave existing outputs outside the SWSS and VS handoff scope up to date.

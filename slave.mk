@@ -1669,6 +1669,23 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 	$(FOOTER)
 
+# Only the explicit preparation goal enables the native snapshot producer.
+include tools/bazel/image/native/native.mk
+
+ifneq ($(filter $(TARGET_PATH)/sonic-vs.bin,$(MAKECMDGOALS)),)
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+ifneq ($(BAZEL_NATIVE_PREPARE),y)
+$(error Bazel VS assembly must use the top-level Makefile and prepared image inputs)
+endif
+endif
+endif
+
+# Check producer state even when an aggregate goal reaches an existing image.
+.PHONY: bazel-vs-native-producer-check
+$(TARGET_PATH)/sonic-vs.bin: | bazel-vs-native-producer-check
+bazel-vs-native-producer-check:
+	@test ! -e target/.bazel-vs-image.json || [ "$(SONIC_BAZEL_NATIVE_PUBLISH)" = y ] || [ "$(BAZEL_NATIVE_PREPARE)" = y ] || { echo 'Use the top-level Makefile to switch final VS image producers' >&2; exit 1; }
+
 # targets for building installers with base image
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
@@ -1757,6 +1774,14 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 		SONIC_IMAGE_TIMING_FILE=$$(python3 ./scripts/image_timing.py begin 2>/dev/null) || SONIC_IMAGE_TIMING_FILE=
 		export SONIC_IMAGE_TIMING_FILE
 		trap 'python3 ./scripts/image_timing.py discard 2>/dev/null || true' EXIT
+	fi
+	# Set the stage only after native prerequisites finish. A target export
+	# would also alter the first root-filesystem stage and image producers.
+	if [[ "$(BAZEL_NATIVE_PREPARE)" == y ]]; then
+		export SONIC_BAZEL_BUILD_STAGE=host
+		export SONIC_BAZEL_HOST_SNAPSHOT="$$PWD/target/bazel-native/host-onie.squashfs"
+		export SONIC_BAZEL_SOURCE_COMMIT="$$(git rev-parse HEAD)"
+		export SONIC_BAZEL_SOURCE_BRANCH="$$(git rev-parse --abbrev-ref HEAD)"
 	fi
 	# Pass initramfs and linux kernel explicitly. They are used for all platforms
 	export debs_path="$(IMAGE_DISTRO_DEBS_PATH)"
@@ -1969,6 +1994,17 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 		ENABLE_SBOM="$(ENABLE_SBOM)" \
 		TARGET_PATH="$(TARGET_PATH)" \
 			./build_debian.sh $(LOG)
+
+		if [[ "$(BAZEL_NATIVE_PREPARE)" == y ]]; then
+			$(foreach docker, $($*_DOCKERS), \
+				rm -f *$($(docker:-dbg.gz=.gz)_CONTAINER_NAME).sh
+				rm -f $($(docker:-dbg.gz=.gz)_CONTAINER_NAME).service
+				rm -f $($(docker:-dbg.gz=.gz)_CONTAINER_NAME)@.service
+			)
+			rm -f sonic_debian_extension.sh
+			$(FOOTER)
+			exit 0
+		fi
 
 		USERNAME="$(USERNAME)" \
 		PASSWORD="$${PASSWORD}" \
