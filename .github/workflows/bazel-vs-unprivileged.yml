@@ -113,6 +113,8 @@ jobs:
     timeout-minutes: 720
     env:
       BAZEL: bazel
+      # Pull official images directly while retaining versions-docker digest pins.
+      DEFAULT_CONTAINER_REGISTRY: ""
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:unprivileged-native
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
       SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
