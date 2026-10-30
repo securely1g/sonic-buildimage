@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the VS build's Orchagent archive survives later image requests."""
+"""Check VS runtime/debug pairs and retain their exact archive identities."""
 
 import argparse
 import copy
@@ -20,6 +20,8 @@ from tools.bazel.ci.artifact_validation import path_name, require, sha
 LABEL = "com.azure.sonic.manifest"
 RUNTIME = "docker-orchagent"
 DEBUG = "docker-orchagent-dbg"
+ENTRYPOINTS = {RUNTIME: ["/usr/bin/docker-init.sh"],
+               "docker-syncd-vs": ["/usr/local/bin/supervisord"]}
 CHUNK = 1024 * 1024
 MAX_JSON = 16 * CHUNK
 CONFIG_NAME = re.compile(r"(?:blobs/sha256/[0-9a-f]{64}|[0-9a-f]{64}\.json)")
@@ -38,12 +40,12 @@ def read_manifest(workspace, image):
     return manifest, hashlib.sha256(data).hexdigest()
 
 
-def profile(workspace):
+def profile(workspace, runtime=RUNTIME):
     expected = {".arch": "amd64", ".platform": "vs",
-                "target/.container-build-method/docker-orchagent.gz": "bazel"}
+                "target/.container-build-method/" + runtime + ".gz": "bazel"}
     for name, value in expected.items():
         require((workspace / name).read_text().strip() == value, "VS archive build profile differs")
-    manifest, digest = read_manifest(workspace, RUNTIME)
+    manifest, digest = read_manifest(workspace, runtime)
     return {"architecture": "amd64", "platform": "vs", "builder": "bazel",
             "make_manifest_sha256": digest}, manifest
 
@@ -67,7 +69,7 @@ def file_identity(stat):
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def archive_snapshot(path, expected_tag, make_manifest):
+def archive_snapshot(path, expected_tag, make_manifest, *, entrypoint=None):
     """Hash every member, inspect only JSON, and never extract layer files.
 
     rules_oci's Docker export copies layer blobs unchanged and names both raw
@@ -124,7 +126,8 @@ def archive_snapshot(path, expected_tag, make_manifest):
     require(config.get("os") == "linux" and config.get("architecture") == "amd64",
             "Docker archive must target linux/amd64")
     settings = config.get("config", {})
-    require(settings.get("Entrypoint") == ["/usr/bin/docker-init.sh"], "Docker archive entrypoint differs")
+    require(settings.get("Entrypoint") == (entrypoint or ENTRYPOINTS[RUNTIME]),
+            "Docker archive entrypoint differs")
     require(settings.get("Cmd") is None, "Docker archive command differs")
     environment = settings.get("Env", [])
     require(isinstance(environment, list) and all(isinstance(value, str) and "=" in value for value in environment),
@@ -151,60 +154,126 @@ def archive_snapshot(path, expected_tag, make_manifest):
             "settings_sha256": json_digest(settings), "layers": layers, "rootfs": diff_ids}
 
 
-def capture(workspace):
+def capture(workspace, runtime=RUNTIME):
     started = time.monotonic()
-    captured_profile, manifest = profile(workspace)
-    runtime = archive_snapshot(workspace / "target/docker-orchagent.gz", RUNTIME + ":latest", manifest)
-    require(profile(workspace)[0] == captured_profile, "VS build profile changed during capture")
-    return {"schema": 1, "profile": captured_profile, "runtime": runtime,
+    captured_profile, manifest = profile(workspace, runtime)
+    snapshot = archive_snapshot(workspace / "target" / (runtime + ".gz"), runtime + ":latest", manifest,
+                                entrypoint=ENTRYPOINTS[runtime])
+    require(profile(workspace, runtime)[0] == captured_profile, "VS build profile changed during capture")
+    return {"schema": 1, "profile": captured_profile, "runtime": snapshot,
             "validation_seconds": {"capture": time.monotonic() - started}}
 
 
-def verify(workspace, receipt, *, runtime_only=False):
+def verify(workspace, receipt, *, runtime_only=False, image=RUNTIME):
     started = time.monotonic()
     require(receipt.get("schema") == 1, "unsupported archive reuse receipt")
-    current_profile, manifest = profile(workspace)
+    current_profile, manifest = profile(workspace, image)
     require(current_profile == receipt["profile"], "VS build profile changed after capture")
     runtime = receipt["runtime"]
-    path = workspace / "target/docker-orchagent.gz"
+    path = workspace / "target" / (image + ".gz")
     before = file_identity(path.stat())
     require(sha(path) == runtime["sha256"] and path.stat().st_size == runtime["bytes"],
             "VS runtime archive changed after capture")
     require(before == file_identity(path.stat()), "VS runtime archive changed during validation")
     result = copy.deepcopy(receipt)
     if not runtime_only:
-        require((workspace / "target/.container-build-method/docker-orchagent-dbg.gz").read_text().strip() == "bazel",
+        debug_image = image + "-dbg"
+        require((workspace / "target/.container-build-method" / (debug_image + ".gz")).read_text().strip() == "bazel",
                 "debug archive was not built with Bazel")
-        debug_manifest, debug_manifest_sha = read_manifest(workspace, DEBUG)
+        debug_manifest, debug_manifest_sha = read_manifest(workspace, debug_image)
         expected_debug = copy.deepcopy(manifest)
         version = expected_debug["package"]["version"]
         expected_debug["package"]["version"] += ".dbg" if "+" in version else "+dbg"
         require(debug_manifest == expected_debug, "debug Make manifest differs beyond the version suffix")
-        debug = archive_snapshot(workspace / "target/docker-orchagent-dbg.gz", DEBUG + ":latest", debug_manifest)
+        debug = archive_snapshot(workspace / "target" / (debug_image + ".gz"), debug_image + ":latest", debug_manifest,
+                                 entrypoint=ENTRYPOINTS[image])
         count = len(runtime["layers"])
         require(len(debug["layers"]) > count and debug["layers"][:count] == runtime["layers"] and
                 debug["rootfs"][:count] == runtime["rootfs"], "debug archive does not extend the exact runtime layers")
         require(debug["settings_sha256"] == runtime["settings_sha256"], "debug archive changes runtime settings")
         result.update(debug=debug, debug_make_manifest_sha256=debug_manifest_sha)
-    require(profile(workspace)[0] == current_profile and before == file_identity(path.stat()),
+    require(profile(workspace, image)[0] == current_profile and before == file_identity(path.stat()),
             "VS build inputs changed during validation")
     result["validation_seconds"]["verify_runtime" if runtime_only else "verify"] = time.monotonic() - started
     return result
 
 
+def installer_selection(workspace, *, debug=False):
+    """Read Make's actual installer list, emitted after build_image.sh succeeds."""
+    path = workspace / "target/sonic-vs.img.gz.dockers"
+    before = file_identity(path.stat())
+    data = path.read_bytes()
+    require(before == file_identity(path.stat()), "VS installer selection changed during validation")
+    selected = data.decode().splitlines()
+    require(len(selected) == len(set(selected)), "VS installer selection contains duplicate images")
+    for image in ENTRYPOINTS:
+        runtime = "target/" + image + ".gz"
+        symbols = "target/" + image + "-dbg.gz"
+        require((symbols if debug else runtime) in selected and (runtime if debug else symbols) not in selected,
+                "VS installer selects the wrong runtime/debug image: " + image)
+    if not debug:
+        require(not any(value.endswith("-dbg.gz") for value in selected),
+                "normal VS installer selects a debug image")
+    return {"sha256": hashlib.sha256(data).hexdigest(), "debug": debug,
+            "paired_images": ["target/" + image + ("-dbg.gz" if debug else ".gz") for image in ENTRYPOINTS]}
+
+
+def capture_pairs(workspace, *, debug=False):
+    started = time.monotonic()
+    selection = installer_selection(workspace, debug=debug)
+    pairs = {image: verify(workspace, capture(workspace, image), image=image) for image in ENTRYPOINTS}
+    require(installer_selection(workspace, debug=debug) == selection, "VS installer selection changed")
+    return {"schema": 1, "installer": selection, "pairs": pairs,
+            "validation_seconds": {"capture": time.monotonic() - started}}
+
+
+def verify_pairs(workspace, receipt):
+    """Reject any archive or manifest changed by post-installer CI work."""
+    started = time.monotonic()
+    require(receipt.get("schema") == 1 and set(receipt.get("pairs", {})) == set(ENTRYPOINTS),
+            "unsupported VS archive-pairs receipt")
+    require(installer_selection(workspace, debug=receipt["installer"]["debug"]) == receipt["installer"],
+            "VS installer selection changed after capture")
+    result = copy.deepcopy(receipt)
+    for image, pair in receipt["pairs"].items():
+        result["pairs"][image] = verify(workspace, pair, image=image, runtime_only=True)
+        name = image + "-dbg"
+        require((workspace / "target/.container-build-method" / (name + ".gz")).read_text().strip() == "bazel",
+                "debug archive was not built with Bazel")
+        require(read_manifest(workspace, name)[1] == pair["debug_make_manifest_sha256"],
+                "debug Make manifest changed after capture")
+        path = workspace / "target" / (name + ".gz")
+        before = file_identity(path.stat())
+        require(sha(path) == pair["debug"]["sha256"] and path.stat().st_size == pair["debug"]["bytes"],
+                "VS debug archive changed after capture")
+        require(before == file_identity(path.stat()), "VS debug archive changed during validation")
+    result["validation_seconds"]["verify"] = time.monotonic() - started
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("capture", "verify-runtime", "verify"))
+    parser.add_argument("action", choices=("capture", "verify-runtime", "verify", "capture-pairs", "verify-pairs"))
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--orchagent-receipt", type=Path)
+    parser.add_argument("--debug-installer", action="store_true")
     args = parser.parse_args()
-    if args.action == "capture":
+    if args.action == "capture-pairs":
+        receipt = capture_pairs(args.workspace, debug=args.debug_installer)
+    elif args.action == "verify-pairs":
+        receipt = verify_pairs(args.workspace, json.loads(args.receipt.read_bytes()))
+    elif args.action == "capture":
         receipt = capture(args.workspace)
     else:
         receipt = verify(args.workspace, json.loads(args.receipt.read_bytes()), runtime_only=args.action == "verify-runtime")
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-    print("Orchagent archive reuse " + args.action + " passed.")
+    if args.orchagent_receipt:
+        require("pairs" in receipt, "--orchagent-receipt requires a pair action")
+        args.orchagent_receipt.parent.mkdir(parents=True, exist_ok=True)
+        args.orchagent_receipt.write_text(json.dumps(receipt["pairs"][RUNTIME], indent=2, sort_keys=True) + "\n")
+    print("VS archive reuse " + args.action + " passed.")
 
 
 if __name__ == "__main__":

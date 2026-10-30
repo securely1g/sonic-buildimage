@@ -255,6 +255,38 @@ class ImagePhaseTests(unittest.TestCase):
 
 
 class ParserTests(unittest.TestCase):
+    def test_pair_marker_labels_only_the_matching_active_recipe(self):
+        building = b"2026-10-10T00:08:20Z [ building ] [ target/docker-orchagent.gz ]\n"
+        marker = b"2026-10-10T00:08:21Z [ bazel image pair ] [ target/docker-orchagent.gz ] [ target/docker-orchagent.gz ]\n"
+        value = breakdown.parse_log(synthetic_log().replace(building, building + marker), job()["steps"][0])
+        self.assertTrue(breakdown.valid(value))
+        task = value["sections"][1]["tasks"][0]
+        self.assertEqual(task["id"], "orchagent-pair-1")
+        self.assertEqual(task["label"], "Orchagent runtime and debug containers")
+        self.assertEqual(task["duration_seconds"], 10)
+        unknown = marker.replace(b"docker-orchagent.gz ] [", b"private-secret.gz ] [")
+        stale = marker.replace(b"00:08:21", b"00:08:19")
+        for log in (synthetic_log().replace(building, building + unknown),
+                    synthetic_log().replace(building, stale + building)):
+            value = breakdown.parse_log(log, job()["steps"][0])
+            self.assertTrue(breakdown.valid(value))
+            self.assertEqual(value["sections"][1]["tasks"][0]["id"], "orchagent-release-1")
+            self.assertNotIn("private-secret", json.dumps(value))
+
+    def test_verification_only_session_has_accurate_label_and_package_timing(self):
+        log = synthetic_log().replace(b"Making target/docker-orchagent.gz", b"Making bazel-vs-oci-verify")
+        log = log.replace(b"[ target/docker-orchagent.gz ]",
+                          b"[ target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb ]")
+        value = breakdown.parse_log(log, job()["steps"][0])
+        self.assertTrue(breakdown.valid(value))
+        self.assertEqual(value["duration_seconds"], 600.2)
+        self.assertEqual([section["id"] for section in value["sections"]], ["vs-image-1", "oci-verification-1"])
+        session = value["sections"][1]
+        self.assertEqual(session["label"], "P4 packages and OCI verification")
+        self.assertEqual(session["duration_seconds"], 110.4)
+        self.assertEqual(session["tasks"][0]["id"], "p4rt-runtime-1")
+        self.assertEqual(session["tasks"][0]["duration_seconds"], 10)
+
     def test_shared_oci_session_preserves_child_archive_timings(self):
         log = synthetic_log().replace(b"Making target/docker-orchagent.gz", b"Making bazel-vs-oci")
         log = log.replace(b"[ target/docker-orchagent.gz ]", b"[ target/docker-orchagent-dbg.gz ]")
