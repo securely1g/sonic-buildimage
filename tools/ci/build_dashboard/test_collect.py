@@ -136,11 +136,14 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(collector.normalize_job(value, REPO, 10)["image_build_seconds"], 600)
 
     def test_separate_validation_does_not_count_as_image_build_time(self):
-        for conclusion in ("success", "failure"):
-            with self.subTest(validation=conclusion):
+        for name, conclusion in (
+            ("Build the VS image", "success"), ("Build the VS image", "failure"),
+            ("Build the VS installer (.bin)", "success"), ("Build the VS installer (.bin)", "failure"),
+        ):
+            with self.subTest(step=name, validation=conclusion):
                 value = job(conclusion)
                 value["steps"] = [
-                    {"number": 1, "name": "Build the VS image", "status": "completed",
+                    {"number": 1, "name": name, "status": "completed",
                      "conclusion": "success", "started_at": START,
                      "completed_at": "2026-10-10T00:06:00Z"},
                     {"number": 2, "name": "Validate VS container pairs and P4 debug symbols",

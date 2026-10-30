@@ -410,7 +410,7 @@ jobs:
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: [checks]
-    # Build full VS images for master pushes and same-repository pull requests
+    # Build VS ONIE installers for master pushes and same-repository pull requests
     # after hosted regression and dependency-resolution checks.
     # Manual runs retain their skip option; external-fork PRs use hosted checks.
     if: >-
@@ -418,15 +418,22 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    # Share the existing P330 pool; checkout still uses this event's ref and SHA.
+    # Use the ONIE pool; checkout still uses this event's ref and SHA.
     runs-on:
       - self-hosted
       - linux
       - x64
-      - sonic-vs-source-master
+      - sonic-vs-bin
     timeout-minutes: 720
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
+      # Explicit execution trust for the ONIE pool's compiler containers.
+      SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      # Use Docker Hub's canonical references with the existing pinned digests.
+      DEFAULT_CONTAINER_REGISTRY: ""
+      MIRROR_URLS: https://deb.debian.org/debian/
+      MIRROR_SECURITY_URLS: https://deb.debian.org/debian-security/
+      SONIC_CONFIG_USE_DOCKER_CACHE: "y"
       # Keep build results outside run-specific checkouts and disposable builders.
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
       SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
@@ -469,7 +476,7 @@ jobs:
           submodules: recursive
 
       - name: Check VS build prerequisites
-        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
+        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD" --build-target sonic-vs.bin
 
       - name: Prepare persistent agent caches
         run: |
@@ -526,7 +533,16 @@ jobs:
               2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
           done
 
-      - name: Build the VS image
+      - name: Check native kernel sandbox in Trixie
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
+            SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
+            2>&1 | tee artifacts/vs/kernel-sandbox.log
+
+      - name: Build the VS installer (.bin)
         id: vs_build
         run: |
           set -o pipefail
@@ -546,7 +562,7 @@ jobs:
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/orchagent-reuse.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs-timing.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.img.gz.dockers
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin.dockers
           if-no-files-found: error
           retention-days: 14
 
@@ -730,7 +746,7 @@ jobs:
         with:
           name: sonic-vs-make-bazel-swss-amd64
           path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.img.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz

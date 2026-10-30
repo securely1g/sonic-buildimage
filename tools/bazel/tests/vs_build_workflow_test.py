@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -36,7 +37,7 @@ args = sys.argv[1:]
 name = pathlib.Path(sys.argv[0]).name
 action = "make" if name == "make" else args[0]
 goal = next((arg for arg in args if arg in (
-    "target/sonic-vs.img.gz", "bookworm", "sonic-slave-run", "docker-cleanup")), None)
+    "target/sonic-vs.bin", "bookworm", "sonic-slave-run", "docker-cleanup")), None)
 with pathlib.Path("calls.jsonl").open("a") as output:
     output.write(json.dumps({"action": action, "goal": goal, "args": args,
         "bazel_args": os.environ.get("BAZEL_CONTAINER_ARGS"),
@@ -119,7 +120,7 @@ else:
         result = self.run_script("build_vs.sh", FORBID_VALIDATION="1")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([call["action"] for call in self.calls()], ["make"])
-        self.assert_profile(self.calls()[0], "target/sonic-vs.img.gz")
+        self.assert_profile(self.calls()[0], "target/sonic-vs.bin")
         self.assertEqual(self.calls()[0]["build_revision"], "a" * 40)
         self.assertEqual([path.name for path in (self.root / "artifacts/vs").iterdir()], ["build-revision.txt"])
 
@@ -234,7 +235,7 @@ else:
                 self.revision.write_text("a" * 40 + "\n")
                 (self.root / "calls.jsonl").unlink(missing_ok=True)
                 result = self.run_script("build_vs.sh", CHANGE_REVISION_ACTION=(
-                    "target/sonic-vs.img.gz" if when == "during-build" else ""))
+                    "target/sonic-vs.bin" if when == "during-build" else ""))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(self.calls()[0]["build_revision"], "a" * 40)
                 if when == "between-steps":
@@ -262,7 +263,7 @@ else:
 
     def test_workflow_exposes_build_and_validation_as_separate_ordered_steps(self):
         selected, build, validation = self.workflow_steps()
-        self.assertEqual(build, "Build the VS image")
+        self.assertEqual(build, "Build the VS installer (.bin)")
         self.assertEqual(validation, "Validate VS container pairs and P4 debug symbols")
         self.assertLess(list(selected).index(build), list(selected).index(validation))
         (self.root / "artifacts/vs").mkdir(parents=True)
@@ -278,6 +279,29 @@ else:
         validation_log = (self.root / "artifacts/vs/validation.log").read_text()
         self.assertIn("controlled capture-pairs", validation_log)
         self.assertIn("controlled verify-pairs", validation_log)
+
+    def test_workflow_publishes_onie_installer_and_its_selection_manifest(self):
+        selected, _, _ = self.workflow_steps()
+        preflight = next(body for body in selected.values() if "runner/preflight.py" in body)
+        self.assertIn("--build-target sonic-vs.bin", preflight)
+        evidence = next(body for body in selected.values()
+                        if "name: sonic-vs-orchagent-reuse-amd64" in body)
+        self.assertIn("/target/sonic-vs.bin.dockers", evidence)
+        self.assertNotIn("sonic-vs.img.gz", evidence)
+        artifacts = next(body for body in selected.values()
+                         if "name: sonic-vs-make-bazel-swss-amd64" in body)
+        prefix = "vs-${{ github.run_id }}-${{ github.run_attempt }}/target/"
+        uploaded = {line.strip().removeprefix(prefix) for line in artifacts.splitlines()
+                    if line.strip().startswith(prefix)}
+        self.assertEqual(uploaded, {"sonic-vs.bin", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                                    "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"})
+
+    def test_onie_workflow_routes_to_the_existing_bin_runner_pool(self):
+        job = next(job for job in jobs().values() if "tools/bazel/ci/build_vs.sh" in job)
+        routing = re.search(r"^    runs-on:\n((?:      - [^\n]+\n)+)", job, re.MULTILINE)
+        self.assertIsNotNone(routing)
+        labels = {line.strip().removeprefix("- ") for line in routing[1].splitlines()}
+        self.assertEqual(labels, {"self-hosted", "linux", "x64", "sonic-vs-bin"})
 
     def test_workflow_tee_does_not_hide_build_or_validation_failure(self):
         selected, build, validation = self.workflow_steps()

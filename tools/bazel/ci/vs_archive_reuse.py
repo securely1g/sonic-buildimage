@@ -22,6 +22,7 @@ RUNTIME = "docker-orchagent"
 DEBUG = "docker-orchagent-dbg"
 ENTRYPOINTS = {RUNTIME: ["/usr/bin/docker-init.sh"],
                "docker-syncd-vs": ["/usr/local/bin/supervisord"]}
+INSTALLERS = ("sonic-vs.bin", "sonic-vs.img.gz")
 CHUNK = 1024 * 1024
 MAX_JSON = 16 * CHUNK
 CONFIG_NAME = re.compile(r"(?:blobs/sha256/[0-9a-f]{64}|[0-9a-f]{64}\.json)")
@@ -198,9 +199,10 @@ def verify(workspace, receipt, *, runtime_only=False, image=RUNTIME):
     return result
 
 
-def installer_selection(workspace, *, debug=False):
+def installer_selection(workspace, *, debug=False, installer="sonic-vs.bin"):
     """Read Make's actual installer list, emitted after build_image.sh succeeds."""
-    path = workspace / "target/sonic-vs.img.gz.dockers"
+    require(installer in INSTALLERS, "unsupported VS installer")
+    path = workspace / "target" / (installer + ".dockers")
     before = file_identity(path.stat())
     data = path.read_bytes()
     require(before == file_identity(path.stat()), "VS installer selection changed during validation")
@@ -214,15 +216,16 @@ def installer_selection(workspace, *, debug=False):
     if not debug:
         require(not any(value.endswith("-dbg.gz") for value in selected),
                 "normal VS installer selects a debug image")
-    return {"sha256": hashlib.sha256(data).hexdigest(), "debug": debug,
+    return {"image": installer, "sha256": hashlib.sha256(data).hexdigest(), "debug": debug,
             "paired_images": ["target/" + image + ("-dbg.gz" if debug else ".gz") for image in ENTRYPOINTS]}
 
 
-def capture_pairs(workspace, *, debug=False):
+def capture_pairs(workspace, *, debug=False, installer="sonic-vs.bin"):
     started = time.monotonic()
-    selection = installer_selection(workspace, debug=debug)
+    selection = installer_selection(workspace, debug=debug, installer=installer)
     pairs = {image: verify(workspace, capture(workspace, image), image=image) for image in ENTRYPOINTS}
-    require(installer_selection(workspace, debug=debug) == selection, "VS installer selection changed")
+    require(installer_selection(workspace, debug=debug, installer=installer) == selection,
+            "VS installer selection changed")
     return {"schema": 1, "installer": selection, "pairs": pairs,
             "validation_seconds": {"capture": time.monotonic() - started}}
 
@@ -232,9 +235,13 @@ def verify_pairs(workspace, receipt):
     started = time.monotonic()
     require(receipt.get("schema") == 1 and set(receipt.get("pairs", {})) == set(ENTRYPOINTS),
             "unsupported VS archive-pairs receipt")
-    require(installer_selection(workspace, debug=receipt["installer"]["debug"]) == receipt["installer"],
+    selection = copy.deepcopy(receipt["installer"])
+    # Earlier receipts described the KVM disk image before recording its name.
+    selection.setdefault("image", "sonic-vs.img.gz")
+    require(installer_selection(workspace, debug=selection["debug"], installer=selection["image"]) == selection,
             "VS installer selection changed after capture")
     result = copy.deepcopy(receipt)
+    result["installer"] = selection
     for image, pair in receipt["pairs"].items():
         result["pairs"][image] = verify(workspace, pair, image=image, runtime_only=True)
         name = image + "-dbg"
@@ -258,9 +265,14 @@ def main():
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--orchagent-receipt", type=Path)
     parser.add_argument("--debug-installer", action="store_true")
+    parser.add_argument("--installer", choices=INSTALLERS,
+                        help="capture-pairs installer (default: sonic-vs.bin); verify-pairs uses the receipt")
     args = parser.parse_args()
+    if args.installer is not None and args.action != "capture-pairs":
+        parser.error("--installer is only supported by capture-pairs")
     if args.action == "capture-pairs":
-        receipt = capture_pairs(args.workspace, debug=args.debug_installer)
+        receipt = capture_pairs(args.workspace, debug=args.debug_installer,
+                                installer=args.installer or "sonic-vs.bin")
     elif args.action == "verify-pairs":
         receipt = verify_pairs(args.workspace, json.loads(args.receipt.read_bytes()))
     elif args.action == "capture":

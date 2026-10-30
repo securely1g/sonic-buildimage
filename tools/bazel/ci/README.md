@@ -62,12 +62,14 @@ for each pair. The normal installer still selects runtime containers;
 `INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
 not add it to the installer.
 
-[`build_vs.sh`](build_vs.sh) runs one `make target/sonic-vs.img.gz` request
+[`build_vs.sh`](build_vs.sh) runs one `make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
-The **Build the VS image** workflow step ends
-when Make finishes producing the image and its runtime/debug archive pairs.
+The **Build the VS installer (.bin)** workflow step ends
+when Make finishes producing the ONIE installer and its runtime/debug archive pairs.
 It does not request those archives again or run the post-build validators.
-The installer's existing BIOS/UEFI build and boot checks remain inside Make.
+This target does not require KVM. BIOS/UEFI VM disk generation and guest boot
+checks belong to `target/sonic-vs.img.gz` and are not exercised by this `.bin`
+CI path. The separate VM target retains those checks.
 The build records its starting Git revision; validation requires that revision
 before checks and again before writing its timing summary.
 
@@ -77,10 +79,14 @@ checkout and configuration. It first checks
 both Orchagent and Syncd pairs before another builder can produce a missing
 archive. The checks cover Linux/AMD64 configuration, Make manifests, Bazel
 producer stamps and each debug image's runtime layers. They also check that
-`target/sonic-vs.img.gz.dockers`, emitted from the installer's actual inputs,
+`target/sonic-vs.bin.dockers`, emitted from the installer's actual inputs,
 selects runtime Orchagent and Syncd rather than debug archives for this normal
-VS configuration. Installed-image validation remains a separate check of the
-resulting image.
+VS configuration. Installed-container validation remains a separate check of
+the resulting container images.
+
+For a separate `.img.gz` build, `vs_archive_reuse.py capture-pairs` accepts
+`--installer sonic-vs.img.gz`; verification follows the image recorded in the
+receipt. Older receipts without an image name retain their `.img.gz` meaning.
 
 The validator prepares Bookworm through `Makefile.work` unless `NOBOOKWORM=1`,
 then uses its existing `sonic-slave-run` entrypoint to run `verify_vs_oci.sh`
@@ -106,8 +112,8 @@ restore those inputs or rebuild them on a cache miss in the validation builder.
 The build and validation steps share persistent action/download caches; their
 private builder output bases are separate. Splitting the workflow steps does
 not remove this work or claim a speedup. SWSS and Syncd source-package checks
-continue in their existing later steps, and installed-container and firmware
-boot checks retain their coverage.
+continue in their existing later steps, and installed-container checks retain
+their coverage. They do not establish BIOS/UEFI VM boot success.
 
 Each container retains its owner's dependencies and Bazel options. Standalone
 archive requests and other configurations retain their existing rules.
@@ -122,13 +128,19 @@ are validation receipts, not inputs needed to assemble the image.
 `runtime-debug-pairs-timing.json` (schema 2) records the revision and profile,
 P4 validation time, pair validation time and their total. It does not include
 the image build duration.
+The successful image artifact contains `target/sonic-vs.bin` and the four
+Orchagent/Syncd runtime/debug archives. The recorded installer selection is
+`target/sonic-vs.bin.dockers`.
 Do not parallelize top-level Make goals that share Docker state.
 
 GitHub Actions reports build and validation as separate step durations. Compare
 the complete job, including later source checks and artifact uploads, when
 measuring an improvement. Moving validation out of the build step changes the
-timing boundary, not the total work. Helper tests exercise dispatch, ordering,
-configuration and failure behavior without Docker; full VS CI is needed to
+timing boundary, not the total work. The `.bin` installer step also has a distinct
+dashboard measurement from historical `.img.gz` builds: omitting VM generation
+and boot checks is a change in scope, not a same-scope build speedup.
+Helper tests exercise dispatch, ordering, configuration and failure behavior
+without Docker; full VS CI is needed to
 validate the resulting image and measure end-to-end time.
 
 - `container.py` runs an owner's `:ci_tests` test suite and builds its

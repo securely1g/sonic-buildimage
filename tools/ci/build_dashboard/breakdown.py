@@ -26,7 +26,7 @@ PHASE_PARTITION_TOLERANCE_SECONDS = 0.00001
 IMAGE_PHASES = {"assembly", "boot-checks", "compression"}
 IMAGE_CONTEXTS = {"recipe", "filesystem", "installer", "bios", "uefi", "4-asic", "6-asic"}
 PHASE_REASONS = {"not-recorded", "invalid-timing", "incomplete-timing"}
-FINAL_IMAGE_TARGET = "target/sonic-vs.img.gz"
+FINAL_IMAGE_TARGETS = {"target/sonic-vs.bin", "target/sonic-vs.img.gz"}
 REASONS = {
     "pending-collection", "step-not-successful", "logs-expired", "logs-too-large",
     "logs-temporarily-unavailable", "unsupported-log-format", "incomplete-log", "invalid-timing",
@@ -86,6 +86,8 @@ TASK_LABELS = {
     "macsec": "MACsec container",
 }
 EXACT_TARGETS = {
+    "target/sonic-vs.bin": "final-image",
+    "target/sonic-vs.bin__vs__rfs.squashfs": "rootfs",
     "target/sonic-vs.img.gz": "final-image",
     "target/sonic-vs.img.gz__vs__rfs.squashfs": "rootfs",
     "target/docker-orchagent.gz": "orchagent-release",
@@ -277,26 +279,30 @@ are observed recipe/cache intervals and are deliberately not summed.
     active_pairs = {}
     current = None
     task_count = 0
-    active_phase = None
+    active_phases = {}
     for when, text in rows[first:last]:
         # Phase marker failures affect only the optional inner measurement. A
         # marker is associated with the exact currently building image target;
         # stale markers outside that interval cannot be reused by later work.
         if text.startswith("[ image phases ]"):
             marker = IMAGE_PHASE_MARKER.fullmatch(text)
-            if active_phase is not None and FINAL_IMAGE_TARGET in active:
-                if marker and marker[1] == FINAL_IMAGE_TARGET:
+            identity = marker[1] if marker else next(
+                (target for target in FINAL_IMAGE_TARGETS if text.startswith(f"[ image phases ] [ {target} ]")), None)
+            active_phase = active_phases.get(identity)
+            if active_phase is not None and identity in active:
+                if marker:
                     active_phase["seen"] += 1
                     if active_phase["seen"] > 1 or when < previous or when > log_end:
                         active_phase["error"] = "invalid-timing"
                     else:
                         value, error = read_phase_payload(marker[2])
                         active_phase.update(value=value, error=error, when=when)
-                elif text.startswith(f"[ image phases ] [ {FINAL_IMAGE_TARGET} ]"):
+                else:
                     active_phase.update(seen=1, error="invalid-timing")
             continue
-        if active_phase is not None and active_phase["when"] is not None and when < active_phase["when"]:
-            active_phase["error"] = "invalid-timing"
+        for active_phase in active_phases.values():
+            if active_phase["when"] is not None and when < active_phase["when"]:
+                active_phase["error"] = "invalid-timing"
         if when < previous or when > log_end:
             return unavailable("invalid-timing")
         previous = when
@@ -341,8 +347,8 @@ are observed recipe/cache intervals and are deliberately not summed.
             if identity in active:
                 return unavailable("incomplete-log")
             active[identity] = when
-            if identity == FINAL_IMAGE_TARGET:
-                active_phase = {"seen": 0, "error": None, "value": None, "when": None}
+            if identity in FINAL_IMAGE_TARGETS:
+                active_phases[identity] = {"seen": 0, "error": None, "value": None, "when": None}
         else:
             began = active.pop(identity, None)
             if began is None:
@@ -355,9 +361,8 @@ are observed recipe/cache intervals and are deliberately not summed.
             task = {"id": f"{kind}-{count}", "label": TASK_LABELS[kind],
                     "offset_seconds": round((began - current["start"]).total_seconds(), 6),
                     "duration_seconds": round((when - began).total_seconds(), 6), "outcome": outcome}
-            if identity == FINAL_IMAGE_TARGET:
-                task["phase_breakdown"] = complete_phase_breakdown(active_phase, began, when, outcome)
-                active_phase = None
+            if identity in FINAL_IMAGE_TARGETS:
+                task["phase_breakdown"] = complete_phase_breakdown(active_phases.pop(identity), began, when, outcome)
             current["tasks"].append(task)
     if not current or active:
         return unavailable("incomplete-log")

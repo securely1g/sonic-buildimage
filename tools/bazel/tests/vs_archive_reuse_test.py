@@ -242,20 +242,21 @@ class ArchiveReuseTest(unittest.TestCase):
         self.assertEqual(set(json.loads(receipt.read_text())["validation_seconds"]),
                          {"capture", "verify_runtime", "verify"})
 
-    def write_pairs(self, *, debug_installer=False):
+    def write_pairs(self, *, debug_installer=False, installer="sonic-vs.bin"):
         manifest = copy.deepcopy(self.runtime_manifest)
         manifest["package"]["name"] = manifest["service"]["name"] = "syncd"
         for debug in (False, True):
             self.write_archive(image="docker-syncd-vs", debug=debug, manifest=manifest)
         selected = ["target/" + image + ("-dbg.gz" if debug_installer else ".gz")
                     for image in reuse.ENTRYPOINTS]
-        (self.target / "sonic-vs.img.gz.dockers").write_text("\n".join(selected) + "\n")
+        (self.target / (installer + ".dockers")).write_text("\n".join(selected) + "\n")
 
     def test_both_pairs_are_checked_before_followup_and_retain_same_bytes(self):
         self.write_pairs()
         receipt = reuse.capture_pairs(self.workspace)
         self.assertEqual(set(receipt["pairs"]), {"docker-orchagent", "docker-syncd-vs"})
         self.assertFalse(receipt["installer"]["debug"])
+        self.assertEqual(receipt["installer"]["image"], "sonic-vs.bin")
         result = reuse.verify_pairs(self.workspace, receipt)
         self.assertEqual(result["pairs"]["docker-syncd-vs"]["debug"]["layers"][:2],
                          receipt["pairs"]["docker-syncd-vs"]["runtime"]["layers"])
@@ -284,15 +285,18 @@ class ArchiveReuseTest(unittest.TestCase):
             reuse.capture_pairs(self.workspace)
 
     def test_installer_selection_excludes_debug_for_normal_image_and_requires_it_for_debug(self):
-        for debug in (False, True):
-            with self.subTest(debug=debug):
-                self.write_pairs(debug_installer=debug)
-                receipt = reuse.capture_pairs(self.workspace, debug=debug)
-                self.assertEqual(receipt["installer"]["debug"], debug)
-                with self.assertRaisesRegex(ValueError, "wrong runtime/debug"):
-                    reuse.capture_pairs(self.workspace, debug=not debug)
+        for installer in ("sonic-vs.bin", "sonic-vs.img.gz"):
+            for debug in (False, True):
+                with self.subTest(installer=installer, debug=debug):
+                    self.write_pairs(debug_installer=debug, installer=installer)
+                    receipt = reuse.capture_pairs(self.workspace, debug=debug, installer=installer)
+                    self.assertEqual(receipt["installer"]["debug"], debug)
+                    self.assertEqual(receipt["installer"]["image"], installer)
+                    self.assertEqual(reuse.verify_pairs(self.workspace, receipt)["installer"], receipt["installer"])
+                    with self.assertRaisesRegex(ValueError, "wrong runtime/debug"):
+                        reuse.capture_pairs(self.workspace, debug=not debug, installer=installer)
         self.write_pairs()
-        path = self.target / "sonic-vs.img.gz.dockers"
+        path = self.target / "sonic-vs.bin.dockers"
         path.write_text(path.read_text() + "target/docker-other-dbg.gz\n")
         with self.assertRaisesRegex(ValueError, "normal VS installer selects a debug"):
             reuse.capture_pairs(self.workspace)
@@ -315,7 +319,7 @@ class ArchiveReuseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "manifest changed"):
             reuse.verify_pairs(self.workspace, receipt)
         manifest.write_bytes(previous)
-        path = self.target / "sonic-vs.img.gz.dockers"
+        path = self.target / "sonic-vs.bin.dockers"
         path.write_text(path.read_text() + "target/docker-extra.gz\n")
         with self.assertRaisesRegex(ValueError, "selection changed"):
             reuse.verify_pairs(self.workspace, receipt)
@@ -329,7 +333,46 @@ class ArchiveReuseTest(unittest.TestCase):
                             action, "--workspace", str(self.workspace), "--receipt", str(receipt),
                             "--orchagent-receipt", str(legacy)], check=True, capture_output=True, text=True)
         self.assertEqual(json.loads(legacy.read_text()), json.loads(receipt.read_text())["pairs"][reuse.RUNTIME])
+        self.assertEqual(json.loads(receipt.read_text())["installer"]["image"], "sonic-vs.bin")
         reuse.verify(self.workspace, json.loads(legacy.read_text()), runtime_only=True)
+
+    def test_legacy_pair_receipt_uses_kvm_manifest_and_returns_explicit_image(self):
+        self.write_pairs(installer="sonic-vs.img.gz")
+        receipt = reuse.capture_pairs(self.workspace, installer="sonic-vs.img.gz")
+        del receipt["installer"]["image"]
+        # A simultaneous, unrelated ONIE manifest must not replace the legacy selection.
+        (self.target / "sonic-vs.bin.dockers").write_text("target/unrelated.gz\n")
+        result = reuse.verify_pairs(self.workspace, receipt)
+        self.assertEqual(result["installer"]["image"], "sonic-vs.img.gz")
+        self.assertNotIn("image", receipt["installer"])
+        path = self.target / "sonic-vs.img.gz.dockers"
+        path.write_text(path.read_text() + "target/docker-extra.gz\n")
+        with self.assertRaisesRegex(ValueError, "selection changed"):
+            reuse.verify_pairs(self.workspace, receipt)
+
+    def test_default_capture_does_not_fall_back_to_a_previous_kvm_manifest(self):
+        self.write_pairs(installer="sonic-vs.img.gz")
+        with self.assertRaises(FileNotFoundError):
+            reuse.capture_pairs(self.workspace)
+
+    def test_pair_cli_keeps_explicit_kvm_selection_during_verification(self):
+        self.write_pairs(installer="sonic-vs.img.gz")
+        receipt = self.workspace / "artifacts/pairs.json"
+        command = [sys.executable, "-B", str(ROOT / "tools/bazel/ci/vs_archive_reuse.py")]
+        options = ["--workspace", str(self.workspace), "--receipt", str(receipt)]
+        subprocess.run([*command, "capture-pairs", *options, "--installer", "sonic-vs.img.gz"],
+                       check=True, capture_output=True, text=True)
+        subprocess.run([*command, "verify-pairs", *options], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(receipt.read_text())["installer"]["image"], "sonic-vs.img.gz")
+
+    def test_invalid_installer_selector_is_rejected(self):
+        self.write_pairs()
+        receipt = reuse.capture_pairs(self.workspace)
+        for image in ("../../outside", "sonic-vs.raw", "", None):
+            with self.subTest(image=image):
+                receipt["installer"]["image"] = image
+                with self.assertRaises(ValueError):
+                    reuse.verify_pairs(self.workspace, receipt)
 
 
 if __name__ == "__main__":

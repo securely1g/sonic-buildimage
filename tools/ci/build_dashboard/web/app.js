@@ -6,6 +6,7 @@ const KIND_LABELS = {"make-vs": "Make VS", "bazel-vs": "Bazel VS installer", con
 const PHASES = ["setup", "build", "validation", "upload", "other"];
 // Match collect.py's IMAGE_STEPS. Exact names preserve historical timing boundaries.
 const IMAGE_STEP_LABELS = {
+  "Build the VS installer (.bin)": "VS installer (.bin); VM generation and boot checks excluded",
   "Build the VS image": "VS build with embedded boot checks; post-build validation excluded",
   "Build the VS image with Bazel SWSS archives": "Build the VS image with Bazel SWSS archives",
   "Build the VS image and both OCI container variants": "VS build, OCI follow-up and archive validation",

@@ -37,6 +37,18 @@ test("moving validation out of the build step starts a separate trend series", (
   assert.deepEqual(points, before, "grouping must preserve historical durations and metadata");
 });
 
+test("ONIE installer timings never join VM-image or combined validation timings", () => {
+  const combined = timingPoint("Build the VS image and both OCI container variants");
+  const vm = timingPoint("Build the VS image");
+  const installer = timingPoint("Build the VS installer (.bin)");
+  const next = timingPoint("Build the VS installer (.bin)", {image_build_seconds: 100});
+  const points = [combined, vm, installer, next], before = structuredClone(points);
+  assert.deepEqual(imageTrendGroups(points), [[combined], [vm], [installer, next]]);
+  assert.match(imageMeasurement(installer.job).label, /installer \(\.bin\); VM generation and boot checks excluded/);
+  assert.match(imageMeasurement(vm.job).label, /embedded boot checks/);
+  assert.deepEqual(points, before, "target changes must preserve historical measurements");
+});
+
 test("trend grouping retains architecture and build-path boundaries", () => {
   const amd64 = timingPoint("Build the VS image");
   const arm64 = timingPoint("Build the VS image", {architecture: "arm64"});
