@@ -82,6 +82,16 @@ variable unset on hosts that need no additional trust. The generated certificate
 stay in ignored builder context directories; do not commit certificates or keys.
 This setting does not add host trust to the installed SONiC filesystem.
 
+If APT stalls on a mirror's DNS SRV service hostname while the configured HTTPS
+mirror URL works, set `SONIC_BUILD_APT_DISABLE_SRV=y` for native
+Bookworm/Trixie jobs. This makes builder and rootfs APT use the configured mirror
+hostname directly; TLS verification, repository signatures, and package version
+pins remain in effect. The default is `n`; only `y` and `n` are accepted. Changing this setting
+changes the builder tag and rebuilds its package layers. Rootfs setup uses a
+temporary APT configuration, removed before split-stage and native snapshots
+and final image publication. The setting is excluded from the frozen installer
+environment and does not change installed SONiC APT configuration.
+
 Use a local, persistent `/data` mount with at least 100 GiB free for workspaces.
 Budget another 100 GiB free for Docker; if they share a filesystem, preflight
 requires 200 GiB total. These are admission thresholds, not measured maximum

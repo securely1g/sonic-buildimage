@@ -90,6 +90,10 @@
 #  * SONIC_BUILD_SLAVE_CA_BUNDLE: Optional public PEM CA bundle for Bookworm/Trixie
 #  *                 native builders. Adds trust anchors without disabling TLS
 #  *                 verification; the bundle digest participates in builder tags.
+#  * SONIC_BUILD_APT_DISABLE_SRV: Keep configured APT mirror hostnames in
+#  *                 Bookworm/Trixie builders and rootfs package installation
+#  *                 instead of DNS SRV service targets. Rootfs config is temporary.
+#  *                 Default: n. Values: y,n. Does not disable TLS verification.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -293,6 +297,15 @@ $(shell \
 	PIP_HTTP_TIMEOUT=$(PIP_HTTP_TIMEOUT) \
 	scripts/generate_buildinfo_config.sh)
 
+# Optional native builder APT routing leaves package selection and TLS unchanged.
+SONIC_BUILD_APT_DISABLE_SRV ?= n
+ifneq ($(SONIC_BUILD_APT_DISABLE_SRV),y)
+ifneq ($(SONIC_BUILD_APT_DISABLE_SRV),n)
+$(error SONIC_BUILD_APT_DISABLE_SRV must be y or n)
+endif
+endif
+SONIC_OVERRIDE_BUILD_VARS += SONIC_BUILD_APT_DISABLE_SRV=$(SONIC_BUILD_APT_DISABLE_SRV)
+
 # Optional host trust belongs to builder execution, not the installed SONiC image.
 # Include its content digest in the rendered Dockerfile so the existing image-tag
 # checks cannot reuse a builder with an older trust configuration.
@@ -320,6 +333,7 @@ $(shell CONFIGURED_ARCH=$(CONFIGURED_ARCH) \
 	FIPS_VERSION=$(FIPS_VERSION) \
 	FIPS_GOLANG_MAIN_VERSION=$(FIPS_GOLANG_MAIN_VERSION) \
 	FIPS_GOLANG_VERSION=$(FIPS_GOLANG_VERSION) \
+	SONIC_BUILD_APT_DISABLE_SRV=$(SONIC_BUILD_APT_DISABLE_SRV) \
 	SONIC_BUILD_SLAVE_CA_SHA256=$(SONIC_BUILD_SLAVE_CA_SHA256) \
 	j2 $(SLAVE_DIR)/Dockerfile.j2 > $(SLAVE_DIR)/Dockerfile)
 

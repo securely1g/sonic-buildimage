@@ -50,6 +50,23 @@ LINUX_KERNEL_VERSION=6.12.41+deb13
 ## Working directory to prepare the file system
 FILESYSTEM_ROOT=./fsroot
 PLATFORM_DIR=platform
+
+# Build-time APT routing must not become installed SONiC configuration.
+sonic_configure_build_apt()
+{
+    if [[ ${SONIC_BUILD_APT_DISABLE_SRV:-n} == y ]]; then
+        printf '%s\n' 'Acquire::EnableSrvRecords "false";' | \
+            sudo tee "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-disable-srv" > /dev/null
+    fi
+}
+
+sonic_cleanup_build_apt()
+{
+    if [[ ${SONIC_BUILD_APT_DISABLE_SRV:-n} == y ]]; then
+        sudo rm -f "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/99sonic-build-disable-srv"
+    fi
+}
+
 ## Hostname for the linux image
 HOSTNAME=sonic
 DEFAULT_USERINFO="Default admin user,,,"
@@ -114,6 +131,7 @@ sudo mount proc /proc -t proc || true
 ## Build the host debian base system
 echo '[INFO] Build host debian base system...'
 TARGET_PATH=$TARGET_PATH scripts/build_debian_base_system.sh $CONFIGURED_ARCH $IMAGE_DISTRO $FILESYSTEM_ROOT $http_proxy
+sonic_configure_build_apt
 
 # Prepare buildinfo
 sudo SONIC_VERSION_CACHE=${SONIC_VERSION_CACHE} \
@@ -682,6 +700,7 @@ if [[ $RFS_SPLIT_FIRST_STAGE == y ]]; then
     sudo timeout 15s bash -c 'until LANG=C chroot $0 umount /proc; do sleep 1; done' $FILESYSTEM_ROOT || true
 
     sudo rm -f $TARGET_PATH/$RFS_SQUASHFS_NAME
+    sonic_cleanup_build_apt
     sudo mksquashfs $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME -Xcompression-level 1
 
     exit 0
@@ -708,6 +727,7 @@ if [[ $RFS_SPLIT_LAST_STAGE == y ]]; then
 
     trap_push 'sudo LANG=C chroot $FILESYSTEM_ROOT umount /proc || true'
     sudo LANG=C chroot $FILESYSTEM_ROOT mount proc /proc -t proc
+    sonic_configure_build_apt
 fi
 
 ## Version file part 2
@@ -737,6 +757,7 @@ if [ -f sonic_debian_extension.sh ]; then
 fi
 
 if [[ ${SONIC_BAZEL_BUILD_STAGE:-} == host ]]; then
+    sonic_cleanup_build_apt
     sonic_bazel_write_host_snapshot
     # Capture generated services and the evaluated environment before Make
     # removes its templates. This never includes password/signing material.
@@ -935,6 +956,7 @@ sudo LANG=C chroot $FILESYSTEM_ROOT bash -c 'rm -rf /usr/share/doc/* /usr/share/
 
 ## Clean up proxy
 [ -n "$http_proxy" ] && sudo rm -f $FILESYSTEM_ROOT/etc/apt/apt.conf.d/01proxy
+sonic_cleanup_build_apt
 
 ## Clean up pip cache
 sudo LANG=C chroot $FILESYSTEM_ROOT pip3 cache purge
