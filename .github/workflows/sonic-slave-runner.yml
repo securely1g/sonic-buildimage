@@ -1,0 +1,242 @@
+name: SONiC slave container runner
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/sonic-slave-runner.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Require the reviewed manager revision installed in the runner image.
+  EXPECTED_MANAGER_REVISION: 6e914bd5bb470bc1a427d2f15f3d451b0986b881
+
+jobs:
+  environment:
+    name: Runner environment and persistent caches
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, sonic-slave-container]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure local and remote Bazel caches
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        run: python3 -B /opt/sonic-runner/cache_probe.py configure --cache-dir /bazel_cache
+      - name: Verify the Actions worker runs inside the SONiC slave
+        id: environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import shutil
+          import stat
+          import tempfile
+
+          artifact = Path("artifacts/runner-container/environment.json")
+          artifact.parent.mkdir(parents=True, exist_ok=True)
+          evidence = {
+              "schema": 1,
+              "scope": "Runner registration and container environment only; no SONiC image build",
+              "status": "failed",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "revision": os.environ["GITHUB_SHA"],
+              "manager_repository": "securely1g/agi-projects",
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner_name": os.environ["RUNNER_NAME"],
+              "uid": os.getuid(),
+              "gid": os.getgid(),
+          }
+
+          def require(condition, message):
+              if not condition:
+                  raise ValueError(message)
+
+          try:
+              require(os.getuid() == 1000 and os.getgid() == 1000,
+                      "Run the Actions agent as UID/GID 1000:1000 in the derived slave image")
+              require(Path("/.dockerenv").is_file(), "The Actions agent must run in the Docker runner container")
+              release = platform.freedesktop_os_release()
+              evidence["os_release"] = release
+              require(release.get("ID") == "debian" and release.get("VERSION_CODENAME") == "trixie",
+                      "The runner must use the Debian Trixie SONiC slave")
+              require(platform.machine() == "x86_64", "The runner must be native x86_64")
+
+              marker_path = Path("/etc/sonic-slave-github-runner.json")
+              require(marker_path.is_file() and not marker_path.is_symlink(), "Derived SONiC slave image marker is missing")
+              marker_stat = marker_path.stat()
+              require(marker_stat.st_uid == 0 and not stat.S_IMODE(marker_stat.st_mode) & 0o222,
+                      "The derived image marker must be root-owned and read-only")
+              marker = json.loads(marker_path.read_text())
+              evidence["image"] = marker
+              evidence["manager_revision"] = marker.get("manager_revision")
+              require(marker.get("manager_revision") == os.environ["EXPECTED_MANAGER_REVISION"],
+                      "Runner image must contain the reviewed worker-manager revision")
+              require(isinstance(marker, dict) and isinstance(marker.get("base_image"), str)
+                      and re.fullmatch(r"sha256:[0-9a-f]{64}", marker["base_image"]),
+                      "The image marker must identify the immutable SONiC slave base image")
+              require(marker.get("uid") == 1000 and marker.get("gid") == 1000,
+                      "Image marker has an unexpected runner UID/GID")
+              require(marker.get("runner_root") == "/opt/actions-runner"
+                      and marker.get("work_root") == "/actions/_work",
+                      "Image marker has unexpected runner or workspace paths")
+
+              runner_root = Path("/opt/actions-runner")
+              # Keep Actions state outside /sonic, which native builds bind to
+              # their checkout for SONiC's fixed build paths.
+              work_root = Path("/actions/_work")
+              for directory in (runner_root, work_root):
+                  require(directory.is_dir() and not directory.is_symlink(), f"Missing runner directory: {directory}")
+                  with tempfile.TemporaryFile(dir=directory) as probe:
+                      probe.write(b"runner workspace probe\n")
+              for name in ("Runner.Listener", "Runner.Worker"):
+                  require((runner_root / "bin" / name).is_file(), f"Missing installed Actions binary: {name}")
+              workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+              runner_workspace = Path(os.environ["RUNNER_WORKSPACE"]).resolve(strict=True)
+              require(workspace.is_relative_to(work_root) and runner_workspace.is_relative_to(work_root),
+                      "The Actions checkout and runner workspace must be beneath /actions/_work")
+              evidence["workspace"] = str(workspace)
+              evidence["runner_workspace"] = str(runner_workspace)
+
+              ancestors = []
+              pid = os.getppid()
+              for _ in range(32):
+                  if pid <= 0:
+                      break
+                  process = Path("/proc") / str(pid)
+                  executable = str((process / "exe").resolve(strict=True))
+                  ancestors.append({"pid": pid, "executable": executable})
+                  if executable == "/opt/actions-runner/bin/Runner.Worker":
+                      break
+                  pid = int((process / "stat").read_text().rsplit(")", 1)[1].split()[1])
+              evidence["process_ancestors"] = ancestors
+              require(any(item["executable"] == "/opt/actions-runner/bin/Runner.Worker" for item in ancestors),
+                      "This job must descend from the Actions worker installed inside /opt/actions-runner")
+
+              tools = {name: shutil.which(name) for name in ("make", "git", "python3", "bazel")}
+              evidence["tools"] = tools
+              require(all(tools.values()), "The selected slave image lacks make, git, python3, or bazel")
+              # The separate cache probe invokes Bazel and checks actual cache hits.
+              mountpoints = {line.split()[4] for line in Path("/proc/self/mountinfo").read_text().splitlines()}
+              for cache_path in ("/dpkg_cache", "/bazel_cache"):
+                  require(cache_path in mountpoints, f"Persistent cache mount is missing: {cache_path}")
+                  with tempfile.TemporaryFile(dir=cache_path) as probe:
+                      probe.write(b"runner cache access probe\n")
+              require(os.environ.get("SONIC_DPKG_CACHE_SOURCE") == "/dpkg_cache"
+                      and os.environ.get("SONIC_DPKG_CACHE_METHOD") == "rwcache",
+                      "The native Make cache must use /dpkg_cache in rwcache mode")
+              require(os.environ.get("BAZELISK_HOME") == "/bazel_cache/bazelisk",
+                      "Bazelisk downloads must use the persistent Bazel cache mount")
+              evidence["persistent_caches"] = {
+                  "make": "/dpkg_cache", "make_method": "rwcache",
+                  "bazel": "/bazel_cache", "native_make_build_tested": False,
+              }
+              sockets = ("/var/run/docker.sock", "/run/docker.sock", "/run/containerd/containerd.sock")
+              exposed = [path for path in sockets if Path(path).exists() or Path(path).is_symlink()]
+              evidence["exposed_runtime_sockets"] = exposed
+              require(not exposed, "The registration proof runner must not receive a host runtime socket")
+              require(not os.environ.get("DOCKER_HOST"), "The registration proof runner must not select an external Docker daemon")
+              evidence["status"] = "passed"
+          except (OSError, ValueError, KeyError, TypeError) as error:
+              evidence["error"] = str(error)
+              raise
+          finally:
+              artifact.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+              print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+      - name: Verify local and remote Bazel cache reuse
+        id: cache_probe
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        run: >-
+          python3 -B /opt/sonic-runner/cache_probe.py verify
+          --cache-dir /bazel_cache
+          --output "$RUNNER_TEMP/sonic-slave-cache.json"
+          --bazel bazel
+      - name: Preserve runner environment evidence
+        if: always() && steps.environment.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-slave-runner-environment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/runner-container/environment.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve sanitized cache evidence
+        if: always() && steps.cache_probe.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-slave-runner-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sonic-slave-cache.json
+          if-no-files-found: error
+          retention-days: 14
+
+  hosted_cache_access:
+    name: GitHub-hosted cache HTTPS access
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Check authenticated cache endpoint from GitHub
+        id: access
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+          import urllib.error
+          import urllib.request
+
+          class NoRedirects(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          receipt = {"status": "failure", "phase": "secret_validation"}
+          try:
+              auth = os.environ.get("BAZEL_REMOTE_AUTH", "")
+              if not auth.startswith("Basic ") or any(character in auth for character in "\r\n"):
+                  raise ValueError()
+              if b":" not in base64.b64decode(auth[6:], validate=True):
+                  raise ValueError()
+              receipt["phase"] = "authenticated_get"
+              request = urllib.request.Request(
+                  "https://lgh-bazel-87263989.eastus.cloudapp.azure.com/status",
+                  headers={"Authorization": auth}, method="GET")
+              opener = urllib.request.build_opener(NoRedirects())
+              with opener.open(request, timeout=20) as response:
+                  receipt["http_status"] = response.status
+                  if response.status != 200:
+                      raise ValueError()
+              receipt["status"] = "success"
+          except urllib.error.HTTPError as error:
+              receipt.update(error_class="HTTPError", http_status=error.code)
+          except urllib.error.URLError as error:
+              receipt["error_class"] = type(error.reason).__name__
+          except Exception as error:
+              receipt["error_class"] = type(error).__name__
+          output = Path(os.environ["RUNNER_TEMP"]) / "hosted-cache-access.json"
+          output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(receipt, sort_keys=True))
+          raise SystemExit(0 if receipt["status"] == "success" else 1)
+          PY
+      - name: Preserve sanitized hosted cache access evidence
+        if: always() && steps.access.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hosted-cache-access-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hosted-cache-access.json
+          if-no-files-found: error
+          retention-days: 14
