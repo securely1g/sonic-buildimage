@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -55,7 +55,11 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          set -euo pipefail
+          mkdir -p artifacts/base-images
+          cp tools/bazel/ci/libteam_draft_bazel.sh artifacts/base-images/registry-input.txt
           python3 -B tools/bazel/ci/base_images.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
           git diff --exit-code
       - name: Retain images, symbols and build evidence
@@ -69,6 +73,7 @@ jobs:
             artifacts/base-images/*.json
             artifacts/base-images/*.jsonl
             artifacts/base-images/*.log
+            artifacts/base-images/registry-input.txt
             artifacts/base-images/MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14

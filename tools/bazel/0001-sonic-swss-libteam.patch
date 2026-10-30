@@ -1,0 +1,39 @@
+diff --git a/MODULE.bazel b/MODULE.bazel
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -92,7 +92,6 @@
+     packages = [
+         "libjansson-dev",
+         "libjemalloc-dev",
+-        "libteam-dev",
+         "libyaml-cpp-dev",
+     ],
+     suites = [
+diff --git a/tools/bazel/deps.bzl b/tools/bazel/deps.bzl
+--- a/tools/bazel/deps.bzl
++++ b/tools/bazel/deps.bzl
+@@ -12,6 +12,6 @@
+     "@trixie//libboost-dev:libboost",
+     "@trixie//libhiredis-dev:libhiredis",
+-    "@trixie//libzmq3-dev:libzmq3",
++    "@trixie//libzmq3-dev:libzmq_cc",
+     "@trixie//nlohmann-json3-dev:nlohmann-json3",
+ ]
+ 
+@@ -26,7 +26,13 @@
+     "@swss_debian//libyaml-cpp-dev:libyaml-cpp",
+ ]
+ 
+-# rules_distroless exposes libteam and libteamdctl through one public target.
+-TEAM_DEPS = SWSS_DEPS + ["@swss_debian//libteam-dev:libteam"]
++# This buildimage integration consumes its patched source libraries.
++TEAM_DEPS = SWSS_DEPS + [
++    "@@//src/libteam:libteam",
++    "@@//src/libteam:libteamdctl",
++]
+ 
+-TLM_TEAM_DEPS = TEAM_DEPS + ["@swss_debian//libjansson-dev:libjansson"]
++TLM_TEAM_DEPS = SWSS_DEPS + [
++    "@@//src/libteam:libteamdctl",
++    "@swss_debian//libjansson-dev:libjansson",
++]
