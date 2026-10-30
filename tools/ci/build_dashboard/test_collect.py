@@ -135,6 +135,21 @@ class TimingTests(unittest.TestCase):
         value["steps"][0]["name"] = "Build the VS image and both OCI container variants"
         self.assertEqual(collector.normalize_job(value, REPO, 10)["image_build_seconds"], 600)
 
+    def test_pr72_image_step_identity_keeps_step_and_job_times_separate(self):
+        fixture = json.loads((Path(__file__).with_name("testdata") / "pr72-carried-image-execution.json").read_text())
+        value = dict(fixture["job"], id=fixture["attempt2"]["job_id"])
+        normalized = collector.normalize_job(value, REPO, fixture["run_id"])
+        self.assertEqual(normalized["image_build_seconds"], 2329)
+        self.assertEqual(normalized["image_build_step_numbers"], [10])
+        self.assertEqual(normalized["started_at"], "2026-10-30T11:50:35Z")
+        self.assertEqual(normalized["completed_at"], "2026-10-30T13:27:57Z")
+        image_step = next(step for step in normalized["steps"] if step["number"] == 10)
+        self.assertEqual(image_step["started_at"], "2026-10-30T11:55:36Z")
+        self.assertEqual(image_step["completed_at"], "2026-10-30T12:34:25Z")
+        value = copy.deepcopy(value)
+        value["steps"].append(copy.deepcopy(next(step for step in value["steps"] if step["number"] == 10)))
+        self.assertIsNone(collector.normalize_job(value, REPO, fixture["run_id"])["image_build_step_numbers"])
+
     def test_fields_and_urls_are_allowlisted(self):
         value = job()
         value["html_url"] = "https://malicious.invalid"
@@ -210,6 +225,37 @@ class AssociationTests(unittest.TestCase):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_cached_retry_start_requires_matching_observed_provenance(self):
+        retry_start = "2026-10-10T00:20:00Z"
+        updated = "2026-10-10T00:21:00Z"
+        original = run(created_at=START)
+        fallback = run(attempt=2, run_started_at=None, created_at=START, updated_at=updated)
+        original_job = collector.normalize_job(job(), REPO, 10)
+        alias = job(); alias["id"] = 100
+        alias_job = collector.normalize_job(alias, REPO, 10)
+        old1 = collector.normalize_run(original, "bazel-swss-oci.yml", REPO, [original_job], ([1], "github"))
+        old2 = collector.normalize_run(fallback, "bazel-swss-oci.yml", REPO, [alias_job], ([1], "github"))
+        self.assertEqual(old2["started_at"], START)
+        self.assertEqual(old2["started_at_source"], "created_at")
+        old1.pop("started_at_source"); old2.pop("started_at_source")
+        history = dict(empty(), runs=[old2, old1])
+        for observed in [None, retry_start]:
+            with self.subTest(observed=observed):
+                latest = run(attempt=2, run_started_at=observed, created_at=START, updated_at=updated)
+                api = FakeAPI(latest=[latest])
+                result = collector.collect(api, REPO, copy.deepcopy(history), log_jobs=0)
+                retry = next(value for value in result["runs"] if value["attempt"] == 2)
+                self.assertEqual(retry["started_at"], observed or START)
+                self.assertEqual(retry.get("started_at_source"), "run_started_at" if observed else None)
+                retained_job = copy.deepcopy(retry["jobs"][0])
+                for step in retained_job["steps"]:
+                    step.pop("breakdown", None)
+                self.assertEqual(retained_job, alias_job)
+                self.assertFalse(any(endpoint.endswith("/jobs") for endpoint in api.calls))
+                self.assertNotIn("started_at_source", next(value for value in result["runs"] if value["attempt"] == 1))
+        wrong_head = run(attempt=2, run_started_at=retry_start, created_at=START, updated_at=updated, head_sha=OTHER_SHA)
+        self.assertEqual(collector.retain_verified_start(old2, wrong_head, "bazel-swss-oci.yml"), old2)
+
     def test_new_attempt_preserves_prior_and_collects_all(self):
         api = FakeAPI(latest=[run(attempt=3)])
         api.attempts[f"repos/{REPO}/actions/runs/10/attempts/1"] = run(conclusion="failure")
