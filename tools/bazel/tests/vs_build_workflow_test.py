@@ -22,6 +22,8 @@ class VsBuildWorkflowTest(unittest.TestCase):
         self.root = Path(temporary.name)
         self.scripts = self.root / "tools/bazel/ci"
         self.scripts.mkdir(parents=True)
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/run_with_retry").symlink_to(ROOT / "scripts/run_with_retry")
         self.commands = self.root / "commands"
         self.commands.mkdir()
         self.revision = self.root / "revision"
@@ -33,14 +35,23 @@ import json, os, pathlib, sys
 args = sys.argv[1:]
 name = pathlib.Path(sys.argv[0]).name
 action = "make" if name == "make" else args[0]
+goal = next((arg for arg in args if arg in (
+    "target/sonic-vs.img.gz", "bookworm", "sonic-slave-run", "docker-cleanup")), None)
 with pathlib.Path("calls.jsonl").open("a") as output:
-    output.write(json.dumps({"action": action, "args": args,
+    output.write(json.dumps({"action": action, "goal": goal, "args": args,
         "bazel_args": os.environ.get("BAZEL_CONTAINER_ARGS"),
+        "override_build_vars": os.environ.get("SONIC_OVERRIDE_BUILD_VARS"),
+        "build_vars": os.environ.get("SONIC_BUILD_VARS"),
         "build_revision": pathlib.Path("artifacts/vs/build-revision.txt").read_text().strip()}) + "\n")
 print("controlled " + action)
-if os.environ.get("CHANGE_REVISION_ACTION") in (action, args[0]):
+if os.environ.get("FAIL_ONCE_GOAL") == goal and goal is not None:
+    failed = pathlib.Path("failed-once")
+    if not failed.exists():
+        failed.touch()
+        sys.exit(17)
+if os.environ.get("CHANGE_REVISION_ACTION") and os.environ["CHANGE_REVISION_ACTION"] in (action, args[0], goal):
     pathlib.Path("revision").write_text("b" * 40 + "\n")
-if os.environ.get("FAIL_ACTION") in (action, args[0]):
+if os.environ.get("FAIL_ACTION") and os.environ["FAIL_ACTION"] in (action, args[0], goal):
     sys.exit(17)
 '''
         (self.commands / "make").write_text(recorder)
@@ -67,9 +78,11 @@ else:
             os.environ, PATH=str(self.commands) + os.pathsep + os.environ["PATH"],
             SONIC_CI_CONTAINER_LABEL="vs-fixture-label", BAZEL="fixture-bazel",
             BAZEL_CONTAINER_ARGS="--distdir='/source downloads' --jobs=3",
+            SONIC_BUILD_RETRY_COUNT="0",
         )
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "FAIL_ACTION",
-                     "FORBID_VALIDATION", "CHANGE_REVISION_ACTION"):
+                     "FORBID_VALIDATION", "CHANGE_REVISION_ACTION", "NOBOOKWORM", "NOTRIXIE",
+                     "SONIC_OVERRIDE_BUILD_VARS", "SONIC_BUILD_VARS", "FAIL_ONCE_GOAL"):
             self.environment.pop(name, None)
 
     def run_script(self, name, *args, **environment):
@@ -91,12 +104,15 @@ else:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         (self.root / "calls.jsonl").unlink()
 
-    def assert_profile(self, call, target):
-        self.assertEqual(call["args"], [
-            target, "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "INCLUDE_VS_DASH_SAI=y", "INCLUDE_FIPS=y",
+    def profile_options(self):
+        return [
+            "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "INCLUDE_VS_DASH_SAI=y", "INCLUDE_FIPS=y",
             "ENABLE_ASAN=n", "ENABLE_SYNCD_RPC=n",
             "SONIC_BUILDER_EXTRA_CMDLINE=--label vs-fixture-label -e BAZEL=fixture-bazel -e BAZEL_CONTAINER_ARGS",
-        ])
+        ]
+
+    def assert_profile(self, call, target):
+        self.assertEqual(call["args"], [target, *self.profile_options()])
         self.assertEqual(call["bazel_args"], self.environment["BAZEL_CONTAINER_ARGS"])
 
     def test_build_records_revision_before_one_make_without_validation_receipts(self):
@@ -133,9 +149,15 @@ else:
         result = self.run_script("validate_vs.sh")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls()
-        self.assertEqual([call["action"] for call in calls], ["capture-pairs", "make", "verify-pairs"])
-        self.assert_profile(calls[1], "bazel-vs-oci-verify")
-        self.assertEqual(calls[0]["args"][1:], calls[2]["args"][1:])
+        self.assertEqual([call["action"] for call in calls], ["capture-pairs", "make", "make", "make", "verify-pairs"])
+        for call, build_env, goal in zip(calls[1:4], ["bookworm", "trixie", "bookworm"],
+                                          ["bookworm", "sonic-slave-run", "docker-cleanup"]):
+            expected = ["-f", "Makefile.work", "BLDENV=" + build_env, goal, *self.profile_options()]
+            if goal == "sonic-slave-run":
+                expected.append("SONIC_RUN_CMDS=bash tools/bazel/ci/verify_vs_oci.sh $(SONIC_BUILD_INSTRUCTION)")
+            self.assertEqual(call["args"], expected)
+            self.assertEqual(call["bazel_args"], self.environment["BAZEL_CONTAINER_ARGS"])
+        self.assertEqual(calls[0]["args"][1:], calls[-1]["args"][1:])
         self.assertIn("--receipt", calls[0]["args"])
         self.assertIn("--orchagent-receipt", calls[0]["args"])
         timing = json.loads((self.root / "artifacts/vs/runtime-debug-pairs-timing.json").read_text())
@@ -152,14 +174,53 @@ else:
 
     def test_validation_failures_stop_before_later_checks_or_success_timing(self):
         self.prepare_build()
-        actions = ["capture-pairs", "make", "verify-pairs"]
+        actions = ["capture-pairs", "bookworm", "sonic-slave-run", "docker-cleanup", "verify-pairs"]
         for index, action in enumerate(actions):
             with self.subTest(action=action):
                 (self.root / "calls.jsonl").unlink(missing_ok=True)
                 result = self.run_script("validate_vs.sh", FAIL_ACTION=action)
                 self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
-                self.assertEqual([call["action"] for call in self.calls()], actions[:index + 1])
+                self.assertEqual([call["goal"] or call["action"] for call in self.calls()], actions[:index + 1])
                 self.assertFalse((self.root / "artifacts/vs/runtime-debug-pairs-timing.json").exists())
+
+    def test_validation_can_skip_bookworm_preparation_but_keeps_cleanup(self):
+        self.prepare_build()
+        result = self.run_script("validate_vs.sh", NOBOOKWORM="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call["goal"] or call["action"] for call in self.calls()],
+                         ["capture-pairs", "sonic-slave-run", "docker-cleanup", "verify-pairs"])
+
+    def test_caller_overrides_are_combined_in_the_environment_for_every_builder(self):
+        self.prepare_build()
+        existing = "KEEP_SETTING=first PACKAGE_REVISION=legacy"
+        configured = "USER_FEATURE=enabled CUSTOM_SOURCE=/configured/source"
+        result = self.run_script("validate_vs.sh", SONIC_OVERRIDE_BUILD_VARS=existing,
+                                 SONIC_BUILD_VARS=configured)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        make_calls = [call for call in self.calls() if call["action"] == "make"]
+        self.assertEqual([call["goal"] for call in make_calls], ["bookworm", "sonic-slave-run", "docker-cleanup"])
+        for call in make_calls:
+            self.assertEqual(call["override_build_vars"], existing + " " + configured)
+            self.assertEqual(call["build_vars"], configured)
+            self.assertFalse(any(arg.startswith("SONIC_OVERRIDE_BUILD_VARS=") for arg in call["args"]),
+                             "A command-line assignment would suppress Makefile.work's version-cache additions")
+
+    def test_validation_rejects_disabled_trixie_before_checks_or_builders(self):
+        self.prepare_build()
+        result = self.run_script("validate_vs.sh", NOTRIXIE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Trixie", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_validation_retries_the_failed_builder_without_recapturing_archives(self):
+        self.prepare_build()
+        result = self.run_script("validate_vs.sh", FAIL_ONCE_GOAL="sonic-slave-run",
+                                 SONIC_BUILD_RETRY_COUNT="1", SONIC_BUILD_RETRY_INTERVAL="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call["goal"] or call["action"] for call in self.calls()],
+                         ["capture-pairs", "bookworm", "sonic-slave-run", "sonic-slave-run",
+                          "docker-cleanup", "verify-pairs"])
+        self.assertIn("Waiting 1 to run again", result.stderr)
 
     def test_missing_build_revision_stops_before_any_validation_or_make(self):
         result = self.run_script("validate_vs.sh")
@@ -189,7 +250,7 @@ else:
         result = self.run_script("validate_vs.sh", CHANGE_REVISION_ACTION="verify-pairs")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Source revision changed during VS validation", result.stderr)
-        self.assertEqual([call["action"] for call in self.calls()], ["capture-pairs", "make", "verify-pairs"])
+        self.assertEqual([call["action"] for call in self.calls()], ["capture-pairs", "make", "make", "make", "verify-pairs"])
         self.assertFalse((self.root / "artifacts/vs/runtime-debug-pairs-timing.json").exists())
 
     def workflow_steps(self):
@@ -210,7 +271,7 @@ else:
                                     cwd=self.root, env=self.environment, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([call["action"] for call in self.calls()],
-                         ["make", "capture-pairs", "make", "verify-pairs"])
+                         ["make", "capture-pairs", "make", "make", "make", "verify-pairs"])
         build_log = (self.root / "artifacts/vs/build.log").read_text()
         self.assertIn("controlled make", build_log)
         self.assertNotIn("capture-pairs", build_log)

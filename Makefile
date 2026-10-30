@@ -146,19 +146,3 @@ target/sonic-vs.bin target/sonic-vs.img.gz target/sonic-vs.raw: sonic-swss-forwa
 $(filter target/debs/trixie/linux-%.deb target/debs/trixie/linux-%.deb-install \
     target/debs/trixie/genl-packet-module_%.deb target/debs/trixie/genl-packet-module_%.deb-install \
     target/files/trixie/ixgbe.ko target/%rfs.squashfs,$(MAKECMDGOALS)): sonic-swss-forward
-
-# The VS CI follow-up builds share one Trixie container and its private Bazel
-# server. All selected containers belong to Trixie; Bookworm still checks the
-# installer's dependencies once before the aggregate enters the Trixie slave.
-.PHONY: bazel-vs-oci bazel-vs-oci-verify
-bazel-vs-oci bazel-vs-oci-verify:
-	@echo "+++ --- Making $@ --- +++"
-ifeq ($(NOTRIXIE),0)
-ifeq ($(NOBOOKWORM),0)
-	$(MAKE_WITH_RETRY) BLDENV=bookworm -f Makefile.work bookworm
-endif
-	$(MAKE_WITH_RETRY) BLDENV=trixie -f Makefile.work $@
-	BLDENV=bookworm $(MAKE) -f Makefile.work docker-cleanup
-else
-	@echo 'bazel-vs-oci requires the Trixie build environment' >&2; exit 1
-endif

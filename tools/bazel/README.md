@@ -74,10 +74,14 @@ owner declares different Bazel arguments for its two variants.
 
 CI uses `build_vs.sh` for that single Make request and `validate_vs.sh` in a
 separate step after the build. Validation checks both pairs and the installer's
-`.dockers` selection, runs the remaining P4 package and image checks, then
-requires the retained archives to remain unchanged. It does not issue another
-Make container-archive request. SWSS/Syncd source checks retain their separate
-workflow steps. See [CI evidence and timing](ci/README.md).
+`.dockers` selection, prepares Bookworm as configured, then uses Make's existing
+`sonic-slave-run` entrypoint for the remaining P4 checks in Trixie. Make supplies
+the build configuration; the verifier resolves and builds the existing P4RT
+runtime/debug package prerequisites before checking the images and symbols.
+After builder cleanup, validation requires the retained archives to remain
+unchanged. It does not issue another Make container-archive request.
+SWSS/Syncd source checks retain their separate workflow steps.
+See [CI evidence and timing](ci/README.md).
 
 ### Register container targets
 

@@ -82,13 +82,23 @@ selects runtime Orchagent and Syncd rather than debug archives for this normal
 VS configuration. Installed-image validation remains a separate check of the
 resulting image.
 
-The validator then requests `bazel-vs-oci-verify` with the same build options.
-This aggregate prepares the two existing P4RT Debian packages and runs the
-Syncd P4 image/package checks and offline P4RT split-debug-symbol check in one
-Trixie builder. It has no image archive prerequisites: Make already produced
-those files in the build step. The final pair check requires all four archives
-and their manifests to remain unchanged. Missing, changed or incompatible
-outputs fail validation; failures are not hidden by rebuilding an archive.
+The validator prepares Bookworm through `Makefile.work` unless `NOBOOKWORM=1`,
+then uses its existing `sonic-slave-run` entrypoint to run `verify_vs_oci.sh`
+in Trixie. Make expands
+`SONIC_BUILD_INSTRUCTION` for that command so it retains the selected build
+configuration. The verifier queries Make for the resolved profile and existing
+P4RT runtime/debug package names rather than hardcoding package versions.
+It requires native AMD64/Trixie VS with Bazel, FIPS and DASH enabled, without
+ASAN, Syncd RPC or cross/emulated execution, and checks that both runtime/debug
+container pairs select their Bazel producers.
+
+The verifier builds the two existing P4RT package prerequisites serially through
+`slave.mk`, then runs the Syncd P4 image/package checks and offline P4RT
+split-debug-symbol check in the same Trixie builder. It does not request Make
+container archives again or add a package definition. Bookworm builder cleanup
+is retained. The final pair check requires all four archives and their manifests
+to remain unchanged. Missing, changed or incompatible outputs fail validation;
+failures are not hidden by rebuilding an archive.
 
 The P4 image test still declares the native Syncd OCI images and Bazel archive
 outputs as inputs and compares them with the retained Make archives. Bazel may
@@ -99,15 +109,12 @@ not remove this work or claim a speedup. SWSS and Syncd source-package checks
 continue in their existing later steps, and installed-container and firmware
 boot checks retain their coverage.
 
-Both `bazel-vs-oci-verify` and the standalone `bazel-vs-oci` aggregate are limited
-to native AMD64/Trixie VS with FIPS and DASH enabled, without ASAN or Syncd RPC.
-The standalone aggregate still builds the follow-up archives for callers that
-need them. Each container uses its owner's dependencies and Bazel options;
-the aggregates serialize their prerequisites and stop on a failed build or
-check. Standalone archive requests and other configurations retain their rules.
+Each container retains its owner's dependencies and Bazel options. Standalone
+archive requests and other configurations retain their existing rules.
+Validation stops on a failed prerequisite or check.
 
-`verify_vs_oci.sh` runs the uncached P4 image test and offline split-debug package
-check before the validation builder exits. It preserves
+[`verify_vs_oci.sh`](verify_vs_oci.sh) runs the uncached P4 image test and offline
+split-debug package check before the validation builder exits. It preserves
 `artifacts/vs/syncd-p4-images/`, `syncd-p4-images.log`,
 `p4rt-debug-verification.log` and `p4rt-debug-verification.json`. The archive
 checker retains `runtime-debug-pairs.json` and `orchagent-reuse.json`; these

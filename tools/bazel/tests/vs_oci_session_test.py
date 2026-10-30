@@ -1,10 +1,11 @@
-"""Exercise the VS aggregate and in-session verification without a builder."""
+"""Exercise P4 Make dependencies and in-session verification without a builder."""
 
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -14,7 +15,6 @@ ARCHIVES = ["docker-orchagent.gz", "docker-orchagent-dbg.gz",
             "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"]
 PACKAGES = ["sonic-p4rt_0.0.1_amd64.deb", "sonic-p4rt-dbgsym_0.0.1_amd64.deb"]
 DEB_PATHS = ["target/debs/trixie/" + name for name in PACKAGES]
-OUTPUTS = DEB_PATHS + ["target/" + name for name in ARCHIVES[1:]]
 
 
 class VsOciSessionTest(unittest.TestCase):
@@ -43,16 +43,66 @@ print('image verification output')
 sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
 """)
         self.bazel.chmod(0o755)
+        self.make = self.directory / "make command"
+        self.make.write_text("#!" + sys.executable + "\n" +
+                            "import json, os, pathlib, sys\n"
+                            "with pathlib.Path('make-calls.jsonl').open('a') as output:\n"
+                            "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n" +
+                            "os.execv(" + repr(shutil.which("make")) + ", ['make', *sys.argv[1:]])\n")
+        self.make.chmod(0o755)
+        self.settings = {
+            "BUILD_WITH_BAZEL_WHEN_AVAILABLE": "y", "BLDENV": "trixie", "CONFIGURED_PLATFORM": "vs",
+            "CONFIGURED_ARCH": "amd64", "INCLUDE_FIPS": "y", "INCLUDE_VS_DASH_SAI": "y",
+            "TARGET_PATH": "target", "DEBS_PATH": "target/debs/$(BLDENV)",
+            "SONIC_BAZEL_DOCKER_IMAGES": " ".join(ARCHIVES[::2]),
+            "SONIC_BAZEL_DBG_DOCKER_IMAGES": " ".join(ARCHIVES[1::2]),
+            "SONIC_P4RT_VERSION": "0.0.1",
+            "SONIC_P4RT": "sonic-p4rt_$(SONIC_P4RT_VERSION)_$(CONFIGURED_ARCH).deb",
+            "SONIC_P4RT_DBG": "sonic-p4rt-dbgsym_$(SONIC_P4RT_VERSION)_$(CONFIGURED_ARCH).deb",
+        }
+        (self.directory / "input.source").write_text("first source revision\n")
+        (self.directory / "slave.mk").write_text(
+            "\n".join(name + " = " + value for name, value in self.settings.items()) + "\n" + r'''
+.DEFAULT_GOAL := forbidden-default
+.PHONY: forbidden-default
+forbidden-default:
+	@echo 'The metadata query must not build the default goal' >&2; exit 39
+input.ready: input.source
+	@cp "$<" "$@"
+$(addprefix $(DEBS_PATH)/,$(SONIC_P4RT) $(SONIC_P4RT_DBG)): input.ready
+	@mkdir recipe-lock
+	@printf '%s\n' '$@' >> producers.log
+	@sleep 0.02
+	@rmdir recipe-lock
+	@test '$@' != '$(FAIL_TARGET)'
+	@mkdir -p '$(@D)'
+	@if test '$@' = '$(OMIT_OUTPUT)'; then :; \
+	elif test '$@' = '$(EMPTY_OUTPUT)'; then : > '$@'; \
+	else cp input.ready '$@'; fi
+# Existing image archives are validation inputs, never package-stage goals.
+$(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.gz docker-syncd-vs-dbg.gz):
+	@echo 'Validation must not request container producers' >&2; exit 41
+''')
         self.environment = dict(os.environ, BAZEL=str(self.bazel))
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL",
                      "BAZEL_CONTAINER_ARGS", "BAZEL_SWSS_ARGS", "BAZEL_CONTAINER_CACHE_DIR", "BAZEL_SWSS_CACHE_DIR"):
             self.environment.pop(name, None)
 
-    def run_verifier(self, **environment):
+    def run_verifier(self, *, settings=None, **environment):
+        arguments = [str(self.make), "--no-print-directory", "-j8", "-f", "slave.mk"]
+        arguments += [key + "=" + value for key, value in (settings or {}).items()]
         return subprocess.run(
-            ["bash", "tools/bazel/ci/verify_vs_oci.sh", *DEB_PATHS],
+            ["bash", "tools/bazel/ci/verify_vs_oci.sh", *arguments],
             cwd=self.directory, env=dict(self.environment, **environment),
             text=True, capture_output=True, check=False)
+
+    def producers(self):
+        path = self.directory / "producers.log"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def make_calls(self):
+        path = self.directory / "make-calls.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_verification_keeps_archive_options_logs_and_deb_inputs(self):
         cache = self.directory / "cache with spaces"
@@ -83,59 +133,81 @@ sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
         result = self.run_verifier(DEBUG_STATUS="9")
         self.assertEqual(result.returncode, 9, result.stdout + result.stderr)
 
-    def run_make(self, *, goal="bazel-vs-oci", **overrides):
-        settings = {
-            "BUILD_WITH_BAZEL_WHEN_AVAILABLE": "y", "BLDENV": "trixie", "CONFIGURED_PLATFORM": "vs",
-            "CONFIGURED_ARCH": "amd64", "INCLUDE_FIPS": "y", "INCLUDE_VS_DASH_SAI": "y",
-            "TARGET_PATH": "target", "DEBS_PATH": "target/debs/trixie",
-            "DOCKER_ORCHAGENT": ARCHIVES[0], "DOCKER_ORCHAGENT_DBG": ARCHIVES[1],
-            "DOCKER_SYNCD_BASE": ARCHIVES[2], "DOCKER_SYNCD_BASE_DBG": ARCHIVES[3],
-            "SONIC_BAZEL_DOCKER_IMAGES": " ".join(ARCHIVES[::2]),
-            "SONIC_BAZEL_DBG_DOCKER_IMAGES": " ".join(ARCHIVES[1::2]),
-            "SONIC_P4RT": PACKAGES[0], "SONIC_P4RT_DBG": PACKAGES[1],
-        }
-        settings.update(overrides)
-        # Concurrent prerequisites would fail the lock acquisition. This checks
-        # Make's actual scheduling, including an inherited parallel jobserver.
-        recipe = f"include {ROOT}/tools/bazel/vs_oci.mk\n.PHONY: {' '.join(OUTPUTS)}\n"
-        recipe += " ".join(OUTPUTS) + ":\n"
-        recipe += "\t@mkdir recipe-lock && printf '%s\\n' '$@' >> producers.log && sleep 0.01 && rmdir recipe-lock\n"
-        recipe += "\t@test '$@' != '$(FAIL_TARGET)'\n"
-        return subprocess.run(["make", "--no-print-directory", "-j8", "-f", "-", goal,
-                               *[key + "=" + value for key, value in settings.items()]],
-                              input=recipe, cwd=self.directory, env=self.environment,
-                              text=True, capture_output=True, check=False)
-
-    def test_aggregate_checks_each_artifact_in_order_before_verification(self):
-        for repetition in range(2):
-            result = self.run_make()
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual((self.directory / "producers.log").read_text().splitlines(), OUTPUTS * (repetition + 1))
-        self.assertTrue((self.directory / "debug-arguments.json").is_file())
-
-    def test_verification_only_builds_p4_packages_without_requesting_archives(self):
-        result = self.run_make(goal="bazel-vs-oci-verify")
+    def test_resolved_package_paths_use_the_passed_make_and_serial_producers(self):
+        """A no-op query selects actual Make variables before fresh package builds."""
+        settings = {"SONIC_P4RT_VERSION": "7.4.9", "DEBS_PATH": "target/selected-debs"}
+        result = self.run_verifier(settings=settings)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((self.directory / "producers.log").read_text().splitlines(), DEB_PATHS)
-        self.assertTrue((self.directory / "debug-arguments.json").is_file())
+        expected = ["target/selected-debs/" + name.replace("0.0.1", "7.4.9") for name in PACKAGES]
+        self.assertEqual(self.producers(), expected)
+        calls = self.make_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("-", calls[0])
+        self.assertNotIn("-", calls[1])
+        self.assertIn("-j1", calls[1])
+        self.assertEqual(calls[1][-2:], expected)
+        for call in calls:
+            self.assertIn("SONIC_P4RT_VERSION=7.4.9", call)
+            self.assertIn("DEBS_PATH=target/selected-debs", call)
+        debug = json.loads((self.directory / "debug-arguments.json").read_text())
+        self.assertEqual(debug[:4], ["--runtime-deb", expected[0], "--debug-deb", expected[1]])
+
+    def test_existing_outputs_still_check_prerequisite_freshness(self):
+        result = self.run_verifier()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.producers(), DEB_PATHS)
+        result = self.run_verifier()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.producers(), DEB_PATHS)
+        (self.directory / "input.source").write_text("changed source revision\n")
+        result = self.run_verifier()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.producers(), DEB_PATHS * 2)
+        for name in DEB_PATHS:
+            self.assertEqual((self.directory / name).read_text(), "changed source revision\n")
 
     def test_build_failure_stops_later_outputs_and_verification(self):
-        result = self.run_make(FAIL_TARGET=OUTPUTS[1])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.directory / "producers.log").read_text().splitlines(), OUTPUTS[:2])
-        self.assertFalse((self.directory / "bazel-arguments.json").exists())
+        for index, target in enumerate(DEB_PATHS):
+            with self.subTest(target=target):
+                shutil.rmtree(self.directory / "target", ignore_errors=True)
+                (self.directory / "producers.log").unlink(missing_ok=True)
+                result = self.run_verifier(settings={"FAIL_TARGET": target})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.producers(), DEB_PATHS[:index + 1])
+                self.assertFalse((self.directory / "bazel-arguments.json").exists())
+                self.assertFalse((self.directory / "debug-arguments.json").exists())
+
+    def test_missing_or_empty_package_outputs_stop_before_image_validation(self):
+        for mode in ("OMIT_OUTPUT", "EMPTY_OUTPUT"):
+            for target in DEB_PATHS:
+                with self.subTest(mode=mode, target=target):
+                    shutil.rmtree(self.directory / "target", ignore_errors=True)
+                    result = self.run_verifier(settings={mode: target})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((self.directory / "bazel-arguments.json").exists())
+                    self.assertFalse((self.directory / "debug-arguments.json").exists())
 
     def test_unsupported_profiles_fail_before_any_producer(self):
         for overrides in ({"BUILD_WITH_BAZEL_WHEN_AVAILABLE": "n"}, {"CONFIGURED_ARCH": "arm64"},
                           {"BLDENV": "bookworm"}, {"INCLUDE_FIPS": "n"}, {"INCLUDE_VS_DASH_SAI": "n"},
-                          {"ENABLE_ASAN": "y"}, {"CROSS_BUILD_ENVIRON": "y"},
+                          {"CONFIGURED_PLATFORM": "broadcom"}, {"ENABLE_ASAN": "y"},
+                          {"ENABLE_SYNCD_RPC": "y"}, {"CROSS_BUILD_ENVIRON": "y"},
+                          {"MULTIARCH_QEMU_ENVIRON": "y"},
                           {"SONIC_BAZEL_DOCKER_IMAGES": "docker-orchagent.gz"},
-                          {"SONIC_BAZEL_DBG_DOCKER_IMAGES": "docker-syncd-vs-dbg.gz"}):
+                          {"SONIC_BAZEL_DBG_DOCKER_IMAGES": "docker-syncd-vs-dbg.gz"},
+                          {"SONIC_P4RT": ""}, {"SONIC_P4RT_DBG": ""}):
             with self.subTest(overrides=overrides):
-                result = self.run_make(**overrides)
+                result = self.run_verifier(settings=overrides)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("bazel-vs-oci", result.stderr)
-                self.assertFalse((self.directory / "producers.log").exists())
+                self.assertEqual(self.producers(), [])
+                self.assertFalse((self.directory / "bazel-arguments.json").exists())
+
+    def test_missing_make_command_fails_without_validation(self):
+        result = subprocess.run(["bash", "tools/bazel/ci/verify_vs_oci.sh"], cwd=self.directory,
+                                env=self.environment, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.producers(), [])
+        self.assertFalse((self.directory / "bazel-arguments.json").exists())
 
 
 if __name__ == "__main__":
