@@ -87,7 +87,8 @@ if name == "docker":
     environment = {key: os.environ[key] for key in ("PATH", "VERIFIER_STATUS") if key in os.environ}
 else:
     assert name == "su" and args[:2] == ["fixture-builder", "-c"]
-    command = ["bash", "-e", "-c", args[2]]
+    # Match su's shell invocation; it does not introduce bash's -e option.
+    command = ["bash", "-c", args[2]]
     environment = None
 raise SystemExit(subprocess.run(command, env=environment).returncode)
 '''
