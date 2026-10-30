@@ -1,6 +1,14 @@
 #!/bin/bash
 ## This script is to generate an ONIE installer image based on a file system overload
 
+# KVM assembly also writes target/sonic-vs.bin. Enter the same publication
+# transaction as the top-level selector before either native VS writer runs.
+if [[ ${TARGET_MACHINE:-} == vs &&
+      ( ${IMAGE_TYPE:-} == onie || ${IMAGE_TYPE:-} == kvm ) &&
+      ${SONIC_BAZEL_NATIVE_PUBLISH:-n} != y ]]; then
+    exec python3 tools/bazel/image/build.py --native-assembly --workspace "$PWD"
+fi
+
 image_password=$PASSWORD
 unset PASSWORD
 

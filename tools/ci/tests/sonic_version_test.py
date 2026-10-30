@@ -177,9 +177,10 @@ sys.exit(subprocess.call(["/usr/bin/install", *args[5:]]))
         python.chmod(0o755)
         source = (ROOT / "build_debian.sh").read_text()
         start = source.index("sonic_version_tmp=$(mktemp)")
-        end = source.index("\nif [ -f sonic_debian_extension.sh ]; then", start)
-        # Execute the unchanged production block, with its real trap helper and
-        # validator. Only sudo ownership and renderer faults are substituted.
+        cleanup = '\nrm -f "$sonic_version_tmp"'
+        end = source.index(cleanup + "\n", start) + len(cleanup)
+        # Execute the production rendering block independently of its surrounding
+        # host-stage guard. Only sudo ownership and renderer faults are substituted.
         script = ('set -e\nsource "$SOURCE_ROOT/functions.sh"\n' + source[start:end] +
                   "\nprintf complete > completed\n")
         env = dict(METADATA, PATH=str(directory / "bin") + os.pathsep + os.defpath,
