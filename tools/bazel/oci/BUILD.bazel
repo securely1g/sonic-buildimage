@@ -22,6 +22,7 @@ py_library(
         ":oci_inventory",
         ":oci_layout",
         "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/ci:validation_inputs",
     ],
 )
 
@@ -142,7 +143,10 @@ py_binary(
 py_library(
     name = "oci_inventory",
     srcs = ["oci_inventory.py"],
-    deps = ["//tools/bazel/ci:artifact_validation"],
+    deps = [
+        "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/ci:validation_inputs",
+    ],
 )
 
 exports_files(["prepare_oci_base.py"])

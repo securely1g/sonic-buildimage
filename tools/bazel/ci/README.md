@@ -98,6 +98,20 @@ installed-image, debug-symbol and firmware boot checks remain required.
   `debug_archives` combines a runtime tar and its symbols tar, rejects payload
   collisions and foreign debug paths, checks the caller's ELF architecture,
   safely extracts the pair and verifies matching build IDs, DWARF and debug links.
+- `validation_inputs.py` shares SHA256 digests and successful archive inventories
+  during one `syncd_p4_images_test` process. Image, native-package and inherited
+  source checks can read the same runtime/debug layers without repeatedly
+  decompressing and hashing their contents. Each input path is hashed before
+  reuse by content, and its device, inode, size, mode, mtime and ctime are checked
+  around reads and at reuse. A final identity and SHA256 check runs before
+  publishing the validation report. Changed inputs fail validation. Only the
+  test's declared files and OCI directories qualify; extracted inspection files
+  remain ordinary uncached reads. The cache retains at most 64 MiB of inventory metadata
+  and 512 file identities; larger inputs fall back to ordinary reads. It retains
+  no extracted payload bytes and nothing persists between test processes.
+  Inventories are copied before use. Overlay order, whiteouts, normalization,
+  owner policies, receipt checks and ELF/debug inspection still run in their
+  existing validators; a cached scan never substitutes for those checks.
 - `build.py` builds a caller's filename-to-label mapping and collects one nonempty
   archive per label, with atomic publication, command logs, sizes and hashes.
   `collect_artifacts` exports all files from a declared CI filegroup. It checks

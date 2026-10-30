@@ -134,8 +134,8 @@ def validate_source_base(runtime_path, debug_path, *, metadata_paths, source_deb
     require(architecture in MACHINES, "unsupported source-base architecture")
     machine, triplet = MACHINES[architecture]
     require(len(metadata_paths) == 2, "base and config-engine metadata are both required")
-    runtime = validate_layout(Path(runtime_path), "linux/" + architecture)
-    debug = validate_layout(Path(debug_path), "linux/" + architecture)
+    runtime = validate_layout(Path(runtime_path), "linux/" + architecture, digest_file=validation.sha)
+    debug = validate_layout(Path(debug_path), "linux/" + architecture, digest_file=validation.sha)
     require(debug.manifest["layers"][:len(runtime.layers)] == runtime.manifest["layers"],
             "debug image does not extend this runtime image")
     runtime_files, runtime_origins = inventory(runtime)

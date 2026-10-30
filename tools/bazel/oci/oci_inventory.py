@@ -2,6 +2,8 @@
 
 from pathlib import PurePosixPath
 import posixpath
+
+from tools.bazel.ci.validation_inputs import cached_inventory
 import tarfile
 
 from tools.bazel.ci.artifact_validation import file_metadata, metadata, path_name, require
@@ -67,6 +69,21 @@ def apply_layer(path, files, *, checked_overlay=False, normalize_member=None):
     Owners may normalize known legacy paths before inspection. Added package
     layers may not contain whiteouts or cross inherited directory symlinks.
     """
+    entries, whiteouts = cached_inventory(
+        path, ("oci_layer", normalize_member), lambda: _layer_entries(path, normalize_member))
+    if checked_overlay:
+        require(not whiteouts, "added OCI layer contains a whiteout")
+        assert_overlay_paths(entries, files)
+    for name, opaque in whiteouts:
+        prefix = "" if name == "." else name + "/"
+        for current in list(files):
+            if current.startswith(prefix) or (not opaque and current == name):
+                del files[current]
+    files.update(entries)
+    return entries
+
+
+def _layer_entries(path, normalize_member):
     entries, whiteouts = {}, []
     with tarfile.open(path, "r:*") as archive:
         for member in archive:
@@ -86,13 +103,4 @@ def apply_layer(path, files, *, checked_overlay=False, normalize_member=None):
                 with archive.extractfile(member) as stream:
                     item.update(file_metadata(stream, name))
             entries[name] = item
-    if checked_overlay:
-        require(not whiteouts, "added OCI layer contains a whiteout")
-        assert_overlay_paths(entries, files)
-    for name, opaque in whiteouts:
-        prefix = "" if name == "." else name + "/"
-        for current in list(files):
-            if current.startswith(prefix) or (not opaque and current == name):
-                del files[current]
-    files.update(entries)
-    return entries
+    return entries, whiteouts

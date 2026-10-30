@@ -609,6 +609,19 @@ py_test(
 
 # Layer checks are shared by APT selection and both containers' CI suites.
 py_test(
+    name = "validation_inputs_test",
+    size = "small",
+    srcs = ["validation_inputs_test.py"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/ci:validation_inputs",
+        "//tools/bazel/oci:oci_inventory",
+        "//tools/bazel/oci:package_contract_lib",
+    ],
+)
+
+py_test(
     name = "oci_inventory_test",
     size = "small",
     srcs = ["integration/oci_inventory_test.py"],
@@ -676,6 +689,7 @@ py_test(
     srcs = ["source_base_validation_test.py"],
     deps = [
         ":oci_base_fixture_lib",
+        "//tools/bazel/ci:validation_inputs",
         "//tools/bazel/oci:source_base_validation",
     ],
 )
@@ -1013,6 +1027,7 @@ py_library(
 
 _OCI_TEST_DEPS = [
     ":oci_contract_fixture",
+    "//tools/bazel/ci:validation_inputs",
     "//tools/bazel/oci:package_contract_lib",
     "//tools/bazel/oci:package_state_lib",
     "//tools/bazel/oci:container_validation",
@@ -1181,6 +1196,7 @@ py_test(
     ],
     deps = [
         "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/ci:validation_inputs",
         "//tools/bazel/oci:container_validation",
         "//tools/bazel/oci:source_base_validation",
     ],

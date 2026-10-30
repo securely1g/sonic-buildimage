@@ -15,6 +15,7 @@ import unittest
 
 ROOT = Path(__file__).absolute().parents[4]
 sys.path.insert(0, str(ROOT))
+from tools.bazel.ci.validation_inputs import validation_input_cache
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, tar_entries as layer, write_layout
 from tools.bazel.oci import image_validation as subject
 from tools.bazel.oci import package_payloads as validate_payloads
@@ -601,6 +602,14 @@ class ValidateImageTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     subject.apply_debug_tools_layer(path, files, alternatives=DEBUG_ALTERNATIVES)
                 self.assertEqual(files, before)
+
+
+class CachedValidateImageTest(ValidateImageTest):
+    """Run the same success and rejection cases with scoped inventory reuse."""
+
+    def validate(self, **kwargs):
+        with validation_input_cache([self.root]):
+            return super().validate(**kwargs)
 
 
 if __name__ == "__main__":
