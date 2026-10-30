@@ -53,7 +53,7 @@ Invalid metadata for a selected target and Bazel build errors remain failures.
 
 ### Build runtime and debug archives with the VS image
 
-During `make target/sonic-vs.img.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`,
+During `make target/sonic-vs.bin BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`,
 the Trixie builder builds each selected, supported runtime/debug pair in one
 Bazel invocation. The two targets share the owner's configuration and declared
 inputs. This retains the runtime layers and Bazel state while producing the
@@ -74,14 +74,19 @@ owner declares different Bazel arguments for its two variants.
 
 CI uses `build_vs.sh` for that single Make request and `validate_vs.sh` in a
 separate step after the build. Validation checks both pairs and the installer's
-`.dockers` selection, prepares Bookworm as configured, then uses Make's existing
-`sonic-slave-run` entrypoint for the remaining P4 checks in Trixie. Make supplies
-the build configuration; the verifier resolves and builds the existing P4RT
+`target/sonic-vs.bin.dockers` selection, prepares Bookworm as configured, then uses
+Make's existing `sonic-slave-run` entrypoint for the remaining P4 checks in
+Trixie. Make supplies the build configuration; the verifier resolves and builds the existing P4RT
 runtime/debug package prerequisites before checking the images and symbols.
 After builder cleanup, validation requires the retained archives to remain
 unchanged. It does not issue another Make container-archive request.
 SWSS/Syncd source checks retain their separate workflow steps.
 See [CI evidence and timing](ci/README.md).
+
+The `.bin` target produces the ONIE installer without KVM. The separate
+`target/sonic-vs.img.gz` target generates BIOS/UEFI VM disks and runs their boot
+checks; the installer CI does not exercise that VM path. Runtime/debug pairing
+also remains available when explicitly building the VM image.
 
 ### Register container targets
 

@@ -216,6 +216,26 @@ class ImagePhaseTests(unittest.TestCase):
         for log in (before, after, different_section):
             self.assertEqual(self.parse(log)["reason"], "not-recorded")
 
+    def test_vm_phase_receipts_never_populate_installer_recipe_timings(self):
+        installer_log = synthetic_log().replace(b"sonic-vs.img.gz", b"sonic-vs.bin")
+        finish = FINAL_FINISH.replace(b"sonic-vs.img.gz", b"sonic-vs.bin")
+        for marker in (phase_marker(), phase_marker("invalid VM timing")):
+            with self.subTest(marker=marker):
+                value = self.parse(installer_log.replace(finish, marker + finish))
+                self.assertEqual(value, breakdown.phase_unavailable("not-recorded"))
+        # The reverse mismatch must not damage valid historical VM details.
+        value = self.parse(log_with_phases(phase_marker(target="target/sonic-vs.bin") + phase_marker()))
+        self.assertEqual(value["status"], "available")
+
+    def test_different_final_image_recipes_have_independent_phase_state(self):
+        second = (b"2026-10-10T00:08:01Z [ building ] [ target/sonic-vs.bin ]\n"
+                  b"2026-10-10T00:08:02Z [ finished ] [ target/sonic-vs.bin ]\n")
+        value = breakdown.parse_log(log_with_phases().replace(FINAL_FINISH, FINAL_FINISH + second), job()["steps"][0])
+        self.assertTrue(breakdown.valid(value))
+        tasks = final_tasks(value)
+        self.assertEqual(tasks[0]["phase_breakdown"]["status"], "available")
+        self.assertEqual(tasks[1]["phase_breakdown"], breakdown.phase_unavailable("not-recorded"))
+
     def test_cached_final_image_never_uses_saved_phase_output(self):
         log = log_with_phases().replace(FINAL_FINISH, FINAL_FINISH.replace(b"finished", b"cached"))
         self.assertEqual(self.parse(log), breakdown.phase_unavailable("not-recorded"))
@@ -255,6 +275,23 @@ class ImagePhaseTests(unittest.TestCase):
 
 
 class ParserTests(unittest.TestCase):
+    def test_installer_and_vm_targets_keep_distinct_recipe_and_rootfs_timings(self):
+        for target, name in (("sonic-vs.bin", "Build the VS installer (.bin)"),
+                             ("sonic-vs.img.gz", "Build the VS image")):
+            with self.subTest(target=target):
+                log = synthetic_log().replace(b"sonic-vs.img.gz", target.encode())
+                rootfs = (f"2026-10-10T00:01:20Z [ building ] [ target/{target}__vs__rfs.squashfs ]\n"
+                          f"2026-10-10T00:01:50Z [ finished ] [ target/{target}__vs__rfs.squashfs ]\n").encode()
+                start = FINAL_START.replace(b"sonic-vs.img.gz", target.encode())
+                value = breakdown.parse_log(log.replace(start, rootfs + start), dict(job()["steps"][0], name=name))
+                self.assertTrue(breakdown.valid(value))
+                self.assertEqual(value["status"], "available")
+                self.assertEqual(value["duration_seconds"], 600.2)
+                self.assertEqual(final_tasks(value)[0]["duration_seconds"], 360)
+                self.assertEqual(final_tasks(value)[0]["phase_breakdown"], breakdown.phase_unavailable("not-recorded"))
+                tasks = value["sections"][0]["tasks"]
+                self.assertEqual([task["duration_seconds"] for task in tasks if task["id"] == "rootfs-1"], [30])
+
     def test_pair_marker_labels_only_the_matching_active_recipe(self):
         building = b"2026-10-10T00:08:20Z [ building ] [ target/docker-orchagent.gz ]\n"
         marker = b"2026-10-10T00:08:21Z [ bazel image pair ] [ target/docker-orchagent.gz ] [ target/docker-orchagent.gz ]\n"

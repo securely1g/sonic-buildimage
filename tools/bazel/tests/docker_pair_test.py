@@ -47,6 +47,7 @@ endif
             self.makefile += f"{name}_BAZEL_ARGS = --define=owner={'swss' if 'orchagent' in name else 'syncd'}\n"
         self.makefile += """
 include platform/vs/kvm-image.mk
+include platform/vs/one-image.mk
 include tools/bazel/docker.mk
 INPUT_ROOT = inputs
 inputs/%.ready: inputs/%.source
@@ -54,6 +55,11 @@ inputs/%.ready: inputs/%.source
 # Exercise the actual installer's selected Docker prerequisite list.
 target/sonic-vs.img.gz: $$(addprefix target/,$$(sonic-vs.img.gz_DOCKERS))
 	@printf '%s\\n' '$(sonic-vs.img.gz_DOCKERS)' > installed-containers
+target/sonic-vs.bin: $$(addprefix target/,$$(sonic-vs.bin_DOCKERS))
+	@printf '%s\\n' '$(sonic-vs.bin_DOCKERS)' > installed-containers
+# This innocuous goal tests the target propagated by the outer Make invocation.
+installer-dispatch: $$(addprefix target/,$$(sonic-vs.bin_DOCKERS))
+	@printf '%s\\n' '$(sonic-vs.bin_DOCKERS)' > installed-containers
 LEGACY_IMAGES = $(filter-out $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$(SONIC_BAZEL_SWITCHABLE_IMAGES))
 $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
 	@printf 'legacy %s' '$(@F)' > "$@"
@@ -93,6 +99,22 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
     def test_debug_vs_builds_both_pairs_and_installs_only_debug(self):
         self.assertEqual(self.installer(INSTALL_DEBUG_TOOLS="y"), list(self.archives[1::2]))
         self.assert_pairs()
+
+    def test_onie_installer_pairs_for_direct_and_propagated_targets(self):
+        for propagated in (False, True):
+            for debug in (False, True):
+                with self.subTest(propagated=propagated, debug=debug):
+                    self.calls.unlink(missing_ok=True)
+                    environment = {"INSTALL_DEBUG_TOOLS": "y" if debug else "n"}
+                    goal = "target/sonic-vs.bin"
+                    if propagated:
+                        environment["SONIC_BUILD_TARGET"] = goal
+                        goal = "installer-dispatch"
+                    result = self.run_make(goals=[goal], parallel=True, environment=environment)
+                    self.assert_success(result)
+                    self.assertEqual((self.root / "installed-containers").read_text().split(),
+                                     list(self.archives[1::2] if debug else self.archives[::2]))
+                    self.assert_pairs()
 
     def test_parallel_installer_and_explicit_variants_execute_once_per_pair(self):
         result = self.run_make(goals=["target/sonic-vs.img.gz"] +

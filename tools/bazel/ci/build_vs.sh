@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the native VS image and both runtime/debug container pairs.
+# Build the native VS ONIE installer and both runtime/debug container pairs.
 set -euo pipefail
 
 if (( $# )); then
@@ -15,4 +15,4 @@ options=(
 revision=$(git rev-parse HEAD)
 mkdir -p artifacts/vs
 printf '%s\n' "$revision" > artifacts/vs/build-revision.txt
-make target/sonic-vs.img.gz "${options[@]}"
+make target/sonic-vs.bin "${options[@]}"

@@ -51,7 +51,7 @@ $(addprefix $(TARGET_PATH)/, $(sort $(SONIC_BAZEL_OCI_BASES))) : $(TARGET_PATH)/
 # Standalone archive requests and unsupported owner profiles keep their rules.
 SONIC_BAZEL_VS_PAIRED_IMAGES :=
 ifeq ($(CONFIGURED_PLATFORM):$(BLDENV),vs:trixie)
-ifneq ($(filter $(TARGET_PATH)/sonic-vs.img.gz,$(SONIC_BUILD_TARGET) $(MAKECMDGOALS)),)
+ifneq ($(filter $(TARGET_PATH)/sonic-vs.bin $(TARGET_PATH)/sonic-vs.img.gz,$(SONIC_BUILD_TARGET) $(MAKECMDGOALS)),)
 SONIC_BAZEL_VS_PAIRED_IMAGES := $(foreach image,$(sort $(SONIC_BAZEL_DOCKER_IMAGES)),\
     $(if $(filter $(image:.gz=-$(DBG_IMAGE_MARK).gz),$(SONIC_BAZEL_DBG_DOCKER_IMAGES)),$(image)))
 endif
