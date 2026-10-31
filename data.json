@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-31T08:50:00.715462Z",
+  "generated_at": "2026-10-31T09:34:50.730609Z",
   "pull_requests": [
     {
       "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
@@ -17827,8 +17827,8 @@
     {
       "attempt": 1,
       "branch": "codex/sonic-slave-github-runner",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-31T09:33:37Z",
+      "conclusion": "success",
       "event": "pull_request",
       "jobs": [
         {
@@ -18422,9 +18422,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-31T09:33:37Z",
+          "conclusion": "success",
+          "duration_seconds": 6184.0,
           "image_build_elapsed_seconds": 2525.0,
           "image_build_seconds": 2525.0,
           "job_id": 124361296347,
@@ -18432,13 +18432,13 @@
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
             "build": 2525.0,
-            "other": 2.0,
-            "setup": 303.0,
-            "upload": 67.0,
-            "validation": 613.0
+            "other": 4.0,
+            "setup": 307.0,
+            "upload": 1573.0,
+            "validation": 1769.0
           },
           "started_at": "2026-10-31T07:50:33Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-31T07:50:58Z",
@@ -18532,11 +18532,392 @@
             },
             {
               "breakdown": {
-                "duration_seconds": null,
-                "reason": "pending-collection",
-                "sections": [],
+                "duration_seconds": 2524.995654,
+                "reason": null,
+                "sections": [
+                  {
+                    "duration_seconds": 1896.98653,
+                    "id": "vs-image-1",
+                    "label": "VS image, dependencies and cleanup",
+                    "offset_seconds": 0.0,
+                    "tasks": [
+                      {
+                        "duration_seconds": 218.53962,
+                        "id": "config-engine-1",
+                        "label": "Config-engine container",
+                        "offset_seconds": 130.38892,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 138.768089,
+                        "id": "base-1",
+                        "label": "Base container",
+                        "offset_seconds": 210.563557,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 30.764674,
+                        "id": "syncd-release-1",
+                        "label": "Syncd release container",
+                        "offset_seconds": 349.58953,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 0.637058,
+                        "id": "bmp-watchdog-1",
+                        "label": "BMP watchdog container",
+                        "offset_seconds": 396.727594,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.651297,
+                        "id": "gnmi-watchdog-1",
+                        "label": "gNMI watchdog container",
+                        "offset_seconds": 402.108462,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.086033,
+                        "id": "sonic-otel-1",
+                        "label": "OpenTelemetry container",
+                        "offset_seconds": 405.691502,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.73206,
+                        "id": "router-advertiser-1",
+                        "label": "Router advertiser container",
+                        "offset_seconds": 411.324712,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.753997,
+                        "id": "dash-engine-1",
+                        "label": "DASH engine container",
+                        "offset_seconds": 417.132168,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 24.593689,
+                        "id": "orchagent-release-1",
+                        "label": "Orchagent release container",
+                        "offset_seconds": 454.274436,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 164.328357,
+                        "id": "rootfs-1",
+                        "label": "Root filesystem squashfs",
+                        "offset_seconds": 481.065255,
+                        "outcome": "finished"
+                      },
+                      {
+                        "duration_seconds": 0.785987,
+                        "id": "sonic-mgmt-framework-1",
+                        "label": "Management framework container",
+                        "offset_seconds": 549.70011,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.869311,
+                        "id": "database-1",
+                        "label": "Database container",
+                        "offset_seconds": 560.023807,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.682315,
+                        "id": "gnmi-sidecar-1",
+                        "label": "gNMI sidecar container",
+                        "offset_seconds": 585.990339,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.93827,
+                        "id": "sonic-gnmi-1",
+                        "label": "gNMI container",
+                        "offset_seconds": 589.818593,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.687244,
+                        "id": "mux-1",
+                        "label": "MUX container",
+                        "offset_seconds": 596.038302,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.418218,
+                        "id": "sonic-p4rt-1",
+                        "label": "P4RT container",
+                        "offset_seconds": 601.121364,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.646168,
+                        "id": "restapi-sidecar-1",
+                        "label": "REST API sidecar container",
+                        "offset_seconds": 606.896254,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.658028,
+                        "id": "sysmgr-1",
+                        "label": "System manager container",
+                        "offset_seconds": 611.328234,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 1.260699,
+                        "id": "lldp-1",
+                        "label": "LLDP container",
+                        "offset_seconds": 626.469845,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 3.493446,
+                        "id": "gbsyncd-vs-1",
+                        "label": "Gearbox syncd container",
+                        "offset_seconds": 633.617141,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.959213,
+                        "id": "platform-monitor-1",
+                        "label": "Platform monitor container",
+                        "offset_seconds": 670.467566,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.759284,
+                        "id": "snmp-1",
+                        "label": "SNMP container",
+                        "offset_seconds": 677.022206,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.836866,
+                        "id": "dhcp-relay-1",
+                        "label": "DHCP relay container",
+                        "offset_seconds": 689.707697,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.812666,
+                        "id": "eventd-1",
+                        "label": "Event daemon container",
+                        "offset_seconds": 705.331683,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.665323,
+                        "id": "sonic-bmp-1",
+                        "label": "BMP container",
+                        "offset_seconds": 718.349235,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.742658,
+                        "id": "swss-layer-1",
+                        "label": "SWSS layer container",
+                        "offset_seconds": 744.975503,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.794975,
+                        "id": "dash-ha-1",
+                        "label": "DASH HA container",
+                        "offset_seconds": 758.767967,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.808975,
+                        "id": "fpm-frr-1",
+                        "label": "FRR container",
+                        "offset_seconds": 782.842499,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.758372,
+                        "id": "nat-1",
+                        "label": "NAT container",
+                        "offset_seconds": 806.702249,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.750174,
+                        "id": "sflow-1",
+                        "label": "sFlow container",
+                        "offset_seconds": 828.445431,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.764196,
+                        "id": "teamd-1",
+                        "label": "Team daemon container",
+                        "offset_seconds": 833.756716,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 0.749826,
+                        "id": "macsec-1",
+                        "label": "MACsec container",
+                        "offset_seconds": 845.258783,
+                        "outcome": "cached"
+                      },
+                      {
+                        "duration_seconds": 985.755885,
+                        "id": "final-image-1",
+                        "label": "Final VS image recipe",
+                        "offset_seconds": 894.309409,
+                        "outcome": "finished",
+                        "phase_breakdown": {
+                          "duration_seconds": 985.672678,
+                          "reason": null,
+                          "segments": [
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 16.522785,
+                              "offset_seconds": 0.0,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 340.885417,
+                              "offset_seconds": 16.522785,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 18.442063,
+                              "offset_seconds": 357.408202,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 0.038769,
+                              "offset_seconds": 375.850265,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "filesystem",
+                              "duration_seconds": 40.773665,
+                              "offset_seconds": 375.889034,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 0.036833,
+                              "offset_seconds": 416.662699,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "installer",
+                              "duration_seconds": 6.937656,
+                              "offset_seconds": 416.699532,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 215.721454,
+                              "offset_seconds": 423.637188,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 41.476871,
+                              "offset_seconds": 639.358642,
+                              "phase": "boot-checks"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 0.033563,
+                              "offset_seconds": 680.835513,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "bios",
+                              "duration_seconds": 29.970106,
+                              "offset_seconds": 680.869076,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 0.024218,
+                              "offset_seconds": 710.839182,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 213.816417,
+                              "offset_seconds": 710.8634,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 31.379939,
+                              "offset_seconds": 924.679817,
+                              "phase": "boot-checks"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 0.035204,
+                              "offset_seconds": 956.059756,
+                              "phase": "assembly"
+                            },
+                            {
+                              "context": "uefi",
+                              "duration_seconds": 29.397277,
+                              "offset_seconds": 956.09496,
+                              "phase": "compression"
+                            },
+                            {
+                              "context": "recipe",
+                              "duration_seconds": 0.180441,
+                              "offset_seconds": 985.492237,
+                              "phase": "assembly"
+                            }
+                          ],
+                          "source": "build-phase-markers",
+                          "status": "available",
+                          "version": 1
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "duration_seconds": 305.792051,
+                    "id": "orchagent-debug-1",
+                    "label": "Orchagent debug",
+                    "offset_seconds": 1896.98653,
+                    "tasks": [
+                      {
+                        "duration_seconds": 211.139201,
+                        "id": "orchagent-debug-1",
+                        "label": "Orchagent debug container",
+                        "offset_seconds": 84.64119,
+                        "outcome": "finished"
+                      }
+                    ]
+                  },
+                  {
+                    "duration_seconds": 322.217073,
+                    "id": "syncd-debug-1",
+                    "label": "Syncd debug",
+                    "offset_seconds": 2202.778581,
+                    "tasks": [
+                      {
+                        "duration_seconds": 220.820362,
+                        "id": "syncd-debug-1",
+                        "label": "Syncd debug container",
+                        "offset_seconds": 81.925109,
+                        "outcome": "finished"
+                      }
+                    ]
+                  }
+                ],
                 "source": "github-job-log",
-                "status": "unavailable",
+                "status": "available",
                 "version": 1
               },
               "completed_at": "2026-10-31T08:37:36Z",
@@ -18589,114 +18970,124 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T08:58:18Z",
+              "conclusion": "success",
+              "duration_seconds": 553.0,
               "name": "Validate Syncd source packages from the Make build",
               "number": 15,
               "phase": "validation",
               "started_at": "2026-10-31T08:49:05Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T08:58:22Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
               "name": "Prepare Syncd source artifact list",
               "number": 16,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T08:58:18Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T08:58:25Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
               "name": "Upload public contract evidence",
               "number": 17,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T08:58:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:07:45Z",
+              "conclusion": "success",
+              "duration_seconds": 560.0,
               "name": "Verify source-built P4 runtime and debug TARs in both Syncd images",
               "number": 18,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T08:58:25Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:08:28Z",
+              "conclusion": "success",
+              "duration_seconds": 43.0,
               "name": "Verify P4RT packaged split debug symbols",
               "number": 19,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T09:07:45Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:08:28Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Remove this job's remaining build containers",
               "number": 20,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T09:08:28Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:08:28Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Prepare public artifact list",
               "number": 21,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T09:08:28Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:08:30Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Upload public VS build summary",
               "number": 22,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T09:08:28Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:08:30Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Retain installed Syncd and source dependency evidence",
               "number": 23,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T09:08:30Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:33:31Z",
+              "conclusion": "success",
+              "duration_seconds": 1501.0,
               "name": "Upload VS image and OCI container archives",
               "number": 24,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T09:08:30Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T09:33:33Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Post Checkout repository",
               "number": 48,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T09:33:31Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-31T09:33:33Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 49,
+              "phase": "other",
+              "started_at": "2026-10-31T09:33:33Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41142753533/job/124361296347"
@@ -18710,8 +19101,8 @@
       "run_id": 41142753533,
       "source_sha": "14faaf7a10cba5e5018dec977888ba7d3507650e",
       "started_at": "2026-10-30T23:09:41Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-31T07:50:33Z",
+      "status": "completed",
+      "updated_at": "2026-10-31T09:33:37Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41142753533/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
