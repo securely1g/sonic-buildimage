@@ -51,6 +51,9 @@ the build user's namespaces required by Bazel's Linux sandbox. The profile is
 installed on the host and assigned only to these privileged workers. Preparation
 runs the pinned kernel Bazel sandbox as UID 1000 before building packages. Node-based Actions
 use the image's existing system CA bundle for verified HTTPS connections.
+The manager also declares `SONIC_BAZEL_JAVA_TRUST_STORE` in the image. The
+isolated kernel adapter reads that default and records the selected trust
+store's digest; the Make rule contains no runner-specific certificate path.
 
 `prepare_vs_slave.sh` checks the image identity and native capabilities, prepares
 the build hooks and configuration normally supplied by the outer Make wrapper,

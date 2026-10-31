@@ -772,11 +772,9 @@ jobs:
       run:
         shell: bash
     env:
-      EXPECTED_MANAGER_REVISION: 6e914bd5bb470bc1a427d2f15f3d451b0986b881
+      EXPECTED_MANAGER_REVISION: 86eac815cae7d33c06a9eb829a44ba49973ef4fd
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
-      # JavaScript actions must trust the same installed CAs as Git and Python.
-      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
       BAZEL_CONTAINER_ARGS: >-
         --jobs=4 --local_resources=memory=12288
         --distdir=/bazel_cache/distdir/ape-1.0.1
