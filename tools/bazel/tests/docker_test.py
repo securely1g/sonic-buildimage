@@ -33,8 +33,11 @@ import hashlib, json, os, pathlib, sys
 arguments = sys.argv[1:]
 operation = arguments[0]
 label = arguments[-1]
-archive = json.loads(os.environ['FAKE_BAZEL_LABELS'])[label]
-prerequisites = json.loads(os.environ['FAKE_BAZEL_PREREQUISITES'])[archive]
+labels = json.loads(os.environ['FAKE_BAZEL_LABELS'])
+archive = labels[label]
+archives = [labels[arg] for arg in arguments if arg in labels]
+prerequisites = [path for name in archives
+                 for path in json.loads(os.environ['FAKE_BAZEL_PREREQUISITES'])[name]]
 record = {'arguments': arguments,
           'prerequisites_ready': all(pathlib.Path(path).is_file() for path in prerequisites),
           'prerequisite_sha256': {path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
@@ -48,12 +51,14 @@ source = pathlib.Path('bazel-bin/archive outputs') / archive
 if operation == 'build':
     if mode == 'build_failure':
         raise SystemExit('fixture build failure')
-    source.parent.mkdir(parents=True, exist_ok=True)
-    if mode == 'directory_output':
-        source.mkdir(exist_ok=True)
-    else:
-        source.write_bytes(b'' if mode == 'empty_output' else
-                           os.environ.get('FAKE_BAZEL_PAYLOAD', 'new ' + archive).encode())
+    for archive in archives:
+        source = pathlib.Path('bazel-bin/archive outputs') / archive
+        source.parent.mkdir(parents=True, exist_ok=True)
+        if mode == 'directory_output':
+            source.mkdir(exist_ok=True)
+        else:
+            source.write_bytes(b'' if mode == 'empty_output' else
+                               os.environ.get('FAKE_BAZEL_PAYLOAD', 'new ' + archive).encode())
 elif operation == 'cquery':
     print('INFO: fixture query diagnostic', file=sys.stderr)
     if mode == 'query_failure':

@@ -10,13 +10,10 @@ on:
         description: Skip the full VS image build
         type: boolean
         default: true
-      measure_orchagent_reuse:
-        description: Time the old redundant Orchagent request after the VS build
-        type: boolean
-        default: false
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
@@ -28,6 +25,8 @@ env:
 
 jobs:
   archive:
+    # Temporary installer-only iteration for PR #64.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' }}
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -301,6 +300,8 @@ jobs:
           compression-level: 1
 
   checks:
+    # Temporary installer-only iteration for PR #64.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' }}
     name: OCI regression checks (AMD64)
     runs-on: ubuntu-24.04
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
@@ -350,6 +351,7 @@ jobs:
           python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
+          python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
         run: |
@@ -409,28 +411,28 @@ jobs:
 
       - name: Report validation scope
         run: |
-          echo 'Hosted checks cover regressions and dependency resolution; source-package and image validation run in the Make VS job.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Hosted checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
 
   vs:
     name: Make VS with Bazel SWSS (AMD64)
     needs: [checks]
-    # Build full VS images for master pushes and same-repository pull requests
-    # after hosted regression and dependency-resolution checks.
-    # Manual runs retain their skip option; external-fork PRs use hosted checks.
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    # Share the existing P330 pool; checkout still uses this event's ref and SHA.
+    # Replaced by vs_container below. Keep the legacy recipe available while
+    # transitioning, but do not schedule another host-driven Make VS build.
+    if: ${{ false }}
+    # Use the ONIE pool; checkout still uses this event's ref and SHA.
     runs-on:
       - self-hosted
       - linux
       - x64
-      - sonic-vs-source-master
+      - sonic-vs-bin
     timeout-minutes: 720
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
+      # Use Docker Hub's canonical references with the existing pinned digests.
+      DEFAULT_CONTAINER_REGISTRY: ""
+      MIRROR_URLS: https://deb.debian.org/debian/
+      MIRROR_SECURITY_URLS: https://deb.debian.org/debian-security/
+      SONIC_CONFIG_USE_DOCKER_CACHE: "y"
       # Keep build results outside run-specific checkouts and disposable builders.
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
       SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
@@ -473,7 +475,7 @@ jobs:
           submodules: recursive
 
       - name: Check VS build prerequisites
-        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD"
+        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD" --build-target sonic-vs.bin
 
       - name: Prepare persistent agent caches
         run: |
@@ -530,25 +532,36 @@ jobs:
               2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
           done
 
-      - name: Build the VS image and both OCI container variants
-        id: vs_build
-        env:
-          MEASURE_ORCHAGENT_REUSE: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_orchagent_reuse }}
+      - name: Check native kernel sandbox in Trixie
+        timeout-minutes: 5
         run: |
-          measurement=()
-          if [[ "$MEASURE_ORCHAGENT_REUSE" == true ]]; then
-            measurement+=(--measure-redundant-request)
-          fi
-          bash tools/bazel/ci/build_vs_with_reused_orchagent.sh "${measurement[@]}" \
-            2>&1 | tee artifacts/vs/build.log
+          set -o pipefail
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
+            SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
+            2>&1 | tee artifacts/vs/kernel-sandbox.log
 
-      - name: Retain Orchagent archive reuse evidence
+      - name: Build the VS installer (.bin)
+        id: vs_build
+        run: |
+          set -o pipefail
+          bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
+
+      - name: Validate VS container pairs and P4 debug symbols
+        id: vs_validation
+        run: |
+          set -o pipefail
+          bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
+
+      - name: Retain VS runtime and debug archive reuse evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-orchagent-reuse-amd64
           path: |
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/orchagent-reuse.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/orchagent-reuse-timing.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs-timing.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin.dockers
           if-no-files-found: error
           retention-days: 14
 
@@ -663,39 +676,6 @@ jobs:
           compression-level: 1
 
 
-      - name: Verify source-built P4 runtime and debug TARs in both Syncd images
-        run: |
-          cat > artifacts/vs/check-syncd-p4-images.sh <<'SH'
-          # AUTO-GENERATED by .github/workflows/bazel-oci.yml. DO NOT EDIT MANUALLY.
-          set -euo pipefail
-          test_status=0
-          "$BAZEL" test --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
-            --nocache_test_results --nozip_undeclared_test_outputs || test_status=$?
-          mkdir -p artifacts/vs/syncd-p4-images
-          for file in test.log test.xml test.outputs/validation.json; do
-            path="bazel-testlogs/tools/bazel/tests/syncd_p4_images_test/$file"
-            if test -f "$path"; then
-              cp "$path" "artifacts/vs/syncd-p4-images/$(basename "$file")"
-            fi
-          done
-          exit "$test_status"
-          SH
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
-            SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-p4-images.sh" \
-            2>&1 | tee artifacts/vs/syncd-p4-images.log
-
-      - name: Verify P4RT packaged split debug symbols
-        run: |
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-            SONIC_RUN_CMDS="python3 -B tools/bazel/ci/verify_p4rt_debug.py \
-              --runtime-deb target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb \
-              --debug-deb target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb \
-              --source-root src/sonic-p4rt/sonic-pins \
-              --output artifacts/vs/p4rt-debug-verification.json" \
-            2>&1 | tee artifacts/vs/p4rt-debug-verification.log
-
       - name: Remove this job's remaining build containers
         if: always()
         timeout-minutes: 2
@@ -765,7 +745,7 @@ jobs:
         with:
           name: sonic-vs-make-bazel-swss-amd64
           path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.img.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz
@@ -773,3 +753,136 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  vs_container:
+    name: VS installer in SONiC slave (AMD64)
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
+    runs-on: [self-hosted, linux, x64, sonic-slave-container]
+    timeout-minutes: 720
+    # The four registered slots share lgh4. Only one full native build may
+    # consume its memory at a time; each worker still handles one job and exits.
+    concurrency:
+      group: sonic-slave-container-vs
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_MANAGER_REVISION: 86eac815cae7d33c06a9eb829a44ba49973ef4fd
+      SONIC_BUILD_GIT_NAME: Guohan Lu
+      SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
+      BAZEL_CONTAINER_ARGS: >-
+        --jobs=4 --local_resources=memory=12288
+        --distdir=/bazel_cache/distdir/ape-1.0.1
+        --distdir=/bazel_cache/distdir/download_utils-1.0.1
+        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
+        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
+        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+    steps:
+      - name: Checkout repository and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Download verified source archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bazel-repository-inputs
+          # Reuse the completed hosted check while iterating only this job.
+          # source_archive.py verifies all five pinned SHA512 values below.
+          run-id: 41152241699
+          github-token: ${{ github.token }}
+          path: artifacts/vs/repository-inputs
+
+      - name: Prepare the privileged SONiC slave
+        run: bash tools/bazel/ci/prepare_vs_slave.sh
+
+      - name: Configure persistent caches
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        run: |
+          python3 -B tools/bazel/ci/configure_runner_cache.py
+          python3 -B tools/bazel/gzip/source_archive.py \
+            --archives-dir artifacts/vs/repository-inputs \
+            --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json
+
+      - name: Build sonic-vs.bin directly with slave.mk
+        id: native_build
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          cd /sonic
+          git rev-parse HEAD > artifacts/vs/build-revision.txt
+          make -f slave.mk target/sonic-vs.bin \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+            INCLUDE_VS_DASH_SAI=y \
+            INCLUDE_FIPS=y \
+            ENABLE_ASAN=n \
+            ENABLE_SYNCD_RPC=n 2>&1 | tee artifacts/vs/build.log
+          test -s target/sonic-vs.bin
+          test -s target/sonic-vs.bin.dockers
+          test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
+
+      - name: Validate the installer and retained container pairs
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          cd /sonic
+          python3 -B tools/bazel/ci/vs_archive_reuse.py capture-pairs \
+            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
+            --orchagent-receipt artifacts/vs/orchagent-reuse.json
+          # Reuse this same slave and its Bazel server for the P4/debug checks.
+          bash tools/bazel/ci/verify_vs_oci.sh make -f slave.mk \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
+            ENABLE_ASAN=n ENABLE_SYNCD_RPC=n 2>&1 | tee artifacts/vs/validation.log
+          python3 -B tools/bazel/ci/vs_archive_reuse.py verify-pairs \
+            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
+            --orchagent-receipt artifacts/vs/orchagent-reuse.json
+          sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
+            target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
+
+      - name: Publish the installer and matching container archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-slave-amd64
+          path: |
+            target/sonic-vs.bin
+            target/sonic-vs.bin.dockers
+            target/docker-orchagent.gz
+            target/docker-orchagent-dbg.gz
+            target/docker-syncd-vs.gz
+            target/docker-syncd-vs-dbg.gz
+            artifacts/vs/outputs.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Preserve build receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-slave-evidence-amd64
+          path: |
+            artifacts/vs/*.json
+            artifacts/vs/*.txt
+            artifacts/vs/*.sha256
+            artifacts/vs/syncd-p4-images/validation.json
+            MODULE.bazel.lock
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop this worker's private Docker daemon
+        if: always()
+        run: |
+          if test -s "$RUNNER_TEMP/sonic-dockerd.pid"; then
+            sudo -n kill -TERM "$(cat "$RUNNER_TEMP/sonic-dockerd.pid")"
+          fi

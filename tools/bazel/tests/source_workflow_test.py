@@ -147,6 +147,9 @@ class SourceWorkflowTest(unittest.TestCase):
     def test_make_source_validation_reuses_outputs_and_propagates_failures(self):
         workflow_steps = steps(jobs()["vs"])
         names = list(workflow_steps)
+        build_steps = [name for name, step in workflow_steps.items()
+                       if re.search(r"(?m)^        id: vs_build$", step)]
+        self.assertEqual(len(build_steps), 1)
         families = (
             ("SWSS", "//dockers/docker-orchagent", "rules/docker-orchagent.mk", "artifacts/swss", False),
             ("Syncd", "//platform/vs/docker-syncd-vs", "platform/vs/docker-syncd-vs.mk", "artifacts/syncd-vs/bazel", True),
@@ -155,7 +158,8 @@ class SourceWorkflowTest(unittest.TestCase):
         lock.write_text("already-resolved Make build\n")
         for family, owner, source, artifacts, dash in families:
             name = "Validate " + family + " source packages from the Make build"
-            self.assertLess(names.index("Build the VS image and both OCI container variants"), names.index(name))
+            self.assertLess(names.index(build_steps[0]), names.index(name))
+            self.assertIn("if: ${{ !cancelled() && steps.vs_build.outcome == 'success' }}", workflow_steps[name])
             for source_exit, make_exit in ((0, 0), (19, 0), (0, 23)):
                 with self.subTest(family=family, source_exit=source_exit, make_exit=make_exit):
                     self.calls.unlink(missing_ok=True)

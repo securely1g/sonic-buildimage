@@ -51,6 +51,45 @@ enabled them for the selected architecture, platform and features. Make does
 not probe for a Bazel executable or retry a failed Bazel build with Make.
 Invalid metadata for a selected target and Bazel build errors remain failures.
 
+### Build runtime and debug archives with the VS image
+
+During `make target/sonic-vs.bin BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`,
+the Trixie builder builds each selected, supported runtime/debug pair in one
+Bazel invocation. The two targets share the owner's configuration and declared
+inputs. This retains the runtime layers and Bazel state while producing the
+matching debug image, before the VS builder exits. Both complete Docker archives
+are exported to `target/`; each archive remains independently cacheable.
+
+For the native AMD64 FIPS/DASH CI configuration, this produces
+`docker-orchagent.gz`, `docker-orchagent-dbg.gz`, `docker-syncd-vs.gz` and
+`docker-syncd-vs-dbg.gz` during the VS build. The existing owner guards determine
+which pairs are available in other configurations.
+
+Building a debug archive does not select it for installation.
+`INSTALL_DEBUG_TOOLS=y` selects the debug containers through the existing VS
+installer list; a normal image continues to install the runtime containers.
+Standalone archive requests and unsupported Make configurations retain their
+existing behavior. A selected pair fails if either build/export fails or the
+owner declares different Bazel arguments for its two variants.
+
+CI uses `build_vs.sh` for that single Make request and `validate_vs.sh` in a
+separate step after the build. Validation checks both pairs and the installer's
+`target/sonic-vs.bin.dockers` selection, prepares Bookworm as configured, then uses
+Make's existing `sonic-slave-run` entrypoint for the remaining P4 checks in
+Trixie. Make supplies the build configuration; the verifier resolves and builds the existing P4RT
+runtime/debug package prerequisites before checking the images and symbols.
+After builder cleanup, validation requires the retained archives to remain
+unchanged. It does not issue another Make container-archive request.
+SWSS/Syncd source checks retain their separate workflow steps.
+See [CI evidence and timing](ci/README.md).
+
+The `.bin` target produces the ONIE installer without KVM. The separate
+`target/sonic-vs.img.gz` target generates BIOS/UEFI VM disks and runs their boot
+checks; the installer CI does not exercise that VM path. Runtime/debug pairing
+also remains available when explicitly building the VM image.
+
+### Register container targets
+
 Keep the container's Make declarations in their existing location, such as
 `rules/docker-orchagent.mk` or `platform/vs/docker-syncd-vs.mk`.
 Select Bazel only under that owner's feature and build-environment guards. The

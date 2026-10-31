@@ -130,6 +130,5 @@ class MakeForwardingTest(unittest.TestCase):
         self.assertEqual(calls, [[target, "y", "trixie", ""]])
         self.assertEqual(self.state(target), before)
 
-
 if __name__ == "__main__":
     unittest.main()

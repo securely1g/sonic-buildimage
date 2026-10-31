@@ -8,8 +8,9 @@ on:
 
 jobs:
   post_cherry_pick:
+    # Temporary: PR #64 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' && (false && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'automerge') && github.event.pull_request.head.user.login == 'mssonicbld' && startsWith(github.event.pull_request.title, '[action]')) }}
     # Use azpw instead to have stable performance
-    if: false && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'automerge') && github.event.pull_request.head.user.login == 'mssonicbld' && startsWith(github.event.pull_request.title, '[action]')
     runs-on: ubuntu-latest
     steps:
     - name: Debug

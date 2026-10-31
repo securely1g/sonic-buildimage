@@ -95,6 +95,15 @@ enables read-only reuse; `--upload-local-results` explicitly permits writes.
 launcher verifies the pinned native Bazel executable and requires the kernel
 action to use `linux-sandbox`; it does not start a worker container.
 
+Managed builders can set `SONIC_BAZEL_JAVA_TRUST_STORE` in their container
+image to provide the default Java trust store for `ensure`, `plan`, and
+`build`. An explicit `--java-trust-store` takes precedence; an empty or unset
+environment variable leaves Bazel's default unchanged. The selected file is
+validated and its SHA256 recorded in the build plan. `verify` ignores this
+environment setting because it only checks existing outputs. The runner
+image owns the certificate path and policy; Make needs no runner-specific
+trust options.
+
 Automatic Make preparation serializes concurrent requests and uses the existing
 `SONIC_BAZEL_CACHE_SOURCE` setting. The existing slave mount exposes this cache
 at `/bazel_cache`; the kernel uses its `kernel-linux-sandbox/repository_cache` and
