@@ -36,12 +36,12 @@ SONIC_BAZEL_KERNEL_CONFIG := CONFIGURED_ARCH CONFIGURED_PLATFORM BLDENV \
         KERNEL_SUBVERSION KERNEL_FEATURESET KVERSION ADDITIONAL_BUILD_PROFILES \
         SECURE_UPGRADE_MODE SECURE_UPGRADE_KERNEL_CAFILE INCLUDE_EXTERNAL_PATCHES \
         EXTERNAL_KERNEL_PATCH_URL EXTERNAL_KERNEL_PATCH_LOC
-# The kernel launcher ignores system Bazel rc files. Forward native builder
-# trust through its explicit options only when that builder opted in.
+# The kernel launcher ignores system Bazel rc files. Forward the native
+# builder's Java trust store explicitly when that builder opted in.
 bazel-kernel-ensure:
 	python3 -B tools/bazel/kernel/prepare.py ensure --debs-directory '$(subst ','"'"',$(DEBS_PATH))' \
 		$(foreach setting,$(SONIC_BAZEL_KERNEL_CONFIG),--kernel-config '$(setting)=$(subst ','"'"',$(if $(filter SECURE_UPGRADE_MODE,$(setting)),$(subst ",,$($(setting))),$($(setting))))') \
-		$(if $(wildcard /usr/local/share/sonic-build-trust/bazel.bazelrc),--ca-bundle /etc/ssl/certs/ca-certificates.crt --java-trust-store /etc/ssl/certs/java/cacerts) \
+		$(if $(wildcard /usr/local/share/sonic-build-trust/bazel.bazelrc),--java-trust-store /etc/ssl/certs/java/cacerts) \
 		$(if $(strip $(SONIC_BAZEL_CACHE_SOURCE)),--cache-directory /bazel_cache)
 else
 SONIC_MAKE_DEBS += $(LINUX_HEADERS_COMMON)

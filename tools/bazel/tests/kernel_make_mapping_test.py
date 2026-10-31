@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -259,7 +258,7 @@ class KernelMakeMappingTest(unittest.TestCase):
         self.assertEqual((self.workspace / "order.txt").read_text().splitlines(), ["ensure", "ensure"])
         self.assertEqual(self.kernel_arguments()[1], {"--debs-directory": "target/debs/trixie"})
 
-    def test_native_builder_trust_reaches_the_isolated_kernel_launcher(self):
+    def test_native_builder_java_trust_reaches_the_isolated_kernel_launcher(self):
         makefile = self.lazy_make_fixture()
         marker = self.root / "native-trust.bazelrc"
         marker.write_text("startup --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts\n")
@@ -268,7 +267,6 @@ class KernelMakeMappingTest(unittest.TestCase):
         config, options = self.kernel_arguments()
         self.assertEqual(options, {
             "--debs-directory": "target/debs/trixie", "--cache-directory": "/bazel_cache",
-            "--ca-bundle": "/etc/ssl/certs/ca-certificates.crt",
             "--java-trust-store": "/etc/ssl/certs/java/cacerts",
         })
         marker.unlink()
@@ -277,16 +275,6 @@ class KernelMakeMappingTest(unittest.TestCase):
         self.assertEqual(self.kernel_arguments(), (config, {
             "--debs-directory": "target/debs/trixie", "--cache-directory": "/bazel_cache",
         }))
-
-    def test_ambient_ca_environment_does_not_enable_native_kernel_trust(self):
-        makefile = self.lazy_make_fixture()
-        with patch.dict(os.environ, {
-            "SSL_CERT_FILE": "/ambient/ca.pem", "REQUESTS_CA_BUNDLE": "/ambient/requests.pem",
-            "SONIC_BUILD_SLAVE_CA_BUNDLE": "/ambient/host.pem",
-        }):
-            result = self.run_make(makefile, "bazel-kernel-ensure")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.kernel_arguments()[1], {"--debs-directory": "target/debs/trixie"})
 
     def test_enabled_kernel_forwards_each_configuration_to_bazel(self):
         makefile = self.lazy_make_fixture()

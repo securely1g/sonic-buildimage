@@ -94,11 +94,13 @@ enables read-only reuse; `--upload-local-results` explicitly permits writes.
 `--ca-bundle` and `--java-trust-store` supply public trust material. The source
 launcher verifies the pinned native Bazel executable and requires the kernel
 action to use `linux-sandbox`; it does not start a worker container.
-The launcher ignores system Bazel rc files. The SONiC slave runner image
-installs a `sonic-build-trust/bazel.bazelrc` marker for its existing trust stores.
-When that marker is present, Make passes the installed Debian PEM and Java
-trust stores through those explicit options. Without that marker, Make leaves trust options unset, including when
-ambient CA environment variables are present.
+The launcher ignores system Bazel rc files, and the pinned Bazel executable
+ignores `JAVA_TOOL_OPTIONS`. The SONiC slave runner image installs a
+`sonic-build-trust/bazel.bazelrc` marker for its existing trust stores. When
+that marker is present, Make passes the installed Java trust store through
+`--java-trust-store`; Python uses the runner's existing CA environment.
+Without the marker, Make leaves the Java trust option unset. This handoff
+only configures HTTPS trust; Bazel still builds the kernel.
 
 Automatic Make preparation serializes concurrent requests and uses the existing
 `SONIC_BAZEL_CACHE_SOURCE` setting. The existing slave mount exposes this cache
