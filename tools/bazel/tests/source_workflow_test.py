@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/bazel-oci.yml"
 
 
-def jobs():
+def jobs(workflow=WORKFLOW):
     """Read top-level job blocks; the shell itself is executed without rewriting."""
-    contents = WORKFLOW.read_text().split("\njobs:\n", 1)[1]
+    contents = workflow.read_text().split("\njobs:\n", 1)[1]
     return dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
                            contents, re.MULTILINE | re.DOTALL))
 
@@ -45,7 +45,7 @@ class SourceWorkflowTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="source-workflow-")
         self.addCleanup(temporary.cleanup)
-        self.directory = Path(temporary.name)
+        self.directory = Path(temporary.name).resolve()
         self.commands = self.directory / "commands"
         self.commands.mkdir()
         (self.directory / "artifacts/vs").mkdir(parents=True)
@@ -90,6 +90,10 @@ class SourceWorkflowTest(unittest.TestCase):
                     env=environment).returncode)
             if source_runner:
                 raise SystemExit(int(os.environ.get('SOURCE_EXIT', '0')))
+            if name == 'python3' and 'tools/bazel/kernel/prepare.py' in args:
+                raise SystemExit(int(os.environ.get('KERNEL_PREPARE_EXIT', '0')))
+            if name == 'python3' and 'tools/bazel/ci/kernel_handoff.py' in args:
+                raise SystemExit(int(os.environ.get('KERNEL_HANDOFF_EXIT', '0')))
             if name == 'python3' and args[:1] == ['tools/bazel/build_helpers.py']:
                 raise SystemExit(subprocess.run([sys.executable, *args]).returncode)
             if name == 'bazel' and args == ['--version']:
@@ -129,7 +133,7 @@ class SourceWorkflowTest(unittest.TestCase):
         checks = workflow_jobs["checks"]
         self.assertIn("name: OCI regression checks (AMD64)", checks)
         self.assertIn("runs-on: ubuntu-24.04", checks)
-        self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: (?:checks|\[checks\])$")
+        self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: \[checks, kernel-native\]$")
         for name, step in steps(checks).items():
             script = shell(step)
             if script is not None:
@@ -143,6 +147,96 @@ class SourceWorkflowTest(unittest.TestCase):
                              (call["name"] == "bazel" and
                               any(arg in ("build", "test") for arg in call["args"]))
                              for call in calls))
+
+    def test_native_jobs_import_same_revision_kernel_packages_before_make(self):
+        for filename, job_name, prerequisite, prefix in (
+                ("bazel-oci.yml", "vs", "checks", "vs"),
+                ("bazel-vs-unprivileged.yml", "native", "store", "native")):
+            with self.subTest(workflow=filename):
+                blocks = jobs(ROOT / ".github/workflows" / filename)
+                caller, native = blocks["kernel-native"], blocks[job_name]
+                self.assertIn("uses: ./.github/workflows/bazel-kernel-native.yml", caller)
+                self.assertIn(f"needs: [{prerequisite}, kernel-native]", native)
+                condition = r"(?ms)^    if: (.*?)(?=^    \S|\Z)"
+                self.assertEqual(re.search(condition, caller)[1], re.search(condition, native)[1])
+                self.assertIn("ref: ${{ github.sha }}", native)
+                self.assertIn("submodules: recursive", native)
+                selected = steps(native)
+                download = selected["Download this run's verified kernel packages"]
+                self.assertIn("name: kernel-native-amd64", download)
+                self.assertIn("path: " + prefix + "-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/kernel-native-amd64", download)
+                self.assertNotIn("run-id:", download)
+                self.assertLess(native.index("uses: actions/checkout@"), native.index("Download this run's verified kernel packages"))
+                self.assertLess(native.index("Verify and import the kernel packages before native Make"), native.index("make init"))
+                script = shell(selected["Verify and import the kernel packages before native Make"])
+                self.calls.unlink(missing_ok=True)
+                result = self.execute(script)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.recorded()[0]["args"], [
+                    "-B", "tools/bazel/ci/kernel_handoff.py", "import", "--workspace", str(self.directory),
+                    "--input", "artifacts/kernel-native-amd64", "--debs-directory", "target/debs/trixie"])
+                result = self.execute(script, KERNEL_HANDOFF_EXIT="17")
+                self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+
+    def test_hosted_kernel_producer_exports_only_after_verified_build(self):
+        producer = jobs(ROOT / ".github/workflows/bazel-kernel-native.yml")["kernel"]
+        self.assertIn("runs-on: ubuntu-22.04", producer)
+        self.assertIn("ref: ${{ github.sha }}", producer)
+        self.assertNotIn("pull_request.head.sha", producer)
+        selected = steps(producer)
+        self.assertIn("src/sonic-linux-kernel", shell(selected["Initialize the pinned kernel source"]))
+        self.assertIn("unshare --user --map-current-user --mount --pid --fork true",
+                      shell(selected["Require unprivileged Linux sandboxing"]))
+        self.assertNotIn("sysctl", producer)
+        self.assertNotIn("apparmor_parser", producer)
+        script = shell(selected["Build and verify the VS kernel packages"])
+        result = self.execute(script, RUNNER_TEMP=str(self.directory))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.recorded()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("tools/bazel/kernel/prepare.py", calls[0]["args"])
+        self.assertIn("ensure", calls[0]["args"])
+        for setting in ("CONFIGURED_ARCH=amd64", "CONFIGURED_PLATFORM=vs", "BLDENV=trixie", "SECURE_UPGRADE_MODE=no_sign"):
+            self.assertIn(setting, calls[0]["args"])
+        self.assertEqual(calls[1]["args"], [
+            "-B", "tools/bazel/ci/kernel_handoff.py", "export", "--workspace", str(self.directory),
+            "--debs-directory", "target/debs/trixie", "--output", str(self.directory / "kernel-native-amd64")])
+        self.calls.unlink()
+        result = self.execute(script, RUNNER_TEMP=str(self.directory), KERNEL_PREPARE_EXIT="19")
+        self.assertEqual(result.returncode, 19, result.stdout + result.stderr)
+        self.assertEqual(len(self.recorded()), 1, "failed kernel build reached artifact export")
+        transfer = selected["Transfer the verified kernel packages to native Make"]
+        self.assertIn("name: kernel-native-amd64", transfer)
+        self.assertNotIn("always()", transfer)
+
+    def test_kernel_cache_bound_counts_only_download_and_action_files(self):
+        selected = steps(jobs(ROOT / ".github/workflows/bazel-kernel-native.yml")["kernel"])
+        script = shell(selected["Bound the retained kernel cache"])
+        cache = self.directory / "kernel-native-cache/kernel-linux-sandbox"
+        blob = cache / "disk_cache/blob"
+        blob.parent.mkdir(parents=True)
+        # Sparse files exercise the real logical-size limit without allocating it.
+        ignored = self.directory / "kernel-native-state/build/output"
+        ignored.parent.mkdir(parents=True)
+        with ignored.open("wb") as output:
+            output.truncate(16 * 2**30)
+        for size, expected in ((0, False), (1024, True), (8 * 2**30, True), (8 * 2**30 + 1, False)):
+            with self.subTest(bytes=size):
+                with blob.open("wb") as output:
+                    output.truncate(size)
+                github_output = self.directory / "cache-output"
+                github_output.unlink(missing_ok=True)
+                result = self.execute(script, RUNNER_TEMP=str(self.directory), GITHUB_OUTPUT=str(github_output),
+                                      PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(github_output.read_text(), "save=" + str(expected).lower() + "\n")
+        for title in ("Restore kernel download and action caches", "Save the bounded kernel cache"):
+            block = selected[title]
+            paths = re.search(r"(?m)^          path: \|\n((?:            [^\n]+\n)+)", block)[1].splitlines()
+            self.assertEqual([path.strip() for path in paths], [
+                "${{ runner.temp }}/kernel-native-cache/kernel-linux-sandbox/repository_cache",
+                "${{ runner.temp }}/kernel-native-cache/kernel-linux-sandbox/disk_cache"])
+        self.assertIn("steps.cache_bound.outputs.save == 'true'", selected["Save the bounded kernel cache"])
 
     def test_vs_cleanup_stops_only_this_jobs_prepared_assembly_workers(self):
         workflow_steps = steps(jobs()["vs"])

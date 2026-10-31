@@ -55,6 +55,16 @@ so runners such as `lgh102` can build without `/dev/kvm`. Native preparation
 uses the official container registry and Debian mirrors through existing
 Make overrides; the existing version-control inputs still apply.
 
+Both workflows first call `bazel-kernel-native.yml` to build the AMD64 VS/Trixie
+kernel on Ubuntu 22.04 with the kernel launcher's enforced `linux-sandbox`.
+The producer and native consumers check out the same `github.sha`. Each workflow
+transfers its own `kernel-native-amd64` artifact: five verified kernel DEBs,
+their package manifest, and source/configuration provenance. After recursive
+checkout, the native job verifies and imports this handoff before running Make;
+the ordinary kernel prerequisite verifies and reuses those packages. This keeps
+the devbox host's AppArmor policy unchanged. Only Bazel's download and action
+caches are eligible for reuse, and cache uploads are limited to 8 GiB.
+
 ## Unprivileged VS installer assembly
 
 The self-hosted runner does not need host `sudo`. A short setup container uses

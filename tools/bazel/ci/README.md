@@ -14,8 +14,14 @@ platform/feature flags and persistent Bazel action
 cache. The private builder output bases remain separate; cached outputs can
 be restored without recompiling the same source packages. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.
-Keep checks that compile image inputs in the installer build job so they can reuse
-its action outputs.
+Keep SWSS and Syncd source checks in the installer build job so they can reuse
+its action outputs. The kernel is produced by the reusable
+`bazel-kernel-native.yml` job on Ubuntu 22.04, where its required `linux-sandbox`
+is supported. `kernel_handoff.py` transfers exactly five verified DEBs plus
+package and provenance manifests from the same revision into native Make's
+package directory. Import rejects mismatches without a build fallback; host
+AppArmor policy stays unchanged. Only the producer's download/action caches
+are retained, subject to an 8 GiB upload limit.
 The owning BUILD files sit beside the original container inputs:
 [`dockers/docker-orchagent/BUILD.bazel`](../../../dockers/docker-orchagent/BUILD.bazel)
 and [`platform/vs/docker-syncd-vs/BUILD.bazel`](../../../platform/vs/docker-syncd-vs/BUILD.bazel).

@@ -1,0 +1,102 @@
+name: Bazel kernel inputs for VS
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    name: Native kernel packages (AMD64)
+    # These hosted runners support the kernel launcher's enforced linux-sandbox.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout the native consumer revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Initialize the pinned kernel source
+        run: git submodule update --init -- src/sonic-linux-kernel
+
+      - name: Check the kernel handoff contract
+        run: python3 -B tools/bazel/tests/kernel_handoff_test.py
+
+      - name: Allocate space on this disposable runner
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          python3 - <<'PY'
+          import os, shutil
+          if shutil.disk_usage(os.environ['RUNNER_TEMP']).free < 45 * 2**30:
+              raise SystemExit('Kernel source validation requires 45 GiB free scratch space')
+          PY
+
+      - name: Require unprivileged Linux sandboxing
+        run: |
+          test "$(id -u)" -ne 0
+          unshare --user --map-current-user --mount --pid --fork true
+
+      - name: Restore kernel download and action caches
+        id: kernel_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/kernel-native-cache/kernel-linux-sandbox/repository_cache
+            ${{ runner.temp }}/kernel-native-cache/kernel-linux-sandbox/disk_cache
+          key: kernel-native-amd64-v1-${{ hashFiles('tools/bazel/kernel/MODULE.bazel', 'tools/bazel/kernel/prepare.py', 'rules/linux-kernel.mk') }}-${{ github.sha }}
+          restore-keys: |
+            kernel-native-amd64-v1-${{ hashFiles('tools/bazel/kernel/MODULE.bazel', 'tools/bazel/kernel/prepare.py', 'rules/linux-kernel.mk') }}-
+
+      - name: Build and verify the VS kernel packages
+        run: |
+          umask 077
+          python3 -B tools/bazel/kernel/prepare.py ensure \
+            --workspace "$GITHUB_WORKSPACE" --architecture amd64 \
+            --kernel-config CONFIGURED_ARCH=amd64 \
+            --kernel-config CONFIGURED_PLATFORM=vs --kernel-config BLDENV=trixie \
+            --kernel-config SECURE_UPGRADE_MODE=no_sign \
+            --state-dir "$RUNNER_TEMP/kernel-native-state" \
+            --cache-directory "$RUNNER_TEMP/kernel-native-cache" \
+            --debs-directory target/debs/trixie
+          python3 -B tools/bazel/ci/kernel_handoff.py export \
+            --workspace "$GITHUB_WORKSPACE" --debs-directory target/debs/trixie \
+            --output "$RUNNER_TEMP/kernel-native-amd64"
+
+      - name: Transfer the verified kernel packages to native Make
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kernel-native-amd64
+          path: ${{ runner.temp }}/kernel-native-amd64/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Bound the retained kernel cache
+        id: cache_bound
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'kernel-native-cache/kernel-linux-sandbox'
+          total = sum(path.stat().st_size
+                      for name in ('repository_cache', 'disk_cache')
+                      for path in (root / name).rglob('*')
+                      if path.is_file() and not path.is_symlink())
+          # Keep the cache optional and bounded; never upload the kernel build tree.
+          save = 0 < total <= 8 * 2**30
+          print(f'Kernel download/action cache: {total / 2**30:.2f} GiB; save={save}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'save={str(save).lower()}\n')
+          PY
+
+      - name: Save the bounded kernel cache
+        if: steps.cache_bound.outputs.save == 'true' && steps.kernel_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/kernel-native-cache/kernel-linux-sandbox/repository_cache
+            ${{ runner.temp }}/kernel-native-cache/kernel-linux-sandbox/disk_cache
+          key: ${{ steps.kernel_cache.outputs.cache-primary-key }}
