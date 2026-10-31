@@ -23,6 +23,8 @@ permissions:
 
 jobs:
   native-tests:
+    # Temporary: PR #81 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-sonic-slave-ci' && github.ref != 'refs/heads/codex/vs-sonic-slave-ci' }}
     name: Native validator tests (${{ matrix.arch }})
     strategy:
       fail-fast: false

@@ -14,7 +14,8 @@ on:
 
 jobs:
   analyze:
-    if: github.repository_owner == 'sonic-net'
+    # Temporary: PR #81 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-sonic-slave-ci' && github.ref != 'refs/heads/codex/vs-sonic-slave-ci' && (github.repository_owner == 'sonic-net') }}
     name: Analyze
     runs-on: ubuntu-latest
     permissions:

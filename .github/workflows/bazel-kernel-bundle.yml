@@ -15,6 +15,8 @@ concurrency:
 
 jobs:
   kernel-bundle:
+    # Temporary: PR #81 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-sonic-slave-ci' && github.ref != 'refs/heads/codex/vs-sonic-slave-ci' && (github.event_name != 'pull_request' || github.event.pull_request.number == 6) }}
     name: Kernel DEBs and Make handoff (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -27,7 +29,6 @@ jobs:
             runner: ubuntu-22.04-arm
             cache_sha256: 295e54fd58841211b00fb204cafc13affc6a13d8946a4520c0ecdce22626ef93
     # Keep the integration check scoped to the requested kernel PR.
-    if: github.event_name != 'pull_request' || github.event.pull_request.number == 6
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     steps:

@@ -215,31 +215,44 @@ define GET_MOD_SHA
 	$(eval  $(1)_MOD_DEP_FILES := $($(1)_DEP_FLAGS_FILE) $($(1)_MOD_HASH_FILE) $($(1)_SMOD_HASH_FILE) )
 	$(if $(MDEBUG), $(info $(1)_MOD_DEP_FILES: $($(1)_MOD_DEP_FILES)))
 	$(eval $(1)_MOD_HASH    := $(if $(filter GIT_COMMIT_SHA,$($(1)_CACHE_MODE)),\
-                            $(shell cd $($(1)_MOD_SRC_PATH) && git log -1 --format="%H"| awk '{print substr($$1,0,23);}' ),\
-                            $(shell git hash-object $($(1)_MOD_DEP_FILES)| \
-                                   sha1sum | awk '{print substr($$1,0,23);}')))
+                            $(shell bash -o pipefail -c 'digest=$$(cd $($(1)_MOD_SRC_PATH) && git log -1 --format="%H") && printf "%.23s" "$$digest"'),\
+                            $(shell bash -o pipefail -c 'digest=$$(git hash-object $($(1)_MOD_DEP_FILES) | sha1sum) && printf "%.23s" "$$digest"')))
+	$(if $($(1)_MOD_HASH),,$(error Cannot compute cache input hash for $(1)))
 endef
 
+
+# Preserve dependency order and duplicates: both are part of existing keys.
+CACHE_MAIN_PACKAGES = $(foreach package,$(1),$(if $($(package)_MAIN_DEB),$($(package)_MAIN_DEB),$(package)))
+CACHE_DEPENDENCY_FILES = $(if $(filter $(1),$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)),$(TARGET_PATH)/$(1),$($(1)_DEP_FLAGS_FILE) $($(1)_MOD_HASH_FILE) $($(1)_SMOD_HASH_FILE))
 
 # Calculate the 24 byte SHA value
 # SHA value is derived from dependent files of the target which includes .flags, .sha and .smsha files.
 # Args:
 #  $(1)   => target name
 define GET_MOD_DEP_SHA
-	$(eval $(1)_MOD_DEP_PKGS := $(foreach dfile,$($(1)_DEPENDS) $($(1)_RDEPENDS) $($(1)_WHEEL_DEPENDS) \
+	# Runtime images inherit debug-only metadata even when their Bazel base
+	# supplies those packages without native DEBs. Omit an absent entry only
+	# when debug tools are disabled and it is not also a real dependency.
+	$(eval $(1)_REQUIRED_DEP_PKGS := $(call CACHE_MAIN_PACKAGES,$($(1)_DEPENDS) $($(1)_RDEPENDS) \
+                            $($(1)_WHEEL_DEPENDS) $($(1)_PYTHON_DEBS) $($(1)_PYTHON_WHEELS) $($(1)_LOAD_DOCKERS) \
+                            $(if $(filter $(1),$(SONIC_DOCKER_IMAGES)),$(call expand,$($(1)_DEPENDS),RDEPENDS))))
+	$(eval $(1)_OPTIONAL_DEBUG_PKGS := $(if $(and $(filter $(1),$(SONIC_DOCKER_IMAGES)),\
+                            $(if $(filter $(1),$(SONIC_DOCKER_DBG_IMAGES) $(SONIC_DBG_DOCKERS)),,yes),\
+                            $(if $(filter y,$(INSTALL_DEBUG_TOOLS) $(SONIC_INSTALL_DEBUG_TOOLS)),,yes),\
+                            $(if $($(1)_MAIN_DOCKER),,yes)),\
+                            $(filter-out $($(1)_REQUIRED_DEP_PKGS),$(call CACHE_MAIN_PACKAGES,$($(1)_DBG_DEPENDS) $($(1)_DBG_IMAGE_PACKAGES)))))
+	$(eval $(1)_MISSING_DEBUG_PKGS := $(foreach package,$($(1)_OPTIONAL_DEBUG_PKGS),\
+                            $(if $(filter-out $(wildcard $(call CACHE_DEPENDENCY_FILES,$(package))),$(call CACHE_DEPENDENCY_FILES,$(package))),$(package))))
+	$(eval $(1)_MOD_DEP_PKGS := $(filter-out $($(1)_MISSING_DEBUG_PKGS),$(call CACHE_MAIN_PACKAGES,$($(1)_DEPENDS) $($(1)_RDEPENDS) $($(1)_WHEEL_DEPENDS) \
                             $($(1)_PYTHON_DEBS) $($(1)_PYTHON_WHEELS) \
-                            $($(1)_DBG_DEPENDS) $($(1)_DBG_IMAGE_PACKAGES) $($(1)_LOAD_DOCKERS),\
-                            $(if $($(dfile)_MAIN_DEB),$($(dfile)_MAIN_DEB),$(dfile))) )
+                            $($(1)_DBG_DEPENDS) $($(1)_DBG_IMAGE_PACKAGES) $($(1)_LOAD_DOCKERS))))
 
 	$(if $(MDEBUG), $(info $(1)_MOD_DEP_PKGS: $($(1)_MOD_DEP_PKGS)))
 
 	# Bazel archives have no Make dependency sidecars. Hash the published bytes
 	# instead: a source or module change can alter the base image without changing
 	# its legacy .flags/.dep.sha files (which may also be left from a Make build).
-	$(eval $(1)_DEP_MOD_SHA_FILES := $(foreach dfile,$($(1)_MOD_DEP_PKGS), \
-	                        $(if $(filter $(dfile),$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)), \
-	                            $(TARGET_PATH)/$(dfile), \
-	                            $($(dfile)_DEP_FLAGS_FILE) $($(dfile)_MOD_HASH_FILE) $($(dfile)_SMOD_HASH_FILE))) )
+	$(eval $(1)_DEP_MOD_SHA_FILES := $(foreach dfile,$($(1)_MOD_DEP_PKGS),$(call CACHE_DEPENDENCY_FILES,$(dfile))))
 	# Warn if there is any missing dependency files
 	$(eval $(1)_DEP_FILES_MISSING := $(filter-out $(wildcard $($(1)_DEP_MOD_SHA_FILES)),$($(1)_DEP_MOD_SHA_FILES)) )
 	$(if $($(1)_DEP_FILES_MISSING), $(warning "[ DPKG ] Dependency file(s) are not found for $(1) : $($(1)_DEP_FILES_MISSING)))
@@ -247,8 +260,10 @@ define GET_MOD_DEP_SHA
 	# Include package dependencies hash values into package hash calculation
 	$(eval $(1)_DEP_PKGS_SHA := $(foreach dfile,$($(1)_MOD_DEP_PKGS),$($(dfile)_DEP_MOD_SHA) $($(dfile)_MOD_HASH)))
 
-	$(eval $(1)_DEP_MOD_SHA := $(shell bash -c "git hash-object  $($(1)_DEP_MOD_SHA_FILES) && echo $($(1)_DEP_PKGS_SHA)" \
-                            | sha1sum | awk '{print substr($$1,0,23);}'))
+	# Do not expose sha1sum's digest of partial output when an earlier read
+	# fails. Keep the successful byte stream (and therefore valid keys) intact.
+	$(eval $(1)_DEP_MOD_SHA := $(shell bash -o pipefail -c 'digest=$$({ git hash-object $($(1)_DEP_MOD_SHA_FILES) && echo $($(1)_DEP_PKGS_SHA); } | sha1sum) && printf "%.23s" "$$digest"'))
+	$(if $($(1)_DEP_MOD_SHA),,$(error Cannot compute cache dependency hash for $(1)))
 endef
 
 

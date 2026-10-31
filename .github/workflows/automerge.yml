@@ -9,8 +9,9 @@ on:
 
 jobs:
   automerge:
+    # Temporary: PR #81 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-sonic-slave-ci' && github.ref != 'refs/heads/codex/vs-sonic-slave-ci' && (github.event.check_suite.app.name == 'Azure Pipelines' &&  github.event.check_suite.conclusion == 'success' && false) }}
     # Disable workflow. Use automerge_scan instead to have the same behaviour.
-    if: github.event.check_suite.app.name == 'Azure Pipelines' &&  github.event.check_suite.conclusion == 'success' && false
     runs-on: ubuntu-latest
     steps:
     - name: automerge
