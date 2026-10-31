@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-31T08:16:49.245247Z",
+  "generated_at": "2026-10-31T08:40:14.882754Z",
   "pull_requests": [
     {
       "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
@@ -71,7 +71,7 @@
       "number": 77,
       "state": "open",
       "title": "Track unprivileged VS installer builds in dashboard",
-      "updated_at": "2026-10-30T11:40:08Z",
+      "updated_at": "2026-10-31T08:33:12Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/77"
     },
     {
@@ -95,7 +95,7 @@
       "number": 75,
       "state": "open",
       "title": "Assemble VS ONIE installers with Bazel",
-      "updated_at": "2026-10-30T16:57:34Z",
+      "updated_at": "2026-10-31T08:19:46Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/75"
     },
     {
@@ -210,12 +210,12 @@
       "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
       "draft": true,
       "head_branch": "codex/vs-oci-build-session",
-      "head_sha": "7afc3c11fe8eca0a7a6b5ff7730caf447f5c57c1",
+      "head_sha": "1710aeac0fac9cc0e62d3b410e3f6492cc4aa3cf",
       "merged_at": null,
       "number": 64,
       "state": "open",
       "title": "Build and validate the VS installer in the SONiC slave runner",
-      "updated_at": "2026-10-31T07:47:58Z",
+      "updated_at": "2026-10-31T08:20:45Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/64"
     },
     {
@@ -953,6 +953,227 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "codex/vs-oci-build-session",
+      "completed_at": null,
+      "conclusion": null,
+      "event": "pull_request",
+      "jobs": [
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 124487484944,
+          "kind": "other",
+          "name": "VS installer in SONiC slave (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": 258.0,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-31T08:19:47Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-10-31T08:19:50Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-10-31T08:19:48Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-31T08:22:07Z",
+              "conclusion": "success",
+              "duration_seconds": 137.0,
+              "name": "Checkout repository and pinned submodules",
+              "number": 2,
+              "phase": "setup",
+              "started_at": "2026-10-31T08:19:50Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-31T08:22:09Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Download verified source archives",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-10-31T08:22:07Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-31T08:23:58Z",
+              "conclusion": "success",
+              "duration_seconds": 109.0,
+              "name": "Prepare the privileged SONiC slave",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-10-31T08:22:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-31T08:24:07Z",
+              "conclusion": "success",
+              "duration_seconds": 8.0,
+              "name": "Configure persistent caches",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-10-31T08:23:59Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Build sonic-vs.bin directly with slave.mk",
+              "number": 6,
+              "phase": "build",
+              "started_at": "2026-10-31T08:24:07Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Validate the installer and retained container pairs",
+              "number": 7,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Publish the installer and matching container archives",
+              "number": 8,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Preserve build receipts",
+              "number": 9,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop this worker's private Docker daemon",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository and pinned submodules",
+              "number": 20,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41184145786/job/124487484944"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-10-31T08:19:45Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 124487485544,
+          "kind": "container",
+          "name": "Container archive (${{ matrix.name }})",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-31T08:19:46Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41184145786/job/124487485544"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-31T08:19:45Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 124487485924,
+          "kind": "other",
+          "name": "OCI regression checks (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-31T08:19:46Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41184145786/job/124487485924"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-10-31T08:19:45Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 124487485978,
+          "kind": "make-vs",
+          "name": "Make VS with Bazel SWSS (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-10-31T08:19:46Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41184145786/job/124487485978"
+        }
+      ],
+      "pr_association": "github",
+      "pr_association_note": null,
+      "pr_numbers": [
+        64
+      ],
+      "run_id": 41184145786,
+      "source_sha": "1710aeac0fac9cc0e62d3b410e3f6492cc4aa3cf",
+      "started_at": "2026-10-31T08:19:45Z",
+      "status": "in_progress",
+      "updated_at": "2026-10-31T08:19:47Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41184145786/attempts/1",
+      "workflow_name": "Bazel OCI",
+      "workflow_path": ".github/workflows/bazel-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/vs-oci-build-session",
@@ -18204,14 +18425,14 @@
           "completed_at": null,
           "conclusion": null,
           "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2525.0,
+          "image_build_seconds": 2525.0,
           "job_id": 124361296347,
           "kind": "make-vs",
           "name": "Make VS with Bazel SWSS (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
+            "build": 2525.0,
+            "other": 2.0,
             "setup": 297.0,
             "upload": null,
             "validation": null
@@ -18312,30 +18533,30 @@
             {
               "breakdown": {
                 "duration_seconds": null,
-                "reason": "step-not-successful",
+                "reason": "pending-collection",
                 "sections": [],
                 "source": "github-job-log",
                 "status": "unavailable",
                 "version": 1
               },
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T08:37:36Z",
+              "conclusion": "success",
+              "duration_seconds": 2525.0,
               "name": "Build the VS image and both OCI container variants",
               "number": 10,
               "phase": "build",
               "started_at": "2026-10-31T07:55:31Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T08:37:38Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Retain Orchagent archive reuse evidence",
               "number": 11,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T08:37:36Z",
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -18344,8 +18565,8 @@
               "name": "Validate SWSS source packages from the Make build",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T08:37:39Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
