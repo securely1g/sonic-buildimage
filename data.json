@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-10-31T09:51:08.620408Z",
+  "generated_at": "2026-10-31T11:19:20.861853Z",
   "pull_requests": [
     {
       "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
@@ -956,29 +956,29 @@
     {
       "attempt": 1,
       "branch": "codex/vs-oci-build-session",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-10-31T11:18:15Z",
+      "conclusion": "failure",
       "event": "pull_request",
       "jobs": [
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-10-31T11:18:15Z",
+          "conclusion": "failure",
+          "duration_seconds": 10708.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124487484944,
           "kind": "other",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
-            "build": null,
-            "other": null,
+            "build": 10435.0,
+            "other": 10.0,
             "setup": 258.0,
             "upload": null,
             "validation": null
           },
           "started_at": "2026-10-31T08:19:47Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-10-31T08:19:50Z",
@@ -1031,64 +1031,74 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T11:18:02Z",
+              "conclusion": "failure",
+              "duration_seconds": 10435.0,
               "name": "Build sonic-vs.bin directly with slave.mk",
               "number": 6,
               "phase": "build",
               "started_at": "2026-10-31T08:24:07Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-31T11:18:02Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Validate the installer and retained container pairs",
               "number": 7,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T11:18:02Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-10-31T11:18:02Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T11:18:02Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T11:18:06Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
               "name": "Preserve build receipts",
               "number": 9,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T11:18:02Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T11:18:06Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Stop this worker's private Docker daemon",
               "number": 10,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T11:18:06Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-10-31T11:18:12Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
               "name": "Post Checkout repository and pinned submodules",
               "number": 20,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-10-31T11:18:06Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-10-31T11:18:12Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 21,
+              "phase": "other",
+              "started_at": "2026-10-31T11:18:12Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41184145786/job/124487484944"
@@ -1168,8 +1178,8 @@
       "run_id": 41184145786,
       "source_sha": "1710aeac0fac9cc0e62d3b410e3f6492cc4aa3cf",
       "started_at": "2026-10-31T08:19:45Z",
-      "status": "in_progress",
-      "updated_at": "2026-10-31T08:19:47Z",
+      "status": "completed",
+      "updated_at": "2026-10-31T11:18:16Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41184145786/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
