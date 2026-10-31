@@ -18,7 +18,7 @@ class HandoffTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.workspace = self.root / "checkout"
         self.workspace.mkdir()
         self.handoff = self.root / "handoff"
@@ -155,7 +155,7 @@ class OwnershipSetupTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.workspace = Path(self.temp.name)
+        self.workspace = Path(self.temp.name).resolve()
         self.inputs = self.workspace / "target/bazel-image-inputs"
         self.inputs.mkdir(parents=True)
         (self.inputs / "execution-environment.json").write_text(json.dumps({"worker_image": "sha256:" + "b" * 64}))
@@ -194,17 +194,24 @@ class SourceDownloadsTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="source downloads ")
         self.addCleanup(self.temp.cleanup)
-        self.workspace = Path(self.temp.name)
+        self.workspace = Path(self.temp.name).resolve()
         self.sources = {}
         self.archives = []
-        for name in ("first", "second"):
+        for name, version, filename, algorithm in (
+                ("rules_gzip", "1.0.0", "src.tar.gz", "sha512"),
+                ("pigz", "2.8.bcr.2", "pigz-2.8.tar.gz", "sha256")):
             data = (name + " source archive").encode()
-            self.sources[name] = ("1.0", "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode())
-            path = self.workspace / "target/bazel-image-inputs/source-downloads" / (name + "-1.0") / "src.tar.gz"
+            directory = name + "-" + version
+            self.sources[directory] = {
+                "module": name, "version": version, "repository": "@@" + name + "+",
+                "filename": filename,
+                "integrity": algorithm + "-" + base64.b64encode(hashlib.new(algorithm, data).digest()).decode(),
+            }
+            path = self.workspace / "target/bazel-image-inputs/source-downloads" / directory / filename
             path.parent.mkdir(parents=True)
             path.write_bytes(data)
             self.archives.append(path)
-        replacement = patch.object(ci, "SOURCES", self.sources)
+        replacement = patch.object(ci.source_archive, "SOURCES", self.sources)
         replacement.start()
         self.addCleanup(replacement.stop)
 
@@ -213,16 +220,38 @@ class SourceDownloadsTest(unittest.TestCase):
                          ["--distdir=" + str(path.parent) for path in self.archives])
 
     def test_modified_missing_and_linked_archives_are_rejected(self):
-        archive = self.archives[0]
-        archive.write_bytes(b"changed bytes")
-        with self.assertRaisesRegex(ValueError, "BCR SHA512"):
-            ci.distdir_args(self.workspace)
-        archive.unlink()
-        with self.assertRaisesRegex(ValueError, "missing carried"):
-            ci.distdir_args(self.workspace)
-        archive.symlink_to(self.archives[1])
-        with self.assertRaisesRegex(ValueError, "missing carried"):
-            ci.distdir_args(self.workspace)
+        for archive in self.archives:
+            original = archive.read_bytes()
+            with self.subTest(archive=archive.name):
+                archive.write_bytes(b"changed bytes")
+                with self.assertRaises(ValueError):
+                    ci.distdir_args(self.workspace)
+                archive.unlink()
+                with self.assertRaises(ValueError):
+                    ci.distdir_args(self.workspace)
+                other = next(path for path in self.archives if path != archive)
+                archive.symlink_to(other)
+                with self.assertRaises(ValueError):
+                    ci.distdir_args(self.workspace)
+                archive.unlink()
+                archive.write_bytes(original)
+
+    def test_restored_handoff_rechecks_mixed_source_filenames_and_integrities(self):
+        archive = self.workspace / "inputs.tar"
+        with tarfile.open(archive, "w") as stream:
+            for source in self.archives:
+                stream.add(source, arcname=str(source.relative_to(self.workspace)))
+        destination = self.workspace / "assembly"
+        destination.mkdir()
+        ci.extract_inputs(archive, destination)
+        restored = [destination / path.relative_to(self.workspace) for path in self.archives]
+        self.assertEqual(ci.distdir_args(destination),
+                         ["--distdir=" + str(path.parent) for path in restored])
+        for source, carried in zip(self.archives, restored):
+            self.assertEqual(carried.read_bytes(), source.read_bytes())
+        restored[1].write_bytes(b"changed after restore")
+        with self.assertRaises(ValueError):
+            ci.distdir_args(destination)
 
 
 class PrivilegeTest(unittest.TestCase):

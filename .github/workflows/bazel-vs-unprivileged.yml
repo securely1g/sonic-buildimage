@@ -37,12 +37,16 @@ jobs:
           repository-cache: true
           disk-cache: false
           cache-version: "8.5.1"
-      - name: Fetch and verify the GitLab source archives
+      - name: Fetch and verify the source archives
         run: |
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
-          "$BAZEL" fetch --repo=@@ape+ --repo=@@download_utils+ \
-            --repo=@@rules_coreutils+ --repo=@@rules_gzip+ --repo=@@toolchain_utils+
+          python3 -B tools/bazel/gzip/source_archive.py --fetch-arguments \
+            > artifacts/source-fetch-arguments.txt
+          repositories=()
+          while IFS= read -r argument; do repositories+=("$argument"); done < artifacts/source-fetch-arguments.txt
+          test "${#repositories[@]}" -gt 0
+          "$BAZEL" fetch "${repositories[@]}"
           python3 - <<'PYCODE'
           from pathlib import Path
           from tools.bazel.ci import resolution
@@ -129,12 +133,6 @@ jobs:
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
       SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
       SONIC_DPKG_CACHE_METHOD: rwcache
-      BAZEL_CONTAINER_ARGS: >-
-        --distdir=/bazel_cache/distdir/ape-1.0.1
-        --distdir=/bazel_cache/distdir/download_utils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
-        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
     defaults:
       run:
         shell: bash
@@ -181,6 +179,11 @@ jobs:
             --archives-dir artifacts/repository-inputs \
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" \
             > artifacts/unprivileged/source-download-receipt.json
+          distdir_arguments=$(python3 -B tools/bazel/gzip/source_archive.py \
+            --distdir-arguments "$SONIC_BAZEL_CACHE_SOURCE/distdir" \
+            --distdir-prefix /bazel_cache/distdir)
+          test -n "$distdir_arguments"
+          printf 'BAZEL_CONTAINER_ARGS=%s\n' "${distdir_arguments//$'\n'/ }" >> "$GITHUB_ENV"
       - name: Build native source inputs and capture the host before container loading
         run: |
           set -o pipefail

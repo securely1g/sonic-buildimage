@@ -94,10 +94,30 @@ class SourceWorkflowTest(unittest.TestCase):
                 raise SystemExit(int(os.environ.get('KERNEL_PREPARE_EXIT', '0')))
             if name == 'python3' and 'tools/bazel/ci/kernel_handoff.py' in args:
                 raise SystemExit(int(os.environ.get('KERNEL_HANDOFF_EXIT', '0')))
+            if name == 'python3' and 'tools/bazel/gzip/source_archive.py' in args:
+                if '--fetch-arguments' in args:
+                    print('--repo=@@first+\n--repo=@@rules_m4++default_toolchain_ext+m4_v1.4.18')
+                    raise SystemExit(int(os.environ.get('SOURCE_FETCH_EXIT', '0')))
+                if '--distdir-arguments' in args:
+                    prefix = args[args.index('--distdir-prefix') + 1]
+                    print('--distdir=' + prefix + '/first-1.0\n--distdir=' + prefix + '/second-2.0')
+                    raise SystemExit(int(os.environ.get('SOURCE_DISTDIR_EXIT', '0')))
+                output = Path(args[args.index('--output') + 1])
+                print(json.dumps([{'archive': str(output / relative)} for relative in
+                                  ('first-1.0/src.tar.gz', 'second-2.0/source.tar.xz')]))
+                raise SystemExit(int(os.environ.get('SOURCE_ARCHIVE_EXIT', '0')))
+            if name == 'python3' and args == ['-']:
+                script = sys.stdin.read()
+                if 'paths<<SOURCE_ARCHIVES' in script:
+                    raise SystemExit(subprocess.run([sys.executable, '-'], input=script, text=True).returncode)
             if name == 'python3' and args[:1] == ['tools/bazel/build_helpers.py']:
                 raise SystemExit(subprocess.run([sys.executable, *args]).returncode)
             if name == 'bazel' and args == ['--version']:
                 print('bazel ' + Path('.bazelversion').read_text().strip())
+            if name == 'bazel' and args[:1] == ['fetch']:
+                raise SystemExit(int(os.environ.get('BAZEL_FETCH_EXIT', '0')))
+            if name == 'bazel' and args == ['info', 'repository_cache']:
+                print(str(Path.cwd() / 'repository-cache'))
             if name == 'git':
                 if args[:2] == ['rev-parse', 'HEAD']:
                     print('a' * 40)
@@ -114,7 +134,9 @@ class SourceWorkflowTest(unittest.TestCase):
             BAZEL_CONTAINER_ARGS="--distdir='/bazel_cache/source downloads' --remote_download_all",
             BAZEL_CONTAINER_CACHE_DIR=str(self.directory / "build-cache"),
             GITHUB_WORKSPACE=str(self.directory), GITHUB_OUTPUT=str(self.directory / "github-output"),
+            GITHUB_ENV=str(self.directory / "github-env"),
             GITHUB_STEP_SUMMARY=str(self.directory / "github-summary"),
+            SONIC_BAZEL_CACHE_SOURCE=str(self.directory / "persistent-cache"),
             SONIC_CI_CONTAINER_LABEL="test-source-validation=one-job",
         )
 
@@ -147,6 +169,71 @@ class SourceWorkflowTest(unittest.TestCase):
                              (call["name"] == "bazel" and
                               any(arg in ("build", "test") for arg in call["args"]))
                              for call in calls))
+
+    def test_hosted_downloads_use_reviewed_selectors_and_publish_only_verified_paths(self):
+        for filename, job, title in (
+                ("bazel-oci.yml", "checks", "Retain the verified source downloads"),
+                ("bazel-vs-unprivileged.yml", "store", "Fetch and verify the source archives")):
+            selected = steps(jobs(ROOT / ".github/workflows" / filename)[job])
+            script = shell(selected[title])
+            for selector_exit, fetch_exit, archive_exit in ((0, 0, 0), (7, 0, 0), (0, 11, 0), (0, 0, 13)):
+                with self.subTest(workflow=filename, selector=selector_exit, fetch=fetch_exit, archive=archive_exit):
+                    self.calls.unlink(missing_ok=True)
+                    output = Path(self.environment["GITHUB_OUTPUT"])
+                    output.unlink(missing_ok=True)
+                    result = self.execute(script, SOURCE_FETCH_EXIT=str(selector_exit),
+                                          BAZEL_FETCH_EXIT=str(fetch_exit), SOURCE_ARCHIVE_EXIT=str(archive_exit))
+                    expected = selector_exit or fetch_exit or archive_exit
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    calls = self.recorded()
+                    fetches = [call for call in calls if call["name"] == "bazel" and call["args"][:1] == ["fetch"]]
+                    self.assertEqual(len(fetches), 0 if selector_exit else 1)
+                    if fetches:
+                        self.assertEqual(fetches[0]["args"], ["fetch", "--repo=@@first+",
+                                         "--repo=@@rules_m4++default_toolchain_ext+m4_v1.4.18"])
+                    exports = [call for call in calls if "--repository-cache" in call["args"]]
+                    self.assertEqual(len(exports), 0 if selector_exit or fetch_exit else 1)
+                    if filename == "bazel-oci.yml" and not expected:
+                        receipt = json.loads((self.directory / "artifacts/repository-inputs/receipt.json").read_text())
+                        self.assertEqual(output.read_text().splitlines(),
+                                         ["paths<<SOURCE_ARCHIVES", *[item["archive"] for item in receipt], "SOURCE_ARCHIVES"])
+                    else:
+                        self.assertFalse(output.exists(), "failed source verification published artifact paths")
+            if filename == "bazel-oci.yml":
+                upload = selected["Upload the source downloads for the VS job"]
+                self.assertIn("${{ steps.source_downloads.outputs.paths }}", upload)
+                self.assertIn("artifacts/repository-inputs/receipt.json", upload)
+                self.assertIn("artifacts/repository-inputs/test-helpers/", upload)
+                self.assertNotIn("module-graph", upload)
+                self.assertNotRegex(upload, r"(?m)^\s+artifacts/repository-inputs/\s*$")
+
+    def test_native_source_arguments_are_published_only_after_complete_verification(self):
+        for filename, job, title in (
+                ("bazel-oci.yml", "vs", "Prepare the shared Bazel source-download directory"),
+                ("bazel-vs-unprivileged.yml", "native", "Prepare the native Bazel source-download directory")):
+            native = jobs(ROOT / ".github/workflows" / filename)[job]
+            self.assertNotIn("      BAZEL_CONTAINER_ARGS:", native)
+            script = shell(steps(native)[title])
+            for archive_exit, distdir_exit in ((0, 0), (17, 0), (0, 19)):
+                with self.subTest(workflow=filename, archive=archive_exit, distdir=distdir_exit):
+                    self.calls.unlink(missing_ok=True)
+                    environment = Path(self.environment["GITHUB_ENV"])
+                    environment.unlink(missing_ok=True)
+                    result = self.execute(script, SOURCE_ARCHIVE_EXIT=str(archive_exit), SOURCE_DISTDIR_EXIT=str(distdir_exit))
+                    expected = archive_exit or distdir_exit
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    verifiers = [call for call in self.recorded() if "--distdir-arguments" in call["args"]]
+                    self.assertEqual(len(verifiers), 0 if archive_exit else 1)
+                    if verifiers:
+                        self.assertEqual(verifiers[0]["args"], ["-B", "tools/bazel/gzip/source_archive.py",
+                                         "--distdir-arguments", str(Path(self.environment["SONIC_BAZEL_CACHE_SOURCE"]) / "distdir"),
+                                         "--distdir-prefix", "/bazel_cache/distdir"])
+                    if expected:
+                        self.assertFalse(environment.exists(), "failed verification published Bazel source arguments")
+                    else:
+                        self.assertEqual(environment.read_text(), "BAZEL_CONTAINER_ARGS="
+                                         "--distdir=/bazel_cache/distdir/first-1.0 "
+                                         "--distdir=/bazel_cache/distdir/second-2.0\n")
 
     def test_native_jobs_import_same_revision_kernel_packages_before_make(self):
         for filename, job_name, prerequisite, prefix in (

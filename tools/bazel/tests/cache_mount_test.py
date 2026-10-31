@@ -78,9 +78,15 @@ partial.replace(directory / 'file')
             recorder.write_text("""import argparse, json
 from pathlib import Path
 parser = argparse.ArgumentParser()
-parser.add_argument('--archives-dir', required=True)
-parser.add_argument('--output', required=True, type=Path)
+parser.add_argument('--archives-dir')
+parser.add_argument('--output', type=Path)
+parser.add_argument('--distdir-arguments', type=Path)
+parser.add_argument('--distdir-prefix')
 args = parser.parse_args()
+if args.distdir_arguments is not None:
+    assert (args.distdir_arguments / 'verified-source').read_text() == 'source archive'
+    print('--distdir=' + args.distdir_prefix)
+    raise SystemExit()
 assert Path(args.archives_dir).is_dir()
 args.output.mkdir(parents=True, exist_ok=True)
 (args.output / 'verified-source').write_text('source archive')
@@ -118,6 +124,9 @@ print(json.dumps({'output': str(args.output)}))
                     receipt = json.loads((workspace / "artifacts/vs/source-download-receipt.json").read_text())
                     self.assertEqual(receipt["output"], str(effective / "distdir"))
                     self.assertTrue((effective / "distdir/verified-source").is_file())
+                    consumed_environment = dict(line.split("=", 1) for line in
+                                                Path(environment["GITHUB_ENV"]).read_text().splitlines())
+                    self.assertEqual(consumed_environment["BAZEL_CONTAINER_ARGS"], "--distdir=/bazel_cache/distdir")
             self.assertNotEqual(selected[0], selected[nobody.pw_uid])
             self.assertFalse((cache / "distdir").exists())
             self.assertEqual(cache_owner_mode, (cache.stat().st_uid, cache.stat().st_mode))

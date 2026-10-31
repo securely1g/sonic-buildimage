@@ -7,7 +7,6 @@ Make command, host finalization, or Docker socket is available in that worker.
 """
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -26,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
 from build_events import bep_outputs, output_identity
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gzip"))
-from source_archive import SOURCES
+import source_archive
 
 TARGET = "//tools/bazel/image/vs:sonic-vs.bin"
 PROFILE = ["BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "USE_CONTAINER_IMAGE_STORE_AS_BACKEND=y",
@@ -76,17 +75,7 @@ def paths(workspace):
 def distdir_args(workspace):
     """Recheck the carried public source bytes before a fresh worker uses them."""
     root = paths(workspace)[0] / "source-downloads"
-    arguments = []
-    for name, (version, integrity) in SOURCES.items():
-        directory = root / (name + "-" + version)
-        archive = directory / "src.tar.gz"
-        require(archive.is_file() and not archive.is_symlink(),
-                "missing carried source archive: " + str(archive))
-        expected = base64.b64decode(integrity.split("-", 1)[1]).hex()
-        require(hashlib.sha512(archive.read_bytes()).hexdigest() == expected,
-                name + " carried source archive does not match its BCR SHA512")
-        arguments.append("--distdir=" + str(directory))
-    return arguments
+    return source_archive.distdir_args(root)
 
 
 def prepare_worker_paths(workspace, directories, files=()):

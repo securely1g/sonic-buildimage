@@ -121,9 +121,9 @@ The prepared bundle records two identities separately:
 
 For the containerd backend, the native preparation job also finalizes the host.
 The CI workflow first downloads the `unprivileged-repository-inputs` artifact,
-which contains the five GitLab-hosted build-tool sources selected by the module
-graph. Verify and carry those source archives into the final handoff so a fresh
-runner does not depend on a warmed download cache:
+which contains the reviewed GitLab, GNU and zlib build-tool source archives
+selected by the module graph. Verify and carry those source archives into the
+final handoff so a fresh runner does not depend on a warmed download cache:
 
 ```sh
 python3 tools/bazel/gzip/source_archive.py \
@@ -132,8 +132,9 @@ python3 tools/bazel/gzip/source_archive.py \
 python3 tools/bazel/image/ci_unprivileged.py prepare-host --workspace "$PWD"
 ```
 
-The CI helper rechecks their BCR SHA512 values before both host preparation and
-final assembly, and supplies their locations to Bazel with `--distdir`.
+The CI helper rechecks each archive's pinned filename and SHA256 or SHA512
+integrity before both host preparation and final assembly, and supplies the
+verified locations to Bazel with `--distdir`.
 
 
 This privileged preparation builds only the host target, then exports
