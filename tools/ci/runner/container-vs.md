@@ -87,7 +87,10 @@ credentials or authorization failures still fail setup. The cache receipt does
 not claim a remote cache hit merely because HTTPS connectivity succeeds.
 
 The former `Make VS with Bazel SWSS (AMD64)` job is disabled in this workflow.
-After the new native build, CI verifies the installer container
+During bring-up, this PR branch skips other CI jobs until the native installer
+workflow succeeds; hosted regression, dependency-resolution, and AMD64/ARM64
+archive checks will then be restored. After the new native build, CI verifies
+the installer container
 selection and both runtime/debug archive pairs, runs the P4/debug checks in the
 same slave, and publishes `sonic-vs-slave-amd64` with the installer, matching
 container archives, and SHA256 checksums. `sonic-vs-slave-evidence-amd64` retains

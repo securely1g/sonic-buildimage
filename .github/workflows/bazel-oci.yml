@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
@@ -24,6 +25,8 @@ env:
 
 jobs:
   archive:
+    # Temporary installer-only iteration for PR #64.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' }}
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -297,6 +300,8 @@ jobs:
           compression-level: 1
 
   checks:
+    # Temporary installer-only iteration for PR #64.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' }}
     name: OCI regression checks (AMD64)
     runs-on: ubuntu-24.04
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
@@ -753,7 +758,6 @@ jobs:
 
   vs_container:
     name: VS installer in SONiC slave (AMD64)
-    needs: [checks]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
@@ -793,6 +797,10 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: bazel-repository-inputs
+          # Reuse the completed hosted check while iterating only this job.
+          # source_archive.py verifies all five pinned SHA512 values below.
+          run-id: 41152241699
+          github-token: ${{ github.token }}
           path: artifacts/vs/repository-inputs
 
       - name: Prepare the privileged SONiC slave

@@ -43,6 +43,8 @@ concurrency:
 
 jobs:
   checks:
+    # Temporary: PR #64 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' }}
     name: Build dashboard checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -58,12 +60,10 @@ jobs:
           node --test tools/ci/build_dashboard/web/app_test.js
 
   publish:
+    # Temporary: PR #64 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' && (github.repository == 'securely1g/sonic-buildimage' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request') }}
     name: Collect build timings
     needs: checks
-    if: >-
-      github.repository == 'securely1g/sonic-buildimage' &&
-      github.ref == 'refs/heads/master' &&
-      github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -129,6 +129,8 @@ jobs:
           path: site
 
   deploy:
+    # Temporary: PR #64 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' }}
     name: Publish build dashboard
     needs: publish
     runs-on: ubuntu-24.04

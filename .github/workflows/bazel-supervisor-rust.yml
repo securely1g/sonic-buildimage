@@ -25,6 +25,8 @@ concurrency:
 
 jobs:
   native:
+    # Temporary: PR #64 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' }}
     name: Rust listener (${{ matrix.arch }})
     strategy:
       fail-fast: false

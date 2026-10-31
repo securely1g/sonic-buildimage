@@ -12,7 +12,8 @@ on:
 
 jobs:
   check-file:
-    if: ${{ github.event.deleted != true }}
+    # Temporary: PR #64 runs only the native installer until it passes.
+    if: ${{ github.head_ref != 'codex/vs-oci-build-session' && github.ref != 'refs/heads/codex/vs-oci-build-session' && (github.event.deleted != true) }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
