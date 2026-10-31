@@ -94,6 +94,10 @@ enables read-only reuse; `--upload-local-results` explicitly permits writes.
 `--ca-bundle` and `--java-trust-store` supply public trust material. The source
 launcher verifies the pinned native Bazel executable and requires the kernel
 action to use `linux-sandbox`; it does not start a worker container.
+The kernel launcher intentionally ignores system Bazel rc files. When the slave
+image has the optional `/etc/bazel/sonic-build-ca.bazelrc` trust marker, Make
+explicitly passes the image's system CA bundle and Java trust store through
+these options. Images without this opt-in keep the launcher's default trust.
 
 Automatic Make preparation serializes concurrent requests and uses the existing
 `SONIC_BAZEL_CACHE_SOURCE` setting. The existing slave mount exposes this cache

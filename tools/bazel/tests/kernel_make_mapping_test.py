@@ -202,6 +202,11 @@ class KernelMakeMappingTest(unittest.TestCase):
         python.chmod(0o755)
         functions = (ROOT / "rules/functions").read_text()
         derived = between(functions, "define add_derived_package\n", "endef") + "endef\n"
+        # Map the image-owned opt-in marker into the fixture instead of changing
+        # /etc or depending on whether the test host has configured builder trust.
+        kernel_rule = self.root / "linux-kernel.mk"
+        kernel_rule.write_text((ROOT / "rules/linux-kernel.mk").read_text().replace(
+            "/etc/bazel/sonic-build-ca.bazelrc", str(self.root / "sonic-build-ca.bazelrc")))
         makefile.write_text(
             ".DEFAULT_GOAL := unrelated\nSHELL := /bin/bash\n.SHELLFLAGS := -ec\n"
             "SRC_PATH := src\nDEBS_PATH := target/debs/trixie\n"
@@ -209,7 +214,7 @@ class KernelMakeMappingTest(unittest.TestCase):
             + f"export PATH := {binary}:$(PATH)\n"
             + "CONFIGURED_ARCH := amd64\nCONFIGURED_PLATFORM := vs\nBLDENV := trixie\n"
             "SECURE_UPGRADE_MODE := no_sign\n"
-            + derived + f"\ninclude {ROOT / 'rules/linux-kernel.mk'}\n"
+            + derived + f"\ninclude {kernel_rule}\n"
             + f"include {ROOT / 'rules/linux-kernel.dep'}\n"
             + "\nunrelated:\n\t@echo unrelated > unrelated.txt\n"
             + "\nselection:\n\t@echo '$(SONIC_MAKE_DEBS)' > native-debs.txt\n"
@@ -250,6 +255,28 @@ class KernelMakeMappingTest(unittest.TestCase):
         result = self.run_make(makefile, "bazel-kernel-ensure", SONIC_BAZEL_CACHE_SOURCE="")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.workspace / "order.txt").read_text().splitlines(), ["ensure", "ensure"])
+        self.assertEqual(self.kernel_arguments()[1], {"--debs-directory": "target/debs/trixie"})
+
+    def test_optional_builder_trust_is_forwarded_to_the_kernel_launcher(self):
+        makefile = self.lazy_make_fixture()
+        marker = self.root / "sonic-build-ca.bazelrc"
+        marker.write_text("startup --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts\n")
+        for cache in ("", "/host/cache"):
+            with self.subTest(cache=cache):
+                result = self.run_make(makefile, "bazel-kernel-ensure", SONIC_BAZEL_CACHE_SOURCE=cache)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                expected = {"--debs-directory": "target/debs/trixie",
+                            "--ca-bundle": "/etc/ssl/certs/ca-certificates.crt",
+                            "--java-trust-store": "/etc/ssl/certs/java/cacerts"}
+                if cache:
+                    expected["--cache-directory"] = "/bazel_cache"
+                self.assertEqual(self.kernel_arguments()[1], expected)
+
+    def test_kernel_launcher_keeps_default_trust_without_builder_opt_in(self):
+        makefile = self.lazy_make_fixture()
+        self.assertFalse((self.root / "sonic-build-ca.bazelrc").exists())
+        result = self.run_make(makefile, "bazel-kernel-ensure")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.kernel_arguments()[1], {"--debs-directory": "target/debs/trixie"})
 
     def test_enabled_kernel_forwards_each_configuration_to_bazel(self):
