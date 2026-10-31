@@ -31,11 +31,13 @@ REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 IMAGE_JOBS = {
     "Make VS with Bazel SWSS (AMD64)": "make-vs",
+    "VS installer in SONiC slave (AMD64)": "make-vs",
     "Bazel VS installer (AMD64)": "bazel-vs",
 }
 IMAGE_STEPS = {
     "Build the VS image with Bazel SWSS archives",
     "Build the VS image and both OCI container variants",
+    "Build sonic-vs.bin directly with slave.mk",
     "Build the Bazel VS installer",
     "Build Bazel VS installer",
     "Build and verify sonic-vs.bin with Bazel",

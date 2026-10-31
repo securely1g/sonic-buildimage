@@ -16,8 +16,11 @@ generate a package, modify a runner, or clear a cache.
 - Show the explicit image-build step separately from job setup, checks, uploads,
   and the complete job duration. Parallel job times must not be added together
   to claim elapsed workflow time.
-- Keep the Make VS and Bazel installer paths separate. The Make VS step builds
-  `sonic-vs.img.gz` and the SWSS debug container archive together.
+- Keep VS builds that use Make separate from Bazel installer builds. The legacy
+  Make VS job builds `sonic-vs.img.gz` and the SWSS debug container archive
+  together. `VS installer in SONiC slave (AMD64)` builds `sonic-vs.bin`
+  directly with `slave.mk` and validates the matching Orchagent and Syncd
+  runtime/debug archive pairs.
 - Record the run's source commit separately from the current PR head. Historical
   evidence does not establish that the latest PR revision passed.
 
