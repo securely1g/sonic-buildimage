@@ -428,8 +428,6 @@ jobs:
     timeout-minutes: 720
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
-      # Explicit execution trust for the ONIE pool's compiler containers.
-      SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       # Use Docker Hub's canonical references with the existing pinned digests.
       DEFAULT_CONTAINER_REGISTRY: ""
       MIRROR_URLS: https://deb.debian.org/debian/
