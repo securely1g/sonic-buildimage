@@ -1852,6 +1852,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	export include_bootchart="$(INCLUDE_BOOTCHART)"
 	export enable_bootchart="$(ENABLE_BOOTCHART)"
 	export enable_multidb="$(ENABLE_MULTIDB)"
+	export ENABLE_MULTIDB="$(ENABLE_MULTIDB)"
+	export ENABLE_VRF_STRICT="$(ENABLE_VRF_STRICT)"
 	export ENABLE_FRR_SNMP_AGENT="$(ENABLE_FRR_SNMP_AGENT)"
 	$(foreach docker, $($*_DOCKERS),\
 		export docker_image="$(docker)"
