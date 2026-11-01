@@ -20,6 +20,52 @@ ROOT = Path(__file__).resolve().parents[3]
 APT_CONFIG = ROOT / "files/apt/apt.conf.d/apt-timeout-n-retries"
 
 
+class NativeDockerRetryTest(unittest.TestCase):
+    def test_workflow_retries_are_bounded_and_preserve_arguments_and_failure(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        job = workflow.split("\n  vs_container:\n", 1)[1].split("\n    steps:\n", 1)[0]
+        settings = dict(re.findall(
+            r'^      (DOCKER_BUILD|SONIC_BUILD_RETRY_COUNT|SONIC_BUILD_RETRY_INTERVAL): (.+)$',
+            job, re.MULTILINE))
+        settings = {key: value.strip('"') for key, value in settings.items()}
+        retry_count = int(settings["SONIC_BUILD_RETRY_COUNT"])
+        interval = int(settings["SONIC_BUILD_RETRY_INTERVAL"])
+        self.assertGreater(retry_count, 0)
+        self.assertLessEqual(retry_count, 3)
+        self.assertGreater(interval, 0)
+        self.assertLessEqual(interval, 30)
+        command = shlex.split(settings.pop("DOCKER_BUILD"))
+        command[0] = str(ROOT / command[0])
+        arguments = ["--file", "fixture Dockerfile", "context with spaces"]
+        for failures, expected_code, expected_calls in (
+                (0, 0, 1), (1, 0, 2), (retry_count + 1, 42, retry_count + 1)):
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                docker = work / "docker"
+                docker.write_text("#!" + sys.executable + "\n" + '''
+import json, os, pathlib, sys
+path = pathlib.Path("calls.json")
+calls = json.loads(path.read_text()) if path.exists() else []
+calls.append(sys.argv[1:])
+path.write_text(json.dumps(calls))
+sys.exit(42 if len(calls) <= int(os.environ["FIXTURE_FAILURES"]) else 0)
+''')
+                docker.chmod(0o755)
+                sleep = work / "sleep"
+                sleep.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> sleeps.txt\n')
+                sleep.chmod(0o755)
+                environment = dict(os.environ, **settings, FIXTURE_FAILURES=str(failures))
+                environment["PATH"] = str(work) + os.pathsep + environment["PATH"]
+                result = subprocess.run(command + arguments, cwd=work, env=environment,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
+                calls = json.loads((work / "calls.json").read_text())
+                self.assertEqual(calls, [["build", *arguments]] * expected_calls)
+                sleeps = work / "sleeps.txt"
+                observed = sleeps.read_text().splitlines() if sleeps.exists() else []
+                self.assertEqual(observed, [str(interval)] * (expected_calls - 1))
+
+
 @unittest.skipUnless(shutil.which("apt-get"), "requires the native Debian/Ubuntu APT client")
 class AptIndexRefreshTest(unittest.TestCase):
     def setUp(self):
