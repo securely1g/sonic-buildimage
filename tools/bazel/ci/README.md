@@ -24,6 +24,12 @@ job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
 
+The native VS Make build produces the runtime and debug archives together for
+each registered Bazel container, using the same builder and Bazel invocation
+for each pair. The normal installer still selects runtime containers;
+`INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
+not add it to the installer.
+
 The native VS job reuses `target/docker-orchagent.gz` produced as an installer
 dependency. `build_vs_with_reused_orchagent.sh` captures that archive after the
 successful VS build, requests the remaining artifacts, and verifies the retained
