@@ -39,6 +39,10 @@ does not execute a build or execute any content from a log.
   `image_build_seconds` is populated only for successful, explicitly recognized
   image-build steps; `image_build_elapsed_seconds` also records a failed image
   build's elapsed time. A failed job is never a successful benchmark.
+  Exact recognized step names identify the measurement scope. In particular,
+  `Build the VS installer (.bin)` excludes VM generation and boot checks;
+  historical `Build the VS image` measurements include them. Consumers must
+  keep those trend series separate even when job kind and architecture match.
 - Each step: `number`, `name`, `status`, `conclusion`, `started_at`,
   `completed_at`, `duration_seconds`, `phase`.
   An optional `breakdown` provides nested Make build timings without changing
@@ -76,6 +80,9 @@ does not execute a build or execute any content from a log.
     Phase receipts are accepted only inside the matching active final-image
     recipe, before its successful finish marker. Invalid or incomplete receipts
     make that inner detail unavailable while preserving valid outer timings.
+    The `.bin` installer and `.img.gz` VM target identities are distinct when
+    associating receipts. Both support outer recipe and root-filesystem task
+    timing; current `.bin` builds do not emit inner-phase receipts.
     Previously retained tasks without this optional field remain supported.
   Timing values must be finite and nonnegative; child intervals must fit their
   parent. Identifiers and labels come from the parser's allowlist, never

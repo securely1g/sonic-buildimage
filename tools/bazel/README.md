@@ -72,6 +72,22 @@ Standalone archive requests and unsupported Make configurations retain their
 existing behavior. A selected pair fails if either build/export fails or the
 owner declares different Bazel arguments for its two variants.
 
+CI uses `build_vs.sh` for that single Make request and `validate_vs.sh` in a
+separate step after the build. Validation checks both pairs and the installer's
+`target/sonic-vs.bin.dockers` selection, prepares Bookworm as configured, then uses
+Make's existing `sonic-slave-run` entrypoint for the remaining P4 checks in
+Trixie. Make supplies the build configuration; the verifier resolves and builds the existing P4RT
+runtime/debug package prerequisites before checking the images and symbols.
+After builder cleanup, validation requires the retained archives to remain
+unchanged. It does not issue another Make container-archive request.
+SWSS/Syncd source checks retain their separate workflow steps.
+See [CI evidence and timing](ci/README.md).
+
+The `.bin` target produces the ONIE installer without KVM. The separate
+`target/sonic-vs.img.gz` target generates BIOS/UEFI VM disks and runs their boot
+checks; the installer CI does not exercise that VM path. Runtime/debug pairing
+also remains available when explicitly building the VM image.
+
 ### Register container targets
 
 Keep the container's Make declarations in their existing location, such as
