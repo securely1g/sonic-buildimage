@@ -207,6 +207,16 @@ apt_inputs(
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
 )
 
+# Shared SWSS base adds only its external runtime closure; project payloads
+# remain the source owners' public TAR targets.
+apt.import_lock(lock = "//dockers/docker-swss-layer-trixie/bazel:apt.lock.json")
+use_repo(apt, "swss_layer_debian")
+
+apt_inputs(
+    name = "swss_layer_apt_inputs",
+    lock = "//dockers/docker-swss-layer-trixie/bazel:apt.lock.json",
+)
+
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
