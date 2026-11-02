@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "base_url": "https://downloadcontent.opensuse.org/repositories/home:/p4lang/Debian_11/",
+  "provenance": {
+    "historical_revisions": [
+      "8bf48af011622657a73570a54d1a660b821bb30a",
+      "13d750dee1750ee1c325e0fea9b7b4eaaf10cb14",
+      "2dc503aaecfb0d3c317608aaeabc68a108e32b97"
+    ],
+    "historical_versions_web_path": "files/build/versions-public/default/versions-web",
+    "p4c_descriptor_md5": "a532d27270ada5967e3a49110b42116b",
+    "p4c_descriptor_cache_url": "https://packages.trafficmanager.net/packages/p4lang-p4c_1.2.4.2-3.dsc-a532d27270ada5967e3a49110b42116b",
+    "prior_source_cache_revision": "0f3484ebf43f357697bb18f177711f066ce7aaf5",
+    "prior_source_cache_path": "src/p4lang/source-cache.json",
+    "other_eight_files_match_manifest": "src/p4lang/source-inputs.json",
+    "pi_note": "Historical Make selects PI 0.1.3-2, while historical versions-web only lists stale PI 0.1.1-1 URLs. The selected PI files retain the independently verified published SHA256 pins."
+  },
+  "packages": {
+    "p4lang-pi": {
+      "version": "0.1.3-2",
+      "upstream_version": "0.1.3",
+      "dsc_consistent": true,
+      "files": {
+        "p4lang-pi_0.1.3-2.debian.tar.xz": {
+          "bytes": 2752,
+          "sha256": "ba9af65a28fd1bbad2b928b681d8b5ea10076611c0e2e0dee1ba855f1216723c"
+        },
+        "p4lang-pi_0.1.3-2.dsc": {
+          "bytes": 1214,
+          "sha256": "9d5b60b6e403755896c8585eef20659a62fe2faccf612968beee2537fd72857e"
+        },
+        "p4lang-pi_0.1.3.orig.tar.gz": {
+          "bytes": 2851766,
+          "sha256": "9bb2b97f2caa7548b9cc798c3643b97315f3d8f8372d3689dea5e2a22e18a097"
+        }
+      }
+    },
+    "p4lang-bmv2": {
+      "version": "1.15.0-9",
+      "upstream_version": "1.15.0",
+      "dsc_consistent": true,
+      "files": {
+        "p4lang-bmv2_1.15.0-9.debian.tar.xz": {
+          "bytes": 3100,
+          "sha256": "30941da6dde4cbbefaa9a12dfffa260115b3b63c6d56b3112b3baee953636179"
+        },
+        "p4lang-bmv2_1.15.0-9.dsc": {
+          "bytes": 1615,
+          "sha256": "2e9a8e6042f0c23148c4a1a11099db2cc87901f685a763d52cfadfad26a96fc1"
+        },
+        "p4lang-bmv2_1.15.0.orig.tar.gz": {
+          "bytes": 37010979,
+          "sha256": "083bb907e45597af8e29ef3b0a92d33d282ba23840ddd5cfb8372d2f030ab415"
+        }
+      }
+    },
+    "p4lang-p4c": {
+      "version": "1.2.4.2-3",
+      "upstream_version": "1.2.4.2",
+      "dsc_consistent": false,
+      "files": {
+        "p4lang-p4c_1.2.4.2-3.debian.tar.xz": {
+          "bytes": 2796,
+          "sha256": "2a39bf04c8d084724014b71cdeb3b91dbe7a32bf1bd6cd499e5e132aa3e4cb40"
+        },
+        "p4lang-p4c_1.2.4.2-3.dsc": {
+          "bytes": 1579,
+          "sha256": "2ee97ffd3f82d67e04ee149f12ef8c58377f9db37e76d4aaa54518178c7f0fb7"
+        },
+        "p4lang-p4c_1.2.4.2.orig.tar.gz": {
+          "bytes": 173758549,
+          "sha256": "a41d616add63924a098edaab446809f543ffadfc2e40356f9b73986f324c668a"
+        }
+      }
+    }
+  },
+  "known_inconsistencies": [
+    {
+      "package": "p4lang-p4c",
+      "descriptor": "p4lang-p4c_1.2.4.2-3.dsc",
+      "descriptor_sha256": "2ee97ffd3f82d67e04ee149f12ef8c58377f9db37e76d4aaa54518178c7f0fb7",
+      "archive": "p4lang-p4c_1.2.4.2.orig.tar.gz",
+      "declared": {
+        "md5": "ead3b9a48dd0052016d69f31df9385f6",
+        "bytes": 173761028,
+        "sha1": "5e4431c76e77ead4a6c1eb184d06b20fb9fa4b35",
+        "sha256": "312e94e556d702823e70a3ac0999e17f1de5f1cdf6b444dab2058f562c8313df"
+      },
+      "published": {
+        "bytes": 173758549,
+        "sha256": "a41d616add63924a098edaab446809f543ffadfc2e40356f9b73986f324c668a",
+        "sha1": "961a3b69204f3523285c72bc8e13705b79b79082",
+        "md5": "98b03592b7a6cf4ed2150463fd757e0e"
+      },
+      "explanation": "The unchanged historical DSC is recovered from the official SONiC cache by its historical versions-web MD5. Its orig checksum rows differ from the independently pinned historical orig bytes. Preserve both historical inputs and the original dget -u extraction behavior; do not repair the DSC or claim its checksums match."
+    }
+  ]
+}
