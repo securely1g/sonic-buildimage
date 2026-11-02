@@ -12,7 +12,7 @@ import time
 from urllib.parse import urlsplit
 
 
-BASE = "https://download.opensuse.org/repositories/home:/p4lang/Debian_11/"
+BASE = "https://downloadcontent.opensuse.org/repositories/home:/p4lang/Debian_11/"
 PACKAGES = {"p4lang-pi": "0.1.3-2", "p4lang-bmv2": "1.15.0-9", "p4lang-p4c": "1.2.4.2-3"}
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 METRICS = ["http_code", "time_namelookup", "time_connect", "time_appconnect",
