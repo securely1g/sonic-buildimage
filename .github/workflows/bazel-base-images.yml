@@ -54,6 +54,16 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
+      - name: Preserve setup-bazel caches through the Draft wrapper
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          lines = [line for line in (Path.home() / '.bazelrc').read_text().splitlines()
+                   if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+          assert lines
+          with Path('.bazelrc.user').open('a') as output:
+              output.write('\n'.join(lines) + '\n')
+          PYCODE
       - name: Check clean dependency inputs
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -67,7 +77,7 @@ jobs:
           if [[ '${{ matrix.architecture }}' == amd64 ]]; then
             acceptance+=(--config-engine-acceptance)
           fi
-          python3 -B tools/bazel/ci/base_images.py \
+          python3 -B tools/bazel/ci/base_images.py --bazel "$PWD/tools/bazel/ci/framework_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images "${acceptance[@]}"
           git diff --exit-code
       - name: Verify config-engine no-op and template rebuilds
@@ -75,7 +85,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/config_engine_rebuild.py \
+          python3 -B tools/bazel/ci/config_engine_rebuild.py --bazel "$PWD/tools/bazel/ci/framework_draft_bazel.sh" \
             --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
       - name: Retain images, symbols and build evidence

@@ -6,6 +6,7 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/framework_draft_bazel.sh
       - .github/workflows/bazel-eventd.yml
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/framework_draft_bazel.sh
       - .github/workflows/bazel-eventd.yml
   workflow_dispatch:
 
@@ -33,6 +35,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/framework_draft_bazel.sh
     defaults:
       run:
         shell: bash
@@ -51,13 +55,24 @@ jobs:
           repository-cache: true
           disk-cache: eventd-${{ matrix.architecture }}
           cache-version: "8.5.1"
+
+      - name: Preserve setup-bazel caches through the Draft wrapper
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          lines = [line for line in (Path.home() / '.bazelrc').read_text().splitlines()
+                   if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+          assert len(lines) == 2
+          with Path('.bazelrc.user').open('a') as output:
+              output.write('\n'.join(lines) + '\n')
+          PYCODE
       - name: Audit, build and run all original suites with private Redis
         env:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
+          python3 -B src/sonic-eventd/bazel/ci.py --bazel "$BAZEL" --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence
         if: always()
