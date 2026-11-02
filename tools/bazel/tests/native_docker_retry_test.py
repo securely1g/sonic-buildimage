@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -127,7 +128,7 @@ class AptIndexRefreshTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("Failed to fetch", result.stderr)
 
-    def download_fixture(self, failures, failure_status=503):
+    def download_fixture(self, failures, failure_status=503, native_docker=False):
         if not shutil.which("dpkg-deb"):
             self.skipTest("requires dpkg-deb to read the existing fixture metadata")
         fixture = ROOT / "tools/bazel/tests/fixtures/oci-debs/example-gz_1.0-1_all.deb"
@@ -169,18 +170,94 @@ class AptIndexRefreshTest(unittest.TestCase):
                 f"deb [trusted=yes] http://127.0.0.1:{server.server_port} ./\n")
             update = self.update(strict=True)
             self.assertEqual(update.returncode, 0, update.stdout + update.stderr)
-            # Exercise the production retry count. Disable only delays in this
-            # isolated fixture so exhausted attempts do not slow the test suite.
-            result = subprocess.run(
-                [shutil.which("apt-get"), "-c", str(APT_CONFIG),
-                 "-o", "Acquire::Retries::Delay=false", "download", "example-gz=1.0-1"],
-                cwd=self.work, env=self.environment, capture_output=True, text=True, timeout=15)
+            if native_docker:
+                result = self.download_with_native_docker_retry()
+            else:
+                # Exercise the runtime image's acquisition retry count. Disable
+                # delays only in this isolated fixture to keep the test short.
+                result = subprocess.run(
+                    [shutil.which("apt-get"), "-c", str(APT_CONFIG),
+                     "-o", "Acquire::Retries::Delay=false", "download", "example-gz=1.0-1"],
+                    cwd=self.work, env=self.environment, capture_output=True, text=True, timeout=15)
             return result, requests, list(self.work.glob("*.deb")), payload
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
             self.assertFalse(thread.is_alive(), "fixture server must stop")
+
+    def download_with_native_docker_retry(self):
+        """Run real APT behind the CI retry wrapper without starting Docker."""
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        job = workflow.split("\n  vs_container:\n", 1)[1].split("\n    steps:\n", 1)[0]
+        settings = dict(re.findall(
+            r'^      (DOCKER_BUILD|SONIC_BUILD_RETRY_COUNT|SONIC_BUILD_RETRY_INTERVAL|'
+            r'SONIC_DOCKER_APT_RETRIES): (.+)$', job, re.MULTILINE))
+        settings = {key: value.strip('"') for key, value in settings.items()}
+        self.assertEqual(settings.pop("SONIC_DOCKER_APT_RETRIES"), "0")
+        command = shlex.split(settings.pop("DOCKER_BUILD"))
+        command[0] = str(ROOT / command[0])
+        # Match normal APT configuration loading: the build-only file overrides
+        # the runtime policy in apt.conf.d. A late -c argument would reverse it.
+        configuration = self.work / "etc/apt.conf.d"
+        shutil.copyfile(APT_CONFIG, configuration / APT_CONFIG.name)
+        (configuration / "zzzz-sonic-ci-acquire-retries").write_text(
+            '// Temporary SONiC native Docker CI override; Debian bug #1117797.\n'
+            'Acquire::Retries "0";\n')
+        docker = self.work / "docker"
+        docker.write_text("#!" + sys.executable + "\n" + '''
+import json, pathlib, subprocess, sys
+path = pathlib.Path("docker-calls.json")
+calls = json.loads(path.read_text()) if path.exists() else []
+calls.append(sys.argv[1:])
+path.write_text(json.dumps(calls))
+sys.exit(subprocess.run([APT_GET, "download", "example-gz=1.0-1"]).returncode)
+'''.replace("APT_GET", repr(shutil.which("apt-get"))))
+        docker.chmod(0o755)
+        sleep = self.work / "sleep"
+        sleep.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> sleeps.txt\n')
+        sleep.chmod(0o755)
+        environment = dict(self.environment, **settings)
+        environment["PATH"] = str(self.work) + os.pathsep + environment["PATH"]
+        arguments = command + ["fixture-context"]
+        process = subprocess.Popen(arguments, cwd=self.work, env=environment,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, start_new_session=True)
+        try:
+            stdout, stderr = process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            # A regression must not leave the wrapper's APT descendants behind.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate(timeout=5)
+            self.fail("native Docker APT retry fixture timed out: " + stdout + stderr)
+        result = subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+        self.docker_calls = json.loads((self.work / "docker-calls.json").read_text())
+        sleeps = self.work / "sleeps.txt"
+        self.docker_sleeps = sleeps.read_text().splitlines() if sleeps.exists() else []
+        return result
+
+    def test_native_docker_retries_after_one_failed_package_attempt(self):
+        result, requests, downloads, payload = self.download_fixture(
+            failures=1, native_docker=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(requests, [503, 200])
+        self.assertEqual(self.docker_calls, [["build", "fixture-context"]] * 2)
+        self.assertEqual(self.docker_sleeps, ["10"])
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(hashlib.sha256(downloads[0].read_bytes()).hexdigest(),
+                         hashlib.sha256(payload).hexdigest())
+
+    def test_native_docker_package_failure_exhausts_three_whole_build_attempts(self):
+        result, requests, downloads, _ = self.download_fixture(
+            failures=100, native_docker=True)
+        self.assertEqual(result.returncode, 100, result.stdout + result.stderr)
+        self.assertEqual(requests, [503] * 3)
+        self.assertEqual(self.docker_calls, [["build", "fixture-context"]] * 3)
+        self.assertEqual(self.docker_sleeps, ["10", "10"])
+        self.assertEqual(downloads, [])
 
     def test_package_download_recovers_after_four_transient_failures(self):
         result, requests, downloads, payload = self.download_fixture(failures=4)

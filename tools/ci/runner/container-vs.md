@@ -104,12 +104,22 @@ Index refreshes fail if any index cannot be downloaded, so an incomplete
 refresh cannot become a successful cached Docker layer. These settings bound
 individual attempts and delays, not the total duration of an APT command.
 
-Native Docker builds also use the existing `run_with_retry` helper, allowing
-two retries with a ten-second delay. This fallback is specific to the native
-job; the shared APT policy applies wherever that configuration file is
-installed. A failed Docker build still fails the job after three attempts,
-and later attempts can reuse completed layers. Increasing acquisition retries
-does not repair a persistent transport failure or force APT to refresh DNS.
+The native Docker CI job sets `SONIC_DOCKER_APT_RETRIES=0` to avoid APT 3.0.3's
+unbounded delayed-retry warning queue ([Debian bug 1117797](https://bugs.debian.org/1117797)).
+The Dockerfile generator installs a temporary APT fragment with a late-sorting
+name and verifies that APT's effective retry count is zero before each independent
+stage's hooks and first build command, including builder and runtime stages.
+It refuses a pre-existing override path and removes only its
+own unchanged fragment before the stage can be copied, flattened or exported.
+The resulting image keeps the original eight-retry runtime policy. Unset or
+empty leaves ordinary Make behavior unchanged; other values are rejected.
+
+These native Docker builds use the existing `run_with_retry` helper, allowing
+two retries with a ten-second delay. A failed Docker build still fails the job
+after three attempts, and later attempts can reuse completed layers. Strict
+index refresh errors, timeouts, and TLS, signature and hash checks stay enabled.
+This CI-only mitigation does not change rootfs or native-package APT behavior,
+repair a persistent transport failure, or force APT to refresh DNS.
 
 GitHub supplies `BAZEL_REMOTE_AUTH` only to cache/build steps. The installed
 credential helper sends it only to the configured cache origin. If the cache
