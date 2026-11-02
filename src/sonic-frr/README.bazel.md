@@ -44,6 +44,15 @@ checks documented in `../libraries/sonic-fib/README.bazel.md`. A failing upstrea
 check remains a failing job. The full VS installer is outside this source-only
 PR's no-DEB scope and its skipped job is not image validation.
 
+`verify_runtime.py` checks the deployed FRR and SNMP ELF modes, architecture,
+build IDs, debug-link CRCs and matching DWARF. It preserves the owner debug
+documentation symlinks and verifies isolated BGPD source lookup succeeds only
+with the matching symbol TAR. The receipt records actual SONAME/DT_NEEDED
+entries. In the selected source, the SONiC FPM module includes libFIB's public
+header but makes no libFIB API call, so the linker drops its unused shared
+library. The existing Make build and runtime metadata declarations are retained;
+a recipe dependency alone is not proof of an ELF loader dependency.
+
 While registry PRs #146–#150 are unmerged, the workflow uses the single frozen
 candidate registry `e0bf141cea82764b18d15d7d2c8516cbf3e99290`. Its
 `DRAFT_VALIDATION_INPUTS.json` records every composed prerequisite. The candidate

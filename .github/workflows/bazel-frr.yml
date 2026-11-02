@@ -113,6 +113,12 @@ jobs:
             --development "$(run_bazel cquery //src/libraries/sonic-fib:development --output=files)" \
             --symbols "$(run_bazel cquery //src/libraries/sonic-fib:runtime.debug_symbols --output=files)" \
             --output artifacts/libfib-installed.json
+          python3 src/sonic-frr/verify_runtime.py \
+            --runtime "$(run_bazel cquery //src/sonic-frr:frr_layout --output=files)" \
+            --symbols "$(run_bazel cquery //src/sonic-frr:frr_elf.debug_symbols --output=files)" \
+            --snmp-runtime "$(run_bazel cquery //src/sonic-frr:frr_snmp_layout --output=files)" \
+            --snmp-symbols "$(run_bazel cquery //src/sonic-frr:frr_snmp_elf.debug_symbols --output=files)" \
+            --output artifacts/frr-installed.json
           run_bazel test --build_event_json_file="$PWD/artifacts/test-events.json" \
             //src/sonic-frr:upstream_native_check \
             //src/libraries/sonic-fib:tests \
