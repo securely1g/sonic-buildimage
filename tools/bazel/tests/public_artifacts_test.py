@@ -150,7 +150,7 @@ def seed(root, kind, architecture="amd64"):
             _, _, ready = artifacts.prepare(source_kind, root, root, "success", REVISION, architecture,
                                             head_sha="3" * 40, base_sha="4" * 40)
             assert ready, source_kind
-        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+        for name in ("sonic-vs.bin", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
                      "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
             write(root, "target/" + name, b"validated image output\n")
     write(root, "artifacts/unexpected.log", SENTINEL)
@@ -287,7 +287,7 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertEqual(summary["receipts"]["outputs"], {
             name: {"bytes": len(b"validated image output\n")}
             for name in (
-                "sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                "sonic-vs.bin", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
                 "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz",
             )
         })
@@ -440,6 +440,17 @@ class PublicArtifactsTest(unittest.TestCase):
                     self.assertEqual(paths, [])
                     self.assertIn({"input": kind + "-public-summary", "reason": "invalid-source-validation"},
                                   summary["blocked"])
+
+    def test_previous_kvm_image_cannot_replace_the_requested_onie_installer(self):
+        seed(self.root, "vs")
+        (self.root / "target/sonic-vs.bin").rename(self.root / "target/sonic-vs.img.gz")
+        summary, paths, ready = self.prepare("vs")
+        self.assertFalse(ready)
+        self.assertFalse(summary["complete"])
+        self.assertEqual(paths, [])
+        self.assertEqual(summary["missing"], ["output-sonic-vs.bin"])
+        self.assertEqual(set(summary["receipts"]["outputs"]), {
+            "docker-orchagent.gz", "docker-orchagent-dbg.gz", "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"})
 
     def test_vs_missing_syncd_debug_archive_blocks_successful_publication(self):
         """A successful installer/P4RT result cannot hide an unbuilt Syncd debug image."""

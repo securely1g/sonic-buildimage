@@ -4,7 +4,9 @@
 import base64
 import copy
 import concurrent.futures
+from contextlib import redirect_stdout
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -317,6 +319,52 @@ class KernelBundleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different kernel tools module"):
             kernel.inspect_resolution(workdir, consumer, self.state, kernel.DEFAULT_REGISTRY,
                                       fetch=lambda url: metadata[url])
+
+    def test_cli_managed_trust_reaches_plan_with_explicit_override(self):
+        managed = self.root / "managed-cacerts"
+        managed.write_bytes(b"managed trust fixture")
+        override = self.root / "override-cacerts"
+        override.write_bytes(b"explicit trust fixture")
+        key = "SONIC_BAZEL_JAVA_TRUST_STORE"
+        cases = [(None, None), ("", None), (str(managed), None),
+                 (str(self.root / "missing-cacerts"), override)]
+        for index, (setting, explicit) in enumerate(cases):
+            argv = ["prepare.py", "plan", "--workspace", str(self.root),
+                    "--state-dir", str(self.root / ("trust-plan-" + str(index)))]
+            if explicit:
+                argv += ["--java-trust-store", str(explicit)]
+            with self.subTest(setting=setting, explicit=explicit), \
+                    patch.dict(os.environ), patch.object(sys, "argv", argv), \
+                    redirect_stdout(io.StringIO()) as output:
+                if setting is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = setting
+                kernel.main()
+                planned = json.loads(output.getvalue())
+            selected = explicit or (managed if setting else None)
+            if selected:
+                self.assertEqual(planned["execution_trust"], {
+                    "java_trust_store_sha256": kernel.sha256(selected)})
+                option = planned["argv"].index("--java-trust-store")
+                self.assertEqual(planned["argv"][option + 1], str(selected))
+            else:
+                self.assertEqual(planned["execution_trust"], {})
+                self.assertNotIn("--java-trust-store", planned["argv"])
+
+    def test_cli_rejects_missing_managed_trust_file(self):
+        with patch.dict(os.environ, {"SONIC_BAZEL_JAVA_TRUST_STORE": str(self.root / "missing-cacerts")}), \
+                patch.object(sys, "argv", ["prepare.py", "plan", "--workspace", str(self.root),
+                                          "--state-dir", str(self.root / "trust-plan")]), \
+                self.assertRaises(FileNotFoundError):
+            kernel.main()
+
+    def test_cli_verify_ignores_managed_trust(self):
+        with patch.dict(os.environ, {"SONIC_BAZEL_JAVA_TRUST_STORE": str(self.root / "missing-cacerts")}), \
+                patch.object(sys, "argv", ["prepare.py", "verify", "--workspace", str(self.root)]), \
+                redirect_stdout(io.StringIO()) as output:
+            kernel.main()
+        self.assertEqual(json.loads(output.getvalue())["manifest"], self.manifest)
 
     def test_producer_uses_registered_source_and_retains_evidence(self):
         prebuilt = self.bundle

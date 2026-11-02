@@ -788,11 +788,18 @@ def main():
     parser.add_argument("--remote-cache")
     parser.add_argument("--upload-local-results", action="store_true")
     parser.add_argument("--ca-bundle", type=Path)
-    parser.add_argument("--java-trust-store", type=Path)
+    parser.add_argument("--java-trust-store", type=Path,
+                        help="Java trust store; overrides SONIC_BAZEL_JAVA_TRUST_STORE for build commands")
     parser.add_argument("--distdir", type=Path)
     parser.add_argument("--cache-directory", type=Path,
                         help="persistent Bazel download/action cache visible to this process")
     args = parser.parse_args()
+    # Managed builders own certificate policy. Keep this optional default out
+    # of verification-only calls, which do not download or invoke Bazel.
+    if args.command in {"ensure", "plan", "build"} and args.java_trust_store is None:
+        configured_trust = os.environ.get("SONIC_BAZEL_JAVA_TRUST_STORE")
+        if configured_trust:
+            args.java_trust_store = Path(configured_trust)
     workspace = args.workspace.resolve(strict=True)
     configuration = parse_kernel_config(args.kernel_config)
     if args.command == "ensure":

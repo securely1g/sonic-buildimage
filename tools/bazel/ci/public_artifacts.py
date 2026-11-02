@@ -510,7 +510,7 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
                 blocked.append({"input": logical, "reason": "invalid-source-validation"})
         outputs = {}
-        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+        for name in ("sonic-vs.bin", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
                      "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
             path = input_path("output-" + name, "target/" + name)
             if path is not None:
