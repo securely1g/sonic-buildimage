@@ -268,15 +268,15 @@ apt_inputs(
     lock = "//dockers/docker-base-trixie/bazel:apt.lock.json",
 )
 
-bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
-bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
+bazel_dep(name = "socat", version = "1.8.0.2.sonic.4")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.4")
 
 single_version_override(
     module_name = "sonic-rust-deps",
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.3-d1a2c8f692d4197295269ed445022c3890b0f1a6", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.3-72079e48d9ae33174efd98b09fea41712c7fa2c9", repo_name = "sonic_fips")
 
 # Fixed target C/C++ runtime and JSON headers for sonic-fib.
 apt.install(
@@ -331,7 +331,7 @@ single_version_override(
 
 single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.3-d1a2c8f692d4197295269ed445022c3890b0f1a6",
+    version = "0.0.3-72079e48d9ae33174efd98b09fea41712c7fa2c9",
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.
