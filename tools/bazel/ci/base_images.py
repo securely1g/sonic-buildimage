@@ -71,6 +71,25 @@ def verify_source_files(files, metadata, machine):
     return native
 
 
+def verify_installed_layer(files, archive):
+    """Require final installed Python, model and startup files to match their owner TAR."""
+    checked = {}
+    for name, expected in validation.payload(archive).items():
+        if expected["kind"] == "directory":
+            continue
+        validation.require(expected["kind"] in ("file", "symlink"),
+                           "unsupported config-engine payload kind: " + name)
+        actual = files.get(name, {})
+        keys = ["kind", "uid", "gid"]
+        # Linux gives ordinary symlinks 0777 regardless of their TAR mode.
+        keys += ["sha256", "mode"] if expected["kind"] == "file" else ["linkname"]
+        validation.require(all(actual.get(key) == expected[key] for key in keys),
+                           "image changed config-engine payload: " + name)
+        checked[name] = {key: expected[key] for key in keys}
+    validation.require(checked, "config-engine owner layer has no installed files")
+    return checked
+
+
 def verify_editor_commands(files):
     for name in ("editor", "ex", "rview", "vi", "view"):
         for path, target in (("usr/bin/" + name, "/etc/alternatives/" + name),
@@ -128,6 +147,8 @@ def main():
     parser.add_argument("--artifacts", required=True, type=Path)
     parser.add_argument("--architecture", choices=("amd64", "arm64"), required=True)
     parser.add_argument("--bazel", default="bazel")
+    parser.add_argument("--config-engine-acceptance", action="store_true",
+                        help="Verify complete installed Python/model/startup payloads on AMD64")
     args = parser.parse_args()
     directory = args.artifacts.resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -135,6 +156,8 @@ def main():
     validation.require(platform.machine() == machine and
                        platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
                        "build requires the selected native Debian Trixie runner")
+    validation.require(not args.config_engine_acceptance or args.architecture == "amd64",
+                       "new config-engine acceptance is native AMD64 only")
     receipt = {"_generated": GENERATED_NOTICE, "status": "running", "architecture": args.architecture, "commands": []}
     execute = partial(command_log.execute, cwd=ROOT)
     options = ["--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
@@ -155,6 +178,9 @@ def main():
                             image + ".source.tar": owner + "source_runtime",
                             image + ".packages.json": owner + "runtime_package_metadata"})
         targets["config-engine.path-normalization.json"] = "//dockers/docker-config-engine-trixie:runtime_path_normalization"
+        if args.config_engine_acceptance:
+            targets.update({"config-engine.python-and-models.tar": "//dockers/docker-config-engine-trixie:python_and_models",
+                            "config-engine.startup.tar": "//dockers/docker-config-engine-trixie:config_files"})
         tests = ["@sonic_build_infra//oci/tests:runtime_packages_test",
                  "@sonic_build_infra//oci/tests:runtime_packages_rule_test",
                  "@sonic_build_infra//oci/tests:installed_packages_test",
@@ -202,6 +228,12 @@ def main():
                       "rootfs": config["rootfs"], "config": config.get("config", {}),
                       "source_packages": [item for report in reports for item in report["source_packages"]],
                       "native": native, "debug_pairs": pairs}
+            if image == "docker-config-engine-trixie" and args.config_engine_acceptance:
+                result["installed_owner_layers"] = {
+                    name: {"sha256": validation.sha(paths[name]),
+                           "files": verify_installed_layer(files, paths[name])}
+                    for name in ("config-engine.python-and-models.tar", "config-engine.startup.tar")
+                }
             (directory / (image + ".validation.json")).write_text(json.dumps(result, indent=2) + "\n")
             receipt["images"][image] = {"manifest_digest": result["manifest_digest"], "source_elf_count": len(native)}
         receipt["resolution"] = resolution.collect(ROOT, directory, bazel=[args.bazel])

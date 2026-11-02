@@ -1,6 +1,7 @@
 """Reject assembled images that differ from their source package receipts."""
 
 from contextlib import ExitStack
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -120,6 +121,29 @@ class SourceImageValidationTest(unittest.TestCase):
     def test_installed_file_matches_source_identity(self):
         native = verify_source_files(self.files, [self.report], 62)
         self.assertEqual(native[self.path]["source_package"], "source-component")
+
+    def test_installed_python_and_startup_bytes_modes_and_owners_are_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "runtime.tar"
+            with tarfile.open(path, "w") as archive:
+                member = tarfile.TarInfo("usr/local/lib/python3.13/dist-packages/sonic_grpc/gnoi/system_pb2.py")
+                member.size, member.mode = 5, 0o644
+                archive.addfile(member, io.BytesIO(b"proto"))
+                link = tarfile.TarInfo("usr/bin/owner-alias")
+                link.type, link.linkname, link.mode = tarfile.SYMTYPE, "owner-command", 0
+                archive.addfile(link)
+            files = base_images.validation.payload(path)
+            files[link.name]["mode"] = 0o777
+            self.assertEqual(len(base_images.verify_installed_layer(files, path)), 2)
+            for key, value in (("sha256", "wrong"), ("mode", 0o755), ("uid", 1000), ("gid", 1000),
+                               ("kind", "symlink")):
+                changed = {**files, member.name: {**files[member.name], key: value}}
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "changed config-engine"):
+                    base_images.verify_installed_layer(changed, path)
+            for changed in ({link.name: files[link.name]},
+                            {**files, link.name: {**files[link.name], "linkname": "different"}}):
+                with self.assertRaisesRegex(ValueError, "changed config-engine"):
+                    base_images.verify_installed_layer(changed, path)
 
     def test_later_layer_cannot_replace_source_elf_or_metadata(self):
         for field, value in (("sha256", "b" * 64), ("mode", 0o644), ("uid", 1000), ("gid", 1000)):
