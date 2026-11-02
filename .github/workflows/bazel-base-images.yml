@@ -106,16 +106,16 @@ jobs:
           receipt = json.loads((directory / 'receipt.json').read_text())
           assert receipt['status'] == 'passed' and receipt['architecture'] == os.environ['EXPECTED_ARCH']
           assert receipt['revision'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          name = 'docker-config-engine-trixie.gz'
-          assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == receipt['artifacts'][name]['sha256']
-          subprocess.run(['docker', 'load', '--input', str(directory / name)], check=True)
-          actual = json.loads(subprocess.check_output(['docker', 'image', 'inspect', 'docker-config-engine-trixie:latest']))[0]
-          report = json.loads((directory / 'docker-config-engine-trixie.validation.json').read_text())
-          assert actual['Architecture'] == os.environ['EXPECTED_ARCH'] and actual['Os'] == 'linux'
-          assert actual['RootFS']['Layers'] == report['rootfs']['diff_ids']
-          meaningful = lambda values: {key: value for key, value in values.items() if value not in (None, '', [], {}, False)}
-          assert meaningful(actual['Config']) == meaningful(report['config'])
+          assert hashlib.sha256((directory / 'installed-images-policy.json').read_bytes()).hexdigest() == receipt['installed_images_policy_sha256']
+          for name in ('docker-base-trixie.gz', 'docker-config-engine-trixie.gz'):
+              with (directory / name).open('rb') as archive:
+                  actual = hashlib.file_digest(archive, 'sha256').hexdigest()
+              assert actual == receipt['artifacts'][name]['sha256'], name
           PY
+          python3 -B tools/bazel/ci/validate_runtime.py \
+            --images-policy artifacts/base-images/installed-images-policy.json \
+            --target artifacts/base-images \
+            --output artifacts/base-images/installed-images.json
       - name: Exercise installed source programs and Python packages
         run: |
           set -o pipefail
@@ -131,6 +131,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: source-base-runtime-${{ matrix.architecture }}
-          path: artifacts/base-images/runtime-smoke.json
+          path: |
+            artifacts/base-images/installed-images.json
+            artifacts/base-images/runtime-smoke.json
           if-no-files-found: warn
           retention-days: 14

@@ -5,6 +5,7 @@ load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("@sonic_build_infra//oci:installed_packages.bzl", "installed_packages")
 load("@syncd_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("@tar.bzl", "tar")
+load("//dockers/docker-config-engine-trixie:validation.bzl", "service_images_policy")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
@@ -496,4 +497,10 @@ filegroup(
         ":installed_packages",
         ":runtime_package_metadata",
     ],
+)
+
+write_file(
+    name = "installed_checks",
+    out = "installed_checks.json",
+    content = [json.encode(service_images_policy("docker-syncd-vs", "amd64"))],
 )

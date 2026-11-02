@@ -49,7 +49,19 @@ class CachedImageLayoutTest(unittest.TestCase):
                 paths = {}
                 for name in targets:
                     paths[name] = directory / name
-                    paths[name].write_text(json.dumps({"source_packages": []}))
+                    document = {"source_packages": []}
+                    if name.endswith(".installed-checks.json"):
+                        document = {"architecture": architecture, "images": [{"name": name.split(".")[0]}]}
+                    if name == "docker-orchagent.runtime-apt-selection.json":
+                        index = json.loads(oci_files(*image_fixture(architecture))["index.json"])
+                        document = {
+                            "image": "docker-orchagent", "group": "runtime",
+                            "base_manifest_digest": index["manifests"][0]["digest"],
+                            "dependency_check": {"status": "satisfied"},
+                            "selected": [{"package": "runtime-addition"}],
+                            "skipped_base": [{"package": "base-package"}],
+                        }
+                    paths[name].write_text(json.dumps(document))
                 return paths
 
             patches = [
@@ -61,11 +73,17 @@ class CachedImageLayoutTest(unittest.TestCase):
                 mock.patch.object(base_images.command_log, "execute", side_effect=execute),
                 mock.patch.object(base_images.build, "collect_archives", side_effect=cached_archives),
                 mock.patch.object(base_images.resolution, "collect", return_value={}),
-                mock.patch.object(base_images, "IMAGES", ("docker-base-trixie",)),
+                mock.patch.object(base_images, "installed_inventory", return_value={
+                    "run/redis/sonic-db/database_config.json": {"kind": "file", "uid": 0, "gid": 0, "mode": 0o644},
+                    "etc/libnl-3/classid": {"kind": "file"},
+                    "etc/libnl-3/pktloc": {"kind": "file"},
+                }),
                 mock.patch.object(base_images, "verify_directory_aliases"),
                 mock.patch.object(base_images, "verify_editor_commands"),
                 mock.patch.object(base_images, "verify_source_files", return_value={}),
                 mock.patch.object(base_images, "verify_symbols", return_value=[]),
+                mock.patch.object(base_images.image_validation, "installed_images_policy",
+                                  return_value={"architecture": architecture, "images": []}),
             ]
             for patch in patches:
                 stack.enter_context(patch)
@@ -77,9 +95,23 @@ class CachedImageLayoutTest(unittest.TestCase):
                 self.assertEqual(json.loads((artifacts / "receipt.json").read_text())["status"], "failed")
             else:
                 base_images.main()
-                self.assertEqual(queries, ["docker-base-trixie"])
-                self.assertEqual(json.loads((artifacts / "receipt.json").read_text())["status"], "passed")
+                self.assertEqual(queries, list(base_images.IMAGES))
+                receipt = json.loads((artifacts / "receipt.json").read_text())
+                self.assertEqual(receipt["status"], "passed")
+                policy_path = artifacts / "installed-images-policy.json"
+                self.assertEqual(receipt["installed_images_policy_sha256"], base_images.validation.sha(policy_path))
                 self.assertIn("//dockers/docker-base-trixie:docker-base-trixie", audit.call_args.args[2])
+                selection_target = "//dockers/docker-orchagent:runtime_apt_selection"
+                if architecture == "amd64":
+                    self.assertIn(selection_target, audit.call_args.args[2])
+                    self.assertEqual(receipt["orchagent_base_selection"], {
+                        "base_manifest_digest": receipt["images"]["docker-config-engine-trixie"]["manifest_digest"],
+                        "selected_package_count": 1, "skipped_base_package_count": 1,
+                    })
+                else:
+                    self.assertNotIn(selection_target, audit.call_args.args[2])
+                    self.assertNotIn("orchagent_base_selection", receipt)
+                    self.assertFalse((artifacts / "docker-orchagent.runtime-apt-selection.json").exists())
 
     def test_cached_archives_materialize_layout_for_each_native_architecture(self):
         for architecture in ("amd64", "arm64"):
@@ -88,6 +120,26 @@ class CachedImageLayoutTest(unittest.TestCase):
 
     def test_failed_layout_build_stops_before_inspection(self):
         self.run_cached_build("amd64", fail_layout_build=True)
+
+
+class OrchagentBaseSelectionTest(unittest.TestCase):
+    def test_requires_runtime_selection_for_the_exact_source_base(self):
+        selection = {
+            "image": "docker-orchagent", "group": "runtime",
+            "base_manifest_digest": "sha256:" + "a" * 64,
+            "dependency_check": {"status": "satisfied"},
+            "selected": [{"package": "libteam5"}], "skipped_base": [{"package": "libnl-3-200"}],
+        }
+        digest = selection["base_manifest_digest"]
+        self.assertEqual(base_images.verify_orchagent_selection(selection, digest), {
+            "base_manifest_digest": digest, "selected_package_count": 1, "skipped_base_package_count": 1,
+        })
+        for changed in (
+                {"base_manifest_digest": "sha256:" + "b" * 64},
+                {"image": "docker-telemetry"}, {"group": "debug"},
+                {"dependency_check": {"status": "failed"}}, {"dependency_check": {}}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                base_images.verify_orchagent_selection({**selection, **changed}, digest)
 
 
 class DuplicateLayerPathsTest(unittest.TestCase):
@@ -115,7 +167,7 @@ class SourceImageValidationTest(unittest.TestCase):
         self.path = "usr/bin/source-program"
         self.item = {"path": self.path, "sha256": "a" * 64, "mode": 0o755, "uid": 0, "gid": 0}
         self.report = {"source_packages": [{"package": "source-component", "native_files": [self.item]}]}
-        self.files = {self.path: {**self.item, "elf_machine": 62}}
+        self.files = {self.path: {**self.item, "kind": "file", "elf_machine": 62}}
 
     def test_installed_file_matches_source_identity(self):
         native = verify_source_files(self.files, [self.report], 62)
