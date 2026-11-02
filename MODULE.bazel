@@ -27,6 +27,7 @@ bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
 bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -241,6 +242,15 @@ use_repo(apt, "base_debian", "base_debug_debian", "config_engine_debian")
 apt_inputs(
     name = "base_apt_inputs",
     lock = "//dockers/docker-base-trixie/bazel:apt.lock.json",
+)
+
+# Router Advertiser imports its existing distro radvd runtime and debug tools.
+apt.import_lock(lock = "//dockers/docker-router-advertiser/bazel:apt.lock.json")
+use_repo(apt, "radv_debug_debian", "radv_runtime_debian")
+
+apt_inputs(
+    name = "radv_apt_inputs",
+    lock = "//dockers/docker-router-advertiser/bazel:apt.lock.json",
 )
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
