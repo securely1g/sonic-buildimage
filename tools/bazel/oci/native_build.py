@@ -19,6 +19,7 @@ import sys
 ENVIRONMENT = 'debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c'
 COMMANDS = {'build', 'test', 'run', 'aquery', 'cquery', 'query', 'info', 'mod'}
 NATIVE_SHARED_CACHE = Path('/bazel_cache/native-root')
+NATIVE_JAVA_TRUST_STORE = Path('/run/sonic-native-java-cacerts')
 
 
 def cache_arguments(arguments, shared_cache):
@@ -34,6 +35,24 @@ def cache_arguments(arguments, shared_cache):
             '--repository_cache=' + str(NATIVE_SHARED_CACHE / 'repository_cache'),
             '--disk_cache=' + str(NATIVE_SHARED_CACHE / 'disk_cache'),
             *arguments[1:]]
+
+
+def default_java_trust_store(startup):
+    """Use the runner's declared Java trust unless the caller selected one."""
+    if any(argument.startswith('--host_jvm_args=-Djavax.net.ssl.trustStore=') for argument in startup):
+        return None
+    configured = os.environ.get('SONIC_BAZEL_JAVA_TRUST_STORE')
+    if not configured:
+        return None
+    path = Path(configured)
+    if not path.is_absolute():
+        raise ValueError('Java trust store must be an absolute path: ' + str(path))
+    path = path.resolve()
+    if not path.is_file() or not path.stat().st_size or not os.access(path, os.R_OK):
+        raise ValueError('Java trust store must be a readable, nonempty regular file: ' + str(path))
+    if ',' in str(path):
+        raise ValueError('Docker bind paths cannot contain commas: ' + str(path))
+    return path
 
 
 @contextmanager
@@ -155,6 +174,13 @@ def command(arguments, workspace, bazel, cache, startup=()):
             raise ValueError('Docker bind paths cannot contain commas: ' + str(git_ca_path))
         result.extend(['--mount', 'type=bind,src=' + str(git_ca_path) + ',dst=/run/sonic-native-git-ca.pem,readonly',
                        '--env', 'GIT_SSL_CAINFO=/run/sonic-native-git-ca.pem'])
+    # Bazel's embedded JVM ignores the runner's environment variable. Preserve
+    # its complete trust store and select it for both the audit and the build.
+    java_trust = default_java_trust_store(startup)
+    if java_trust:
+        result.extend(['--mount', 'type=bind,src=' + str(java_trust) + ',dst=' + str(NATIVE_JAVA_TRUST_STORE) + ',readonly',
+                       '--env', 'SONIC_BAZEL_JAVA_TRUST_STORE=' + str(NATIVE_JAVA_TRUST_STORE)])
+        startup = ['--host_jvm_args=-Djavax.net.ssl.trustStore=' + str(NATIVE_JAVA_TRUST_STORE), *startup]
     script = '''set -eu
 apt-get update >&2
 apt-get install -y --no-install-recommends ca-certificates build-essential git libarchive-tools python3 >&2
@@ -189,6 +215,9 @@ def main():
         arguments = cache_arguments(arguments, shared_cache)
         if shared_cache:
             os.environ['BAZELISK_HOME'] = str(NATIVE_SHARED_CACHE / 'bazelisk')
+        java_trust = default_java_trust_store(startup)
+        if java_trust:
+            startup = ['--host_jvm_args=-Djavax.net.ssl.trustStore=' + str(java_trust), *startup]
         audit_command([executable, *startup, *arguments], Path.cwd())
         os.execv(executable, [executable, *startup, *arguments])
     workspace = Path.cwd()
