@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/bazel-swss-native.yml
+      - .bazelrc
+      - .bazelversion
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/0001-sonic-swss-libteam.patch
@@ -12,6 +14,7 @@ on:
       - tools/bazel/tests/**
       - tools/bazel/oci/**
       - tools/bazel/dpkg/**
+      - tools/bazel/gzip/**
       - dockers/docker-orchagent/**
       - src/libteam/**
   workflow_dispatch:
@@ -46,6 +49,12 @@ jobs:
           repository-cache: true
           disk-cache: swss-native-amd64
           cache-version: "8.5.1"
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
       - name: Build and test the selected SWSS source outputs
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
