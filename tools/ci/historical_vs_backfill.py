@@ -18,6 +18,14 @@ INPUTS = {
     "2dc503aaecfb0d3c317608aaeabc68a108e32b97": (
         40634671547, 12793195886,
         "sha256:43570784d046c6ba2058e2f8a569c7dd35b90edf8f58b6fdbbd9362bc7ee54b1"),
+    "c20b1d43e26c6eb2928191f041b78a60251ef9a0": (
+        41423968669, 13130803809,
+        "sha256:2c226f2764aec2cc960b24966bfa503118bafa205108fc2c32056d140211ae5c"),
+}
+P4_INPUTS = {
+    "c20b1d43e26c6eb2928191f041b78a60251ef9a0": (
+        13130893268, "p4-source-inputs-41423968669-1",
+        "sha256:9102a9108ce7f4c9ef7620d45940d5acd3eb729232f9871357d18dc58d2bf068"),
 }
 
 
@@ -26,7 +34,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def check_inputs(source, run, artifact):
+def check_inputs(source, run, artifact, p4_artifact=None):
     run_id, artifact_id, digest = INPUTS[source]
     require(run["id"] == run_id and run["head_sha"] == source,
             "Original run does not match the pinned source")
@@ -40,9 +48,25 @@ def check_inputs(source, run, artifact):
     require(artifact["workflow_run"]["id"] == run_id and
             artifact["workflow_run"]["head_sha"] == source,
             "Input artifact belongs to another source run")
-    return {"source_sha": source, "original_run_id": run_id,
-            "input_artifact_id": artifact_id, "input_artifact_digest": digest,
-            "input_artifact_expires_at": artifact["expires_at"]}
+    receipt = {"source_sha": source, "original_run_id": run_id,
+               "input_artifact_id": artifact_id, "input_artifact_digest": digest,
+               "input_artifact_expires_at": artifact["expires_at"],
+               "prefer_debian_repo": "y" if source in P4_INPUTS else "n",
+               "native_docker_apt_retries": "0" if source in P4_INPUTS else ""}
+    if source in P4_INPUTS:
+        p4_id, p4_name, p4_digest = P4_INPUTS[source]
+        require(isinstance(p4_artifact, dict), "Pinned P4 source artifact is required")
+        require(p4_artifact["id"] == p4_id and p4_artifact["name"] == p4_name and
+                p4_artifact["digest"] == p4_digest and not p4_artifact["expired"],
+                "P4 source artifact identity, digest or availability changed")
+        require(p4_artifact["workflow_run"]["id"] == run_id and
+                p4_artifact["workflow_run"]["head_sha"] == source,
+                "P4 source artifact belongs to another source run")
+        receipt.update(p4_artifact_id=p4_id, p4_artifact_digest=p4_digest,
+                       p4_artifact_expires_at=p4_artifact["expires_at"])
+    else:
+        require(p4_artifact is None, "Historical source has no P4 artifact transport")
+    return receipt
 
 
 def api(path):
@@ -86,13 +110,18 @@ def main():
     args = parser.parse_args()
     if args.command == "inputs":
         run_id, artifact_id, _ = INPUTS[args.source_sha]
+        p4_artifact = (api(f"actions/artifacts/{P4_INPUTS[args.source_sha][0]}")
+                       if args.source_sha in P4_INPUTS else None)
         receipt = check_inputs(args.source_sha, api(f"actions/runs/{run_id}"),
-                               api(f"actions/artifacts/{artifact_id}"))
+                               api(f"actions/artifacts/{artifact_id}"), p4_artifact)
         args.output.mkdir(parents=True, exist_ok=True)
         path = args.output / "inputs.json"
         if args.github_output:
             with args.github_output.open("a") as output:
                 output.write(f"run_id={run_id}\nartifact_id={artifact_id}\n")
+                output.write(f"p4_artifact_id={receipt.get('p4_artifact_id', '')}\n")
+                output.write(f"prefer_debian_repo={receipt['prefer_debian_repo']}\n")
+                output.write(f"native_docker_apt_retries={receipt['native_docker_apt_retries']}\n")
     else:
         require(args.workspace is not None, "identity requires --workspace")
         receipt = identity(args.source_sha, args.workspace, args.after_build)
@@ -109,12 +138,15 @@ def main():
                        "SONIC_DPKG_CACHE_SOURCE", "SONIC_DPKG_CACHE_METHOD",
                        "SONIC_CONFIG_USE_DOCKER_CACHE", "SONIC_BUILD_MEMORY",
                        "SONIC_BUILD_MEMORY_SWAP", "SECURE_UPGRADE_MODE",
-                       "ENABLE_MULTIDB", "ENABLE_VRF_STRICT")},
+                       "ENABLE_MULTIDB", "ENABLE_VRF_STRICT", "PREFER_DEBIAN_REPO",
+                       "SONIC_DOCKER_APT_RETRIES")},
                    build_flags={"BUILD_WITH_BAZEL_WHEN_AVAILABLE": "y",
                                 "INCLUDE_VS_DASH_SAI": "y", "INCLUDE_FIPS": "y",
                                 "ENABLE_ASAN": "n", "ENABLE_SYNCD_RPC": "n",
                                 "SONIC_CONFIG_BUILD_JOBS": "1", "SONIC_CONFIG_MAKE_JOBS": "4"},
-                   scope="ONIE installer build; no KVM boot or newer image-runtime checks")
+                   scope=("ONIE installer and original c20 source-package/archive-pair checks; no KVM boot"
+                          if args.source_sha in P4_INPUTS else
+                          "ONIE installer build; no KVM boot or newer image-runtime checks"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     print(json.dumps(receipt, indent=2, sort_keys=True))

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 import subprocess
 import tempfile
-from historical_vs_backfill import INPUTS, REPOSITORY, check_inputs, identity
+from historical_vs_backfill import INPUTS, P4_INPUTS, REPOSITORY, check_inputs, identity
 
 
 class HistoricalInputsTest(unittest.TestCase):
@@ -19,7 +19,11 @@ class HistoricalInputsTest(unittest.TestCase):
                          "workflow_run": {"id": run_id, "head_sha": self.source}}
 
     def test_accepts_recorded_source_and_artifact(self):
-        self.assertEqual(check_inputs(self.source, self.run, self.artifact)["source_sha"], self.source)
+        receipt = check_inputs(self.source, self.run, self.artifact)
+        self.assertEqual(receipt["source_sha"], self.source)
+        self.assertEqual(receipt["prefer_debian_repo"], "n")
+        self.assertEqual(receipt["native_docker_apt_retries"], "")
+        self.assertNotIn("p4_artifact_id", receipt)
 
     def test_rejects_other_source_run(self):
         self.run["head_sha"] = "0" * 40
@@ -43,6 +47,43 @@ class HistoricalInputsTest(unittest.TestCase):
                 run.update(changes)
                 with self.assertRaises(ValueError):
                     check_inputs(self.source, run, self.artifact)
+
+
+class C20InputsTest(unittest.TestCase):
+    def setUp(self):
+        self.source = "c20b1d43e26c6eb2928191f041b78a60251ef9a0"
+        run_id, artifact_id, digest = INPUTS[self.source]
+        self.run = {"id": run_id, "head_sha": self.source,
+                    "repository": {"full_name": REPOSITORY},
+                    "event": "push", "head_branch": "master"}
+        self.artifact = {"id": artifact_id, "name": "bazel-repository-inputs",
+                         "digest": digest, "expired": False, "expires_at": "2026-11-16T09:53:34Z",
+                         "workflow_run": {"id": run_id, "head_sha": self.source}}
+        p4_id, p4_name, p4_digest = P4_INPUTS[self.source]
+        self.p4 = {"id": p4_id, "name": p4_name, "digest": p4_digest,
+                   "expired": False, "expires_at": "2026-11-16T09:53:50Z",
+                   "workflow_run": {"id": run_id, "head_sha": self.source}}
+
+    def test_c20_preserves_original_p4_and_debian_source_profile(self):
+        receipt = check_inputs(self.source, self.run, self.artifact, self.p4)
+        self.assertEqual(receipt["p4_artifact_id"], 13130893268)
+        self.assertEqual(receipt["prefer_debian_repo"], "y")
+        self.assertEqual(receipt["native_docker_apt_retries"], "0")
+
+    def test_c20_requires_its_p4_artifact(self):
+        with self.assertRaisesRegex(ValueError, "Pinned P4 source artifact is required"):
+            check_inputs(self.source, self.run, self.artifact)
+
+    def test_rejects_changed_expired_or_misattributed_p4_artifact(self):
+        for changes in ({"expired": True}, {"id": 1}, {"name": "different"},
+                        {"digest": "sha256:" + "0" * 64},
+                        {"workflow_run": {"id": 1, "head_sha": self.source}},
+                        {"workflow_run": {"id": self.run["id"], "head_sha": "0" * 40}}):
+            with self.subTest(changes=changes):
+                p4 = copy.deepcopy(self.p4)
+                p4.update(changes)
+                with self.assertRaises(ValueError):
+                    check_inputs(self.source, self.run, self.artifact, p4)
 
 
 class HistoricalCheckoutTest(unittest.TestCase):

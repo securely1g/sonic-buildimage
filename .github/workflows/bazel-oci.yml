@@ -12,6 +12,7 @@ on:
           - 8bf48af011622657a73570a54d1a660b821bb30a
           - 13d750dee1750ee1c325e0fea9b7b4eaaf10cb14
           - 2dc503aaecfb0d3c317608aaeabc68a108e32b97
+          - c20b1d43e26c6eb2928191f041b78a60251ef9a0
 permissions:
   contents: read
   actions: read
@@ -28,7 +29,7 @@ jobs:
       EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
-      # The historical recipes do not implement the newer Debian-source mode.
+      # The preparation step selects the original revision-specific source mode.
       PREFER_DEBIAN_REPO: "n"
       DOCKER_BUILD: ./scripts/run_with_retry docker build
       SONIC_BUILD_RETRY_COUNT: "2"
@@ -78,6 +79,8 @@ jobs:
           test ! -e target/sonic-vs.bin
 
       - name: Prepare the native slave using separate current control helpers
+        env:
+          PREFER_DEBIAN_REPO: ${{ steps.inputs.outputs.prefer_debian_repo }}
         run: |
           bash "$GITHUB_WORKSPACE/control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tools/bazel/ci/prepare_vs_slave.sh"
 
@@ -89,6 +92,24 @@ jobs:
           github-token: ${{ github.token }}
           merge-multiple: true
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
+
+      - name: Download c20's original pinned P4 input artifact
+        if: steps.inputs.outputs.p4_artifact_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.inputs.outputs.p4_artifact_id }}
+          run-id: ${{ steps.inputs.outputs.run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/p4-source-inputs
+
+      - name: Verify P4 bytes using c20's original source manifest and helper
+        if: steps.inputs.outputs.p4_artifact_id != ''
+        run: |
+          python3 -B tools/ci/p4_source_inputs.py \
+            --manifest src/p4lang/source-inputs.json \
+            --directory artifacts/vs/p4-source-inputs/sources \
+            --receipt artifacts/vs/p4-source-inputs-verified.json
 
       - name: Configure caches and verify the historical source-download pins
         env:
@@ -104,12 +125,18 @@ jobs:
         id: build
         env:
           BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+          P4_SOURCES_ARTIFACT_ID: ${{ steps.inputs.outputs.p4_artifact_id }}
+          SONIC_DOCKER_APT_RETRIES: ${{ steps.inputs.outputs.native_docker_apt_retries }}
         run: |
           source "$RUNNER_TEMP/sonic-vs-slave.env"
           cd /sonic
-          # The old P4 recipe has no source-directory override. Preserve its
-          # original URLs and fail visibly if the original inputs are unavailable.
-          make -f slave.mk target/sonic-vs.bin \
+          # c20 supports its original verified file transport. The three older
+          # source recipes retain their original URLs without an ignored override.
+          p4_options=()
+          if [[ -n "$P4_SOURCES_ARTIFACT_ID" ]]; then
+            p4_options+=(P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources)
+          fi
+          make -f slave.mk target/sonic-vs.bin "${p4_options[@]}" \
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
             ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
             2>&1 | tee artifacts/vs/build.log
@@ -126,8 +153,31 @@ jobs:
             --json-output artifacts/vs/sonic-version.json target/sonic-vs.bin \
             2>&1 | tee artifacts/vs/installer-version.log
 
+      - name: Retain c20's original archive-pair and source-package validation
+        if: steps.inputs.outputs.p4_artifact_id != ''
+        env:
+          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+          SONIC_DOCKER_APT_RETRIES: ${{ steps.inputs.outputs.native_docker_apt_retries }}
+        run: |
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          cd /sonic
+          python3 -B tools/bazel/ci/vs_archive_reuse.py capture-pairs \
+            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
+            --orchagent-receipt artifacts/vs/orchagent-reuse.json
+          bash tools/bazel/ci/verify_vs_oci.sh make -f slave.mk \
+            P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
+            ENABLE_ASAN=n ENABLE_SYNCD_RPC=n 2>&1 | tee artifacts/vs/validation.log
+          python3 -B tools/bazel/ci/vs_archive_reuse.py verify-pairs \
+            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
+            --orchagent-receipt artifacts/vs/orchagent-reuse.json
+          sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
+            target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
+
       - name: Verify source identity after the build
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          SONIC_DOCKER_APT_RETRIES: ${{ steps.inputs.outputs.native_docker_apt_retries }}
         run: |
           source "$RUNNER_TEMP/sonic-vs-slave.env"
           cd /sonic
@@ -152,6 +202,22 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+      - name: Upload c20's matching runtime and debug container archives
+        if: success() && steps.inputs.outputs.p4_artifact_id != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-container-pairs-${{ inputs.source_sha }}
+          path: |
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin.dockers
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/outputs.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
       - name: Stop only this worker's private Docker daemon
         if: always()
         timeout-minutes: 2
@@ -171,7 +237,9 @@ jobs:
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*.log
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*.txt
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*.sha256
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-p4-images/validation.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/target/*.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
