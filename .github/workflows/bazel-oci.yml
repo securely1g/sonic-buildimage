@@ -804,6 +804,9 @@ jobs:
       DOCKER_BUILD: ./scripts/run_with_retry docker build
       SONIC_BUILD_RETRY_COUNT: "2"
       SONIC_BUILD_RETRY_INTERVAL: "10"
+      # Contain APT 3.0.3's delayed-retry warning queue (Debian #1117797).
+      # The generator removes this temporary policy before image export.
+      SONIC_DOCKER_APT_RETRIES: "0"
       BAZEL_CONTAINER_ARGS: >-
         --jobs=4 --local_resources=memory=12288
         --distdir=/bazel_cache/distdir/ape-1.0.1
