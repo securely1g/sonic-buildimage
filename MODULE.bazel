@@ -23,10 +23,10 @@ bazel_dep(name = "sonic-dash", version = "0.0.2-5c9305403585a7ae54f86918219acb8e
 
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
-bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_cc", version = "0.2.22")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.15")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -35,7 +35,7 @@ bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "rules_python", version = "1.8.0")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
-bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
+bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.1")
 bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
@@ -45,7 +45,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
+    version = "0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -75,7 +75,7 @@ bazel_dep(
 git_override(
     module_name = "sonic-swss",
     commit = "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
-    patches = ["//tools/bazel:sonic-swss-libteam.patch"],
+    patches = ["//tools/bazel:0001-sonic-swss-libteam.patch"],
     patch_strip = 1,
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
@@ -89,12 +89,12 @@ single_version_override(
 
 single_version_override(
     module_name = "rules_cc",
-    version = "0.2.20",
+    version = "0.2.22",
 )
 
 single_version_override(
     module_name = "tar.bzl",
-    version = "0.10.5-sonic.1",
+    version = "0.10.5.sonic.1",
 )
 
 single_version_override(
@@ -261,7 +261,7 @@ bazel_dep(name = "sonic-fips", version = "0.0.3-d1a2c8f692d4197295269ed445022c38
 # their previous infrastructure declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
+    version = "0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -283,7 +283,7 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
-    patches = ["//tools/bazel:sonic-swss-common-zmq.patch"],
+    patches = ["//tools/bazel:0001-sonic-swss-common-zmq.patch"],
     patch_strip = 1,
     version = "0.0.7-f7fda40c02b3a8b4bbbff3d17fca3dff83f4cbad",
 )
