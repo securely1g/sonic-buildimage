@@ -77,6 +77,14 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -153,9 +161,9 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure' || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/frr-oci-amd64') }}
         run: |
-          # Temporary PR #51/#61 scope: no DEB generation, including kernel fixtures.
+          # Temporary source and OCI migration scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
             for test in tools/bazel/tests/*_test.py; do
@@ -365,9 +373,9 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure' || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/frr-oci-amd64') }}
         run: |
-          # Temporary PR #51/#61 scope: no DEB generation, including kernel fixtures.
+          # Temporary source and OCI migration scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
             for test in tools/bazel/tests/*_test.py; do
@@ -813,12 +821,13 @@ jobs:
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
-    # PRs #51 and #61 validate source TARs only; their scope excludes DEB generation.
+    # The scoped source and OCI migration branches exclude DEB generation; validate their outputs separately.
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       github.event.pull_request.number != 51 && github.event.pull_request.number != 61) ||
+       github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
+       github.head_ref != 'codex/swss-native-closure' && github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/frr-oci-amd64') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720

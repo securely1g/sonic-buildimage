@@ -13,6 +13,8 @@ bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "googletest", version = "1.16.0")
+# Match the shared gzip toolchain source identity checked by prepare_pigz.py.
+bazel_dep(name = "pigz", version = "2.8.bcr.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # P4 producers retain their upstream Make/configure builds and export TARs.
@@ -77,6 +79,8 @@ bazel_dep(
 git_override(
     module_name = "sonic-swss",
     commit = "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
+    patches = ["//tools/bazel:0001-sonic-swss-libteam.patch"],
+    patch_strip = 1,
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
@@ -207,6 +211,25 @@ apt_inputs(
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
 )
 
+# FRR's OCI layer imports distro runtime/debug inputs, never its source DEBs.
+apt.import_lock(lock = "//dockers/docker-fpm-frr/bazel:apt.lock.json")
+use_repo(apt, "frr_image_debian", "frr_image_debug_debian", "frr_image_test_debian")
+
+apt_inputs(
+    name = "frr_image_apt_inputs",
+    lock = "//dockers/docker-fpm-frr/bazel:apt.lock.json",
+)
+
+# Shared SWSS base adds only its external runtime closure; project payloads
+# remain the source owners' public TAR targets.
+apt.import_lock(lock = "//dockers/docker-swss-layer-trixie/bazel:apt.lock.json")
+use_repo(apt, "swss_layer_debian")
+
+apt_inputs(
+    name = "swss_layer_apt_inputs",
+    lock = "//dockers/docker-swss-layer-trixie/bazel:apt.lock.json",
+)
+
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
@@ -296,6 +319,8 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
+    patches = ["//tools/bazel:0001-sonic-swss-common-zmq.patch"],
+    patch_strip = 1,
     version = "0.0.7-f7fda40c02b3a8b4bbbff3d17fca3dff83f4cbad",
 )
 
@@ -346,3 +371,5 @@ source_files(
         "@sonic_swss//:debian/swss.install": "swss.install.txt",
     },
 )
+
+include("//src/libteam:deps.MODULE.bazel")
