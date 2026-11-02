@@ -274,3 +274,17 @@ must pass `--downloader_config` explicitly. The policy does not rewrite
 `apt-get` or arbitrary `curl` commands, and does not provide connectivity to the
 private remote cache/downloader. The mirror may redirect HTTPS requests to
 HTTP, so HTTPS source URLs alone do not guarantee end-to-end TLS.
+
+The source-base, OCI archive, and full VS jobs also use the registry's shared
+[`ci/source_mirrors.cfg`](https://github.com/securely1g/sonic-bazel-registry/blob/main/ci/source_mirrors.cfg).
+[`source_mirrors.py`](source_mirrors.py) downloads one commit-pinned copy and
+verifies its SHA256 before adding it after the local Debian rules. CI selects
+the combined file with Bazel's `--downloader_config`, preserving the local
+mirror priorities and the normal repository cache. For example, the unchanged
+BCR `pigz@2.8.bcr.2` archive comes from the registry release, with MacPorts as a
+fallback; Bazel still checks the original SHA256 and applies the BCR patches.
+There is no separate pigz download or pigz distdir.
+
+The private source-image worker uses the same verified shared configuration
+and retains its additional exact gawk and snapshot fallbacks. Its private
+cache paths and download artifacts are unchanged.

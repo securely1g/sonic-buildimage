@@ -278,6 +278,13 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Configure shared source download mirrors
+        run: |
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -1213,6 +1220,10 @@ jobs:
         run: |
           python3 -B tools/bazel/ci/configure_runner_cache.py \
             --jobs=4 --local-memory-mb=12288
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$PWD/artifacts/vs/source-mirrors.cfg"
+          # /sonic shares this checkout; retain the private cache configuration.
+          printf 'common --downloader_config=%s\n' "$PWD/artifacts/vs/source-mirrors.cfg" >> .bazelrc.user
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
             --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json

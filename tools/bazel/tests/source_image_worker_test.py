@@ -216,7 +216,7 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_gawk_mirror_changes_only_three_exact_source_urls(self):
         original = b"verified existing mirror fixture\n"
-        with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
+        with patch.object(worker.source_mirrors, 'SHA256', hashlib.sha256(original).hexdigest()):
             config = worker.mirror_configuration(original).decode()
             with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
                 worker.mirror_configuration(original + b'changed')
@@ -231,7 +231,7 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_snapshot_fallbacks_keep_original_and_only_exact_observed_urls(self):
         original = b'prior verified mirror rules\n'
-        with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
+        with patch.object(worker.source_mirrors, 'SHA256', hashlib.sha256(original).hexdigest()):
             config = worker.mirror_configuration(original).decode()
         rules = [line.split()[1:] for line in config.splitlines()
                  if line.startswith('rewrite ') and 'snapshot' in line]
