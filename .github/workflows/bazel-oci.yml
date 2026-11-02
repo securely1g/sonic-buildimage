@@ -25,7 +25,8 @@ jobs:
   historical_inputs:
     name: Stage exact historical Salsa and P4 sources
     if: inputs.source_sha != 'c20b1d43e26c6eb2928191f041b78a60251ef9a0'
-    runs-on: ubuntu-24.04
+    # Source transport uses Git, curl and hashes; it produces no host binaries.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
