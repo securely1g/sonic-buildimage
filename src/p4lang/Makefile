@@ -33,6 +33,8 @@ $(addprefix $(DEST)/, $(P4LANG_BMV2_TARGET)): $(DEST)/% :
 	pushd p4lang-bmv2-$(P4LANG_BMV2_VERSION)
 	patch -p1 -i ../p4lang-bmv2.patch/use-boost-1.83.patch
 	patch -p1 -i ../p4lang-bmv2.patch/remove-unnecessary-dependencies.patch
+	patch -p1 -i ../p4lang-bmv2.patch/hold-cli-endpoint-reservations.patch
+	python3 -B ../tests/test_bmv2_cli_reservations.py targets/simple_switch/tests/CLI_tests/run_one_test.py.in
 ifeq ($(CROSS_BUILD_ENVIRON), y)
 	dpkg-buildpackage -us -uc -b -a$(CONFIGURED_ARCH) -Pcross,nocheck -j$(SONIC_CONFIG_MAKE_JOBS) --admindir $(SONIC_DPKG_ADMINDIR)
 else
