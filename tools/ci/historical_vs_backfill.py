@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Exact-source receipts for the disposable November 2 master backfill branch."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import urllib.request
 
 REPOSITORY = "securely1g/sonic-buildimage"
@@ -99,9 +101,65 @@ def identity(source, workspace, after_build):
             "submodule_commits_unchanged": True}
 
 
+def kernel_command(workspace, trust_store):
+    """Read the historical Make contract, then use its existing trust CLI."""
+    trust_store = trust_store.resolve(strict=True)
+    require(trust_store.is_file() and trust_store.stat().st_size > 0,
+            "The worker must supply an existing nonempty Java trust store")
+    # Reading an additional no-op target leaves the historical rule untouched.
+    # Use its own ordered setting list and the same quote normalization as its
+    # bazel-kernel-ensure recipe, rather than synthesizing VS defaults.
+    fragment = r'''$(info BACKFILL_KERNEL:DEBS_PATH=$(DEBS_PATH))
+$(info BACKFILL_KERNEL:CACHE_ENABLED=$(if $(strip $(SONIC_BAZEL_CACHE_SOURCE)),yes,no))
+$(info BACKFILL_KERNEL:KEYS=$(SONIC_BAZEL_KERNEL_CONFIG))
+$(foreach setting,$(SONIC_BAZEL_KERNEL_CONFIG),$(info BACKFILL_KERNEL:CONFIG:$(setting)=$(if $(filter SECURE_UPGRADE_MODE,$(setting)),$(subst ",,$($(setting))),$($(setting)))))
+.PHONY: .backfill-kernel-configuration
+.backfill-kernel-configuration: ; @:
+'''
+    result = subprocess.run(
+        ["make", "--no-print-directory", "-s", "-f", "slave.mk", "-f", "-",
+         ".backfill-kernel-configuration"], cwd=workspace, input=fragment,
+        check=True, text=True, capture_output=True)
+    settings = dict(line.removeprefix("BACKFILL_KERNEL:").split("=", 1)
+                    for line in result.stdout.splitlines() if line.startswith("BACKFILL_KERNEL:"))
+    keys = settings["KEYS"].split()
+    require(keys and settings["DEBS_PATH"], "Historical Make did not expose its kernel contract")
+    require(len(set(keys)) == len(keys), "Historical kernel settings are duplicated")
+    command = [sys.executable, "-B", "tools/bazel/kernel/prepare.py", "ensure",
+               "--debs-directory", settings["DEBS_PATH"]]
+    for key in keys:
+        command += ["--kernel-config", f"{key}={settings['CONFIG:' + key]}"]
+    if settings["CACHE_ENABLED"] == "yes":
+        command += ["--cache-directory", "/bazel_cache"]
+    elif settings["CACHE_ENABLED"] != "no":
+        raise ValueError("Invalid historical cache selection")
+    command += ["--java-trust-store", str(trust_store)]
+    return command, {"kernel_config": {key: settings["CONFIG:" + key] for key in keys},
+                     "debs_directory": settings["DEBS_PATH"],
+                     "java_trust_store": str(trust_store),
+                     "java_trust_store_sha256": hashlib.sha256(trust_store.read_bytes()).hexdigest()}
+
+
+def prepare_kernel(workspace, trust_store, output):
+    command, receipt = kernel_command(workspace, trust_store)
+    receipt.update(status="running", command=command)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    print("Prepare the original kernel with the worker's verified Java trust store", flush=True)
+    subprocess.run(command, cwd=workspace, check=True)
+    # The normal Make recipe omits this execution-only trust option. Require its
+    # original ensure path to reuse the published packages before continuing.
+    ordinary = command[:-2]
+    result = subprocess.run(ordinary, cwd=workspace, check=True, text=True, capture_output=True)
+    reused = json.loads(result.stdout)
+    require(reused.get("reused") is True, "Ordinary kernel ensure did not reuse the prepared outputs")
+    receipt.update(status="passed", ordinary_ensure_reused=True, ordinary_ensure=reused)
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("inputs", "identity"))
+    parser.add_argument("command", choices=("inputs", "identity", "kernel"))
     parser.add_argument("--source-sha", required=True, choices=INPUTS)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--workspace", type=Path)
@@ -122,6 +180,14 @@ def main():
                 output.write(f"p4_artifact_id={receipt.get('p4_artifact_id', '')}\n")
                 output.write(f"prefer_debian_repo={receipt['prefer_debian_repo']}\n")
                 output.write(f"native_docker_apt_retries={receipt['native_docker_apt_retries']}\n")
+    elif args.command == "kernel":
+        require(args.workspace is not None, "kernel requires --workspace")
+        require(args.source_sha not in P4_INPUTS, "c20 already reads the worker trust-store setting")
+        require(git(args.workspace, "rev-parse", "HEAD") == args.source_sha, "Checkout HEAD changed")
+        store = os.environ.get("SONIC_BAZEL_JAVA_TRUST_STORE")
+        require(bool(store), "Worker image must declare SONIC_BAZEL_JAVA_TRUST_STORE")
+        receipt = prepare_kernel(args.workspace, Path(store), args.output)
+        path = args.output
     else:
         require(args.workspace is not None, "identity requires --workspace")
         receipt = identity(args.source_sha, args.workspace, args.after_build)

@@ -121,6 +121,15 @@ jobs:
             --archives-dir artifacts/vs/repository-inputs \
             --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json
 
+      - name: Prepare older kernels with the existing worker Java trust store
+        if: steps.inputs.outputs.p4_artifact_id == ''
+        run: |
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          cd /sonic
+          python3 -B "$GITHUB_WORKSPACE/control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tools/ci/historical_vs_backfill.py" kernel \
+            --source-sha "$SOURCE_SHA" --workspace "$PWD" --output artifacts/vs/kernel-trust-handoff.json \
+            2>&1 | tee artifacts/vs/kernel-trust-handoff.log
+
       - name: Build the historical ONIE installer directly with slave.mk
         id: build
         env:

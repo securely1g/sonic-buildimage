@@ -1,10 +1,15 @@
 """Reject mismatched historical source inputs before a runner builds them."""
 import copy
+import hashlib
+import json
 import unittest
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
-from historical_vs_backfill import INPUTS, P4_INPUTS, REPOSITORY, check_inputs, identity
+from historical_vs_backfill import INPUTS, P4_INPUTS, REPOSITORY, check_inputs, identity, kernel_command
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class HistoricalInputsTest(unittest.TestCase):
@@ -119,6 +124,49 @@ class HistoricalCheckoutTest(unittest.TestCase):
             (source / "recipe").write_text("different recipe\n")
             with self.assertRaises(subprocess.CalledProcessError):
                 identity(revision, source, True)
+
+
+class HistoricalKernelCommandTest(unittest.TestCase):
+    def test_command_matches_the_original_make_recipe_with_and_without_cache(self):
+        # Execute the real kernel Make recipe with a recording Python launcher;
+        # compare its complete argument list against the separate prebuild CLI.
+        # Quotes and spaces catch accidental shell/Make normalization changes.
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            binary = workspace / "bin"
+            binary.mkdir()
+            launcher = binary / "python3"
+            launcher.write_text(
+                "#!" + sys.executable + "\nimport json,sys\nfrom pathlib import Path\n"
+                "Path('arguments.json').write_text(json.dumps(sys.argv[1:]))\n")
+            launcher.chmod(0o755)
+            store = workspace / "worker public cacerts"
+            store.write_bytes(b"fixture public trust store")
+            for cache in ("", "/bazel_cache"):
+                with self.subTest(cache=cache):
+                    (workspace / "slave.mk").write_text(
+                        "SRC_PATH := src\nDEBS_PATH := target/debs/trixie\n"
+                        "BUILD_WITH_BAZEL_WHEN_AVAILABLE := y\n"
+                        "CONFIGURED_ARCH := amd64\nCONFIGURED_PLATFORM := vs\nBLDENV := trixie\n"
+                        "CROSS_BUILD_ENVIRON := n\nMULTIARCH_QEMU_ENVIRON := n\n"
+                        "SECURE_UPGRADE_MODE := \"no_sign\"\n"
+                        "ADDITIONAL_BUILD_PROFILES := test's profile\n"
+                        "SECURE_UPGRADE_KERNEL_CAFILE := path with spaces/public.pem\n"
+                        f"SONIC_BAZEL_CACHE_SOURCE := {cache}\n"
+                        f"export PATH := {binary}:$(PATH)\n"
+                        f"include {ROOT / 'rules/linux-kernel.mk'}\n")
+                    recorded = workspace / "arguments.json"
+                    recorded.unlink(missing_ok=True)
+                    command, receipt = kernel_command(workspace, store)
+                    self.assertFalse(recorded.exists(), "configuration query ran the kernel recipe")
+                    subprocess.run(["make", "-s", "-f", "slave.mk", "bazel-kernel-ensure"],
+                                   cwd=workspace, check=True, capture_output=True, text=True)
+                    self.assertEqual(command[1:-2], json.loads(recorded.read_text()))
+                    self.assertEqual(command[-2:], ["--java-trust-store", str(store)])
+                    self.assertEqual(receipt["kernel_config"]["SECURE_UPGRADE_MODE"], "no_sign")
+                    self.assertEqual(receipt["kernel_config"]["ADDITIONAL_BUILD_PROFILES"], "test's profile")
+                    self.assertEqual(receipt["debs_directory"], "target/debs/trixie")
+                    self.assertEqual(receipt["java_trust_store_sha256"], hashlib.sha256(store.read_bytes()).hexdigest())
 
 
 if __name__ == "__main__":

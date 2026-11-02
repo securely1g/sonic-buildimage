@@ -759,6 +759,32 @@ class KernelBundleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SHA256"):
             kernel.ensure(self.root, builder=lambda *a, **kw: self.fail("must not hide corruption"))
 
+    def test_execution_trust_does_not_prevent_ordinary_make_reuse(self):
+        saved = self.root / "saved-outputs"
+        shutil.copytree(self.bundle, saved)
+        shutil.rmtree(self.bundle)
+        trust_store = self.root / "worker-cacerts"
+        trust_store.write_bytes(b"fixture public Java trust store")
+        calls = []
+
+        def builder(workspace, state, remote, upload, **options):
+            calls.append(options)
+            planned = kernel.plan(workspace, state, remote, upload, **options)
+            self.declared_outputs(state / "build", saved)
+            kernel.stage_outputs(state / "build", options["debs_directory"], workspace, self.state, self.selected)
+            return {"plan": planned}
+
+        prepared = kernel.ensure(self.root, java_trust_store=trust_store, builder=builder)
+        self.assertFalse(prepared["reused"])
+        self.assertEqual(prepared["plan"]["execution_trust"],
+                         {"java_trust_store_sha256": kernel.sha256(trust_store)})
+        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.bundle.iterdir()}
+        ordinary = kernel.ensure(self.root, builder=builder)
+        self.assertTrue(ordinary["reused"])
+        self.assertEqual(len(calls), 1, "normal Make unnecessarily rebuilt the kernel")
+        self.assertEqual(before, {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+                                  for p in self.bundle.iterdir()})
+
     def test_explicit_deb_directory_reuses_only_its_verified_packages(self):
         selected = self.root / "custom-debs"
         self.bundle.rename(selected)
