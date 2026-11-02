@@ -74,6 +74,14 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
