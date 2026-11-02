@@ -4,8 +4,20 @@
 const IMAGE_KINDS = new Set(["make-vs", "bazel-vs"]);
 const KIND_LABELS = {"make-vs": "Make VS", "bazel-vs": "Bazel VS installer", container: "Container", source: "Source", checks: "Checks", other: "Other"};
 const PHASES = ["setup", "build", "validation", "upload", "other"];
+// Match collect.py's IMAGE_STEPS. Exact names preserve historical timing boundaries.
+const IMAGE_STEP_LABELS = {
+  "Build the VS installer (.bin)": "VS installer (.bin); VM generation and boot checks excluded",
+  "Build the VS image": "VS build with embedded boot checks; post-build validation excluded",
+  "Build the VS image with Bazel SWSS archives": "Build the VS image with Bazel SWSS archives",
+  "Build the VS image and both OCI container variants": "VS build, OCI follow-up and archive validation",
+  "Build the Bazel VS installer": "Build the Bazel VS installer",
+  "Build Bazel VS installer": "Build Bazel VS installer",
+  "Build and verify sonic-vs.bin with Bazel": "Build and verify sonic-vs.bin with Bazel",
+};
 // Keep this vocabulary in sync with breakdown.py. Never display labels or log text from a snapshot.
 const SECTION_LABELS = {
+  "oci-session": "OCI archives and verification",
+  "oci-verification": "P4 packages and OCI verification",
   "vs-image": "VS image, dependencies and cleanup", "orchagent-release": "Orchagent release",
   "orchagent-debug": "Orchagent debug", "syncd-release": "Syncd release", "syncd-debug": "Syncd debug",
   "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
@@ -15,6 +27,7 @@ const TASK_LABELS = {
   "config-engine": "Config-engine container", "orchagent-release": "Orchagent release container",
   "orchagent-debug": "Orchagent debug container", "syncd-release": "Syncd release container",
   "syncd-debug": "Syncd debug container", "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
+  "orchagent-pair": "Orchagent runtime and debug containers", "syncd-pair": "Syncd runtime and debug containers",
   "bmp-watchdog": "BMP watchdog container", "gnmi-watchdog": "gNMI watchdog container",
   "sonic-otel": "OpenTelemetry container", "router-advertiser": "Router advertiser container",
   "dash-engine": "DASH engine container", "sonic-mgmt-framework": "Management framework container",
@@ -63,6 +76,23 @@ function resultLabel(value) { return String(value || "unknown").replaceAll("_", 
 function runKey(run) { return `${run.run_id}:${run.attempt}`; }
 function imageJob(job) { return IMAGE_KINDS.has(job.kind); }
 function measured(job) { return imageJob(job) && job.conclusion === "success" && seconds(job.image_build_seconds) !== null; }
+function imageMeasurement(job) {
+  const names = (Array.isArray(job.steps) ? job.steps : []).map(step => step?.name)
+    .filter(name => typeof name === "string" && Object.hasOwn(IMAGE_STEP_LABELS, name)).sort();
+  return names.length ? {signature: JSON.stringify(names), label: names.map(name => IMAGE_STEP_LABELS[name]).join(" + ")} :
+    {signature: null, label: "Image step boundary not recorded"};
+}
+function imageTrendGroups(points) {
+  const groups = new Map();
+  for (const item of points) {
+    const signature = imageMeasurement(item.job).signature;
+    // Unknown boundaries are isolated points, even when path and architecture match.
+    const key = signature === null ? item : JSON.stringify([item.job.kind, item.job.architecture || "unknown", signature]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups.values()];
+}
 function imageResult(jobs) {
   const outcomes = jobs.filter(imageJob).map(result);
   if (!outcomes.length) return "unmeasured";
@@ -223,7 +253,7 @@ function renderMetrics() {
   const latest = successes[0];
   const measuredPrs = new Set(successes.flatMap(item => prNumbers(item.run)));
   const metrics = [
-    ["Latest successful image step", latest ? duration(latest.job.image_build_seconds) : "—", latest ? `${kindLabel(latest.job)} · ${architecture(latest.job)}` : "Waiting for an image measurement"],
+    ["Latest successful image step", latest ? duration(latest.job.image_build_seconds) : "—", latest ? `${kindLabel(latest.job)} · ${architecture(latest.job)} · ${imageMeasurement(latest.job).label}` : "Waiting for an image measurement"],
     ["Successful image measurements", successes.length, "Build steps with a successful result"],
     ["PRs with image measurements", `${state.data.pull_requests.filter(pr => measuredPrs.has(pr.number)).length} / ${state.data.pull_requests.length}`, "Includes historical PR revisions"],
     ["Workflow runs retained", state.data.runs.length, "Each retry attempt is recorded separately"],
@@ -258,7 +288,7 @@ function renderTrend() {
   const points = all.slice(0, 60).reverse();
   const container = byId("trend");
   container.replaceChildren();
-  byId("trend-note").textContent = `Showing ${points.length} of ${all.length} matching successful image measurements. Select a point to inspect its job. Lines join only the same build path and architecture; they do not imply a controlled comparison.`;
+  byId("trend-note").textContent = `Showing ${points.length} of ${all.length} matching successful image measurements. Select a point to inspect its job. Lines join only the same build path, architecture and measured step; they do not imply a controlled comparison.`;
   if (!points.length) { container.append(el("p", "empty", "No successful image measurements match these filters.\nFailed, skipped, and pending runs remain visible below.")); return; }
   const padding = getComputedStyle(container);
   const width = Math.max(240, Math.round(container.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)));
@@ -281,20 +311,14 @@ function renderTrend() {
     const tick = firstTime + (lastTime - firstTime) * fraction;
     svg.append(svgEl("text", {x: left + fraction * (width - left - right), y: height - 13, "text-anchor": "middle"}, dateTime(new Date(tick).toISOString(), true)));
   }
-  const groups = new Map();
-  for (const item of points) {
-    const group = `${item.job.kind}:${item.job.architecture || "unknown"}`;
-    if (!groups.has(group)) groups.set(group, []);
-    groups.get(group).push(item);
-  }
-  for (const items of groups.values()) {
+  for (const items of imageTrendGroups(points)) {
     const color = items[0].job.kind === "make-vs" ? "#007f78" : "#23548a";
     const line = svgEl("polyline", {points: items.map(item => `${x(item)},${y(item)}`).join(" "), fill: "none", stroke: color, "stroke-opacity": ".45", "stroke-width": "2", "stroke-dasharray": items[0].job.architecture === "arm64" ? "5 4" : "0"});
     svg.append(line);
   }
   for (const item of points) {
     const prs = prNumbers(item.run).map(number => `PR #${number}`).join(", ") || item.run.branch || "Branch build";
-    const label = `${prs} · ${kindLabel(item.job)} · ${architecture(item.job)} · ${duration(item.job.image_build_seconds)} · ${dateTime(item.run.started_at)}`;
+    const label = `${prs} · ${kindLabel(item.job)} · ${architecture(item.job)} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · ${dateTime(item.run.started_at)}`;
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
@@ -489,6 +513,7 @@ function renderDetails() {
     const valueBox = el("div", "detail-value"); valueBox.append(el("span", "", name), el("strong", "", duration(value))); values.append(valueBox);
   }
   box.append(values);
+  if (measured(job)) box.append(el("p", "stage-note", `Measured scope: ${imageMeasurement(job).label}.`));
   const phases = job.phases || {};
   const total = PHASES.reduce((sum, phase) => sum + (seconds(phases[phase]) || 0), 0);
   const bar = el("div", "stage-bar"); bar.setAttribute("aria-label", "Recorded step time by phase");
@@ -543,4 +568,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageMeasurement, imageTrendGroups, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};
