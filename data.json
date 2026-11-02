@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-02T09:44:22.583913Z",
+  "generated_at": "2026-11-02T09:52:04.072361Z",
   "pull_requests": [
     {
       "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
@@ -40,14 +40,14 @@
     },
     {
       "base_sha": "c743d7521e80fc1733e5cc0ffc24889b08f78444",
-      "draft": true,
+      "draft": false,
       "head_branch": "codex/dashboard-slave-installer",
       "head_sha": "54fb3679610eaa4d5e66a07258481534ac047f9f",
-      "merged_at": null,
+      "merged_at": "2026-11-02T09:50:49Z",
       "number": 82,
-      "state": "open",
+      "state": "closed",
       "title": "Track SONiC slave installer and upload timing",
-      "updated_at": "2026-11-02T09:13:16Z",
+      "updated_at": "2026-11-02T09:50:51Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/82"
     },
     {
@@ -159,15 +159,15 @@
       "url": "https://github.com/securely1g/sonic-buildimage/pull/72"
     },
     {
-      "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9",
+      "base_sha": "c743d7521e80fc1733e5cc0ffc24889b08f78444",
       "draft": false,
       "head_branch": "codex/exact-pr-pair-ci",
-      "head_sha": "b2c541289ebe1989c8635608b51b14844dda9cc0",
+      "head_sha": "872607234b55d7a31c2461ef9cc925030bc20843",
       "merged_at": null,
       "number": 71,
       "state": "open",
       "title": "Validate exact PR pairs in Bazel OCI CI",
-      "updated_at": "2026-10-30T08:29:22Z",
+      "updated_at": "2026-11-02T09:50:23Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/71"
     },
     {
@@ -383,7 +383,7 @@
       "number": 53,
       "state": "open",
       "title": "Preserve builder cache keys when initializing Docker hooks",
-      "updated_at": "2026-11-02T09:32:52Z",
+      "updated_at": "2026-11-02T09:46:34Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/53"
     },
     {
@@ -989,6 +989,1256 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "master",
+      "completed_at": null,
+      "conclusion": null,
+      "event": "push",
+      "jobs": [
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 125205961738,
+          "kind": "container",
+          "name": "Container archive (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 5.0,
+            "setup": 27.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-11-02T09:51:14Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-11-02T09:51:16Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:15Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:21Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-02T09:51:16Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:43Z",
+              "conclusion": "success",
+              "duration_seconds": 22.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:21Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:47Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:47Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:47Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:47Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423968669/job/125205961738"
+        },
+        {
+          "architecture": "arm64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 125205961963,
+          "kind": "container",
+          "name": "Container archive (ARM64)",
+          "phases": {
+            "build": null,
+            "other": 5.0,
+            "setup": 33.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-11-02T09:50:56Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-11-02T09:51:08Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:07Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:13Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-02T09:51:08Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:32Z",
+              "conclusion": "success",
+              "duration_seconds": 19.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:13Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:37Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:32Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:37Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:45Z",
+              "conclusion": "success",
+              "duration_seconds": 8.0,
+              "name": "Set up Bazel",
+              "number": 6,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:37Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:45Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 8,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 11,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 13,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 14,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423968669/job/125205961963"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 125205962126,
+          "kind": "other",
+          "name": "OCI regression checks (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 5.0,
+            "setup": 39.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-11-02T09:50:54Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-11-02T09:50:56Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:01Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-02T09:50:56Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:24Z",
+              "conclusion": "success",
+              "duration_seconds": 23.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:01Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:30Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:24Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:30Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check generated dependency state",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:30Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check hosted storage",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:39Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Set up Bazel",
+              "number": 7,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make handoff and archive validation",
+              "number": 8,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:39Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain the verified GitLab source downloads",
+              "number": 9,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain the native Redis test helper for installed-image checks",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload the source downloads for the VS job",
+              "number": 11,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Fetch pinned P4 source inputs for the native worker",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Preserve P4 source inputs and verification receipt",
+              "number": 13,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Report validation scope",
+              "number": 14,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 26,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 27,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423968669/job/125205962126"
+        }
+      ],
+      "pr_association": "none",
+      "pr_association_note": null,
+      "pr_numbers": [],
+      "run_id": 41423968669,
+      "source_sha": "c20b1d43e26c6eb2928191f041b78a60251ef9a0",
+      "started_at": "2026-11-02T09:50:51Z",
+      "status": "in_progress",
+      "updated_at": "2026-11-02T09:51:14Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423968669/attempts/1",
+      "workflow_name": "Bazel OCI",
+      "workflow_path": ".github/workflows/bazel-oci.yml"
+    },
+    {
+      "attempt": 1,
+      "branch": "codex/exact-pr-pair-ci",
+      "completed_at": null,
+      "conclusion": null,
+      "event": "pull_request",
+      "jobs": [
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 125205822847,
+          "kind": "other",
+          "name": "OCI regression checks (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 4.0,
+            "setup": 29.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-11-02T09:50:34Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-11-02T09:50:47Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:50:51Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-02T09:50:47Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:07Z",
+              "conclusion": "success",
+              "duration_seconds": 16.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:51Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:10Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:07Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:10Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Prepare exact PR pair",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:10Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check generated dependency state",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:10Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check hosted storage",
+              "number": 7,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:18Z",
+              "conclusion": "success",
+              "duration_seconds": 8.0,
+              "name": "Set up Bazel",
+              "number": 8,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make handoff and archive validation",
+              "number": 9,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:18Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain the verified GitLab source downloads",
+              "number": 10,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain the native Redis test helper for installed-image checks",
+              "number": 11,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Verify exact checkout for source downloads",
+              "number": 12,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload the source downloads for the VS job",
+              "number": 13,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Fetch pinned P4 source inputs for the native worker",
+              "number": 14,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Preserve P4 source inputs and verification receipt",
+              "number": 15,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain exact checkout after hosted failure",
+              "number": 16,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Report validation scope",
+              "number": 17,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 32,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 33,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 34,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423926126/job/125205822847"
+        },
+        {
+          "architecture": "arm64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 125205823321,
+          "kind": "container",
+          "name": "Container archive (ARM64)",
+          "phases": {
+            "build": null,
+            "other": 4.0,
+            "setup": 34.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-11-02T09:50:47Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-11-02T09:50:49Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:48Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:50:53Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-02T09:50:49Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:12Z",
+              "conclusion": "success",
+              "duration_seconds": 19.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:17Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:12Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:17Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Prepare exact PR pair",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:17Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:17Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:17Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:26Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Set up Bazel",
+              "number": 7,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:17Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 8,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:26Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 9,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 10,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 11,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 12,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 13,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 14,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 15,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 29,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 30,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423926126/job/125205823321"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": null,
+          "conclusion": null,
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 125205823482,
+          "kind": "container",
+          "name": "Container archive (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 4.0,
+            "setup": 38.0,
+            "upload": null,
+            "validation": 0.0
+          },
+          "started_at": "2026-11-02T09:50:34Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completed_at": "2026-11-02T09:50:36Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:35Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:50:40Z",
+              "conclusion": "success",
+              "duration_seconds": 4.0,
+              "name": "Initialize containers",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-02T09:50:36Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:50:59Z",
+              "conclusion": "success",
+              "duration_seconds": 19.0,
+              "name": "Install execution tools",
+              "number": 3,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:40Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:05Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Checkout repository",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:50:59Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:05Z",
+              "conclusion": "skipped",
+              "duration_seconds": null,
+              "name": "Prepare exact PR pair",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:05Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:05Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Check native architecture and generated dependency state",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:05Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-02T09:51:17Z",
+              "conclusion": "success",
+              "duration_seconds": 12.0,
+              "name": "Set up Bazel",
+              "number": 7,
+              "phase": "setup",
+              "started_at": "2026-11-02T09:51:05Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check Make OCI bases and reproducible Docker archives",
+              "number": 8,
+              "phase": "validation",
+              "started_at": "2026-11-02T09:51:17Z",
+              "status": "in_progress"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check shared Make rules with unrelated container targets",
+              "number": 9,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Test Python packages and check startup generation",
+              "number": 10,
+              "phase": "validation",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain wheels and required Python test evidence",
+              "number": 11,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Check local cache reuse across fresh checkouts",
+              "number": 12,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Retain generated module lock and graph",
+              "number": 13,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Prepare public artifact list",
+              "number": 14,
+              "phase": "setup",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Upload public archive evidence",
+              "number": 15,
+              "phase": "upload",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Set up Bazel",
+              "number": 28,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 29,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Stop containers",
+              "number": 30,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423926126/job/125205823482"
+        }
+      ],
+      "pr_association": "github",
+      "pr_association_note": null,
+      "pr_numbers": [
+        71
+      ],
+      "run_id": 41423926126,
+      "source_sha": "872607234b55d7a31c2461ef9cc925030bc20843",
+      "started_at": "2026-11-02T09:50:32Z",
+      "status": "in_progress",
+      "updated_at": "2026-11-02T09:50:48Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41423926126/attempts/1",
+      "workflow_name": "Bazel OCI",
+      "workflow_path": ".github/workflows/bazel-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/make-common-remote-cache",
@@ -1613,7 +2863,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125200889179,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -2288,7 +3538,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125198919112,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -2963,7 +4213,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125197009602,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -3638,7 +4888,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125196681529,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -4313,7 +5563,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125195369920,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -4988,7 +6238,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125193907798,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -5663,7 +6913,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125190141762,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -6338,7 +7588,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125177341498,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -6431,6 +7681,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": null,
               "conclusion": null,
               "duration_seconds": null,
@@ -6456,7 +7714,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 11,
-              "phase": "other",
+              "phase": "upload",
               "started_at": null,
               "status": "pending"
             },
@@ -6466,7 +7724,7 @@
               "duration_seconds": null,
               "name": "Preserve build receipts",
               "number": 12,
-              "phase": "other",
+              "phase": "upload",
               "started_at": null,
               "status": "pending"
             },
@@ -7782,16 +9040,16 @@
           "completed_at": "2026-11-02T08:07:22Z",
           "conclusion": "success",
           "duration_seconds": 10129.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 8486.0,
+          "image_build_seconds": 8486.0,
           "job_id": 125108987503,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 8486.0,
-            "other": 79.0,
+            "other": 8.0,
             "setup": 317.0,
-            "upload": null,
+            "upload": 71.0,
             "validation": 1244.0
           },
           "started_at": "2026-11-02T05:18:33Z",
@@ -7878,6 +9136,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "unsupported-log-format",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-02T07:45:18Z",
               "conclusion": "success",
               "duration_seconds": 8486.0,
@@ -7903,7 +9169,7 @@
               "duration_seconds": 68.0,
               "name": "Publish the installer and matching container archives",
               "number": 11,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T08:06:01Z",
               "status": "completed"
             },
@@ -7913,7 +9179,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 12,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T08:07:09Z",
               "status": "completed"
             },
@@ -8608,16 +9874,16 @@
           "completed_at": "2026-11-02T04:58:38Z",
           "conclusion": "failure",
           "duration_seconds": 11877.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 11579.0,
           "image_build_seconds": null,
           "job_id": 125049387361,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 11579.0,
-            "other": 12.0,
+            "other": 8.0,
             "setup": 280.0,
-            "upload": null,
+            "upload": 4.0,
             "validation": 1.0
           },
           "started_at": "2026-11-02T01:40:41Z",
@@ -8704,6 +9970,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-02T04:58:23Z",
               "conclusion": "failure",
               "duration_seconds": 11579.0,
@@ -8729,7 +10003,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 11,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T04:58:23Z",
               "status": "completed"
             },
@@ -8739,7 +10013,7 @@
               "duration_seconds": 4.0,
               "name": "Preserve build receipts",
               "number": 12,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T04:58:23Z",
               "status": "completed"
             },
@@ -9434,16 +10708,16 @@
           "completed_at": "2026-11-02T01:18:03Z",
           "conclusion": "failure",
           "duration_seconds": 2877.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 2567.0,
           "image_build_seconds": null,
           "job_id": 125030599746,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 2567.0,
-            "other": 12.0,
+            "other": 7.0,
             "setup": 293.0,
-            "upload": null,
+            "upload": 5.0,
             "validation": 1.0
           },
           "started_at": "2026-11-02T00:30:06Z",
@@ -9530,6 +10804,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-02T01:17:49Z",
               "conclusion": "failure",
               "duration_seconds": 2567.0,
@@ -9555,7 +10837,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 11,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T01:17:49Z",
               "status": "completed"
             },
@@ -9565,7 +10847,7 @@
               "duration_seconds": 5.0,
               "name": "Preserve build receipts",
               "number": 12,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T01:17:49Z",
               "status": "completed"
             },
@@ -9651,16 +10933,16 @@
           "completed_at": "2026-11-02T00:29:16Z",
           "conclusion": "cancelled",
           "duration_seconds": 7169.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 6875.0,
           "image_build_seconds": null,
           "job_id": 125000332577,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 6875.0,
-            "other": 12.0,
+            "other": 7.0,
             "setup": 278.0,
-            "upload": null,
+            "upload": 5.0,
             "validation": null
           },
           "started_at": "2026-11-01T22:29:47Z",
@@ -9717,6 +10999,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-02T00:29:01Z",
               "conclusion": "cancelled",
               "duration_seconds": 6875.0,
@@ -9742,7 +11032,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T00:29:01Z",
               "status": "completed"
             },
@@ -9752,7 +11042,7 @@
               "duration_seconds": 5.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-02T00:29:01Z",
               "status": "completed"
             },
@@ -11016,16 +12306,16 @@
           "completed_at": "2026-11-01T22:25:12Z",
           "conclusion": "failure",
           "duration_seconds": 749.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 443.0,
           "image_build_seconds": null,
           "job_id": 124995943223,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 443.0,
-            "other": 9.0,
+            "other": 7.0,
             "setup": 292.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-11-01T22:12:43Z",
@@ -11082,6 +12372,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-01T22:25:01Z",
               "conclusion": "failure",
               "duration_seconds": 443.0,
@@ -11107,7 +12405,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T22:25:01Z",
               "status": "completed"
             },
@@ -11117,7 +12415,7 @@
               "duration_seconds": 2.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T22:25:01Z",
               "status": "completed"
             },
@@ -11817,7 +13115,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124994278690,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
@@ -12465,11 +13763,9 @@
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41313706812/job/124869938991"
         }
       ],
-      "pr_association": "github",
+      "pr_association": "none",
       "pr_association_note": null,
-      "pr_numbers": [
-        82
-      ],
+      "pr_numbers": [],
       "run_id": 41313706812,
       "source_sha": "7cdd31380778e929d83bbdb9719ced2fd63dc465",
       "started_at": "2026-11-01T13:56:56Z",
@@ -13080,16 +14376,16 @@
           "completed_at": "2026-11-01T07:21:06Z",
           "conclusion": "success",
           "duration_seconds": 4502.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 3152.0,
+          "image_build_seconds": 3152.0,
           "job_id": 124768143566,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 3152.0,
-            "other": 75.0,
+            "other": 7.0,
             "setup": 306.0,
-            "upload": null,
+            "upload": 68.0,
             "validation": 965.0
           },
           "started_at": "2026-11-01T06:06:04Z",
@@ -13146,6 +14442,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "incomplete-log",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-01T07:03:44Z",
               "conclusion": "success",
               "duration_seconds": 3152.0,
@@ -13171,7 +14475,7 @@
               "duration_seconds": 65.0,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T07:19:49Z",
               "status": "completed"
             },
@@ -13181,7 +14485,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T07:20:54Z",
               "status": "completed"
             },
@@ -13856,16 +15160,16 @@
           "completed_at": "2026-11-01T05:02:13Z",
           "conclusion": "success",
           "duration_seconds": 8908.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 7583.0,
+          "image_build_seconds": 7583.0,
           "job_id": 124727107497,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 7583.0,
-            "other": 86.0,
+            "other": 8.0,
             "setup": 266.0,
-            "upload": null,
+            "upload": 78.0,
             "validation": 970.0
           },
           "started_at": "2026-11-01T02:33:45Z",
@@ -13922,6 +15226,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "incomplete-log",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-01T04:44:35Z",
               "conclusion": "success",
               "duration_seconds": 7583.0,
@@ -13947,7 +15259,7 @@
               "duration_seconds": 75.0,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T05:00:45Z",
               "status": "completed"
             },
@@ -13957,7 +15269,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T05:02:00Z",
               "status": "completed"
             },
@@ -14632,16 +15944,16 @@
           "completed_at": "2026-11-01T02:33:43Z",
           "conclusion": "cancelled",
           "duration_seconds": 6966.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 6671.0,
           "image_build_seconds": null,
           "job_id": 124701932210,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 6671.0,
-            "other": 11.0,
+            "other": 7.0,
             "setup": 281.0,
-            "upload": null,
+            "upload": 4.0,
             "validation": null
           },
           "started_at": "2026-11-01T00:37:37Z",
@@ -14698,6 +16010,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-01T02:33:30Z",
               "conclusion": "cancelled",
               "duration_seconds": 6671.0,
@@ -14723,7 +16043,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T02:33:30Z",
               "status": "completed"
             },
@@ -14733,7 +16053,7 @@
               "duration_seconds": 4.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T02:33:30Z",
               "status": "completed"
             },
@@ -16674,16 +17994,16 @@
           "completed_at": "2026-11-01T00:37:35Z",
           "conclusion": "cancelled",
           "duration_seconds": 1819.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 1538.0,
           "image_build_seconds": null,
           "job_id": 124696953097,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 1538.0,
-            "other": 12.0,
+            "other": 7.0,
             "setup": 266.0,
-            "upload": null,
+            "upload": 5.0,
             "validation": null
           },
           "started_at": "2026-11-01T00:07:16Z",
@@ -16740,6 +18060,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-11-01T00:37:21Z",
               "conclusion": "cancelled",
               "duration_seconds": 1538.0,
@@ -16765,7 +18093,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T00:37:21Z",
               "status": "completed"
             },
@@ -16775,7 +18103,7 @@
               "duration_seconds": 5.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T00:37:21Z",
               "status": "completed"
             },
@@ -17450,16 +18778,16 @@
           "completed_at": "2026-11-01T00:07:14Z",
           "conclusion": "success",
           "duration_seconds": 4268.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 2955.0,
+          "image_build_seconds": 2955.0,
           "job_id": 124682380066,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 2955.0,
-            "other": 76.0,
+            "other": 6.0,
             "setup": 281.0,
-            "upload": null,
+            "upload": 70.0,
             "validation": 953.0
           },
           "started_at": "2026-10-31T22:56:06Z",
@@ -17516,6 +18844,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "incomplete-log",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T23:50:03Z",
               "conclusion": "success",
               "duration_seconds": 2955.0,
@@ -17541,7 +18877,7 @@
               "duration_seconds": 67.0,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T00:05:56Z",
               "status": "completed"
             },
@@ -17551,7 +18887,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-11-01T00:07:03Z",
               "status": "completed"
             },
@@ -17637,16 +18973,16 @@
           "completed_at": "2026-10-31T22:16:50Z",
           "conclusion": "success",
           "duration_seconds": 4305.0,
-          "image_build_elapsed_seconds": null,
-          "image_build_seconds": null,
+          "image_build_elapsed_seconds": 3006.0,
+          "image_build_seconds": 3006.0,
           "job_id": 124657327002,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 3006.0,
-            "other": 77.0,
+            "other": 7.0,
             "setup": 276.0,
-            "upload": null,
+            "upload": 70.0,
             "validation": 943.0
           },
           "started_at": "2026-10-31T21:05:05Z",
@@ -17703,6 +19039,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "incomplete-log",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T21:59:48Z",
               "conclusion": "success",
               "duration_seconds": 3006.0,
@@ -17728,7 +19072,7 @@
               "duration_seconds": 67.0,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T22:15:31Z",
               "status": "completed"
             },
@@ -17738,7 +19082,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T22:16:38Z",
               "status": "completed"
             },
@@ -17868,16 +19212,16 @@
           "completed_at": "2026-10-31T20:53:47Z",
           "conclusion": "failure",
           "duration_seconds": 2504.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 2239.0,
           "image_build_seconds": null,
           "job_id": 124645070177,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 2239.0,
-            "other": 10.0,
+            "other": 6.0,
             "setup": 250.0,
-            "upload": null,
+            "upload": 4.0,
             "validation": null
           },
           "started_at": "2026-10-31T20:12:03Z",
@@ -17934,6 +19278,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T20:53:34Z",
               "conclusion": "failure",
               "duration_seconds": 2239.0,
@@ -17959,7 +19311,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T20:53:34Z",
               "status": "completed"
             },
@@ -17969,7 +19321,7 @@
               "duration_seconds": 4.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T20:53:34Z",
               "status": "completed"
             },
@@ -18099,16 +19451,16 @@
           "completed_at": "2026-10-31T19:55:42Z",
           "conclusion": "failure",
           "duration_seconds": 2361.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 2086.0,
           "image_build_seconds": null,
           "job_id": 124632117117,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 2086.0,
-            "other": 9.0,
+            "other": 6.0,
             "setup": 261.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": null
           },
           "started_at": "2026-10-31T19:16:21Z",
@@ -18165,6 +19517,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T19:55:30Z",
               "conclusion": "failure",
               "duration_seconds": 2086.0,
@@ -18190,7 +19550,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T19:55:30Z",
               "status": "completed"
             },
@@ -18200,7 +19560,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T19:55:30Z",
               "status": "completed"
             },
@@ -18330,16 +19690,16 @@
           "completed_at": "2026-10-31T18:50:17Z",
           "conclusion": "failure",
           "duration_seconds": 6144.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 5857.0,
           "image_build_seconds": null,
           "job_id": 124601287458,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 5857.0,
-            "other": 11.0,
+            "other": 7.0,
             "setup": 272.0,
-            "upload": null,
+            "upload": 4.0,
             "validation": null
           },
           "started_at": "2026-10-31T17:07:53Z",
@@ -18396,6 +19756,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T18:50:03Z",
               "conclusion": "failure",
               "duration_seconds": 5857.0,
@@ -18421,7 +19789,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T18:50:03Z",
               "status": "completed"
             },
@@ -18431,7 +19799,7 @@
               "duration_seconds": 4.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T18:50:03Z",
               "status": "completed"
             },
@@ -18561,16 +19929,16 @@
           "completed_at": "2026-10-31T16:40:16Z",
           "conclusion": "failure",
           "duration_seconds": 2429.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 2151.0,
           "image_build_seconds": null,
           "job_id": 124584945352,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 2151.0,
-            "other": 9.0,
+            "other": 6.0,
             "setup": 266.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": null
           },
           "started_at": "2026-10-31T15:59:47Z",
@@ -18627,6 +19995,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T16:40:05Z",
               "conclusion": "failure",
               "duration_seconds": 2151.0,
@@ -18652,7 +20028,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T16:40:05Z",
               "status": "completed"
             },
@@ -18662,7 +20038,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T16:40:05Z",
               "status": "completed"
             },
@@ -18792,16 +20168,16 @@
           "completed_at": "2026-10-31T15:49:28Z",
           "conclusion": "failure",
           "duration_seconds": 15640.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 15371.0,
           "image_build_seconds": null,
           "job_id": 124525121298,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 15371.0,
-            "other": 12.0,
+            "other": 7.0,
             "setup": 254.0,
-            "upload": null,
+            "upload": 5.0,
             "validation": null
           },
           "started_at": "2026-10-31T11:28:48Z",
@@ -18858,6 +20234,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T15:49:14Z",
               "conclusion": "failure",
               "duration_seconds": 15371.0,
@@ -18883,7 +20267,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T15:49:14Z",
               "status": "completed"
             },
@@ -18893,7 +20277,7 @@
               "duration_seconds": 5.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T15:49:14Z",
               "status": "completed"
             },
@@ -19023,16 +20407,16 @@
           "completed_at": "2026-10-31T11:18:15Z",
           "conclusion": "failure",
           "duration_seconds": 10708.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 10435.0,
           "image_build_seconds": null,
           "job_id": 124487484944,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 10435.0,
-            "other": 10.0,
+            "other": 6.0,
             "setup": 258.0,
-            "upload": null,
+            "upload": 4.0,
             "validation": null
           },
           "started_at": "2026-10-31T08:19:47Z",
@@ -19089,6 +20473,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T11:18:02Z",
               "conclusion": "failure",
               "duration_seconds": 10435.0,
@@ -19114,7 +20506,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T11:18:02Z",
               "status": "completed"
             },
@@ -19124,7 +20516,7 @@
               "duration_seconds": 4.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T11:18:02Z",
               "status": "completed"
             },
@@ -19254,16 +20646,16 @@
           "completed_at": "2026-10-31T08:15:38Z",
           "conclusion": "cancelled",
           "duration_seconds": 1637.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 1347.0,
           "image_build_seconds": null,
           "job_id": 124480951717,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 1347.0,
-            "other": 10.0,
+            "other": 7.0,
             "setup": 276.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": null
           },
           "started_at": "2026-10-31T07:48:21Z",
@@ -19320,6 +20712,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T08:15:26Z",
               "conclusion": "cancelled",
               "duration_seconds": 1347.0,
@@ -19345,7 +20745,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T08:15:26Z",
               "status": "completed"
             },
@@ -19355,7 +20755,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T08:15:26Z",
               "status": "completed"
             },
@@ -19485,16 +20885,16 @@
           "completed_at": "2026-10-31T07:48:20Z",
           "conclusion": "cancelled",
           "duration_seconds": 1429.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 1139.0,
           "image_build_seconds": null,
           "job_id": 124476685828,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 1139.0,
-            "other": 10.0,
+            "other": 7.0,
             "setup": 277.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": null
           },
           "started_at": "2026-10-31T07:24:31Z",
@@ -19551,6 +20951,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T07:48:08Z",
               "conclusion": "cancelled",
               "duration_seconds": 1139.0,
@@ -19576,7 +20984,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T07:48:08Z",
               "status": "completed"
             },
@@ -19586,7 +20994,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T07:48:08Z",
               "status": "completed"
             },
@@ -19716,16 +21124,16 @@
           "completed_at": "2026-10-31T07:22:25Z",
           "conclusion": "cancelled",
           "duration_seconds": 2209.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 1934.0,
           "image_build_seconds": null,
           "job_id": 124469143309,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 1934.0,
-            "other": 11.0,
+            "other": 8.0,
             "setup": 261.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": null
           },
           "started_at": "2026-10-31T06:45:36Z",
@@ -19782,6 +21190,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T07:22:12Z",
               "conclusion": "cancelled",
               "duration_seconds": 1934.0,
@@ -19807,7 +21223,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T07:22:12Z",
               "status": "completed"
             },
@@ -19817,7 +21233,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T07:22:12Z",
               "status": "completed"
             },
@@ -19950,13 +21366,13 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124468671062,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
             "other": 3.0,
             "setup": 111.0,
-            "upload": null,
+            "upload": 0.0,
             "validation": null
           },
           "started_at": "2026-10-31T06:43:04Z",
@@ -20013,6 +21429,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T06:44:57Z",
               "conclusion": "skipped",
               "duration_seconds": null,
@@ -20038,7 +21462,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T06:44:57Z",
               "status": "completed"
             },
@@ -20048,7 +21472,7 @@
               "duration_seconds": 0.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T06:44:57Z",
               "status": "completed"
             },
@@ -20178,16 +21602,16 @@
           "completed_at": "2026-10-31T06:32:09Z",
           "conclusion": "cancelled",
           "duration_seconds": 5107.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 4841.0,
           "image_build_seconds": null,
           "job_id": 124449567980,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 4841.0,
-            "other": 9.0,
+            "other": 6.0,
             "setup": 253.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": null
           },
           "started_at": "2026-10-31T05:07:02Z",
@@ -20244,6 +21668,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T06:31:57Z",
               "conclusion": "cancelled",
               "duration_seconds": 4841.0,
@@ -20269,7 +21701,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T06:31:57Z",
               "status": "completed"
             },
@@ -20279,7 +21711,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T06:31:57Z",
               "status": "completed"
             },
@@ -20409,16 +21841,16 @@
           "completed_at": "2026-10-31T04:59:19Z",
           "conclusion": "failure",
           "duration_seconds": 2758.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 2500.0,
           "image_build_seconds": null,
           "job_id": 124438608499,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 2500.0,
-            "other": 8.0,
+            "other": 6.0,
             "setup": 247.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-10-31T04:13:21Z",
@@ -20475,6 +21907,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T04:59:09Z",
               "conclusion": "failure",
               "duration_seconds": 2500.0,
@@ -20500,7 +21940,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T04:59:09Z",
               "status": "completed"
             },
@@ -20510,7 +21950,7 @@
               "duration_seconds": 2.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T04:59:09Z",
               "status": "completed"
             },
@@ -20640,16 +22080,16 @@
           "completed_at": "2026-10-31T04:07:06Z",
           "conclusion": "failure",
           "duration_seconds": 1021.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 756.0,
           "image_build_seconds": null,
           "job_id": 124433721809,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 756.0,
-            "other": 7.0,
+            "other": 5.0,
             "setup": 253.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-10-31T03:50:05Z",
@@ -20706,6 +22146,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T04:06:56Z",
               "conclusion": "failure",
               "duration_seconds": 756.0,
@@ -20731,7 +22179,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T04:06:56Z",
               "status": "completed"
             },
@@ -20741,7 +22189,7 @@
               "duration_seconds": 2.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T04:06:56Z",
               "status": "completed"
             },
@@ -20871,16 +22319,16 @@
           "completed_at": "2026-10-31T03:44:52Z",
           "conclusion": "failure",
           "duration_seconds": 846.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 568.0,
           "image_build_seconds": null,
           "job_id": 124418170358,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 568.0,
-            "other": 7.0,
+            "other": 5.0,
             "setup": 267.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-10-31T03:30:46Z",
@@ -20937,6 +22385,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T03:44:43Z",
               "conclusion": "failure",
               "duration_seconds": 568.0,
@@ -20962,7 +22418,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T03:44:43Z",
               "status": "completed"
             },
@@ -20972,7 +22428,7 @@
               "duration_seconds": 2.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T03:44:43Z",
               "status": "completed"
             },
@@ -23270,16 +24726,16 @@
           "completed_at": "2026-10-31T03:30:45Z",
           "conclusion": "cancelled",
           "duration_seconds": 6621.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 6360.0,
           "image_build_seconds": null,
           "job_id": 124404245444,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 6360.0,
-            "other": 10.0,
+            "other": 7.0,
             "setup": 247.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": null
           },
           "started_at": "2026-10-31T01:40:24Z",
@@ -23336,6 +24792,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T03:30:32Z",
               "conclusion": "cancelled",
               "duration_seconds": 6360.0,
@@ -23361,7 +24825,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T03:30:32Z",
               "status": "completed"
             },
@@ -23371,7 +24835,7 @@
               "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T03:30:32Z",
               "status": "completed"
             },
@@ -23501,16 +24965,16 @@
           "completed_at": "2026-10-31T01:37:16Z",
           "conclusion": "cancelled",
           "duration_seconds": 744.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 465.0,
           "image_build_seconds": null,
           "job_id": 124400444688,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 465.0,
-            "other": 8.0,
+            "other": 6.0,
             "setup": 267.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-10-31T01:24:52Z",
@@ -23567,6 +25031,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T01:37:06Z",
               "conclusion": "cancelled",
               "duration_seconds": 465.0,
@@ -23592,7 +25064,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:37:06Z",
               "status": "completed"
             },
@@ -23602,7 +25074,7 @@
               "duration_seconds": 2.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:37:06Z",
               "status": "completed"
             },
@@ -23732,16 +25204,16 @@
           "completed_at": "2026-10-31T01:16:34Z",
           "conclusion": "failure",
           "duration_seconds": 351.0,
-          "image_build_elapsed_seconds": null,
+          "image_build_elapsed_seconds": 84.0,
           "image_build_seconds": null,
           "job_id": 124396786084,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": 84.0,
-            "other": 7.0,
+            "other": 6.0,
             "setup": 256.0,
-            "upload": null,
+            "upload": 1.0,
             "validation": null
           },
           "started_at": "2026-10-31T01:10:43Z",
@@ -23798,6 +25270,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T01:16:25Z",
               "conclusion": "failure",
               "duration_seconds": 84.0,
@@ -23823,7 +25303,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:16:25Z",
               "status": "completed"
             },
@@ -23833,7 +25313,7 @@
               "duration_seconds": 1.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:16:25Z",
               "status": "completed"
             },
@@ -23966,13 +25446,13 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124395248250,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
-            "other": 4.0,
+            "other": 3.0,
             "setup": 193.0,
-            "upload": null,
+            "upload": 1.0,
             "validation": null
           },
           "started_at": "2026-10-31T01:05:49Z",
@@ -24029,6 +25509,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T01:09:03Z",
               "conclusion": "skipped",
               "duration_seconds": null,
@@ -24054,7 +25542,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:09:03Z",
               "status": "completed"
             },
@@ -24064,7 +25552,7 @@
               "duration_seconds": 1.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:09:03Z",
               "status": "completed"
             },
@@ -24197,13 +25685,13 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124394652945,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
             "other": 3.0,
             "setup": 180.0,
-            "upload": null,
+            "upload": 0.0,
             "validation": null
           },
           "started_at": "2026-10-31T01:02:41Z",
@@ -24260,6 +25748,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T01:05:42Z",
               "conclusion": "skipped",
               "duration_seconds": null,
@@ -24285,7 +25781,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:05:42Z",
               "status": "completed"
             },
@@ -24295,7 +25791,7 @@
               "duration_seconds": 0.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T01:05:42Z",
               "status": "completed"
             },
@@ -26542,13 +28038,13 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124391708877,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
-            "other": 7.0,
+            "other": 5.0,
             "setup": 246.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": null
           },
           "started_at": "2026-10-31T00:51:26Z",
@@ -26605,6 +28101,14 @@
               "status": "completed"
             },
             {
+              "breakdown": {
+                "duration_seconds": null,
+                "reason": "step-not-successful",
+                "sections": [],
+                "source": "github-job-log",
+                "status": "unavailable",
+                "version": 1
+              },
               "completed_at": "2026-10-31T00:55:33Z",
               "conclusion": "skipped",
               "duration_seconds": null,
@@ -26630,7 +28134,7 @@
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 8,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T00:55:33Z",
               "status": "completed"
             },
@@ -26640,7 +28144,7 @@
               "duration_seconds": 2.0,
               "name": "Preserve build receipts",
               "number": 9,
-              "phase": "other",
+              "phase": "upload",
               "started_at": "2026-10-31T00:55:33Z",
               "status": "completed"
             },
@@ -27318,7 +28822,7 @@
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 124391213072,
-          "kind": "other",
+          "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
             "build": null,
