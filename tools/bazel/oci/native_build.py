@@ -141,6 +141,20 @@ def command(arguments, workspace, bazel, cache, startup=()):
         if not slave_rc.is_file():
             raise ValueError('Missing native build cache configuration: ' + str(slave_rc))
         result.extend(['--mount', 'type=bind,src=' + str(slave_rc) + ',dst=/etc/bazel.bazelrc,readonly'])
+    # Keep Git's explicitly selected parent trust bundle in the nested build.
+    # Mount it separately so apt can still configure its own system CA bundle.
+    git_ca = os.environ.get('GIT_SSL_CAINFO')
+    if git_ca:
+        git_ca_path = Path(git_ca)
+        if not git_ca_path.is_absolute():
+            raise ValueError('Git CA bundle must be an absolute path: ' + str(git_ca_path))
+        git_ca_path = git_ca_path.resolve()
+        if not git_ca_path.is_file():
+            raise ValueError('Git CA bundle is not a regular file: ' + str(git_ca_path))
+        if ',' in str(git_ca_path):
+            raise ValueError('Docker bind paths cannot contain commas: ' + str(git_ca_path))
+        result.extend(['--mount', 'type=bind,src=' + str(git_ca_path) + ',dst=/run/sonic-native-git-ca.pem,readonly',
+                       '--env', 'GIT_SSL_CAINFO=/run/sonic-native-git-ca.pem'])
     script = '''set -eu
 apt-get update >&2
 apt-get install -y --no-install-recommends ca-certificates build-essential git libarchive-tools python3 >&2
