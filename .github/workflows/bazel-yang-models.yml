@@ -6,6 +6,8 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/ci/lldp_draft_bazel.sh'
+      - 'tools/bazel/ci/lldp_draft_cache.py'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
@@ -15,6 +17,8 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/ci/lldp_draft_bazel.sh'
+      - 'tools/bazel/ci/lldp_draft_cache.py'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
@@ -49,6 +53,9 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
           disk-cache: yang-models-${{ matrix.architecture }}
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash
@@ -60,8 +67,8 @@ jobs:
           registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
-          # The standalone module and image root use the same maintained registry.
-          (cd ../.. && bazel cquery --lockfile_mode=update \
+          # The standalone module stays canonical; the image root uses the LLDP Draft catalog.
+          (cd ../.. && tools/bazel/ci/lldp_draft_bazel.sh cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt
           uname -m > artifacts/execution-machine.txt

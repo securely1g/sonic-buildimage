@@ -6,6 +6,8 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/lldp_draft_bazel.sh
+      - tools/bazel/ci/lldp_draft_cache.py
       - .github/workflows/bazel-eventd.yml
   push:
     branches: [master]
@@ -13,6 +15,8 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/lldp_draft_bazel.sh
+      - tools/bazel/ci/lldp_draft_cache.py
       - .github/workflows/bazel-eventd.yml
   workflow_dispatch:
 
@@ -51,13 +55,16 @@ jobs:
           repository-cache: true
           disk-cache: eventd-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+
       - name: Audit, build and run all original suites with private Redis
         env:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
+          python3 -B src/sonic-eventd/bazel/ci.py --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/lldp_draft_bazel.sh" --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence
         if: always()

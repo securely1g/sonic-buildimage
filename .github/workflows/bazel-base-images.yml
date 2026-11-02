@@ -46,6 +46,9 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+
       - name: Prepare the checksum-pinned pigz source archive
         run: |
           mkdir -p artifacts/source-downloads
@@ -67,7 +70,7 @@ jobs:
           if [[ '${{ matrix.architecture }}' == amd64 ]]; then
             acceptance+=(--config-engine-acceptance)
           fi
-          python3 -B tools/bazel/ci/base_images.py \
+          python3 -B tools/bazel/ci/base_images.py --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/lldp_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images "${acceptance[@]}"
           git diff --exit-code
       - name: Verify config-engine no-op and template rebuilds
@@ -75,7 +78,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/config_engine_rebuild.py \
+          python3 -B tools/bazel/ci/config_engine_rebuild.py --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/lldp_draft_bazel.sh" \
             --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
       - name: Retain images, symbols and build evidence
