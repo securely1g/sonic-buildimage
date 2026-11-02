@@ -53,6 +53,7 @@ class MakeForwardingTest(unittest.TestCase):
             "NOJESSIE": "1", "NOSTRETCH": "1", "NOBUSTER": "1",
             "NOBULLSEYE": "1", "NOBOOKWORM": "1", "NOTRIXIE": "0",
             "BUILD_WITH_BAZEL_WHEN_AVAILABLE": mode,
+            "USE_CONTAINER_IMAGE_STORE_AS_BACKEND": "n",
         }
         options.update(settings)
         result = subprocess.run(

@@ -1,7 +1,8 @@
 # VS installer assembly worker
 
 This local AMD64 Debian Trixie worker contains Bazel 8.5.1, Docker 28.5.2 with
-classic `overlay2`, Buildx, Python, j2cli, tar, pigz, and SquashFS tools. It
+classic `overlay2`, containerd 1.7.28, Skopeo 1.18.0, Umoci 0.4.7, Buildx,
+Python, j2cli, tar, pigz, zstd and SquashFS tools. It
 contains execution tools only. Native host snapshots and service archives are
 declared separately by [installer preparation](../README.md).
 
@@ -57,3 +58,8 @@ its Bazel server. Lifecycle operations verify worker identity and serialize
 access to the output root. See the [launcher example](../README.md#assembly-and-cache-boundaries)
 for building and stopping a persistent worker. This worker assembles already
 prepared inputs; the normal outer Make build produces native predecessors.
+
+For the optional containerd backend, Skopeo converts the declared service
+archives and containerd imports them without unpacking. Umoci extracts only
+local-package files needed for host plugins. The same worker supports both
+backends; its image ID remains an explicit action input.
