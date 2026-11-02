@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check the kernel's pinned Linux sandbox as the native builder user."""
 
+import argparse
 import os
 from pathlib import Path
 import re
@@ -36,10 +37,10 @@ def diagnostics():
         print(f"process security status unavailable ({error.strerror})", file=sys.stderr)
 
 
-def check_sandbox(bazel=None):
+def check_sandbox(bazel=None, version_file=None):
     if os.getuid() == 0 or os.geteuid() == 0:
         raise RuntimeError("Run the kernel sandbox check as the unprivileged native build user")
-    version = VERSION_FILE.read_text().strip()
+    version = (version_file or VERSION_FILE).read_text().strip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise RuntimeError("Invalid pinned kernel Bazel version")
     bazel = bazel or os.environ.get("BAZEL", "bazel")
@@ -86,8 +87,12 @@ def check_sandbox(bazel=None):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version-file", type=Path, default=VERSION_FILE,
+                        help="Use the historical source checkout's kernel Bazel pin")
+    args = parser.parse_args()
     try:
-        check_sandbox()
+        check_sandbox(version_file=args.version_file)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"Kernel sandbox readiness failed: {error}", file=sys.stderr)
         diagnostics()

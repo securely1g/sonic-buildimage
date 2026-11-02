@@ -6,7 +6,10 @@ set -euo pipefail
 die() { printf 'VS slave preparation: %s\n' "$*" >&2; exit 1; }
 (( $# == 0 )) || die 'This script takes no arguments.'
 [[ $(id -u):$(id -g) == 1000:1000 ]] || die 'Expected runner UID/GID 1000:1000.'
-workspace=$(realpath "${GITHUB_WORKSPACE:?}")
+# This disposable backfill branch keeps orchestration separate from the exact
+# historical source tree. Ordinary callers retain the original default.
+helper_root=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
+workspace=$(realpath "${SONIC_VS_SOURCE_WORKSPACE:-${GITHUB_WORKSPACE:?}}")
 runner_temp=$(realpath "${RUNNER_TEMP:?}")
 [[ $workspace == /actions/_work/* && $runner_temp == /actions/_work/* ]] ||
     die 'Checkout and runner temporary files must be below /actions/_work.'
@@ -101,11 +104,33 @@ report = {"schema": 1, "image": marker, "uid": os.getuid(), "gid": os.getgid(),
 Path(sys.argv[1]).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 PY
 
+stage=package-cache-isolation
+# Historical Make publishes archives directly to their shared final names.
+# Keep its recipes unchanged while making /dpkg_cache worker-private, including
+# buildinfo/vcache. The original shared mount remains untouched underneath.
+private_cache=/actions/sonic-historical-dpkg-cache
+[[ ! -e $private_cache ]] || die 'Historical package cache requires a fresh worker.'
+install -d -m 0700 "$private_cache"
+sudo -n mount --bind "$private_cache" /dpkg_cache
+[[ $(stat -c '%d:%i' /dpkg_cache) == "$(stat -c '%d:%i' "$private_cache")" ]] ||
+    die 'Historical package cache isolation could not be verified.'
+python3 - "$artifacts/slave-preparation.json" "$private_cache" <<'PYCODE'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+report = json.loads(path.read_text())
+report["package_cache"] = {"mode": "worker_private", "directory": sys.argv[2],
+                           "mount": "/dpkg_cache", "shared_cache_reused": False}
+path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+PYCODE
+
 stage=kernel-sandbox
 # Exercise the producer's pinned helper as the build user, including its
 # mounts: namespace creation alone does not establish sandbox readiness.
 export BAZELISK_HOME=/bazel_cache/bazelisk
-if timeout --kill-after=5s 300s python3 -B "$workspace/tools/bazel/ci/check_kernel_sandbox.py" \
+if timeout --kill-after=5s 300s python3 -B "$helper_root/tools/bazel/ci/check_kernel_sandbox.py" \
+    --version-file "$workspace/tools/bazel/kernel/.bazelversion" \
     > "$artifacts/kernel-sandbox.log" 2>&1; then
     python3 - "$artifacts/slave-preparation.json" <<'PY'
 import json
@@ -146,7 +171,7 @@ git rev-parse HEAD > "$artifacts/preparation-revision.txt"
 ulimit -Sn 524288
 
 stage=docker
-sudo -n python3 tools/bazel/ci/prepare_nested_docker.py > "$artifacts/private-cgroup.json"
+sudo -n python3 "$helper_root/tools/bazel/ci/prepare_nested_docker.py" > "$artifacts/private-cgroup.json"
 docker_root=/actions/sonic-native-docker
 [[ ! -e $docker_root && ! -e $runner_temp/sonic-dockerd.pid ]] ||
     die 'Private Docker state already exists; this preparation requires a fresh worker.'
@@ -239,6 +264,11 @@ $(info VS_DEFAULT:PIP_HTTP_TIMEOUT=$(PIP_HTTP_TIMEOUT))
 $(info VS_DEFAULT:ENABLE_TRANSLIB_WRITE=$(ENABLE_TRANSLIB_WRITE))
 $(info VS_DEFAULT:ENABLE_NATIVE_WRITE=$(ENABLE_NATIVE_WRITE))
 $(info VS_DEFAULT:ENABLE_HOST_SERVICE_ON_START=$(ENABLE_HOST_SERVICE_ON_START))
+# These are supplied by Makefile.work in the historical host build. Export
+# its resolved values when direct slave.mk bypasses that outer wrapper.
+$(info VS_DEFAULT:SECURE_UPGRADE_MODE=$(subst ",,$(SECURE_UPGRADE_MODE)))
+$(info VS_DEFAULT:ENABLE_MULTIDB=$(ENABLE_MULTIDB))
+$(info VS_DEFAULT:ENABLE_VRF_STRICT=$(ENABLE_VRF_STRICT))
 .PHONY: .vs-preparation-defaults
 .vs-preparation-defaults: ; @:
 MAKE
@@ -323,7 +353,8 @@ for variable in PLATFORM_ARCH TARGET_BOOTLOADER BUILD_WITH_BAZEL_WHEN_AVAILABLE 
     SLAVE_DIR SLAVE_TAG DISTRO IMAGENAME SONIC_BUILD_TARGET TRUSTED_GPG_URLS \
     SONIC_VERSION_CONTROL_COMPONENTS SONIC_VERSION_CACHE SONIC_VERSION_CACHE_SOURCE \
     BUILD_PACKAGES_URL BUILD_PUBLIC_URL BUILD_SNAPSHOT_URL MIRROR_SNAPSHOT PIP_HTTP_TIMEOUT \
-    ENABLE_TRANSLIB_WRITE ENABLE_NATIVE_WRITE ENABLE_HOST_SERVICE_ON_START; do
+    ENABLE_TRANSLIB_WRITE ENABLE_NATIVE_WRITE ENABLE_HOST_SERVICE_ON_START \
+    SECURE_UPGRADE_MODE ENABLE_MULTIDB ENABLE_VRF_STRICT; do
     printf 'export %s=%q\n' "$variable" "${!variable}" >> "$environment_file"
 done
 printf 'ulimit -Sn 524288\n' >> "$environment_file"

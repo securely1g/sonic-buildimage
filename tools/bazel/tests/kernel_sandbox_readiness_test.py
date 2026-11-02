@@ -163,6 +163,21 @@ class KernelSandboxReadinessTest(unittest.TestCase):
         self.assertFalse(probe_directory.exists(), "The private probe directory must be removed")
         self.assert_cache_untouched()
 
+    def test_explicit_historical_version_file_overrides_control_pin(self):
+        if os.getuid() == 0 or os.geteuid() == 0:
+            self.skipTest("Executable identity probe requires an unprivileged test process")
+        version = "6.4.0"
+        pin = self.root / "historical.bazelversion"
+        pin.write_text(version + "\n")
+        result = subprocess.run(
+            [sys.executable, str(HELPER), "--version-file", str(pin)], cwd=self.root,
+            env={**self.env, "PROBE_VERSION": f"bazel {version}"},
+            text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e["version"] for e in self.recorded() if e["kind"] == "bazel"],
+                         [version, version])
+        self.assert_cache_untouched()
+
     def test_sandbox_failure_reports_allowlisted_diagnostics_and_fails(self):
         result = self.run_probe(PROBE_SANDBOX_STATUS="23")
         self.assertEqual(result.returncode, 1)
