@@ -231,18 +231,41 @@ class ConfigureTests(unittest.TestCase):
                 self.assertEqual(contents.count(cache.RESOURCE_BEGIN), 1)
                 self.assertEqual(cache.FALLBACK_BEGIN in contents, mode == "local_only")
                 self.assertNotIn(SECRET, contents + stdout + self.output.read_text())
+                self.assertNotIn("--max_idle_secs", contents)
+
+    def test_idle_timeout_is_opt_in_and_preserves_cache_and_trust_in_both_modes(self):
+        self.install_fake_runtime()
+        for mode in ("local_only", "local_and_remote"):
+            with self.subTest(mode=mode):
+                self.rc.write_text(self.original)
+                result = {"mode": mode, "error_class": None, "http_status": 200}
+                with mock.patch.object(cache, "check_remote", return_value=result):
+                    code, receipt, stdout = self.run_main(
+                        "--jobs=4", "--local-memory-mb=12288", "--max-idle-secs=300")
+                self.assertEqual(code, 0)
+                self.assertEqual(receipt["resource_limits"], {
+                    "jobs": 4, "local_memory_mb": 12288, "max_idle_secs": 300})
+                contents = self.rc.read_text()
+                self.assertTrue(contents.startswith(self.original))
+                self.assertIn("common --disk_cache=" + str(self.cache_dir / "disk"), contents)
+                self.assertIn("common --repository_cache=" + str(self.cache_dir / "repository"), contents)
+                self.assertIn("startup --max_idle_secs=300\n", contents)
+                self.assertIn("build --jobs=4\nbuild --local_ram_resources=12288\n", contents)
+                self.assertEqual(cache.FALLBACK_BEGIN in contents, mode == "local_only")
+                self.assertNotIn(SECRET, contents + stdout + self.output.read_text())
 
     def test_resource_budget_replacement_is_idempotent_and_preserves_other_rc_settings(self):
         self.rc.write_text(self.original + "test --test_output=errors\n")
         cache.set_local_fallback(self.rc, True)
-        cache.set_resource_limits(self.rc, 4, 12288)
+        cache.set_resource_limits(self.rc, 4, 12288, max_idle_secs=300)
         first = self.rc.read_text()
-        cache.set_resource_limits(self.rc, 4, 12288)
+        cache.set_resource_limits(self.rc, 4, 12288, max_idle_secs=300)
         self.assertEqual(self.rc.read_text(), first)
         cache.set_resource_limits(self.rc, 2, 8192)
         contents = self.rc.read_text()
         self.assertEqual(contents.count(cache.RESOURCE_BEGIN), 1)
         self.assertNotIn("build --jobs=4", contents)
+        self.assertNotIn("--max_idle_secs", contents)
         self.assertIn("build --jobs=2\nbuild --local_ram_resources=8192\n", contents)
         self.assertIn("test --test_output=errors\n", contents)
         self.assertIn("common --remote_cache=\n", contents)
@@ -255,6 +278,10 @@ class ConfigureTests(unittest.TestCase):
                  ("--jobs=4", "--local-memory-mb=-1"),
                  ("--jobs=1.5", "--local-memory-mb=12288"),
                  ("--jobs=4", "--local-memory-mb=invalid"),
+                 ("--jobs=4", "--local-memory-mb=12288", "--max-idle-secs=0"),
+                 ("--jobs=4", "--local-memory-mb=12288", "--max-idle-secs=-1"),
+                 ("--jobs=4", "--local-memory-mb=12288", "--max-idle-secs=invalid"),
+                 ("--max-idle-secs=300",),
                  ("--jobs=4",), ("--local-memory-mb=12288",)]
         for arguments in cases:
             with self.subTest(arguments=arguments), mock.patch.object(cache, "load_credentials") as helper:

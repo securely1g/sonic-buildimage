@@ -313,6 +313,10 @@ define LOAD_FROM_CACHE
 	# Load the cache if cache is enabled and cache file is present in the cache
 	# Update the cache_loaded variable
 	$(if $(and $(CACHE_FILE_SELECT),$(call CHECK_RCACHE_ENABLED,$(1))),
+		# Older builders publish directly into the shared archive. Writable
+		# readers take their writer lock during mixed-version parallel builds.
+		# Read-only cache consumers retain their no-lock-file-write behavior.
+		$(if $(call CHECK_WCACHE_ENABLED,$(1)), $(call MOD_LOCK,$(1),$(SONIC_DPKG_CACHE_DIR),$(MOD_CACHE_LOCK_SUFFIX),$(MOD_CACHE_LOCK_TIMEOUT)))
 		$(if $($(1)_CACHE_FORCE_RESTORE),
 			# Switchable container archives must replace the other builder's output.
 			# Stage this single-output restore so an invalid cache preserves the old
@@ -327,6 +331,7 @@ define LOAD_FROM_CACHE
 			$(if $(LOAD_DRV_DEB), $($(1)_CACHE_USER) tar -C $($(1)_BASE_PATH) -mxzvf $(CACHE_FILE_SELECT) 1>> $($(1)_DST_PATH)/$(1).log ,echo ));
 		echo "File $(CACHE_FILE_SELECT) is loaded from cache into $($(1)_BASE_PATH)" >> $($(1)_DST_PATH)/$(1).log
 		$(eval $(1)_CACHE_LOADED := Yes)
+		$(if $(call CHECK_WCACHE_ENABLED,$(1)), $(call MOD_UNLOCK,$(1)))
 		$(if $(call CHECK_WCACHE_ENABLED,$(1)), $(shell touch $(CACHE_FILE_SELECT)))
 		echo "[ CACHE::LOADED ] $($(1)_CACHE_DIR)/$($(1)_MOD_CACHE_FILE)" >> $($(1)_DST_PATH)/$(1).log
 		echo "File $($(1)_CACHE_DIR)/$($(1)_MOD_CACHE_FILE)  is not present in cache or cache mode set as $(SONIC_DPKG_CACHE_METHOD) !" >> $($(1)_DST_PATH)/$(1).log
@@ -364,9 +369,16 @@ define SAVE_INTO_CACHE
 		$(eval $(1)_CACHE_DIR := $(SONIC_DPKG_LOCAL_CACHE_DIR))
 	 )
 	cp $($(1)_DST_PATH)/$(1).log $($(1)_DST_PATH)/$(1).cached.log
-	$($(1)_CACHE_USER) tar -C $($(1)_BASE_PATH) -mczvf $($(1)_CACHE_DIR)/$(MOD_CACHE_FILE) $(2) $(addprefix $($(1)_DST_PATH)/,$($(1)_DERIVED_DEBS) $($(1)_EXTRA_DEBS) $(1).cached.log)  \
-		1>>$($(1)_DST_PATH)/$(1).log
-	sudo chmod 777 $($(1)_CACHE_DIR)/$(MOD_CACHE_FILE)
+	# Read-only cache consumers do not hold the writer lock. Publish only a
+	# complete archive so concurrent restores retain the previous contents.
+	(
+		cache_archive_tmp=$$(mktemp "$($(1)_CACHE_DIR)/.$(MOD_CACHE_FILE).XXXXXX")
+		trap '$($(1)_CACHE_USER) rm -f "$$cache_archive_tmp"' EXIT
+		$($(1)_CACHE_USER) tar -C $($(1)_BASE_PATH) -mczvf "$$cache_archive_tmp" $(2) $(addprefix $($(1)_DST_PATH)/,$($(1)_DERIVED_DEBS) $($(1)_EXTRA_DEBS) $(1).cached.log) \
+			1>>$($(1)_DST_PATH)/$(1).log
+		sudo chmod 777 "$$cache_archive_tmp"
+		$($(1)_CACHE_USER) mv -f "$$cache_archive_tmp" "$($(1)_CACHE_DIR)/$(MOD_CACHE_FILE)"
+	)
 	rm -f $($(1)_DST_PATH)/$(1).cached.log
 	
 	echo "File $($(1)_CACHE_DIR)/$(MOD_CACHE_FILE) saved in cache " >> $($(1)_DST_PATH)/$(1).log
