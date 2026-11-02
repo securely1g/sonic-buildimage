@@ -1,0 +1,170 @@
+name: Bazel SWSS native closure
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/bazel-swss-native.yml
+      - MODULE.bazel
+      - tools/bazel/common.bazelrc
+      - tools/bazel/0001-sonic-swss-libteam.patch
+      - tools/bazel/0001-sonic-swss-common-zmq.patch
+      - tools/bazel/ci/**
+      - tools/bazel/tests/**
+      - tools/bazel/oci/**
+      - tools/bazel/dpkg/**
+      - dockers/docker-orchagent/**
+      - src/libteam/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: SWSS runtime and dependency parity (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      BAZELISK_GITHUB_TOKEN: ""
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl gdb git libtool pkg-config python3 redis-server tar unzip zstd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: swss-native-amd64
+          cache-version: "8.5.1"
+      - name: Build and test the selected SWSS source outputs
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          test "$(uname -m)" = x86_64
+          test "$(dpkg --print-architecture)" = amd64
+          printf '%s\n' "$(uname -m)" "$(dpkg --print-architecture)" > artifacts/architecture.txt
+          git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD > artifacts/checkout-sha.txt
+          git -c safe.directory="$GITHUB_WORKSPACE" cat-file -p HEAD > artifacts/checkout.txt
+          printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" > artifacts/inputs.txt
+          cp tools/bazel/ci/libteam_draft_bazel.sh artifacts/registry-input.txt
+          targets=(
+            @sonic_swss//dist:swss_pkg
+            @sonic_swss//dist:swss_pkg.debug_symbols
+            //tools/bazel/tests:swss_package_contract_test
+            //tools/bazel/tests:swss_common_rust_test
+            @sonic_swss//bazel:protobuf_runtime_test
+            //src/libteam:consumer_test
+          )
+          python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
+            --output artifacts/action-audit.json "${targets[@]}"
+          "$BAZEL" build --jobs=2 --build_event_json_file="$PWD/artifacts/build-events.json" \
+            "${targets[@]}" 2>&1 | tee artifacts/build.log
+          "$BAZEL" test --jobs=2 --nocache_test_results --test_output=all \
+            --build_event_json_file="$PWD/artifacts/test-events.json" \
+            "${targets[@]:2}" 2>&1 | tee artifacts/test.log
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.container import collect_test_outputs
+          events = Path('artifacts/test-events.json')
+          labels = {value['id']['testResult']['label']
+                    for line in events.read_text().splitlines()
+                    if 'testResult' in (value := json.loads(line)).get('id', {})}
+          expected = {'swss_package_contract_test', 'swss_common_rust_test', 'protobuf_runtime_test', 'consumer_test'}
+          assert {label.rsplit(':', 1)[-1] for label in labels} == expected
+          collect_test_outputs(events, Path('artifacts'), sorted(labels))
+          PYCODE
+          output() { "$BAZEL" cquery "$1" --output=files; }
+          runtime="$(output @sonic_swss//dist:swss_pkg)"
+          symbols="$(output @sonic_swss//dist:swss_pkg.debug_symbols)"
+          policy="$(output //dockers/docker-orchagent:package_policy)"
+          anchor="$(output @sonic_swss//fpmsyncd:bgp_eoiu_marker.py)"
+          execution_root="$(dirname "$(realpath bazel-out)")"
+          source="$(dirname "$(dirname "$(realpath "$execution_root/$anchor")")")"
+          graph="$(mktemp)"
+          trap 'rm -f "$graph"' EXIT
+          "$BAZEL" aquery --include_param_files --output=jsonproto \
+            'mnemonic("CppLink", deps(@sonic_swss//dist:swss_pkg))' > "$graph"
+          python3 -B tools/bazel/ci/swss_native_closure.py --source "$source" \
+            --runtime "$runtime" --symbols "$symbols" --policy "$policy" \
+            --link-graph "$graph" --output artifacts/native-closure.json
+          cp "$runtime" artifacts/swss-runtime.tar
+          cp "$symbols" artifacts/swss-debug.tar
+          cp MODULE.bazel.lock artifacts/
+          sha256sum artifacts/swss-*.tar > artifacts/SHA256SUMS
+          python3 -B tools/bazel/ci/swss_rebuild.py --bazel "$BAZEL" --output artifacts/rebuild \
+            2>&1 | tee artifacts/rebuild.log
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from tools.bazel.ci import resolution
+          report = resolution.collect(Path.cwd(), Path('artifacts'), bazel=[os.environ['BAZEL']])
+          Path('artifacts/resolution.json').write_text(json.dumps(report, indent=2) + '\n')
+          PYCODE
+          git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
+      - name: Prepare public validation evidence
+        id: public
+        if: always()
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import bep_summary, dependency_json, safe_json, safe_text
+          directory = Path('artifacts')
+          directory.mkdir(exist_ok=True)
+          summaries = {}
+          for path in sorted(directory.rglob('*-events.json')):
+              summaries[str(path.relative_to(directory))] = bep_summary(path.read_text().splitlines(), partial=True)
+          safe_json(summaries)
+          (directory / 'build-test-summary.json').write_text(json.dumps(summaries, indent=2) + '\n')
+          for name in ('action-audit.json', 'native-closure.json', 'rebuild/rebuild.json'):
+              path = directory / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for path in directory.glob('tests/*/validation.json'):
+              safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = directory / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          for name in ('architecture.txt', 'checkout-sha.txt', 'checkout.txt', 'inputs.txt', 'registry-input.txt', 'SHA256SUMS'):
+              path = directory / name
+              if path.exists():
+                  safe_text(path.read_text())
+          PYCODE
+      - name: Upload SWSS source artifacts and evidence
+        if: always() && steps.public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-native-amd64
+          path: |
+            artifacts/swss-*.tar
+            artifacts/SHA256SUMS
+            artifacts/architecture.txt
+            artifacts/checkout-sha.txt
+            artifacts/checkout.txt
+            artifacts/inputs.txt
+            artifacts/registry-input.txt
+            artifacts/action-audit.json
+            artifacts/native-closure.json
+            artifacts/rebuild/rebuild.json
+            artifacts/build-test-summary.json
+            artifacts/tests/*/validation.json
+            artifacts/MODULE.bazel.lock
+            artifacts/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
