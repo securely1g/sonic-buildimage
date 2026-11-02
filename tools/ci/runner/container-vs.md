@@ -30,6 +30,31 @@ that the DHCP6 tests passed. The isolated Redis fixture and failure-reporting
 fixes remain a separate component change in
 [sonic-dhcp-relay #1](https://github.com/securely1g/sonic-dhcp-relay/pull/1).
 
+The native P4 dependencies still use their existing Make/Debian producers.
+The lgh4 worker cannot currently connect to the OpenSUSE source endpoint, so
+the hosted checks download the nine published source files pinned in
+[`src/p4lang/source-inputs.json`](../../../src/p4lang/source-inputs.json).
+They upload a per-run artifact; the native job selects its exact artifact ID
+and independently checks every file's SHA256, size and descriptor identity.
+It then passes `P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources`
+to Make. Staging is separate from `src/p4lang`, where `dget` replaces its working
+descriptor. Ordinary Make invocations keep the original OpenSUSE URL.
+
+OpenSUSE currently publishes an inconsistent P4C descriptor: its unchanged
+bytes identify an orig archive with SHA256 `61251b9c...` and size 173,765,465,
+while both its mirror and direct content server supply `a41d616a...` and
+173,758,549 bytes. The supplied archive matches SONiC's existing `versions-web`
+record and the prior passing native build. The input manifest binds this exact
+known discrepancy to the descriptor and archive hashes; receipts report it
+explicitly, and any new discrepancy fails verification. This does not establish
+equivalence with the archive named by the descriptor. The original descriptor
+and existing `dget -u` behavior are preserved; no checksum rows are rewritten.
+PI and BMv2 must match their descriptors normally.
+
+This source handoff uses a fresh CI artifact. It adds no persistent P4 source
+cache and changes no shared Make-cache logic. The tracked source pins are
+already covered by the P4 recipes' existing input-file hashing.
+
 The worker manager is maintained in
 [agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/codex/sonic-slave-wrk-mgr/sonic-slave-wrk-mgr).
 The native profile requires a privileged container, private PID/cgroup namespaces,
