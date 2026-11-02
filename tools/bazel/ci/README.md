@@ -26,6 +26,35 @@ job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
 
+The source-only [SWSS native closure workflow](../../../.github/workflows/bazel-swss-native.yml)
+runs the existing full-package, Common-owned Rust and DASH/Protobuf tests on
+native AMD64/Trixie with the libteam source interfaces selected by the buildimage
+root. It retains both TARs, their checksums, every production native link command,
+all 30 deployed ELF dependency lists and matching debug pairs, plus isolated
+GDB source/line lookups for the C++ and Rust entry points. The targeted
+edit probe changes one installed Python source through the declared SWSS patch,
+requires only the runtime TAR to change, then restores both original hashes.
+It does not claim cold-cache performance, C++ recompilation, complete daemon
+execution or full-image validation. It runs through the shared CI entry point
+(`tools/bazel/ci/libteam_draft_bazel.sh`) with the canonical registry.
+Public uploads contain explicit archives, hashes, validated receipts and the
+shared helper's build/test summaries. Raw Bazel events, action environments and
+test/command logs remain in the CI workspace.
+
+For the selected SWSS revision, Make's `LIBFIB` declaration is inactive in the
+source/link/ELF closure; the audit fails if later inputs introduce that usage.
+FRR's libFIB header/recipe prerequisite remains independent; its actual loader
+requirements are inspected separately. SAI metadata/Redis and DASH APIs
+remain source-owner dependencies. `LIBSAIVS_DEV` supports the native mock-test
+path; the production graph does not automatically install that development
+package. `stpmgrd` uses its declared local IPC definitions rather than linking
+an STP daemon. The old Protobuf variables in `rules/swss.mk` are defined only
+for Bullseye; Trixie uses the selected owner's shared Protobuf ABI. The image
+integration follow-up must replace stock `libteam5`/`libteamdctl0` runtime APT
+payloads with the same source owners' TARs; the source check alone does not
+prove that replacement. `libteam-utils` is a separate teamd image input, not an
+extra SWSS runtime dependency.
+
 The native VS Make build produces the runtime and debug archives together for
 each registered Bazel container, using the same builder and Bazel invocation
 for each pair. The normal installer still selects runtime containers;
