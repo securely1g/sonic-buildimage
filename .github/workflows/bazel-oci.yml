@@ -1,465 +1,49 @@
-name: Bazel OCI
-
+# Disposable backfill driver; do not merge this workflow into master.
+name: Historical master VS installer backfill
+run-name: VS installer backfill ${{ inputs.source_sha }}
 on:
-  pull_request:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
-      skip_vs:
-        description: Skip the full VS image build
-        type: boolean
-        default: true
-
+      source_sha:
+        description: Original cancelled master revision (source remains unchanged)
+        required: true
+        type: choice
+        options:
+          - 8bf48af011622657a73570a54d1a660b821bb30a
+          - 13d750dee1750ee1c325e0fea9b7b4eaaf10cb14
+          - 2dc503aaecfb0d3c317608aaeabc68a108e32b97
 permissions:
   contents: read
-
-concurrency:
-  # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
-  cancel-in-progress: true
-
-env:
-  BAZEL: bazel
-
+  actions: read
 jobs:
-  archive:
-    name: Container archive (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: AMD64
-            architecture: amd64
-            machine: x86_64
-            runner: ubuntu-24.04
-            platform: x86_64_trixie
-          - name: ARM64
-            architecture: arm64
-            machine: aarch64
-            runner: ubuntu-24.04-arm
-            platform: aarch64_trixie
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Install execution tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
-
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Check native architecture and generated dependency state
-        run: |
-          test "$(uname -m)" = "${{ matrix.machine }}"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          test ! -e MODULE.bazel.lock
-          test -z "$(git ls-files -- MODULE.bazel.lock)"
-          git check-ignore MODULE.bazel.lock
-
-      - name: Set up Bazel
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: buildimage-gzip-${{ matrix.architecture }}
-          cache-version: "8.5.1"
-
-      - name: Check Make OCI bases and reproducible Docker archives
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/archive
-          git rev-parse HEAD > artifacts/archive/revision.txt
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          pull = event.get("pull_request", {})
-          commit = subprocess.check_output(["git", "cat-file", "-p", "HEAD"], text=True)
-          parents = [line.split()[1] for line in commit.split("\n\n", 1)[0].splitlines()
-                     if line.startswith("parent ")]
-          evidence = {
-              "tested_head": Path("artifacts/archive/revision.txt").read_text().strip(),
-              "tested_parents": parents,
-              "github_sha": os.environ["GITHUB_SHA"],
-              "pull_request_head": pull.get("head", {}).get("sha"),
-              "pull_request_base": pull.get("base", {}).get("sha"),
-              "architecture": "${{ matrix.architecture }}",
-          }
-          Path("artifacts/archive/revision.json").write_text(json.dumps(evidence, indent=2) + "\n")
-          PY
-          "$BAZEL" --version | tee artifacts/archive/bazel-version.txt
-          test "$(cat artifacts/archive/bazel-version.txt)" = "bazel $(cat .bazelversion)"
-          python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000 \
-            --output artifacts/archive/action-audit.json \
-            //tools/bazel/tests:sonic_docker_archive_test \
-            //tools/bazel/tests:oci_base_layout_test \
-            //tools/bazel/tests:prepare_oci_base_test \
-            //tools/bazel/tests:oci_base_consumer_test \
-            //tools/bazel/tests:select_apt_payloads_test \
-            //tools/bazel/tests:source_contract_test \
-            //tools/bazel/tests:oci_license_filter_test \
-            //tools/bazel/tests:test_dpkg_patterns_up_to_date \
-            //tools/bazel/oci/tests:imported_symbols_test \
-            //tools/bazel/oci/tests:native_symbols_test \
-            //tools/bazel/oci/tests:normalize_layer_test \
-            //tools/bazel/oci/tests:normalize_layer_rule_test \
-            //tools/bazel/tests:archive-fixture.gz \
-            //tools/bazel/tests:oci-consumer-first.gz
-          "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
-            --lockfile_mode=update --nocache_test_results --test_output=all \
-            --build_event_json_file="$PWD/artifacts/archive/test-events.jsonl" \
-            //tools/bazel/tests:sonic_docker_archive_test \
-            //tools/bazel/tests:oci_base_layout_test \
-            //tools/bazel/tests:prepare_oci_base_test \
-            //tools/bazel/tests:oci_base_consumer_test \
-            //tools/bazel/tests:select_apt_payloads_test \
-            //tools/bazel/tests:source_contract_test \
-            //tools/bazel/tests:oci_license_filter_test \
-            //tools/bazel/tests:test_dpkg_patterns_up_to_date \
-            //tools/bazel/oci/tests:imported_symbols_test \
-            //tools/bazel/oci/tests:native_symbols_test \
-            //tools/bazel/oci/tests:normalize_layer_test \
-            //tools/bazel/oci/tests:normalize_layer_rule_test \
-            2>&1 | tee artifacts/archive/test.log
-          output=$("$BAZEL" cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --output=files //tools/bazel/tests:archive-fixture.gz)
-          test -s "$output"
-          cp "$output" artifacts/archive/archive-fixture.gz
-          # The fixture test verifies that this payload equals the original Docker tar.
-          python3 -c 'import gzip; from pathlib import Path; p = Path("artifacts/archive"); (p / "archive-fixture.tar").write_bytes(gzip.decompress((p / "archive-fixture.gz").read_bytes()))'
-          sha256sum artifacts/archive/archive-fixture.* > artifacts/archive/archive-sha256.txt
-
-      - name: Check shared Make rules with unrelated container targets
-        run: |
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
-          python3 -B tools/bazel/ci/verify_make_archive.py \
-            --artifacts artifacts/archive/make-export \
-            --bazel "$BAZEL" \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 \
-            --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000
-
-      - name: Test Python packages and check startup generation
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/config-engine
-          # Render SWSS metadata on either host; this does not build an ARM64 image.
-          make -f tools/bazel/prepare_manifests.mk \
-            MANIFEST_METADATA=rules/docker-orchagent.mk \
-            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs \
-            CONFIGURED_ARCH=amd64 ENABLE_ASAN=n DBG_IMAGE_MARK=dbg DOCKERS_PATH=dockers \
-            2>&1 | tee artifacts/config-engine/make-manifests.log
-          python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000 \
-            --output artifacts/config-engine/action-audit.json \
-            //tools/bazel/tests:apt_selection_test \
-            //tools/bazel/tests:sonic_py_common_test \
-            //tools/bazel/tests:sonic_yang_mgmt_full_test \
-            //tools/bazel/tests:sonic_yang_mgmt_wheel_test \
-            //tools/bazel/tests:sonic_py_common_full_test \
-            //tools/bazel/tests:sonic_config_engine_full_test \
-            //tools/bazel/tests:sonic_python_wheels_test \
-            //tools/bazel/tests:containercfgd_full_test \
-            //tools/bazel/tests:containercfgd_wheel_test \
-            //tools/bazel/tests:supervisor_python_full_test \
-            //tools/bazel/tests:supervisor_python_wheel_test \
-            //tools/bazel/tests:installed_wheel_fixture_test \
-            //tools/bazel/tests:wheel_contract_test \
-            //src/sonic-config-engine:sonic_cfggen_cli_test \
-            //tools/bazel/tests:manifest_labels_test \
-            //tools/bazel/tests:manifest_labels_action_test \
-            //tools/bazel/tests:cfggen_template_test \
-            //tools/bazel/tests:swss_render_test \
-            //src/sonic-yang-mgmt:sonic_yang_mgmt_wheel \
-            //src/sonic-py-common:sonic_py_common_wheel \
-            //src/sonic-config-engine:sonic_config_engine_wheel \
-            //src/sonic-containercfgd:sonic_containercfgd_wheel \
-            //src/sonic-supervisord-utilities:sonic_supervisord_utilities_wheel \
-            //dockers/docker-orchagent/config:docker_init
-          "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
-            --nocache_test_results --test_output=all \
-            --build_event_json_file="$PWD/artifacts/config-engine/test-events.jsonl" \
-            //tools/bazel/tests:apt_selection_test \
-            //tools/bazel/tests:sonic_py_common_test \
-            //tools/bazel/tests:sonic_yang_mgmt_full_test \
-            //tools/bazel/tests:sonic_yang_mgmt_wheel_test \
-            //tools/bazel/tests:sonic_py_common_full_test \
-            //tools/bazel/tests:sonic_config_engine_full_test \
-            //tools/bazel/tests:sonic_python_wheels_test \
-            //tools/bazel/tests:containercfgd_full_test \
-            //tools/bazel/tests:containercfgd_wheel_test \
-            //tools/bazel/tests:supervisor_python_full_test \
-            //tools/bazel/tests:supervisor_python_wheel_test \
-            //tools/bazel/tests:installed_wheel_fixture_test \
-            //tools/bazel/tests:wheel_contract_test \
-            //src/sonic-config-engine:sonic_cfggen_cli_test \
-            //tools/bazel/tests:manifest_labels_test \
-            //tools/bazel/tests:manifest_labels_action_test \
-            //tools/bazel/tests:cfggen_template_test \
-            //tools/bazel/tests:swss_render_test \
-            2>&1 | tee artifacts/config-engine/test.log
-          output=$("$BAZEL" cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --output=files //dockers/docker-orchagent/config:docker_init)
-          test -s "$output"
-          bash -n "$output"
-          cp "$output" artifacts/config-engine/docker-init.sh
-          sha256sum artifacts/config-engine/docker-init.sh > artifacts/config-engine/sha256.txt
-          git diff --exit-code
-
-      - name: Retain wheels and required Python test evidence
-        run: |
-          python3 -B tools/bazel/ci/python_packages.py \
-            --artifacts artifacts/config-engine \
-            --revision artifacts/archive/revision.json \
-            --architecture "${{ matrix.architecture }}" \
-            --bazel "$BAZEL" \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 \
-            --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000
-          git diff --exit-code
-
-      - name: Check local cache reuse across fresh checkouts
-        run: |
-          python3 -B tools/bazel/ci/verify_agent_cache.py \
-            --artifacts artifacts/archive/agent-cache \
-            --bazel "$BAZEL" \
-            --repository-cache "$("$BAZEL" info repository_cache)" \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 \
-            --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000
-
-      - name: Retain generated module lock and graph
-        run: |
-          python3 -B - <<'PY'
-          import json
-          from pathlib import Path
-          import os
-          from tools.bazel.ci import resolution
-          directory = Path("artifacts/archive").resolve()
-          evidence = resolution.collect(Path.cwd(), directory, bazel=[os.environ["BAZEL"]])
-          (directory / "resolution.json").write_text(json.dumps(evidence, indent=2) + "\n")
-          PY
-
-      - name: Prepare public artifact list
-        id: public_artifacts
-        if: always()
-        env:
-          CI_JOB_STATUS: ${{ job.status }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          python3 -B tools/bazel/ci/public_artifacts.py archive \
-            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
-            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
-            --architecture "${{ matrix.architecture }}" \
-            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Upload public archive evidence
-        if: always() && steps.public_artifacts.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: container-archive-${{ matrix.architecture }}
-          path: ${{ steps.public_artifacts.outputs.paths }}
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
-
-  checks:
-    name: OCI regression checks (AMD64)
-    runs-on: ubuntu-24.04
-    outputs:
-      p4_sources_artifact_id: ${{ steps.p4_sources_upload.outputs.artifact-id }}
-    # No SWSS/Syncd package compilation: those checks reuse the full Make build.
-    timeout-minutes: 60
-    container:
-      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-      # Reap any Bazel processes used for dependency resolution.
-      options: --init
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Install execution tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl \
-            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
-
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Check generated dependency state
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          test ! -e MODULE.bazel.lock
-          test -z "$(git ls-files -- MODULE.bazel.lock)"
-          git check-ignore MODULE.bazel.lock
-
-      - name: Check hosted storage
-        run: df -h "$GITHUB_WORKSPACE" "$HOME"
-
-      - name: Set up Bazel
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
-          # This job resolves/downloads dependencies but executes no Bazel builds.
-          disk-cache: false
-          cache-version: "8.5.1"
-
-      - name: Check Make handoff and archive validation
-        run: |
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
-          python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
-          python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
-          python3 -B tools/bazel/ci/configure_runner_cache_test.py
-
-      - name: Retain the verified GitLab source downloads
-        run: |
-          mkdir -p artifacts/repository-inputs
-          test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
-          "$BAZEL" fetch --repo=@@ape+ --repo=@@download_utils+ \
-            --repo=@@rules_coreutils+ --repo=@@rules_gzip+ --repo=@@toolchain_utils+
-          python3 - <<'PYCODE'
-          from pathlib import Path
-          from tools.bazel.ci import resolution
-          import os
-          resolution.collect(Path.cwd(), Path("artifacts/repository-inputs"), bazel=[os.environ["BAZEL"]])
-          PYCODE
-          python3 -B tools/bazel/gzip/source_archive.py \
-            --repository-cache "$("$BAZEL" info repository_cache)" \
-            --module-graph artifacts/repository-inputs/module-graph.json \
-            --output artifacts/repository-inputs \
-            > artifacts/repository-inputs/receipt.json
-
-      - name: Retain the native Redis test helper for installed-image checks
-        run: |
-          mkdir -p artifacts/repository-inputs/test-helpers
-          cp /usr/bin/redis-server artifacts/repository-inputs/test-helpers/redis-server
-          cp /usr/share/doc/redis-server/copyright artifacts/repository-inputs/test-helpers/redis-copyright
-          python3 - <<'PY'
-          import hashlib, json, pathlib, subprocess
-          root = pathlib.Path("artifacts/repository-inputs/test-helpers")
-          binary = root / "redis-server"
-          receipt = {
-              "_generated": {"notice": "AUTO-GENERATED. DO NOT EDIT MANUALLY.",
-                             "generator": ".github/workflows/bazel-oci.yml"},
-              "purpose": "Isolated test helper; not installed in the Syncd image",
-              "architecture": subprocess.check_output(["dpkg", "--print-architecture"], text=True).strip(),
-              "package_version": subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", "redis-server"], text=True),
-              "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-              "version": subprocess.check_output([str(binary.resolve()), "--version"], text=True).strip(),
-          }
-          assert receipt["architecture"] == "amd64"
-          (root / "redis.json").write_text(json.dumps(receipt, indent=2) + "\n")
-          PY
-
-      - name: Upload the source downloads for the VS job
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: bazel-repository-inputs
-          path: |
-            artifacts/repository-inputs/ape-1.0.1/src.tar.gz
-            artifacts/repository-inputs/download_utils-1.0.1/src.tar.gz
-            artifacts/repository-inputs/rules_coreutils-1.0.1/src.tar.gz
-            artifacts/repository-inputs/rules_gzip-1.0.0/src.tar.gz
-            artifacts/repository-inputs/toolchain_utils-1.0.2/src.tar.gz
-            artifacts/repository-inputs/receipt.json
-            artifacts/repository-inputs/test-helpers/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-      - name: Fetch pinned P4 source inputs for the native worker
-        id: p4_sources_fetch
-        if: >-
-          (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-          (github.event_name == 'pull_request' &&
-           github.event.pull_request.head.repo.full_name == github.repository) ||
-          (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-        run: |
-          python3 -B tools/ci/p4_source_inputs.py --fetch \
-            --manifest src/p4lang/source-inputs.json \
-            --directory artifacts/p4-source-inputs/sources \
-            --receipt artifacts/p4-source-inputs/receipt.json
-          echo 'P4 source-byte pins verified. The unchanged upstream P4C descriptor has a known checksum discrepancy; receipt.json records its declared and published hashes separately.' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Preserve P4 source inputs and verification receipt
-        id: p4_sources_upload
-        if: always() && (steps.p4_sources_fetch.outcome == 'success' || steps.p4_sources_fetch.outcome == 'failure')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: p4-source-inputs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/p4-source-inputs/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-      - name: Report validation scope
-        run: |
-          echo 'Hosted checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
-
-  vs:
-    name: Make VS with Bazel SWSS (AMD64)
-    needs: [checks]
-    # Replaced by vs_container below. Keep the legacy recipe available while
-    # transitioning, but do not schedule another host-driven Make VS build.
-    if: ${{ false }}
-    # Use the ONIE pool; checkout still uses this event's ref and SHA.
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - sonic-vs-bin
+  backfill:
+    name: Historical Make VS installer (AMD64)
+    runs-on: [self-hosted, linux, x64, sonic-vs-bin]
     timeout-minutes: 720
+    # Also serialize against the normal native-slave image build. These host
+    # runners must not introduce another concurrent full-image memory consumer.
+    concurrency:
+      group: sonic-slave-container-vs
+      cancel-in-progress: false
+      queue: max
     env:
-      SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
-      # Use Docker Hub's canonical references with the existing pinned digests.
-      DEFAULT_CONTAINER_REGISTRY: ""
-      MIRROR_URLS: https://deb.debian.org/debian/
-      MIRROR_SECURITY_URLS: https://deb.debian.org/debian-security/
-      SONIC_CONFIG_USE_DOCKER_CACHE: "y"
-      # Keep build results outside run-specific checkouts and disposable builders.
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:master-backfill
       SONIC_BAZEL_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/bazel
       SONIC_DPKG_CACHE_SOURCE: /data/sonic-runner/cache/sonic-buildimage/packages
       SONIC_DPKG_CACHE_METHOD: rwcache
+      SONIC_CONFIG_USE_DOCKER_CACHE: "y"
+      SONIC_BUILD_MEMORY: "20g"
+      SONIC_BUILD_MEMORY_SWAP: "20g"
+      DEFAULT_CONTAINER_REGISTRY: ""
+      # The installer bootstraps CA certificates after its first signed APT update.
+      MIRROR_URLS: http://deb.debian.org/debian/
+      MIRROR_SECURITY_URLS: http://deb.debian.org/debian-security/
+      BAZEL: bazel
       BAZEL_CONTAINER_ARGS: >-
+        --jobs=4
+        --local_resources=cpu=4
+        --local_resources=memory=10000
         --distdir=/bazel_cache/distdir/ape-1.0.1
         --distdir=/bazel_cache/distdir/download_utils-1.0.1
         --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
@@ -470,512 +54,177 @@ jobs:
         shell: bash
         working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Check source-build runner capacity
-        working-directory: ${{ github.workspace }}
-        run: |
-          docker info > /dev/null
-          python3 - <<'PY'
-          from pathlib import Path
-          import shutil
-          workspace = Path.cwd().resolve()
-          usage = shutil.disk_usage(workspace)
-          free_gib = usage.free / 1024**3
-          print(f'Workspace: {workspace}; available: {free_gib:.1f} GiB; '
-                f'total: {usage.total / 1024**3:.1f} GiB', flush=True)
-          if usage.free < 100 * 1024**3:
-              raise SystemExit(f'The full Make VS build needs at least 100 GiB free; '
-                               f'{workspace} has {free_gib:.1f} GiB available')
-          PY
-
-      - name: Checkout repository
+      - name: Checkout the reviewed backfill driver
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # An interrupted submodule clone can leave an invalid HEAD that the
-          # checkout action's superproject clean/reset cannot repair.
+          ref: ${{ github.sha }}
+          path: control-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+
+      - name: Verify original run and pinned download artifact
+        id: inputs
+        working-directory: ${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B "control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tools/ci/historical_vs_backfill.py" inputs \
+            --source-sha "$SOURCE_SHA" --output "evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Checkout the exact historical source and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
           submodules: recursive
 
-      - name: Check VS build prerequisites
-        run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD" --build-target sonic-vs.bin
+      - name: Verify historical checkout identity
+        run: |
+          mkdir -p artifacts/vs
+          python3 -B "$GITHUB_WORKSPACE/control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tools/ci/historical_vs_backfill.py" identity \
+            --source-sha "$SOURCE_SHA" --workspace "$PWD" --output artifacts/vs/source-before.json
+          test ! -e target/sonic-vs.bin
+
+      - name: Check ONIE host prerequisites with the separate current driver
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tools/ci/runner/preflight.py" \
+            --workspace "$PWD" --build-target sonic-vs.bin 2>&1 | tee artifacts/vs/preflight.log
 
       - name: Prepare persistent agent caches
         run: |
-          # Keep ordinary Make writers separate from older root-created cache entries.
           SONIC_BAZEL_CACHE_SOURCE="$SONIC_BAZEL_CACHE_SOURCE/make-uid-$(id -u)"
           install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
           test -w "$SONIC_BAZEL_CACHE_SOURCE"
           test -w "$SONIC_DPKG_CACHE_SOURCE"
-          # A writable cache root does not prove old digest directories are writable.
-          # Check directories only: cached content files may intentionally be read-only.
           for cache in repository_cache disk_cache kernel-linux-sandbox/repository_cache kernel-linux-sandbox/disk_cache; do
             cache_path="$SONIC_BAZEL_CACHE_SOURCE/$cache"
             if test -d "$cache_path"; then
               blocked=$(find "$cache_path" -type d ! -writable -print -quit)
               if test -n "$blocked"; then
-                stat -c 'Unwritable Bazel cache directory: %n (uid=%u gid=%g mode=%a)' "$blocked" >&2
-                echo 'Repair this cache directory for the runner user before rebuilding; preserve cached content.' >&2
+                stat -c 'Unwritable cache: %n (uid=%u gid=%g mode=%a)' "$blocked" >&2
                 exit 1
               fi
             fi
           done
           printf 'SONIC_BAZEL_CACHE_SOURCE=%s\n' "$SONIC_BAZEL_CACHE_SOURCE" >> "$GITHUB_ENV"
-          printf 'Bazel cache: %s\nMake package cache: %s (%s)\n' \
-            "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" "$SONIC_DPKG_CACHE_METHOD"
 
-      - name: Download verified sources from the hosted checks
+      - name: Download the original run's verified source inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: bazel-repository-inputs
+          artifact-ids: ${{ steps.inputs.outputs.artifact_id }}
+          run-id: ${{ steps.inputs.outputs.run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
 
-      - name: Prepare the shared Bazel source-download directory
+      - name: Verify and stage sources using the historical integrity pins
         run: |
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" \
             > artifacts/vs/source-download-receipt.json
 
-      - name: Configure the native VS image
+      - name: Initialize and configure the original Make source
         run: |
-          mkdir -p artifacts/vs
           make init 2>&1 | tee artifacts/vs/init.log
           make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
+            SONIC_CONFIG_BUILD_JOBS=1 SONIC_CONFIG_MAKE_JOBS=4 \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
             2>&1 | tee artifacts/vs/configure.log
 
-      - name: Check nested Docker in both build environments
+      - name: Check the original nested Docker setup
         timeout-minutes: 10
         run: |
-          set -o pipefail
           for build_env in bookworm trixie; do
             make -f Makefile.work BLDENV="$build_env" docker-start \
+              SONIC_CONFIG_BUILD_JOBS=1 SONIC_CONFIG_MAKE_JOBS=4 \
               SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
               2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
           done
 
-      - name: Check native kernel sandbox in Trixie
-        timeout-minutes: 5
+      - name: Build the historical ONIE installer
+        id: build
         run: |
-          set -o pipefail
+          make target/sonic-vs.bin \
+            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
+            ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
+            SONIC_CONFIG_BUILD_JOBS=1 SONIC_CONFIG_MAKE_JOBS=4 \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
+            2>&1 | tee artifacts/vs/build.log
+          test -s target/sonic-vs.bin
+          sha256sum target/sonic-vs.bin > artifacts/vs/sonic-vs.bin.sha256
+
+      - name: Verify the installer embeds the historical source identity
+        run: |
+          # The historical slave already provides PyYAML and unsquashfs. Mount
+          # the current read-only validator separately; never patch the source.
+          control="$GITHUB_WORKSPACE/control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          expected_commit=$(git rev-parse --short HEAD)
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL" \
-            SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
-            2>&1 | tee artifacts/vs/kernel-sandbox.log
+            DOCKER_ROOT="$PWD/target/docker-backfill-metadata" \
+            SONIC_CONFIG_BUILD_JOBS=1 SONIC_CONFIG_MAKE_JOBS=4 \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL --mount type=bind,source=$control,target=/ci-control,readonly" \
+            SONIC_RUN_CMDS="python3 -B /ci-control/scripts/validate_sonic_version.py \
+              --installer --expected-commit-id $expected_commit --secure-upgrade-mode no_sign \
+              --json-output artifacts/vs/sonic-version.json target/sonic-vs.bin" \
+            2>&1 | tee artifacts/vs/installer-version.log
 
-      - name: Build the VS installer (.bin)
-        id: vs_build
+      - name: Verify source identity after the build
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
-          set -o pipefail
-          bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
+          python3 -B "$GITHUB_WORKSPACE/control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tools/ci/historical_vs_backfill.py" identity \
+            --source-sha "$SOURCE_SHA" --workspace "$PWD" --output artifacts/vs/source-after.json \
+            --after-build
+          printf '%s\n' 'Built target/sonic-vs.bin from the original source revision. This backfill does not create or boot a KVM disk, or claim the newer PR #54 runtime-validation coverage.' >> "$GITHUB_STEP_SUMMARY"
+          printf 'Source: `%s`; driver: `%s`.\n' "$SOURCE_SHA" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Validate VS container pairs and P4 debug symbols
-        id: vs_validation
-        run: |
-          set -o pipefail
-          bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
-
-      - name: Verify installed base, SWSS and Syncd images
-        timeout-minutes: 20
-        run: |
-          # Make clears DOCKER_ROOT on entry; preserve the completed build's store.
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            DOCKER_ROOT="$PWD/fsroot.docker.verify-images" \
-            SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL --cgroupns=private" \
-            SONIC_RUN_CMDS="sudo python3 -B tools/bazel/ci/prepare_nested_docker.py && \
-              make -f slave.mk docker-start SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n && \
-              python3 -B tools/bazel/ci/validate_runtime.py \
-                --images-policy artifacts/vs/swss-installed-images-policy.json \
-                --images-policy artifacts/vs/syncd-installed-images-policy.json --target target \
-                --output artifacts/vs/installed-images.json" \
-            2>&1 | tee artifacts/vs/installed-images.log
-
-      - name: Retain VS runtime and debug archive reuse evidence
+      - name: Upload the historical installer and checksum
+        if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sonic-vs-orchagent-reuse-amd64
+          name: sonic-vs-bin-${{ inputs.source_sha }}
           path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/orchagent-reuse.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/runtime-debug-pairs-timing.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin.dockers
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/sonic-vs.bin.sha256
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/source-*.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/sonic-version.json
+            evidence-${{ github.run_id }}-${{ github.run_attempt }}/inputs.json
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
 
-      - name: Validate SWSS source packages from the Make build
-        id: swss_validation
-        if: ${{ !cancelled() && steps.vs_build.outcome == 'success' }}
-        run: |
-          cat > artifacts/vs/check-swss-source.sh <<'SH'
-          set -euo pipefail
-          option_lines=$(python3 tools/bazel/build_helpers.py options \
-            --cache-directory="${BAZEL_CONTAINER_CACHE_DIR-${BAZEL_SWSS_CACHE_DIR:-}}" \
-            --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}}")
-          ci_options=()
-          if test -n "$option_lines"; then
-            while IFS= read -r option; do ci_options+=("--bazel-arg=$option"); done <<< "$option_lines"
-          fi
-          python3 -B tools/bazel/ci/container.py --reuse-build \
-            --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk \
-            --bazel "$BAZEL" --artifacts artifacts/swss \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
-            "${ci_options[@]}"
-          SH
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            DOCKER_ROOT="$PWD/target/docker-source-validation" \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
-            SONIC_RUN_CMDS="bash artifacts/vs/check-swss-source.sh" \
-            2>&1 | tee artifacts/vs/swss-source-validation.log
-
-      - name: Prepare SWSS source artifact list
-        id: swss_artifacts
-        if: always()
-        env:
-          CI_JOB_STATUS: ${{ steps.swss_validation.outcome == 'success' && 'success' || 'failure' }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          python3 -B tools/bazel/ci/public_artifacts.py source \
-            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
-            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
-            --architecture "amd64" \
-            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Upload public source layers and evidence
-        if: always() && steps.swss_artifacts.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: swss-source-layers-amd64
-          path: ${{ steps.swss_artifacts.outputs.paths }}
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
-
-      - name: Validate Syncd source packages from the Make build
-        id: syncd_validation
-        if: ${{ !cancelled() && steps.vs_build.outcome == 'success' }}
-        run: |
-          mkdir -p artifacts/syncd-vs
-          git rev-parse HEAD > artifacts/syncd-vs/revision.txt
-          sha256sum platform/vs/docker-syncd-vs/bazel/apt.lock.json \
-            platform/vs/docker-syncd-vs/BUILD.bazel > artifacts/syncd-vs/input-locks.sha256
-          cat > artifacts/vs/check-syncd-source.sh <<'SH'
-          set -euo pipefail
-          option_lines=$(python3 tools/bazel/build_helpers.py options \
-            --cache-directory="${BAZEL_CONTAINER_CACHE_DIR-${BAZEL_SWSS_CACHE_DIR:-}}" \
-            --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}}")
-          ci_options=()
-          if test -n "$option_lines"; then
-            while IFS= read -r option; do ci_options+=("--bazel-arg=$option"); done <<< "$option_lines"
-          fi
-          python3 -B tools/bazel/ci/container.py --reuse-build \
-            --container //platform/vs/docker-syncd-vs --source-file platform/vs/docker-syncd-vs.mk \
-            --bazel "$BAZEL" --artifacts artifacts/syncd-vs/bazel \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
-            --bazel-arg=--config=syncd-dash "${ci_options[@]}"
-          python3 -B tools/bazel/ci/bazel_commands.py \
-            --bazel "$BAZEL" --bazel-arg=--config=syncd-dash "${ci_options[@]}" \
-            --output artifacts/syncd-vs/p4-image-test-analysis.json \
-            //tools/bazel/tests:syncd_p4_images_test
-          SH
-          make -f Makefile.work BLDENV=trixie sonic-slave-run \
-            DOCKER_ROOT="$PWD/target/docker-source-validation" \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
-            SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-source.sh" \
-            2>&1 | tee artifacts/vs/syncd-source-validation.log
-
-      - name: Prepare Syncd source artifact list
-        id: syncd_artifacts
-        if: always()
-        env:
-          CI_JOB_STATUS: ${{ steps.syncd_validation.outcome == 'success' && 'success' || 'failure' }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          python3 -B tools/bazel/ci/public_artifacts.py syncd \
-            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
-            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
-            --architecture "amd64" \
-            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Upload public contract evidence
-        if: always() && steps.syncd_artifacts.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: syncd-vs-oci-contracts-amd64
-          path: ${{ steps.syncd_artifacts.outputs.paths }}
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
-
-
-      - name: Remove this job's remaining build containers
+      - name: Remove only this job's remaining build containers
         if: always()
         timeout-minutes: 2
         working-directory: ${{ github.workspace }}
-        env:
-          VS_CHECKOUT: vs-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          # Killing a docker client does not stop its daemon-owned container.
-          # Match this repository/run/attempt only; keep the bind-mounted logs.
           containers=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
           if test -n "$containers"; then
             readarray -t container_ids <<< "$containers"
-            mkdir -p "$VS_CHECKOUT/artifacts/vs"
+            logs="vs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/artifacts/vs"
+            mkdir -p "$logs"
             for container_id in "${container_ids[@]}"; do
-              docker logs "$container_id" > "$VS_CHECKOUT/artifacts/vs/container-$container_id.log" 2>&1 || true
+              docker logs "$container_id" > "$logs/container-$container_id.log" 2>&1 || true
             done
             if ! docker rm --force "${container_ids[@]}"; then
-              # --rm containers can disappear between listing and removal.
+              # A --rm builder may exit between listing and removal.
               remaining=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
               test -z "$remaining"
             fi
           fi
 
-      - name: Prepare public artifact list
-        id: public_artifacts
+      - name: Retain build evidence on success or failure
         if: always()
-        env:
-          CI_JOB_STATUS: ${{ job.status }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          python3 -B tools/bazel/ci/public_artifacts.py vs \
-            --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
-            --job-status "$CI_JOB_STATUS" --revision "$(git rev-parse HEAD)" \
-            --architecture "amd64" \
-            --head-sha "$CI_HEAD_SHA" --base-sha "$CI_BASE_SHA" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Upload public VS build summary
-        if: always() && steps.public_artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sonic-vs-build-diagnostics-amd64
-          path: ${{ steps.public_artifacts.outputs.paths }}
+          name: sonic-vs-backfill-evidence-${{ inputs.source_sha }}
+          path: |
+            evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*.sha256
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/*.log
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
-
-      - name: Retain shared image validation evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sonic-vs-image-validation-amd64
-          path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/swss-images/
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-p4-images/
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*-installed-images-policy.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/installed-images.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload VS image and OCI container archives
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sonic-vs-make-bazel-swss-amd64
-          path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-  vs_container:
-    name: VS installer in SONiC slave (AMD64)
-    needs: [checks]
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    runs-on: [self-hosted, linux, x64, sonic-slave-container]
-    timeout-minutes: 720
-    # The four registered slots share lgh4. Only one full native build may
-    # consume its memory at a time; each worker still handles one job and exits.
-    concurrency:
-      group: sonic-slave-container-vs
-      cancel-in-progress: false
-    defaults:
-      run:
-        shell: bash
-    env:
-      EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
-      SONIC_BUILD_GIT_NAME: Guohan Lu
-      SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
-      PREFER_DEBIAN_REPO: "y"
-      # Direct slave.mk bypasses the outer Make retry wrapper. Retry only
-      # native Docker builds; strict APT refreshes keep failed indexes uncached.
-      DOCKER_BUILD: ./scripts/run_with_retry docker build
-      SONIC_BUILD_RETRY_COUNT: "2"
-      SONIC_BUILD_RETRY_INTERVAL: "10"
-      # Contain APT 3.0.3's delayed-retry warning queue (Debian #1117797).
-      # The generator removes this temporary policy before image export.
-      SONIC_DOCKER_APT_RETRIES: "0"
-      BAZEL_CONTAINER_ARGS: >-
-        --jobs=4 --local_resources=memory=12288
-        --distdir=/bazel_cache/distdir/ape-1.0.1
-        --distdir=/bazel_cache/distdir/download_utils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
-        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
-    steps:
-      - name: Checkout repository and pinned submodules
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          submodules: recursive
-
-      - name: Download verified source archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: bazel-repository-inputs
-          path: artifacts/vs/repository-inputs
-
-      - name: Prepare the privileged SONiC slave
-        run: bash tools/bazel/ci/prepare_vs_slave.sh
-
-      - name: Require the P4 source artifact from this producer job
-        env:
-          P4_SOURCES_ARTIFACT_ID: ${{ needs.checks.outputs.p4_sources_artifact_id }}
-        run: '[[ "$P4_SOURCES_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]'
-
-      - name: Download the pinned P4 source inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.checks.outputs.p4_sources_artifact_id }}
-          merge-multiple: true
-          path: artifacts/vs/p4-source-inputs
-
-      - name: Verify P4 source bytes before native Make
-        run: |
-          python3 -B tools/ci/p4_source_inputs.py \
-            --manifest src/p4lang/source-inputs.json \
-            --directory artifacts/vs/p4-source-inputs/sources \
-            --receipt artifacts/vs/p4-source-inputs-verified.json
-
-      - name: Configure persistent caches
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
-        run: |
-          python3 -B tools/bazel/ci/configure_runner_cache.py \
-            --jobs=4 --local-memory-mb=12288
-          python3 -B tools/bazel/gzip/source_archive.py \
-            --archives-dir artifacts/vs/repository-inputs \
-            --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json
-
-      - name: Build sonic-vs.bin directly with slave.mk
-        id: native_build
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
-        run: |
-          set -euo pipefail
-          source "$RUNNER_TEMP/sonic-vs-slave.env"
-          cd /sonic
-          git rev-parse HEAD > artifacts/vs/build-revision.txt
-          make -f slave.mk target/sonic-vs.bin \
-            P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources \
-            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
-            INCLUDE_VS_DASH_SAI=y \
-            INCLUDE_FIPS=y \
-            ENABLE_ASAN=n \
-            ENABLE_SYNCD_RPC=n 2>&1 | tee artifacts/vs/build.log
-          test -s target/sonic-vs.bin
-          test -s target/sonic-vs.bin.dockers
-          test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
-
-      - name: Validate the installer and retained container pairs
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
-        run: |
-          set -euo pipefail
-          source "$RUNNER_TEMP/sonic-vs-slave.env"
-          cd /sonic
-          python3 -B scripts/validate_sonic_version.py target/sonic-vs.bin \
-            --installer --secure-upgrade-mode no_sign \
-            --expected-commit-id "$(git rev-parse --short HEAD)" \
-            --json-output artifacts/vs/sonic-version.json
-          python3 -B tools/bazel/ci/vs_archive_reuse.py capture-pairs \
-            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
-            --orchagent-receipt artifacts/vs/orchagent-reuse.json
-          # Reuse this same slave and its Bazel server for the P4/debug checks.
-          bash tools/bazel/ci/verify_vs_oci.sh make -f slave.mk \
-            P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources \
-            BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
-            ENABLE_ASAN=n ENABLE_SYNCD_RPC=n 2>&1 | tee artifacts/vs/validation.log
-          python3 -B tools/bazel/ci/vs_archive_reuse.py verify-pairs \
-            --workspace "$PWD" --receipt artifacts/vs/runtime-debug-pairs.json \
-            --orchagent-receipt artifacts/vs/orchagent-reuse.json
-          sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
-            target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
-
-      - name: Verify installed base, SWSS and Syncd images
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          source "$RUNNER_TEMP/sonic-vs-slave.env"
-          cd /sonic
-          # Reuse the worker-private daemon prepared before the native build.
-          python3 -B tools/bazel/ci/validate_runtime.py \
-            --images-policy artifacts/vs/swss-installed-images-policy.json \
-            --images-policy artifacts/vs/syncd-installed-images-policy.json --target target \
-            --output artifacts/vs/installed-images.json \
-            2>&1 | tee artifacts/vs/installed-images.log
-
-      - name: Publish the installer and matching container archives
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sonic-vs-slave-amd64
-          path: |
-            target/sonic-vs.bin
-            target/sonic-vs.bin.dockers
-            target/docker-orchagent.gz
-            target/docker-orchagent-dbg.gz
-            target/docker-syncd-vs.gz
-            target/docker-syncd-vs-dbg.gz
-            artifacts/vs/outputs.sha256
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-      - name: Preserve build receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sonic-vs-slave-evidence-amd64
-          path: |
-            artifacts/vs/*.json
-            artifacts/vs/*.txt
-            artifacts/vs/*.sha256
-            artifacts/vs/syncd-p4-images/validation.json
-            MODULE.bazel.lock
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Retain shared image validation evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sonic-vs-image-validation-amd64
-          path: |
-            artifacts/vs/swss-images/
-            artifacts/vs/syncd-p4-images/
-            artifacts/vs/*-installed-images-policy.json
-            artifacts/vs/installed-images.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Stop this worker's private Docker daemon
-        if: always()
-        run: |
-          if test -s "$RUNNER_TEMP/sonic-dockerd.pid"; then
-            sudo -n kill -TERM "$(cat "$RUNNER_TEMP/sonic-dockerd.pid")"
-          fi
