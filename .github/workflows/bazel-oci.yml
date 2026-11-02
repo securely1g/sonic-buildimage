@@ -38,7 +38,7 @@ jobs:
             platform: x86_64_trixie
             # Reuse the shared image cache and allow time for archive + image checks.
             disk_cache: swss-layer-amd64
-            timeout: 240
+            timeout: 300
           - name: ARM64
             architecture: arm64
             machine: aarch64
@@ -89,6 +89,16 @@ jobs:
             --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+          # Draft wrappers disable the home rc; share setup-bazel caches with them.
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          home = Path.home() / '.bazelrc'
+          cache_lines = [line for line in home.read_text().splitlines()
+                         if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+          assert len(cache_lines) == 2, 'setup-bazel cache settings are missing'
+          user = Path('.bazelrc.user')
+          user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
+          PYCODE
 
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
@@ -392,6 +402,77 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Build Teamd runtime and debug images from source owners
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
+          python3 -B tools/bazel/ci/teamd_image.py build --artifacts artifacts/teamd
+      - name: Validate Teamd image contents and source symbols
+        if: matrix.architecture == 'amd64'
+        run: python3 -B tools/bazel/ci/teamd_image.py validate --artifacts artifacts/teamd
+      - name: Check Teamd incremental rebuild and restored image digests
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/teamd_image.py incremental --artifacts artifacts/teamd
+          git diff --exit-code
+      - name: Prepare reviewed Teamd evidence
+        id: teamd_public
+        if: always() && matrix.architecture == 'amd64'
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/teamd')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names += [path.name for path in root.glob('*.validation.json')]
+          names += [path.name for path in root.glob('*.packages.json')]
+          for name in names:
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYCODE
+      - name: Retain Teamd images and reviewed build evidence
+        if: always() && matrix.architecture == 'amd64' && steps.teamd_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: teamd-image-amd64
+          path: |
+            artifacts/teamd/*.gz
+            artifacts/teamd/*.tar
+            artifacts/teamd/*.status
+            artifacts/teamd/*.packages.json
+            artifacts/teamd/*.validation.json
+            artifacts/teamd/validation.json
+            artifacts/teamd/public-receipt.json
+            artifacts/teamd/runtime-apt.json
+            artifacts/teamd/debug-apt.json
+            artifacts/teamd/action-audit.json
+            artifacts/teamd/incremental.json
+            artifacts/teamd/build-summary.json
+            artifacts/teamd/MODULE.bazel.lock
+            artifacts/teamd/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
   swss_layer_runtime:
     name: Load and run the shared SWSS image (AMD64)
     needs: archive
@@ -440,6 +521,75 @@ jobs:
         with:
           name: swss-layer-runtime-amd64
           path: artifacts/swss-layer/runtime-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  teamd_runtime:
+    name: Run installed Teamd images (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: teamd-image-amd64
+          path: artifacts/teamd
+      - name: Verify and load only this run's images
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
+          directory=Path('artifacts/teamd')
+          receipt=json.loads((directory/'validation.json').read_text())
+          assert receipt['status']=='passed' and receipt['architecture']=='amd64'
+          assert receipt['revision']==subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          for name in ['docker-teamd','docker-teamd-dbg']:
+              path=directory/(name+'.gz')
+              assert hashlib.sha256(path.read_bytes()).hexdigest()==receipt['artifacts'][path.name]['sha256']
+              expected=json.loads((directory/(name+'.validation.json')).read_text())
+              tag='sonic-teamd-validation-'+name+':latest'
+              actual,config,_=load_archive(path,tag,expected['config_digest'])
+              verify_loaded_image(actual,config,expected['config_digest'])
+              assert actual['Os']=='linux' and actual['Architecture']=='amd64'
+              assert actual['RootFS']['Layers']==expected['rootfs']['diff_ids']
+          assert hashlib.sha256((directory/'test-redis.tar').read_bytes()).hexdigest()==receipt['artifacts']['test-redis.tar']['sha256']
+          PY
+          mkdir -p artifacts/teamd/redis-fixture
+          tar --no-same-owner -xf artifacts/teamd/test-redis.tar -C artifacts/teamd/redis-fixture
+      - name: Enable the kernel team driver on this isolated CI worker
+        run: |
+          test -d /sys/module/team || sudo modprobe team
+          test -d /sys/module/team_mode_loadbalance || sudo modprobe team_mode_loadbalance
+      - name: Exercise real Teamd control and inherited SWSS services
+        run: |
+          set -euo pipefail
+          for image in docker-teamd docker-teamd-dbg; do
+            probe_args=()
+            if [[ "$image" == *-dbg ]]; then probe_args+=(--debug); fi
+            # teamdctl resolves the interface through PF_PACKET/SOCK_DGRAM;
+            # that read-only ioctl socket requires NET_RAW as well as NET_ADMIN.
+            docker run --rm --network=none --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW --security-opt=no-new-privileges \
+              --read-only --pids-limit=128 --memory=4g --cpus=2 \
+              --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
+              --tmpfs /run/teamd:rw,nosuid,nodev,noexec,size=16m \
+              --tmpfs /var/warmboot:rw,nosuid,nodev,noexec,size=16m \
+              --mount type=volume,dst=/run/redis \
+              --mount "type=bind,src=$PWD/dockers/docker-teamd/bazel/runtime_probe.py,dst=/probe/runtime_probe.py,readonly" \
+              --mount "type=bind,src=$PWD/tools/bazel/oci/runtime_smoke.py,dst=/probe/runtime_smoke.py,readonly" \
+              --mount "type=bind,src=$PWD/artifacts/teamd/redis-fixture,dst=/probe/redis,readonly" \
+              --mount "type=bind,src=$PWD/artifacts/teamd/validation.json,dst=/probe/validation.json,readonly" \
+              --entrypoint /usr/bin/python3 "sonic-teamd-validation-$image:latest" -B /probe/runtime_probe.py --validation /probe/validation.json "${probe_args[@]}" \
+              | tee "artifacts/teamd/$image.runtime.json"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: teamd-runtime-amd64
+          path: artifacts/teamd/*.runtime.json
           if-no-files-found: warn
           retention-days: 14
 
