@@ -104,7 +104,37 @@ function validateSnapshot(data) {
   for (const pr of data.pull_requests) {
     if (!pr || !Number.isSafeInteger(pr.number) || typeof pr.title !== "string") throw new Error("The published pull request data is incomplete.");
   }
+  validateRefresh(data);
   return data;
+}
+function validateRefresh(data) {
+  if (data.refresh === undefined) return;
+  const refresh = data.refresh;
+  const fields = ["mode", "completed_at", "collection_id", "collection_sha256", "manifest_sha256", "pull_request_numbers", "run_attempts"];
+  if (!refresh || typeof refresh !== "object" || Object.keys(refresh).some(key => !fields.includes(key)) ||
+      fields.some(key => !Object.hasOwn(refresh, key)) || refresh.mode !== "scoped" ||
+      timestamp(refresh.completed_at) === null || timestamp(data.generated_at) === null ||
+      timestamp(refresh.completed_at) < timestamp(data.generated_at) ||
+      typeof refresh.collection_id !== "string" || !/^[0-9a-f]{32}$/.test(refresh.collection_id) ||
+      typeof refresh.collection_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(refresh.collection_sha256) ||
+      typeof refresh.manifest_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(refresh.manifest_sha256)) throw new Error("The published partial-refresh metadata is invalid.");
+  const numbers = refresh.pull_request_numbers, attempts = refresh.run_attempts;
+  if (!Array.isArray(numbers) || !numbers.length || numbers.length > 100 ||
+      numbers.some(number => !Number.isSafeInteger(number) || number < 1) || new Set(numbers).size !== numbers.length ||
+      !Array.isArray(attempts) || !attempts.length || attempts.length > 200 ||
+      attempts.some(run => !run || Object.keys(run).length !== 2 || !Number.isSafeInteger(run.run_id) || run.run_id < 1 ||
+        !Number.isSafeInteger(run.attempt) || run.attempt < 1) ||
+      new Set(attempts.map(runKey)).size !== attempts.length) throw new Error("The published partial-refresh selection is invalid.");
+  const prIds = new Set(data.pull_requests.map(pr => pr.number)), runIds = new Set(data.runs.map(runKey));
+  if (numbers.some(number => !prIds.has(number)) || attempts.some(run => !runIds.has(runKey(run)))) {
+    throw new Error("The published partial refresh refers to missing history.");
+  }
+}
+function freshnessLabel(data) {
+  if (!data.refresh) return `Snapshot: ${dateTime(data.generated_at)}`;
+  const numbers = data.refresh.pull_request_numbers, count = data.refresh.run_attempts.length;
+  const selection = `${numbers.length === 1 ? "PR" : "PRs"} ${numbers.map(number => `#${number}`).join(", ")}; ${count} selected run attempt${count === 1 ? "" : "s"}`;
+  return `Partial metadata refresh: ${dateTime(data.refresh.completed_at)} (${selection}). Previous snapshot: ${dateTime(data.generated_at)}.`;
 }
 function timingIdentity(id, labels) {
   const match = typeof id === "string" && /^([a-z][a-z0-9-]*)-([1-9][0-9]{0,5})$/.exec(id);
@@ -507,7 +537,7 @@ function renderDetails() {
 function renderFiltered() { renderTrend(); renderCoverage(); renderRuns(); renderDetails(); }
 function render() {
   byId("dashboard").hidden = false;
-  byId("snapshot-time").textContent = `Snapshot: ${dateTime(state.data.generated_at)}`;
+  byId("snapshot-time").textContent = freshnessLabel(state.data);
   byId("repository-link").href = `https://github.com/${state.data.repository}`;
   renderFilters(); renderMetrics();
   if (!state.selectedRun) { const latest = successfulImages()[0]; const run = latest?.run || [...state.data.runs].sort((a, b) => runTime(b) - runTime(a))[0]; state.selectedRun = run ? runKey(run) : null; state.selectedJob = latest?.job.job_id || null; }
@@ -543,4 +573,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, dateTime, freshnessLabel, safeGithubUrl, validateSnapshot, measured, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};

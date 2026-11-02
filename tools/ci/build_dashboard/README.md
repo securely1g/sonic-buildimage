@@ -108,9 +108,15 @@ value from 1 to 20 to limit its log reads.
 `.github/workflows/build-dashboard.yml` validates PR changes with read-only
 permissions. Once on `master`, it collects on completion of the selected
 workflows, every 15 minutes at minutes 7/22/37/52, and on manual dispatch.
-GitHub schedules can be delayed; `generated_at` shows the actual refresh time.
+GitHub schedules can be delayed; `generated_at` shows the ordinary metadata snapshot time.
 The collector checks the complete selected workflow history, so a coalesced
 completion event is recovered by the next collection.
+
+Manual dispatch has an explicit `full` or `scoped` mode, defaulting to the
+ordinary `full` path used by scheduled and workflow-completion publication.
+Scoped mode requires nonempty `scope_manifest` JSON; full mode rejects supplied
+manifest data. The workflow passes these inputs as environment data to Python;
+it never inserts the manifest into shell code.
 
 Completed attempt records are reused from the dedicated `build-metrics` branch.
 New attempts, changed latest attempts, and unfinished jobs are refreshed. Old
@@ -142,6 +148,75 @@ python3 -m http.server 8000 --bind 127.0.0.1 --directory /tmp/sonic-build-dashbo
 Use `--backfill` to re-read available completed attempts. It does not discard
 older retained records. A missing history file starts an initial collection;
 invalid existing history must be corrected rather than silently reset.
+
+## Refresh an exact host scope
+
+Use `--mode scoped --scope-manifest PATH` for a partial refresh from a host that has already
+validated PR admission against its immutable collection. The collection ID and
+hash attest admission only. A focused read may select a newer current head than
+the collection evaluated; the updater verifies that current tuple live before
+fetching jobs and again before returning output.
+
+For example, collection `12cac406b72243288a1994ed77b909a1` admitted PR64. A
+later focused read selected head `2dd8776b` on the same `master` tip, with an
+explicit matching GitHub PR association on run `41392934714`, attempt 1:
+
+```json
+{
+  "schema_version": 1,
+  "collection_id": "12cac406b72243288a1994ed77b909a1",
+  "collection_sha256": "b8a1c9e2210132baee608ad751951d03a7949b7110aab056c1d3f42a64782207",
+  "repository": "securely1g/sonic-buildimage",
+  "pull_requests": [{
+    "id": "PR_kwDORRewBs8AAAABLEqWTQ",
+    "number": 64,
+    "state": "OPEN",
+    "draft": true,
+    "head_repository": "securely1g/sonic-buildimage",
+    "head_ref": "codex/vs-oci-build-session",
+    "head_sha": "2dd8776bec64df150773bd801347ebecb24b67ee",
+    "base_ref": "master",
+    "base_sha": "071c575c71f85329d21a94b4d40c1f2d7b696cd9"
+  }],
+  "runs": [{
+    "run_id": 41392934714,
+    "attempt": 1,
+    "pr_number": 64,
+    "workflow_path": ".github/workflows/bazel-oci.yml"
+  }]
+}
+```
+
+The host supplies the manifest as an admission attestation; the updater cannot
+recompute the private collection hash from a subset. It validates strict JSON,
+bounded unique identities, the requested public `securely1g` repository, the
+exact PR node/head/repository/ref/state and selected base tip, and one explicit
+matching run association. Empty or ambiguous run associations and moved
+attempts fail closed. `--run-id` and `--backfill` cannot be combined with scoped
+mode. Each selected PR needs a selected current run attempt.
+
+Scoped mode requires a valid retained metadata snapshot. It never enumerates all
+PRs or workflows, performs commit-to-PR inference, or normalizes/enriches
+unselected run history. Optional log reads stay within the selected runs.
+Job pages must account for a stable advertised total, and every job's status
+and conclusion must agree before normalization.
+Changes in run status, conclusion, attempt, or update time during job reads
+abort before output replacement. The result keeps the previous `generated_at`
+and adds the latest partial-refresh time and exact selection. The dashboard
+labels these as **Partial metadata refresh** and **Previous snapshot**. The
+previous snapshot may have limited legacy `--run-id` coverage; no full-history
+claim is made. The next ordinary collection supersedes the partial marker.
+
+This example updates PR64 metadata and exact run records only. On the stated
+`071c575c` baseline, the installer job remains classified as `other`;
+[PR82](https://github.com/securely1g/sonic-buildimage/pull/82) retains the
+separate matcher correction needed for its displayed image outcome.
+
+The CLI also supports `--mode scoped --scope-manifest-env NAME` for data supplied
+through a named environment variable. Empty, missing, or invalid JSON fails.
+Omitting scoped mode and its inputs keeps ordinary behavior; `--mode full`
+rejects scoped input flags. The publication workflow uses the environment form
+only after selecting scoped mode.
 
 ## Pages setup
 

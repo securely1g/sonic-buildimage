@@ -6,6 +6,7 @@ import argparse
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import json
 import os
@@ -29,6 +30,23 @@ WORKFLOWS = ("bazel-swss-oci.yml", "bazel-oci.yml", "bazel.yml")
 PHASES = ("setup", "build", "validation", "upload", "other")
 REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
+COLLECTION_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
+SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+MAX_SCOPE_BYTES = 64 * 1024
+MAX_SCOPE_PRS = 100
+MAX_SCOPE_RUNS = 200
+SCOPED_PR_QUERY = """query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    id databaseId nameWithOwner isPrivate
+    pullRequest(number:$number){
+      id number title state isDraft headRefOid headRefName baseRefName updatedAt mergedAt
+      headRef { target { oid } }
+      baseRef { target { oid } }
+      baseRepository { id databaseId nameWithOwner }
+      headRepository { id databaseId nameWithOwner }
+    }
+  }
+}"""
 IMAGE_JOBS = {
     "Make VS with Bazel SWSS (AMD64)": "make-vs",
     "Bazel VS installer (AMD64)": "bazel-vs",
@@ -42,6 +60,7 @@ IMAGE_STEPS = {
 }
 MAX_LOG_JOBS = 20
 LOG_TIMEOUT_SECONDS = 45
+WORK_STATUSES = {"completed", "queued", "in_progress", "waiting", "requested", "pending"}
 
 
 class LogReadError(RuntimeError):
@@ -76,6 +95,15 @@ def timestamp(value):
         return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     except ValueError:
         return None
+
+
+def coherent_scoped_status(value):
+    status, conclusion = value.get("status"), value.get("conclusion")
+    if not isinstance(status, str) or status not in WORK_STATUSES:
+        return False
+    if status == "completed":
+        return isinstance(conclusion, str) and bool(conclusion)
+    return conclusion is None
 
 
 def seconds(item):
@@ -211,14 +239,12 @@ class GitHub:
             process.stdout.close()
             process.stderr.close()
 
-    def get(self, endpoint):
+    def _json(self, command, endpoint, timeout, input_text=None):
         for attempt in range(self.retries):
             try:
                 result = subprocess.run(
-                    [self.executable, "api", "--method", "GET", endpoint],
-                    text=True, capture_output=True,
-                    timeout=30 if "/commits/" in endpoint and "/pulls" in endpoint else 90,
-                    check=False,
+                    command, input=input_text, text=True, capture_output=True,
+                    timeout=timeout, check=False,
                 )
             except (OSError, subprocess.TimeoutExpired) as error:
                 if attempt + 1 == self.retries or isinstance(error, OSError):
@@ -242,6 +268,31 @@ class GitHub:
             print(f"Retrying metadata read after {code} (attempt {attempt + 1}/{self.retries}): {endpoint}", file=sys.stderr)
             time.sleep(min(30, 5 * 2 ** attempt))
         raise CollectionError(f"GitHub request failed: {endpoint}")
+
+    def get(self, endpoint):
+        return self._json(
+            [self.executable, "api", "--method", "GET", endpoint], endpoint,
+            30 if "/commits/" in endpoint and "/pulls" in endpoint else 90,
+        )
+
+    def exact_pr(self, repo, number):
+        """Read one PR and its selected base tip without listing repository PRs."""
+        if not REPOSITORY_RE.fullmatch(repo) or not integer(number):
+            raise CollectionError("Invalid exact pull-request identity")
+        owner, name = repo.split("/", 1)
+        request = json.dumps({"query": SCOPED_PR_QUERY,
+                              "variables": {"owner": owner, "name": name, "number": number}})
+        response = self._json(
+            [self.executable, "api", "graphql", "--method", "POST", "--input", "-"],
+            f"exact pull request {repo}#{number}", 90, request,
+        )
+        if not isinstance(response, dict) or response.get("errors"):
+            raise CollectionError("Exact pull-request query failed")
+        data = response.get("data")
+        repository = data.get("repository") if isinstance(data, dict) else None
+        if not isinstance(repository, dict):
+            raise CollectionError("Exact pull-request query returned no repository")
+        return repository
 
     def pages(self, endpoint, key=None):
         results = []
@@ -270,6 +321,203 @@ def normalize_pr(raw, repo):
         "head_branch": raw.get("head", {}).get("ref"),
         "updated_at": timestamp(raw.get("updated_at")), "merged_at": timestamp(raw.get("merged_at")),
     }
+
+
+def valid_scope_text(value):
+    return isinstance(value, str) and 0 < len(value) <= 255 and all(32 < ord(char) < 127 for char in value)
+
+
+def validate_scope_manifest(value, repo):
+    """Validate the host's admitted PR subset and exact current run selection."""
+    fields = {"schema_version", "collection_id", "collection_sha256", "repository", "pull_requests", "runs"}
+    if (not isinstance(value, dict) or set(value) != fields or type(value.get("schema_version")) is not int
+            or value["schema_version"] != 1 or value.get("repository") != repo
+            or not isinstance(repo, str) or not REPOSITORY_RE.fullmatch(repo) or not repo.startswith("securely1g/")
+            or not isinstance(value.get("collection_id"), str) or not COLLECTION_ID_RE.fullmatch(value["collection_id"])
+            or not isinstance(value.get("collection_sha256"), str) or not SHA256_RE.fullmatch(value["collection_sha256"])):
+        raise CollectionError("Scoped refresh manifest has invalid collection or repository identity")
+    pulls, runs = value.get("pull_requests"), value.get("runs")
+    if (not isinstance(pulls, list) or not 0 < len(pulls) <= MAX_SCOPE_PRS
+            or not isinstance(runs, list) or not 0 < len(runs) <= MAX_SCOPE_RUNS):
+        raise CollectionError("Scoped refresh manifest has an invalid PR or run selection")
+    pr_fields = {"id", "number", "state", "draft", "head_repository", "head_ref", "head_sha", "base_ref", "base_sha"}
+    numbers, node_ids = set(), set()
+    for pr in pulls:
+        if (not isinstance(pr, dict) or set(pr) != pr_fields or not integer(pr.get("number"))
+                or pr["number"] in numbers or not valid_scope_text(pr.get("id")) or pr["id"] in node_ids
+                or not isinstance(pr.get("state"), str) or pr["state"] not in {"OPEN", "CLOSED", "MERGED"}
+                or type(pr.get("draft")) is not bool
+                or not isinstance(pr.get("head_repository"), str) or not REPOSITORY_RE.fullmatch(pr["head_repository"])
+                or not valid_scope_text(pr.get("head_ref")) or not valid_scope_text(pr.get("base_ref"))
+                or not isinstance(pr.get("head_sha"), str) or not SHA_RE.fullmatch(pr["head_sha"])
+                or not isinstance(pr.get("base_sha"), str) or not SHA_RE.fullmatch(pr["base_sha"])):
+            raise CollectionError("Scoped refresh manifest has an invalid or duplicate PR identity")
+        numbers.add(pr["number"])
+        node_ids.add(pr["id"])
+    run_fields = {"run_id", "attempt", "pr_number", "workflow_path"}
+    run_ids, used_numbers = set(), set()
+    for run in runs:
+        if (not isinstance(run, dict) or set(run) != run_fields or not integer(run.get("run_id"))
+                or not integer(run.get("attempt")) or not integer(run.get("pr_number")) or run["run_id"] in run_ids
+                or run.get("pr_number") not in numbers
+                or not isinstance(run.get("workflow_path"), str)
+                or run["workflow_path"] not in {f".github/workflows/{name}" for name in WORKFLOWS}):
+            raise CollectionError("Scoped refresh manifest has an invalid or duplicate run identity")
+        run_ids.add(run["run_id"])
+        used_numbers.add(run["pr_number"])
+    if used_numbers != numbers:
+        raise CollectionError("Every scoped PR must have an exact selected run")
+    return copy.deepcopy(value)
+
+
+def parse_scope_manifest(text, repo):
+    try:
+        valid_size = isinstance(text, str) and bool(text) and len(text.encode("utf-8")) <= MAX_SCOPE_BYTES
+    except UnicodeError:
+        valid_size = False
+    if not valid_size:
+        raise CollectionError("Scoped refresh manifest is empty or too large")
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    def invalid_constant(_value):
+        raise ValueError("invalid constant")
+
+    try:
+        value = json.loads(text, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+    except (UnicodeError, ValueError) as error:
+        raise CollectionError("Scoped refresh manifest is not strict JSON") from error
+    return validate_scope_manifest(value, repo)
+
+
+def validate_scoped_refresh(value):
+    fields = {"mode", "completed_at", "collection_id", "collection_sha256", "manifest_sha256", "pull_request_numbers", "run_attempts"}
+    if (not isinstance(value, dict) or set(value) != fields or value.get("mode") != "scoped"
+            or not timestamp(value.get("completed_at"))
+            or not isinstance(value.get("collection_id"), str) or not COLLECTION_ID_RE.fullmatch(value["collection_id"])
+            or not isinstance(value.get("collection_sha256"), str) or not SHA256_RE.fullmatch(value["collection_sha256"])
+            or not isinstance(value.get("manifest_sha256"), str) or not SHA256_RE.fullmatch(value["manifest_sha256"])):
+        raise CollectionError("Dashboard history has invalid scoped freshness metadata")
+    numbers, runs = value.get("pull_request_numbers"), value.get("run_attempts")
+    if (not isinstance(numbers, list) or not 0 < len(numbers) <= MAX_SCOPE_PRS
+            or any(not integer(number) for number in numbers) or len(set(numbers)) != len(numbers)
+            or not isinstance(runs, list) or not 0 < len(runs) <= MAX_SCOPE_RUNS):
+        raise CollectionError("Dashboard history has invalid scoped freshness identities")
+    keys = set()
+    for run in runs:
+        if (not isinstance(run, dict) or set(run) != {"run_id", "attempt"}
+                or not integer(run.get("run_id")) or not integer(run.get("attempt"))
+                or (run["run_id"], run["attempt"]) in keys):
+            raise CollectionError("Dashboard history has invalid scoped run freshness")
+        keys.add((run["run_id"], run["attempt"]))
+
+
+def scoped_pr(repository, expected, repo):
+    """Validate an exact GraphQL PR read, including the live selected base tip."""
+    try:
+        pr = repository["pullRequest"]
+        base_repo, head_repo = pr["baseRepository"], pr["headRepository"]
+        if (repository["isPrivate"] is not False or repository["nameWithOwner"] != repo
+                or not integer(repository["databaseId"])
+                or not integer(pr["number"]) or type(pr["isDraft"]) is not bool
+                or base_repo["id"] != repository["id"] or base_repo["databaseId"] != repository["databaseId"]
+                or base_repo["nameWithOwner"] != repo or not integer(head_repo["databaseId"])):
+            raise CollectionError("Scoped PR does not belong to the requested public repository")
+        observed = {
+            "id": pr["id"], "number": pr["number"], "state": pr["state"], "draft": pr["isDraft"],
+            "head_repository": head_repo["nameWithOwner"], "head_ref": pr["headRefName"],
+            "head_sha": pr["headRefOid"], "base_ref": pr["baseRefName"], "base_sha": pr["baseRef"]["target"]["oid"],
+        }
+        if observed != expected:
+            raise CollectionError("Scoped PR identity changed from the admitted current tuple")
+        if pr["state"] == "OPEN" and pr["headRef"]["target"]["oid"] != pr["headRefOid"]:
+            raise CollectionError("Scoped open PR head ref changed from the admitted head")
+        if not isinstance(pr["title"], str) or not timestamp(pr["updatedAt"]):
+            raise CollectionError("Scoped PR metadata is incomplete")
+        if (pr["state"] == "MERGED" and not timestamp(pr["mergedAt"])) or (pr["state"] != "MERGED" and pr["mergedAt"] is not None):
+            raise CollectionError("Scoped PR merge state is inconsistent")
+        metadata = normalize_pr({
+            "number": pr["number"], "title": pr["title"], "state": "open" if pr["state"] == "OPEN" else "closed",
+            "draft": pr["isDraft"], "head": {"sha": pr["headRefOid"], "ref": pr["headRefName"]},
+            "base": {"sha": observed["base_sha"]}, "updated_at": pr["updatedAt"], "merged_at": pr["mergedAt"],
+        }, repo)
+        return {**observed, "base_repository_id": repository["databaseId"],
+                "head_repository_id": head_repo["databaseId"], "metadata": metadata}
+    except (KeyError, TypeError, AttributeError) as error:
+        raise CollectionError("Scoped PR response is missing required identity fields") from error
+
+
+def validate_scoped_run(raw, expected, pr, repo):
+    """Require the exact current attempt and one explicit matching PR association."""
+    try:
+        path = raw["path"]
+        if (not integer(raw["id"]) or not integer(raw["run_attempt"])
+                or raw["id"] != expected["run_id"] or raw["run_attempt"] != expected["attempt"]
+                or raw["event"] != "pull_request" or path != expected["workflow_path"]
+                or not integer(raw["repository"]["id"]) or not integer(raw["head_repository"]["id"])
+                or raw["repository"]["full_name"] != repo or raw["repository"]["id"] != pr["base_repository_id"]
+                or raw["head_repository"]["full_name"] != pr["head_repository"]
+                or raw["head_repository"]["id"] != pr["head_repository_id"]
+                or raw["head_sha"] != pr["head_sha"] or raw["head_branch"] != pr["head_ref"]):
+            raise CollectionError("Scoped run identity or attempt changed")
+        associations = raw["pull_requests"]
+        if not isinstance(associations, list) or len(associations) != 1:
+            raise CollectionError("Scoped run needs one explicit PR association")
+        association = associations[0]
+        if (not integer(association["number"]) or not integer(association["head"]["repo"]["id"])
+                or not integer(association["base"]["repo"]["id"]) or association["number"] != expected["pr_number"]
+                or association["head"]["sha"] != pr["head_sha"] or association["head"]["ref"] != pr["head_ref"]
+                or association["head"]["repo"]["id"] != pr["head_repository_id"]
+                or association["base"]["sha"] != pr["base_sha"] or association["base"]["ref"] != pr["base_ref"]
+                or association["base"]["repo"]["id"] != pr["base_repository_id"]):
+            raise CollectionError("Scoped run PR association changed")
+        if not coherent_scoped_status(raw):
+            raise CollectionError("Scoped run status and conclusion are inconsistent")
+        if not timestamp(raw.get("updated_at")):
+            raise CollectionError("Scoped run is missing a valid update timestamp")
+    except (KeyError, TypeError, AttributeError) as error:
+        raise CollectionError("Scoped run response is missing required identity fields") from error
+
+
+def scoped_inputs(api, repo, manifest):
+    pulls = {entry["number"]: scoped_pr(api.exact_pr(repo, entry["number"]), entry, repo)
+             for entry in sorted(manifest["pull_requests"], key=lambda item: item["number"])}
+    runs = {}
+    for entry in sorted(manifest["runs"], key=lambda item: item["run_id"]):
+        raw = api.get(f"repos/{repo}/actions/runs/{entry['run_id']}")
+        validate_scoped_run(raw, entry, pulls[entry["pr_number"]], repo)
+        runs[entry["run_id"]] = raw
+    return pulls, runs
+
+
+def scoped_jobs(api, repo, run_id, attempt):
+    """Read every job for one exact attempt, checking a stable advertised count."""
+    endpoint = f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs"
+    jobs, total, page = [], None, 1
+    while True:
+        response = api.get(f"{endpoint}?per_page=100&page={page}")
+        if (not isinstance(response, dict) or type(response.get("total_count")) is not int
+                or response["total_count"] < 0 or not isinstance(response.get("jobs"), list)
+                or len(response["jobs"]) > 100):
+            raise CollectionError("Scoped jobs page has invalid count metadata")
+        if total is None:
+            total = response["total_count"]
+        elif response["total_count"] != total:
+            raise CollectionError("Scoped jobs total changed during pagination")
+        jobs.extend(response["jobs"])
+        if len(jobs) > total:
+            raise CollectionError("Scoped jobs exceed the advertised total")
+        if len(jobs) == total:
+            return jobs
+        if len(response["jobs"]) < 100:
+            raise CollectionError("Scoped jobs page ended before the advertised total")
+        page += 1
 
 
 class Associations:
@@ -353,7 +601,7 @@ def load_history(path, repo):
             or not isinstance(history.get("pull_requests"), list)):
         raise CollectionError("Dashboard history schema or repository does not match")
     allowed = {
-        "document": {"schema_version", "repository", "generated_at", "pull_requests", "runs", "comparisons"},
+        "document": {"schema_version", "repository", "generated_at", "pull_requests", "runs", "comparisons", "refresh"},
         "pr": {"number", "title", "state", "draft", "url", "head_sha", "base_sha", "head_branch", "updated_at", "merged_at"},
         "run": {"run_id", "attempt", "workflow_name", "workflow_path", "source_sha", "branch", "event", "status", "conclusion", "pr_numbers", "pr_association", "pr_association_note", "started_at", "completed_at", "updated_at", "url", "jobs"},
         "job": {"job_id", "name", "kind", "architecture", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "image_build_seconds", "image_build_elapsed_seconds", "phases", "steps", "url"},
@@ -364,6 +612,11 @@ def load_history(path, repo):
             raise CollectionError(f"Dashboard history contains invalid {kind} metadata")
 
     check_fields(history, "document")
+    if "refresh" in history:
+        validate_scoped_refresh(history["refresh"])
+        previous_time, scoped_time = timestamp(history.get("generated_at")), timestamp(history["refresh"]["completed_at"])
+        if not previous_time or datetime.fromisoformat(scoped_time) < datetime.fromisoformat(previous_time):
+            raise CollectionError("Scoped dashboard history has invalid previous or partial snapshot times")
     for pr in history["pull_requests"]:
         check_fields(pr, "pr")
         if not integer(pr.get("number")):
@@ -386,6 +639,10 @@ def load_history(path, repo):
         if None in key or key in keys or run.get("workflow_path") not in {f".github/workflows/{w}" for w in WORKFLOWS}:
             raise CollectionError("Dashboard history has invalid or duplicate run attempts")
         keys.add(key)
+    if "refresh" in history:
+        if (not set(history["refresh"]["pull_request_numbers"]).issubset({pr["number"] for pr in history["pull_requests"]})
+                or not {(run["run_id"], run["attempt"]) for run in history["refresh"]["run_attempts"]}.issubset(keys)):
+            raise CollectionError("Scoped dashboard freshness refers to missing history")
     return history
 
 
@@ -514,6 +771,91 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs
     }
 
 
+def collect_scoped(api, repo, history, manifest, workers=4, log_jobs=MAX_LOG_JOBS):
+    """Refresh only admitted current PRs and exact run attempts from the host manifest."""
+    manifest = validate_scope_manifest(manifest, repo)
+    if (not isinstance(history, dict) or type(history.get("schema_version")) is not int
+            or history.get("schema_version") != 1 or history.get("repository") != repo
+            or not timestamp(history.get("generated_at")) or not isinstance(history.get("pull_requests"), list)
+            or not isinstance(history.get("runs"), list) or history.get("comparisons", []) != []):
+        raise CollectionError("Scoped refresh requires a valid retained metadata snapshot")
+    prior_times = [timestamp(history["generated_at"])]
+    if "refresh" in history:
+        validate_scoped_refresh(history["refresh"])
+        prior_times.append(timestamp(history["refresh"]["completed_at"]))
+    if any(datetime.fromisoformat(value) > datetime.now(timezone.utc) for value in prior_times):
+        raise CollectionError("Scoped refresh cannot precede the retained snapshot time")
+    old_prs = {pr["number"]: pr for pr in history["pull_requests"]}
+    old_runs = {(run["run_id"], run["attempt"]): run for run in history["runs"]}
+    if len(old_prs) != len(history["pull_requests"]) or len(old_runs) != len(history["runs"]):
+        raise CollectionError("Scoped refresh cannot preserve duplicate retained identities")
+
+    # Finish every PR/run identity check before the first job or optional log read.
+    pulls, raw_runs = scoped_inputs(api, repo, manifest)
+
+    def fetch(entry):
+        raw = raw_runs[entry["run_id"]]
+        raw_jobs = scoped_jobs(api, repo, entry["run_id"], entry["attempt"])
+        for job in raw_jobs:
+            if (not isinstance(job, dict) or not integer(job.get("run_id")) or job.get("run_id") != entry["run_id"]
+                    or job.get("head_sha") != pulls[entry["pr_number"]]["head_sha"]
+                    or ("run_attempt" in job and (not integer(job["run_attempt"]) or job["run_attempt"] != entry["attempt"]))):
+                raise CollectionError("Scoped jobs response does not match the selected run attempt")
+            if not coherent_scoped_status(job):
+                raise CollectionError("Scoped job status and conclusion are inconsistent")
+        if raw["status"] == "completed" and any(
+                job.get("status") != "completed" for job in raw_jobs):
+            raise CollectionError("Scoped completed run has incomplete job observations")
+        jobs = [normalize_job(job, repo, entry["run_id"]) for job in raw_jobs]
+        if len({job["job_id"] for job in jobs}) != len(jobs):
+            raise CollectionError("Scoped jobs response contains duplicate IDs")
+        previous = old_runs.get((entry["run_id"], entry["attempt"]), {})
+        retain_breakdowns(jobs, previous.get("jobs", []))
+        return normalize_run(raw, entry["workflow_path"].rsplit("/", 1)[-1], repo, jobs,
+                             ([entry["pr_number"]], "github"))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        selected = list(pool.map(fetch, manifest["runs"]))
+    # Retained unselected runs are not normalized and cannot trigger log reads.
+    enrich_breakdowns(api, repo, selected, max(0, min(MAX_LOG_JOBS, log_jobs)))
+
+    closing_pulls, closing_runs = scoped_inputs(api, repo, manifest)
+    run_fields = ("id", "run_attempt", "head_sha", "head_branch", "event", "path", "status", "conclusion",
+                  "updated_at", "run_started_at", "created_at", "name")
+    if any(tuple(raw_runs[run_id].get(field) for field in run_fields) !=
+           tuple(closing_runs[run_id].get(field) for field in run_fields) for run_id in raw_runs):
+        raise CollectionError("Scoped run metadata changed during refresh; retry the exact selection")
+
+    pr_updates = {number: pr["metadata"] for number, pr in closing_pulls.items()}
+    run_updates = {(run["run_id"], run["attempt"]): run for run in selected}
+
+    def replace_selected(items, updates, key):
+        result = []
+        for item in items:
+            identity = key(item)
+            result.append(updates.pop(identity) if identity in updates else copy.deepcopy(item))
+        result.extend(updates[identity] for identity in sorted(updates, reverse=True))
+        return result
+
+    completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    manifest_sha256 = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    return {
+        "schema_version": 1, "repository": repo, "generated_at": history["generated_at"],
+        "pull_requests": replace_selected(history["pull_requests"], pr_updates, lambda pr: pr["number"]),
+        "runs": replace_selected(history["runs"], run_updates, lambda run: (run["run_id"], run["attempt"])),
+        "comparisons": copy.deepcopy(history.get("comparisons", [])),
+        "refresh": {
+            "mode": "scoped", "completed_at": completed_at,
+            "collection_id": manifest["collection_id"], "collection_sha256": manifest["collection_sha256"],
+            "manifest_sha256": manifest_sha256,
+            "pull_request_numbers": sorted(pr["number"] for pr in manifest["pull_requests"]),
+            "run_attempts": [{"run_id": run["run_id"], "attempt": run["attempt"]}
+                             for run in sorted(manifest["runs"], key=lambda item: item["run_id"])],
+        },
+    }
+
+
 def write_atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -530,6 +872,22 @@ def write_atomic(path, data):
             temporary.unlink(missing_ok=True)
 
 
+def load_scope_manifest(path, environment_name, repo):
+    if path is not None:
+        try:
+            with path.open("rb") as handle:
+                text = handle.read(MAX_SCOPE_BYTES + 1).decode("utf-8")
+        except (OSError, UnicodeError) as error:
+            raise CollectionError("Cannot read scoped refresh manifest") from error
+        return parse_scope_manifest(text, repo)
+    if environment_name is not None:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", environment_name) or environment_name not in os.environ:
+            raise CollectionError("Scoped refresh environment input is unavailable")
+        text = os.environ[environment_name]
+        return parse_scope_manifest(text, repo)
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="securely1g/sonic-buildimage")
@@ -538,6 +896,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--backfill", action="store_true", help="Re-read all available allowlisted run attempts, including completed history")
+    parser.add_argument("--mode", choices=("full", "scoped"), default="full",
+                        help="Use the ordinary collector or an exact scoped refresh (default: full)")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--scope-manifest", type=Path, help="Host-supplied JSON selecting exact current PR and run identities")
+    scope.add_argument("--scope-manifest-env", metavar="NAME", help="Read required scope JSON from this environment variable")
     parser.add_argument("--workers", type=int, default=4, choices=range(1, 9))
     parser.add_argument("--log-jobs", type=int, default=MAX_LOG_JOBS, choices=range(MAX_LOG_JOBS + 1),
                         help="Maximum newest missing Make VS job logs to summarize per refresh (default: 20; 0 skips reads)")
@@ -547,13 +910,28 @@ def main():
     if args.run_id is not None and args.run_id < 1:
         parser.error("--run-id must be positive")
     try:
+        has_scope_input = args.scope_manifest is not None or args.scope_manifest_env is not None
+        if args.mode == "full" and has_scope_input:
+            raise CollectionError("Full mode does not accept scoped manifest input")
+        if args.mode == "scoped" and not has_scope_input:
+            raise CollectionError("Scoped mode requires a nonempty manifest input")
+        manifest = load_scope_manifest(args.scope_manifest, args.scope_manifest_env, args.repo) if has_scope_input else None
+        if args.mode == "scoped" and (manifest is None or args.run_id is not None or args.backfill):
+            raise CollectionError("Scoped refresh cannot be combined with --run-id or --backfill")
         history = load_history(args.history if args.history is not None else args.output, args.repo)
-        result = collect(GitHub(args.github_cli), args.repo, history, args.run_id, args.backfill, args.workers, args.log_jobs)
+        api = GitHub(args.github_cli)
+        if args.mode == "full":
+            result = collect(api, args.repo, history, args.run_id, args.backfill, args.workers, args.log_jobs)
+        else:
+            result = collect_scoped(api, args.repo, history, manifest, args.workers, args.log_jobs)
         write_atomic(args.output, result)
     except CollectionError as error:
         print(f"Collection failed; published history was not replaced: {error}", file=sys.stderr)
         return 1
-    print(f"Collected {len(result['runs'])} run attempts and {len(result['pull_requests'])} PRs into {args.output}")
+    if args.mode == "scoped":
+        print(f"Refreshed {len(manifest['runs'])} selected run attempts and {len(manifest['pull_requests'])} PRs into {args.output}")
+    else:
+        print(f"Collected {len(result['runs'])} run attempts and {len(result['pull_requests'])} PRs into {args.output}")
     return 0
 
 

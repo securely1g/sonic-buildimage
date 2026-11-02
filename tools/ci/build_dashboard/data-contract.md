@@ -2,13 +2,29 @@
 
 `collect.py` produces one JSON document, also used as its durable history. It
 reads public GitHub Actions metadata and bounded timing markers from selected
-public job logs. Raw logs, artifacts, machine names, workflow inputs, environment
-variables and credentials are never retained in the public document. Collection
-does not execute a build or execute any content from a log.
+public job logs. Raw logs, artifacts, machine names, raw workflow input bodies,
+environment variables and credentials are never retained in the public document.
+The optional refresh record keeps only validated identities and attestation
+hashes described below. Collection does not execute a build or execute any
+content from a log.
 
 - `schema_version`: `1`.
 - `repository`: validated `owner/repository`.
-- `generated_at`: UTC collection timestamp.
+- `generated_at`: UTC timestamp of an ordinary metadata snapshot. Its
+  established meaning does not prove full run coverage: the legacy `--run-id`
+  path may refresh only one run. A scoped refresh preserves this as the
+  previous snapshot time so retained rows do not acquire its new partial date.
+- Optional `refresh`: the latest successful scoped refresh. It contains
+  `mode: "scoped"`, UTC `completed_at`, `collection_id`, `collection_sha256`,
+  a canonical-JSON `manifest_sha256`, selected `pull_request_numbers`, and
+  selected `run_attempts` (`run_id`, `attempt`). The collection ID/hash are the
+  host's attestation that those PR identities were admitted by its collection;
+  they do not assert that the current head equals the collection's evaluated
+  head. The updater verifies the manifest's current PR/head/selected-base/run
+  tuples live. It cannot recompute a private collection hash from this subset.
+  The field describes only the latest partial refresh, not the freshness of
+  every retained row. A later ordinary collection omits it and advances
+  `generated_at`.
 - `pull_requests`: current metadata, including closed and unmeasured PRs:
   `number`, `title`, `state`, `draft`, `url`, `head_sha`, `base_sha`,
   `head_branch`, `updated_at`, `merged_at`. These SHAs describe the **current PR
@@ -90,10 +106,29 @@ start/end times are `null`, never a fabricated zero. Valid measured zero-second
 steps are preserved. Concluded failed/cancelled jobs may have elapsed time;
 consumers must use the outcome before plotting successful performance.
 
-Only `bazel-swss-oci.yml`, `bazel-oci.yml`, and `bazel.yml` are collected. All
-pages and run attempts are covered. Completed attempts are reused from history;
+Only `bazel-swss-oci.yml`, `bazel-oci.yml`, and `bazel.yml` are collected. Normal
+full mode covers all pages and run attempts. Completed attempts are reused from history;
 new, nonterminal, and changed latest attempts fetch current jobs. `--backfill`
 forces a fresh read of every available attempt, including completed history. API failures
 fail collection before replacing the output. Historical entries absent from
 GitHub's response remain in history. Every URL is constructed on `github.com`
 from the validated repository and integer identifiers.
+
+The legacy `--run-id` path still reads all PR metadata and can enrich retained
+runs. It is not an exact scope boundary; use scoped mode for that purpose.
+
+Scoped mode requires valid retained schema-1 history with a snapshot time.
+It reads only exact admitted PRs and selected run IDs, verifies the current
+attempt and one explicit matching GitHub PR/head/base association for each run,
+then reads jobs only for those exact attempts. It has no repository-wide PR or
+workflow enumeration, commit-to-PR fallback, or log enrichment outside selected
+runs. Job pagination must account for a stable `total_count`; a missing or short
+page fails. Every job must have coherent status/conclusion fields, and a
+completed run cannot contain nonterminal jobs. A closing PR/run read must still
+match; run status, conclusion, attempt, or update-time movement during job
+reads fails without replacing output.
+Unselected PRs, attempts, jobs, and breakdowns are retained without
+normalization. Scoped output retains the previous `generated_at` and adds
+the partial `refresh` marker described above. The displayed date names the
+selected PR metadata and number of run attempts separately from the previous
+snapshot, without claiming that prior run coverage was complete.

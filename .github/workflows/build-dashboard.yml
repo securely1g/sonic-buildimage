@@ -27,10 +27,19 @@ on:
     - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
+      mode:
+        description: Choose ordinary collection or an exact scoped refresh
+        type: choice
+        options: [full, scoped]
+        default: full
       backfill:
         description: Re-read completed run attempts from GitHub
         type: boolean
         default: false
+      scope_manifest:
+        description: Required host JSON in scoped mode; must be empty in full mode
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -74,6 +83,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPOSITORY: securely1g/sonic-buildimage
       BACKFILL: ${{ inputs.backfill || false }}
+      DASHBOARD_REFRESH_MODE: ${{ inputs.mode || 'full' }}
+      DASHBOARD_SCOPE_MANIFEST: ${{ inputs.scope_manifest || '' }}
     steps:
       # workflow_run data never selects executable code. Only the maintained
       # default-branch revision that passed checks supplies the collector/site.
@@ -100,11 +111,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p site
-          args=()
-          if test "$BACKFILL" = true; then args+=(--backfill); fi
-          python3 -B tools/ci/build_dashboard/collect.py \
-            --repo "$REPOSITORY" --history history/data.json \
-            --output site/data.json "${args[@]}"
+          python3 -B - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          mode = os.environ["DASHBOARD_REFRESH_MODE"]
+          manifest = os.environ["DASHBOARD_SCOPE_MANIFEST"]
+          if mode not in {"full", "scoped"}:
+              raise SystemExit("Invalid dashboard refresh mode")
+          command = [sys.executable, "-B", "tools/ci/build_dashboard/collect.py",
+                     "--repo", os.environ["REPOSITORY"], "--history", "history/data.json",
+                     "--output", "site/data.json", "--mode", mode]
+          if mode == "scoped":
+              command.extend(["--scope-manifest-env", "DASHBOARD_SCOPE_MANIFEST"])
+          elif manifest:
+              raise SystemExit("Full mode does not accept scoped manifest data")
+          if os.environ["BACKFILL"] == "true":
+              command.append("--backfill")
+          subprocess.run(command, check=True)
+          PY
           cp tools/ci/build_dashboard/web/index.html tools/ci/build_dashboard/web/app.js \
             tools/ci/build_dashboard/web/styles.css site/
           cp LICENSE site/

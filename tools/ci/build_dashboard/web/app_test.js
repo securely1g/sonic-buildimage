@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {duration, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
+const {duration, dateTime, freshnessLabel, measured, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
 
 test("unmeasured and invalid durations never look like fast builds", () => {
   for (const value of [null, undefined, "12", -1, NaN, Infinity]) assert.equal(duration(value), "—");
@@ -135,6 +135,29 @@ test("unsupported or partial snapshots fail explicitly", () => {
   const snapshot = {schema_version: 1, repository: "securely1g/sonic-buildimage", pull_requests: [], runs: []};
   assert.equal(validateSnapshot(snapshot), snapshot);
   for (const malformed of [null, {...snapshot, schema_version: 2}, {...snapshot, repository: "bad<script>"}, {...snapshot, runs: [{run_id: 1}]}, {...snapshot, pull_requests: [{number: "1", title: "PR"}]}]) assert.throws(() => validateSnapshot(malformed));
+});
+
+test("partial freshness names the selected scope and retains the previous snapshot date", () => {
+  const previousAt = "2026-10-10T00:00:00Z", scopedAt = "2026-10-10T01:00:00Z";
+  const snapshot = {schema_version: 1, repository: "securely1g/sonic-buildimage", generated_at: previousAt,
+    pull_requests: [{number: 64, title: "Selected PR"}, {number: 33, title: "Retained PR"}],
+    runs: [{run_id: 10, attempt: 1, jobs: [], pr_numbers: [64]}],
+    refresh: {mode: "scoped", completed_at: scopedAt, collection_id: "1".repeat(32),
+      collection_sha256: "2".repeat(64), manifest_sha256: "3".repeat(64),
+      pull_request_numbers: [64], run_attempts: [{run_id: 10, attempt: 1}]}};
+  validateSnapshot(snapshot);
+  const label = freshnessLabel(snapshot);
+  assert.ok(label.includes(`Partial metadata refresh: ${dateTime(scopedAt)}`));
+  assert.ok(label.includes("PR #64; 1 selected run attempt"));
+  assert.ok(label.includes(`Previous snapshot: ${dateTime(previousAt)}`));
+  assert.ok(!label.includes("#33"), "retained PRs must not be labelled as selected");
+  const ordinary = {...snapshot, generated_at: "2026-10-10T02:00:00Z"};
+  delete ordinary.refresh;
+  assert.equal(freshnessLabel(ordinary), `Snapshot: ${dateTime(ordinary.generated_at)}`);
+  for (const refresh of [{...snapshot.refresh, run_attempts: [{run_id: 99, attempt: 1}]},
+    {...snapshot.refresh, pull_request_numbers: [99]}, {...snapshot.refresh, completed_at: "2026-10-09T00:00:00Z"},
+    {...snapshot.refresh, collection_sha256: "invalid"}, {...snapshot.refresh, collection_id: 1},
+    {...snapshot.refresh, collection_sha256: 2}, {...snapshot.refresh, manifest_sha256: 3}]) assert.throws(() => validateSnapshot({...snapshot, refresh}));
 });
 
 function exampleBreakdown() {
