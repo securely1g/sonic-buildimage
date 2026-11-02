@@ -29,20 +29,20 @@ runs the ordinary upstream checks with the default tcmalloc configuration.
 run it with `--//src/sonic-frr:tcmalloc=false` so Valgrind owns allocation
 instrumentation. Both suites support native AMD64 and ARM64 execution.
 CI keeps the production TARs and ordinary tests on the default allocator and
-runs the complete memory-check suite separately for Bookworm and Trixie on
-both architectures. Cross-compiling the check programs does not execute them.
+runs the complete memory-check suite separately on native AMD64/Trixie. Cross-compiling the check programs does not execute them.
 This avoids the observed tcmalloc initialization errors under Bookworm Valgrind
 and preserves strict memory-error exit codes without suppressions.
 
 ## Native source CI
 
 The `Bazel FRR and sonic-fib` workflow builds the installation TARs, matching
-symbols and upstream check programs on native AMD64 and ARM64. FRR metadata
-is selected on its declared Trixie platforms; sonic-fib metadata covers both
-distributions. Each
-architecture tests both the Trixie and Bookworm target platform using the
-declared runtime. It runs the original FRR checks, including Valgrind, and both
-sonic-fib tests. A failing upstream check remains a failing job.
+symbols and upstream check programs on native AMD64/Trixie. This matches the
+current migration scope; the retained ARM64 and Bookworm target definitions are
+not current CI coverage. It runs the original FRR checks, including Valgrind,
+both sonic-fib tests, and the installed SDK/runtime and schema-invalidation
+checks documented in `../libraries/sonic-fib/README.bazel.md`. A failing upstream
+check remains a failing job. The full VS installer is outside this source-only
+PR's no-DEB scope and its skipped job is not image validation.
 
 While registry PRs #146–#150 are unmerged, the workflow uses the single frozen
 candidate registry `e0bf141cea82764b18d15d7d2c8516cbf3e99290`. Its
