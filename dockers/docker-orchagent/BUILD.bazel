@@ -173,17 +173,11 @@ sonic_layer(
     tars = [":runtime_layer"],
 )
 
-sonic_layer(
+# Share the same complete source payload with the SWSS parent and its consumers.
+# This alias remains source-only: package tests do not need an OCI base.
+alias(
     name = "rdeps",
-    root_owned = True,
-    tars = [
-        "@sonic_swss//dist:swss_pkg",
-        "@sonic_swss_common//:libswsscommon_pkg",
-        "@sonic_sairedis//lib:libsairedis_pkg",
-        "@sonic_sairedis//meta:libsaimetadata_pkg",
-        "@sonic_dash_api//:libdashapi_pkg",
-        "@sonic_dash_api//:protobuf_runtime_pkg",
-    ],
+    actual = "//dockers/docker-swss-layer-trixie:source_runtime",
 )
 
 # Check the runtime dependencies' transitive symbols without requiring the

@@ -161,7 +161,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure' || github.head_ref == 'codex/swss-layer-amd64') }}
         run: |
           # Temporary source-only PR scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
@@ -373,7 +373,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure' || github.head_ref == 'codex/swss-layer-amd64') }}
         run: |
           # Temporary source-only PR scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
@@ -821,13 +821,13 @@ jobs:
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
-    # PRs #51/#61 and the SWSS closure follow-up validate source TARs only; no DEB generation.
+    # PRs #51/#61 and the SWSS source/OCI follow-ups exclude DEB generation.
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
-       github.head_ref != 'codex/swss-native-closure') ||
+       github.head_ref != 'codex/swss-native-closure' && github.head_ref != 'codex/swss-layer-amd64') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720

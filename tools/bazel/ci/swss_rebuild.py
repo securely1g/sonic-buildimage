@@ -27,12 +27,18 @@ def main():
     parser.add_argument("--bazel", required=True)
     parser.add_argument("--bazel-arg", action="append", default=[])
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--runtime-target", default="@sonic_swss//dist:swss_pkg")
+    parser.add_argument("--symbols-target", default="@sonic_swss//dist:swss_pkg.debug_symbols")
+    parser.add_argument("--additional-runtime-target", action="append", default=[])
+    parser.add_argument("--unchanged-target", action="append", default=[])
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     patch = ROOT / "tools/bazel/0001-sonic-swss-libteam.patch"
     original = patch.read_bytes()
-    targets = ["@sonic_swss//dist:swss_pkg", "@sonic_swss//dist:swss_pkg.debug_symbols"]
+    runtime_targets = [args.runtime_target, *args.additional_runtime_target]
+    unchanged_targets = [args.symbols_target, *args.unchanged_target]
+    targets = runtime_targets + unchanged_targets
     records = []
 
     def build(phase):
@@ -55,10 +61,11 @@ def main():
         require(build("no-op") == baseline, "unchanged inputs changed a SWSS TAR")
         patch.write_bytes(original + PROBE)
         changed = build("source-edit")
-        require(changed[targets[0]] != baseline[targets[0]] and changed[targets[1]] == baseline[targets[1]],
-                "an installed Python edit must change runtime TAR only, keeping compiled symbols")
+        require(all(changed[target] != baseline[target] for target in runtime_targets) and
+                all(changed[target] == baseline[target] for target in unchanged_targets),
+                "an installed Python edit must change its runtime outputs, preserving compiled symbols and bases")
         patch.write_bytes(original)
-        require(build("restored") == baseline, "restored inputs did not reproduce both SWSS TARs")
+        require(build("restored") == baseline, "restored inputs did not reproduce the SWSS outputs")
     finally:
         patch.write_bytes(original)
         (args.output / "rebuild.json").write_text(json.dumps({
