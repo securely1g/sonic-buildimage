@@ -80,6 +80,13 @@ jobs:
           bazel test "${options[@]}" --nocache_test_results --test_output=errors \
             //src/sonic-frr-mgmt-framework:upstream_tests \
             //src/sonic-bgpcfgd:upstream_tests
+          # The new installed-wheel acceptance is scoped to native AMD64.
+          # Preserve the existing ARM64 source suite without extending its scope.
+          if [[ "$NATIVE_ARCHITECTURE" == amd64 ]]; then
+            bazel test "${options[@]}" --nocache_test_results --test_output=errors \
+              //src/sonic-frr-mgmt-framework:installed_wheel_test \
+              //src/sonic-bgpcfgd:installed_wheel_test
+          fi
           python3 - <<'PY'
           import hashlib
           import json
@@ -137,9 +144,33 @@ jobs:
                   "test_target": package + ":upstream_tests", "tests": counts,
                   "python": inventory["python"].split()[0], "outputs": outputs,
               }
+              if os.environ["NATIVE_ARCHITECTURE"] == "amd64":
+                  source = Path("bazel-testlogs/src") / component / "installed_wheel_test"
+                  installed_counts = test_result(source / "test.xml")
+                  installed = json.loads(test_output(source, "wheels.json"))
+                  wheel = next(output for output in outputs if output["path"].endswith(".whl"))
+                  if (installed_counts["skipped"] or installed["status"] != "passed"
+                          or installed["architecture"] != "x86_64"
+                          or not installed["python"].startswith("3.13.")
+                          or installed["component"] != component
+                          or installed["wheels"] != [{"filename": Path(wheel["path"]).name,
+                                                      "sha256": wheel["sha256"]}]):
+                      raise ValueError("Installed test does not match retained wheel: " + component)
+                  receipt["components"][component]["installed_wheel"] = installed
+                  receipt["components"][component]["installed_tests"] = installed_counts
           receipt["status"] = "passed"
           (directory / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
           PY
+
+      - name: Verify wheel and TAR rebuild behavior (AMD64)
+        if: matrix.architecture == 'amd64'
+        run: |
+          python3 tools/bazel/ci/frr_python_rebuild.py \
+            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
+            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
+            --bazel-arg=--jobs=4 \
+            --output=artifacts/frr-python/rebuild.json
+          git diff --exit-code
 
       - name: Upload packages and bounded validation receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -807,7 +807,7 @@ jobs:
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
-    # PRs #51 and #61 validate source TARs only; their scope excludes DEB generation.
+    # PRs #51, #61 and #67 validate source outputs only; their scope excludes DEB generation.
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&

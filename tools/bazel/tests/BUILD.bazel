@@ -16,6 +16,8 @@ load(":runtime.bzl", "common_runtime_test")
 
 package(default_visibility = ["//visibility:public"])
 
+exports_files(["integration/frr_python_wheel_probe.py"])
+
 # Run the unchanged Rust tests with Common's declared native runtime. The owner
 # helper, runtime TAR and Rust binary are all inputs to the Bazel test action.
 sh_test(
