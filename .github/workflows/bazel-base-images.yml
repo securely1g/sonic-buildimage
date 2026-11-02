@@ -64,8 +64,20 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          acceptance=()
+          if [[ '${{ matrix.architecture }}' == amd64 ]]; then
+            acceptance+=(--config-engine-acceptance)
+          fi
           python3 -B tools/bazel/ci/base_images.py \
-            --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
+            --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images "${acceptance[@]}"
+          git diff --exit-code
+      - name: Verify config-engine no-op and template rebuilds
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/config_engine_rebuild.py \
+            --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
       - name: Retain images, symbols and build evidence
         if: always()
