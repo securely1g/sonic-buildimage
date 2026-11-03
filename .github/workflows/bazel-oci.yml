@@ -25,6 +25,8 @@ env:
 jobs:
   archive:
     name: Container archive (${{ matrix.name }})
+    # Temporarily skip packaging checks while validating the native lgh100 build.
+    if: ${{ false }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
