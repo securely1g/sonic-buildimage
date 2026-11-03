@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-03T22:12:30.863617Z",
+  "generated_at": "2026-11-03T22:14:22.205178Z",
   "pull_requests": [
     {
       "base_sha": "e184e05976958f78acd4f17e65af70df43965483",
@@ -2013,8 +2013,8 @@
     {
       "attempt": 1,
       "branch": "codex/source-image-worker-dispatch",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-11-03T22:12:29Z",
+      "conclusion": "success",
       "event": "pull_request",
       "jobs": [
         {
@@ -2425,9 +2425,9 @@
         },
         {
           "architecture": "arm64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-03T22:12:29Z",
+          "conclusion": "success",
+          "duration_seconds": 989.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 126223919143,
@@ -2441,7 +2441,7 @@
             "validation": 720.0
           },
           "started_at": "2026-11-03T21:56:00Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-03T21:56:02Z",
@@ -2745,8 +2745,8 @@
       "run_id": 41724014629,
       "source_sha": "a35c216117d559091607e06e54db65a489359f63",
       "started_at": "2026-11-03T21:41:06Z",
-      "status": "in_progress",
-      "updated_at": "2026-11-03T21:56:01Z",
+      "status": "completed",
+      "updated_at": "2026-11-03T22:12:30Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41724014629/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
@@ -7141,8 +7141,8 @@
     {
       "attempt": 1,
       "branch": "codex/gnmi-oci-amd64",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-11-03T22:13:07Z",
+      "conclusion": "success",
       "event": "pull_request",
       "jobs": [
         {
@@ -8043,9 +8043,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-03T22:13:02Z",
+          "conclusion": "success",
+          "duration_seconds": 227.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 126238536342,
@@ -8053,13 +8053,13 @@
           "name": "Run installed gNMI images (AMD64)",
           "phases": {
             "build": null,
-            "other": 109.0,
+            "other": 110.0,
             "setup": 1.0,
-            "upload": null,
-            "validation": null
+            "upload": 1.0,
+            "validation": 113.0
           },
           "started_at": "2026-11-03T22:09:15Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-03T22:09:17Z",
@@ -8092,37 +8092,100 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T22:12:59Z",
+              "conclusion": "success",
+              "duration_seconds": 113.0,
               "name": "Verify loaded archives, gNMI services and installed source symbols",
               "number": 4,
               "phase": "validation",
               "started_at": "2026-11-03T22:11:06Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T22:13:00Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Run actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
               "number": 5,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T22:12:59Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T22:13:01Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
               "number": 10,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T22:13:00Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T22:13:01Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 11,
+              "phase": "other",
+              "started_at": "2026-11-03T22:13:01Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41716109168/job/126238536342"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-03T22:13:07Z",
+          "conclusion": "success",
+          "duration_seconds": 2.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 126240536898,
+          "kind": "other",
+          "name": "gNMI acceptance (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 0.0,
+            "setup": 0.0,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-03T22:13:05Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-11-03T22:13:05Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-03T22:13:05Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T22:13:06Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Require both image construction and installed-service checks",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-03T22:13:06Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T22:13:06Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-11-03T22:13:06Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41716109168/job/126240536898"
         }
       ],
       "pr_association": "github",
@@ -8133,8 +8196,8 @@
       "run_id": 41716109168,
       "source_sha": "135bfcbd93c4073e63be34c19eec6a8a8b0685b8",
       "started_at": "2026-11-03T20:49:31Z",
-      "status": "in_progress",
-      "updated_at": "2026-11-03T22:09:16Z",
+      "status": "completed",
+      "updated_at": "2026-11-03T22:13:08Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41716109168/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
@@ -8142,8 +8205,8 @@
     {
       "attempt": 1,
       "branch": "codex/sflow-oci-amd64",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-11-03T22:12:57Z",
+      "conclusion": "success",
       "event": "pull_request",
       "jobs": [
         {
@@ -9031,9 +9094,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-03T22:12:57Z",
+          "conclusion": "success",
+          "duration_seconds": 319.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 126234397927,
@@ -9041,13 +9104,13 @@
           "name": "Load and run SWSS and sFlow images (AMD64)",
           "phases": {
             "build": null,
-            "other": 47.0,
+            "other": 304.0,
             "setup": 1.0,
             "upload": null,
             "validation": 11.0
           },
           "started_at": "2026-11-03T22:07:38Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-03T22:07:40Z",
@@ -9120,34 +9183,44 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T22:12:54Z",
+              "conclusion": "success",
+              "duration_seconds": 256.0,
               "name": "Exercise installed sFlow manager, mapper and exporter variants",
               "number": 8,
               "phase": "other",
               "started_at": "2026-11-03T22:08:38Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T22:12:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Retain installed sFlow evidence",
               "number": 9,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T22:12:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T22:12:55Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
               "number": 18,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T22:12:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T22:12:55Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 19,
+              "phase": "other",
+              "started_at": "2026-11-03T22:12:55Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41709318414/job/126234397927"
@@ -9161,8 +9234,8 @@
       "run_id": 41709318414,
       "source_sha": "0b2017ac4c9cf7fafb6f13e82e988b426d73b638",
       "started_at": "2026-11-03T20:05:29Z",
-      "status": "in_progress",
-      "updated_at": "2026-11-03T22:07:39Z",
+      "status": "completed",
+      "updated_at": "2026-11-03T22:12:58Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41709318414/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
