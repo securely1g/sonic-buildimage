@@ -11,8 +11,11 @@ configurations independently. For SWSS, on native AMD64 Debian Trixie with
 SWSS and assemble its runtime and debug OCI images. Other SWSS configurations
 continue to use Make, even with the switch set to `y`.
 Make continues to generate the container manifests and build
-the config-engine base, the Scapy wheel, other containers, host packages, kernel
-and final `sonic-vs.img.gz` virtual-machine image.
+other containers, host packages, kernel and the final VS installer. In the selected
+FIPS configuration, Bazel consumes the source config-engine OCI image directly.
+Scapy is built from the selected source by `@scapy//:wheel`; no Make wheel is an
+input to either Bazel Orchagent variant. Legacy Make-only builds retain their
+Scapy wheel dependency and metadata.
 
 The source and toolchain revisions are declared in the root `MODULE.bazel`; they do not change
 the source revisions used by Make's existing submodules. SWSS and its declared
@@ -211,9 +214,11 @@ make target/docker-orchagent.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 make target/docker-orchagent-dbg.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 ```
 
-These targets first produce their Make inputs, including
-`target/docker-config-engine-trixie.oci`, the Scapy wheel, and
-`target/bazel-manifests/docker-orchagent/manifest.json`. The debug target also
+The imported-parent profile first prepares its Make inputs, including
+`target/docker-config-engine-trixie.oci` and
+`target/bazel-manifests/docker-orchagent/manifest.json`. With the source
+config-engine profile selected, Bazel builds the parent and Make prepares
+the manifests. Both profiles build Scapy through its source-owned wheel target. The debug target also
 prepares `target/bazel-manifests/docker-orchagent-dbg/manifest.json`, since its
 image extends the runtime image. SWSS registers the
 base in `SONIC_BAZEL_OCI_BASES`, selecting its Make archive with `_OCI_ARCHIVE`
@@ -233,8 +238,8 @@ The shared archive helper publishes the completed archive to `target/` only
 after both commands succeed. It preserves the previous archive on failure and
 keeps its timestamp when the new bytes are unchanged.
 
-If the Docker base archive and Scapy wheel already exist, prepare the layout
-and manifests before invoking Bazel directly:
+For an existing Docker base archive, prepare the imported layout and manifests
+before invoking Bazel directly:
 
 ```sh
 python3 tools/bazel/oci/prepare_oci_base.py \
@@ -451,3 +456,37 @@ the [shared label macro](../../../tools/bazel/oci/README.md) and its non-ASAN
 settings to the source-owned `sonic_cfggen_template` macro. Manifest metadata
 continues to live in `rules/docker-orchagent.mk`. Other containers reuse the same
 Make generator and Bazel label action with their own declarations.
+
+## Source wheel and image acceptance
+
+The Scapy producer is `scapy@2.6.1.sonic.1` from registry PR #188. It preserves
+SONiC's selected upstream commit, both production patches, the exact
+`scapy-2.6.1.dev0-py3-none-any.whl` output and the upstream build backend.
+`config/BUILD.bazel` uses the existing standard wheel installer to add it.
+The source SWSS TAR is reused from the shared owner; Orchagent continues to
+extend config-engine, not the shared SWSS image.
+
+The native FIPS debug profile also consumes the existing OpenSSH client TAR
+and matching symbols from `sonic-fips`, retains its `_ssh` group and ssh-agent
+permissions, and records the installed debug packages. Its pinned external
+tools include gdb, gdbserver, strace, sshpass and full vim, matching Make.
+These debug additions do not enter the runtime variant.
+
+The existing OCI AMD64 job builds both variants and separately validates
+source payload bytes/modes, inherited files, matching debug symbols, the
+installed wheel and original owner test suites. Its installed-source edit
+probe requires both archives to change while preserving compiled symbols,
+the config-engine base and Scapy wheel; restoring the input restores digests.
+The existing runtime job loads those exact archives and exercises the real
+`tunnel_packet_handler.py` with source-built Scapy, a private Redis fixture
+and offline IPv4/IPv6 captures. It checks requested ping arguments without
+executing them. This does not test ASIC forwarding, live capture, complete
+supervisor startup, FIPS POST or a VS installer.
+
+Draft validation uses one immutable combined review catalog through
+`tools/bazel/ci/review_bazel.sh`; normal `.bazelrc` remains on maintained main
+and BCR. Registry #188, #180, #181, #179, #177 and #186 and image PRs #136
+and #146 must land before removing the temporary review selection. The FIPS
+parent retains its selected source and known entropy/assembly-path
+reproducibility limitations; same-output-root restoration is not a fresh-root
+reproducibility claim.

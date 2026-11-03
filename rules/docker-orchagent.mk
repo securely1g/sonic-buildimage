@@ -26,12 +26,12 @@ ifeq ($(INCLUDE_FIPS),y)
 $(DOCKER_ORCHAGENT)_BAZEL_ARGS = --//dockers/docker-orchagent:source_config_engine=true
 $(DOCKER_ORCHAGENT_DBG)_BAZEL_ARGS = $($(DOCKER_ORCHAGENT)_BAZEL_ARGS)
 $(DOCKER_ORCHAGENT)_BAZEL_DEPENDS = $(TARGET_PATH)/bazel-manifests/docker-base-trixie/manifest.json \
-    $(TARGET_PATH)/bazel-manifests/docker-config-engine-trixie/manifest.json $(PYTHON_WHEELS_PATH)/$(SCAPY)
+    $(TARGET_PATH)/bazel-manifests/docker-config-engine-trixie/manifest.json
 else
 SONIC_BAZEL_OCI_BASES += docker-config-engine-trixie.oci
 docker-config-engine-trixie.oci_OCI_ARCHIVE = $(TARGET_PATH)/$(DOCKER_CONFIG_ENGINE_TRIXIE)
 docker-config-engine-trixie.oci_OCI_PLATFORM = linux/amd64
-$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS = $(TARGET_PATH)/docker-config-engine-trixie.oci $(PYTHON_WHEELS_PATH)/$(SCAPY)
+$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS = $(TARGET_PATH)/docker-config-engine-trixie.oci
 endif
 $(DOCKER_ORCHAGENT)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT)
 $(DOCKER_ORCHAGENT_DBG)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT_DBG)
