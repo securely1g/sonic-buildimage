@@ -358,6 +358,27 @@ SONiC registry endpoint; do not add another endpoint in a home or user rc.
 Generated resolution receipts list registry lookup URLs from the lock; a reused
 lock can also contain historical lookups.
 
+For a Draft image PR that needs unlanded registry entries, use the shared
+review wrapper with the complete catalog's immutable commit:
+
+```sh
+SONIC_BAZEL_REGISTRY_REVISION=<40-character-catalog-commit> \
+  tools/bazel/ci/review_bazel.sh build //dockers/<docker>:<target>
+```
+
+Set `BAZEL_REAL` when the Bazel executable is not named `bazel`. Startup options
+such as `--output_base` go before the command as usual. The wrapper reads the
+checked-in common build settings and selects exactly that SONiC catalog plus
+BCR. It retains local disk/repository cache, distdir, repository hardlink and
+standard `--experimental_downloader_config` settings from the home rc used by
+`setup-bazel` and from `.bazelrc.user`, in that order. It leaves those files and existing cache contents intact. Other home/user
+rc settings are not imported; pass intended build options on the command line.
+
+Keep the catalog's source PRs linked as prerequisites and retain Draft status
+until they land. Then switch the CI caller back to ordinary `bazel`; `.bazelrc`
+already uses maintained `main`. The wrapper does not authorize package targets
+or replace the no-DEB action audit used by image CI.
+
 ## Kernel Debian packages in the Make VS flow
 
 The opt-in kernel runtime/debug/header DEB producer and installer handoff are documented
