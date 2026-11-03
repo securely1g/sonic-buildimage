@@ -8,7 +8,9 @@ inputs. SWSS is owned by `dockers/docker-orchagent/`; Syncd VS is owned by
 
 Tracked scripts, templates and Make metadata are exported by `BUILD.bazel` files
 in `files/scripts`, `files/build_templates` and `rules`. The root `BUILD.bazel`
-declares the Make-generated manifests, config-engine OCI files and Scapy wheel.
+declares the Make-generated manifests and Scapy wheel. SWSS consumes the
+source-built config-engine OCI target directly within the Bazel graph, inheriting
+Common's runtime and symbols instead of adding another copy of its runtime TAR.
 
 | Location | Responsibility |
 | --- | --- |
@@ -72,15 +74,16 @@ Standalone archive requests and unsupported Make configurations retain their
 existing behavior. A selected pair fails if either build/export fails or the
 owner declares different Bazel arguments for its two variants.
 
-CI uses `build_vs.sh` for that single Make request and `validate_vs.sh` in a
-separate step after the build. Validation checks both pairs and the installer's
-`target/sonic-vs.bin.dockers` selection, prepares Bookworm as configured, then uses
-Make's existing `sonic-slave-run` entrypoint for the remaining P4 checks in
-Trixie. Make supplies the build configuration; the verifier resolves and builds the existing P4RT
-runtime/debug package prerequisites before checking the images and symbols.
-After builder cleanup, validation requires the retained archives to remain
-unchanged. It does not issue another Make container-archive request.
-SWSS/Syncd source checks retain their separate workflow steps.
+The active VS CI job makes that request directly through `slave.mk` in a
+privileged SONiC slave. Validation checks both pairs and the installer's
+`target/sonic-vs.bin.dockers` selection, then runs the shared SWSS/Syncd static
+image tests and Docker-load checks in the same worker. The verifier also
+resolves the config-engine archive and existing P4RT runtime/debug package
+prerequisites before checking the images and symbols. It does not request the
+Orchagent or Syncd archives again, and their retained bytes must remain unchanged.
+The disabled legacy VS job retains `build_vs.sh`/`validate_vs.sh` dispatch and
+the separate SWSS/Syncd source-package suites; those suites are not currently
+selected by the active direct-slave job.
 See [CI evidence and timing](ci/README.md).
 
 The `.bin` target produces the ONIE installer without KVM. The separate
@@ -162,7 +165,8 @@ that archive from a matching Make cache; a failed extraction preserves the prior
 archive and leaves the newer stamp in place for a retry.
 Archives selected for Bazel cannot appear in `SONIC_PACKAGES_LOCAL`: the shared
 archive macro supplies `:latest`, while that Make mode expects versioned tags.
-SWSS supports native AMD64 Trixie VS without ASAN. Other SWSS configurations
+The base/config-engine images and service images register their own Bazel
+producers. SWSS supports native AMD64 Trixie VS without ASAN. Other SWSS configurations
 keep the Make build even with `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`.
 The syncd VS owner also registers an opt-in for native AMD64 Trixie VS with
 DASH SAI and FIPS enabled, without ASAN, RPC, or a combined `docker-sonic-vs`

@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,22 @@ def absolute_path(name):
     if '..' in path.parts or '\x00' in name:
         raise ValueError('Unsafe image path: ' + name)
     return '/' + str(path).lstrip('/')
+
+
+def inspect_files(paths, aliases, *, root=Path('/')):
+    """Inspect declared files after the container engine has applied its layers."""
+    files = {}
+    for name in paths:
+        path = root / absolute_path(name).lstrip('/')
+        value = path.lstat()
+        if not stat.S_ISREG(value.st_mode):
+            raise ValueError('Expected an installed regular file: ' + name)
+        with path.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        files[name] = {'kind': 'file', 'sha256': digest, 'mode': stat.S_IMODE(value.st_mode),
+                       'uid': value.st_uid, 'gid': value.st_gid}
+    return {'files': files, 'directory_aliases': {
+        name: os.readlink(root / absolute_path(name).lstrip('/')) for name in aliases}}
 
 
 def command(argv, timeout=30):
@@ -367,8 +384,15 @@ def probe_installed(inputs, variant):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--variant', choices=['runtime', 'debug'], required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--variant', choices=['runtime', 'debug'])
+    mode.add_argument('--inspect-files', type=json.loads,
+                      help='Declared file and directory-alias paths to inspect as JSON')
     args = parser.parse_args()
+    if args.inspect_files is not None:
+        print(json.dumps(inspect_files(args.inspect_files['files'], args.inspect_files['directory_aliases']),
+                         sort_keys=True))
+        return 0
     result = probe(json.load(sys.stdin), args.variant)
     print(json.dumps(result, sort_keys=True))
     return 0 if result['passed'] else 1
