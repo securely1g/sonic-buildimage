@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-02T23:25:54.061111Z",
+  "generated_at": "2026-11-03T00:45:03.521714Z",
   "pull_requests": [
     {
       "base_sha": "87cb1a84d24105b2fe3304d288013d47a998a090",
@@ -23,7 +23,7 @@
       "number": 142,
       "state": "open",
       "title": "Build database images from source TARs",
-      "updated_at": "2026-11-02T22:00:41Z",
+      "updated_at": "2026-11-02T23:52:39Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/142"
     },
     {
@@ -47,7 +47,7 @@
       "number": 140,
       "state": "open",
       "title": "Build Teamd OCI images from the shared SWSS source layer",
-      "updated_at": "2026-11-02T23:25:05Z",
+      "updated_at": "2026-11-02T23:59:52Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/140"
     },
     {
@@ -59,7 +59,7 @@
       "number": 139,
       "state": "open",
       "title": "Run VS image builds across all four native workers",
-      "updated_at": "2026-11-02T22:51:08Z",
+      "updated_at": "2026-11-02T23:39:47Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/139"
     },
     {
@@ -635,7 +635,7 @@
       "number": 43,
       "state": "open",
       "title": "Retry private Redis port collisions in event tests",
-      "updated_at": "2026-11-02T10:21:05Z",
+      "updated_at": "2026-11-02T23:30:54Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/43"
     },
     {
@@ -671,7 +671,7 @@
       "number": 40,
       "state": "open",
       "title": "Add native ARM64 SWSS source-package validation",
-      "updated_at": "2026-11-02T20:34:16Z",
+      "updated_at": "2026-11-02T23:27:15Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/40"
     },
     {
@@ -695,7 +695,7 @@
       "number": 38,
       "state": "open",
       "title": "Add manual runner capacity diagnostics",
-      "updated_at": "2026-11-02T10:21:00Z",
+      "updated_at": "2026-11-02T23:30:54Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/38"
     },
     {
@@ -911,7 +911,7 @@
       "number": 20,
       "state": "open",
       "title": "Check installed Syncd programs and debug symbols in isolated containers",
-      "updated_at": "2026-11-02T19:40:34Z",
+      "updated_at": "2026-11-03T00:14:08Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/20"
     },
     {
@@ -1055,7 +1055,7 @@
       "number": 8,
       "state": "open",
       "title": "Use declared P4RT schemas and separate Bazel caches",
-      "updated_at": "2026-10-25T10:50:50Z",
+      "updated_at": "2026-11-03T00:09:49Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/8"
     },
     {
@@ -18034,29 +18034,29 @@
     {
       "attempt": 1,
       "branch": "codex/master-vs-backfill",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-11-03T00:43:48Z",
+      "conclusion": "failure",
       "event": "workflow_dispatch",
       "jobs": [
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-03T00:43:48Z",
+          "conclusion": "failure",
+          "duration_seconds": 19616.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125493722522,
           "kind": "other",
           "name": "Historical VS installer in SONiC slave (AMD64)",
           "phases": {
-            "build": null,
-            "other": 8.0,
+            "build": 19230.0,
+            "other": 31.0,
             "setup": 347.0,
             "upload": null,
             "validation": 3.0
           },
           "started_at": "2026-11-02T19:16:52Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-02T19:16:57Z",
@@ -18159,104 +18159,114 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T00:43:22Z",
+              "conclusion": "failure",
+              "duration_seconds": 19230.0,
               "name": "Build the historical ONIE installer directly with slave.mk",
               "number": 11,
               "phase": "build",
               "started_at": "2026-11-02T19:22:52Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-03T00:43:22Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify the installer embeds the historical source identity",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-03T00:43:22Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Retain c20's original archive-pair and source-package validation",
               "number": 13,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-03T00:43:22Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify source identity after the build",
               "number": 14,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-03T00:43:22Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Upload the historical installer and checksum",
               "number": 15,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-03T00:43:22Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Upload c20's matching runtime and debug container archives",
               "number": 16,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T00:43:23Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Stop only this worker's private Docker daemon",
               "number": 17,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:22Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T00:43:28Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
               "name": "Retain build evidence on success or failure",
               "number": 18,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:23Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T00:43:43Z",
+              "conclusion": "success",
+              "duration_seconds": 15.0,
               "name": "Post Checkout the exact historical source and pinned submodules",
               "number": 35,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:28Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T00:43:45Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Post Checkout the reviewed backfill driver",
               "number": 36,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T00:43:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T00:43:45Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 37,
+              "phase": "other",
+              "started_at": "2026-11-03T00:43:45Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41508453167/job/125493722522"
@@ -18268,8 +18278,8 @@
       "run_id": 41508453167,
       "source_sha": "103aec4d953c8fa919f28af8e7e7449ba60543a2",
       "started_at": "2026-11-02T19:16:49Z",
-      "status": "in_progress",
-      "updated_at": "2026-11-02T19:16:53Z",
+      "status": "completed",
+      "updated_at": "2026-11-03T00:43:49Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41508453167/attempts/1",
       "workflow_name": "VS installer backfill c20b1d43e26c6eb2928191f041b78a60251ef9a0",
       "workflow_path": ".github/workflows/bazel-oci.yml"
