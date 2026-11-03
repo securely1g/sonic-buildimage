@@ -369,3 +369,26 @@ in [kernel/README.md](kernel/README.md). The separate kernel workspace keeps
 the source/cache graph independent of the container graph and verifies the DEBs
 against the current buildimage inputs and kernel gitlink. Packages go directly
 to the normal `target/debs/trixie` directory.
+
+### Image environment from Make
+
+Images whose Dockerfile uses `ENV IMAGE_VERSION=$image_version` can opt in to the
+existing Make-to-Bazel input boundary:
+
+```make
+SONIC_BAZEL_IMAGE_ENVIRONMENTS += docker-sonic-gnmi
+$(DOCKER_GNMI)_BAZEL_DEPENDS += $(TARGET_PATH)/bazel-manifests/docker-sonic-gnmi/image.env
+```
+
+Use `env = "//:target/bazel-manifests/docker-sonic-gnmi/image.env"` on the
+`oci_image` target. The file contains `DEBIAN_FRONTEND=noninteractive` and the
+exact `SONIC_IMAGE_VERSION` selected by Make. It is independent of the package
+version stored in `manifest.json`; for example, package version `1.0.0` must not
+replace image version `master.42-test`. Debug images inherit the runtime image's
+environment. Images opt in individually, so existing producers are unchanged.
+
+The helper reuses the implementation exercised by the Eventd image: unchanged
+content retains its timestamp, updates are atomic, and invalid or empty values
+preserve the previous input. Newline, NUL and dollar characters are rejected to
+prevent extra environment records or rules_oci variable expansion. Make exports
+the value to the helper instead of interpolating it into shell code.
