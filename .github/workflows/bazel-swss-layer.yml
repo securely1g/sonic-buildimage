@@ -56,6 +56,7 @@ jobs:
       - name: Build and inspect the shared runtime and symbols
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B tools/bazel/tests/swss_layer_payload_test.py
           python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
       - name: Check cached no-op and source edit through the image
         run: |

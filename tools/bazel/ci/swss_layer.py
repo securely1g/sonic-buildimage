@@ -32,23 +32,34 @@ TARGETS = {
 }
 
 
-def verify(layout, parent, paths, source):
-    base_images.verify_unique_layer_paths(layout)
-    files = base_images.installed_inventory(layout)
-    inherited = base_images.installed_inventory(parent)
-    base_images.verify_directory_aliases(files)
-    runtime = checks.payload(paths["source-runtime.tar"])
+def verify_source_runtime(files, archive):
+    """Compare installed semantics while retaining original owner TAR metadata."""
+    runtime = checks.payload(archive)
+    installed = {}
+    # Use the same layer interpretation as the final OCI inventory. For example,
+    # Linux installs protobuf's mode-0000 TAR symlink with mode 0777; its target
+    # and ownership, and every regular file's bytes/mode, must still match.
+    image_validation.apply_layer(archive, installed)
     native = {}
     for name, item in runtime.items():
         if item["kind"] == "directory":
             continue
         actual = files.get(name, {})
-        checks.require(all(actual.get(key) == value for key, value in item.items()),
+        checks.require(all(actual.get(key) == value for key, value in installed[name].items()),
                        "OCI changed source-owned payload: " + name)
         if "elf_machine" in item:
             checks.require(item["elf_machine"] == 62, "non-AMD64 source ELF: " + name)
             native[name] = item
     checks.require(native, "shared layer has no native source payload")
+    return runtime, native
+
+
+def verify(layout, parent, paths, source):
+    base_images.verify_unique_layer_paths(layout)
+    files = base_images.installed_inventory(layout)
+    inherited = base_images.installed_inventory(parent)
+    base_images.verify_directory_aliases(files)
+    runtime, native = verify_source_runtime(files, paths["source-runtime.tar"])
     # A child must preserve parent configuration, accounts and libraries. The
     # complete shared Common TAR can repeat identical inherited files.
     changed_parent = []
