@@ -1,20 +1,124 @@
 """Run the real image-verification workflow shell against recording commands."""
 
+import ast
+import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
+import stat
 import sys
 import tempfile
 import textwrap
+from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def run_native_preflight(self, revision, *, marker_mode=stat.S_IFREG | 0o444,
+                             memory=20 * 1024**3):
+        script = (ROOT / "tools/bazel/ci/prepare_vs_slave.sh").read_text()
+        source = script.split('python3 - "$artifacts/slave-preparation.json" <<\'PY\'\n', 1)[1].split("\nPY\n", 1)[0]
+        tree = ast.parse(source)
+        # Execute the actual preflight with explicit host fixtures. No real
+        # image, cgroup, route, account, or receipt paths are accessed.
+        tree.body = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
+        marker = {"uid": 1000, "gid": 1000, "runner_root": "/opt/actions-runner",
+                  "work_root": "/actions/_work", "base_image": "sha256:" + "a" * 64,
+                  "manager_revision": revision}
+        files = {"/etc/sonic-slave-github-runner.json": json.dumps(marker),
+                 "/proc/self/cgroup": "0::/\n",
+                 "/sys/fs/cgroup/memory.max": str(memory),
+                 "/sys/fs/cgroup/cpu.max": "600000 100000"}
+        receipts = []
+
+        class FixturePath:
+            def __init__(self, path):
+                self.path = str(path)
+
+            def __truediv__(self, suffix):
+                return FixturePath(self.path + "/" + suffix)
+
+            def lstat(self):
+                if self.path != "/etc/sonic-slave-github-runner.json":
+                    raise AssertionError("Unexpected marker path")
+                return SimpleNamespace(st_mode=marker_mode, st_uid=0)
+
+            def read_text(self):
+                return files[self.path]
+
+            def write_text(self, text):
+                if self.path != "receipt.json":
+                    raise AssertionError("Unexpected receipt path")
+                receipts.append(json.loads(text))
+
+        def check_output(command, *, text):
+            self.assertTrue(text)
+            if command == ["findmnt", "-n", "-o", "FSTYPE", "-T", "/actions"]:
+                return "ext4\n"
+            self.assertEqual(command, ["ip", "-j", "-4", "route", "show"])
+            return "[]"
+
+        namespace = {"Path": FixturePath, "json": json, "stat": stat, "re": re,
+                     "ipaddress": ipaddress, "sys": SimpleNamespace(argv=["preflight", "receipt.json"]),
+                     "subprocess": SimpleNamespace(check_output=check_output),
+                     "grp": SimpleNamespace(getgrnam=lambda name: SimpleNamespace(gr_gid=998)),
+                     "os": SimpleNamespace(getgroups=lambda: [998], getuid=lambda: 1000,
+                                           getgid=lambda: 1000, environ={"EXPECTED_MANAGER_REVISION": "0" * 40})}
+        exec(compile(tree, "prepare_vs_slave.sh:preflight", "exec"), namespace)
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0]["image"], marker)
+        return receipts[0]
+
+    def test_native_preflight_records_each_full_manager_revision_without_pinning_it(self):
+        for revision in ("1" * 40, "abcdef12" * 5):
+            with self.subTest(revision=revision):
+                receipt = self.run_native_preflight(revision)
+                self.assertEqual(receipt["image"]["manager_revision"], revision)
+                self.assertEqual(receipt["memory_limit_bytes"], 20 * 1024**3)
+                self.assertEqual(receipt["package_jobs"], 4)
+
+    def test_native_preflight_still_rejects_invalid_provenance_and_capabilities(self):
+        for revision in (None, 12, "short", "a" * 39, "g" * 40, "a" * 41):
+            with self.subTest(revision=revision), self.assertRaisesRegex(SystemExit, "full manager source revision"):
+                self.run_native_preflight(revision)
+        with self.assertRaisesRegex(SystemExit, "root-owned, read-only"):
+            self.run_native_preflight("a" * 40, marker_mode=stat.S_IFREG | 0o644)
+        with self.assertRaisesRegex(SystemExit, "20 GiB"):
+            self.run_native_preflight("a" * 40, memory=16 * 1024**3)
+
+    def test_native_resource_step_keeps_source_archive_preparation(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        active = workflow.split("\n  vs_container:\n", 1)[1]
+        self.assertNotIn("EXPECTED_MANAGER_REVISION", active)
+        self.assertNotIn("BAZEL_REMOTE_AUTH", active)
+        block = active.split("      - name: Apply build resource limits and prepare source archives\n", 1)[1].split(
+            "\n      - ", 1)[0]
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory(prefix="native-resource-step-") as temporary:
+            directory = Path(temporary)
+            (directory / "artifacts/vs").mkdir(parents=True)
+            calls = directory / "calls.jsonl"
+            python = directory / "python3"
+            python.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                              "with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                              "print('{}')\n")
+            python.chmod(0o755)
+            subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=directory,
+                           env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                                    CALLS=str(calls)), check=True, capture_output=True)
+            self.assertEqual([json.loads(line) for line in calls.read_text().splitlines()], [
+                ["-B", "tools/bazel/ci/configure_runner_cache.py", "--jobs=4", "--local-memory-mb=12288"],
+                ["-B", "tools/bazel/gzip/source_archive.py", "--archives-dir", "artifacts/vs/repository-inputs",
+                 "--output", "/bazel_cache/distdir"],
+            ])
+            self.assertEqual(json.loads((directory / "artifacts/vs/source-download-receipt.json").read_text()), {})
+
     def test_static_checks_match_make_configs_and_stop_publication_on_failure(self):
         verifier = (ROOT / "tools/bazel/ci/verify_vs_oci.sh").read_text()
         script = "set -euo pipefail\n" + verifier[verifier.index("# Match the archive recipes"):].split(

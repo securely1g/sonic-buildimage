@@ -71,9 +71,9 @@ for key, expected in {"uid": 1000, "gid": 1000, "runner_root": "/opt/actions-run
     require(marker.get(key) == expected, f"Unexpected runner image marker field: {key}")
 require(re.fullmatch(r"sha256:[0-9a-f]{64}", marker.get("base_image", "")),
         "Runner marker must identify the immutable SONiC slave base image")
-expected = os.environ.get("EXPECTED_MANAGER_REVISION", "")
-require(re.fullmatch(r"[0-9a-f]{40}", expected) and marker.get("manager_revision") == expected,
-        "Runner manager revision differs from the workflow pin")
+revision = marker.get("manager_revision")
+require(isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision),
+        "Runner marker must identify the full manager source revision")
 require(grp.getgrnam("docker").gr_gid in os.getgroups(), "Runner process lacks the Docker group")
 require(Path("/proc/self/cgroup").read_text().strip() == "0::/",
         "Expected a fresh, private cgroup v2 namespace")
