@@ -22,6 +22,46 @@ permissions:
   contents: read
   actions: read
 jobs:
+  lldp_inputs:
+    name: Stage signed original LLDP sources
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout the reviewed transport helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install Debian source signature verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends devscripts debian-keyring
+      - name: Fetch and verify the signed original LLDP release
+        run: |
+          set -o pipefail
+          python3 -B tools/ci/historical_lldp_inputs.py stage --output lldp-inputs \
+            2>&1 | tee lldp-source-staging.log
+      - name: Publish verified LLDP inputs
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lldp-source-inputs-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: lldp-inputs/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Retain LLDP staging evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lldp-source-staging-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            lldp-source-staging.log
+            lldp-inputs/receipt.json
+          if-no-files-found: warn
+          retention-days: 14
   historical_inputs:
     name: Stage exact historical Salsa and P4 sources
     if: inputs.source_sha != 'c20b1d43e26c6eb2928191f041b78a60251ef9a0'
@@ -73,9 +113,9 @@ jobs:
           retention-days: 14
   backfill:
     name: Historical VS installer in SONiC slave (AMD64)
-    needs: historical_inputs
+    needs: [historical_inputs, lldp_inputs]
     if: >-
-      !cancelled() && !inputs.stage_only &&
+      !cancelled() && !inputs.stage_only && needs.lldp_inputs.result == 'success' &&
       (needs.historical_inputs.result == 'success' ||
        (inputs.source_sha == 'c20b1d43e26c6eb2928191f041b78a60251ef9a0' && needs.historical_inputs.result == 'skipped'))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
@@ -190,6 +230,27 @@ jobs:
             --directory artifacts/vs/p4-source-inputs/sources \
             --receipt artifacts/vs/p4-source-inputs-verified.json
 
+      - name: Download this run's verified signed LLDP source
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.lldp_inputs.outputs.artifact_id }}
+          merge-multiple: true
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/lldp-source-inputs
+
+      - name: Verify signed LLDP extraction and prepare job-local source transport
+        run: |
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          if [[ -f "$RUNNER_TEMP/historical-sources.env" ]]; then
+            source "$RUNNER_TEMP/historical-sources.env"
+          fi
+          cd /sonic
+          python3 -B "$GITHUB_WORKSPACE/control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tools/ci/historical_lldp_inputs.py" install \
+            --workspace "$PWD" --source-sha "$SOURCE_SHA" \
+            --inputs artifacts/vs/lldp-source-inputs --runtime "$RUNNER_TEMP/lldp-source-transport" \
+            --environment-file "$RUNNER_TEMP/lldp-sources.env" \
+            --output artifacts/vs/lldp-inputs-verified.json \
+            2>&1 | tee artifacts/vs/lldp-inputs-verification.log
+
       - name: Configure caches and verify the historical source-download pins
         env:
           BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
@@ -239,6 +300,7 @@ jobs:
             [[ $source_port =~ ^[0-9]+$ ]]
             p4_options+=(INITRAMFS_TOOLS_TARBALL_URL="http://127.0.0.1:$source_port/initramfs-tools.tar.gz")
           fi
+          source "$RUNNER_TEMP/lldp-sources.env"
           make -f slave.mk target/sonic-vs.bin "${p4_options[@]}" \
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y \
             ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \

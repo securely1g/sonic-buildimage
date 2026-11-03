@@ -105,6 +105,7 @@ def set_resource_limits(rc, jobs, local_memory_mb):
     # sonic-pins' Bazel 6.4 and the newer image builds; 6.4 lacks local_resources.
     block = "\n".join([
         RESOURCE_BEGIN,
+        "startup --max_idle_secs=300",
         f"build --jobs={jobs}",
         f"build --local_ram_resources={local_memory_mb}",
         RESOURCE_END,
