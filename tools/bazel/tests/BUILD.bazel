@@ -18,20 +18,9 @@ package(default_visibility = ["//visibility:public"])
 
 # Run the unchanged Rust tests with Common's declared native runtime. The owner
 # helper, runtime TAR and Rust binary are all inputs to the Bazel test action.
-sh_test(
+common_runtime_test(
     name = "swss_common_rust_test",
-    srcs = ["@sonic_swss_common//tools/bazel/runtime:run_with_runtime.py"],
-    args = [
-        "$(rootpath @sonic_swss_common//tools/bazel/runtime:test_runtime)",
-        "-",
-    ] + select({
-        "@sonic_swss_common//tools/bazel:yang_modules_enabled": ["enabled"],
-        "//conditions:default": ["disabled"],
-    }) + ["$(rootpath @sonic_swss//crates/countersyncd:common_rust_test)"],
-    data = [
-        "@sonic_swss//crates/countersyncd:common_rust_test",
-        "@sonic_swss_common//tools/bazel/runtime:test_runtime",
-    ],
+    binary = "@sonic_swss//crates/countersyncd:common_rust_test",
 )
 
 _OCI_OWNER_POLICIES = [
@@ -969,9 +958,12 @@ py_binary(
 
 run_binary(
     name = "oci_license_fixture_tar",
-    tool = ":oci_license_fixture",
-    args = ["--write", "$(location oci-license-fixture.tar)"],
     outs = ["oci-license-fixture.tar"],
+    args = [
+        "--write",
+        "$(location oci-license-fixture.tar)",
+    ],
+    tool = ":oci_license_fixture",
 )
 
 dpkg_filter(
@@ -987,12 +979,15 @@ sonic_layer(
 py_test(
     name = "oci_license_filter_test",
     srcs = ["integration/oci_license_filter_test.py"],
-    main = "integration/oci_license_filter_test.py",
     args = [
         "$(rootpath :oci_license_filtered)",
         "$(rootpath :oci_license_refiltered)",
     ],
-    data = [":oci_license_filtered", ":oci_license_refiltered"],
+    data = [
+        ":oci_license_filtered",
+        ":oci_license_refiltered",
+    ],
+    main = "integration/oci_license_filter_test.py",
 )
 
 # Rust links Common's shared library; its indirect runtime imports need the
