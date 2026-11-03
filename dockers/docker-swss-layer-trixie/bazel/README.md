@@ -58,10 +58,14 @@ the same reviewed registry and `tools/bazel/ci/libteam_draft_bazel.sh` as the
 libteam/SWSS closure changes. Ordinary `.bazelrc` remains on canonical registry
 main; remove the temporary wrapper when the required registrations land.
 
-The targeted workflow audits the action graph for DEB generation, checks all
-source files against the final OCI inventory, matches every source ELF with
-its symbols, preserves inherited files, loads the exact exported archive and
-checks installed hashes and the complete loader closure. A declared installed
+The [Bazel OCI workflow](../../../.github/workflows/bazel-oci.yml) builds this
+image in its AMD64 archive job, reusing checkout, execution tools, Bazel setup,
+the shared-image disk cache and pinned source preparation. It runs on pull
+requests, master pushes and manual dispatches. The job audits the action graph
+for DEB generation, checks all source files against the final OCI inventory,
+matches every source ELF with its symbols and preserves inherited files. A
+dependent runtime job loads that run's exact exported archive and checks
+installed hashes and the complete loader closure. A declared installed
 Python edit must change the runtime TAR/archive while preserving compiled
 symbols and the parent; restoring it must reproduce the original bytes.
 This is same-output-base no-op/edit evidence, not a cold-cache compilation claim.
