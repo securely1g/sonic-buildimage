@@ -17,6 +17,14 @@ BAZEL_BUILD_OPTS += --fission=opt --copt=-g --copt=-gdwarf-4
 # Override sonic_swss_common to use the version specific to this buildimage.
 BAZEL_BUILD_OPTS += --override_repository=sonic_swss_common=/sonic/src/sonic-swss-common
 
+# Use the YANG schema installed by libswsscommon-dev until Common can generate
+# it under Bazel. Export it from CFG_SCHEMA_REPO as a declared input so the
+# P4RT build keeps YANG modules enabled.
+CFG_SCHEMA_H = /usr/include/swss/cfg_schema.h
+CFG_SCHEMA_REPO = /tmp/sonic-p4rt-cfg-schema
+BAZEL_BUILD_OPTS += --override_repository=swss_cfg_schema=$(CFG_SCHEMA_REPO)
+BAZEL_BUILD_OPTS += --@sonic_swss_common//tools/bazel:cfg_schema=@swss_cfg_schema//:cfg_schema.h
+
 # Newer version of gcc has spurious warnings in boringssl package.
 BAZEL_BUILD_OPTS += --copt=-Wno-array-bounds
 BAZEL_BUILD_OPTS += --copt=-Wno-stringop-overflow
@@ -24,17 +32,18 @@ BAZEL_BUILD_OPTS += --copt=-Wno-stringop-overflow
 # Keep optimized binaries with the skeleton debug information for the .dwp.
 BAZEL_BUILD_OPTS += -c opt
 
-# Use a host directory to store Bazel cache, if mounted. This will speed up
-# incremental rebuilds on the same system for developers that makes changes
-# to sonic-pins code.
+# Use a host directory to store Bazel download and action caches, to speed up
+# incremental rebuilds on the same system for developers changing sonic-pins.
+# Keep Bazel server and output state private to each recipe with the shared
+# helper for private Bazel servers so concurrent builds do not share that state.
 #
-# To build with Bazel cache, add DOCKER_BUILDER_USER_MOUNT:
+# When present, /bazel_cache is the standard shared slave cache mount
+# (see SONIC_BAZEL_CACHE_SOURCE in rules/config).
+# To point it elsewhere instead, override BAZEL_CACHE and mount it yourself via
+# DOCKER_BUILDER_USER_MOUNT:
 #   DOCKER_BUILDER_USER_MOUNT=<directory on host system>:$BAZEL_CACHE:rw
 #
-# For example:
-#   DOCKER_BUILDER_USER_MOUNT=/tmp/bazel_cache:/bazel:rw make target/...
-#
-BAZEL_CACHE ?= /bazel
+BAZEL_CACHE ?= /bazel_cache
 
 MAIN_TARGET = $(SONIC_P4RT)
 DERIVED_TARGETS = $(SONIC_P4RT_DBG)
@@ -48,24 +57,28 @@ endef
 vs_time_phase = $(vs_timer) "$$timing_directory" $(1)
 endif
 
-$(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
-	$(vs_start_timing)
-	# TODO: Remove this Makefile workaround
-	# once Bazel natively supports generating cfg_schema.h.
-	if [[ ! -f /sonic/src/sonic-swss-common/common/cfg_schema.h && -f /usr/include/swss/cfg_schema.h ]]; then \
-		if [ ! -d /sonic/src/sonic-swss-common/common ]; then \
-			mkdir -p /sonic/src/sonic-swss-common/common; \
-		fi; \
-		cp /usr/include/swss/cfg_schema.h /sonic/src/sonic-swss-common/common/cfg_schema.h; \
-	fi
+# TODO: Remove this Makefile workaround once Bazel supports generating cfg_schema.h.
+#
+# Wrap the installed header in a throwaway repository so it can be named by a
+# label and handed to --@sonic_swss_common//tools/bazel:cfg_schema.
+$(CFG_SCHEMA_REPO)/BUILD: $(CFG_SCHEMA_H)
+	mkdir -p $(@D)
+	cp $< $(@D)/cfg_schema.h
+	echo 'workspace(name = "swss_cfg_schema")' > $(@D)/WORKSPACE
+	echo 'exports_files(["cfg_schema.h"])' > $@
 
+$(CFG_SCHEMA_H):
+	echo "$@ not found: is libswsscommon-dev installed?" >&2
+	exit 1
+
+$(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% : $(CFG_SCHEMA_REPO)/BUILD
+	$(vs_start_timing)
 	cd ./sonic-pins
 	source "$(CURDIR)/../../tools/bazel/private_server.sh"
 	startup_options=($(BAZEL_OPTS))
 	build_options=($(BAZEL_BUILD_OPTS) --symlink_prefix=/)
 	if [[ -d "$(BAZEL_CACHE)" ]]; then
-		startup_options+=("--output_user_root=$(abspath $(BAZEL_CACHE))/cache")
-		build_options+=("--disk_cache=$(abspath $(BAZEL_CACHE))/disk_cache")
+		build_options+=("--repository_cache=$(abspath $(BAZEL_CACHE))/repository_cache" "--disk_cache=$(abspath $(BAZEL_CACHE))/disk_cache")
 	fi
 	if [[ -n "$${SONIC_BAZEL_REMOTE_CACHE:-}" ]]; then
 		build_options+=("--remote_cache=$$SONIC_BAZEL_REMOTE_CACHE" "--remote_upload_local_results=$(if $(filter y,$(SONIC_BAZEL_REMOTE_UPLOAD)),true,false)")
