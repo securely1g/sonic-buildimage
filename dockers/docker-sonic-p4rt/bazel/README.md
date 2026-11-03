@@ -60,6 +60,8 @@ mounts, shutdown order and excluded-profile producers are preserved.
 build. `P4RT_BAZEL`, `P4RT_BAZEL_OUTPUT_BASE` and `P4RT_BAZEL_JOBS` select the
 separate owner client. Keep each output base private to one active client and
 retain it for later builds; no clean is needed between image changes.
+The helper stops the idle image Bazel server before the owner build and test
+phases. Its disk caches and output tree remain available for the next phase.
 
 ## Validate separately
 

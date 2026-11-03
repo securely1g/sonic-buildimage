@@ -117,6 +117,39 @@ def owner_command(args, sdk, output, phase, runtime=None):
     return command
 
 
+def server_process(pid):
+    try:
+        fields = Path('/proc/' + str(pid) + '/stat').read_text().rsplit(')', 1)[1].split()
+    except FileNotFoundError:
+        return None
+    return {'state': fields[0], 'started': int(fields[19]), 'rss_pages': int(fields[21])}
+
+
+def run_owner(args, sdk, output, phase, directory, receipt, runtime=None):
+    # Commands in the preceding phase have finished. Release only this root's
+    # idle JVM before starting the separate owner JVM; retain every cache/output.
+    execute = partial(command_log.execute, cwd=ROOT)
+    pid = int(execute([args.bazel, 'info', 'server_pid'], directory, receipt, 'root-server-pid').strip())
+    before = server_process(pid)
+    check.require(before is not None and before['state'] != 'Z', 'Root Bazel server identity is unavailable')
+    try:
+        execute([args.bazel, 'shutdown'], directory, receipt, 'root-server-shutdown')
+    except subprocess.CalledProcessError as error:
+        # Some container PID1 implementations leave an exited JVM as a zombie.
+        # Accept only the observed container wait failure with this exact PID gone
+        # or the same process defunct and using no resident memory.
+        if error.returncode != 36:
+            raise
+    after = server_process(pid)
+    check.require(after is None or (after['started'] == before['started'] and
+                  after['state'] == 'Z' and after['rss_pages'] == 0),
+                  'Root Bazel server remains alive; refusing overlapping owner compilation')
+    receipt['root_server_shutdown'] = {'pid': pid, 'before': before, 'after': after,
+                                       'caches_and_outputs_retained': True}
+    return execute(owner_command(args, sdk, output, phase, runtime), directory, receipt,
+                   'owner-tests' if phase == 'test' else 'owner-build')
+
+
 def prepare_manifests(execute, directory, receipt):
     execute(['make', '-f', 'tools/bazel/prepare_manifests.mk',
              'MANIFEST_METADATA=rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk rules/docker-p4rt.mk',
@@ -157,7 +190,7 @@ def prepare_owner(args):
             parent_archive=preparation / 'config-engine.source.tar')
         receipt['parent_common'] = p4rt_handoff.same_common_library(sdk,
             preparation / 'common-runtime.tar', preparation / 'config-engine.source.tar')
-        execute(owner_command(args, sdk, output, 'build'), preparation, receipt, 'owner-build')
+        run_owner(args, sdk, output, 'build', preparation, receipt)
         receipt['owner_handoff'] = p4rt_handoff.stage(args.owner_source, args.owner_revision, sdk, output,
             ROOT / '.bazel-inputs/p4rt-owner', receipt['parent_common'])
         check.require(source_identity(directory) == revision, 'Image source changed during owner preparation')
@@ -328,8 +361,7 @@ def owner_tests(args):
                   runtime_inventory(preparation)), 'Prepared runtime receipt differs from declared payloads')
     receipt = {'status': 'testing', 'owner_revision': args.owner_revision, 'commands': []}
     try:
-        command_log.execute(owner_command(args, sdk, output, 'test', runtime), directory, receipt,
-                            'owner-tests', cwd=ROOT)
+        run_owner(args, sdk, output, 'test', directory, receipt, runtime)
         prepared(args)
         receipt['status'] = 'passed'
     except Exception as error:

@@ -6,11 +6,6 @@ bazel_real=${BAZEL_REAL:-bazel}
 if [[ $# == 1 && "$1" == --version ]]; then
     exec "$bazel_real" --version
 fi
-revision=${SONIC_BAZEL_REGISTRY_REVISION:-}
-if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
-    printf '%s\n' 'SONIC_BAZEL_REGISTRY_REVISION must be an immutable 40-character lowercase Git commit.' >&2
-    exit 2
-fi
 startup=()
 while [[ $# -gt 0 && "$1" == --* ]]; do
     case "$1" in
@@ -23,6 +18,17 @@ while [[ $# -gt 0 && "$1" == --* ]]; do
     esac
 done
 bazel_command=${1:-}
+if [[ "$bazel_command" == shutdown ]]; then
+    [[ $# == 1 ]] || { printf '%s\n' 'shutdown does not accept build arguments.' >&2; exit 2; }
+    # Select the same native binary/startup options/output base. Shutdown never
+    # resolves a registry or needs build-command options.
+    exec "$bazel_real" "${startup[@]}" shutdown
+fi
+revision=${SONIC_BAZEL_REGISTRY_REVISION:-}
+if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+    printf '%s\n' 'SONIC_BAZEL_REGISTRY_REVISION must be an immutable 40-character lowercase Git commit.' >&2
+    exit 2
+fi
 case "$bazel_command" in
     aquery|build|cquery|fetch|info|mod|query|test) shift ;;
     *) printf 'Unsupported review Bazel command: %s\n' "$bazel_command" >&2; exit 2 ;;
