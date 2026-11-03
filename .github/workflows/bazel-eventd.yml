@@ -19,6 +19,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SONIC_BAZEL_REGISTRY_REVISION: b88af269424359f5d34017e4d95de09265b7a803
+
 jobs:
   native:
     name: Native event services (${{ matrix.architecture }})
@@ -44,6 +47,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -57,7 +62,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
+          python3 -B src/sonic-eventd/bazel/ci.py --bazel tools/bazel/ci/review_bazel.sh --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence
         if: always()
