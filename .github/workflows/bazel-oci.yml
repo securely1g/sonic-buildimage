@@ -820,7 +820,6 @@ jobs:
       # The generator removes this temporary policy before image export.
       SONIC_DOCKER_APT_RETRIES: "0"
       BAZEL_CONTAINER_ARGS: >-
-        --jobs=4 --local_resources=memory=12288
         --distdir=/bazel_cache/distdir/ape-1.0.1
         --distdir=/bazel_cache/distdir/download_utils-1.0.1
         --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
@@ -861,10 +860,8 @@ jobs:
             --directory artifacts/vs/p4-source-inputs/sources \
             --receipt artifacts/vs/p4-source-inputs-verified.json
 
-      - name: Apply build resource limits and prepare source archives
+      - name: Prepare source archives
         run: |
-          python3 -B tools/bazel/ci/configure_runner_cache.py \
-            --jobs=4 --local-memory-mb=12288
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
             --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json

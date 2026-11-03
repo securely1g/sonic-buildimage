@@ -89,10 +89,12 @@ It checks that the selected installer has
 no Bookworm container prerequisites. A future configuration needing those
 prerequisites must add an explicit compatible preparation stage.
 
-Each native runner slot is capped at six CPUs and 20 GiB. Workflow concurrency
-permits one full VS build at a time. Make runs one
-package build at a time with four compilation jobs; Bazel is also limited to
-four jobs. The manager registers a replacement container after each job.
+Native runner slots support either six CPUs and 20 GiB or four CPUs and 10 GiB.
+Preparation selects the exact profile from cgroup limits and gives Bazel four
+jobs with a 12,288 or 7,168 MiB local action memory budget, respectively.
+`SONIC_BUILD_MEMORY` follows the selected memory limit. Workflow concurrency
+permits one full VS build at a time. Make runs one package build at a time with
+four compilation jobs. The manager registers a replacement container after each job.
 
 Both cache mounts survive worker replacement:
 
@@ -139,8 +141,9 @@ Bazel's configured retries and cache error handling. A successful connectivity
 check does not establish a remote cache hit.
 
 The workflow supplies no cache credential and does not probe or rewrite the
-runner's cache settings. It appends only its jobs and memory limits and prepares
-the verified source archives used by the build. The isolated kernel launcher
+runner's cache settings. Slave preparation appends only the selected jobs and
+memory limits; a later step prepares the verified source archives used by the build.
+The isolated kernel launcher
 already disables home and system rc files and continues using its explicit
 local cache options; remote caching for that path is separate coverage work.
 

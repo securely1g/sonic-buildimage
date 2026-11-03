@@ -8,12 +8,38 @@ from pathlib import Path
 
 RESOURCE_BEGIN = "# BEGIN SONiC native CI Bazel resources"
 RESOURCE_END = "# END SONiC native CI Bazel resources"
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+RESOURCE_PROFILES = {
+    (6, 20 * 1024**3): ("pilot", 12288, "20g"),
+    (4, 10 * 1024**3): ("fleet", 7168, "10g"),
+}
 
 
 class ConfigurationFailure(Exception):
     def __init__(self, error_class):
         super().__init__(error_class)
         self.error_class = error_class
+
+
+def read_resource_profile():
+    """Select one supported worker profile from its finite cgroup v2 limits."""
+    try:
+        memory = int((CGROUP_ROOT / "memory.max").read_text(encoding="ascii").strip())
+        quota, period = map(int, (CGROUP_ROOT / "cpu.max").read_text(encoding="ascii").split())
+    except (OSError, UnicodeError, ValueError):
+        raise ConfigurationFailure("invalid_cgroup_limits") from None
+    if memory <= 0 or quota <= 0 or period <= 0:
+        raise ConfigurationFailure("invalid_cgroup_limits")
+    if quota % period:
+        raise ConfigurationFailure("unsupported_resource_profile")
+    cpu_cores = quota // period
+    selected = RESOURCE_PROFILES.get((cpu_cores, memory))
+    if selected is None:
+        raise ConfigurationFailure("unsupported_resource_profile")
+    name, local_memory_mb, sonic_build_memory = selected
+    return {"name": name, "cpu_cores": cpu_cores, "memory_limit_bytes": memory,
+            "sonic_build_memory": sonic_build_memory, "jobs": 4,
+            "local_memory_mb": local_memory_mb}
 
 
 def read_runner_rc(rc):
@@ -86,13 +112,22 @@ def main(argv=None):
                         help="Job-scoped Bazel build/test concurrency (requires --local-memory-mb)")
     parser.add_argument("--local-memory-mb", type=positive_integer,
                         help="Job-scoped Bazel local action memory budget (requires --jobs)")
+    parser.add_argument("--from-cgroup", action="store_true",
+                        help="Select the supported worker resource profile from cgroup v2 limits")
     args = parser.parse_args(argv)
+    if args.from_cgroup and (args.jobs is not None or args.local_memory_mb is not None):
+        parser.error("--from-cgroup cannot be combined with --jobs or --local-memory-mb")
     if (args.jobs is None) != (args.local_memory_mb is None):
         parser.error("--jobs and --local-memory-mb must be supplied together")
     resource_limits = None if args.jobs is None else {
         "jobs": args.jobs, "local_memory_mb": args.local_memory_mb}
     try:
+        profile = read_resource_profile() if args.from_cgroup else None
+        if profile is not None:
+            resource_limits = {key: profile[key] for key in ("jobs", "local_memory_mb")}
         receipt = configure(args.rc, resource_limits)
+        if profile is not None:
+            receipt["resource_profile"] = profile
     except ConfigurationFailure as error:
         receipt = {"status": "failure", "error_class": error.error_class}
     try:

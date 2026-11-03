@@ -28,6 +28,8 @@ class ConfigureTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.rc = self.root / ".bazelrc"
         self.output = self.root / "artifacts/vs/cache-configuration.json"
+        self.cgroups = self.root / "cgroup"
+        self.cgroups.mkdir()
         self.original = b"startup --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts\r\n\r\n"
         self.rc.write_bytes(self.original)
 
@@ -40,6 +42,56 @@ class ConfigureTests(unittest.TestCase):
     def resource_block(self, jobs=4, memory=12288):
         return "\n".join([cache.RESOURCE_BEGIN, f"build --jobs={jobs}",
                           f"build --local_ram_resources={memory}", cache.RESOURCE_END]).encode()
+
+    def write_cgroups(self, memory, cpu):
+        (self.cgroups / "memory.max").write_text(str(memory) + "\n")
+        (self.cgroups / "cpu.max").write_text(cpu + "\n")
+
+    def test_cgroup_profiles_apply_limits_and_preserve_runner_settings_when_switching(self):
+        original = self.original + (
+            b"common --remote_cache=https://cache.example.invalid/\n"
+            b"common --credential_helper=cache.example.invalid=/image/helper\n"
+            b"common --disk_cache=/bazel_cache/disk\n"
+            b"common --repository_cache=/bazel_cache/repository\n\n")
+        self.rc.write_bytes(original)
+        profiles = [("pilot", 6, 20, "600000 100000", 12288),
+                    ("fleet", 4, 10, "200000 50000", 7168),
+                    ("pilot", 6, 20, "600000 100000", 12288)]
+        for name, cores, memory_gib, cpu, local_memory_mb in profiles:
+            with self.subTest(profile=name), mock.patch.object(cache, "CGROUP_ROOT", self.cgroups):
+                self.write_cgroups(memory_gib * 1024**3, cpu)
+                code, receipt, stdout = self.run_main("--from-cgroup")
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt, {
+                "status": "configured",
+                "resource_limits": {"jobs": 4, "local_memory_mb": local_memory_mb},
+                "resource_profile": {"name": name, "cpu_cores": cores,
+                                     "memory_limit_bytes": memory_gib * 1024**3,
+                                     "sonic_build_memory": f"{memory_gib}g", "jobs": 4,
+                                     "local_memory_mb": local_memory_mb},
+            })
+            self.assertEqual(json.loads(stdout), receipt)
+            self.assertEqual(self.rc.read_bytes(), original + self.resource_block(4, local_memory_mb) + b"\n")
+            self.assertNotIn("example.invalid", stdout + self.output.read_text())
+            self.assertNotIn("endpoint", stdout + self.output.read_text())
+
+    def test_invalid_or_mismatched_cgroups_fail_before_accessing_runner_rc(self):
+        cases = [("max", "400000 100000", "invalid_cgroup_limits"),
+                 (10 * 1024**3, "max 100000", "invalid_cgroup_limits"),
+                 (10 * 1024**3, "400000", "invalid_cgroup_limits"),
+                 (10 * 1024**3, "400000 0", "invalid_cgroup_limits"),
+                 (10 * 1024**3, "450000 100000", "unsupported_resource_profile"),
+                 (10 * 1024**3, "600000 100000", "unsupported_resource_profile"),
+                 (20 * 1024**3, "400000 100000", "unsupported_resource_profile")]
+        for memory, cpu, error_class in cases:
+            with self.subTest(memory=memory, cpu=cpu), mock.patch.object(cache, "CGROUP_ROOT", self.cgroups), \
+                    mock.patch.object(Path, "read_bytes") as read:
+                self.write_cgroups(memory, cpu)
+                code, receipt, _ = self.run_main("--from-cgroup")
+                read.assert_not_called()
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt, {"status": "failure", "error_class": error_class})
+            self.assertEqual(self.rc.read_bytes(), self.original)
 
     def test_resource_limits_preserve_all_runner_modes_without_external_access(self):
         modes = {
@@ -149,7 +201,10 @@ class ConfigureTests(unittest.TestCase):
                  ("--jobs=4", "--local-memory-mb=-1"),
                  ("--jobs=1.5", "--local-memory-mb=12288"),
                  ("--jobs=4", "--local-memory-mb=invalid"),
-                 ("--jobs=4",), ("--local-memory-mb=12288",)]
+                 ("--jobs=4",), ("--local-memory-mb=12288",),
+                 ("--from-cgroup", "--jobs=4", "--local-memory-mb=12288"),
+                 ("--from-cgroup", "--jobs=4"),
+                 ("--from-cgroup", "--local-memory-mb=12288")]
         for arguments in cases:
             with self.subTest(arguments=arguments), mock.patch.object(Path, "read_bytes") as read:
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:

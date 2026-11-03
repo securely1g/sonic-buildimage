@@ -10,6 +10,22 @@ archive checks, lightweight hosted regressions and the full VS integration
 job. The active `vs_container` job builds inside a privileged SONiC slave,
 then runs shared SWSS/Syncd static image checks and Docker-load validation in
 that same worker. Build and validation share its Bazel server and caches.
+Preparation selects one supported profile from the worker's cgroup v2 limits:
+
+| Profile | CPU quota | Memory limit | Bazel jobs | Bazel local action memory |
+|---|---:|---:|---:|---:|
+| Pilot | 6 cores | 20 GiB | 4 | 12,288 MiB |
+| Fleet | 4 cores | 10 GiB | 4 | 7,168 MiB |
+
+Both profiles run one Make target at a time with four package build jobs.
+`SONIC_BUILD_MEMORY` follows the worker memory limit. Preparation applies these
+resource settings to the runner's home `.bazelrc` before starting the private
+Docker daemon, preserving all manager-owned cache and trust settings. The
+resource receipts contain no cache endpoint or authentication settings.
+The kernel launcher remains separate: it uses one Bazel job and four internal
+package build jobs, with its own local caches. Validate the 10 GiB profile with
+a full build before activating it across the fleet.
+
 The older `vs` job is disabled; its post-Make source-package suites and
 cache-action reports remain in that legacy path and are not run by the active
 job. Add checks for future

@@ -79,10 +79,13 @@ require(Path("/proc/self/cgroup").read_text().strip() == "0::/",
         "Expected a fresh, private cgroup v2 namespace")
 cgroups = Path("/sys/fs/cgroup")
 memory = (cgroups / "memory.max").read_text().strip()
-require(memory == str(20 * 1024**3), "Native runner must have a 20 GiB memory limit")
-quota, period = (cgroups / "cpu.max").read_text().split()
-require(quota != "max" and 0 < int(quota) <= 6 * int(period),
-        "Native runner must have a CPU quota of at most six cores")
+require(memory.isascii() and memory.isdecimal() and int(memory) > 0,
+        "Native runner must have a finite positive memory limit")
+cpu = (cgroups / "cpu.max").read_text().split()
+require(len(cpu) == 2 and all(value.isascii() and value.isdecimal() for value in cpu),
+        "Native runner must have a finite CPU quota")
+quota, period = map(int, cpu)
+require(quota > 0 and period > 0, "Native runner must have a positive CPU quota and period")
 filesystem = subprocess.check_output(["findmnt", "-n", "-o", "FSTYPE", "-T", "/actions"], text=True).strip()
 require(filesystem in {"ext4", "xfs"}, "Native Docker storage requires an ext4 or XFS worker volume")
 bridge = ipaddress.ip_network("192.168.240.0/24")
@@ -95,11 +98,38 @@ for route in json.loads(subprocess.check_output(["ip", "-j", "-4", "route", "sho
                 "Private Docker bridge/address pool overlaps an existing worker route")
 report = {"schema": 1, "image": marker, "uid": os.getuid(), "gid": os.getgid(),
           "work_root": "/actions/_work", "build_root": "/sonic",
-          "memory_limit_bytes": int(memory), "cpu_quota": int(quota), "cpu_period": int(period),
+          "memory_limit_bytes": int(memory), "cpu_quota": quota, "cpu_period": period,
           "docker_storage_filesystem": filesystem, "docker_bridge": str(bridge),
           "make_jobs": 1, "package_jobs": 4}
 Path(sys.argv[1]).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 PY
+
+stage=resources
+python3 -B "$workspace/tools/bazel/ci/configure_runner_cache.py" \
+    --from-cgroup --output "$artifacts/cache-configuration.json"
+resource_memory=$(python3 - "$artifacts/cache-configuration.json" "$artifacts/slave-preparation.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+configuration = json.loads(Path(sys.argv[1]).read_text())
+preparation_path = Path(sys.argv[2])
+preparation = json.loads(preparation_path.read_text())
+profile = configuration.get("resource_profile")
+fields = {"name", "cpu_cores", "memory_limit_bytes", "sonic_build_memory", "jobs", "local_memory_mb"}
+if (configuration.get("status") != "configured" or not isinstance(profile, dict)
+        or set(profile) != fields or profile.get("name") not in ("pilot", "fleet")
+        or profile.get("sonic_build_memory") not in ("10g", "20g")
+        or any(type(profile.get(key)) is not int for key in ("cpu_cores", "memory_limit_bytes", "jobs", "local_memory_mb"))
+        or configuration.get("resource_limits") != {key: profile[key] for key in ("jobs", "local_memory_mb")}
+        or profile.get("memory_limit_bytes") != preparation["memory_limit_bytes"]
+        or profile.get("cpu_cores") * preparation["cpu_period"] != preparation["cpu_quota"]):
+    raise SystemExit("Resource profile differs from the runner preflight")
+preparation["resource_profile"] = profile
+preparation_path.write_text(json.dumps(preparation, indent=2, sort_keys=True) + "\n")
+print(profile["sonic_build_memory"])
+PY
+)
 
 stage=kernel-sandbox
 # Exercise the producer's pinned helper as the build user, including its
@@ -206,7 +236,7 @@ export SONIC_DEFAULT_CONTAINER_REGISTRY='' DEFAULT_CONTAINER_REGISTRY=''
 # using the public Debian mirrors instead of the default Traffic Manager mirror.
 export MIRROR_URLS=http://deb.debian.org/debian/
 export MIRROR_SECURITY_URLS=http://deb.debian.org/debian-security/
-export SONIC_BUILD_JOBS=1 SONIC_BUILD_MEMORY=20g
+export SONIC_BUILD_JOBS=1 SONIC_BUILD_MEMORY="$resource_memory"
 # rules/config assigns these with '='; MAKEFLAGS gives the bounded values the
 # same precedence as the outer wrapper's command-line assignments.
 export MAKEFLAGS='SONIC_CONFIG_BUILD_JOBS=1 SONIC_CONFIG_MAKE_JOBS=4'

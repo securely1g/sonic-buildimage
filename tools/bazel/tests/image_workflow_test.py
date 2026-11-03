@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class VerificationWorkflowTest(unittest.TestCase):
     def run_native_preflight(self, revision, *, marker_mode=stat.S_IFREG | 0o444,
-                             memory=20 * 1024**3):
+                             memory=20 * 1024**3, cpu="600000 100000"):
         script = (ROOT / "tools/bazel/ci/prepare_vs_slave.sh").read_text()
         source = script.split('python3 - "$artifacts/slave-preparation.json" <<\'PY\'\n', 1)[1].split("\nPY\n", 1)[0]
         tree = ast.parse(source)
@@ -34,7 +34,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         files = {"/etc/sonic-slave-github-runner.json": json.dumps(marker),
                  "/proc/self/cgroup": "0::/\n",
                  "/sys/fs/cgroup/memory.max": str(memory),
-                 "/sys/fs/cgroup/cpu.max": "600000 100000"}
+                 "/sys/fs/cgroup/cpu.max": cpu}
         receipts = []
 
         class FixturePath:
@@ -83,21 +83,85 @@ class VerificationWorkflowTest(unittest.TestCase):
                 self.assertEqual(receipt["memory_limit_bytes"], 20 * 1024**3)
                 self.assertEqual(receipt["package_jobs"], 4)
 
+    def test_native_preflight_records_fleet_cgroup_limits(self):
+        receipt = self.run_native_preflight("a" * 40, memory=10 * 1024**3, cpu="400000 100000")
+        self.assertEqual(receipt["memory_limit_bytes"], 10 * 1024**3)
+        self.assertEqual((receipt["cpu_quota"], receipt["cpu_period"]), (400000, 100000))
+
     def test_native_preflight_still_rejects_invalid_provenance_and_capabilities(self):
         for revision in (None, 12, "short", "a" * 39, "g" * 40, "a" * 41):
             with self.subTest(revision=revision), self.assertRaisesRegex(SystemExit, "full manager source revision"):
                 self.run_native_preflight(revision)
         with self.assertRaisesRegex(SystemExit, "root-owned, read-only"):
             self.run_native_preflight("a" * 40, marker_mode=stat.S_IFREG | 0o644)
-        with self.assertRaisesRegex(SystemExit, "20 GiB"):
-            self.run_native_preflight("a" * 40, memory=16 * 1024**3)
+        with self.assertRaisesRegex(SystemExit, "finite positive memory"):
+            self.run_native_preflight("a" * 40, memory="max")
+        with self.assertRaisesRegex(SystemExit, "finite CPU quota"):
+            self.run_native_preflight("a" * 40, cpu="max 100000")
 
-    def test_native_resource_step_keeps_source_archive_preparation(self):
+    def test_native_resource_receipt_sets_memory_and_rejects_preflight_mismatch(self):
+        preparation = (ROOT / "tools/bazel/ci/prepare_vs_slave.sh").read_text()
+        self.assertLess(preparation.index("\nstage=resources\n"),
+                        preparation.index("\nstage=kernel-sandbox\n"))
+        script = preparation.split("stage=resources\n", 1)[1].split("\nstage=kernel-sandbox\n", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="native-resource-profile-") as temporary:
+            directory = Path(temporary)
+            artifacts = directory / "artifacts"
+            artifacts.mkdir()
+            python = directory / "python3"
+            python.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''\
+                import json, os, pathlib, sys
+                if sys.argv[1:3] == ["-B", os.environ["HELPER"]]:
+                    assert sys.argv[3:5] == ["--from-cgroup", "--output"]
+                    pathlib.Path(sys.argv[5]).write_text(os.environ["PROFILE_RECEIPT"])
+                else:
+                    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+            '''))
+            python.chmod(0o755)
+            for name, cores, memory_gib, local_memory_mb in (("pilot", 6, 20, 12288), ("fleet", 4, 10, 7168)):
+                profile = {"name": name, "cpu_cores": cores, "memory_limit_bytes": memory_gib * 1024**3,
+                           "sonic_build_memory": f"{memory_gib}g", "jobs": 4,
+                           "local_memory_mb": local_memory_mb}
+                receipt = {"status": "configured", "resource_profile": profile,
+                           "resource_limits": {"jobs": 4, "local_memory_mb": local_memory_mb}}
+                preflight = {"memory_limit_bytes": memory_gib * 1024**3,
+                             "cpu_quota": cores * 100000, "cpu_period": 100000}
+                path = artifacts / "slave-preparation.json"
+                path.write_text(json.dumps(preflight))
+                environment = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                                   HELPER=str(ROOT / "tools/bazel/ci/configure_runner_cache.py"),
+                                   PROFILE_RECEIPT=json.dumps(receipt), workspace=str(ROOT), artifacts=str(artifacts))
+                result = subprocess.run(["bash", "-e", "-c", script + '\nprintf "%s\\n" "$resource_memory"'],
+                                        env=environment, check=True, text=True, capture_output=True)
+                self.assertEqual(result.stdout.strip(), f"{memory_gib}g")
+                self.assertEqual(json.loads(path.read_text())["resource_profile"], profile)
+                preflight["memory_limit_bytes"] = (30 - memory_gib) * 1024**3
+                path.write_text(json.dumps(preflight))
+                result = subprocess.run(["bash", "-e", "-c", script], env=environment,
+                                        check=False, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Resource profile differs", result.stderr)
+                self.assertNotIn("resource_profile", json.loads(path.read_text()))
+                preflight["memory_limit_bytes"] = memory_gib * 1024**3
+                path.write_text(json.dumps(preflight))
+                receipt["resource_limits"]["local_memory_mb"] += 1
+                environment["PROFILE_RECEIPT"] = json.dumps(receipt)
+                result = subprocess.run(["bash", "-e", "-c", script], env=environment,
+                                        check=False, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Resource profile differs", result.stderr)
+                self.assertNotIn("resource_profile", json.loads(path.read_text()))
+
+    def test_native_source_archive_step_keeps_inputs_without_resource_overrides(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         active = workflow.split("\n  vs_container:\n", 1)[1]
         self.assertNotIn("EXPECTED_MANAGER_REVISION", active)
         self.assertNotIn("BAZEL_REMOTE_AUTH", active)
-        block = active.split("      - name: Apply build resource limits and prepare source archives\n", 1)[1].split(
+        self.assertNotIn("--remote_cache", active)
+        self.assertNotIn("--credential_helper", active)
+        arguments = active.split("      BAZEL_CONTAINER_ARGS: >-\n", 1)[1].split("\n    steps:", 1)[0]
+        self.assertTrue(all(value.startswith("--distdir=") for value in arguments.split()))
+        block = active.split("      - name: Prepare source archives\n", 1)[1].split(
             "\n      - ", 1)[0]
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
         with tempfile.TemporaryDirectory(prefix="native-resource-step-") as temporary:
@@ -113,7 +177,6 @@ class VerificationWorkflowTest(unittest.TestCase):
                            env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
                                     CALLS=str(calls)), check=True, capture_output=True)
             self.assertEqual([json.loads(line) for line in calls.read_text().splitlines()], [
-                ["-B", "tools/bazel/ci/configure_runner_cache.py", "--jobs=4", "--local-memory-mb=12288"],
                 ["-B", "tools/bazel/gzip/source_archive.py", "--archives-dir", "artifacts/vs/repository-inputs",
                  "--output", "/bazel_cache/distdir"],
             ])
