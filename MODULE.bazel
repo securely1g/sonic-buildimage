@@ -9,7 +9,7 @@ module(
 include("//src/sonic-supervisord-utilities-rs:deps.MODULE.bazel")
 
 bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
-bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "googletest", version = "1.16.0")
 bazel_dep(name = "pigz", version = "2.8.bcr.2")
@@ -23,19 +23,20 @@ bazel_dep(name = "sonic-dash", version = "0.0.2-5c9305403585a7ae54f86918219acb8e
 
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
-bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_cc", version = "0.2.22")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.16")
+
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
-bazel_dep(name = "rules_python", version = "1.8.0")
+bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
-bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
+bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.1")
 bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
@@ -45,7 +46,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
+    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -59,7 +60,7 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.7-f7fda40c02b3a8b4bbbff3d17fca3dff83f4cbad", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -82,22 +83,7 @@ git_override(
 # repair selected when another module requests the unpatched stable release.
 single_version_override(
     module_name = "rules_go",
-    version = "0.64.1-sonic.1",
-)
-
-single_version_override(
-    module_name = "rules_cc",
-    version = "0.2.20",
-)
-
-single_version_override(
-    module_name = "tar.bzl",
-    version = "0.10.5-sonic.1",
-)
-
-single_version_override(
-    module_name = "libnl3",
-    version = "3.7.0.sonic.6",
+    version = "0.65.0.sonic.1",
 )
 
 single_version_override(
@@ -244,8 +230,8 @@ apt_inputs(
 )
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
-bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.5")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
 
 single_version_override(
@@ -253,13 +239,13 @@ single_version_override(
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.3-d1a2c8f692d4197295269ed445022c3890b0f1a6", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.3-e910ec2217bc42aae8a185a398b23a329f482fef", repo_name = "sonic_fips")
 
 # Select the shared producer-file checks while older consumers retain
 # their previous infrastructure declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c",
+    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -268,6 +254,7 @@ source_modules = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "so
 source_modules(
     name = "image_source_modules",
     modules = {
+        "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
@@ -280,18 +267,18 @@ source_modules(
 )
 
 single_version_override(
-    module_name = "sonic-swss-common",
-    version = "0.0.7-f7fda40c02b3a8b4bbbff3d17fca3dff83f4cbad",
-)
-
-single_version_override(
     module_name = "sonic-sairedis",
     version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
 )
 
 single_version_override(
+    module_name = "sonic-swss-common",
+    version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed",
+)
+
+single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.3-d1a2c8f692d4197295269ed445022c3890b0f1a6",
+    version = "0.0.3-e910ec2217bc42aae8a185a398b23a329f482fef",
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.
@@ -330,4 +317,37 @@ source_files(
         "@sonic_swss//dist:BUILD.bazel": "dist-BUILD.bazel.txt",
         "@sonic_swss//:debian/swss.install": "swss.install.txt",
     },
+)
+
+# Collector source ownership and its standard Gazelle policy stay with the owner.
+bazel_dep(name = "otelcol-contrib", version = "0.144.0.sonic.1", repo_name = "otelcol_contrib")
+bazel_dep(name = "rules_go", version = "0.65.0.sonic.1", repo_name = "io_bazel_rules_go")
+bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
+
+go_sdk = use_extension("@io_bazel_rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.25.6")
+
+otel_runtime_deps = use_extension("@otelcol_contrib//bazel:collector_deps.bzl", "go_deps")
+otel_runtime_deps.gazelle_default_attributes(
+    build_file_generation = "clean",
+    directives = ["gazelle:proto disable_global"],
+)
+otel_runtime_deps.module_override(
+    patch_strip = 1,
+    patches = ["@otelcol_contrib//bazel:0001-googlecloudspannerreceiver-embedded-metadata.patch"],
+    path = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/googlecloudspannerreceiver",
+)
+
+otel_golden_deps = use_extension("@otelcol_contrib//bazel:golden_deps.bzl", "go_deps")
+otel_golden_deps.gazelle_default_attributes(
+    build_file_generation = "clean",
+    directives = ["gazelle:proto disable_global"],
+)
+
+apt.import_lock(lock = "//dockers/docker-sonic-otel/bazel:apt.lock.json")
+use_repo(apt, "otel_debian", "otel_debug_debian", "otel_test_debian")
+
+apt_inputs(
+    name = "otel_apt_inputs",
+    lock = "//dockers/docker-sonic-otel/bazel:apt.lock.json",
 )
