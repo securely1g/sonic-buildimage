@@ -1,0 +1,81 @@
+module(name = "mux_image_lock")
+
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.14")
+
+apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+    ],
+    uris = ["https://snapshot.debian.org/archive/debian/20260727T143429Z"],
+)
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = ["trixie-security"],
+    uris = ["https://snapshot.debian.org/archive/debian-security/20260726T121236Z"],
+)
+
+# Additional external libraries of Linkmgrd. Common and libnl remain source
+# inputs inherited from config-engine, not imports from Debian.
+apt.install(
+    dependency_set = "mux_runtime_debian",
+    packages = [
+        "libboost-filesystem1.83.0:amd64",
+        "libboost-log1.83.0:amd64",
+        "libboost-program-options1.83.0:amd64",
+        "libboost-thread1.83.0:amd64",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "mux_runtime_debian")
+
+# Legacy debug tools plus the external libraries of source-built FIPS OpenSSH.
+apt.install(
+    dependency_set = "mux_debug_debian",
+    packages = [
+        "gdb:amd64",
+        "gdbserver:amd64",
+        "libaudit1:amd64",
+        "libcap-ng0:amd64",
+        "libcbor0.10:amd64",
+        "libcrypt1:amd64",
+        "libedit2:amd64",
+        "libfido2-1:amd64",
+        "libpam0g:amd64",
+        "libselinux1:amd64",
+        "libtinfo6:amd64",
+        "libudev1:amd64",
+        "libwrap0:amd64",
+        "libwtmpdb0:amd64",
+        "sshpass:amd64",
+        "strace:amd64",
+        "vim:amd64",
+        "zlib1g:amd64",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "mux_debug_debian")
+
+# A private test database; this payload is never added to the image.
+apt.install(
+    dependency_set = "mux_test_debian",
+    packages = ["redis-server:amd64"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "mux_test_debian")
