@@ -129,6 +129,22 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(set(actual), {str(self.library), str(self.alias)})
         self.assertEqual(set(actual.values()), {image.check.sha(self.library)})
 
+    def test_loader_report_hashes_actual_resolved_files(self):
+        libraries = image.runtime_libraries(self.root, self.selected)
+        output = f'\t{self.alias.name} => {self.alias} (0x1234)\n'
+        self.assertEqual(image.loaded_libraries(output, libraries),
+                         {self.alias.name: image.check.sha(self.library)})
+
+    def test_loader_report_rejects_changed_or_undeclared_libraries(self):
+        libraries = image.runtime_libraries(self.root, self.selected)
+        for output in (f'\tlibundeclared.so.1 => {self.alias} (0x1234)\n',
+                       f'\t{self.alias.name} => {self.alias} (0x1234)\n'):
+            with self.subTest(output=output):
+                if 'libundeclared' not in output:
+                    self.library.write_bytes(b'\x7fELFwrong runtime')
+                with self.assertRaisesRegex(ValueError, 'resolved an ambient library'):
+                    image.loaded_libraries(output, libraries)
+
     def test_unrecorded_or_changed_library_is_rejected(self):
         extra = self.library.with_name('libambient.so')
         extra.write_bytes(b'\x7fELFambient library')

@@ -214,6 +214,18 @@ def runtime_libraries(destination, selected):
     return dict(sorted(actual.items()))
 
 
+def loaded_libraries(output, libraries):
+    result = {}
+    for match in re.finditer(r'^\s*(\S+) => (/\S+) \(', output, re.MULTILINE):
+        name, path = match.groups()
+        selected_hashes = {checksum for selected, checksum in libraries.items() if Path(selected).name == name}
+        checksum = check.sha(Path(path))
+        check.require(selected_hashes and selected_hashes == {checksum},
+                      'Common resolved an ambient library instead of its declared runtime: ' + name)
+        result[name] = checksum
+    return result
+
+
 def prepare_runtime(args):
     native()
     directory, preparation, sdk, output, receipt = prepared(args)
@@ -255,10 +267,7 @@ def prepare_runtime(args):
     check.require(check.sha(patchelf) == receipt['artifacts']['runtime-patchelf']['sha256'],
                   'Declared patchelf artifact changed')
     patchelf.chmod(0o555)
-    for match in re.finditer(r'^\s*(\S+) => (/\S+) \(', loaded, re.MULTILINE):
-        selected_hashes = {checksum for name, checksum in libraries.items() if Path(name).name == match.group(1)}
-        check.require(selected_hashes and selected_hashes == {check.sha(match.group(2))},
-                      'Common resolved an ambient library instead of its declared runtime: ' + match.group(1))
+    common_libraries = loaded_libraries(loaded, libraries)
     runtime = {'schema': 1, 'architecture': 'amd64', 'kind': 'p4rt-owner-test-runtime',
                'sdk_inventory': p4rt_handoff.owner_api(args.owner_source, args.owner_revision).sdk_inventory(sdk),
                'library_path': sorted(directories), 'libraries': libraries,
@@ -269,8 +278,7 @@ def prepare_runtime(args):
                'patchelf': {'path': str(patchelf), 'sha256': check.sha(patchelf)},
                'runtime_archive': {'path': str(preparation / 'owner-test-runtime.tar'),
                                    'sha256': check.sha(preparation / 'owner-test-runtime.tar')},
-               'common_ldd': {match.group(1): check.sha(match.group(2)) for match in
-                             re.finditer(r'^\s*(\S+) => (/\S+) \(', loaded, re.MULTILINE)}}
+               'common_ldd': common_libraries}
     write(destination / '.p4rt-runtime.json', runtime)
     write(directory / 'prepared-owner-runtime.json', runtime)
     p4rt_handoff.owner_api(args.owner_source, args.owner_revision).runtime_environment(
