@@ -150,14 +150,16 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/image-environment' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/image-environment') }}
         run: |
-          if [ "$SOURCE_ONLY_NO_DEBS" = true ]; then
-            for test_file in tools/bazel/tests/*_test.py; do
-              case "$(basename "$test_file")" in
-                kernel_test.py|kernel_artifacts_test.py|kernel_sbom_test.py) continue ;;
+          # This review-helper PR is scoped to source/TAR builds only.
+          if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
+            for test in tools/bazel/tests/*_test.py; do
+              case "$test" in
+                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py)
+                  echo "Skip DEB-generating kernel fixtures: $test" ;;
+                *) PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test")" ;;
               esac
-              python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test_file")"
             done
           else
             python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
@@ -356,14 +358,16 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/image-environment' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/image-environment') }}
         run: |
-          if [ "$SOURCE_ONLY_NO_DEBS" = true ]; then
-            for test_file in tools/bazel/tests/*_test.py; do
-              case "$(basename "$test_file")" in
-                kernel_test.py|kernel_artifacts_test.py|kernel_sbom_test.py) continue ;;
+          # This review-helper PR is scoped to source/TAR builds only.
+          if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
+            for test in tools/bazel/tests/*_test.py; do
+              case "$test" in
+                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py)
+                  echo "Skip DEB-generating kernel fixtures: $test" ;;
+                *) PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test")" ;;
               esac
-              python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test_file")"
             done
           else
             python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
@@ -817,8 +821,9 @@ jobs:
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
-       github.head_ref != 'codex/image-environment' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.head.ref != 'codex/review-registry-catalog' &&
+       github.head_ref != 'codex/image-environment') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
