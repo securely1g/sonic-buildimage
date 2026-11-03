@@ -5,15 +5,17 @@ SHELL = /bin/bash
 MAIN_TARGET = socat_$(SOCAT_VERSION)_$(CONFIGURED_ARCH).deb
 DERIVED_TARGETS = socat-dbgsym_$(SOCAT_VERSION)_$(CONFIGURED_ARCH).deb
 SOCAT_UPSTREAM_VERSION = $(word 1,$(subst -, ,$(SOCAT_VERSION)))
+# Keep the pinned source available after it leaves Debian's current mirrors.
+SOCAT_SOURCE_URL ?= https://snapshot.debian.org/archive/debian/20241222T205329Z/pool/main/s/socat
 
 $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 	# Remove any stale files
 	rm -rf ./socat-$(SOCAT_UPSTREAM_VERSION)
 
 	# Get source package
-	wget -NO socat_$(SOCAT_VERSION).dsc "$(BUILD_PUBLIC_URL)/debian/socat_$(SOCAT_VERSION).dsc"
-	wget -NO socat_$(SOCAT_VERSION).debian.tar.xz "$(BUILD_PUBLIC_URL)/debian/socat_$(SOCAT_VERSION).debian.tar.xz"
-	wget -NO socat_$(SOCAT_UPSTREAM_VERSION).orig.tar.bz2 "$(BUILD_PUBLIC_URL)/debian/socat_$(SOCAT_UPSTREAM_VERSION).orig.tar.bz2"
+	wget -NO socat_$(SOCAT_VERSION).dsc "$(SOCAT_SOURCE_URL)/socat_$(SOCAT_VERSION).dsc"
+	wget -NO socat_$(SOCAT_VERSION).debian.tar.xz "$(SOCAT_SOURCE_URL)/socat_$(SOCAT_VERSION).debian.tar.xz"
+	wget -NO socat_$(SOCAT_UPSTREAM_VERSION).orig.tar.bz2 "$(SOCAT_SOURCE_URL)/socat_$(SOCAT_UPSTREAM_VERSION).orig.tar.bz2"
 
 	dpkg-source -x socat_$(SOCAT_VERSION).dsc
 
