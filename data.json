@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-03T09:52:56.444790Z",
+  "generated_at": "2026-11-03T10:00:44.267644Z",
   "pull_requests": [
     {
       "base_sha": "05ca5bc87f81e2d9954181b21c10403f44963578",
@@ -3503,8 +3503,8 @@
     {
       "attempt": 1,
       "branch": "codex/teamd-oci-amd64",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-11-03T09:54:06Z",
+      "conclusion": "success",
       "event": "pull_request",
       "jobs": [
         {
@@ -4362,9 +4362,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-03T09:53:46Z",
+          "conclusion": "success",
+          "duration_seconds": 38.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125844323433,
@@ -4372,21 +4372,102 @@
           "name": "Load and run the shared SWSS image (AMD64)",
           "phases": {
             "build": null,
-            "other": null,
-            "setup": null,
+            "other": 18.0,
+            "setup": 1.0,
             "upload": null,
-            "validation": null
+            "validation": 16.0
           },
-          "started_at": "2026-11-03T09:51:54Z",
-          "status": "queued",
-          "steps": [],
+          "started_at": "2026-11-03T09:53:08Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-11-03T09:53:10Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-03T09:53:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:53:15Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-03T09:53:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:53:27Z",
+              "conclusion": "success",
+              "duration_seconds": 12.0,
+              "name": "Run actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-11-03T09:53:15Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:53:42Z",
+              "conclusion": "success",
+              "duration_seconds": 15.0,
+              "name": "Verify and load this run's archive",
+              "number": 4,
+              "phase": "validation",
+              "started_at": "2026-11-03T09:53:27Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:53:43Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Verify installed source hashes and complete loader closure",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-11-03T09:53:42Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:53:44Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Retain installed-image evidence",
+              "number": 6,
+              "phase": "other",
+              "started_at": "2026-11-03T09:53:43Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:53:44Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 12,
+              "phase": "other",
+              "started_at": "2026-11-03T09:53:44Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:53:44Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 13,
+              "phase": "other",
+              "started_at": "2026-11-03T09:53:44Z",
+              "status": "completed"
+            }
+          ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41603567704/job/125844323433"
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-03T09:54:06Z",
+          "conclusion": "success",
+          "duration_seconds": 82.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 125844323470,
@@ -4394,13 +4475,13 @@
           "name": "Run installed Teamd images (AMD64)",
           "phases": {
             "build": null,
-            "other": 6.0,
+            "other": 53.0,
             "setup": 1.0,
-            "upload": null,
-            "validation": null
+            "upload": 1.0,
+            "validation": 24.0
           },
           "started_at": "2026-11-03T09:52:44Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-03T09:52:46Z",
@@ -4423,64 +4504,74 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T09:53:25Z",
+              "conclusion": "success",
+              "duration_seconds": 33.0,
               "name": "Run actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
               "number": 3,
               "phase": "other",
               "started_at": "2026-11-03T09:52:52Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T09:53:49Z",
+              "conclusion": "success",
+              "duration_seconds": 24.0,
               "name": "Verify and load only this run's images",
               "number": 4,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T09:53:25Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T09:53:50Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Enable the kernel team driver on this isolated CI worker",
               "number": 5,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T09:53:49Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T09:54:03Z",
+              "conclusion": "success",
+              "duration_seconds": 13.0,
               "name": "Exercise real Teamd control and inherited SWSS services",
               "number": 6,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T09:53:50Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T09:54:04Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Run actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
               "number": 7,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T09:54:03Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-03T09:54:04Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
               "number": 14,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-03T09:54:04Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-03T09:54:04Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 15,
+              "phase": "other",
+              "started_at": "2026-11-03T09:54:04Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41603567704/job/125844323470"
@@ -4494,8 +4585,8 @@
       "run_id": 41603567704,
       "source_sha": "3902e7370d52c721af8df09e6f3e63215963bd1c",
       "started_at": "2026-11-03T08:28:43Z",
-      "status": "queued",
-      "updated_at": "2026-11-03T09:51:54Z",
+      "status": "completed",
+      "updated_at": "2026-11-03T09:54:07Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41603567704/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
