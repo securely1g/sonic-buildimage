@@ -18,20 +18,9 @@ package(default_visibility = ["//visibility:public"])
 
 # Run the unchanged Rust tests with Common's declared native runtime. The owner
 # helper, runtime TAR and Rust binary are all inputs to the Bazel test action.
-sh_test(
+common_runtime_test(
     name = "swss_common_rust_test",
-    srcs = ["@sonic_swss_common//tools/bazel/runtime:run_with_runtime.py"],
-    args = [
-        "$(rootpath @sonic_swss_common//tools/bazel/runtime:test_runtime)",
-        "-",
-    ] + select({
-        "@sonic_swss_common//tools/bazel:yang_modules_enabled": ["enabled"],
-        "//conditions:default": ["disabled"],
-    }) + ["$(rootpath @sonic_swss//crates/countersyncd:common_rust_test)"],
-    data = [
-        "@sonic_swss//crates/countersyncd:common_rust_test",
-        "@sonic_swss_common//tools/bazel/runtime:test_runtime",
-    ],
+    binary = "@sonic_swss//crates/countersyncd:common_rust_test",
 )
 
 _OCI_OWNER_POLICIES = [
@@ -1310,3 +1299,15 @@ _INSTALLED_BASE = "//dockers/docker-config-engine-trixie"
     )
     for family, (owner, image) in _INSTALLED_IMAGE_FAMILIES.items()
 ]
+
+py_test(
+    name = "gbsyncd_make_test",
+    srcs = ["gbsyncd_make_test.py"],
+    data = [
+        "//:platform/template/docker-gbsyncd-trixie.mk",
+        "//:platform/vs/docker-gbsyncd-vs.mk",
+        "//platform/vs/docker-gbsyncd-vs:Dockerfile.j2",
+        "//platform/vs/docker-syncd-vs:Dockerfile.j2",
+    ],
+    python_version = "3.11",
+)
