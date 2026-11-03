@@ -8,7 +8,11 @@ runtime dependencies and debug tools.
 P4RT still owns a Bazel 6.4.0 WORKSPACE. The image and Common use Bazel 8.5.1.
 The explicit preparation step builds Common's SDK in the image's dependency
 graph, verifies its library is byte-identical to the config-engine runtime,
-then asks P4RT's source owner to build its five production programs and matching
+and imports the libnl owner's existing SDK TARs. All four libnl libraries and
+SONAME links must match that same parent; the P4RT link uses those declared
+libraries instead of the slave's incompatible libnl ABI. Duplicate SDK headers
+must agree, and the source targets and file hashes are retained in the SDK receipt.
+Preparation then asks P4RT's source owner to build its five production programs and matching
 DWP files. The owner seals the source revision, SDK inventory and TAR hashes.
 A standard `local_repository` exposes those files to the image build.
 

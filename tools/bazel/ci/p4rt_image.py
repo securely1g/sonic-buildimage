@@ -33,6 +33,8 @@ OPTIONS = ['--jobs=2', '--local_resources=cpu=2', '--local_resources=memory=8000
            '--host_platform=@sonic_build_infra//platforms:x86_64_trixie']
 PREPARATION_TARGETS = {
     'common-sdk.tar': '@sonic_swss_common//dist:libswsscommon_sdk',
+    'libnl-nf-sdk.tar': '@libnl3//:libnl-nf-3-dev_pkg',
+    'libnl-genl-sdk.tar': '@libnl3//:libnl-genl-3-dev_pkg',
     'common-runtime.tar': '@sonic_swss_common//dist:libswsscommon_pkg',
     'common-runtime-runner.py': OWNER + 'owner_runtime_runner',
     'common.MODULE.bazel': OWNER + 'owner_common_module',
@@ -145,7 +147,9 @@ def prepare_owner(args):
             'common_source_commit': COMMON_REVISION, 'common_source_has_tracked_changes': False,
             'common_module_sha256': check.sha(preparation / 'common.MODULE.bazel'),
             'image_source_revision': revision, 'yang_modules': True,
-        })
+        }, libnl_archives={PREPARATION_TARGETS[name]: preparation / name
+                           for name in ('libnl-nf-sdk.tar', 'libnl-genl-sdk.tar')},
+            parent_archive=preparation / 'config-engine.source.tar')
         receipt['parent_common'] = p4rt_handoff.same_common_library(sdk,
             preparation / 'common-runtime.tar', preparation / 'config-engine.source.tar')
         execute(owner_command(args, sdk, output, 'build'), preparation, receipt, 'owner-build')

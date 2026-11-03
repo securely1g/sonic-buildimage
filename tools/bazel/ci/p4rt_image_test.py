@@ -1,6 +1,10 @@
 """Keep private test-runtime materialization faithful to the declared TARs."""
 
 from pathlib import Path
+import io
+import json
+import struct
+import tarfile
 import tempfile
 import os
 import subprocess
@@ -9,6 +13,99 @@ from types import SimpleNamespace
 import unittest
 
 from tools.bazel.ci import p4rt_image as image
+from tools.bazel import p4rt_common_sdk as sdk
+
+
+class SdkTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.elf = b'\x7fELF\x02\x01' + bytes(12) + struct.pack('<H', 62)
+        self.common = self.archive('common.tar', {
+            'lib/libswsscommon.so.0': self.elf,
+            'include/swss/dbconnector.h': b'// database',
+            'include/swss/cfg_schema.h': b'// schema',
+        })
+        self.members = {'usr/include/libnl3/netlink/netlink.h': b'// source-owned header'}
+        for stem in sdk.LIBNL_STEMS:
+            name = 'usr/lib/x86_64-linux-gnu/' + stem
+            self.members[name + '.so.200.26.0'] = self.elf + stem.encode()
+            self.members[name + '.so.200'] = stem + '.so.200.26.0'
+        self.parent = self.archive('parent.tar', self.members)
+        self.inputs = {'@libnl3//:libnl-nf-3-dev_pkg': self.archive('nf.tar', self.members),
+                       '@libnl3//:libnl-genl-3-dev_pkg': self.archive('genl.tar', self.members)}
+        self.output = self.root / 'sdk'
+
+    def archive(self, name, members):
+        path = self.root / name
+        with tarfile.open(path, 'w') as archive:
+            for name, contents in members.items():
+                member = tarfile.TarInfo(name)
+                member.mode = 0o644
+                if isinstance(contents, str):
+                    member.type, member.linkname = tarfile.SYMTYPE, contents
+                    archive.addfile(member)
+                else:
+                    member.size = len(contents)
+                    archive.addfile(member, io.BytesIO(contents))
+        return path
+
+    def prepare(self):
+        sdk.prepare_repository(self.common, self.output, 'amd64', {},
+                               libnl_archives=self.inputs, parent_archive=self.parent)
+
+    def test_declared_libraries_headers_links_and_parent_identity(self):
+        self.prepare()
+        self.assertIn('_DECLARED_LIBNL = True', (self.output / 'BUILD.bazel').read_text())
+        for stem in sdk.LIBNL_STEMS:
+            library = self.output / ('lib/' + stem + '.so.200')
+            self.assertTrue(library.is_symlink())
+            self.assertEqual(library.read_bytes(), self.elf + stem.encode())
+        self.assertEqual((self.output / 'include/libnl3/netlink/netlink.h').read_bytes(),
+                         self.members['usr/include/libnl3/netlink/netlink.h'])
+        receipt = json.loads((self.output / 'sdk-build.json').read_text())['libnl']
+        self.assertEqual(receipt['parent_source_tar_sha256'], image.check.sha(self.parent))
+        self.assertEqual(receipt['producer_targets'], {key: image.check.sha(path) for key, path in self.inputs.items()})
+
+    def test_legacy_sdk_keeps_original_dependency_contract(self):
+        sdk.prepare_repository(self.common, self.output, 'amd64', {})
+        self.assertIn('_DECLARED_LIBNL = False', (self.output / 'BUILD.bazel').read_text())
+        self.assertNotIn('libnl', json.loads((self.output / 'sdk-build.json').read_text()))
+
+    def test_flattened_relative_soname_prefix_is_normalized(self):
+        flattened = {'./' + name: './' + value if isinstance(value, str) else value
+                     for name, value in self.members.items()}
+        self.archive('nf.tar', flattened)
+        self.prepare()
+        for stem in sdk.LIBNL_STEMS:
+            self.assertEqual((self.output / ('lib/' + stem + '.so.200')).readlink().as_posix(),
+                             stem + '.so.200.26.0')
+
+    def test_conflicting_header_does_not_replace_existing_sdk(self):
+        self.prepare()
+        before = (self.output / 'sdk-build.json').read_bytes()
+        changed = dict(self.members, **{'usr/include/libnl3/netlink/netlink.h': b'wrong header'})
+        self.archive('genl.tar', changed)
+        with self.assertRaisesRegex(ValueError, 'Conflicting libnl SDK member'):
+            self.prepare()
+        self.assertEqual((self.output / 'sdk-build.json').read_bytes(), before)
+
+    def test_parent_with_different_library_is_rejected(self):
+        changed = dict(self.members, **{'usr/lib/x86_64-linux-gnu/libnl-3.so.200.26.0': self.elf + b'wrong'})
+        self.archive('parent.tar', changed)
+        with self.assertRaisesRegex(ValueError, 'differs from the selected parent runtime'):
+            self.prepare()
+        self.assertFalse(self.output.exists())
+
+    def test_escaping_soname_and_incomplete_sdk_are_rejected(self):
+        changed = dict(self.members, **{'usr/lib/x86_64-linux-gnu/libnl-3.so.200': '/tmp/ambient.so'})
+        self.archive('nf.tar', changed)
+        with self.assertRaisesRegex(ValueError, 'Unexpected libnl SONAME link'):
+            self.prepare()
+        self.inputs = {'@libnl3//:incomplete': self.archive('incomplete.tar', {})}
+        with self.assertRaisesRegex(ValueError, 'Incomplete libnl SDK'):
+            self.prepare()
 
 
 class RuntimeTest(unittest.TestCase):
