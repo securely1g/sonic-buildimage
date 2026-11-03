@@ -56,7 +56,7 @@ cache and changes no shared Make-cache logic. The tracked source pins are
 already covered by the P4 recipes' existing input-file hashing.
 
 The worker manager is maintained in
-[agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/codex/sonic-slave-wrk-mgr/sonic-slave-wrk-mgr).
+[agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/main/sonic-slave-wrk-mgr).
 The native profile requires a privileged container, private PID/cgroup namespaces,
 bridge networking, and passwordless sudo for its UID 1000 build user. Each job
 starts its own Docker daemon; the host Docker socket is not mounted. The Actions
@@ -72,9 +72,15 @@ The manager also declares `SONIC_BAZEL_JAVA_TRUST_STORE` in the image. The
 isolated kernel adapter reads that default and records the selected trust
 store's digest; the Make rule contains no runner-specific certificate path.
 
-`prepare_vs_slave.sh` checks the image identity and native capabilities, prepares
-the build hooks and configuration normally supplied by the outer Make wrapper,
-and configures VS through `slave.mk`. The workflow supplies `SONIC_BUILD_GIT_NAME`
+Enable this consumer on `sonic-slave-container` only after every eligible
+runner has Bazel configuration prepared by the manager. Existing jobs finish on
+their current runners before replacement. Older workflow branches that still pin a
+manager revision need separate routing until they are updated.
+
+`prepare_vs_slave.sh` checks the image marker and native capabilities and records
+the actual manager source revision for provenance. It prepares the build hooks
+and configuration normally supplied by the outer Make wrapper and configures VS
+through `slave.mk`. The workflow supplies `SONIC_BUILD_GIT_NAME`
 and `SONIC_BUILD_GIT_EMAIL` for package recipes that create temporary Git commits;
 preparation sets this identity only in the ephemeral worker's user configuration.
 The VS selector is passed to `configure` and saved in `.platform`; it is not
@@ -83,8 +89,8 @@ It checks that the selected installer has
 no Bookworm container prerequisites. A future configuration needing those
 prerequisites must add an explicit compatible preparation stage.
 
-The lgh4 profile has four ephemeral runner slots, each capped at six CPUs and
-20 GiB. Workflow concurrency permits one full VS build at a time. Make runs one
+Each native runner slot is capped at six CPUs and 20 GiB. Workflow concurrency
+permits one full VS build at a time. Make runs one
 package build at a time with four compilation jobs; Bazel is also limited to
 four jobs. The manager registers a replacement container after each job.
 
@@ -121,11 +127,22 @@ index refresh errors, timeouts, and TLS, signature and hash checks stay enabled.
 This CI-only mitigation does not change rootfs or native-package APT behavior,
 repair a persistent transport failure, or force APT to refresh DNS.
 
-GitHub supplies `BAZEL_REMOTE_AUTH` only to cache/build steps. The installed
-credential helper sends it only to the configured cache origin. If the cache
-cannot be reached, the job records an explicit local-only fallback. Invalid
-credentials or authorization failures still fail setup. The cache receipt does
-not claim a remote cache hit merely because HTTPS connectivity succeeds.
+The worker manager configures the runner account's `.bazelrc` before GitHub
+registration. It owns the local cache paths, remote endpoint, authentication,
+and trust settings. Its eight-second connectivity check selects local caching
+for transport or TLS failures and HTTP 5xx responses. Invalid credentials,
+HTTP 401/403 responses, redirects, and other unexpected statuses fail setup.
+The safe connectivity receipt is
+written to `/opt/actions-runner/_diag/cache-configuration.json` and retained
+with the runner diagnostics. Availability changes after registration use
+Bazel's configured retries and cache error handling. A successful connectivity
+check does not establish a remote cache hit.
+
+The workflow supplies no cache credential and does not probe or rewrite the
+runner's cache settings. It appends only its jobs and memory limits and prepares
+the verified source archives used by the build. The isolated kernel launcher
+already disables home and system rc files and continues using its explicit
+local cache options; remote caching for that path is separate coverage work.
 
 The former `Make VS with Bazel SWSS (AMD64)` job is disabled in this workflow.
 After the new native build, CI verifies the installer container

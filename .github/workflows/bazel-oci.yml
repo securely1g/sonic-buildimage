@@ -797,18 +797,17 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
-    runs-on: [self-hosted, linux, x64, sonic-slave-container]
+    runs-on: [self-hosted, linux, x64, sonic-slave-lgh100-bazel-transparency-once]
     timeout-minutes: 720
-    # The four registered slots share lgh4. Only one full native build may
-    # consume its memory at a time; each worker still handles one job and exits.
+    # Route one validation job to the dedicated lgh100 runner label.
+    # The ephemeral worker exits after that job.
     concurrency:
-      group: sonic-slave-container-vs
+      group: sonic-slave-lgh100-bazel-transparency-once
       cancel-in-progress: false
     defaults:
       run:
         shell: bash
     env:
-      EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
       PREFER_DEBIAN_REPO: "y"
@@ -862,9 +861,7 @@ jobs:
             --directory artifacts/vs/p4-source-inputs/sources \
             --receipt artifacts/vs/p4-source-inputs-verified.json
 
-      - name: Configure persistent caches
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+      - name: Apply build resource limits and prepare source archives
         run: |
           python3 -B tools/bazel/ci/configure_runner_cache.py \
             --jobs=4 --local-memory-mb=12288
@@ -874,8 +871,6 @@ jobs:
 
       - name: Build sonic-vs.bin directly with slave.mk
         id: native_build
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
@@ -893,8 +888,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
 
       - name: Validate the installer and retained container pairs
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
