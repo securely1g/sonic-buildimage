@@ -63,7 +63,8 @@ jobs:
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
           # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e0bf141cea82764b18d15d7d2c8516cbf3e99290
+          SONIC_BAZEL_REGISTRY_REVISION: 2c9a1bfed7c4e5db33bb7279ea10d055a17eff29
+          BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -72,10 +73,8 @@ jobs:
           printf '%s\n' "$(uname -m)" "$(dpkg --print-architecture)" > artifacts/architecture.txt
           git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD > artifacts/checkout-sha.txt
           git -c safe.directory="$GITHUB_WORKSPACE" cat-file -p HEAD > artifacts/checkout.txt
-          printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" "$CI_ARCHITECTURE" "$CI_DISTRIBUTION" "$SONIC_BAZEL_REGISTRY" > artifacts/inputs.txt
+          printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" "$CI_ARCHITECTURE" "$CI_DISTRIBUTION" "$SONIC_BAZEL_REGISTRY_REVISION" > artifacts/inputs.txt
           options=(
-            "--registry=$SONIC_BAZEL_REGISTRY"
-            --registry=https://bcr.bazel.build
             "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
             "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
             --jobs=2
@@ -83,10 +82,10 @@ jobs:
           run_bazel() {
             local command="$1"
             shift
-            bazel --nosystem_rc --nohome_rc --noworkspace_rc \
-              --bazelrc="$PWD/tools/bazel/common.bazelrc" \
-              "$command" "${options[@]}" "$@"
+            "$BAZEL" "$command" "${options[@]}" "$@"
           }
+          python3 tools/bazel/gzip/prepare_pigz.py --output "$PWD/.cache/bazel-distdir" > artifacts/pigz-source.json
+          options+=("--distdir=$PWD/.cache/bazel-distdir")
           targets=(
             //src/libteam:libteam_runtime
             //src/libteam:libteam_runtime.debug_symbols
