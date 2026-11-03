@@ -4,16 +4,20 @@ on:
   pull_request:
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
+      - .bazelrc
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/go/**
       - tools/bazel/tests/**
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
+      - .bazelrc
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/go/**
       - tools/bazel/tests/**
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
@@ -43,6 +47,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    env:
+      BAZEL: tools/bazel/go/bazel-with-draft-registry
     defaults:
       run:
         shell: bash
@@ -92,10 +98,10 @@ jobs:
             //src/sonic-supervisord-utilities-rs:package_test)
           audit_flags=()
           for flag in "${flags[@]}"; do audit_flags+=("--bazel-arg=$flag"); done
-          python3 tools/bazel/ci/bazel_commands.py "${audit_flags[@]}" \
+          python3 tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit_flags[@]}" \
             --output artifacts/supervisor-rust/action-audit.json "${targets[@]}"
-          bazel test "${flags[@]}" --test_output=errors "${targets[@]}"
-          bazel cquery "${flags[@]}" --noimplicit_deps \
+          "$BAZEL" test "${flags[@]}" --test_output=errors "${targets[@]}"
+          "$BAZEL" cquery "${flags[@]}" --noimplicit_deps \
             'kind("rust_library rule", deps(//src/sonic-supervisord-utilities-rs:supervisor_library))' \
             > artifacts/supervisor-rust/rust-libraries.txt
           cp MODULE.bazel.lock artifacts/supervisor-rust/MODULE.bazel.lock

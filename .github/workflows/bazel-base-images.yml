@@ -56,7 +56,8 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/ci/base_images.py \
-            --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
+            --architecture '${{ matrix.architecture }}' \
+            --bazel tools/bazel/go/bazel-with-draft-registry --artifacts artifacts/base-images
           git diff --exit-code
       - name: Retain images, symbols and build evidence
         if: always()
