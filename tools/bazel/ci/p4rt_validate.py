@@ -49,6 +49,43 @@ def verify_payload(files, expected, description):
                           description + ': ' + name)
 
 
+def verify_debug_sai(runtime, symbols, debug, metadata, payloads, hashes, owner):
+    """Preserve legacy debug-only SAI Redis and its exact source ELF closure."""
+    expected = {
+        'libsairedis': ('//lib:libsairedis_pkg', {'libsairedis.so.0.0.0'}),
+        'libsaimetadata': ('//meta:libsaimetadata_pkg', {'libsaimeta.so.0.0.0', 'libsaimetadata.so.0.0.0'}),
+    }
+    check.require(owner.get('schema') == 1 and owner.get('module') == 'sonic-sairedis' and
+                  owner.get('architecture') == 'amd64' and set(owner.get('packages', {})) == set(expected),
+                  'owner metadata must describe only the two SAI library packages')
+    records = {item['package']: item for item in metadata['source_packages']}
+    check.require(len(records) == len(metadata['source_packages']), 'duplicate debug source package')
+    for package, (target, native_names) in expected.items():
+        payload = payloads[package]
+        native = {name for name, item in payload.items() if 'elf_machine' in item}
+        check.require(native == {'usr/lib/x86_64-linux-gnu/' + name for name in native_names},
+                      'debug SAI native inventory differs: ' + package)
+        verify_payload(debug, payload, 'debug SAI source payload changed')
+        check.require(not any(name in stage for stage in (runtime, symbols)
+                              for name, item in payload.items() if item['kind'] != 'directory'),
+                      'debug-only SAI package leaked into an earlier stage: ' + package)
+        definition = owner['packages'][package]
+        check.require(definition.get('runtime_target') == target and
+                      definition.get('payload_sha256') == hashes[package],
+                      'owner library metadata differs from retained source TAR: ' + package)
+        record = records.get(package, {})
+        check.require(record.get('target') == target and record.get('source_revision') and
+                      record.get('payload_sha256') == hashes[package] and
+                      record.get('version') == definition['control_fields']['Version'],
+                      'missing source-owned debug package metadata: ' + package)
+        rows = record.get('native_files', [])
+        check.require(len(rows) == len(native) and {row['path'] for row in rows} == native,
+                      'debug SAI metadata native inventory differs: ' + package)
+        for row in rows:
+            check.require(all(row[key] == payload[row['path']][key] for key in ('sha256', 'mode', 'uid', 'gid')),
+                          'debug SAI metadata changed: ' + row['path'])
+
+
 def inherited_files(parent, child, replacements=(), *, group=False):
     replacements = set(replacements) | {'var/lib/dpkg/status'}
     if group:
@@ -307,6 +344,13 @@ def validate(args):
                   'source TAR is not the actual owner output')
     owner_debug = check.payload(directory / 'owner-output/p4rt_runtime_debug.tar')
     verify_payload(symbols, owner_debug, 'symbol stage changed owner DWP')
+    verify_debug_sai(runtime, symbols, debug, read_json(directory / 'p4rt-debug.packages.json'), {
+        'libsairedis': check.payload(directory / 'sairedis.source.tar'),
+        'libsaimetadata': check.payload(directory / 'saimetadata.source.tar'),
+    }, {
+        'libsairedis': check.sha(directory / 'sairedis.source.tar'),
+        'libsaimetadata': check.sha(directory / 'saimetadata.source.tar'),
+    }, read_json(directory / 'sairedis.library-packages.json'))
     debug_payload = check.payload(directory / 'p4rt.debug.tar')
     verify_payload(debug, debug_payload, 'complete source debug layer changed')
     check.require(not any(name in runtime for name, item in debug_payload.items() if item['kind'] != 'directory'),
@@ -314,7 +358,8 @@ def validate(args):
     reports = [read_json(directory / name) for name in
                ('base.packages.json', 'config-engine.packages.json', 'p4rt-debug.packages.json')]
     native = base_images.verify_source_files(debug, reports, 62)
-    runtimes = [directory / name for name in ('base.source.tar', 'config-engine.source.tar', 'openssh.source.tar')]
+    runtimes = [directory / name for name in ('base.source.tar', 'config-engine.source.tar', 'openssh.source.tar',
+                                                     'sairedis.source.tar', 'saimetadata.source.tar')]
     pairs = base_images.verify_symbols(native, runtimes, directory / 'p4rt.native-debug.tar', directory)
     p4rt_pairs, helper_sha = verify_p4rt_symbols(directory, owner_source, receipt['owner_revision'], runtime, debug, layouts['debug'])
     for name, item in owner_runtime.items():

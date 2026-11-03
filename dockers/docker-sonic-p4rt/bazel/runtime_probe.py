@@ -29,6 +29,21 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def source_debug_pairs(report, native, debug):
+    common = {path for path in native if path.startswith("usr/lib/x86_64-linux-gnu/libswsscommon.so.")}
+    require(len(common) == 1, "expected the inherited Common library")
+    selected = common
+    if debug:
+        sai = {"usr/lib/x86_64-linux-gnu/" + name for name in
+               ("libsairedis.so.0.0.0", "libsaimeta.so.0.0.0", "libsaimetadata.so.0.0.0")}
+        require(sai <= set(native), "missing debug SAI runtime libraries")
+        selected = common | sai
+    pairs = [item for item in report["source_debug_pairs"] if item["path"] in selected]
+    require(len(pairs) == len(selected) and {item["path"] for item in pairs} == selected,
+            "missing or duplicate selected source debug pairs")
+    return pairs
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--validation", type=Path, required=True)
@@ -46,12 +61,11 @@ def main():
         require((info.st_uid, info.st_gid, info.st_mode & 0o7777) ==
                 (expected["uid"], expected["gid"], expected["mode"]),
                 "installed source metadata differs: " + name)
-    common = {path for path in native if path.startswith("usr/lib/x86_64-linux-gnu/libswsscommon.so.")}
-    require(len(common) == 1, "expected the inherited Common library")
+    selected_pairs = source_debug_pairs(report, native, args.debug)
     probe = runtime_smoke.probe({
         "architecture": "amd64",
         "elfs": [item for item in report["elfs"] if item["path"] in native],
-        "debug_pairs": [item for item in report["source_debug_pairs"] if item["path"] in common],
+        "debug_pairs": selected_pairs,
         "policy": {
             "python_imports": ["swsscommon.swsscommon"],
             "commands": [{"argv": ["/usr/bin/vim", "--version"], "output_pattern": "Huge version"}]

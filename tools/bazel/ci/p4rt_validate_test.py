@@ -1,9 +1,101 @@
 """Reject stale stage receipts and undeclared changes to installed image files."""
 
+import ast
 import copy
+from pathlib import Path
 import unittest
 
 from tools.bazel.ci import p4rt_validate as validation
+
+
+class DebugSaiTest(unittest.TestCase):
+    def setUp(self):
+        self.payloads = {}
+        self.debug = {}
+        self.metadata = {'source_packages': []}
+        self.hashes = {'libsairedis': 'a' * 64, 'libsaimetadata': 'b' * 64}
+        self.owner = {'schema': 1, 'module': 'sonic-sairedis', 'architecture': 'amd64', 'packages': {}}
+        for package, target, names in (
+                ('libsairedis', '//lib:libsairedis_pkg', ['libsairedis.so.0.0.0']),
+                ('libsaimetadata', '//meta:libsaimetadata_pkg', ['libsaimeta.so.0.0.0', 'libsaimetadata.so.0.0.0'])):
+            files = {'usr/lib/x86_64-linux-gnu/' + name: {
+                'kind': 'file', 'uid': 0, 'gid': 0, 'mode': 0o644, 'sha256': name, 'elf_machine': 62}
+                for name in names}
+            self.payloads[package] = files
+            self.debug.update(copy.deepcopy(files))
+            self.metadata['source_packages'].append({'package': package, 'target': target,
+                'source_revision': 'a' * 40, 'payload_sha256': self.hashes[package], 'version': '1.0.0',
+                'native_files': [{'path': name, **row} for name, row in files.items()]})
+            self.owner['packages'][package] = {'runtime_target': target,
+                'payload_sha256': self.hashes[package], 'control_fields': {'Version': '1.0.0'}}
+
+    def verify(self, runtime=None):
+        validation.verify_debug_sai(runtime or {}, {}, self.debug, self.metadata, self.payloads, self.hashes, self.owner)
+
+    def test_declared_debug_closure_and_owner_metadata_are_required(self):
+        self.verify()
+        self.metadata['source_packages'].pop()
+        with self.assertRaisesRegex(ValueError, 'missing source-owned'):
+            self.verify()
+
+    def test_owner_metadata_is_bound_to_the_exact_retained_tars(self):
+        self.verify()
+        self.owner['packages']['libsairedis']['payload_sha256'] = 'c' * 64
+        with self.assertRaisesRegex(ValueError, 'differs from retained source TAR'):
+            self.verify()
+        self.owner['packages']['libsairedis']['payload_sha256'] = self.hashes['libsairedis']
+        self.owner['packages']['syncd-vs'] = {}
+        with self.assertRaisesRegex(ValueError, 'only the two SAI library packages'):
+            self.verify()
+
+    def test_missing_changed_or_runtime_sai_libraries_are_rejected(self):
+        name = next(iter(self.debug))
+        original = self.debug[name]
+        with self.assertRaisesRegex(ValueError, 'leaked into an earlier stage'):
+            self.verify({name: original})
+        self.debug[name] = {**original, 'mode': 0o777}
+        with self.assertRaisesRegex(ValueError, 'payload changed'):
+            self.verify()
+        del self.debug[name]
+        with self.assertRaisesRegex(ValueError, 'payload changed'):
+            self.verify()
+
+    def test_extra_native_library_and_duplicate_metadata_are_rejected(self):
+        first = self.metadata['source_packages'][0]
+        self.metadata['source_packages'].append(copy.deepcopy(first))
+        with self.assertRaisesRegex(ValueError, 'duplicate debug source'):
+            self.verify()
+        self.metadata['source_packages'].pop()
+        self.payloads['libsairedis']['usr/lib/x86_64-linux-gnu/unexpected.so'] = next(iter(self.debug.values()))
+        with self.assertRaisesRegex(ValueError, 'native inventory differs'):
+            self.verify()
+
+
+class LoadedSaiSelectionTest(unittest.TestCase):
+    def test_debug_profile_requires_all_three_sai_libraries_and_matching_pairs(self):
+        path = Path(__file__).resolve().parents[3] / 'dockers/docker-sonic-p4rt/bazel/runtime_probe.py'
+        tree = ast.parse(path.read_text())
+        selected = [item for item in tree.body if isinstance(item, ast.FunctionDef) and
+                    item.name in ('require', 'source_debug_pairs')]
+        self.assertEqual(len(selected), 2)
+        namespace = {}
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(path), 'exec'), namespace)
+        choose = namespace['source_debug_pairs']
+        common = 'usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0'
+        sai = ['usr/lib/x86_64-linux-gnu/' + name for name in
+               ('libsairedis.so.0.0.0', 'libsaimeta.so.0.0.0', 'libsaimetadata.so.0.0.0')]
+        report = {'source_debug_pairs': [{'path': name} for name in [common, *sai]]}
+        self.assertEqual(choose(report, {common: {}}, False), [{'path': common}])
+        native = {name: {} for name in [common, *sai]}
+        self.assertEqual(len(choose(report, native, True)), 4)
+        with self.assertRaisesRegex(AssertionError, 'missing debug SAI runtime'):
+            choose(report, {common: {}}, True)
+        report['source_debug_pairs'].pop()
+        with self.assertRaisesRegex(AssertionError, 'missing or duplicate'):
+            choose(report, native, True)
+        report['source_debug_pairs'].append({'path': common})
+        with self.assertRaisesRegex(AssertionError, 'missing or duplicate'):
+            choose(report, native, True)
 
 
 class StageBindingTest(unittest.TestCase):

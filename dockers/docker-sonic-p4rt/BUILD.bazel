@@ -236,6 +236,25 @@ debug_symbols_layer(
     image = ":debug_client",
 )
 
+# Legacy LIBSAIREDIS_DBG pulls its runtime package; the selected source
+# implementation also links the owner's metadata libraries. Keep this closure
+# in the debug image and consume the existing library-only metadata interface.
+flatten(
+    name = "debug_sai_runtime",
+    tars = [
+        "@sonic_sairedis//lib:libsairedis_pkg",
+        "@sonic_sairedis//meta:libsaimetadata_pkg",
+    ],
+)
+
+flatten(
+    name = "debug_sai_symbols",
+    tars = [
+        "@sonic_sairedis//lib:libsairedis_pkg.debug_symbols",
+        "@sonic_sairedis//meta:libsaimetadata_pkg.debug_symbols",
+    ],
+)
+
 account_layer(
     name = "debug_accounts",
     architecture = "amd64",
@@ -259,10 +278,20 @@ installed_packages(
     architecture = "amd64",
     base = ":p4rt_with_symbols",
     controls = [label + ":control" for label in APT_INPUTS["p4rt_debug_debian"]["amd64"].values()],
-    owner_metadata = ["@sonic_fips//:runtime_packages.json"],
-    source_modules = {"sonic-fips": "@image_source_modules//:sonic-fips.MODULE.bazel"},
+    owner_metadata = [
+        "@sonic_fips//:runtime_packages.json",
+        "@sonic_sairedis//:library_runtime_packages.json",
+    ],
+    source_modules = {
+        "sonic-fips": "@image_source_modules//:sonic-fips.MODULE.bazel",
+        "sonic-sairedis": "@image_source_modules//:sonic-sairedis.MODULE.bazel",
+    },
     source_spec = "//dockers/docker-sonic-p4rt/bazel:debug_source_paths.json",
-    sources = {"openssh-client": "@sonic_fips//openssh:openssh_client_pkg"},
+    sources = {
+        "openssh-client": "@sonic_fips//openssh:openssh_client_pkg",
+        "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
+        "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
+    },
 )
 
 filegroup(
@@ -290,6 +319,8 @@ oci_image(
     target_compatible_with = _COMPATIBLE,
     tars = [
         ":debug_tools",
+        ":debug_sai_runtime",
+        ":debug_sai_symbols",
         ":debug_client",
         ":debug_client_symbols",
         ":debug_accounts",
@@ -312,6 +343,7 @@ flatten(
     name = "native_debug_symbols",
     tars = [
         ":parent_debug_symbols",
+        ":debug_sai_symbols",
         ":debug_client_symbols",
     ],
 )

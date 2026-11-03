@@ -22,6 +22,12 @@ extends that exact runtime with matching symbols, the standard tools and the
 source-built FIPS OpenSSH client. Each package-state stage has its own APT
 decision bound to the completed base image.
 
+The debug image also consumes Sairedis's library-only runtime metadata and its
+existing `libsairedis`, `libsaimeta` and `libsaimetadata` runtime/symbol TARs.
+These preserve the legacy debug dependencies. Validation binds their package
+records to the exact owner TAR hashes and checks their symbols in the loaded
+debug container.
+
 ## Build
 
 Use a native AMD64/Trixie build environment with Bazelisk and the P4RT execution
@@ -29,7 +35,7 @@ dependencies installed by `bazel-oci.yml`. Initialize the committed source owner
 
 ```sh
 git submodule update --init -- src/sonic-p4rt/sonic-pins
-export SONIC_BAZEL_REGISTRY_REVISION=2cfdf22158bbd1a085326e2272e9ad302579770b
+export SONIC_BAZEL_REGISTRY_REVISION=f6966a573237fe41c21d2704c3b463a1da8ad459
 export BAZEL="$PWD/tools/bazel/ci/review_bazel.sh"
 owner_revision=$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)
 

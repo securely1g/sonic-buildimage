@@ -56,7 +56,7 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-7c49be4d19826917b457a3e8183529af760df296",
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
@@ -257,6 +257,7 @@ source_modules(
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
+        "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
         "@libyang//:MODULE.bazel": "libyang",
         "@libyang_python//:MODULE.bazel": "libyang-python",
@@ -267,7 +268,7 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-7c49be4d19826917b457a3e8183529af760df296",
 )
 
 single_version_override(
