@@ -78,6 +78,20 @@ def build_images(args, directory):
         (directory / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
+def verify_inherited_accounts(inherited, installed, inherited_groups, groups, *, add_ssh):
+    for rows in (inherited_groups, groups):
+        names = [row.split(":", 1)[0] for row in rows]
+        check.require(len(names) == len(set(names)), "duplicate group name")
+    expected = inherited_groups + (["_ssh:x:104:"] if add_ssh and "_ssh:x:104:" not in inherited_groups else [])
+    check.require(groups == expected, "account merge changed inherited group rows")
+    check.require("etc/group" in inherited and "etc/group" in installed,
+                  "inherited group file is missing")
+    check.require(all(installed["etc/group"][key] == inherited["etc/group"][key]
+                      for key in ("kind", "uid", "gid", "mode")), "group file metadata changed")
+    for path in ("etc/passwd", "etc/gshadow"):
+        check.require(installed.get(path) == inherited.get(path), "changed inherited account state: " + path)
+
+
 def validate_images(directory):
     receipt = json.loads((directory / "build-receipt.json").read_text())
     check.require(receipt["status"] == "built", "Teamd image build did not finish")
@@ -87,6 +101,11 @@ def validate_images(directory):
         check.require(check.sha(directory / name) == artifact["sha256"], "artifact changed: " + name)
     parent = oci_layout.validate_layout(ROOT / receipt["base_layout"], "linux/amd64")
     inherited = base_images.installed_inventory(parent)
+    parent_selected, parent_origins = source_base_validation.inventory(parent)
+    with tempfile.TemporaryDirectory(prefix="teamd-parent-accounts-") as temporary:
+        root = Path(temporary)
+        source_base_validation.extract_selected(parent, parent_selected, parent_origins, {"etc/group"}, root)
+        inherited_groups = (root / "etc/group").read_text().splitlines()
     configuration = check.payload(directory / "teamd.files.tar", require_root=False)
     source = check.payload(directory / "teamd.source.tar")
     expected = source | configuration
@@ -108,6 +127,8 @@ def validate_images(directory):
             # Docker-owned COPY/template paths may intentionally replace an
             # inherited file; preserve every other parent byte and metadata.
             if name.endswith("-dbg") and path == "etc/group":
+                # The account merge is checked against every inherited row
+                # and the original file metadata below.
                 continue
             expected_item = configuration.get(path, item)
             if name.endswith("-dbg"):
@@ -138,8 +159,7 @@ def validate_images(directory):
             root = Path(temporary)
             source_base_validation.extract_selected(layout, selected, origins, {"etc/group"}, root)
             groups = (root / "etc/group").read_text().splitlines()
-            if name.endswith("-dbg"):
-                check.require("_ssh:x:104:" in groups, "debug ssh-agent group differs")
+            verify_inherited_accounts(inherited, files, inherited_groups, groups, add_ssh=name.endswith("-dbg"))
         archive = image_validation.docker_archive(directory / (name + ".gz"), name + ":latest",
             layout.manifest["config"]["digest"], layout.manifest["layers"])
         inventories[name] = files
