@@ -13,6 +13,9 @@ concurrency:
   group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  SONIC_BAZEL_REGISTRY_REVISION: e69dae4e70d0de9e24292b2028a28ff3fd628e99
+
 jobs:
   native:
     name: Build and inspect source base (${{ matrix.architecture }})
@@ -75,7 +78,7 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/base_images.py \
+          python3 -B tools/bazel/ci/base_images.py --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/review_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
           git diff --exit-code
       - name: Retain images, symbols and build evidence
