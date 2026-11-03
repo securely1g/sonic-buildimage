@@ -24,6 +24,9 @@ debug image adds the inherited debugger/editor tools, the source FIPS OpenSSH
 client and its `_ssh` group contract, and symbols matching the complete native
 source chain. Every installed package-state file is checked against its
 generated input; no maintainer script or package installation runs in assembly.
+Validation preserves every inherited group row in order and the group file's
+type, numeric ownership and mode. The debug image may add only `_ssh:x:104:`;
+duplicate group names and any changes to inherited passwd/gshadow state fail.
 
 The Make bridge selects native AMD64, VS, Trixie, FIPS enabled, ASAN disabled,
 and the standard `dbg` suffix. Other profiles keep the existing producer.
