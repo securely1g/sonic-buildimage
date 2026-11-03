@@ -34,7 +34,11 @@
         "amd64": {
           "/trixie/gdb:amd64": "16.3-1",
           "/trixie/gdbserver:amd64": "16.3-1",
-          "/trixie/strace:amd64": "6.13+ds-1"
+          "/trixie/libedit2:amd64": "3.1-20250104-1",
+          "/trixie/libfido2-1:amd64": "1.15.0-1+b1",
+          "/trixie/sshpass:amd64": "1.10-0.1",
+          "/trixie/strace:amd64": "6.13+ds-1",
+          "/trixie/vim:amd64": "2:9.1.1230-2"
         }
       }
     }
@@ -336,6 +340,21 @@
       "size": 29524,
       "suite": "trixie-security",
       "version": "1.11.0-1+deb13u1"
+    },
+    "/trixie-security/libsodium23:amd64=1.0.18-1+deb13u1": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19"
+      ],
+      "filename": "pool/updates/main/libs/libsodium/libsodium23_1.0.18-1+deb13u1_amd64.deb",
+      "name": "libsodium23",
+      "section": "libs",
+      "sha256": "9ff9d97bb7ce3aee7f6e6ec3a785cdbe237454a7b9fd84728121bc4ef2bebebe",
+      "size": 165028,
+      "suite": "trixie-security",
+      "version": "1.0.18-1+deb13u1"
     },
     "/trixie-security/libssh2-1t64:amd64=1.11.1-1+deb13u1": {
       "architecture": "amd64",
@@ -1282,6 +1301,21 @@
       "suite": "trixie",
       "version": "1:2.75-10+deb13u1+b1"
     },
+    "/trixie/libcbor0.10:amd64=0.10.2-2": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19"
+      ],
+      "filename": "pool/main/libc/libcbor/libcbor0.10_0.10.2-2_amd64.deb",
+      "name": "libcbor0.10",
+      "section": "libs",
+      "sha256": "2457686e375dcb7567ba01da6638a0711e2a55725d084d65de44dd11bb1f52e2",
+      "size": 28296,
+      "suite": "trixie",
+      "version": "0.10.2-2"
+    },
     "/trixie/libcom-err2:amd64=1.47.2-3+b11": {
       "architecture": "amd64",
       "control_sha256": "6206a26cc71e473dd61f2b4129c64b3214988c4af0167640a0862b1475222a07",
@@ -1548,6 +1582,24 @@
       "suite": "trixie",
       "version": "0.192-4"
     },
+    "/trixie/libedit2:amd64=3.1-20250104-1": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libtinfo6:amd64=6.5+20250216-2",
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19",
+        "/trixie/libbsd0:amd64=0.12.2-2",
+        "/trixie/libmd0:amd64=1.1.0-2+b1"
+      ],
+      "filename": "pool/main/libe/libedit/libedit2_3.1-20250104-1_amd64.deb",
+      "name": "libedit2",
+      "section": "libs",
+      "sha256": "b002ea172b9c1e34a67bc497c523c67bb74c3f0a4e98113cb083990a1f1d3bfe",
+      "size": 93832,
+      "suite": "trixie",
+      "version": "3.1-20250104-1"
+    },
     "/trixie/libelf1t64:amd64=0.192-4": {
       "architecture": "amd64",
       "control_sha256": "a2132fe3a18e1b46261d812aab7787ba62f7fadeb89ff73c39e85aa6f0fbe3b7",
@@ -1603,6 +1655,28 @@
       "size": 24144,
       "suite": "trixie",
       "version": "3.4.8-2"
+    },
+    "/trixie/libfido2-1:amd64=1.15.0-1+b1": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/zlib1g:amd64=1:1.3.dfsg+really1.3.1-1+b1",
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19",
+        "/trixie/libudev1:amd64=257.13-1~deb13u1",
+        "/trixie/libcap2:amd64=1:2.75-10+deb13u1+b1",
+        "/trixie-security/libssl3t64:amd64=3.5.6-1~deb13u2",
+        "/trixie-security/openssl-provider-legacy:amd64=3.5.6-1~deb13u2",
+        "/trixie/libzstd1:amd64=1.5.7+dfsg-1",
+        "/trixie/libcbor0.10:amd64=0.10.2-2"
+      ],
+      "filename": "pool/main/libf/libfido2/libfido2-1_1.15.0-1+b1_amd64.deb",
+      "name": "libfido2-1",
+      "section": "libs",
+      "sha256": "094fc0fe20c652be848ab2a8b3793eb03bc4327140ebd232145356352004e6c0",
+      "size": 78728,
+      "suite": "trixie",
+      "version": "1.15.0-1+b1"
     },
     "/trixie/libgcc-s1:amd64=14.2.0-19": {
       "architecture": "amd64",
@@ -1700,6 +1774,21 @@
       "size": 560220,
       "suite": "trixie",
       "version": "2:6.3.0+dfsg-3"
+    },
+    "/trixie/libgpm2:amd64=1.20.7-11+b2": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19"
+      ],
+      "filename": "pool/main/g/gpm/libgpm2_1.20.7-11+b2_amd64.deb",
+      "name": "libgpm2",
+      "section": "libs",
+      "sha256": "c8779444e5bb8df39c8bce3ef7dd3d662686a9ab770dcc96bb0f4aeb2077a67c",
+      "size": 14376,
+      "suite": "trixie",
+      "version": "1.20.7-11+b2"
     },
     "/trixie/libhogweed6t64:amd64=3.10.1-1": {
       "architecture": "amd64",
@@ -3616,6 +3705,21 @@
       "suite": "trixie",
       "version": "0.0.25"
     },
+    "/trixie/sshpass:amd64=1.10-0.1": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19"
+      ],
+      "filename": "pool/main/s/sshpass/sshpass_1.10-0.1_amd64.deb",
+      "name": "sshpass",
+      "section": "utils",
+      "sha256": "55f11ea67b8a7393865eae8ea426585feacdccb6e33431fc5e873d0b1b4391c5",
+      "size": 12704,
+      "suite": "trixie",
+      "version": "1.10-0.1"
+    },
     "/trixie/strace:amd64=6.13+ds-1": {
       "architecture": "amd64",
       "control_sha256": "be857d4e1a8e09bcf51ea2f9b81d55aeca0be06bb1dd4ea09b1eace1d821fa1a",
@@ -3771,6 +3875,51 @@
       "size": 43296,
       "suite": "trixie",
       "version": "3.0052"
+    },
+    "/trixie/vim-common:amd64=2:9.1.1230-2": {
+      "architecture": "all",
+      "depends_on": [],
+      "filename": "pool/main/v/vim/vim-common_9.1.1230-2_all.deb",
+      "name": "vim-common",
+      "section": "editors",
+      "sha256": "bcf7e3e675cbc4eed1f444ea3a6dfbf420eae141615b0d35cee24cf23e18aa18",
+      "size": 420760,
+      "suite": "trixie",
+      "version": "2:9.1.1230-2"
+    },
+    "/trixie/vim-runtime:amd64=2:9.1.1230-2": {
+      "architecture": "all",
+      "depends_on": [],
+      "filename": "pool/main/v/vim/vim-runtime_9.1.1230-2_all.deb",
+      "name": "vim-runtime",
+      "section": "editors",
+      "sha256": "5addd2e7d3aae7d1907aba6c0c16c525e78ccfc0f6ee9ef9651c139a80c97058",
+      "size": 7126616,
+      "suite": "trixie",
+      "version": "2:9.1.1230-2"
+    },
+    "/trixie/vim:amd64=2:9.1.1230-2": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libtinfo6:amd64=6.5+20250216-2",
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19",
+        "/trixie-security/libsodium23:amd64=1.0.18-1+deb13u1",
+        "/trixie/libselinux1:amd64=3.8.1-1",
+        "/trixie/libpcre2-8-0:amd64=10.46-1~deb13u1",
+        "/trixie/libgpm2:amd64=1.20.7-11+b2",
+        "/trixie/libacl1:amd64=2.3.2-2+b1",
+        "/trixie/vim-runtime:amd64=2:9.1.1230-2",
+        "/trixie/vim-common:amd64=2:9.1.1230-2"
+      ],
+      "filename": "pool/main/v/vim/vim_9.1.1230-2_amd64.deb",
+      "name": "vim",
+      "section": "editors",
+      "sha256": "7050d710bbcd5dee68865d90fd95a9aa865bf16d9a3874c5bb6a4f1d69231cfe",
+      "size": 1669984,
+      "suite": "trixie",
+      "version": "2:9.1.1230-2"
     },
     "/trixie/zlib1g:amd64=1:1.3.dfsg+really1.3.1-1+b1": {
       "architecture": "amd64",
