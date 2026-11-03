@@ -274,9 +274,18 @@ def redis_fixture(config):
     socket_path = data['INSTANCES']['redis']['unix_socket_path']
     if Path(socket_path).resolve() != Path('/run/redis/redis.sock'):
         raise ValueError('Unexpected Redis socket path in installed database config')
+    # Some unmodified SONiC services use the configured TCP endpoint. Opt in
+    # only inside the caller's isolated network namespace; retain Unix-only
+    # behavior for existing probes and never bind an external interface.
+    port = 0
+    if config.get('loopback_tcp', False):
+        instance = data['INSTANCES']['redis']
+        port = instance.get('port')
+        if instance.get('hostname') != '127.0.0.1' or type(port) is not int or not 1024 <= port <= 65535:
+            raise ValueError('Redis fixture TCP endpoint must be unprivileged loopback')
     with tempfile.TemporaryDirectory(prefix='sonic-redis-smoke-') as name:
         directory = Path(name)
-        argv = [str(executable), '--port', '0', '--save', '', '--appendonly', 'no',
+        argv = [str(executable), '--port', str(port), '--bind', '127.0.0.1', '--save', '', '--appendonly', 'no',
                 '--unixsocket', socket_path, '--unixsocketperm', '700',
                 '--dir', str(directory), '--databases', '32']
         with (directory / 'redis.log').open('w+') as log:
@@ -300,7 +309,7 @@ def redis_fixture(config):
                     raise ValueError('Isolated Redis did not become ready: ' + log.read()[-4000:])
                 yield {'version': version['stdout'].strip(), 'sha256': config['sha256'],
                        'database_config_sha256': hashlib.sha256(database.read_bytes()).hexdigest(),
-                       'unix_socket': socket_path, 'tcp_disabled': True,
+                       'unix_socket': socket_path, 'tcp_disabled': port == 0,
                        'scope': 'Explicit test helper, not an installed image component.'}
             finally:
                 if process.poll() is None:

@@ -96,7 +96,6 @@ selected:
         self.assertEqual(values["runtime_inputs"].split(),
                          ["target/bazel-manifests/docker-base-trixie/manifest.json",
                           "target/bazel-manifests/docker-config-engine-trixie/manifest.json",
-                          "target/python-wheels/trixie/scapy.whl",
                           "target/bazel-manifests/docker-orchagent/manifest.json"])
         self.assertEqual(values["debug_inputs"].split(), values["runtime_inputs"].split() +
                          ["target/bazel-manifests/docker-orchagent-dbg/manifest.json"])
@@ -134,7 +133,6 @@ selected:
                 self.assertEqual(values["runtime_inputs"].split(), [
                     "target/bazel-manifests/docker-base-trixie/manifest.json",
                     "target/bazel-manifests/docker-config-engine-trixie/manifest.json",
-                    "target/python-wheels/trixie/scapy.whl",
                     "target/bazel-manifests/docker-orchagent/manifest.json",
                 ])
                 self.assertEqual(values["debug_inputs"].split(), values["runtime_inputs"].split() +
@@ -202,12 +200,8 @@ class MakeArchiveRecipeTest(ArchiveRecipeFixture, unittest.TestCase):
         # The production slave loads this generator before the shared bridge.
         generator = (ROOT / "rules/functions").read_text().split("define generate_manifest\n", 1)[1].split("endef", 1)[0]
         self.makefile += "\ndefine generate_manifest\n" + generator + "endef\n"
-        self.wheel = self.target / "python-wheels/trixie/scapy.whl"
-        self.wheel.parent.mkdir(parents=True)
-        self.wheel.write_bytes(b"cached Make wheel")
         self.prerequisites = {archive: ["target/bazel-manifests/docker-base-trixie/manifest.json",
                                         "target/bazel-manifests/docker-config-engine-trixie/manifest.json",
-                                        "target/python-wheels/trixie/scapy.whl",
                                         "target/bazel-manifests/docker-orchagent/manifest.json"]
                               for archive in self.archives}
         self.prerequisites[self.archives[1]].append("target/bazel-manifests/docker-orchagent-dbg/manifest.json")
@@ -231,6 +225,7 @@ include tools/bazel/docker.mk
         self.makefile = self.makefile.replace("include rules/docker-orchagent.mk",
                                               "INCLUDE_FIPS = y\ninclude rules/docker-orchagent.mk")
         self.assertFalse((self.target / "docker-config-engine-trixie.gz").exists())
+        self.assertFalse((self.target / "python-wheels/trixie/scapy.whl").exists())
         result = self.run_make(*self.archives, parallel=True)
         self.assert_success(result)
         calls = self.recorded_calls()
@@ -242,8 +237,8 @@ include tools/bazel/docker.mk
         self.assertFalse((self.target / "docker-config-engine-trixie.oci").exists())
 
     def test_make_prerequisite_failures_stop_before_bazel(self):
-        """Keep the previous SWSS archive when its Make-provided wheel is missing."""
-        self.wheel.unlink()
+        """Keep the previous SWSS archive when a required Make prerequisite is missing."""
+        (self.root / ".platform").unlink()
         result = self.run_make()
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.recorded_calls(), [])

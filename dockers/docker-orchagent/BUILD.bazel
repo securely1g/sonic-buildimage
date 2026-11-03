@@ -2,7 +2,10 @@ load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@sonic_build_infra//oci:accounts.bzl", "account_layer")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+load("@sonic_build_infra//oci:installed_packages.bzl", "installed_packages")
+load("@tar.bzl", "tar")
 load("//dockers/docker-config-engine-trixie:validation.bzl", "service_images_policy")
 load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
 load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
@@ -154,6 +157,11 @@ alias(
     actual = "//dockers/docker-swss-layer-trixie:source_runtime",
 )
 
+alias(
+    name = "python_runtime",
+    actual = "//dockers/docker-orchagent/config:python_runtime",
+)
+
 # Check the runtime dependencies' transitive symbols without requiring the
 # config-engine base container used for complete image assembly.
 debug_symbols_layer(
@@ -192,7 +200,6 @@ debug_symbols_layer(
 apt_layer(
     name = "debug_layer",
     base = ":docker-orchagent",
-    base_package_metadata = ":runtime_apt_selection",
     dependency_set = "orchagent_debug_debian",
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
     packages = APT_INPUTS["orchagent_debug_debian"]["amd64"],
@@ -206,9 +213,72 @@ filegroup(
     output_group = "selection",
 )
 
+# The source base owns a hardlink to vim.tiny at this path. Replacing it with
+# the normal alternatives link activates the full Vim installed for debug.
+tar(
+    name = "debug_vim_link",
+    mtree = ["usr/bin/vim uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/vim"],
+)
+
 sonic_layer(
     name = "debug_tools",
-    tars = [":debug_layer"],
+    tars = [
+        ":debug_layer",
+        "@sonic_build_infra//deps/vim:vim_alternatives_pkg",
+        ":debug_vim_link",
+    ],
+)
+
+sonic_layer(
+    name = "debug_client",
+    tars = ["@sonic_fips//openssh:openssh_client_pkg"],
+)
+
+debug_symbols_layer(
+    name = "debug_client_symbols",
+    image = ":debug_client",
+)
+
+# Match the selected FIPS OpenSSH owner's ssh-agent group contract.
+account_layer(
+    name = "debug_accounts",
+    architecture = "amd64",
+    base = ":docker-orchagent",
+    groups = [{
+        "name": "_ssh",
+        "password": "x",
+        "gid": 104,
+    }],
+)
+
+installed_packages(
+    name = "debug_installed_packages",
+    apt_receipt = ":debug_apt_selection",
+    architecture = "amd64",
+    base = ":docker-orchagent",
+    controls = [label + ":control" for label in APT_INPUTS["orchagent_debug_debian"]["amd64"].values()],
+    owner_metadata = ["@sonic_fips//:runtime_packages.json"],
+    source_modules = {"sonic-fips": "@image_source_modules//:sonic-fips.MODULE.bazel"},
+    source_spec = "//dockers/docker-orchagent/bazel:debug_source_paths.json",
+    sources = {"openssh-client": "@sonic_fips//openssh:openssh_client_pkg"},
+)
+
+filegroup(
+    name = "debug_package_metadata",
+    srcs = [":debug_installed_packages"],
+    output_group = "metadata",
+)
+
+tar(
+    name = "debug_package_state",
+    srcs = [
+        ":debug_installed_packages",
+        ":debug_package_metadata",
+    ],
+    mtree = [
+        "var/lib/dpkg/status uid=0 gid=0 mode=0644 time=0 type=file content=$(location :debug_installed_packages)",
+        "usr/share/sonic/bazel/orchagent-debug-packages.json uid=0 gid=0 mode=0644 time=0 type=file content=$(location :debug_package_metadata)",
+    ],
 )
 
 oci_image(
@@ -219,6 +289,19 @@ oci_image(
     tars = [
         ":debug_tools",
         ":docker-orchagent.debug_symbols",
+        ":debug_client",
+        ":debug_client_symbols",
+        ":debug_accounts",
+        ":debug_package_state",
+    ],
+)
+
+# The native FIPS debug profile adds its owner's client symbols to runtime symbols.
+sonic_layer(
+    name = "all_debug_symbols",
+    tars = [
+        ":docker-orchagent.debug_symbols",
+        ":debug_client_symbols",
     ],
 )
 
@@ -262,6 +345,8 @@ test_suite(
         "//tools/bazel/tests:swss_package_contract_test",
         "//tools/bazel/tests:swss_render_test",
         "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
+        "@scapy//:upstream_test",
+        "@scapy//:wheel_test",
     ],
 )
 
