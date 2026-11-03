@@ -20,6 +20,12 @@ source dependencies produce runtime tar layers and matching debug symbols.
 Pinned Debian packages supply external runtime dependencies; Bazel does not
 create Debian packages in this path.
 
+The complete source runtime now comes from
+`//dockers/docker-swss-layer-trixie:source_runtime`. It includes the patched
+libteam and libteamdctl used by SWSS's source link; the Orchagent APT roots no
+longer request their distribution replacements. This source-only TAR is shared
+with the new SWSS parent without changing Orchagent's config-engine selector.
+
 Make selects the builder before starting the build. Missing or invalid metadata
 for a selected Bazel target, a missing Bazel executable, or a Bazel build failure
 fails the build; it does not trigger a retry with Make.
@@ -137,10 +143,12 @@ To update packages in a separate clean checkout:
    required. Run the owner tests and rebuild both images, checking the automatic
    selection receipts and installed consumers.
 
-The selector checks dependency-version requirements without running package
-installation scripts. It does not update the inherited dpkg database or
-regenerate loader/Python caches. Full image support remains AMD64; native ARM64
-helper tests do not establish a complete ARM64 image.
+The selector checks `Depends` and `Pre-Depends`, including version requirements,
+across the checked base, retained packages and selected APT additions. Source
+TARs layered afterwards are outside that selection check. It does not run
+package installation scripts, update the inherited dpkg database or regenerate
+loader/Python caches. Full image support remains AMD64; native ARM64 helper
+tests do not establish a complete ARM64 image.
 
 ## Startup configuration
 
