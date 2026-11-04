@@ -338,6 +338,53 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
+      - name: Prepare the reviewed libaudit-common download
+        if: >-
+          github.event_name == 'workflow_dispatch' && inputs.source_image == 'database-hosted' &&
+          matrix.architecture == 'amd64' &&
+          inputs.source_revision == '7d33e8732b6bea282799b5517248ee390813e354' &&
+          inputs.registry_revision == '6a69c2d89070d4d2ffc80b1e13626da387f7ea65'
+        run: |
+          python3 - <<'PYDEB'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.request import urlopen
+          from tools.bazel.gzip.source_archive import publish
+
+          # Snapshot's content address changes transport only; Bazel still checks
+          # the original SHA256 declared by the reviewed graph's APT lock.
+          URL = "https://snapshot.debian.org/file/d4657962ca3a903c5f26f0d7f2b1a46b5d7ec6c0"
+          SHA256 = "b6edcd7aa36a2a5a1abd2c52966d69a99eebdb69c8f5cb33cbf415b0875775e3"
+          SIZE = 12692
+          FILENAME = "libaudit-common_4.0.2-2_all.deb"
+
+          def prepare():
+              destination = Path("artifacts/source-downloads") / FILENAME
+              receipt = Path("artifacts/database/libaudit-common-download.json")
+              if destination.is_symlink() or receipt.is_symlink():
+                  raise ValueError("Reviewed download path must not be a symlink")
+              cached = destination.is_file() and destination.stat().st_size == SIZE
+              if cached:
+                  cached = hashlib.sha256(destination.read_bytes()).hexdigest() == SHA256
+              if not cached:
+                  with urlopen(URL, timeout=60) as response:
+                      if response.status != 200:
+                          raise ValueError("Reviewed download did not return HTTP 200")
+                      data = response.read(SIZE + 1)
+                  if len(data) != SIZE or hashlib.sha256(data).hexdigest() != SHA256:
+                      raise ValueError("Reviewed download differs from the locked SHA256 or size")
+                  # The existing helper atomically replaces only verified bytes.
+                  publish(data, destination)
+              result = {"url": URL, "sha256": SHA256, "bytes": SIZE,
+                        "filename": FILENAME, "reused_verified_file": cached}
+              publish((json.dumps(result, sort_keys=True) + "\n").encode(), receipt)
+              print(json.dumps(result, sort_keys=True))
+
+          if __name__ == "__main__":
+              prepare()
+          PYDEB
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -597,7 +644,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'include_system_eventd', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'debug-packages.json'):
+          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'debug-packages.json', 'libaudit-common-download.json'):
               path = root / name
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -618,6 +665,7 @@ jobs:
             artifacts/database/*.gz
             artifacts/database/*.tar
             artifacts/database/public-receipt.json
+            artifacts/database/libaudit-common-download.json
             artifacts/database/reviewed-selection.json
             artifacts/database/validation.json
             artifacts/database/incremental.json
