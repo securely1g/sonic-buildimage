@@ -259,8 +259,8 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
-        choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
-        self.assertEqual(set(choices), set(worker.DRIVERS))
+        choices = re.search(r"options: \[([^\]]+)\]", workflow).group(1).split(", ")
+        self.assertEqual(set(choices), set(worker.DRIVERS) | {"none", "preflight", "swss-layer-hosted"})
         gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
         self.assertEqual(len(gates), 2)
         for gate in gates:
