@@ -7,14 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       source_image:
-        description: Dedicated source-image worker task
+        description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout]
+        options: [none, preflight, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout]
         default: none
       source_revision:
-        description: Reviewed 40-character source commit for an image task
+        description: Reviewed 40-character image source or fixed registry commit
         type: string
         default: ''
+      registry_consumer:
+        description: Fixed ordinary registry consumer (registry-native mode only)
+        type: choice
+        options: [none, common, fips, sairedis, dash, linkmgrd]
+        default: none
       source_worker:
         description: Dedicated worker for an image pilot
         type: choice
@@ -41,6 +46,67 @@ env:
   BAZEL: bazel
 
 jobs:
+  registry_native:
+    name: Registry native (${{ inputs.registry_consumer }}, AMD64)
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_image == 'registry-native' && contains(fromJSON('["common", "fips", "sairedis", "dash", "linkmgrd"]'), inputs.registry_consumer)
+    runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+      REGISTRY_REVISION: ${{ inputs.source_revision }}
+      EXPECTED_WORKER: ${{ inputs.source_worker }}
+    steps:
+      - name: Checkout reviewed registry worker control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          persist-credentials: false
+      - name: Validate the fixed registry dispatch
+        run: |
+          python3 -B control/tools/bazel/ci/registry_native_worker.py selection \
+            --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
+            --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
+      - name: Checkout the exact reviewed registry
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: ${{ inputs.source_revision }}
+          path: registry
+          persist-credentials: false
+      - name: Run the original native registry build and tests
+        id: native
+        run: |
+          python3 -B control/tools/bazel/ci/registry_native_worker.py run \
+            --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
+            --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
+      - name: Stage declared native outputs and public receipts
+        id: public
+        if: always() && steps.native.outcome != 'skipped'
+        run: |
+          python3 -B control/tools/bazel/ci/registry_native_worker.py publish \
+            --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
+            --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
+      - name: Upload ordinary registry consumer evidence
+        if: always() && steps.native.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: registry-native-${{ inputs.registry_consumer }}-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/registry-native-evidence.tar
+            ${{ runner.temp }}/registry-native-artifacts/worker-run.json
+            ${{ runner.temp }}/registry-native-artifacts/worker-execute.json
+            ${{ runner.temp }}/registry-native-artifacts/worker-publish.json
+            ${{ runner.temp }}/registry-native-artifacts/worker-preflight.json
+            ${{ runner.temp }}/registry-native-artifacts/worker-registry.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
   source_image_inputs:
     name: Fetch pinned source-image downloads
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout"]'), inputs.source_image) && inputs.source_inputs_run == ''
@@ -342,7 +408,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.head_ref == 'codex/registry-native-workers' && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -550,7 +616,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.head_ref == 'codex/registry-native-workers' && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1010,6 +1076,7 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
+      github.head_ref != 'codex/registry-native-workers' &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
