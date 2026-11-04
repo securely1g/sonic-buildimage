@@ -15,16 +15,25 @@ on:
       - rules/docker-macsec.mk
       - tools/bazel/**
   workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Reviewed immutable source SHA (blank uses this workflow revision)
+        type: string
+        default: ''
+      registry_revision:
+        description: Reviewed immutable registry SHA (required with source_revision)
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: bazel-macsec-image-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-macsec-image-${{ github.event.pull_request.number || github.ref }}-${{ inputs.source_revision }}-${{ inputs.registry_revision }}
   cancel-in-progress: true
 
 env:
-  SONIC_BAZEL_REGISTRY_REVISION: 2c9a1bfed7c4e5db33bb7279ea10d055a17eff29
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.registry_revision || '2c9a1bfed7c4e5db33bb7279ea10d055a17eff29' }}
 
 jobs:
   native:
@@ -36,13 +45,30 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Validate the optional reviewed MACsec source selection
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          if [[ -n "$SOURCE_REVISION$REGISTRY_REVISION" ]]; then
+            [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+                echo 'Select paired immutable source and registry SHAs.' >&2
+                exit 2
+              }
+          fi
       - name: Install execution and verification tools
         run: |
           apt-get update
           apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git j2cli jq libarchive-tools libxml2 python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.source_revision || github.sha }}
           persist-credentials: false
+      - name: Test the MACsec workflow contract
+        if: inputs.source_revision == ''
+        run: python3 -B tools/bazel/tests/macsec_workflow_test.py
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -66,9 +92,26 @@ jobs:
           user.write_text(current + '\n' + '\n'.join(cache_lines) +
                           '\ncommon --distdir=' + os.environ['RUNNER_TEMP'] + '/pigz-distdir\n')
           PYCODE
+      - name: Configure verified Debian payload transport
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/f9003910e389ce3dff5b2b543c907af635025ad3/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != "84b777906cc81c5c4491bca69ec2e2bf8dedcda43fbf8c0c32388593ab05ef0b":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "macsec-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build runtime and debug images from source owners
         env:
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_HEAD_SHA: ${{ inputs.source_revision || github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -79,17 +122,40 @@ jobs:
           python3 -B tools/bazel/ci/macsec_image.py build --artifacts artifacts/macsec
       - name: Validate completed image contents and source symbols
         env:
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_HEAD_SHA: ${{ inputs.source_revision || github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
         run: python3 -B tools/bazel/ci/macsec_image.py validate --artifacts artifacts/macsec
       - name: Check incremental rebuild and restored image digests
         env:
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_HEAD_SHA: ${{ inputs.source_revision || github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/ci/macsec_image.py incremental --artifacts artifacts/macsec
           git diff --exit-code
+      - name: Bind the completed MACsec artifacts to the reviewed source
+        if: inputs.source_revision != ''
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          python3 - <<'PYBIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          expected = os.environ['SOURCE_REVISION']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == expected
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True)
+          root = Path('artifacts/macsec')
+          for name, status in [('build-receipt.json', 'built'), ('validation.json', 'passed')]:
+              value = json.loads((root / name).read_text())
+              assert value['revision'] == expected and value['status'] == status
+              if name == 'build-receipt.json':
+                  assert value['invocation']['review_registry_revision'] == os.environ['REGISTRY_REVISION']
+          value = {'source_revision': expected, 'registry_revision': os.environ['REGISTRY_REVISION'],
+                   'control_revision': os.environ['GITHUB_SHA'],
+                   'loaded_driver_sha256': hashlib.sha256(Path('tools/bazel/ci/macsec_loaded.py').read_bytes()).hexdigest()}
+          (root / 'reviewed-selection.json').write_text(json.dumps(value, indent=2) + '\n')
+          PYBIND
       - name: Prepare reviewed public evidence
         id: public
         if: always()
@@ -104,7 +170,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names = ['reviewed-selection.json', 'validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
           names += [path.name for path in root.glob('*.validation.json')]
           names += [path.name for path in root.glob('*.packages.json')]
           for name in names:
@@ -133,6 +199,7 @@ jobs:
             artifacts/macsec/*.validation.json
             artifacts/macsec/validation.json
             artifacts/macsec/public-receipt.json
+            artifacts/macsec/reviewed-selection.json
             artifacts/macsec/runtime-apt.json
             artifacts/macsec/debug-apt.json
             artifacts/macsec/action-audit.json
@@ -150,16 +217,49 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Validate the optional reviewed MACsec source selection
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          if [[ -n "$SOURCE_REVISION$REGISTRY_REVISION" ]]; then
+            [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+                echo 'Select paired immutable source and registry SHAs.' >&2
+                exit 2
+              }
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.source_revision || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: macsec-image-amd64
           path: artifacts/macsec
+      - name: Verify the selected source against the downloaded MACsec evidence
+        if: inputs.source_revision != ''
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          python3 - <<'PYBIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          root = Path('artifacts/macsec')
+          value = json.loads((root / 'reviewed-selection.json').read_text())
+          assert value['source_revision'] == os.environ['SOURCE_REVISION']
+          assert value['registry_revision'] == os.environ['REGISTRY_REVISION']
+          assert value['control_revision'] == os.environ['GITHUB_SHA']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == value['source_revision']
+          assert hashlib.sha256(Path('tools/bazel/ci/macsec_loaded.py').read_bytes()).hexdigest() == value['loaded_driver_sha256']
+          for name in ['public-receipt.json', 'validation.json']:
+              assert json.loads((root / name).read_text())['revision'] == value['source_revision']
+          PYBIND
       - name: Exercise installed MACsec manager and actual WPA child
         env:
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_HEAD_SHA: ${{ inputs.source_revision || github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
         run: python3 -B tools/bazel/ci/macsec_loaded.py --artifacts artifacts/macsec
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
