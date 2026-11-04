@@ -128,6 +128,21 @@ def build_images(args, directory):
         (directory / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
+def declared_image_policy(policy, image_version, environment_file):
+    check.require(isinstance(image_version, str) and image_version and "\n" not in image_version,
+                  "missing or malformed recorded image version")
+    expected = {"DEBIAN_FRONTEND": "noninteractive", "IMAGE_VERSION": image_version}
+    lines = environment_file.read_text().splitlines()
+    check.require(len(lines) == len(expected) and all("=" in line for line in lines),
+                  "Make image environment has missing or extra entries")
+    declared = dict(line.split("=", 1) for line in lines)
+    check.require(declared == expected, "Make image environment differs from the recorded build input")
+    settings = policy["image_validation"]
+    check.require(settings.get("environment") == {"DEBIAN_FRONTEND": "noninteractive"},
+                  "package policy changed its declared public environment")
+    return {**policy, "image_validation": {**settings, "environment": expected}}
+
+
 def validate_images(directory):
     clean_source(directory)
     receipt = json.loads((directory / "build-receipt.json").read_text())
@@ -137,7 +152,8 @@ def validate_images(directory):
     runtime, debug = [ROOT / receipt["layouts"][name] for name in IMAGES]
     accounts = validate_groups(*[oci_layout.validate_layout(path, "linux/amd64") for path in
         (ROOT / receipt["base_layout"], runtime, debug)])
-    policy = json.loads((directory / "policy.json").read_text())
+    policy = declared_image_policy(json.loads((directory / "policy.json").read_text()),
+        receipt["image_version"], ROOT / "target/bazel-manifests/docker-gbsyncd-vs/image.env")
     source = {"source_contract_path": directory / "source-contract.json", "source_runtime_tar": directory / "source-runtime.tar",
               "source_debug_tar": directory / "source-debug.tar", "source_receipt": directory / "source-receipt.json",
               "base_path": ROOT / receipt["base_layout"]}

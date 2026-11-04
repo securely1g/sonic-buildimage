@@ -49,6 +49,12 @@ def stop(process):
             process.wait(timeout=5)
 
 
+def full_vim_receipt(result):
+    require(result["returncode"] == 0 and "Huge version" in result["stdout"],
+            "debug command did not select full Vim")
+    return {"returncode": 0, "huge_version": True}
+
+
 def main():
     report = json.loads(Path(sys.argv[1]).read_text()); variant = sys.argv[2]
     expected = report["images"][variant]
@@ -61,8 +67,7 @@ def main():
     debug_checks = []
     vim = None
     if variant.endswith("-dbg"):
-        vim = runtime_smoke.command(["/usr/bin/vim", "--version"])
-        require(vim["returncode"] == 0 and "Huge version" in vim["stdout"], "debug command did not select full Vim")
+        vim = full_vim_receipt(runtime_smoke.command(["/usr/bin/vim", "--version"]))
         targets = {"usr/bin/syncd", "usr/bin/syncd_dash", "usr/bin/pi_CLI_dummy", "usr/bin/sonic-db-cli"}
         selected = [pair for pair in report["source_debug_pairs"] if pair["path"] in targets]
         require(targets == {pair["path"] for pair in selected}, "missing installed debugger contracts")
