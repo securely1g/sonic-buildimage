@@ -140,6 +140,52 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
+      - name: Prepare the reviewed libde265 download
+        if: >-
+          github.event_name == 'workflow_dispatch' && matrix.architecture == 'amd64' &&
+          inputs.source_revision == 'a5a1f8dfa22b0b99226968f8d11dfe9d654e9a97' &&
+          inputs.registry_revision == '6a69c2d89070d4d2ffc80b1e13626da387f7ea65'
+        run: |
+          python3 - <<'PYDEB'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.request import urlopen
+          from tools.bazel.gzip.source_archive import publish
+
+          # Snapshot's content address changes transport only; Bazel still checks
+          # the original SHA256 declared by the reviewed graph's APT lock.
+          URL = "https://snapshot.debian.org/file/ec0ded8276cfdb68db5f5daad1469dc59d440627"
+          SHA256 = "d80d262c7a323fb594712354e4080c1ffe0c25e6cfbbd1192cda82536be123d4"
+          SIZE = 189084
+          FILENAME = "libde265-0_1.0.15-1+b3_amd64.deb"
+
+          def prepare():
+              destination = Path("artifacts/source-downloads") / FILENAME
+              receipt = Path("artifacts/base-images/libde265-download.json")
+              if destination.is_symlink() or receipt.is_symlink():
+                  raise ValueError("Reviewed download path must not be a symlink")
+              cached = destination.is_file() and destination.stat().st_size == SIZE
+              if cached:
+                  cached = hashlib.sha256(destination.read_bytes()).hexdigest() == SHA256
+              if not cached:
+                  with urlopen(URL, timeout=60) as response:
+                      if response.status != 200:
+                          raise ValueError("Reviewed download did not return HTTP 200")
+                      data = response.read(SIZE + 1)
+                  if len(data) != SIZE or hashlib.sha256(data).hexdigest() != SHA256:
+                      raise ValueError("Reviewed download differs from the locked SHA256 or size")
+                  # The existing helper atomically replaces only verified bytes.
+                  publish(data, destination)
+              result = {"url": URL, "sha256": SHA256, "bytes": SIZE,
+                        "filename": FILENAME, "reused_verified_file": cached}
+              publish((json.dumps(result, sort_keys=True) + "\n").encode(), receipt)
+              print(json.dumps(result, sort_keys=True))
+
+          if __name__ == "__main__":
+              prepare()
+          PYDEB
+
       - name: Check clean dependency inputs
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
