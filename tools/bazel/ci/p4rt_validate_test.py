@@ -2,10 +2,78 @@
 
 import ast
 import copy
+import json
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from tools.bazel.ci import p4rt_validate as validation
+
+
+class IncrementalOwnerOutputTest(unittest.TestCase):
+    def test_external_owner_tar_uses_the_recorded_execution_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace, execution, directory = (root / name for name in ('workspace', 'execroot', 'artifacts'))
+            for path in (workspace, execution, directory):
+                path.mkdir()
+            source = workspace / 'dockers/docker-sonic-p4rt/p4rt_vars.j2'
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b'original template\n')
+            original = source.read_bytes()
+            names = [*(name + '.gz' for name in validation.IMAGES), 'p4rt.source.tar', 'p4rt.debug.tar']
+            paths = {name: ('external/+_repo_rules4+p4rt_owner_payload/p4rt_runtime.tar'
+                            if name == 'p4rt.source.tar' else 'bazel-out/config/bin/' + name)
+                     for name in names}
+            for name, path in paths.items():
+                output = execution / path
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(name.encode())
+            handoff = workspace / '.bazel-inputs/p4rt-owner/handoff.json'
+            handoff.parent.mkdir(parents=True)
+            handoff.write_text('{}\n')
+            receipt = {
+                'status': 'built', 'revision': 'reviewed-revision',
+                'layouts': {name: 'layouts/' + name for name in (*validation.IMAGES, validation.SYMBOLS)},
+                'base_layout': 'layouts/base',
+                'artifacts': {name: {'sha256': validation.check.sha(execution / path)}
+                              for name, path in paths.items()},
+            }
+            (directory / 'build-receipt.json').write_text(json.dumps(receipt))
+            (directory / 'build-events.jsonl').write_text(json.dumps({
+                'workspaceInfo': {'localExecRoot': str(execution)}}) + '\n')
+            labels = {validation.p4rt_image.TARGETS[name]: path for name, path in paths.items()}
+
+            def queried_output(command, **kwargs):
+                self.assertEqual(command[1], 'cquery')
+                return labels[command[-1]] + '\n'
+
+            def build_outputs(command, **kwargs):
+                self.assertEqual(command[1], 'build')
+                edited = source.read_bytes() != original
+                for name, path in paths.items():
+                    (execution / path).write_bytes(name.encode() + (b' edited' if edited and name.endswith('.gz') else b''))
+
+            def layout(path, platform):
+                self.assertEqual(platform, 'linux/amd64')
+                changed = source.read_bytes() != original and path.name != 'base'
+                return SimpleNamespace(descriptor={'digest': path.name + ('-edited' if changed else '')})
+
+            with (mock.patch.object(validation, 'ROOT', workspace),
+                  mock.patch.object(validation, 'clean_source', return_value='reviewed-revision'),
+                  mock.patch.object(validation.subprocess, 'check_output', side_effect=queried_output),
+                  mock.patch.object(validation.subprocess, 'run', side_effect=build_outputs),
+                  mock.patch.object(validation.oci_layout, 'validate_layout', side_effect=layout)):
+                validation.incremental(SimpleNamespace(directory=directory, bazel='bazel'))
+            result = json.loads((directory / 'incremental.json').read_text())
+            self.assertEqual(result['status'], 'passed')
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse((workspace / paths['p4rt.source.tar']).exists())
+            self.assertEqual(result['baseline']['outputs'], result['restored']['outputs'])
+            self.assertEqual(result['baseline']['outputs']['p4rt.source.tar'],
+                             result['changed']['outputs']['p4rt.source.tar'])
 
 
 class DebugSaiTest(unittest.TestCase):
