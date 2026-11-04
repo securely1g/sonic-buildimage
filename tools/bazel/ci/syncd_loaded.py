@@ -17,6 +17,17 @@ from tools.bazel.ci import validate_runtime
 from tools.bazel.ci.public_artifacts import safe_json
 
 
+def profile_inputs(hwsku):
+    """Keep the original BCM56850 fixture, including its absent optional map."""
+    files = ("sai.profile", "lanemap.ini", "fabriclanemap.ini")
+    check.require(all((hwsku / name).is_file() and not (hwsku / name).is_symlink()
+                      for name in files), "missing original VS profile inputs")
+    optional = hwsku / "coreportindexmap.ini"
+    check.require(not optional.exists() and not optional.is_symlink(),
+                  "original VS default core port map was replaced")
+    return files
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, required=True)
@@ -30,8 +41,7 @@ def main():
     probe = ROOT / "platform/vs/docker-syncd-vs/bazel/runtime_probe.py"
     # These are original VS data files; no VM or KVM is launched by the probe.
     hwsku = ROOT / "device/virtual/x86_64-kvm_x86_64-r0/SONiC-VM"
-    profile_files = ("sai.profile", "lanemap.ini", "coreportindexmap.ini", "fabriclanemap.ini")
-    check.require(all((hwsku / name).is_file() for name in profile_files), "missing original VS profile inputs")
+    profile_files = profile_inputs(hwsku)
     check.require(Path("/dev/net/tun").exists(), "the declared VS TAP fixture requires /dev/net/tun")
     results = {}
     with tempfile.TemporaryDirectory(prefix="syncd-redis-") as temporary:
@@ -88,8 +98,11 @@ def main():
                         if isinstance(value, dict) and "status" in value:
                             records.append(value)
                 check.require(len(records) == 1 and records[0]["status"] == "passed", "missing runtime receipt")
+                check.require(records[0].get("original_core_port_map_absent") is True,
+                              "original default core port map was not preserved")
                 results[name] = {**records[0], "config_and_layers_verified": True, "archive_sha256": check.sha(archive),
-                                 "fixture_sources": {name: check.sha(hwsku / name) for name in profile_files}}
+                                 "fixture_sources": {name: check.sha(hwsku / name) for name in profile_files},
+                                 "fixture_absent": ["coreportindexmap.ini"]}
                 safe_json(results[name])
                 (directory / (name + ".runtime.json")).write_text(json.dumps(results[name], indent=2) + "\n")
             finally:

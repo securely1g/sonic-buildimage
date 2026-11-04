@@ -48,6 +48,20 @@ def descendants(pid):
             yield from descendants(int(child))
 
 
+def prepare_hwsku(source, hwsku):
+    """Copy original VS data; Sairedis supplies its default optional core map."""
+    hwsku.mkdir(parents=True, exist_ok=True)
+    for directory in (source, hwsku):
+        optional = directory / "coreportindexmap.ini"
+        require(not optional.exists() and not optional.is_symlink(),
+                "original VS default core port map was replaced")
+    for name in ("sai.profile", "lanemap.ini", "fabriclanemap.ini"):
+        path = source / name
+        require(path.is_file() and not path.is_symlink(), "missing original VS profile input: " + name)
+        (hwsku / name).write_bytes(path.read_bytes())
+    return (hwsku / "sai.profile").read_text()
+
+
 @contextlib.contextmanager
 def private_redis(database):
     """Reuse the declared helper closure and prove TCP/Unix reach this process."""
@@ -118,10 +132,7 @@ def main():
         require("Tiny version" in command(["/usr/bin/vim", "--version"]), "runtime Vim changed")
 
     hwsku = Path("/usr/share/sonic/hwsku")
-    hwsku.mkdir(parents=True, exist_ok=True)
-    for name in ("sai.profile", "lanemap.ini", "coreportindexmap.ini", "fabriclanemap.ini"):
-        (hwsku / name).write_bytes((Path("/probe/hwsku") / name).read_bytes())
-    profile = (hwsku / "sai.profile").read_text()
+    profile = prepare_hwsku(Path("/probe/hwsku"), hwsku)
     command(["/usr/bin/start.sh"])
     require(Path("/etc/sai.d/sai.profile").read_text() == profile, "original copied profile differs")
     database = Path("/run/redis/sonic-db/database_config.json")
@@ -207,6 +218,8 @@ def main():
     print(json.dumps({"status": "passed", "variant": variant, "native_files": len(expected["native_paths"]),
                       "debug_checks": debug_checks, "private_redis": redis_report, "service_states": states,
                       "actual_entrypoint": True, "actual_syncd": True, "startup_arguments": args,
+                      "original_core_port_map_absent": not ((hwsku / "coreportindexmap.ini").exists() or
+                                                            (hwsku / "coreportindexmap.ini").is_symlink()),
                       "profile_copy_and_render": True, "stable_process": True,
                       "scope": "Original regular VS service startup and software dependencies; DASH source/debug closure only; no forwarding or hardware"}))
 
