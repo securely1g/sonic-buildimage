@@ -1006,7 +1006,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
-    runs-on: [self-hosted, linux, x64, sonic-slave-container]
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-c6505518]
     timeout-minutes: 720
     # The four registered slots share lgh4. Only one full native build may
     # consume its memory at a time; each worker still handles one job and exits.
@@ -1017,7 +1017,7 @@ jobs:
       run:
         shell: bash
     env:
-      EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
+      EXPECTED_MANAGER_REVISION: c650551885f8ad22cbc104082d1f1b6171e67eef
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
       PREFER_DEBIAN_REPO: "y"
