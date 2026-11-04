@@ -19,7 +19,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
-from tools.bazel.ci.source_worker_preflight import BUILD_PROFILE, measure
+from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd"}
@@ -225,16 +225,16 @@ def memory_snapshot():
     return result
 
 
-def launcher_text(binary, base):
+def launcher_text(binary, base, profile):
     flags = ["--remote_cache=", "--remote_download_regex=(^|.*/)tools/build_tools/kernel_runtime_(amd64|arm64)(/.*)?$",
-             "--jobs=" + str(BUILD_PROFILE["jobs"]), "--local_resources=cpu=" + str(BUILD_PROFILE["cpu"]),
-             "--local_resources=memory=" + str(BUILD_PROFILE["scheduler_memory_mb"])]
+             "--jobs=" + str(profile["jobs"]), "--local_resources=cpu=" + str(profile["cpu"]),
+             "--local_resources=memory=" + str(profile["scheduler_memory_mb"])]
     return ("#!/usr/bin/env python3\nimport os, sys\n" +
             "binary = " + repr(binary) + "\nbase = " + repr(str(base)) + "\nargs = sys.argv[1:]\n" +
             "if any(value in ('build', 'test', 'aquery', 'cquery') for value in args):\n" +
             "    args.extend(" + repr(flags) + ")\n" +
             "os.execv(binary, [binary, '--output_base=' + base, '--host_jvm_args=-Xmx" +
-            str(BUILD_PROFILE["jvm_heap_gib"]) + "g', " +
+            str(profile["jvm_heap_gib"]) + "g', " +
             "'--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts', *args])\n")
 
 
@@ -264,6 +264,7 @@ def prepare(args):
     preflight = measure(os.environ.get("RUNNER_NAME", ""))
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
+    profile = preflight["build_profile"]
     require(os.getuid() == 1000 and os.getgid() == 1000, "Expected worker UID/GID1000")
     require(platform.machine() == "x86_64" and
             platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie", "Expected native AMD64 Debian Trixie")
@@ -305,7 +306,7 @@ def prepare(args):
     distdirs, download_receipt = prepare_source_downloads(temporary / "source-image-inputs", cache)
     (artifacts / "worker-source-downloads.json").write_text(json.dumps(download_receipt, indent=2) + "\n")
     launch = temporary / "source-image-bazel"
-    launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base"))
+    launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile))
     launch.chmod(0o755)
     mirror = temporary / "source-image-mirrors.cfg"
     with urllib.request.urlopen(MIRROR_URL, timeout=60) as response:
@@ -333,7 +334,7 @@ def prepare(args):
            "SONIC_BAZEL_REGISTRY_REVISION": catalog, "CI_HEAD_SHA": args.revision, "CI_BASE_SHA": "",
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
-             "pidfile": str(pidfile), "docker_root": str(docker_root)}
+             "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
     (artifacts / "worker-private.json").write_text(json.dumps(state, indent=2) + "\n")
     run(["sudo", "-n", sys.executable, str(ROOT / "tools/bazel/ci/prepare_nested_docker.py")])
     with (artifacts / "dockerd.log").open("w") as log:
@@ -360,7 +361,7 @@ def prepare(args):
     receipt = {"schema": 1, "status": "prepared", "worker": runner, "architecture": "amd64", "distribution": "trixie",
                "source_revision": args.revision, "dispatcher_revision": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
                "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "persistent_worker_local",
-               "build_profile": BUILD_PROFILE, "memory": memory_snapshot(),
+               "build_profile": profile, "memory": memory_snapshot(),
                "docker_network": "none", "image": args.image}
     safe_json(receipt)
     (artifacts / "worker.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -373,10 +374,17 @@ def state_for(args):
     return state
 
 
+def prepared_profile(state, memory):
+    profile = select_build_profile(int(memory["limit"]), cpu_limit(memory["cpu_max"]))
+    require(state.get("build_profile") == profile, "Worker resources/profile differ from preparation")
+    return profile
+
+
 def execute_phase(args):
     state = state_for(args)
     source_check(args.workspace, args.revision)
     before = memory_snapshot()
+    profile = prepared_profile(state, before)
     if args.phase == "loaded":
         # The worker's own server is idle here; disk/output caches remain intact.
         run([state["environment"]["BAZEL_REAL"], "shutdown"], cwd=args.workspace,
@@ -404,7 +412,7 @@ def execute_phase(args):
     receipt = {"phase": args.phase, "status": "passed" if completed.returncode == 0 and memory_ok else "failed",
                "source_revision": args.revision, "image": args.image, "elapsed_seconds": round(time.monotonic() - started, 3),
                "exit_code": completed.returncode, "memory_before": before, "memory_after": after,
-               "build_profile": BUILD_PROFILE, "no_oom_events": memory_ok}
+               "build_profile": profile, "no_oom_events": memory_ok}
     (args.artifacts / ("worker-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")
     require(completed.returncode == 0, "Image phase failed: " + args.phase)
     require(memory_ok, "Worker exhausted its memory during " + args.phase)

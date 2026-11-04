@@ -18,9 +18,20 @@ sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json
 
 WORKERS = tuple(f"sonic-slave-lgh114-{number}" for number in range(1, 5))
-BUILD_PROFILE = {"status": "pilot", "minimum_memory_bytes": 20 * 1024**3,
-                 "jvm_heap_gib": 3, "jobs": 1, "cpu": 1, "scheduler_memory_mb": 4000,
-                 "loaded_container_memory_gib": 4}
+MINIMUM_MEMORY_BYTES = 20 * 1024**3
+
+
+def select_build_profile(memory_bytes, cpus):
+    """Choose scheduling from the admitted worker's measured cgroup limits."""
+    if (type(memory_bytes) is not int or memory_bytes < MINIMUM_MEMORY_BYTES or
+            type(cpus) not in (int, float) or not 2 <= cpus <= 6):
+        raise ValueError("Worker does not meet the existing bounded resource gate")
+    parallel = cpus >= 4
+    return {"name": "two_actions" if parallel else "one_action", "status": "pilot",
+            "minimum_memory_bytes": MINIMUM_MEMORY_BYTES, "minimum_cpu": 4 if parallel else 2,
+            "measured_memory_limit_bytes": memory_bytes, "measured_cpu_limit": cpus,
+            "jvm_heap_gib": 3, "jobs": 2 if parallel else 1, "cpu": 2 if parallel else 1,
+            "scheduler_memory_mb": 8000 if parallel else 4000, "loaded_container_memory_gib": 4}
 
 
 def cpu_limit(value):
@@ -45,6 +56,7 @@ def marker_identity(path):
 
 def measure(expected_worker):
     checks, facts = {}, {}
+    build_profile = None
 
     def check(name, probe):
         try:
@@ -75,12 +87,14 @@ def measure(expected_worker):
         (cgroups / "cgroup.controllers").read_text().split()))
 
     def resources():
+        nonlocal build_profile
         facts["memory_limit"] = (cgroups / "memory.max").read_text().strip()
         facts["cpu_max"] = (cgroups / "cpu.max").read_text().strip()
         facts["memory_limit_bytes"] = int(facts["memory_limit"])
         facts["memory_current_bytes"] = int((cgroups / "memory.current").read_text())
         facts["cpu_limit"] = cpu_limit(facts["cpu_max"])
-        return facts["memory_limit_bytes"] >= BUILD_PROFILE["minimum_memory_bytes"] and 2 <= facts["cpu_limit"] <= 6
+        build_profile = select_build_profile(facts["memory_limit_bytes"], facts["cpu_limit"])
+        return True
 
     check("bounded_build_resources", resources)
     for name in ("bazel", "docker", "dockerd", "sudo", "git", "make", "readelf", "mountpoint", "findmnt", "unshare"):
@@ -104,7 +118,7 @@ def measure(expected_worker):
 
         check(name + "_storage", storage)
     return {"schema": 1, "status": "passed" if all(checks.values()) else "failed", "checks": checks,
-            "facts": facts, "build_profile": BUILD_PROFILE, "scope": "resource_and_namespace_preflight_only",
+            "facts": facts, "build_profile": build_profile, "scope": "resource_and_namespace_preflight_only",
             "image_build_executed": False, "deb_generation_executed": False}
 
 

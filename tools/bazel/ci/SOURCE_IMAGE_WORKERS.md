@@ -42,11 +42,21 @@ large image graphs when host capacity permits. Four simultaneous 24 GiB
 workers require at least 96 GiB for their limits, plus host/daemon headroom;
 separate containers do not create additional host capacity. The original
 10 GiB measurement does not establish enough build capacity.
-The image pilot uses a 3 GiB
-Java heap, one Bazel action at a time, one scheduled CPU and 4000 MiB scheduled
-action memory. These options follow the selected driver's arguments so they
-override its larger defaults. They change scheduling, not compiler features.
-This profile remains a pilot until the actual graph and image acceptance pass.
+The preflight selects scheduling from the actual cgroup limits. Admitted workers
+with at least 4 CPUs use two Bazel actions, two scheduled CPUs and 8000 MiB
+scheduled action memory. Other admitted workers (at least 2 CPUs) retain one
+action, one scheduled CPU and 4000 MiB. Both profiles keep the 20 GiB admission
+minimum, 3 GiB Java heap and 4 GiB loaded-probe limit. No profile admits the
+historical 10 GiB workers.
+
+These options follow the selected driver's arguments so they override its
+defaults. They change scheduling, not compiler features. `worker-preflight.json`,
+`worker.json` and each phase receipt record the selected profile, its minimum
+limits and the actual measured limits. Selection is fixed during preparation;
+a later phase rejects changed limits instead of silently changing its launcher.
+The two-action profile remains a pilot until actual graph and image acceptance
+establish its behavior. The earlier successful image runs used one action and
+do not establish the new profile's peak memory or speedup.
 The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
