@@ -13,6 +13,9 @@ concurrency:
   group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
+env:
+  SONIC_BAZEL_REGISTRY_REVISION: f87ec1d97b0493d895e34733ea4aae92a90cf75d
+
 jobs:
   native:
     name: Build and inspect source base (${{ matrix.architecture }})
