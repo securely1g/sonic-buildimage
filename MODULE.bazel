@@ -59,7 +59,7 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-dash-api",
-    version = "0.0.4-2a6e390b96a4fc17c191fa0da4b7ed1f40aed069",
+    version = "0.0.5-fd8eab1b90a6f67124996d24417cff5d4d849edd",
     repo_name = "sonic_dash_api",
 )
 bazel_dep(
@@ -327,7 +327,7 @@ bazel_dep(name = "iproute2", version = "6.15.0.sonic.5")
 
 single_version_override(
     module_name = "sonic-rust-deps",
-    version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
+    version = "0.0.5-c53741eb56e55e4f1c9b48c577ed5de986e62192",
 )
 
 bazel_dep(name = "sonic-fips", version = "0.0.3-e910ec2217bc42aae8a185a398b23a329f482fef", repo_name = "sonic_fips")
@@ -382,6 +382,7 @@ source_modules(
         "@hsflowd//:MODULE.bazel": "hsflowd",
         "@sflowtool//:MODULE.bazel": "sflowtool",
         "@libpsample//:MODULE.bazel": "libpsample",
+        "@sonic_dash_ha//:MODULE.bazel": "sonic-dash-ha",
         "@libyang//:MODULE.bazel": "libyang",
         "@libyang_python//:MODULE.bazel": "libyang-python",
         "@libnl3//:MODULE.bazel": "libnl3",
@@ -516,4 +517,15 @@ use_repo(apt, "otel_debian", "otel_debug_debian", "otel_test_debian")
 apt_inputs(
     name = "otel_apt_inputs",
     lock = "//dockers/docker-sonic-otel/bazel:apt.lock.json",
+)
+
+bazel_dep(name = "sonic-dash-ha", version = "0.0.1-3e17acff2fe1d3eab1febe686262d376d859b37b", repo_name = "sonic_dash_ha")
+
+# Existing external runtime/debug packages and a private test-only Redis helper.
+apt.import_lock(lock = "//dockers/docker-dash-ha/bazel:apt.lock.json")
+use_repo(apt, "dash_ha_debian", "dash_ha_debug_debian", "dash_ha_test_debian")
+
+apt_inputs(
+    name = "dash_ha_apt_inputs",
+    lock = "//dockers/docker-dash-ha/bazel:apt.lock.json",
 )
