@@ -691,6 +691,7 @@ jobs:
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
+        id: repository_inputs
         run: |
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
@@ -707,6 +708,18 @@ jobs:
             --module-graph artifacts/repository-inputs/module-graph.json \
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
+
+      - name: Retain failed module graph diagnostics
+        if: always() && steps.repository_inputs.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repository-inputs-module-graph-failure
+          path: |
+            artifacts/repository-inputs/module-graph.json
+            artifacts/repository-inputs/module-graph.stderr
+            artifacts/repository-inputs/module-graph-inspection.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |
