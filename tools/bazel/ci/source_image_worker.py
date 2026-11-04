@@ -22,7 +22,7 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "teamd": "teamd"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -172,6 +172,17 @@ def source_check(workspace, revision):
     run(["git", "-C", str(workspace), "diff", "--exit-code", "--ignore-submodules=none", "HEAD"])
 
 
+def prepare_teamd_kernel(artifacts, modules=Path("/sys/module")):
+    """Require the original Teamd fixture's preloaded modules without host changes."""
+    required = ("team", "team_mode_loadbalance")
+    missing = [name for name in required if not (modules / name).is_dir()]
+    receipt = {"status": "failed" if missing else "passed", "read_only": True,
+               "required_modules": list(required), "missing_modules": missing,
+               "preloaded_modules": [name for name in required if name not in missing]}
+    (artifacts / "worker-teamd-kernel.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    require(not missing, "Teamd worker requires preloaded kernel modules: " + ", ".join(missing))
+
+
 def prepare_tap_fixture(artifacts):
     """Prove the original VS profile's TAP support before building its image."""
     device = Path("/dev/net/tun").lstat()
@@ -282,6 +293,8 @@ def phase_command(image, phase, workspace, artifacts):
 
 def prepare(args):
     workspace, artifacts = args.workspace, args.artifacts
+    if args.image == "teamd":
+        prepare_teamd_kernel(artifacts)
     preflight = measure(os.environ.get("RUNNER_NAME", ""))
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
@@ -471,7 +484,7 @@ def publish(args):
                         "Existing public artifact differs: " + name)
             else:
                 os.link(path, target)
-    names = ["worker.json", "action-audit.json", "validation.json", "incremental.json", "rebuild/rebuild.json"]
+    names = ["worker.json", "action-audit.json", "validation.json", "loaded-validation.json", "incremental.json", "rebuild/rebuild.json"]
     names += [p.name for pattern in ("worker-*.json", "*.validation.json", "*.runtime.json") for p in source.glob(pattern)
               if p.name != "worker-private.json"]
     for name in sorted(set(names)):
@@ -533,7 +546,7 @@ if root.exists():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("selection", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"))
+    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"))
     parser.add_argument("--image", required=True, choices=DRIVERS)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
@@ -548,7 +561,10 @@ def main():
     if args.phase == "selection":
         return
     args.artifacts.mkdir(parents=True, exist_ok=True)
-    if args.phase == "verify-input-run":
+    if args.phase == "kernel-preflight":
+        require(args.image == "teamd", "Kernel module preflight is only defined for Teamd")
+        prepare_teamd_kernel(args.artifacts)
+    elif args.phase == "verify-input-run":
         verify_input_run(args)
     elif args.phase == "prepare":
         prepare(args)
