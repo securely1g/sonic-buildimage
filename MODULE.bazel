@@ -689,3 +689,25 @@ apt_inputs(
     name = "p4rt_apt_inputs",
     lock = "//dockers/docker-sonic-p4rt/bazel:apt.lock.json",
 )
+
+# Framework shares the root gNMI Go selection and public generator identities.
+# Its registration follows the standard non-root go.mod dependency mechanism;
+# the refreshed registration identity is pending before this graph is executed.
+bazel_dep(name = "sonic-mgmt-framework", version = "1.0.0-4036a01aa4648913ce44a0b4db52556a55cb2911", repo_name = "sonic_mgmt_framework")
+
+# The old pre-flag.Parse glog diagnostic patch does not apply to glog1.2.4.
+# Preserve the shared root's current glog API and all other SONiC Go patches.
+pip.parse(
+    hub_name = "image_framework_pip",
+    python_version = "3.13",
+    requirements_lock = "@sonic_mgmt_framework//:requirements_lock.txt",
+)
+use_repo(pip, "image_framework_pip")
+
+apt.import_lock(lock = "//dockers/docker-sonic-mgmt-framework/bazel:apt.lock.json")
+use_repo(apt, "framework_debian", "framework_debug_debian", "framework_test_debian")
+
+apt_inputs(
+    name = "framework_apt_inputs",
+    lock = "//dockers/docker-sonic-mgmt-framework/bazel:apt.lock.json",
+)
