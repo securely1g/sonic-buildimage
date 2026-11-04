@@ -1,4 +1,5 @@
 """Keep the root and owner JVMs separate without relaxing original acceptance."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -92,10 +93,56 @@ class ReviewShutdownTest(unittest.TestCase):
             for args in (['--version'], ['--output_base=' + str(root / 'base'), '--host_jvm_args=-Xmx3g', 'shutdown']):
                 result = subprocess.run(['bash', str(wrapper), *args], env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.splitlines(), args)
+                actual = result.stdout.splitlines()
+                if args == ['--version']:
+                    self.assertEqual(actual, args)
+                else:
+                    self.assertEqual(actual[:2], args[:2])
+                    self.assertEqual(actual[2:5], ['--nosystem_rc', '--nohome_rc', '--noworkspace_rc'])
+                    self.assertTrue(actual[5].startswith('--bazelrc='))
+                    self.assertFalse(Path(actual[5].split('=', 1)[1]).exists())
+                    self.assertEqual(actual[6:], ['shutdown'])
             result = subprocess.run(['bash', str(wrapper), 'shutdown', '--registry=wrong'], env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 2)
             self.assertEqual(result.stdout, '')
+
+    def test_shutdown_uses_the_same_rc_selection_as_info_despite_home_startup(self):
+        wrapper = Path(image.__file__).with_name('review_bazel.sh')
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            home = root / 'home'
+            home.mkdir()
+            (home / '.bazelrc').write_text(
+                'startup --output_base=' + str(root / 'wrong-server') + '\n'
+                'common --disk_cache=' + str(root / 'cache') + '\n')
+            common = root / 'tools/bazel/common.bazelrc'
+            common.parent.mkdir(parents=True)
+            common.write_text('try-import %workspace%/.bazelrc.user\n')
+            fake = root / 'bazel'
+            fake.write_text('#!/usr/bin/env python3\n'
+                'import json, pathlib, sys\n'
+                'args = sys.argv[1:]\n'
+                'rc = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--bazelrc="))\n'
+                'print(json.dumps({"args": args, "rc": pathlib.Path(rc).read_text()}))\n')
+            fake.chmod(0o755)
+            env = dict(os.environ, HOME=str(home), BAZEL_REAL=str(fake),
+                       SONIC_BAZEL_REGISTRY_REVISION='a' * 40)
+            records = []
+            for command in (['info', 'server_pid'], ['shutdown']):
+                result = subprocess.run(['bash', str(wrapper), '--host_jvm_args=-Xmx512m', *command],
+                    cwd=root, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                record = json.loads(result.stdout)
+                args = record['args']
+                self.assertEqual(args[:4], ['--host_jvm_args=-Xmx512m', '--nosystem_rc',
+                                          '--nohome_rc', '--noworkspace_rc'])
+                self.assertTrue(args[4].startswith('--bazelrc='))
+                self.assertFalse(Path(args[4].split('=', 1)[1]).exists())
+                self.assertNotIn('startup', record['rc'])
+                self.assertIn('--disk_cache=' + str(root / 'cache'), record['rc'])
+                records.append(record)
+            self.assertEqual(records[0]['rc'], records[1]['rc'])
+            self.assertEqual(records[1]['args'][5:], ['shutdown'])
 
 
 if __name__ == '__main__':
