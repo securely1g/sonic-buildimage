@@ -60,7 +60,7 @@ jobs:
           python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
       - name: Check cached no-op and source edit through the image
         run: |
-          python3 -B tools/bazel/ci/swss_rebuild.py --bazel "$BAZEL" \
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
             --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
             --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
             --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
