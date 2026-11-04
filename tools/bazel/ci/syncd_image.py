@@ -112,21 +112,35 @@ def verify_parent_files(parent, runtime, debug, configuration, alternatives):
             "runtime_exceptions": sorted(runtime_changes), "debug_exceptions": sorted(debug_changes)}
 
 
+def manifest_command():
+    return ["make", "-s", "-f", "tools/bazel/prepare_manifests.mk",
+            "MANIFEST_METADATA=rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk platform/vs/docker-syncd-vs.mk",
+            "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "BLDENV=trixie", "CONFIGURED_PLATFORM=vs", "CONFIGURED_ARCH=amd64",
+            "INCLUDE_FIPS=y", "INCLUDE_VS_DASH_SAI=y", "ENABLE_ASAN=n", "ENABLE_SYNCD_RPC=n", "DBG_IMAGE_MARK=dbg", "DOCKERS_PATH=dockers",
+            "PLATFORM_PATH=platform/vs", "manifests"]
+
+
+def verify_environment(parent, installed):
+    def entries(values):
+        pairs = [value.split("=", 1) for value in values]
+        check.require(all(len(pair) == 2 for pair in pairs), "invalid OCI environment entry")
+        result = dict(pairs)
+        check.require(len(result) == len(pairs), "duplicate OCI environment key")
+        return result
+    expected = {**entries(parent), "DEBIAN_FRONTEND": "noninteractive"}
+    check.require(entries(installed) == expected, "Syncd changed inherited OCI environment")
+
+
 def build_images(args, directory):
     check.require(platform.machine() == "x86_64" and platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
                   "Syncd acceptance requires native AMD64/Trixie")
-    receipt = {"status": "building", "architecture": "amd64", "image_version": args.image_version, "commands": [],
+    receipt = {"status": "building", "architecture": "amd64", "commands": [],
                "review_registry_revision": os.environ.get("SONIC_BAZEL_REGISTRY_REVISION")}
     execute = partial(command_log.execute, cwd=ROOT)
     try:
         clean_source(directory)
         receipt.update(identity())
-        execute(["make", "-s", "-f", "tools/bazel/prepare_manifests.mk",
-                 "MANIFEST_METADATA=rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk platform/vs/docker-syncd-vs.mk",
-                 "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "BLDENV=trixie", "CONFIGURED_PLATFORM=vs", "CONFIGURED_ARCH=amd64",
-                 "INCLUDE_FIPS=y", "INCLUDE_VS_DASH_SAI=y", "ENABLE_ASAN=n", "ENABLE_SYNCD_RPC=n", "DBG_IMAGE_MARK=dbg", "DOCKERS_PATH=dockers",
-                 "PLATFORM_PATH=platform/vs", "SONIC_IMAGE_VERSION=" + args.image_version,
-                 "manifests", "target/bazel-manifests/docker-syncd-vs/image.env"], directory, receipt, "manifests")
+        execute(manifest_command(), directory, receipt, "manifests")
         layouts = [BASE, *[OWNER + name for name in IMAGES]]
         receipt["action_audit"] = bazel_commands.audit_targets(args.bazel, OPTIONS, [*TARGETS.values(), *layouts],
             workspace=ROOT, output=directory / "action-audit.json")
@@ -179,6 +193,7 @@ def validate_images(directory):
     images, own, inherited, p4 = (validated[name] for name in ("images", "native", "source_base", "p4"))
     pairs = {item["path"]: item for item in [*inherited["paired_symbols"], *own["paired_symbols"]]}
     inventories, summaries = {}, {}
+    parent_environment = oci_layout.validate_layout(ROOT / receipt["base_layout"], "linux/amd64").config["config"].get("Env", [])
     for name in IMAGES:
         layout = oci_layout.validate_layout(ROOT / receipt["layouts"][name], "linux/amd64")
         files, _ = image_validation.image_inventory(layout)
@@ -187,8 +202,7 @@ def validate_images(directory):
                                ("usr/share/sonic/bazel/syncd" + ("-debug" if variant == "debug" else "") + "-packages.json", variant + "-packages.json")]:
             check.require(files[path]["sha256"] == check.sha(directory / artifact), "installed package state differs: " + path)
         check.require(files["usr/bin/syncd"]["mode"] == 0o755, "installed Syncd is not executable")
-        env = dict(value.split("=", 1) for value in layout.config["config"]["Env"])
-        check.require(env.get("IMAGE_VERSION") == receipt["image_version"], "Make image version was lost")
+        verify_environment(parent_environment, layout.config["config"].get("Env", []))
         inventories[name] = files
         summaries[name] = {"config_digest": layout.manifest["config"]["digest"], "rootfs": layout.config["rootfs"],
                            "manifest_digest": layout.descriptor["digest"], "native_paths": sorted(pairs)}
@@ -197,7 +211,7 @@ def validate_images(directory):
         inventories[IMAGES[0]], inventories[IMAGES[1]],
         check.payload(directory / "config-files.tar", require_root=False), policy["image_validation"]["debug_alternatives"])
     native = {path: inventories[IMAGES[0]][path] for path in pairs}
-    result = {"status": "passed", **identity(), "architecture": "amd64", "image_version": receipt["image_version"],
+    result = {"status": "passed", **identity(), "architecture": "amd64",
               "images": summaries, "native": native, "source_debug_pairs": list(pairs.values()),
               "accounts": accounts,
               "preserved_parent": preserved,
@@ -245,7 +259,6 @@ def main():
     parser.add_argument("phase", choices=("build", "validate", "incremental"))
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--bazel", default="bazel")
-    parser.add_argument("--image-version", default="bazel-syncd-ci")
     args = parser.parse_args(); directory = args.artifacts.resolve(); directory.mkdir(parents=True, exist_ok=True)
     if args.phase == "build": build_images(args, directory)
     elif args.phase == "validate": validate_images(directory)

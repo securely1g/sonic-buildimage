@@ -1,9 +1,36 @@
 """Reject account corruption hidden by the runtime image's added SSH group."""
 
 import copy
+import json
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
-from tools.bazel.ci.syncd_image import verify_inherited_accounts, verify_parent_files
+from tools.bazel.ci.syncd_image import ROOT, manifest_command, verify_environment, verify_inherited_accounts, verify_parent_files
+
+
+class SyncdPreparationTest(unittest.TestCase):
+    def test_actual_metadata_preparation_from_empty_target_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'target'
+            subprocess.run([*manifest_command(), 'TARGET_PATH=' + str(target)], cwd=ROOT, check=True)
+            paths = sorted(target.glob('bazel-manifests/*/manifest.json'))
+            self.assertEqual([path.parent.name for path in paths], [
+                'docker-base-trixie', 'docker-config-engine-trixie',
+                'docker-syncd-vs', 'docker-syncd-vs-dbg'])
+            for path in paths:
+                self.assertIsInstance(json.loads(path.read_text()), dict)
+            self.assertEqual(list(target.rglob('image.env')), [])
+
+    def test_environment_preserves_every_parent_value_and_only_declared_override(self):
+        parent = ['PATH=/usr/bin', 'IMAGE_VERSION=parent', 'DEBIAN_FRONTEND=dialog']
+        installed = ['PATH=/usr/bin', 'IMAGE_VERSION=parent', 'DEBIAN_FRONTEND=noninteractive']
+        verify_environment(parent, installed)
+        for values in (installed[1:], installed + ['NEW=unexpected'],
+                       ['PATH=/bin', *installed[1:]], installed + ['PATH=/usr/bin']):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                verify_environment(parent, values)
 
 
 class SyncdAccountsTest(unittest.TestCase):
