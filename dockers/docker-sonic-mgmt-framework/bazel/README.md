@@ -17,7 +17,8 @@ Make package producer remains available for other configurations.
 | Unmodified Debian libraries and debug tools | The checked AMD64 `apt.lock.json`, using the parent image's Debian snapshots |
 | Startup scripts, supervisor settings and management template | This Docker directory, copied with their existing paths and modes |
 
-The shared APT selector rejects conflicts with the parent. Real imported control
+The shared APT selector rejects native ELF conflicts with the parent and retains
+the declared package overrides for other files. Real imported control
 records update its package inventory. Common and Framework TARs are consumed
 directly; this does not invent a dpkg installation for either source payload.
 The debug image extends the exact runtime image and preserves its native files.
@@ -32,9 +33,10 @@ requires VS, AMD64, Trixie, FIPS, ordinary execution without ASAN, and the stand
 On a native AMD64 Trixie worker:
 
 ```sh
-# This Draft wrapper selects one reviewed registry catalog plus BCR.
+# This wrapper selects one immutable reviewed registry catalog plus BCR.
 # Canonical .bazelrc remains on registry main.
-BAZEL="$PWD/tools/bazel/ci/framework_draft_bazel.sh"
+export SONIC_BAZEL_REGISTRY_REVISION=28bd77d92d8d28f100ca328489a49f3b025e1a65
+BAZEL="$PWD/tools/bazel/ci/review_bazel.sh"
 python3 -B tools/bazel/ci/mgmt_framework_image.py build --bazel "$BAZEL" --artifacts artifacts/mgmt-framework
 python3 -B tools/bazel/ci/mgmt_framework_image.py validate --artifacts artifacts/mgmt-framework
 python3 -B tools/bazel/ci/mgmt_framework_image.py incremental --bazel "$BAZEL" --artifacts artifacts/mgmt-framework
@@ -48,10 +50,14 @@ gzip output. A no-op and management-template edit/restore must preserve source
 TARs and reproduce both original image/archive digests after restoration.
 
 Installed checks load only those verified archives under temporary tags. Each
-container runs as the inherited Redis user with a read-only root, no capabilities
-and no external network. A private Redis fixture supplies the database socket.
-The test verifies native library loading, Python imports, supervisor settings,
-the start hook, cfggen template rendering, certificate generation, verified REST
+container preserves its declared service user with a read-only root, private
+writable service directories, no capabilities and no external network. A private
+Redis fixture supplies both the Unix socket and loopback TCP endpoint; both must
+identify the actual child process. The original Supervisor starts the installed
+start hook, rsyslogd and REST launcher. Its service states, process ancestry,
+configuration status and persistent process identities are checked.
+The test verifies native library loading, Python imports,
+cfggen template rendering, certificate generation, verified REST
 TLS, RPC registration, the installed UI and command-tree parsing through the
 installed CLI launcher. Both valid and invalid commands are checked with klish's
 syntax-only option. The Redis fixture is test-only and is not installed in either
@@ -62,6 +68,15 @@ and full VS installer/boot acceptance are separate. They do not change the
 production startup script's default authentication. Its deprecated `-ui
 /rest_ui` argument is preserved; the current server uses its default installed
 UI directory `/etc/rest_server/ui`.
+
+The shared Go graph uses one root gNMI work file, Go 1.25.9, modern glog 1.2.4,
+and the existing SONiC-patched public goyang and ygot modules. Framework joins
+through its go.mod requirements. The root explicitly preserves x/text 0.39.0
+from the original owners while combining their compatible net/crypto/sys
+requirements. Management-common's cumulative source includes deterministic
+model discovery. These are changed dependency inputs: the earlier Framework
+image acceptance does not validate this graph. Current ordinary owner and
+installed image acceptance remain separate gates.
 
 Framework and Common keep their reusable source/generator definitions. Image
 changes belong in the nearby BUILD files; update this directory's lock through

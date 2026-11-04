@@ -3,6 +3,7 @@
 from contextlib import ExitStack
 from types import SimpleNamespace
 from copy import deepcopy
+import ast
 import json
 from pathlib import Path
 import subprocess
@@ -112,10 +113,72 @@ class DashEngineImageTest(unittest.TestCase):
             with self.assertRaises(ValueError): public.review(root)
 
     def test_archive_names_are_explicit_and_unique(self):
-        self.assertEqual(len(driver.TARGETS), 18)
+        self.assertEqual(len(driver.TARGETS), 19)
         self.assertEqual(len(set(driver.TARGETS.values())), len(driver.TARGETS))
         for name in ('pi.source.tar', 'bmv2.source.tar', 'nnpy.source.tar'):
             self.assertIn(name, driver.TARGETS)
+
+    def test_retained_runtime_apt_is_the_first_actual_image_layer(self):
+        nodes = ast.parse((driver.ROOT / 'platform/vs/docker-dash-engine/BUILD.bazel').read_text())
+        image = next(n.value for n in nodes.body if isinstance(n, ast.Expr) and
+                     isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name) and
+                     n.value.func.id == 'oci_image' and any(k.arg == 'name' and
+                     ast.literal_eval(k.value) == driver.IMAGES[0] for k in n.value.keywords))
+        tars = ast.literal_eval(next(k.value for k in image.keywords if k.arg == 'tars'))
+        self.assertEqual(driver.TARGETS['engine.runtime-apt.tar'], driver.OWNER.rstrip(':') + tars[0])
+
+    def test_apt_replacements_preserve_exact_payload_and_other_parent_files(self):
+        path = 'etc/supervisor/supervisord.conf'
+        item = {'kind': 'file', 'mode': 0o644, 'uid': 0, 'gid': 0, 'sha256': 'old', 'size': 3}
+        parent = {path: item, 'other': item}
+        payload = {path: {**item, 'sha256': 'new'}}
+        installed = {**parent, **payload}
+        selection = {'selected': [{'package': 'supervisor'}],
+                     'changed_non_elf_base_paths': [{'package': 'supervisor', 'path': path}]}
+        validate.verify_parent_payload(parent, installed, payload, selection)
+        for key, value in [('sha256', 'wrong'), ('size', 4), ('mode', 0o600), ('uid', 1), ('gid', 1), ('kind', 'symlink')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate.verify_parent_payload(parent, {**installed, path: {**payload[path], key: value}}, payload, selection)
+        with self.assertRaises(ValueError):
+            validate.verify_parent_payload(parent, {**installed, 'other': payload[path]}, payload, selection)
+        for records in [[], selection['changed_non_elf_base_paths'] * 2,
+                        [{'package': 'unknown', 'path': path}], [{'package': 'supervisor', 'path': 'missing'}]]:
+            with self.subTest(records=records), self.assertRaises(ValueError):
+                validate.verify_parent_payload(parent, installed, payload, {**selection, 'changed_non_elf_base_paths': records})
+        for old, new in [({}, payload), (parent, {}),
+                         ({**parent, path: {**item, 'elf_machine': 62}}, payload),
+                         (parent, {path: {**payload[path], 'elf_machine': 62}})]:
+            with self.assertRaises(ValueError): validate.verify_parent_payload(old, installed, new, selection)
+
+    def test_exported_layer_matches_correct_stage_digest_and_size(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'layer.tar'; path.write_bytes(b'layer')
+            parent = SimpleNamespace(layers=['base'])
+            descriptor = {'digest': 'sha256:' + validate.check.sha(path), 'size': path.stat().st_size}
+            layout = SimpleNamespace(manifest={'layers': [{'digest': 'base'}, descriptor]})
+            validate.verify_layer_binding(layout, parent, path)
+            for bad in [{'digest': 'wrong', 'size': 5}, {'digest': descriptor['digest'], 'size': 6}]:
+                with self.assertRaises(ValueError):
+                    validate.verify_layer_binding(SimpleNamespace(manifest={'layers': [{'digest': 'base'}, bad]}), parent, path)
+
+    def test_package_receipt_binds_lock_and_runtime_or_debug_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / 'platform/vs/docker-dash-engine/bazel/apt.lock.json'
+            lock.parent.mkdir(parents=True); lock.write_text('{}')
+            apt = root / 'runtime-apt.json'; apt.write_text('selected packages')
+            base = SimpleNamespace(descriptor={'digest': 'parent'})
+            selection = {'schema': 1, 'image': 'docker-dash-engine', 'group': 'runtime',
+                         'apt_lock_sha256': validate.check.sha(lock), 'base_manifest_digest': 'parent',
+                         'dependency_check': {'status': 'satisfied'}}
+            report = {'base_manifest_digest': 'parent', 'apt_selection_sha256': validate.check.sha(apt),
+                      'dependency_check': {'status': 'satisfied'}, 'source_packages': []}
+            with mock.patch.object(validate, 'ROOT', root):
+                validate.verify_package_binding(report, selection, base, apt, 'runtime')
+                for key, value in [('group', 'debug'), ('image', 'other'), ('schema', 2),
+                                   ('apt_lock_sha256', 'wrong'), ('base_manifest_digest', 'other')]:
+                    with self.subTest(key=key), self.assertRaises(ValueError):
+                        validate.verify_package_binding(report, {**selection, key: value}, base, apt, 'runtime')
 
     def test_source_fence_allows_prior_ci_receipts_but_rejects_source_changes(self):
         with tempfile.TemporaryDirectory() as temporary:

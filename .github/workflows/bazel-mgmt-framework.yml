@@ -13,6 +13,9 @@ concurrency:
   group: bazel-mgmt-framework-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  SONIC_BAZEL_REGISTRY_REVISION: 28bd77d92d8d28f100ca328489a49f3b025e1a65
+
 jobs:
   native:
     name: Build Framework OCI images and symbols (AMD64)
@@ -25,6 +28,8 @@ jobs:
     env:
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/framework_draft_bazel.sh
       BAZELISK_GITHUB_TOKEN: ""
+      CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Install execution and inspection tools
         run: |
@@ -53,6 +58,8 @@ jobs:
           with Path('.bazelrc.user').open('a') as output:
               output.write('\n'.join(lines) + '\n')
           PY
+      - name: Check original-service fixture and image contracts
+        run: python3 -B -m unittest discover -s tools/bazel/tests -p 'mgmt_framework*_test.py'
       - name: Build runtime and debug images from owner TARs
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -76,10 +83,10 @@ jobs:
           root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
-              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'tested_revision_parents', 'review_registry_revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'packages.json', 'debug-packages.json'):
+          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'packages.json', 'debug-packages.json', 'base-packages.json', 'config-engine-packages.json'):
               path = root / name
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -104,6 +111,10 @@ jobs:
             artifacts/mgmt-framework/action-audit.json
             artifacts/mgmt-framework/packages.json
             artifacts/mgmt-framework/debug-packages.json
+            artifacts/mgmt-framework/base-packages.json
+            artifacts/mgmt-framework/config-engine-packages.json
+            artifacts/mgmt-framework/installed.status
+            artifacts/mgmt-framework/debug.status
             artifacts/mgmt-framework/build-summary.json
             artifacts/mgmt-framework/MODULE.bazel.lock
             artifacts/mgmt-framework/module-graph.json

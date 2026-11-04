@@ -32,7 +32,10 @@ def receipt(debug=False):
         'source_elf_count': 2, 'loader_checks': 2, 'debug_checks': [
             {'path': p, 'symbol': s, 'without_symbols': {'found': False}, 'with_symbols': {'found': True}}
             for p, s in [('usr/bin/simple_switch_grpc', 'main'), ('usr/lib/python3/dist-packages/_nnpy.so', '_cffi_f_nn_socket')]
-        ] if debug else [], 'startup': {'entrypoint': '/usr/bin/start.sh', 'stable_installed_process': True,
+        ] + [{'path': 'usr/bin/pi_CLI_dummy', 'symbol': 'main',
+              'debug_forwarding': {'provider': 'usr/lib/x86_64-linux-gnu/libpicli.so.0', 'symbol': 'main', 'source': 'main.c'},
+              'without_symbols': {'found': False}, 'with_symbols': {'found': True, 'function': 'main',
+              'source': 'main.c', 'line': 391, 'type': 'int (int, char **)'}}] if debug else [], 'startup': {'entrypoint': '/usr/bin/start.sh', 'stable_installed_process': True,
             'interfaces_up': ['eth1', 'eth2'], 'switch_arguments': ['simple_switch_grpc', '--interface', '0@eth1',
             '--interface', '1@eth2', '--log-console', '--no-p4'], 'p4runtime': {'api_version': '1.3.0',
             'device_id': 0, 'primary_arbitration': 'passed', 'no_pipeline_get_config': 'FAILED_PRECONDITION'},
@@ -84,6 +87,47 @@ class LoadedTests(unittest.TestCase):
         r = receipt(True); r['debug_checks'][1] = copy.deepcopy(r['debug_checks'][0])
         with self.assertRaises(ValueError): self.parse(r, True)
 
+    def test_missing_or_changed_pi_forwarding(self):
+        for key, value in [('provider', 'usr/lib/different.so'), ('symbol', 'other'), ('source', 'other.c')]:
+            r = receipt(True); r['debug_checks'][2]['debug_forwarding'][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError): self.parse(r, True)
+        r = receipt(True); del r['debug_checks'][2]['debug_forwarding']
+        with self.assertRaises(ValueError): self.parse(r, True)
+
+    def test_pi_lookup_keeps_source_line_and_type(self):
+        for key, value in [('function', 'other'), ('source', 'other.c'), ('line', 0), ('type', '')]:
+            r = receipt(True); r['debug_checks'][2]['with_symbols'][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError): self.parse(r, True)
+        for side, value in [('without_symbols', True), ('with_symbols', False)]:
+            r = receipt(True); r['debug_checks'][2][side]['found'] = value
+            with self.subTest(side=side), self.assertRaises(ValueError): self.parse(r, True)
+
+    def test_installed_probe_reuses_declared_pi_provider(self):
+        pairs = [{'path': name, 'debug_path': name + '.debug'} for name in
+                 ('usr/bin/simple_switch_grpc', 'usr/lib/python3/dist-packages/_nnpy.so', 'usr/bin/pi_CLI_dummy')]
+        forwarding = {'provider': 'usr/lib/x86_64-linux-gnu/libpicli.so.0', 'symbol': 'main', 'source': 'main.c',
+                      'debug_path': 'usr/lib/debug/.build-id/ab/provider.debug', 'build_id': 'ab1234'}
+        pairs[2]['debug_forwarding'] = forwarding
+        forwarded = {'path': '/usr/bin/pi_CLI_dummy', 'debug_path': '/usr/bin/pi_CLI_dummy.debug',
+                     'debug_forwarding': forwarding, 'without_symbols': {'found': False},
+                     'with_symbols': {'found': True, 'function': 'main', 'source': '/build/PI/CLI/main.c',
+                                      'line': 391, 'type': 'int (int, char **)'}}
+        with patch.object(probe, 'installed_symbol', side_effect=lambda item, symbol: {'path': item['path'], 'symbol': symbol}) as own, \
+             patch.object(probe.runtime_smoke, 'debug_pair', return_value=forwarded) as shared:
+            checks = probe.installed_debug_checks({'source_debug_pairs': pairs})
+            self.assertEqual(own.call_count, 2)
+            shared.assert_called_once_with(pairs[2])
+            self.assertEqual(checks[2]['with_symbols']['source'], 'main.c')
+            self.assertEqual(checks[2]['path'], 'usr/bin/pi_CLI_dummy')
+            self.assertEqual(checks[2]['debug_forwarding'], forwarding)
+        for changed in [pairs[:2], pairs + [copy.deepcopy(pairs[2])],
+                        pairs[:2] + [{'path': pairs[2]['path'], 'debug_path': pairs[2]['debug_path']}]]:
+            with self.assertRaises(AssertionError): probe.installed_debug_checks({'source_debug_pairs': changed})
+        for key in ('provider', 'symbol', 'source'):
+            changed = copy.deepcopy(pairs); changed[2]['debug_forwarding'][key] = 'wrong'
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                probe.installed_debug_checks({'source_debug_pairs': changed})
+
     def test_duplicate_receipt(self):
         text = json.dumps(receipt())
         with self.assertRaises(ValueError): loaded.parse_probe(text + '\n' + text, False, 2)
@@ -122,6 +166,27 @@ class LoadedTests(unittest.TestCase):
                 with self.assertRaises(AssertionError): probe.installed_symbol(record, 'main')
             with patch.object(probe.runtime_smoke, 'gdb_lookup', side_effect=[{'found': False}, {'found': False}]):
                 with self.assertRaises(AssertionError): probe.installed_symbol(record, 'main')
+
+    def test_bmv2_cpp_main_keeps_exact_named_function_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / 'switch'; binary.write_bytes(b'ELF')
+            symbols = root / 'switch.debug'; symbols.write_bytes(b'debug')
+            record = {'path': 'usr/bin/simple_switch_grpc', 'debug_path': 'usr/lib/debug/switch.debug'}
+            success = {'found': True, 'function': 'main(int, char**)', 'source': './main.cpp', 'line': 37,
+                       'type': 'int (int, char **)', 'parameters': ['int', 'char **']}
+            with patch.object(probe.runtime_smoke, 'absolute_path', side_effect=lambda name: str(binary if name == record['path'] else symbols)):
+                with patch.object(probe.runtime_smoke, 'gdb_lookup', side_effect=[{'found': False}, success]):
+                    self.assertEqual(probe.installed_symbol(record, 'main')['with_symbols']['function'], 'main(int, char**)')
+                for function in ('main_helper', 'other::main(int, char**)', 'main(int)', 'main(int, char**) suffix'):
+                    with self.subTest(function=function), patch.object(probe.runtime_smoke, 'gdb_lookup',
+                            side_effect=[{'found': False}, {**success, 'function': function}]):
+                        with self.assertRaises(AssertionError): probe.installed_symbol(record, 'main')
+                for field, value in [('line', 0), ('source', ''), ('type', '')]:
+                    with self.subTest(field=field), patch.object(probe.runtime_smoke, 'gdb_lookup',
+                            side_effect=[{'found': False}, {**success, field: value}]):
+                        with self.assertRaises(AssertionError): probe.installed_symbol(record, 'main')
+
 
 
 if __name__ == '__main__':

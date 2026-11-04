@@ -10,6 +10,12 @@ from tools.bazel.ci.dash_engine_image import ROOT, IMAGES, TARGETS, clean_source
 from tools.bazel.oci import image_validation, oci_layout, source_base_validation
 
 
+# PI's CRT-only launcher imports its original main.c implementation from this
+# declared SONAME. The shared verifier checks both ELF/debug identities and CRCs.
+DEBUG_FORWARDING = {"usr/bin/pi_CLI_dummy": {
+    "provider": "usr/lib/x86_64-linux-gnu/libpicli.so.0", "symbol": "main", "source": "main.c"}}
+
+
 def require_item(files, path, item):
     # The shared OCI inventory records Linux's installed symlink mode (0777),
     # even when an owner's TAR header has mode 0000. Keep the raw TAR-to-TAR
@@ -57,7 +63,11 @@ def read_groups(layout):
         return (root / "etc/group").read_text().splitlines()
 
 
-def verify_package_binding(report, selection, parent, apt_path):
+def verify_package_binding(report, selection, parent, apt_path, variant):
+    check.require(selection["schema"] == 1 and selection["image"] == "docker-dash-engine" and
+                  selection["group"] == variant and selection["apt_lock_sha256"] == check.sha(
+                      ROOT / "platform/vs/docker-dash-engine/bazel/apt.lock.json"),
+                  "APT lock/image/stage binding differs")
     check.require(selection["base_manifest_digest"] == parent.descriptor["digest"] and
                   selection["dependency_check"]["status"] == "satisfied", "APT base/dependency binding differs")
     check.require(report["base_manifest_digest"] == parent.descriptor["digest"] and
@@ -65,6 +75,49 @@ def verify_package_binding(report, selection, parent, apt_path):
                   report["dependency_check"]["status"] == "satisfied", "installed package binding differs")
     check.require(all(item["package"] != "nnpy" for item in report["source_packages"]),
                   "nnpy must retain Python metadata, not an invented Debian package")
+
+
+def verify_layer_binding(layout, parent, path):
+    added = layout.manifest["layers"][len(parent.layers):]
+    check.require(added and added[0]["digest"] == "sha256:" + check.sha(path) and
+                  added[0]["size"] == path.stat().st_size,
+                  "exported package payload differs from the first declared stage layer")
+
+
+def verify_parent_payload(parent, installed, payload, selection, owned=None):
+    """Bind each APT-declared non-ELF replacement to its retained layer record."""
+    expected = dict(owned or {})
+    selected = {item["package"] for item in selection["selected"]}
+    replacements = selection["changed_non_elf_base_paths"]
+    paths = [item["path"] for item in replacements]
+    check.require(len(paths) == len(set(paths)), "duplicate APT replacement path")
+    for record in replacements:
+        path = record["path"]
+        check.require(check.path_name(path) == path and path not in expected and
+                      record["package"] in selected, "undeclared APT replacement owner/path")
+        before, after = parent.get(path, {}), payload.get(path, {})
+        check.require(before.get("kind") == after.get("kind") == "file" and
+                      "elf_machine" not in before and "elf_machine" not in after,
+                      "APT replacement must be an inherited non-ELF file: " + path)
+        require_item(installed, path, after)
+        expected[path] = after
+    for path, item in parent.items():
+        if item["kind"] == "directory" or path in ("var/lib/dpkg/status", "etc/group"):
+            continue
+        require_item(installed, path, expected.get(path, item))
+
+
+def debug_alternatives(payload):
+    # Exact links supplied by the declared upstream Vim alternatives target and
+    # this image's debug_vim_link target; unrelated links remain inherited.
+    paths = {"etc/alternatives/" + name: "/usr/bin/vim.basic" for name in
+             ("editor", "ex", "rview", "rvim", "vi", "view", "vim", "vimdiff")}
+    paths["usr/bin/vim"] = "/etc/alternatives/vim"
+    expected = {path: {"kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0,
+                       "linkname": target} for path, target in paths.items()}
+    for path, item in expected.items():
+        require_item(payload, path, item)
+    return expected
 
 
 def validate(directory):
@@ -102,6 +155,7 @@ def validate(directory):
     check.require("usr/lib/python3/dist-packages/_nnpy.so" in nnpy and
                   "usr/lib/python3/dist-packages/nnpy-1.4.2.egg-info/PKG-INFO" in nnpy, "nnpy extension/distribution metadata absent")
     debug_tools = check.payload(directory / "engine.debug-tools.tar", require_root=False)
+    runtime_apt = check.payload(directory / "engine.runtime-apt.tar", require_root=False)
     manifest = json.loads((ROOT / "target/bazel-manifests/docker-dash-engine/manifest.json").read_text())
     inventories, reports = {}, [json.loads((directory / "base.packages.json").read_text())]
     for name in IMAGES:
@@ -116,20 +170,19 @@ def validate(directory):
             if item["kind"] != "directory":
                 require_item(files, path, item)
         stage_parent = inventories[IMAGES[0]] if debug else inherited
-        for path, item in stage_parent.items():
-            if item["kind"] == "directory" or path in ("var/lib/dpkg/status", "etc/group"):
-                continue
-            expected = (debug_tools if debug else configuration).get(path, item)
-            require_item(files, path, expected)
-        if debug:
-            for path, item in debug_tools.items():
-                if item["kind"] != "directory":
-                    require_item(files, path, item)
-        verify_groups(parent_groups, read_groups(layout), inherited["etc/group"], files["etc/group"], debug)
         prefix = "engine-debug" if debug else "engine"
         report = json.loads((directory / (prefix + ".packages.json")).read_text())
         apt_path = directory / ("debug-apt.json" if debug else "runtime-apt.json")
-        verify_package_binding(report, json.loads(apt_path.read_text()), base, apt_path)
+        selection = json.loads(apt_path.read_text())
+        verify_package_binding(report, selection, base, apt_path, "debug" if debug else "runtime")
+        payload = debug_tools if debug else runtime_apt
+        verify_layer_binding(layout, base, directory / ("engine.debug-tools.tar" if debug else "engine.runtime-apt.tar"))
+        verify_parent_payload(stage_parent, files, payload, selection,
+                              debug_alternatives(debug_tools) if debug else configuration)
+        for path, item in payload.items():
+            if item["kind"] != "directory":
+                require_item(files, path, item)
+        verify_groups(parent_groups, read_groups(layout), inherited["etc/group"], files["etc/group"], debug)
         reports.append(report)
         for path, artifact in (("var/lib/dpkg/status", prefix + ".status"),
                                ("usr/share/sonic/bazel/dash-engine" + ("-debug" if debug else "") + "-packages.json", prefix + ".packages.json")):
@@ -157,7 +210,8 @@ def validate(directory):
                 check.require(native[path]["sha256"] == item["sha256"], "source owners disagree: " + path)
             else:
                 native[path] = {**item, "source_package": archive.name}
-    pairs = base_images.verify_symbols(native, runtimes, directory / "engine.debug.tar", directory)
+    pairs = base_images.verify_symbols(native, runtimes, directory / "engine.debug.tar", directory,
+                                       forwarding=DEBUG_FORWARDING)
     check.require((debug["usr/bin/ssh-agent"]["gid"], debug["usr/bin/ssh-agent"]["mode"]) == (104, 0o2755), "SSH client privilege differs")
     selected, origins = source_base_validation.inventory(layouts[IMAGES[1]])
     elfs = []

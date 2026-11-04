@@ -51,13 +51,22 @@ def parse_probe(stdout, debug, expected_count):
     check.require(report["loader_checks"] == report["source_elf_count"] == expected_count and expected_count > 0,
                   "incomplete installed ELF validation")
     checks = report["debug_checks"]
-    check.require(len(checks) == (2 if debug else 0), "incomplete installed symbol validation")
+    check.require(len(checks) == (3 if debug else 0), "incomplete installed symbol validation")
     if debug:
         check.require({(item["path"], item["symbol"]) for item in checks} == {
-            ("usr/bin/simple_switch_grpc", "main"), ("usr/lib/python3/dist-packages/_nnpy.so", "_cffi_f_nn_socket")},
+            ("usr/bin/simple_switch_grpc", "main"), ("usr/lib/python3/dist-packages/_nnpy.so", "_cffi_f_nn_socket"),
+            ("usr/bin/pi_CLI_dummy", "main")},
             "installed debug targets differ")
         check.require(all(not item["without_symbols"].get("found") and item["with_symbols"].get("found")
                           for item in checks), "missing installed GDB positive/negative evidence")
+        launcher = next(item for item in checks if item["path"] == "usr/bin/pi_CLI_dummy")
+        check.require(all(launcher.get("debug_forwarding", {}).get(key) == value for key, value in {
+            "provider": "usr/lib/x86_64-linux-gnu/libpicli.so.0", "symbol": "main", "source": "main.c"}.items()),
+            "PI installed debug forwarding differs")
+        found = launcher["with_symbols"]
+        check.require(found.get("function") == "main" and found.get("source") == "main.c"
+                      and found.get("line", 0) > 0 and found.get("type"),
+                      "PI implementation lacks installed source/line/type evidence")
     startup = report["startup"]
     check.require(startup["entrypoint"] == "/usr/bin/start.sh" and startup["stable_installed_process"]
                   and startup["interfaces_up"] == ["eth1", "eth2"], "original startup was not verified")

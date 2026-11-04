@@ -13,8 +13,37 @@ import uuid
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
-from tools.bazel.ci import validate_runtime
+from tools.bazel.ci import mgmt_framework_image, validate_runtime
 from tools.bazel.ci.public_artifacts import safe_json
+
+
+def copy_database_fixture(directory, report, fixture):
+    archive_path = directory / "config-engine-source.tar"
+    check.require(check.sha(archive_path) == report["artifacts"][archive_path.name]["sha256"],
+                  "Config-engine source TAR changed")
+    with tarfile.open(archive_path) as archive:
+        members = [member for member in archive.getmembers()
+                   if str(Path(member.name)) == "run/redis/sonic-db/database_config.json"]
+        check.require(len(members) == 1 and members[0].isfile(), "missing or duplicate declared database configuration")
+        (fixture / "database_config.json").write_bytes(archive.extractfile(members[0]).read())
+
+
+def probe_command(tag, name, probe, report_path, fixture):
+    # Preserve the validated image's service user; the original global
+    # Supervisor config declares root, independently of the Redis helper user.
+    return ["docker", "run", "--rm", "--network=none", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--read-only",
+            "--pids-limit=128", "--memory=4g", "--cpus=2",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777",
+            "--tmpfs", "/run:rw,nosuid,nodev,noexec,size=32m,mode=0755",
+            "--tmpfs", "/var/log:rw,nosuid,nodev,noexec,size=32m,mode=0755",
+            "--tmpfs", "/var/spool:rw,nosuid,nodev,noexec,size=16m,mode=0755",
+            "--tmpfs", "/var/sonic:rw,nosuid,nodev,noexec,size=8m,mode=1777",
+            "--mount", "type=bind,src=" + str(probe) + ",dst=/probe/runtime_probe.py,readonly",
+            "--mount", "type=bind,src=" + str(report_path) + ",dst=/probe/validation.json,readonly",
+            "--mount", "type=bind,src=" + str(fixture) + ",dst=/probe/redis,readonly",
+            "--entrypoint", "/usr/bin/python3", tag, "-B", "/probe/runtime_probe.py",
+            "/probe/validation.json", name]
 
 
 def main():
@@ -22,6 +51,7 @@ def main():
     parser.add_argument("--artifacts", type=Path, required=True)
     args = parser.parse_args()
     directory = args.artifacts.resolve()
+    mgmt_framework_image.clean_source(directory)
     report_path = directory / "validation.json"
     report = json.loads(report_path.read_text())
     check.require(report["status"] == "passed" and report["architecture"] == "amd64", "static validation did not pass")
@@ -35,7 +65,7 @@ def main():
         check.require(check.sha(test_redis) == report["artifacts"][test_redis.name]["sha256"], "Redis fixture changed")
         with tarfile.open(test_redis) as source:
             source.extractall(fixture, filter="data")
-        # The probe runs as the image's Redis user, not the host's build user.
+        copy_database_fixture(directory, report, fixture)
         fixture.chmod(0o755)
         for name, expected in report["images"].items():
             archive = directory / (name + ".gz")
@@ -45,16 +75,7 @@ def main():
                 loaded, config, diagnostics = validate_runtime.load_archive(archive, tag, expected["config_digest"])
                 validate_runtime.verify_loaded_image(loaded, config, expected["config_digest"])
                 check.require(config["rootfs"] == expected["rootfs"], "loaded layers differ from validated OCI")
-                command = ["docker", "run", "--rm", "--network=none", "--cap-drop=ALL",
-                           "--security-opt=no-new-privileges", "--read-only", "--user=100:101",
-                           "--pids-limit=128", "--memory=4g", "--cpus=2",
-                           "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777",
-                           "--tmpfs", "/var/sonic:rw,nosuid,nodev,noexec,size=8m,mode=1777",
-                           "--mount", "type=bind,src=" + str(probe) + ",dst=/probe/runtime_probe.py,readonly",
-                           "--mount", "type=bind,src=" + str(report_path) + ",dst=/probe/validation.json,readonly",
-                           "--mount", "type=bind,src=" + str(fixture) + ",dst=/probe/redis,readonly",
-                           "--entrypoint", "/usr/bin/python3", tag, "-B", "/probe/runtime_probe.py",
-                           "/probe/validation.json", name]
+                command = probe_command(tag, name, probe, report_path, fixture)
                 completed = subprocess.run(command, text=True, capture_output=True, timeout=180)
                 if completed.returncode:
                     raise AssertionError(name + " installed probe failed:\n" + completed.stdout + completed.stderr)
@@ -66,6 +87,8 @@ def main():
             finally:
                 # Remove only this probe's unique tag; keep all prior images/caches.
                 subprocess.run(["docker", "image", "rm", tag], capture_output=True, check=False)
+    mgmt_framework_image.clean_source(directory)
+    check.require(mgmt_framework_image.identity()["revision"] == revision, "loaded source head changed")
     result = {"status": "passed", "revision": revision, "images": results}
     safe_json(result)
     (directory / "loaded-validation.json").write_text(json.dumps(result, indent=2) + "\n")

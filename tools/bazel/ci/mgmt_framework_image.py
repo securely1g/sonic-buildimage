@@ -4,17 +4,19 @@
 import argparse
 from functools import partial
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci import base_images, bazel_commands, build, command_log, resolution
-from tools.bazel.oci import image_validation, oci_layout
+from tools.bazel.oci import image_validation, oci_layout, source_base_validation
 
 OWNER = "//dockers/docker-sonic-mgmt-framework:"
 IMAGES = ("docker-sonic-mgmt-framework", "docker-sonic-mgmt-framework-dbg")
@@ -39,16 +41,80 @@ TARGETS = {
     "debug-packages.json": OWNER + "debug_package_metadata",
     "debug.status": OWNER + "debug_installed_packages",
 }
-OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=10000"]
+OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=8000"]
+
+
+def clean_source(directory):
+    check.require(not ROOT.is_relative_to(directory), "artifact directory cannot contain the source checkout")
+    if directory.is_relative_to(ROOT):
+        relative = directory.relative_to(ROOT)
+        check.require(len(relative.parts) > 1 and relative.parts[0] == "artifacts",
+                      "in-checkout evidence must use artifacts/<name>")
+    subprocess.run(["git", "diff", "--exit-code", "--ignore-submodules=none", "HEAD"], cwd=ROOT, check=True)
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
+    unexpected = [name for name in untracked if name and
+                  not (ROOT / name).is_relative_to(directory) and
+                  not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")]
+    check.require(not unexpected, "untracked source inputs: " + repr(unexpected))
+
+
+def identity():
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    headers = subprocess.check_output(["git", "cat-file", "-p", "HEAD"], cwd=ROOT, text=True).split("\n\n", 1)[0]
+    parents = [line.split()[1] for line in headers.splitlines() if line.startswith("parent ")]
+    if os.environ.get("CI_HEAD_SHA"):
+        check.require(os.environ["CI_HEAD_SHA"] in [revision, *parents], "CI source differs from requested PR head")
+    if os.environ.get("CI_BASE_SHA"):
+        check.require(os.environ["CI_BASE_SHA"] in parents, "CI merge differs from requested PR base")
+    return {"revision": revision, "tested_revision_parents": parents}
+
+
+def verify_environment(parent, current):
+    rows = current.get("Env", [])
+    check.require(all(isinstance(row, str) and "=" in row for row in rows), "invalid image environment")
+    actual = dict(row.split("=", 1) for row in rows)
+    check.require(len(rows) == len(actual), "duplicate image environment key")
+    expected = dict(row.split("=", 1) for row in parent.get("Env", []))
+    expected["DEBIAN_FRONTEND"] = "noninteractive"
+    check.require(actual == expected and all(current.get(key) == parent.get(key) for key in ("User", "WorkingDir")),
+                  "Framework image changes inherited configuration")
+
+
+def compare_group_rows(rows, metadata):
+    check.require(all(len(value) == len({row.split(":", 1)[0] for row in value}) for value in rows),
+                  "image has duplicate group names")
+    base, runtime, debug = rows
+    check.require(runtime == base, "runtime image changed inherited groups")
+    expected = runtime + ([] if "_ssh:x:104:" in runtime else ["_ssh:x:104:"])
+    check.require(debug == expected, "debug account merge changed existing group rows or order")
+    check.require(metadata[0] == metadata[1] == metadata[2], "group ownership or permissions changed")
+    return {"base_groups": len(base), "runtime_groups": len(runtime), "debug_groups": len(debug),
+            "declared_addition": "_ssh:x:104:"}
+
+
+def validate_groups(layouts):
+    rows, metadata = [], []
+    for layout in layouts:
+        files, origins = image_validation.image_inventory(layout)
+        with tempfile.TemporaryDirectory(prefix="framework-accounts-") as temporary:
+            root = Path(temporary)
+            source_base_validation.extract_selected(layout, files, origins, {"etc/group"}, root)
+            rows.append((root / "etc/group").read_text().splitlines())
+        metadata.append({key: files["etc/group"][key] for key in ("kind", "mode", "uid", "gid")})
+    return compare_group_rows(rows, metadata)
 
 
 def build_images(args, directory):
     check.require(platform.machine() == "x86_64" and
                   platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
                   "Framework image build requires native AMD64 Debian Trixie")
-    receipt = {"status": "building", "architecture": "amd64", "commands": []}
+    receipt = {"status": "building", "architecture": "amd64", "commands": [],
+               "review_registry_revision": os.environ.get("SONIC_BAZEL_REGISTRY_REVISION")}
     execute = partial(command_log.execute, cwd=ROOT)
     try:
+        clean_source(directory)
+        receipt.update(identity())
         receipt["revision"] = execute(["git", "rev-parse", "HEAD"], directory, receipt, "revision").strip()
         receipt["commit_headers"] = subprocess.check_output(
             ["git", "cat-file", "-p", "HEAD"], cwd=ROOT, text=True).split("\n\n", 1)[0]
@@ -67,6 +133,8 @@ def build_images(args, directory):
             [args.bazel, "cquery", *OPTIONS, target, "--output=files"], directory, receipt,
             "layout-" + str(index)).strip() for index, target in enumerate(layouts)}
         receipt["resolution"] = resolution.collect(ROOT, directory, bazel=[args.bazel])
+        clean_source(directory)
+        check.require(identity()["revision"] == receipt["revision"], "source head changed during build")
         receipt["status"] = "built"
     except Exception as error:
         receipt.update(status="failed", error=str(error))
@@ -78,17 +146,22 @@ def build_images(args, directory):
 def validate_images(directory):
     receipt = json.loads((directory / "build-receipt.json").read_text())
     check.require(receipt["status"] == "built", "image build did not complete")
+    clean_source(directory)
+    check.require(identity()["revision"] == receipt["revision"], "static checker differs from built source")
     for name, item in receipt["artifacts"].items():
         check.require(check.sha(directory / name) == item["sha256"], "artifact changed: " + name)
     parent = oci_layout.validate_layout(ROOT / receipt["layouts"][PARENT], "linux/amd64")
     inherited = base_images.installed_inventory(parent)
-    debug_tools = check.payload(directory / "debug-tools.tar", require_root=False)
-    reports, inventories = {}, {}
+    debug_tools = {}
+    image_validation.apply_layer(directory / "debug-tools.tar", debug_tools)
+    reports, inventories, layouts = {}, {}, [parent]
     configs = {"start.sh": "usr/bin/start.sh", "rest-server.sh": "usr/bin/rest-server.sh",
                "mgmt_vars.j2": "usr/share/sonic/templates/mgmt_vars.j2",
                "supervisord.conf": "etc/supervisor/conf.d/supervisord.conf"}
     for name in IMAGES:
         layout = oci_layout.validate_layout(ROOT / receipt["layouts"][OWNER + name], "linux/amd64")
+        image_validation.assert_ancestry(layouts[-1], layout, "Framework image parent layers differ")
+        layouts.append(layout)
         base_images.verify_unique_layer_paths(layout)
         files = base_images.installed_inventory(layout)
         base_images.verify_directory_aliases(files)
@@ -97,7 +170,7 @@ def validate_images(directory):
         # Debug tools also add their explicitly declared _ssh group.
         changed = set(configs.values()) | {"var/lib/dpkg/status"}
         if name.endswith("-dbg"):
-            changed |= {"etc/group", "etc/gshadow"}
+            changed |= {"etc/group"}
         for path, item in inherited.items():
             if item["kind"] == "directory" or path in changed:
                 continue
@@ -128,7 +201,7 @@ def validate_images(directory):
                       "installed package inventory differs")
         config = layout.config.get("config", {})
         check.require(config.get("Entrypoint") == ["/usr/local/bin/supervisord"], "entrypoint changed")
-        check.require("DEBIAN_FRONTEND=noninteractive" in config.get("Env", []), "environment changed")
+        verify_environment(parent.config.get("config", {}), config)
         expected = json.loads((ROOT / "target/bazel-manifests" / name / "manifest.json").read_text())
         check.require(json.loads(config["Labels"]["com.azure.sonic.manifest"]) == expected, "Make labels differ")
         archive = image_validation.docker_archive(directory / (name + ".gz"), name + ":latest",
@@ -139,6 +212,7 @@ def validate_images(directory):
                          "rootfs": layout.config["rootfs"], "archive": archive,
                          "owner_payloads": checked, "parent_payload_preserved": True}
         inventories[name] = files
+    accounts = validate_groups(layouts)
     runtime, debug = (inventories[name] for name in IMAGES)
     check.require(all(debug.get(path) == item for path, item in runtime.items() if "elf_machine" in item),
                   "debug variant replaces a runtime ELF")
@@ -163,7 +237,7 @@ def validate_images(directory):
     for name in IMAGES:
         reports[name]["native_paths"] = sorted(set(native).intersection(inventories[name]))
     report = {"status": "passed", "revision": receipt["revision"], "architecture": "amd64",
-              "images": reports, "source_debug_pairs": pairs, "native": native, "artifacts": receipt["artifacts"]}
+              "images": reports, "accounts": accounts, "source_debug_pairs": pairs, "native": native, "artifacts": receipt["artifacts"]}
     (directory / "validation.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"status": "passed", "source_elf_debug_pairs": len(pairs)}))
 
@@ -171,6 +245,8 @@ def validate_images(directory):
 def incremental(args, directory):
     receipt = json.loads((directory / "build-receipt.json").read_text())
     check.require(receipt["status"] == "built", "missing accepted build")
+    clean_source(directory)
+    check.require(identity()["revision"] == receipt["revision"], "incremental source differs from accepted build")
     labels = [OWNER + name + suffix for name in IMAGES for suffix in ("", ".gz")]
     labels += [PARENT, TARGETS["source-runtime.tar"], TARGETS["all-debug.tar"]]
     command = [args.bazel, "build", *OPTIONS, *labels]
@@ -194,18 +270,31 @@ def incremental(args, directory):
         check.require(original[OWNER + name + ".gz"] == receipt["artifacts"][name + ".gz"]["sha256"],
                       "incremental baseline differs from accepted archives")
     source = ROOT / "dockers/docker-sonic-mgmt-framework/mgmt_vars.j2"
-    content = source.read_bytes()
+    content, mode = source.read_bytes(), source.stat().st_mode
+    results["status"] = "running"
     try:
         source.write_bytes(content + b"\n{# Framework image incremental probe #}\n")
         results["edit"] = snapshot("edit")
         changed = {label for label, digest in results["edit"]["sha256"].items() if original[label] != digest}
         check.require(changed == {OWNER + name + suffix for name in IMAGES for suffix in ("", ".gz")},
                       "template edit changed unrelated source outputs: " + repr(changed))
+        results["status"] = "passed"
+    except Exception as error:
+        results.update(status="failed", error=str(error))
+        raise
     finally:
         source.write_bytes(content)
-    results["restore"] = snapshot("restore")
-    check.require(results["restore"]["sha256"] == original, "restored inputs changed image/archive digests")
-    (directory / "incremental.json").write_text(json.dumps(results, indent=2) + "\n")
+        source.chmod(mode)
+        try:
+            results["restore"] = snapshot("restore")
+            check.require(results["restore"]["sha256"] == original, "restored inputs changed image/archive digests")
+            clean_source(directory)
+            check.require(identity()["revision"] == receipt["revision"], "source head changed during incremental checks")
+        except Exception as error:
+            results.update(status="failed", restoration_error=str(error))
+            raise
+        finally:
+            (directory / "incremental.json").write_text(json.dumps(results, indent=2) + "\n")
 
 
 def main():

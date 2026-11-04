@@ -74,11 +74,36 @@ def installed_symbol(record, symbol):
         missing = runtime_smoke.gdb_lookup(isolated, root, str(empty), symbol)
         require(not missing.get("found"), "function resolved without packaged symbols: " + symbol)
         found = runtime_smoke.gdb_lookup(binary, root, "/usr/lib/debug", symbol)
-        require(found.get("found") and found.get("function") == symbol and found.get("line", 0) > 0
+        names = {symbol}
+        if record["path"] == "usr/bin/simple_switch_grpc" and symbol == "main":
+            # GDB reports this source-owned C++ main with its parameter spelling.
+            names.add("main(int, char**)")
+        require(found.get("found") and found.get("function") in names and found.get("line", 0) > 0
                 and found.get("source") and found.get("type"), "installed function lacks source/line/type: " + symbol)
         found["source"] = Path(found["source"]).name
     return {"path": record["path"], "debug_path": record["debug_path"], "symbol": symbol,
             "without_symbols": missing, "with_symbols": found}
+
+
+def installed_debug_checks(report):
+    selected = {"usr/bin/simple_switch_grpc": "main", "usr/lib/python3/dist-packages/_nnpy.so": "_cffi_f_nn_socket"}
+    pairs = {item["path"]: item for item in report["source_debug_pairs"]}
+    required = set(selected) | {"usr/bin/pi_CLI_dummy"}
+    require(len(pairs) == len(report["source_debug_pairs"]) and required <= pairs.keys(),
+            "missing or duplicate installed debugger contracts")
+    launcher = pairs["usr/bin/pi_CLI_dummy"]
+    forwarding = launcher.get("debug_forwarding", {})
+    require(all(forwarding.get(key) == value for key, value in {
+        "provider": "usr/lib/x86_64-linux-gnu/libpicli.so.0", "symbol": "main", "source": "main.c"}.items()),
+        "PI launcher lacks its declared implementation contract")
+    checks = [installed_symbol(pairs[name], symbol) for name, symbol in selected.items()]
+    # The PI owner exports a CRT launcher whose main is defined by libpicli.
+    # Reuse the shared installed provider/symbol positive and negative controls.
+    forwarded = runtime_smoke.debug_pair(launcher)
+    forwarded.update(path=launcher["path"], debug_path=launcher["debug_path"], symbol="main")
+    forwarded["with_symbols"]["source"] = Path(forwarded["with_symbols"]["source"]).name
+    checks.append(forwarded)
+    return checks
 
 
 def installed_closure(report, debug):
@@ -100,11 +125,7 @@ def installed_closure(report, debug):
                 "installed ELF closure failed: " + json.dumps(result))
     checks = []
     if debug:
-        selected = {"usr/bin/simple_switch_grpc": "main", "usr/lib/python3/dist-packages/_nnpy.so": "_cffi_f_nn_socket"}
-        pairs = {item["path"]: item for item in report["source_debug_pairs"]}
-        require(len(pairs) == len(report["source_debug_pairs"]) and selected.keys() <= pairs.keys(),
-                "missing or duplicate installed debugger contracts")
-        checks = [installed_symbol(pairs[name], symbol) for name, symbol in selected.items()]
+        checks = installed_debug_checks(report)
         require("Huge version" in command(["/usr/bin/vim", "--version"]), "debug Vim is not full Vim")
     return {"source_elf_count": len(native), "loader_checks": len(native), "debug_checks": checks}
 

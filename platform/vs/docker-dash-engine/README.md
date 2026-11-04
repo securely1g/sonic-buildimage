@@ -40,8 +40,11 @@ change adds no debug installer family to the legacy Make configuration.
 The static check binds both image stages to their exact parents, source TARs,
 APT selections and installed package state. It preserves inherited account rows,
 file metadata and runtime ELFs, and verifies every project ELF's matching build
-ID, DWARF and debuglink (with the existing sealed SymCrypt contract). The debug
-image adds the source OpenSSH client, matching symbols and full Vim.
+ID, DWARF and debuglink (with the existing sealed SymCrypt contract). PI's
+CRT launcher retains its own matching debug identity and forwards `main` to the
+source-owned `libpicli.so.0`; the existing package verifier checks that declared
+provider, and the installed probe requires GDB source/line/type lookup with a
+missing-symbol negative control. The debug image adds the source OpenSSH client, matching symbols and full Vim.
 
 The loaded check uses a disposable Docker network namespace and two private
 interfaces. It runs the unchanged startup script, verifies stable installed
@@ -56,7 +59,8 @@ and restores exact baseline archive bytes. That verifies image invalidation and
 cache restoration; it does not claim a fresh rebuild of every native producer.
 
 CI runs these checks in the existing `bazel-oci.yml`. Public artifacts include all
-18 declared payloads and selected receipts; command environments, execution logs
+19 declared payloads and selected receipts, including the exact runtime APT
+layer for declared non-ELF replacement checks; command environments, execution logs
 and local cache paths stay private. The source base's inherited ARM64 checks stay
 enabled. The fixed `dash-engine` worker selector runs the same four phases with the
 reviewed resource profile and source/catalog fences.

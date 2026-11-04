@@ -28,6 +28,7 @@ OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=8000
 TARGETS = {
     **{name + ".gz": OWNER + name + ".gz" for name in IMAGES},
     "runtime-apt.json": OWNER + "runtime_apt_selection",
+    "engine.runtime-apt.tar": OWNER + "debian_runtime_payload",
     "debug-apt.json": OWNER + "debug_apt_selection",
     "engine.debug.tar": OWNER + "all_debug_symbols",
     "engine.debug-tools.tar": OWNER + "debug_tools",

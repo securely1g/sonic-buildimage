@@ -149,11 +149,17 @@ apt_layer(
     variant = "debug",
 )
 
+tar(
+    name = "debug_vim_link",
+    mtree = ["usr/bin/vim uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/vim"],
+)
+
 sonic_layer(
     name = "debug_tools",
     tars = [
         ":debian_debug",
         "@sonic_build_infra//deps/vim:vim_alternatives_pkg",
+        ":debug_vim_link",
     ],
 )
 
