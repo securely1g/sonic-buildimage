@@ -225,6 +225,24 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
                                  prefix + [f"/source/tools/bazel/ci/{stem}_loaded.py", "--artifacts", str(artifacts)])
 
+    def test_orchagent_incremental_uses_current_source_parent_and_all_six_targets(self):
+        command = worker.phase_command("orchagent", "incremental", Path("/source"), Path("/evidence"))
+        self.assertEqual(command[:5], [
+            sys.executable, "-B", "/source/tools/bazel/ci/swss_rebuild.py", "--bazel",
+            "/source/tools/bazel/ci/libteam_draft_bazel.sh",
+        ])
+        self.assertEqual(list(zip(command[5::2], command[6::2])), [
+            ("--runtime-target", "//dockers/docker-orchagent:docker-orchagent.gz"),
+            ("--additional-runtime-target", "//dockers/docker-orchagent:docker-orchagent-dbg.gz"),
+            ("--additional-runtime-target", "//dockers/docker-orchagent:rdeps"),
+            ("--symbols-target", "//dockers/docker-orchagent:rdeps_debug_symbols"),
+            ("--unchanged-target", "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz"),
+            ("--unchanged-target", "@scapy//:wheel"),
+            ("--output", "/evidence/rebuild"),
+        ])
+        self.assertEqual(len(command), 19)
+        self.assertFalse(any("source_config_engine" in value for value in command))
+
     def test_gnmi_profiles_have_fixed_flags_for_existing_four_phases(self):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
@@ -281,6 +299,32 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertFalse(condition(guard, event="pull_request", branch=branch, head_repo="other/fork"))
         self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch))
         self.assertFalse(condition(workflow["jobs"]["registry_native"]["if"], event="pull_request", branch=branch))
+
+    def test_orchagent_worker_followup_skips_only_its_owned_deb_fixtures_and_vs(self):
+        import yaml
+        from tools.bazel.tests.registry_native_worker_test import condition
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        branch = "codex/orchagent-source-worker-current"
+        guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
+                  for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
+        self.assertEqual(len(guards), 2)
+        for guard in guards:
+            self.assertTrue(condition(guard, event="pull_request", branch=branch))
+            for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
+                            {"head_repo": "other/fork"}, {"event": "push"},
+                            {"event": "workflow_dispatch"}):
+                with self.subTest(changes=changes):
+                    context = {"event": "pull_request", "branch": branch, **changes}
+                    self.assertFalse(condition(guard, **context))
+        for name in ("vs", "vs_container", "source_image", "source_image_inputs", "registry_native",
+                     "source_worker_preflight", "worker_provenance"):
+            self.assertFalse(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
+        self.assertTrue(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch + "-suffix"))
+        for name in ("archive", "checks"):
+            self.assertTrue(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
+        kernel = yaml.safe_load((ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text())
+        self.assertFalse(condition(kernel["jobs"]["kernel-bundle"]["if"], event="pull_request", branch=branch))
 
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:

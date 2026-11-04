@@ -267,7 +267,6 @@ def phase_command(image, phase, workspace, artifacts):
         return prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_loaded.py"), "--artifacts", str(artifacts)]
     if phase == "incremental" and image == "orchagent":
         return prefix + [str(workspace / "tools/bazel/ci/swss_rebuild.py"), "--bazel", wrapper,
-                         "--bazel-arg=--//dockers/docker-orchagent:source_config_engine=true",
                          "--runtime-target", "//dockers/docker-orchagent:docker-orchagent.gz",
                          "--additional-runtime-target", "//dockers/docker-orchagent:docker-orchagent-dbg.gz",
                          "--additional-runtime-target", "//dockers/docker-orchagent:rdeps",
