@@ -219,6 +219,80 @@ class CollectionTests(unittest.TestCase):
                          ["inputs.source_image == 'registry-native-collect'"])
         for line in step[0]["run"].splitlines()[:-1]:self.assertTrue(line.endswith(chr(92)))
 
+    def source_link_fixture(self):
+        name="p4c++_repo_rules+p4c_source/BUILD.bazel"
+        target_name="p4c+/bazel/p4c.BUILD.bazel"
+        external=self.base/"external"
+        link=external/name;link.parent.mkdir(parents=True,exist_ok=True)
+        target=external/target_name;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_text("original registered BUILD definition")
+        link.symlink_to(target)
+        mapping={name:(target_name,worker.digest(target))}
+        original=Path.lstat
+        def measured(path,*args,**kwargs):
+            value=original(path,*args,**kwargs)
+            if path==link:
+                fields={key:getattr(value,key) for key in ("st_dev","st_ino","st_mode","st_size","st_mtime_ns","st_ctime_ns")}
+                fields.update(st_uid=0,st_gid=0)
+                return NS(**fields)
+            return value
+        return link,target,mapping,measured
+
+    def test_declared_source_link_binds_actual_target_bytes_and_both_identities(self):
+        link,target,mapping,measured=self.source_link_fixture()
+        original=link.lstat()
+        with patch.object(collect,"SOURCE_LINKS",mapping),patch.object(Path,"lstat",measured):
+            result=collect.source_definition(link,self.work,self.base)
+            self.assertEqual(result["kind"],"declared_source_symlink")
+            self.assertEqual(result["target_measurement"]["sha256"],worker.digest(target))
+            before=collect.source_fence(self.work,self.base)
+            self.assertEqual(collect.source_fence(self.work,self.base),before)
+            target.write_text("changed definition")
+            with self.assertRaisesRegex(ValueError,"registry"):
+                collect.source_definition(link,self.work,self.base)
+        self.assertEqual(link.lstat().st_ino,original.st_ino)
+
+    def test_source_link_wrong_target_loop_output_and_special_file_reject(self):
+        link,target,mapping,measured=self.source_link_fixture()
+        with patch.object(collect,"SOURCE_LINKS",mapping),patch.object(Path,"lstat",measured):
+            for replacement in [self.root/"outside",self.execroot/"bazel-out/output.bzl",link]:
+                link.unlink();link.symlink_to(replacement)
+                with self.assertRaises((ValueError,OSError,RuntimeError)):
+                    collect.source_definition(link,self.work,self.base)
+            link.unlink();os.mkfifo(link)
+            with self.assertRaisesRegex(ValueError,"remain links"):
+                collect.source_definition(link,self.work,self.base)
+        unknown=self.external/"unknown.bzl";unknown.symlink_to(target)
+        with self.assertRaisesRegex(ValueError,"Undeclared"):
+            collect.source_definition(unknown,self.work,self.base)
+
+    def test_declared_link_replaced_with_regular_file_is_rejected_before_hash(self):
+        link,target,mapping,measured=self.source_link_fixture()
+        link.unlink()
+        for content in [target.read_text(),"arbitrary replacement BUILD"]:
+            link.write_text(content)
+            with patch.object(collect,"SOURCE_LINKS",mapping),patch.object(collect,"stable_file") as hashing:
+                with self.assertRaisesRegex(ValueError,"remain links"):
+                    collect.source_definition(link,self.work,self.base)
+                hashing.assert_not_called()
+
+    def test_link_replacement_during_measurement_rejects(self):
+        link,target,mapping,measured=self.source_link_fixture()
+        original=collect.stable_file
+        def change(path):
+            result=original(path);link.unlink();link.symlink_to(target);return result
+        with patch.object(collect,"SOURCE_LINKS",mapping),patch.object(Path,"lstat",measured), \
+             patch.object(collect,"stable_file",side_effect=change):
+            with self.assertRaisesRegex(ValueError,"changed"):
+                collect.source_definition(link,self.work,self.base)
+
+    def test_known_consumer_template_change_stops_before_query(self):
+        (self.consumer/"BUILD.bazel").write_text("changed original consumer")
+        with patch.object(subprocess,"run") as commands:
+            with self.assertRaisesRegex(ValueError,"Known"):
+                collect.known_definitions(self.work,self.base)
+            commands.assert_not_called()
+
     def test_workflow_routes_only_fixed_collect_step_and_preserves_other_modes(self):
         jobs=yaml.safe_load((ROOT/".github/workflows/bazel-oci.yml").read_text())["jobs"]
         ctx={"mode":"registry-native-collect","consumer":"dash"}

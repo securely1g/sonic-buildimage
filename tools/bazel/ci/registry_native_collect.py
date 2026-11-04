@@ -34,6 +34,17 @@ TEST_SHA256 = {
 BUILDS = ["@sonic-dash//:runtime", "@sonic-dash//:runtime.debug_symbols",
           "@sonic-dash//:sdk", "@sonic-dash//:runtime_packages.json"]
 
+SOURCE_LINKS = {'p4c++_repo_rules+p4c_source/BUILD.bazel': ('p4c+/bazel/p4c.BUILD.bazel',
+                                             'ccf0e2047ab4e6704c2993256e9912340e064a0a8fda794018f69dfd7f07fdc7'),
+ 'p4c++_repo_rules+p4c_source/bazel/runtime.bzl': ('p4c+/bazel/runtime.bzl',
+                                                   '23713425cc23215bda7ef1b367482edcfb3a6eaa27a967873257d53d5044b984'),
+ 'p4c++_repo_rules+p4c_source/bazel/tool.bzl': ('p4c+/bazel/tool.bzl',
+                                                '483d11120e25219d2f190cf0e7ee04472803e5f61c7f0ba4eae3018942154737'),
+ 'p4lang-pi++_repo_rules+pi_source/BUILD.bazel': ('p4lang-pi+/bazel/pi.BUILD.bazel',
+                                                  '601d39a6025f35ff6499217ef93387b2664674023900d837021cef624c8d3c26'),
+ 'p4lang-pi++_repo_rules+pi_source/bazel/runtime.bzl': ('p4lang-pi+/bazel/runtime.bzl',
+                                                        '9587108c35816d3f66d4b8a53f76064d76e697adf78ab95c4cf3c1843057170e')}
+
 
 def stable_file(path):
     before = path.lstat()
@@ -50,6 +61,48 @@ def stable_file(path):
 def confined(path, root):
     require(path.resolve().is_relative_to(root.resolve()), "Retained path escapes its fixed root")
     return path
+
+
+def source_definition(path, work, base):
+    before=path.lstat()
+    external=base/"external"
+    relative=path.relative_to(external).as_posix() if path.is_relative_to(external) else None
+    if relative in SOURCE_LINKS:
+        require(stat.S_ISLNK(before.st_mode),"Declared source definitions must remain links")
+    if not stat.S_ISLNK(before.st_mode):
+        return stable_file(path)
+    require(relative is not None,"Consumer definitions must remain regular files")
+    require(relative in SOURCE_LINKS,"Undeclared source-definition link")
+    expected,expected_sha=SOURCE_LINKS[relative]
+    target=external/expected
+    require(path.resolve(strict=True)==target and target.resolve(strict=True)==target and
+            target.is_relative_to(external),"Source-definition link escapes its declared mapping")
+    require(before.st_uid==before.st_gid==0 and stat.S_IMODE(before.st_mode)==0o777,
+            "Declared source link ownership/mode differs")
+    link_text=os.readlink(path)
+    measured=stable_file(target)
+    require(measured["sha256"]==expected_sha,"Declared source-link bytes differ from original registry")
+    after=path.lstat()
+    identity=lambda x:(x.st_dev,x.st_ino,x.st_mode,x.st_uid,x.st_gid,x.st_size,x.st_mtime_ns,x.st_ctime_ns)
+    require(identity(before)==identity(after) and os.readlink(path)==link_text and
+            path.resolve(strict=True)==target,"Source link changed during target measurement")
+    return {"kind":"declared_source_symlink","target":expected,"target_measurement":measured,
+            "link_sha256":hashlib.sha256(os.fsencode(link_text)).hexdigest(),
+            "link_mode":stat.S_IMODE(before.st_mode),"link_uid":before.st_uid,"link_gid":before.st_gid,
+            "link_mtime_ns":before.st_mtime_ns,"link_ctime_ns":before.st_ctime_ns}
+
+
+def known_definitions(work,base):
+    paths={
+        "consumer/BUILD.bazel":"1dadc23604efb1d2ed339f4597276a0cc41c6b82ef0c43421ddafef10656eb7e",
+        "consumer/.bazelversion":"be5107d336c2c67ca336619df86248b687a929b6267b440210066c515cea063a",
+        (base/"external/sonic-dash+/BUILD.bazel").relative_to(work).as_posix():"6fafef3df9d286934d0da90a147541e50e3e51ccb00bdec9cd59979c6d3de051",
+        (base/"external/sonic-dash+/bazel/BUILD.bazel").relative_to(work).as_posix():"4ecb443710e6ce2bdfab9b1bfcb9eab9a480a5dff75e362cd2c09063f50a5d89",
+        (base/"external/sonic-dash+/.bazelversion").relative_to(work).as_posix():"be5107d336c2c67ca336619df86248b687a929b6267b440210066c515cea063a",
+    }
+    for name,sha in paths.items():
+        require(stable_file(confined(work/name,work))["sha256"]==sha,"Known source/consumer definition changed")
+    return paths
 
 
 def source_fence(work, base):
@@ -69,7 +122,7 @@ def source_fence(work, base):
         confined(path, work)
         total += path.stat().st_size
         require(total <= 512*1024**2, "Source definition bytes exceed bound")
-        result[path.relative_to(work).as_posix()] = stable_file(path)
+        result[path.relative_to(work).as_posix()] = source_definition(path,work,base)
     return result
 
 
@@ -298,6 +351,7 @@ def collect(args, output):
     binary=query_binary(cache)
     require(subprocess.check_output([str(binary),"--version"],text=True,timeout=15).strip()=="bazel 8.5.1",
             "Pinned binary version mismatch")
+    known=known_definitions(work,base)
     fence=source_fence(work,base)
     tests=base/"execroot/_main/bazel-out/k8-fastbuild/testlogs/external/sonic-dash+/bazel"
     for name,digest in TEST_SHA256.items():
@@ -313,6 +367,7 @@ def collect(args, output):
              "downloader_config_sha256":hashlib.sha256(expected_mirrors).hexdigest(),
              "memory_before":memory_before,
              "definitions_evaluated":"verified retained BUILD and Starlark; no repository fetching permitted",
+             "known_definition_sha256":known,
              "source_fence_sha256":hashlib.sha256(json.dumps(fence,sort_keys=True).encode()).hexdigest()}
     rows=[]
     try:
