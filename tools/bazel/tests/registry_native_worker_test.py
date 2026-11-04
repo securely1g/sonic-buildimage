@@ -287,6 +287,73 @@ def condition(expression,event='workflow_dispatch',mode='registry-native',actor=
         'needs':namespace({'source_image_inputs':{'result':'skipped'}}),
         'always':lambda:True,'cancelled':lambda:False,'contains':lambda items,item:item in items,'fromJSON':json.loads,'false':False,'true':True}))
 
+
+class TypedRuntimeWorkerTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.identity = json.loads((ROOT / 'tools/bazel/ci/registry_common_worker_identity.json').read_text())
+        path = self.root / 'tools/bazel/ci/registry_common_worker_identity.json'
+        path.parent.mkdir(parents=True)
+        path.write_bytes((ROOT / 'tools/bazel/ci/registry_common_worker_identity.json').read_bytes())
+        self.profile = copy.deepcopy(worker.PROFILES['common'])
+        self.helper_path = self.root / 'selected/ci/container_provenance.py'
+        self.helper_path.parent.mkdir(parents=True)
+        self.helper_path.write_bytes(b'reviewed selected helper fixture')
+        self.profile['provenance_helper_sha256'] = worker.digest(self.helper_path)
+        self.helper = NS(__file__=str(self.helper_path), validate_identity=lambda value: value,
+                         parse=json.loads, measure=Mock())
+        self.runner = NS(__file__=str(self.helper_path.parent / 'registry_ci.py'), container_provenance=self.helper)
+        self.config = {'test_runtime_preparation': {'script': 'tools/bazel/runtime/prepare.py'}}
+
+    def test_root_requires_exact_live_reviewed_identity(self):
+        with patch.object(worker, 'ROOT', self.root), patch.object(self.helper, 'measure', return_value=self.identity):
+            self.assertEqual(worker.runtime_identity(self.runner, self.profile, self.config, worker.WORKERS[0]), self.identity)
+        changed = copy.deepcopy(self.identity)
+        changed['marker']['base_image'] = 'sha256:' + '0' * 64
+        with patch.object(worker, 'ROOT', self.root), patch.object(self.helper, 'measure', return_value=changed):
+            with self.assertRaisesRegex(ValueError, 'differs from reviewed'):
+                worker.runtime_identity(self.runner, self.profile, self.config, worker.WORKERS[0])
+
+    def test_uid1000_preflight_reuses_diagnostic_fields(self):
+        from tools.bazel.ci import worker_provenance
+        observed = {**self.identity, 'identity_kind': self.identity['kind'],
+                    'marker': {**self.identity['marker'], 'base_image_ref': 'diagnostic-only'}}
+        with patch.object(worker, 'ROOT', self.root), patch.object(worker_provenance, 'collect', return_value=observed) as collect:
+            self.assertEqual(worker.runtime_identity(self.runner, self.profile, self.config, worker.WORKERS[0], unprivileged=True), self.identity)
+            collect.assert_called_once_with(worker.WORKERS[0], os.environ)
+
+    def test_changed_helper_or_expected_identity_rejected_before_measurement(self):
+        bad = {**self.profile, 'provenance_helper_sha256': '0' * 64}
+        with patch.object(worker, 'ROOT', self.root), patch.object(self.helper, 'measure') as measure:
+            with self.assertRaisesRegex(ValueError, 'helper changed'):
+                worker.runtime_identity(self.runner, bad, self.config, worker.WORKERS[0])
+            measure.assert_not_called()
+            path = self.root / 'tools/bazel/ci/registry_common_worker_identity.json'
+            path.write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'identity changed'):
+                worker.runtime_identity(self.runner, self.profile, self.config, worker.WORKERS[0])
+            measure.assert_not_called()
+
+    def test_legacy_profiles_do_not_enter_typed_mode(self):
+        self.assertIsNone(worker.runtime_identity(None, worker.PROFILES['fips'], {}, worker.WORKERS[0]))
+        with self.assertRaisesRegex(ValueError, 'owner runtime preparation'):
+            worker.runtime_identity(self.runner, self.profile, {}, worker.WORKERS[0])
+
+    def test_expected_file_is_private_readonly_and_never_overwritten(self):
+        private = self.root / 'run'
+        private.mkdir()
+        with patch.object(os, 'geteuid', return_value=0):
+            path = worker.write_runtime_identity(private, self.identity)
+            self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o400)
+            self.assertEqual(json.loads(path.read_text()), self.identity)
+            with self.assertRaises(FileExistsError):
+                worker.write_runtime_identity(private, self.identity)
+        with patch.object(os, 'geteuid', return_value=1000), self.assertRaisesRegex(ValueError, 'root-owned'):
+            worker.write_runtime_identity(private, self.identity)
+
 class WorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls): cls.flow=yaml.safe_load((ROOT/'.github/workflows/bazel-oci.yml').read_text())
@@ -320,6 +387,18 @@ class WorkflowTest(unittest.TestCase):
             self.assertFalse(condition(guard,event='pull_request',head_repo='foreign/repo'))
             self.assertFalse(condition(guard,event='pull_request',branch='codex/registry-native-workers-extra'))
         self.assertFalse(condition(self.flow['jobs']['vs_container']['if'],event='pull_request'))
+    def test_common_runtime_profile_pr_keeps_source_only_scope(self):
+        branch = 'codex/common-native-runtime-worker'
+        guards = [step['env']['SOURCE_ONLY_NO_DEBS'] for job in self.flow['jobs'].values()
+                  for step in job.get('steps', []) if 'SOURCE_ONLY_NO_DEBS' in step.get('env', {})]
+        self.assertEqual(len(guards), 2)
+        for guard in guards:
+            self.assertTrue(condition(guard, event='pull_request', branch=branch))
+            self.assertFalse(condition(guard, event='pull_request', branch=branch + '-suffix'))
+            self.assertFalse(condition(guard, event='pull_request', branch=branch, head_repo='other/fork'))
+        self.assertFalse(condition(self.flow['jobs']['vs_container']['if'], event='pull_request', branch=branch))
+        self.assertFalse(condition(self.flow['jobs']['registry_native']['if'], event='pull_request', branch=branch))
+
     def test_fixed_checkout_permissions_and_no_hosted_cache_dependency(self):
         job=self.flow['jobs']['registry_native'];self.assertEqual(job['permissions'],{'contents':'read','actions':'read'})
         checkouts=[s for s in job['steps'] if s.get('uses','').startswith('actions/checkout@')]

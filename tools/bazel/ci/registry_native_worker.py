@@ -21,9 +21,12 @@ from tools.bazel.ci.bazel_commands import audit_targets
 from tools.bazel.ci.public_artifacts import safe_json, bep_summary, dependency_json
 
 PROFILES = {
-    'common': {'revision': '03f870c62fa2bab567133c6a9303f71392e4986e',
+    'common': {'revision': 'e23b7089cd403a186984127b4db3599e0ad50d27',
                'module': 'sonic-swss-common', 'version': '0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed',
-               'presubmit_sha256': '4c121e977fb3a316aca8ab1127cc66c42ca082e771744be0393995662dfa8694', 'builds': 16, 'tests': 24},
+               'presubmit_sha256': 'be50fe841ed9ee13e0f424abb28b09aa1113ba62d64d1fbae9d028649ac0837f',
+               'worker_identity_sha256': '5b7d930fc218034860cf5943976e774288495b7383745305ba62f7852b273fc7',
+               'provenance_helper_sha256': '845344168232a29a7c3c52ec3265f81e3e63c68bc9bcb799d719f31ca2fd4586',
+               'builds': 16, 'tests': 24},
     'fips': {'revision': '8374b07ca138b98546122186d832544f1b46ac07',
              'module': 'sonic-fips', 'version': '0.0.5-15fcb926a302059ec379f0c2fd15eb3d88bda4c9',
              'presubmit_sha256': 'f4d7148c6dd8e8e5f1deda78bb0c878fa8fc4604181fce654a23d3d7e578a870', 'builds': 18, 'tests': 6},
@@ -47,7 +50,7 @@ PROFILES = {
          'tests': 3},
 }
 # Populate only from verified provisioner provenance. A local image ID alone is
-# not a registry image reference. Common remains fail-closed until one is known.
+# not a registry image reference. Typed Common identity is reviewed separately.
 SLAVE_IMAGE_REFERENCES = {}
 PROXY_NAMES = ('http_proxy','https_proxy','all_proxy','no_proxy','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY')
 CONTEXT_NAMES = ('GITHUB_EVENT_NAME','GITHUB_REPOSITORY','GITHUB_ACTOR','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','RUNNER_NAME','RUNNER_TEMP')
@@ -105,6 +108,43 @@ def container_reference(config, marker):
     require(isinstance(reference,str) and re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}',reference),
             'Common needs the actual provisioner-verified slave image reference; a local image ID is insufficient')
     return reference
+
+
+
+def runtime_identity(runner, profile, config, worker, *, unprivileged=False):
+    if 'worker_identity_sha256' not in profile:
+        return None
+    require(config.get('test_runtime_preparation'), 'Typed worker identity requires owner runtime preparation')
+    provenance = runner.container_provenance
+    helper = Path(provenance.__file__).resolve()
+    require(helper == Path(runner.__file__).resolve().parent / 'container_provenance.py' and
+            digest(helper) == profile['provenance_helper_sha256'], 'Selected provenance helper changed')
+    path = ROOT / 'tools/bazel/ci/registry_common_worker_identity.json'
+    content = path.read_bytes()
+    require(hashlib.sha256(content).hexdigest() == profile['worker_identity_sha256'],
+            'Reviewed worker identity changed')
+    expected = provenance.validate_identity(provenance.parse(content))
+    if unprivileged:
+        from tools.bazel.ci.worker_provenance import collect
+        observed = collect(worker, os.environ)
+        actual = {name: observed[name] for name in expected if name not in ('kind', 'marker')}
+        actual['kind'] = observed['identity_kind']
+        actual['marker'] = {name: observed['marker'][name] for name in expected['marker']}
+    else:
+        actual = provenance.measure()
+    require(actual == expected, 'Live worker base-config/provisioner differs from reviewed identity')
+    return expected
+
+
+def write_runtime_identity(private, identity):
+    require(os.geteuid() == 0 and private.is_dir() and not private.is_symlink(),
+            'Expected identity requires the root-owned private run directory')
+    private.chmod(0o700)
+    path = private / 'expected-provenance.json'
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+    with os.fdopen(descriptor, 'w') as stream:
+        stream.write(json.dumps(identity, indent=2, sort_keys=True) + '\n')
+    return path
 
 
 def memory():
@@ -273,7 +313,8 @@ def execute(args, profile, cache):
     runner,config=registry_config(args.workspace,profile)
     runner.verify_native('amd64')
     require('VERSION_CODENAME=trixie' in Path('/etc/os-release').read_text().splitlines(), 'Expected native Trixie')
-    reference=container_reference(config,marker)
+    identity=runtime_identity(runner,profile,config,args.worker)
+    reference=None if identity is not None else container_reference(config,marker)
     if reference: runner.require_test_container(reference)
     for name in ('home','tmp','bazelisk','repository','disk'):
         cache_directory(cache,name)
@@ -289,6 +330,7 @@ def execute(args, profile, cache):
     require(private.resolve()==private and not private.is_symlink(), 'Private run path must not traverse symlinks')
     private.mkdir(exist_ok=False)
     work=private/'work'
+    expected_identity=write_runtime_identity(private,identity) if identity is not None else None
     spec={'binary':shutil.which('bazel'),'work':str(work),'artifacts':str(args.artifacts),
           'repository_cache':str(cache/'repository'),'disk_cache':str(cache/'disk'),'profile':selected,'config':config}
     require(spec['binary'], 'Worker must provide Bazel/Bazelisk')
@@ -315,6 +357,7 @@ def execute(args, profile, cache):
                  '--version',profile['version'],'--architecture','amd64','--work-dir',str(work),
                  '--artifacts',str(args.artifacts),'--bazel',str(wrapper)]
         if reference: command += ['--test-container-image',reference]
+        if expected_identity is not None: command += ['--test-container-provenance',str(expected_identity)]
         child=subprocess.Popen(command,cwd=args.workspace)
         while True:
             try:
@@ -507,9 +550,13 @@ def main():
         write(args.artifacts/'worker-preflight.json',preflight)
         require(preflight['status']=='passed','Worker resource/isolation preflight failed')
         require(os.getuid()==os.getgid()==1000,'Outer worker control must remain UID/GID1000')
-        _,config=registry_config(args.workspace,profile)
+        runner,config=registry_config(args.workspace,profile)
         marker=json.loads(Path('/etc/sonic-slave-github-runner.json').read_text())
-        container_reference(config,marker)  # Fail before sudo/APT if Common identity is unavailable.
+        identity=runtime_identity(runner,profile,config,args.worker,unprivileged=True)
+        if identity is None:
+            container_reference(config,marker)  # Preserve the qualified-image admission path.
+        else:
+            write(args.artifacts/'worker-reviewed-provenance.json',identity)
         environment=child_environment(os.environ,args.workspace,cache)
         command=['sudo','-n','/usr/bin/env','-i',*[k+'='+v for k,v in environment.items()],
                  sys.executable,'-B',str(Path(__file__).resolve()),'execute',*sys.argv[2:]]
