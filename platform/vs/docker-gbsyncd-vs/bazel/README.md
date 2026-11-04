@@ -22,13 +22,13 @@ The isolated Redis package lock is only a runtime-test fixture, with exact packa
 records and closure reused from the accepted MUX fixture.
 
 For current Draft review, use the immutable catalog
-`f87ec1d97b0493d895e34733ea4aae92a90cf75d` via the shared review wrapper. The normal
+`cb6299d4231f860ef310c5e1241c99995745d3df` via the shared review wrapper. The normal
 `.bazelrc` remains on the maintained registry. The image selects the accepted
 FIPS197, Distroless200, Common201 and infrastructure195 candidates and the current
 libnl/iproute2 interfaces. These unlanded requirements keep this image Draft.
 
 ```sh
-export SONIC_BAZEL_REGISTRY_REVISION=f87ec1d97b0493d895e34733ea4aae92a90cf75d
+export SONIC_BAZEL_REGISTRY_REVISION=cb6299d4231f860ef310c5e1241c99995745d3df
 python3 tools/bazel/ci/gbsyncd_image.py build \
   --bazel tools/bazel/ci/review_bazel.sh --artifacts artifacts/gbsyncd
 python3 tools/bazel/ci/gbsyncd_image.py validate --artifacts artifacts/gbsyncd
