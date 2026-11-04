@@ -5,12 +5,21 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Reviewed immutable source SHA (blank uses this workflow revision)
+        type: string
+        default: ''
+      registry_revision:
+        description: Reviewed immutable registry SHA (required with source_revision)
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: bazel-lldp-image-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-lldp-image-${{ github.event.pull_request.number || github.ref }}-${{ inputs.source_revision }}-${{ inputs.registry_revision }}
   cancel-in-progress: true
 
 jobs:
@@ -19,20 +28,39 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI_HEAD_SHA: ${{ inputs.source_revision || github.event.pull_request.head.sha || github.sha }}
       CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+      BAZEL: ${{ inputs.registry_revision && 'tools/bazel/ci/review_bazel.sh' || 'tools/bazel/ci/lldp_draft_bazel.sh' }}
+      SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.registry_revision }}
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:
         shell: bash
     steps:
+      - name: Validate the optional reviewed source and registry selection
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          if [[ -n "$SOURCE_REVISION$REGISTRY_REVISION" ]]; then
+            [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+                echo 'Select both source and registry using full lowercase Git SHAs.' >&2
+                exit 2
+              }
+          fi
       - name: Install execution and verification tools
         run: |
           apt-get update
           apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git j2cli jq libarchive-tools libxml2 python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.source_revision || github.sha }}
           persist-credentials: false
+      - name: Initialize the reviewed source's pinned gNOI dependency
+        if: inputs.source_revision != ''
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -40,6 +68,35 @@ jobs:
           repository-cache: true
           disk-cache: lldp-image-amd64
           cache-version: "8.5.1"
+      - name: Preserve caches and verified transport for the reviewed source
+        if: inputs.registry_revision != ''
+        run: |
+          python3 -B tools/bazel/ci/lldp_draft_cache.py
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          inputs = [
+              ("https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg",
+               "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"),
+              ("https://raw.githubusercontent.com/securely1g/sonic-buildimage/ba746670df1c30d0e6913d018ef0ff88d5b88679/tools/bazel/debian-pool.cfg",
+               "43dce3f1b98b76ffa9db403e47139497dfb702126282747446463356c58133ee"),
+          ]
+          parts = []
+          for url, expected in inputs:
+              with urlopen(url, timeout=60) as response:
+                  data = response.read()
+              if hashlib.sha256(data).hexdigest() != expected:
+                  raise SystemExit("Reviewed downloader configuration checksum mismatch")
+              parts.append(data.rstrip(b"\n") + b"\n")
+          config = Path(os.environ["RUNNER_TEMP"]) / "reviewed-lldp-downloads.cfg"
+          config.write_bytes(b"".join(parts))
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+          mkdir -p artifacts/lldp
+          cp "$RUNNER_TEMP/reviewed-lldp-downloads.cfg" artifacts/lldp/downloader.cfg
       - name: Prepare the verified compression source
         run: |
           mkdir -p artifacts/lldp
@@ -68,14 +125,14 @@ jobs:
           test "$(uname -m)" = x86_64
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           test ! -e MODULE.bazel.lock
-          python3 -B tools/bazel/ci/lldp_image.py build --artifacts artifacts/lldp
+          python3 -B tools/bazel/ci/lldp_image.py build --artifacts artifacts/lldp --bazel "$BAZEL"
       - name: Validate completed image contents and source symbols
         run: python3 -B tools/bazel/ci/lldp_image.py validate --artifacts artifacts/lldp
       - name: Check incremental rebuild and restored image digests
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/lldp_image.py incremental --artifacts artifacts/lldp
+          python3 -B tools/bazel/ci/lldp_image.py incremental --artifacts artifacts/lldp --bazel "$BAZEL"
           git diff --exit-code
       - name: Prepare reviewed public evidence
         id: public
@@ -125,6 +182,7 @@ jobs:
             artifacts/lldp/build-summary.json
             artifacts/lldp/MODULE.bazel.lock
             artifacts/lldp/module-graph.json
+            artifacts/lldp/downloader.cfg
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
@@ -137,6 +195,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.source_revision || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
