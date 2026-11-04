@@ -185,7 +185,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -536,7 +536,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -1001,7 +1001,7 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64"]'), github.head_ref))) ||
+       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64"]'), github.head_ref))) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720

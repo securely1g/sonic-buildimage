@@ -290,6 +290,15 @@ pip.parse(
 )
 use_repo(pip, "database_pip")
 
+# Router Advertiser imports its existing distro radvd runtime and debug tools.
+apt.import_lock(lock = "//dockers/docker-router-advertiser/bazel:apt.lock.json")
+use_repo(apt, "radv_debug_debian", "radv_runtime_debian")
+
+apt_inputs(
+    name = "radv_apt_inputs",
+    lock = "//dockers/docker-router-advertiser/bazel:apt.lock.json",
+)
+
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
 
