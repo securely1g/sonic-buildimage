@@ -41,8 +41,8 @@ class ImageWorkerTest(unittest.TestCase):
             ('workflow_dispatch', '', True, 'teamd', False, False, False),
         ):
             github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
-                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
-                    head=SimpleNamespace(repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
+                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(number=999,
+                    head=SimpleNamespace(ref=branch, repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
             inputs = SimpleNamespace(source_image=image, skip_vs=skip)
             def evaluate(expression):
                 expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
