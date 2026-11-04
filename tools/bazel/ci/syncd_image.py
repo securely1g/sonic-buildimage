@@ -103,10 +103,24 @@ def validate_groups(base_layout, runtime_layout, debug_layout):
             "declared_addition": "_ssh:x:104:", "ordered_rows_and_metadata_preserved": True}
 
 
-def verify_parent_files(parent, runtime, debug, configuration, alternatives):
+def verify_parent_files(parent, runtime, debug, configuration, alternatives, *,
+                        debug_replacements=(), debug_tools=None):
     """Preserve every parent file except separately verified image-owned changes."""
     runtime_changes = set(configuration) | {"etc/group", "var/lib/dpkg/status"}
     debug_changes = {path for item in alternatives for path in item["paths"]} | {"var/lib/dpkg/status"}
+    # The completed APT validator binds these non-ELF replacements to the
+    # selected lock, source receipt and runtime image. Full Vim replaces the
+    # inherited Tiny Vim help index; require its exact retained layer record.
+    replacements = [item["path"] for item in debug_replacements]
+    check.require(len(replacements) == len(set(replacements)), "duplicate debug replacement path")
+    for path in replacements:
+        previous = runtime.get(path, {})
+        replacement = (debug_tools or {}).get(path, {})
+        check.require(previous.get("kind") == replacement.get("kind") == "file" and
+                      "elf_machine" not in previous and "elf_machine" not in replacement,
+                      "debug replacement must name an inherited non-ELF file and declared payload: " + path)
+        check.require(debug.get(path) == replacement, "debug replacement differs from declared payload: " + path)
+    debug_changes.update(replacements)
     for path, expected in parent.items():
         if path not in runtime_changes:
             check.require(runtime.get(path) == expected, "runtime changed inherited parent file: " + path)
@@ -114,7 +128,8 @@ def verify_parent_files(parent, runtime, debug, configuration, alternatives):
         if path not in debug_changes:
             check.require(debug.get(path) == expected, "debug changed inherited runtime file: " + path)
     return {"parent_paths": len(parent), "runtime_paths": len(runtime),
-            "runtime_exceptions": sorted(runtime_changes), "debug_exceptions": sorted(debug_changes)}
+            "runtime_exceptions": sorted(runtime_changes), "debug_exceptions": sorted(debug_changes),
+            "declared_debug_package_replacements": sorted(replacements)}
 
 
 def manifest_command():
@@ -214,7 +229,9 @@ def validate_images(directory):
     preserved = verify_parent_files(
         image_validation.image_inventory(oci_layout.validate_layout(ROOT / receipt["base_layout"], "linux/amd64"))[0],
         inventories[IMAGES[0]], inventories[IMAGES[1]],
-        check.payload(directory / "config-files.tar", require_root=False), policy["image_validation"]["debug_alternatives"])
+        check.payload(directory / "config-files.tar", require_root=False), policy["image_validation"]["debug_alternatives"],
+        debug_replacements=images["overlay_checks"]["debug_non_elf_base_changes"],
+        debug_tools=check.payload(directory / "debug-tools.tar", require_root=False))
     native = {path: inventories[IMAGES[0]][path] for path in pairs}
     result = {"status": "passed", **identity(), "architecture": "amd64",
               "images": summaries, "native": native, "source_debug_pairs": list(pairs.values()),

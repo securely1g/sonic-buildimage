@@ -118,6 +118,42 @@ class SyncdAccountsTest(unittest.TestCase):
 
 
 class SyncdParentTest(unittest.TestCase):
+    def test_declared_vim_documentation_replacements_bind_exact_layer_records(self):
+        paths = ["usr/share/vim/vim91/doc/help.txt", "usr/share/vim/vim91/doc/tags"]
+        original = {"kind": "file", "sha256": "tiny-help", "size": 12, "mode": 0o644, "uid": 0, "gid": 0}
+        installed = {**original, "sha256": "full-help", "size": 24}
+        runtime = {path: dict(original) for path in paths}
+        tools = {path: dict(installed) for path in paths}
+        declared = [{"package": "vim-runtime", "path": path} for path in paths]
+        result = verify_parent_files(runtime, runtime, tools, {}, [],
+                                     debug_replacements=declared, debug_tools=tools)
+        self.assertEqual(result["declared_debug_package_replacements"], paths)
+        for key, value in (("sha256", "wrong"), ("size", 25), ("mode", 0o600),
+                           ("uid", 1), ("gid", 1), ("kind", "symlink")):
+            wrong = copy.deepcopy(tools)
+            wrong[paths[0]][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "differs from declared payload"):
+                verify_parent_files(runtime, runtime, wrong, {}, [],
+                                    debug_replacements=declared, debug_tools=tools)
+        with self.assertRaisesRegex(ValueError, "inherited runtime file"):
+            verify_parent_files(runtime, runtime, tools, {}, [],
+                                debug_replacements=declared[:1], debug_tools=tools)
+
+    def test_debug_replacement_rejects_duplicate_missing_or_elf_paths(self):
+        path = "usr/share/vim/vim91/doc/help.txt"
+        original = {"kind": "file", "sha256": "tiny", "mode": 0o644, "uid": 0, "gid": 0}
+        installed = {**original, "sha256": "full"}
+        declared = [{"package": "vim-runtime", "path": path}]
+        with self.assertRaisesRegex(ValueError, "duplicate debug replacement"):
+            verify_parent_files({path: original}, {path: original}, {path: installed}, {}, [],
+                                debug_replacements=declared * 2, debug_tools={path: installed})
+        for runtime, tools in (({}, {path: installed}), ({path: original}, {}),
+                               ({path: {**original, "elf_machine": 62}}, {path: installed}),
+                               ({path: original}, {path: {**installed, "elf_machine": 62}})):
+            with self.subTest(runtime=runtime, tools=tools), self.assertRaisesRegex(ValueError, "inherited non-ELF file"):
+                verify_parent_files(runtime, runtime, {path: installed}, {}, [],
+                                    debug_replacements=declared, debug_tools=tools)
+
     def test_checks_nonnative_parent_files_and_exact_metadata(self):
         parent = {"usr/share/owner/data": {"kind": "file", "sha256": "same", "mode": 0o644}}
         verify_parent_files(parent, parent, parent, {}, [])
