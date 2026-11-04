@@ -871,12 +871,12 @@ jobs:
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
-    # PRs #51/#61 and the SWSS closure follow-up validate source TARs only; no DEB generation.
+    # Source PRs #5/#51/#61 and the SWSS closure follow-up do not build DEBs.
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       (github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure"]'), github.head_ref))) ||
+       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure"]'), github.head_ref))) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
