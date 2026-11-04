@@ -26,11 +26,35 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      # Bind disposable host SDKs so cleanup frees the disk used by /github/home.
+      volumes:
+        - /usr/local/lib/android:/host-unused-sdk/android
+        - /usr/share/dotnet:/host-unused-sdk/dotnet
+        - /opt/ghc:/host-unused-sdk/ghc
+        - /usr/local/.ghcup:/host-unused-sdk/ghcup
     defaults:
       run:
         shell: bash
     steps:
+      - name: Allocate space on this disposable hosted runner
+        run: |
+          set -euo pipefail
+          [[ "${RUNNER_ENVIRONMENT:-}" == github-hosted ]] || {
+            echo 'SDK cleanup requires a disposable GitHub-hosted runner.' >&2
+            exit 1
+          }
+          for sdk in /host-unused-sdk/android /host-unused-sdk/dotnet \
+                     /host-unused-sdk/ghc /host-unused-sdk/ghcup; do
+            find "$sdk" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          done
+          df -h /github/home
+          available_bytes=$(df --output=avail --block-size=1 /github/home | tail -n 1)
+          (( available_bytes >= 45 * 1024 * 1024 * 1024 )) || {
+            echo 'Source image validation requires 45 GiB of free build space.' >&2
+            exit 1
+          }
       - name: Install execution and verification tools
         run: |
           apt-get update
