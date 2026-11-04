@@ -123,7 +123,7 @@ class SourceWorkflowTest(unittest.TestCase):
     def recorded(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
-    def test_owned_libteam_companion_keeps_source_only_scope(self):
+    def test_owned_source_companions_keep_source_only_scope(self):
         text = WORKFLOW.read_text()
         fixture_conditions = re.findall(r"SOURCE_ONLY_NO_DEBS: \$\{\{ (.*?) \}\}", text)
         self.assertEqual(len(fixture_conditions), 2)
@@ -155,6 +155,9 @@ class SourceWorkflowTest(unittest.TestCase):
             (999, "codex/libteam-current-native-inputs", "securely1g/sonic-buildimage", True, False),
             (999, "codex/libteam-current-native-inputs", "example/sonic-buildimage", False, False),
             (999, "codex/libteam-current-native-inputs-extra", "securely1g/sonic-buildimage", False, True),
+            (999, "frr-native-bazel", "securely1g/sonic-buildimage", True, False),
+            (999, "frr-native-bazel", "example/sonic-buildimage", False, False),
+            (999, "frr-native-bazel-extra", "securely1g/sonic-buildimage", False, True),
             (999, "unrelated", "securely1g/sonic-buildimage", False, True),
         ):
             with self.subTest(number=number, branch=branch, owner=owner):
