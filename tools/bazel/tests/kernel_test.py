@@ -73,6 +73,7 @@ class KernelBundleTest(unittest.TestCase):
         shutil.copyfile(ROOT / "Makefile.work", self.root / "Makefile.work")
         shutil.copyfile(ROOT / ".gitmodules", self.root / ".gitmodules")
         shutil.copytree(ROOT / "tools/bazel/kernel", self.root / "tools/bazel/kernel")
+        shutil.copyfile(ROOT / kernel.DOWNLOADER_CONFIG, self.root / kernel.DOWNLOADER_CONFIG)
         consumer_module = self.root / "tools/bazel/kernel/MODULE.bazel"
         consumer_module.write_text(module.replace(next(line for line in module.splitlines() if 'name = "sonic-linux-kernel"' in line),
             'bazel_dep(name = "sonic-linux-kernel", version = "0.0.1-' + self.gitlink + '", repo_name = "sonic_linux_kernel")'))
@@ -305,6 +306,18 @@ class KernelBundleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inputs must match|checkout must have"):
             kernel.verify(self.bundle, self.root)
 
+    def test_download_policy_is_bound_to_kernel_consumer_identity(self):
+        config = self.root / kernel.DOWNLOADER_CONFIG
+        config.write_bytes(config.read_bytes() + b"\n# Changed transport policy\n")
+        with self.assertRaisesRegex(ValueError, "handoff inputs must match"):
+            kernel.verify(self.bundle, self.root)
+        subprocess.run(["git", "-C", str(self.root), "add", str(kernel.DOWNLOADER_CONFIG)], check=True)
+        self.commit(self.root, "Change the pinned download policy")
+        current = kernel.source_state(self.root)
+        self.assertNotEqual(current["consumer_inputs_sha256"], self.state["consumer_inputs_sha256"])
+        with self.assertRaisesRegex(ValueError, "provenance differs"):
+            kernel.verify(self.bundle, self.root)
+
     def test_resolution_binds_registered_kernel_and_exact_tools_source(self):
         workdir, consumer = self.root / "resolution", self.root / "consumer"
         consumer.mkdir()
@@ -368,6 +381,8 @@ class KernelBundleTest(unittest.TestCase):
 
     def test_producer_uses_registered_source_and_retains_evidence(self):
         prebuilt = self.bundle
+        template_rc = self.root / "tools/bazel/kernel/.bazelrc"
+        original_rc = template_rc.read_text()
         with self.assertRaisesRegex(ValueError, "must not overlap"):
             kernel.plan(self.root, self.bundle / "state", None, False)
         calls = []
@@ -381,6 +396,11 @@ class KernelBundleTest(unittest.TestCase):
             workdir = Path(command[command.index("--work-dir") + 1])
             self.assertIn(kernel.DEFAULT_REGISTRY, (consumer / ".bazelrc").read_text())
             self.assertIn(kernel.DEFAULT_REGISTRY, (self.root / "tools/bazel/kernel/.bazelrc").read_text())
+            self.assertEqual((consumer / kernel.DOWNLOADER_CONFIG.name).read_bytes(),
+                             (self.root / kernel.DOWNLOADER_CONFIG).read_bytes())
+            self.assertEqual((consumer / ".bazelrc").read_text(), original_rc +
+                             "\ncommon --experimental_downloader_config=debian-pool.cfg\n")
+            self.assertEqual(template_rc.read_text(), original_rc)
             outputs = workdir / "outputs"
             outputs.mkdir(parents=True)
             for name in [kernel.MANIFEST, *self.packages]:
