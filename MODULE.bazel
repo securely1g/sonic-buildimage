@@ -524,3 +524,20 @@ apt_inputs(
     name = "macsec_apt_inputs",
     lock = "//dockers/docker-macsec/bazel:apt.lock.json",
 )
+
+# Preserve the source owner as a standalone module in this same checkout.
+bazel_dep(name = "sonic-sysmgr", version = "0.0.0.sonic-buildimage", repo_name = "sonic_sysmgr")
+local_path_override(
+    module_name = "sonic-sysmgr",
+    path = "src/sonic-sysmgr",
+)
+
+bazel_dep(name = "protobuf-legacy", version = "3.21.12.sonic.2", repo_name = "sonic_protobuf")
+
+apt.import_lock(lock = "//dockers/docker-sysmgr/bazel:apt.lock.json")
+use_repo(apt, "sysmgr_debian", "sysmgr_debug_debian", "sysmgr_test_debian")
+
+apt_inputs(
+    name = "sysmgr_apt_inputs",
+    lock = "//dockers/docker-sysmgr/bazel:apt.lock.json",
+)
