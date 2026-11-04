@@ -86,6 +86,7 @@ debug_symbols_layer(
 
 flatten(
     name = "source_debug_symbols",
+    deduplicate = True,
     tars = [
         ":parent_debug_symbols",
         "@p4rt_owner_payload//:p4rt_runtime_debug.tar",
@@ -249,6 +250,7 @@ flatten(
 
 flatten(
     name = "debug_sai_symbols",
+    deduplicate = True,
     tars = [
         "@sonic_sairedis//lib:libsairedis_pkg.debug_symbols",
         "@sonic_sairedis//meta:libsaimetadata_pkg.debug_symbols",
