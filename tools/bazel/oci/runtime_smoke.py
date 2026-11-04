@@ -329,7 +329,7 @@ def redis_fixture(config):
                 yield {'version': version['stdout'].strip(), 'sha256': config['sha256'],
                        'database_config_sha256': hashlib.sha256(database.read_bytes()).hexdigest(),
                        'unix_socket': socket_path, 'tcp_disabled': tcp_port == 0,
-                       'tcp_port': tcp_port, 'tcp_bind': '127.0.0.1',
+                       'tcp_port': tcp_port, 'tcp_bind': '127.0.0.1', 'process_id': process.pid,
                        'scope': 'Explicit test helper, not an installed image component.'}
             finally:
                 if process.poll() is None:

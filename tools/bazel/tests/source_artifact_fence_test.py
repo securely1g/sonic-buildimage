@@ -5,10 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.bazel.ci import sysmgr_image
+from tools.bazel.ci import gbsyncd_image, sysmgr_image
 
 
 class SourceArtifactFenceTest(unittest.TestCase):
+    driver = sysmgr_image
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -21,8 +22,8 @@ class SourceArtifactFenceTest(unittest.TestCase):
                         'commit', '-qm', 'fixture'], cwd=self.root, check=True)
 
     def check_source(self):
-        with patch.object(sysmgr_image, 'ROOT', self.root):
-            sysmgr_image.clean_source(self.root / 'artifacts' / 'sysmgr')
+        with patch.object(self.driver, 'ROOT', self.root):
+            self.driver.clean_source(self.root / 'artifacts' / 'sysmgr')
 
     def test_prior_family_evidence_can_coexist(self):
         evidence = self.root / 'artifacts' / 'orchagent' / 'receipt.json'
@@ -32,7 +33,7 @@ class SourceArtifactFenceTest(unittest.TestCase):
 
     def test_untracked_source_still_rejected(self):
         (self.root / 'undeclared.py').write_text('pass\n')
-        with self.assertRaisesRegex(ValueError, 'untracked source inputs'):
+        with self.assertRaisesRegex(ValueError, '(untracked source inputs|commit all source inputs)'):
             self.check_source()
 
     def test_tracked_source_still_rejected(self):
@@ -42,8 +43,12 @@ class SourceArtifactFenceTest(unittest.TestCase):
 
     def test_artifacts_name_alone_is_not_reserved_subtree(self):
         (self.root / 'artifacts').write_text('undeclared input\n')
-        with self.assertRaisesRegex(ValueError, 'untracked source inputs'):
+        with self.assertRaisesRegex(ValueError, '(untracked source inputs|commit all source inputs)'):
             self.check_source()
+
+
+class GearboxSourceArtifactFenceTest(SourceArtifactFenceTest):
+    driver = gbsyncd_image
 
 
 if __name__ == '__main__':
