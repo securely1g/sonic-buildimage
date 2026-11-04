@@ -26,48 +26,10 @@ job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
 
-The source-only [SWSS native closure workflow](../../../.github/workflows/bazel-swss-native.yml)
-runs the existing full-package, Common-owned Rust and DASH/Protobuf tests on
-native AMD64/Trixie with the libteam source interfaces selected by the buildimage
-root. It retains both TARs, their checksums, every production native link command,
-all 30 deployed ELF dependency lists and matching debug pairs, plus isolated
-GDB source/line lookups for the C++ and Rust entry points. The targeted
-edit probe changes one installed Python source through the declared SWSS patch,
-requires only the runtime TAR to change, then restores both original hashes.
-It does not claim cold-cache performance, C++ recompilation, complete daemon
-execution or full-image validation. The Draft registry entry point is shared
-with libteam until its prerequisite registrations land.
-Public uploads contain explicit archives, hashes, validated receipts and the
-shared helper's build/test summaries. Raw Bazel events, action environments and
-test/command logs remain in the CI workspace.
-
-The Teamd worker adapter preserves the image inputs from PR140 revision
-`ed875db040becc65eac8912e4e350a0ce47b168b` and its immutable registry catalog.
-Run `teamd_image.py build`, `validate`, and `incremental` with
-`--artifacts artifacts/teamd`, then `teamd_loaded.py --artifacts artifacts/teamd`.
-The build and incremental commands accept `--bazel tools/bazel/ci/libteam_draft_bazel.sh`.
-That compatibility wrapper uses the shared review launcher from PR160 revision
-`9bf4f2fd546f1e79b812e69b27381700f2bd206e`, preserving the worker-selected
-JVM, action limits, and cache settings through `BAZEL_REAL`.
-Loaded checks require the existing `team` and `team_mode_loadbalance` kernel
-modules and inspect their availability without loading modules. The hosted
-workflow retains its existing module setup. Both paths run the original
-Teamd probe with its archive, rootfs, loader, service, and debug checks, and
-retain per-image receipts plus `loaded-validation.json`.
-
-For the selected SWSS revision, Make's `LIBFIB` declaration is inactive in the
-source/link/ELF closure; the audit fails if later inputs introduce that usage.
-FRR's libFIB header/recipe prerequisite remains independent; its actual loader
-requirements are inspected separately. SAI metadata/Redis and DASH APIs
-remain source-owner dependencies. `LIBSAIVS_DEV` supports the native mock-test
-path; the production graph does not automatically install that development
-package. `stpmgrd` uses its declared local IPC definitions rather than linking
-an STP daemon. The old Protobuf variables in `rules/swss.mk` are defined only
-for Bullseye; Trixie uses the selected owner's shared Protobuf ABI. The image
-integration follow-up must replace stock `libteam5`/`libteamdctl0` runtime APT
-payloads with the same source owners' TARs; the source check alone does not
-prove that replacement. `libteam-utils` is a separate teamd image input, not an
-extra SWSS runtime dependency.
+SWSS compilation, package contents and component tests are validated in the
+[SWSS source repository](https://github.com/securely1g/sonic-swss). Buildimage
+consumes those targets and validates the assembled OCI images, including their
+installed behavior and image-cache invalidation.
 
 The native VS Make build produces the runtime and debug archives together for
 each registered Bazel container, using the same builder and Bazel invocation
