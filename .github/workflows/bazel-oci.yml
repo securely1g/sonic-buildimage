@@ -349,20 +349,8 @@ jobs:
           sha256sum artifacts/archive/archive-fixture.* > artifacts/archive/archive-sha256.txt
 
       - name: Check shared Make rules with unrelated container targets
-        env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
-          if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
-            # This CI-only change does not authorize Debian package generation.
-            for test in tools/bazel/tests/*_test.py; do
-              case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
-                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
-              esac
-            done
-          else
-            python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
-          fi
+          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B tools/bazel/ci/verify_make_archive.py \
             --artifacts artifacts/archive/make-export \
             --bazel "$BAZEL" \
@@ -557,20 +545,8 @@ jobs:
           cache-version: "8.5.1"
 
       - name: Check Make handoff and archive validation
-        env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
-          if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
-            # This CI-only change does not authorize Debian package generation.
-            for test in tools/bazel/tests/*_test.py; do
-              case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
-                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
-              esac
-            done
-          else
-            python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
-          fi
+          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
@@ -1018,8 +994,6 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
-      github.head_ref != 'codex/image-environment' &&
-      github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
