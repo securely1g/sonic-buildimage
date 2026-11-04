@@ -41,6 +41,20 @@ Public uploads contain explicit archives, hashes, validated receipts and the
 shared helper's build/test summaries. Raw Bazel events, action environments and
 test/command logs remain in the CI workspace.
 
+The Teamd worker adapter preserves the image inputs from PR140 revision
+`ed875db040becc65eac8912e4e350a0ce47b168b` and its immutable registry catalog.
+Run `teamd_image.py build`, `validate`, and `incremental` with
+`--artifacts artifacts/teamd`, then `teamd_loaded.py --artifacts artifacts/teamd`.
+The build and incremental commands accept `--bazel tools/bazel/ci/libteam_draft_bazel.sh`.
+That compatibility wrapper uses the shared review launcher from PR160 revision
+`9bf4f2fd546f1e79b812e69b27381700f2bd206e`, preserving the worker-selected
+JVM, action limits, and cache settings through `BAZEL_REAL`.
+Loaded checks require the existing `team` and `team_mode_loadbalance` kernel
+modules and inspect their availability without loading modules. The hosted
+workflow retains its existing module setup. Both paths run the original
+Teamd probe with its archive, rootfs, loader, service, and debug checks, and
+retain per-image receipts plus `loaded-validation.json`.
+
 For the selected SWSS revision, Make's `LIBFIB` declaration is inactive in the
 source/link/ELF closure; the audit fails if later inputs introduce that usage.
 FRR's libFIB header/recipe prerequisite remains independent; its actual loader
