@@ -158,7 +158,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && contains(fromJSON('["codex/config-engine-amd64", "codex/eventd-oci-amd64"]'), github.event.pull_request.head.ref) }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/eventd-review-source-inputs') || github.event_name == 'pull_request' && contains(fromJSON('["codex/config-engine-amd64", "codex/eventd-oci-amd64"]'), github.event.pull_request.head.ref) }}
         run: |
           # Temporary config-engine source/image acceptance: no DEB generation.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -366,7 +366,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && contains(fromJSON('["codex/config-engine-amd64", "codex/eventd-oci-amd64"]'), github.event.pull_request.head.ref) }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/eventd-review-source-inputs') || github.event_name == 'pull_request' && contains(fromJSON('["codex/config-engine-amd64", "codex/eventd-oci-amd64"]'), github.event.pull_request.head.ref) }}
         run: |
           # Temporary config-engine source/image acceptance: no DEB generation.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -818,6 +818,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.ref != 'codex/config-engine-amd64' &&
        github.event.pull_request.head.ref != 'codex/eventd-oci-amd64' &&
+       github.event.pull_request.head.ref != 'codex/eventd-review-source-inputs' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
