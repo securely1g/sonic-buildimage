@@ -274,3 +274,20 @@ debug images retain their original private kernel-team/Redis checks, payload
 hashes and aggregate `loaded-validation.json`. This mode does not select DEB
 packaging or the full VS installer. The source and registry revisions are paired
 explicit inputs; worker control is a separate reviewed revision.
+
+## Service-specific source workflow selection
+
+The worker first retains a compatible `bazel-oci.yml` catalog for combined
+source checkouts. For Eventd, LLDP, Router Advertiser, MACsec and MUX, it can
+instead read the selected source's fixed image workflow. That workflow must use
+the existing `review_bazel.sh` entrypoint and declare one immutable catalog.
+MACsec's workflow invokes its driver without `--bazel`, so the worker also checks
+the driver's declared default. Its optional `inputs.registry_revision` fallback
+is accepted only with a literal 40-character default; arbitrary expressions are
+rejected. A reviewed explicit catalog still overrides a review-wrapper default.
+
+These checks do not convert older plain-Bazel or different-wrapper source
+branches. Those branches need a separately reviewed compatible source selection.
+Database continues to use the common OCI workflow. The four build/validation/
+incremental/installed phases, no-DEB audit, worker affinity and persistent cache
+paths are unchanged; the selected source files are never rewritten.

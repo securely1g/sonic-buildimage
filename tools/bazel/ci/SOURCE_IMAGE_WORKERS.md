@@ -77,7 +77,8 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `framework`,
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
+`database`, `eventd`, `lldp`, `radv`, `macsec` or `mux`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -192,6 +193,28 @@ supplies the reviewed registry revision, just as for gNMI. This enables
 to run the same image checks on an idle native AMD64 worker. Select an immutable
 source commit and retain the source/catalog and all four phase receipts; adding
 the selector alone does not establish image acceptance.
+
+The `database`, `eventd`, `lldp`, `radv`, `macsec` and `mux` selectors reuse
+those images' existing `*_image.py` build, content validation and incremental
+commands, then their `*_loaded.py` runtime probes. Their dedicated workflow's
+Make/identity checks run before the build and a failure stops the image driver.
+The worker retains each image's runtime receipt and `loaded-validation.json`
+when the existing driver produces that aggregate. Native owner tests remain
+with their existing owner workflows.
+
+For example, `source_image=database` validates the selected source's runtime
+and debug archives, original Redis entrypoint and DASH conversion fixture using
+`database_image.py` and `database_loaded.py`, as in
+[database image PR #142](https://github.com/securely1g/sonic-buildimage/pull/142).
+It uses the source checkout's immutable review catalog, private Docker daemon
+and per-worker `database/output-base` cache. The same four phases, AMD64/Trixie
+preflight, source checks, no-DEB action audit and artifact hash checks apply.
+
+SNMP, FRR and the shared base/config-engine/SWSS layers are not selectable here.
+Their existing workflows use inline loaded-container commands or combine build
+and validation under different CLIs. They need an explicit adapter preserving
+all of those checks and receipts; a missing phase must not be treated as a pass.
+Use their dedicated workflows until that interface is reviewed.
 
 ## Explicit ordinary registry consumers
 
