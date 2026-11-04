@@ -557,3 +557,24 @@ apt_inputs(
 # Original gearbox services use a declared private Redis fixture.
 apt.import_lock(lock = "//platform/vs/docker-gbsyncd-vs/bazel:apt-test.lock.json")
 use_repo(apt, "gbsyncd_test_debian")
+
+# Native nnpy is source-built for the BMv2 clients already installed by its owner.
+bazel_dep(name = "nnpy", version = "1.4.2.sonic.1")
+
+apt.import_lock(lock = "//platform/vs/docker-dash-engine/bazel:apt.lock.json")
+use_repo(apt, "dash_engine_debian", "dash_engine_debug_debian")
+
+apt_inputs(
+    name = "dash_engine_apt_inputs",
+    lock = "//platform/vs/docker-dash-engine/bazel:apt.lock.json",
+)
+
+source_modules(
+    name = "dash_engine_source_modules",
+    modules = {
+        "@p4lang_pi//:MODULE.bazel": "p4lang-pi",
+        "@p4lang_bmv2//:MODULE.bazel": "p4lang-bmv2",
+        "@nnpy//:MODULE.bazel": "nnpy",
+        "@sonic_fips//:MODULE.bazel": "sonic-fips",
+    },
+)
