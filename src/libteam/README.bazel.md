@@ -14,12 +14,16 @@ development and matching debug TARs, producer metadata, `teamsyncd` and
 `tlm_teamd` on native AMD64 and ARM64 Trixie runners. It executes
 `@libteam//:consumer_test` with the declared runtime libraries. The SWSS
 integration patches select this source-built libteam and the per-library ZeroMQ
-interface; the Common patch applies to the current landed `f7fda40` source.
+interface; the root applies the Common patch to its selected
+`0.0.8-a0450924719a9f706125cc44a07dc88934935003` source.
 
 Dependencies resolve from the canonical `securely1g/sonic-bazel-registry`
-`main` catalog: `libnl3 3.7.0.sonic.7`, `sonic-build-infra
-0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88` and `rules_distroless
-0.9.4.sonic.15`. `tools/bazel/ci/libteam_draft_bazel.sh` is only a pass-through
+`main` catalog. Root and standalone libteam declare `libnl3 3.7.0.sonic.7`
+and `rules_distroless 0.9.4.sonic.15`. Standalone libteam declares
+`sonic-build-infra 0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88`;
+the root dependency and override select
+`0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568` for root builds.
+`tools/bazel/ci/libteam_draft_bazel.sh` is only a pass-through
 that loads `tools/bazel/common.bazelrc` with that canonical registry; it pins
 no registry snapshot or module version. For local validation run
 `tools/bazel/ci/libteam_draft_bazel.sh build @libteam//:libteam_runtime`.
