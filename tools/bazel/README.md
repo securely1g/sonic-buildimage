@@ -251,6 +251,24 @@ recipe.
 
 ## Shared Bazel options and caches
 
+The shared `common.bazelrc` uses Bazel's [downloader configuration](debian-pool.cfg)
+to try `deb.debian.org` before the original dated `snapshot.debian.org` URL for
+Debian `.deb` package payloads. This also covers the Debian security pool.
+The repository rule's pinned SHA-256 still verifies the bytes from either
+location; package versions, snapshots and lockfiles are unchanged. For example,
+`arping_2.25-1_amd64.deb` can come from the official pool when its snapshot URL
+returns HTTP 503. A package removed from that pool can still use its snapshot.
+Package indexes, source archives and other hosts are not rewritten.
+
+The configuration path is relative to the Bazel workspace root, so commands
+from subdirectories use the same file. Existing repository and action caches
+keep their settings. A `common --experimental_downloader_config=...` option in
+`.bazelrc.user`, or a command-line option, replaces this default with the user's
+complete downloader configuration; Bazel does not merge those files. Custom
+configurations that also need this fallback should include these four rules.
+Review checkouts that use the existing generated rc retain the same default
+and append their allowed local cache and downloader options afterward.
+
 Make uses `SONIC_BAZEL_CACHE_SOURCE` as the host directory for shared Bazel
 caches. Its default is `$(SONIC_DPKG_CACHE_SOURCE)/bazel`, independent of
 `BUILD_WITH_BAZEL_WHEN_AVAILABLE`. Set it to a persistent directory writable by
