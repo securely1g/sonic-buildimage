@@ -23,7 +23,7 @@ class DebugSaiTest(unittest.TestCase):
                 for name in names}
             self.payloads[package] = files
             self.debug.update(copy.deepcopy(files))
-            self.metadata['source_packages'].append({'package': package, 'target': target,
+            self.metadata['source_packages'].append({'package': package, 'target': '@@sonic-sairedis+' + target,
                 'source_revision': 'a' * 40, 'payload_sha256': self.hashes[package], 'version': '1.0.0',
                 'native_files': [{'path': name, **row} for name, row in files.items()]})
             self.owner['packages'][package] = {'runtime_target': target,
@@ -47,6 +47,17 @@ class DebugSaiTest(unittest.TestCase):
         self.owner['packages']['syncd-vs'] = {}
         with self.assertRaisesRegex(ValueError, 'only the two SAI library packages'):
             self.verify()
+
+    def test_installed_target_must_be_the_canonical_sairedis_owner(self):
+        self.verify()
+        record = self.metadata['source_packages'][0]
+        target = self.owner['packages'][record['package']]['runtime_target']
+        for wrong in (target, '@sonic_sairedis' + target, '@@another-module+' + target,
+                      '@@sonic-sairedis+//lib:another_target'):
+            with self.subTest(target=wrong):
+                record['target'] = wrong
+                with self.assertRaisesRegex(ValueError, 'missing source-owned'):
+                    self.verify()
 
     def test_missing_changed_or_runtime_sai_libraries_are_rejected(self):
         name = next(iter(self.debug))
