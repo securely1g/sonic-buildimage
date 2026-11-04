@@ -73,6 +73,49 @@ def source_fence(work, base):
     return result
 
 
+def source_inventory(work, base):
+    """Only lstat/resolve source definitions; never read file payloads or outputs."""
+    require(work.resolve()==work and base.resolve()==base and base.is_relative_to(work),
+            "Source diagnostic root must be confined")
+    paths=[work/"consumer"/name for name in ("MODULE.bazel","MODULE.bazel.lock","BUILD.bazel",".bazelversion")]
+    for parent, directories, files in os.walk(base/"external",followlinks=False):
+        directories[:]=sorted(d for d in directories if not (Path(parent)/d).is_symlink())
+        for name in sorted(files):
+            if name in ("BUILD","BUILD.bazel","MODULE.bazel","REPO.bazel","WORKSPACE","WORKSPACE.bazel") or name.endswith(".bzl"):
+                require(len(paths)<50000,"Source diagnostic inventory exceeds bound")
+                paths.append(Path(parent)/name)
+    result={};nonregular=[]
+    kinds=((stat.S_ISREG,"file"),(stat.S_ISLNK,"symlink"),(stat.S_ISDIR,"directory"),
+           (stat.S_ISFIFO,"fifo"),(stat.S_ISSOCK,"socket"))
+    for path in paths:
+        info=path.lstat();relative=path.relative_to(work).as_posix()
+        kind=next((name for check,name in kinds if check(info.st_mode)),"special")
+        if kind=="file" and not relative.startswith("consumer/"):continue
+        require(len(result)<1024,"Nonregular source diagnostic exceeds bound")
+        item={"kind":kind,"mode":stat.S_IMODE(info.st_mode),"uid":info.st_uid,"gid":info.st_gid,"bytes":info.st_size}
+        if kind!="file":
+            nonregular.append(relative)
+            try:
+                resolved=path.resolve(strict=True);inside=resolved.is_relative_to(work)
+                item["target_within_original_work"]=inside
+                if inside:
+                    item["resolved_relative_path"]=resolved.relative_to(work).as_posix()
+                    item["target_is_regular"]=resolved.is_file()
+                    item["target_in_configured_outputs"]=resolved.is_relative_to(base/"execroot")
+            except (OSError,RuntimeError) as error:
+                item["resolution_error_class"]=type(error).__name__
+        result[relative]=item
+    return {"status":"passed","kind":"source-definition-type-inventory",
+            "original_run":origin.ORIGINAL_RUN,"registry_revision":origin.REVISION,
+            "definitions_examined":len(paths),"nonregular_count":len(nonregular),
+            "first_nonregular":nonregular[0] if nonregular else None,"records":result,
+            "file_payloads_read":False,"configured_query_executed":False,"native_execution":False}
+
+
+def failure_receipt_name(uid):
+    return "worker-collection-root-failure.json" if uid==0 else "worker-collection-outer-failure.json"
+
+
 def query_binary(cache):
     # The binary itself is pinned to the official 8.5.1 Linux x86_64 SHA256.
     # No retained wrapper or Bazelisk code is executed, and no download is attempted.
@@ -330,7 +373,7 @@ def collect(args, output):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase",choices=("collect","root-collect"))
+    parser.add_argument("phase",choices=("collect","root-collect","source-inventory","root-source-inventory"))
     parser.add_argument("--consumer",required=True)
     parser.add_argument("--revision",required=True)
     parser.add_argument("--worker",required=True)
@@ -342,6 +385,13 @@ def main():
     require(args.workspace.resolve()==args.workspace and args.workspace.is_relative_to("/actions/_work"),
             "Registry workspace must be confined")
     output=ROOT/"artifacts/registry-export";output.mkdir(parents=True,exist_ok=True)
+    if args.phase=="root-source-inventory":
+        require(os.geteuid()==0 and Path("/.dockerenv").is_file(),"Source inventory requires disposable root")
+        worker.marker_identity(Path("/etc/sonic-slave-github-runner.json"))
+        require(stable_file(origin.PRIVATE/"spec.json")["sha256"]==SPEC_SHA256,"Original spec changed")
+        work=origin.PRIVATE/"work"
+        worker.write(output/"worker-source-definition-inventory.json",source_inventory(work,work/"bazel"/BASE_NAME))
+        return
     if args.phase=="root-collect":
         collect(args,output)
         return
@@ -354,7 +404,8 @@ def main():
     require(measured["status"]=="passed","Collection isolation/resource preflight failed")
     env=worker.child_environment(os.environ,args.workspace,Path("/bazel_cache/registry-native")/origin.WORKER)
     result=subprocess.run(["sudo","-n","/usr/bin/env","-i",*[k+"="+v for k,v in env.items()],
-                           sys.executable,"-B",str(Path(__file__).resolve()),"root-collect",*sys.argv[2:]])
+                           sys.executable,"-B",str(Path(__file__).resolve()),
+                           "root-source-inventory" if args.phase=="source-inventory" else "root-collect",*sys.argv[2:]])
     require(result.returncode==0,"Root collection failed; original native evidence is not relabeled")
 
 
@@ -364,7 +415,7 @@ if __name__=="__main__":
     except BaseException as error:
         diagnostic=ROOT/"artifacts/registry-export"
         if diagnostic.is_dir():
-            worker.write(diagnostic/"worker-collection-failure.json",
+            worker.write(diagnostic/failure_receipt_name(os.geteuid()),
                          {"status":"failed","stage":"configured-output-collection",
                           "error_class":type(error).__name__,"native_execution":False,
                           "original_run":origin.ORIGINAL_RUN})

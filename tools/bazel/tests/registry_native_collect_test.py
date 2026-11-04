@@ -176,6 +176,49 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(result["before"]["started"],observed["started"])
         self.assertIsNone(result["after"])
 
+    def test_source_inventory_identifies_real_link_without_reading_payloads(self):
+        target=self.external/"actual.bzl";target.write_text("do not execute")
+        link=self.external/"alias.bzl";link.symlink_to("actual.bzl")
+        outside=self.root/"private";outside.write_text("never read this")
+        (self.external/"outside.bzl").symlink_to(outside)
+        (self.external/"loop.bzl").symlink_to("loop.bzl")
+        os.mkfifo(self.external/"special.bzl")
+        directory=self.external/"linked-directory";directory.symlink_to(self.root,target_is_directory=True)
+        with patch.object(collect,"stable_file") as hashing,patch.object(subprocess,"run") as commands:
+            result=collect.source_inventory(self.work,self.base)
+            hashing.assert_not_called();commands.assert_not_called()
+        records=result["records"];prefix="bazel/base/external/sonic-dash+/"
+        self.assertEqual(result["first_nonregular"],prefix+"alias.bzl")
+        self.assertTrue(records[prefix+"alias.bzl"]["target_within_original_work"])
+        self.assertTrue(records[prefix+"alias.bzl"]["target_is_regular"])
+        self.assertEqual(records[prefix+"outside.bzl"]["target_within_original_work"],False)
+        self.assertNotIn("resolved_relative_path",records[prefix+"outside.bzl"])
+        self.assertIn("resolution_error_class",records[prefix+"loop.bzl"])
+        self.assertEqual(records[prefix+"special.bzl"]["kind"],"fifo")
+        self.assertFalse(result["file_payloads_read"])
+        self.assertFalse(result["configured_query_executed"])
+        self.assertFalse(any("linked-directory/" in name for name in records))
+
+    def test_failure_sidecars_preserve_root_record_for_outer_uid(self):
+        root=self.root/collect.failure_receipt_name(0);root.write_text("original root failure");root.chmod(0o444)
+        outer=self.root/collect.failure_receipt_name(1000);outer.write_text("outer failure")
+        self.assertNotEqual(root,outer)
+        self.assertEqual(root.read_text(),"original root failure")
+        self.assertEqual(root.stat().st_mode & 0o777,0o444)
+
+    def test_source_inventory_dispatch_selects_no_query_step(self):
+        jobs=yaml.safe_load((ROOT/".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        ctx={"mode":"registry-native-source-inventory","consumer":"dash"}
+        self.assertEqual([name for name,body in jobs.items() if condition(str(body.get("if","true")),**ctx)],
+                         ["registry_native_export"])
+        job=jobs["registry_native_export"]
+        step=[x for x in job["steps"] if "registry_native_collect.py source-inventory" in x.get("run","")]
+        self.assertEqual(len(step),1)
+        self.assertEqual(step[0]["if"],"inputs.source_image == 'registry-native-source-inventory'")
+        self.assertEqual([x["if"] for x in job["steps"] if x.get("id")=="collect"],
+                         ["inputs.source_image == 'registry-native-collect'"])
+        for line in step[0]["run"].splitlines()[:-1]:self.assertTrue(line.endswith(chr(92)))
+
     def test_workflow_routes_only_fixed_collect_step_and_preserves_other_modes(self):
         jobs=yaml.safe_load((ROOT/".github/workflows/bazel-oci.yml").read_text())["jobs"]
         ctx={"mode":"registry-native-collect","consumer":"dash"}
