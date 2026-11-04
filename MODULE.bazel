@@ -32,12 +32,13 @@ bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
 bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
-bazel_dep(name = "rules_python", version = "1.8.0")
+bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
@@ -64,6 +65,8 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_platform_common")
+bazel_dep(name = "sonic-snmpagent", version = "2.1.0", repo_name = "sonic_snmpagent")
 bazel_dep(name = "sonic-swss-common", version = "0.0.7-f7fda40c02b3a8b4bbbff3d17fca3dff83f4cbad", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
@@ -365,3 +368,31 @@ source_files(
 )
 
 include("//src/libteam:deps.MODULE.bazel")
+
+# Draft-only bridges until registry PRs #162 and #164 land. These are the
+# checksum-verified source owners tested by their native AMD64 CI.
+archive_override(
+    module_name = "sonic-platform-common",
+    integrity = "sha256-1tHp/iGw/yTR/WE4qDiP4aOWO8oXMeIBSQOQPVhbxDc=",
+    strip_prefix = "sonic-platform-common-e12b435873296fbd7a2868e0ff71fe6c051d63e1",
+    urls = ["https://github.com/securely1g/sonic-platform-common/archive/e12b435873296fbd7a2868e0ff71fe6c051d63e1.tar.gz"],
+)
+
+archive_override(
+    module_name = "sonic-snmpagent",
+    integrity = "sha256-tiVx7BqUtQ0UOotka+jvzdzcTqWsxZuG32tWsXkgdqs=",
+    strip_prefix = "sonic-snmpagent-5445b3138b586f988472a0840f274cae101996af",
+    urls = ["https://github.com/securely1g/sonic-snmpagent/archive/5445b3138b586f988472a0840f274cae101996af.tar.gz"],
+)
+
+# Reuse the source owner's locked third-party wheels; YAML and natsort already
+# come from config-engine. No second copy of either SONiC package is generated.
+use_repo(pip, "snmpagent_pip")
+
+apt.import_lock(lock = "//dockers/docker-snmp/bazel:apt.lock.json")
+use_repo(apt, "snmp_debian", "snmp_debug_debian", "snmp_test_debian")
+
+apt_inputs(
+    name = "snmp_apt_inputs",
+    lock = "//dockers/docker-snmp/bazel:apt.lock.json",
+)
