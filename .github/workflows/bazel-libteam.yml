@@ -54,6 +54,19 @@ jobs:
           repository-cache: true
           disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Fetch the verified shared downloader configuration
+        env:
+          SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/b7b92bcfa5857685ee7cd7953fdbf55264989932/ci/source_mirrors.cfg
+          SOURCE_MIRRORS_SHA256: 9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/libteam-source-mirrors.cfg"
+          curl --fail --location --retry 3 --max-time 60 --output "$config" "$SOURCE_MIRRORS_URL"
+          printf '%s  %s\n' "$SOURCE_MIRRORS_SHA256" "$config" | sha256sum --check --strict
+          mkdir -p artifacts
+          cp "$config" artifacts/source-mirrors.cfg
+          printf '%s\n' "$SOURCE_MIRRORS_URL" > artifacts/source-mirrors-url.txt
+          sha256sum artifacts/source-mirrors.cfg > artifacts/source-mirrors.sha256
       - name: Build source outputs and execute native tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -76,6 +89,7 @@ jobs:
           options=(
             "--registry=$SONIC_BAZEL_REGISTRY"
             --registry=https://bcr.bazel.build
+            "--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg"
             "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
             "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
             --jobs=2
@@ -128,6 +142,7 @@ jobs:
               --bazel "$PWD/tools/bazel/ci/libteam_draft_bazel.sh" \
               --bazel-arg="--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie" \
               --bazel-arg="--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}" \
+              --bazel-arg="--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg" \
               --output artifacts/rebuild
           fi
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code

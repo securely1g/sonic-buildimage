@@ -14,6 +14,22 @@ CI uses the immutable review catalog
 `0.9.4.sonic.16`. Both root FIPS declarations select
 `0.0.5-15fcb926a302059ec379f0c2fd15eb3d88bda4c9`.
 
+The dedicated libteam workflow separately fetches the shared downloader config
+from registry #228 at `b7b92bcfa5857685ee7cd7953fdbf55264989932`, verifies SHA256
+`9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9`, and passes its absolute path
+explicitly to initial builds/tests, installed-SDK output queries and the existing
+config-edit/rebuild check. This overrides the checked-in generic pool default
+without editing it or changing the review catalog. Config bytes, URL and hash
+remain in the artifacts.
+
+[The approved AMD64 retry](https://github.com/securely1g/sonic-buildimage/actions/runs/41900723985/job/126883238634)
+failed analysis before native build/test acceptance because Graphviz required
+`libheif1_1.19.8-1_amd64.deb`: the official pool returned 404 and the dated
+Snapshot URL returned 503. The shared config adds one exact verified content-ID
+alternative between those routes, preserving the package checksum and version.
+The rebuild probe still measures same-output-base reuse; this does not add a
+fresh-checkout or remote-cache acceptance claim.
+
 The earlier ARM64 base-image check failed during Krb5 configuration with
 FIPS `d1a2c8f`; its inner compiler log was not retained. This refresh uses
 the current FIPS candidate from registry #221 and the infrastructure entry
