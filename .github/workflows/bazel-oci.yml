@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, worker-provenance, registry-native, registry-native-export, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout]
+        options: [none, preflight, worker-provenance, registry-native, registry-native-export, registry-native-inventory, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout]
         default: none
       source_revision:
         description: Reviewed 40-character image source or fixed registry commit
@@ -47,8 +47,8 @@ env:
 
 jobs:
   registry_native_export:
-    name: Recover exact DASH registry export
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_image == 'registry-native-export' && inputs.registry_consumer == 'dash' && inputs.source_revision == '28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623' && inputs.source_worker == 'sonic-slave-lgh114-2'
+    name: Retained DASH registry evidence
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && (inputs.source_image == 'registry-native-export' || inputs.source_image == 'registry-native-inventory') && inputs.registry_consumer == 'dash' && inputs.source_revision == '28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623' && inputs.source_worker == 'sonic-slave-lgh114-2'
     runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
     timeout-minutes: 30
     permissions:
@@ -82,9 +82,16 @@ jobs:
           path: registry
           persist-credentials: false
       - name: Recover only retained declared native evidence
+        if: inputs.source_image == 'registry-native-export'
         id: recover
         run: |
           python3 -B control/tools/bazel/ci/registry_native_export.py recover \
+            --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
+            --workspace "$GITHUB_WORKSPACE/registry"
+      - name: Inventory only the original retained consumer cache
+        if: inputs.source_image == 'registry-native-inventory'
+        run: |
+          python3 -B control/tools/bazel/ci/registry_native_export.py inventory \
             --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
             --workspace "$GITHUB_WORKSPACE/registry"
       - name: Upload recovered original native evidence

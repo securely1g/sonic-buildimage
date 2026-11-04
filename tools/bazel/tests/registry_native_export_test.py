@@ -240,6 +240,79 @@ class RetainedNativeValidationTests(unittest.TestCase):
             export.validate_native(self.artifacts,self.private,self.workspace)
 
 
+
+class RetainedInventoryTests(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name);self.private=self.root/'private';self.private.mkdir()
+        self.work=self.private/'work';(self.work/'consumer').mkdir(parents=True)
+        self.builds=['@sonic-dash//:runtime','@sonic-dash//:runtime.debug_symbols',
+                     '@sonic-dash//:sdk','@sonic-dash//:runtime_packages.json']
+        self.tests=['@sonic-dash//bazel:runtime_test','@sonic-dash//bazel:make_flags_test']
+        spec={'work':str(self.work),'artifacts':str(export.ORIGINAL_ARTIFACTS),
+              'config':{'build_targets':self.builds,'test_targets':self.tests},
+              'binary':'do-not-execute-cache-content'}
+        (self.private/'spec.json').write_text(json.dumps(spec))
+        (self.work/'consumer/MODULE.bazel').write_text('unchanged original consumer')
+        self.base=self.work/'bazel'/('a'*32)
+        self.repo=self.base/'external/sonic-dash+';self.repo.mkdir(parents=True)
+        (self.repo/'MODULE.bazel').write_text('unchanged source metadata')
+        (self.repo/'BUILD.bazel').write_text('raise RuntimeError("never import cached code")')
+        self.config=self.base/'execroot/_main/bazel-out/k8-opt'
+        self.outputs=self.config/'bin/external/sonic-dash+';self.outputs.mkdir(parents=True)
+        (self.outputs/'runtime.tar').write_bytes(b'cached native bytes')
+        self.secret=self.outputs/'source-private';self.secret.write_text('unchanged');self.secret.chmod(0o400)
+        logs=self.config/'testlogs/external/sonic-dash+/bazel/runtime_test';logs.mkdir(parents=True)
+        (logs/'test.xml').write_text('<testsuite><testcase/><testcase><skipped/></testcase></testsuite>')
+        (logs/'test.log').write_text('existing native test log')
+    def test_read_only_inventory_binds_metadata_and_original_xml(self):
+        before={str(p):(p.read_bytes(),p.stat().st_mode) for p in self.private.rglob('*') if p.is_file()}
+        with patch.object(subprocess,'run') as commands:
+            result=export.retained_inventory(self.private);commands.assert_not_called()
+        self.assertEqual(result['status'],'passed');self.assertFalse(result['native_execution'])
+        self.assertFalse(result['configured_query_executed'])
+        xml=[v['xml'] for k,v in result['records'].items() if k.endswith('test.xml') and 'xml' in v]
+        self.assertEqual(xml,[{'cases':2,'failures':0,'errors':0,'skipped':1}])
+        self.assertEqual(result['source_repository_count'],1)
+        for name,(content,mode) in before.items():
+            self.assertEqual(Path(name).read_bytes(),content);self.assertEqual(Path(name).stat().st_mode,mode)
+    def test_large_files_are_not_hashed_and_external_links_are_not_followed(self):
+        large=self.outputs/'runtime.debug_symbols.tar'
+        with large.open('wb') as f:f.truncate(17*1024**2)
+        outside=self.root/'outside';outside.write_text('do not read')
+        link=self.outputs/'unrelated-link';link.symlink_to(outside)
+        records=export.retained_inventory(self.private)['records']
+        self.assertTrue(records[large.relative_to(self.private).as_posix()]['hash_deferred'])
+        self.assertNotIn('sha256',records[large.relative_to(self.private).as_posix()])
+        self.assertFalse(records[link.relative_to(self.private).as_posix()]['target_within_original_work'])
+    def test_total_hash_budget_defers_additional_payloads(self):
+        for number in range(5):
+            with (self.outputs/('bounded-'+str(number)+'.tar')).open('wb') as stream:
+                stream.truncate(16*1024**2)
+        result=export.retained_inventory(self.private)
+        self.assertLessEqual(result['metadata_bytes_hashed'],64*1024**2)
+        deferred=[value for name,value in result['records'].items()
+                  if 'bounded-' in name and value.get('hash_deferred')]
+        self.assertGreaterEqual(len(deferred),2)
+
+    def test_changed_target_inventory_ambiguous_outputbase_and_cache_symlink_reject(self):
+        spec=self.private/'spec.json';old=spec.read_text();spec.write_text(old.replace('@sonic-dash//:sdk','@foreign//:sdk'))
+        with self.assertRaisesRegex(ValueError,'identity'):export.retained_inventory(self.private)
+        spec.write_text(old)
+        other=self.work/'bazel'/('b'*32)/'execroot/_main';other.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError,'exactly'):export.retained_inventory(self.private)
+        link=self.root/'link';link.symlink_to(self.private,target_is_directory=True)
+        with self.assertRaisesRegex(ValueError,'confined'):export.retained_inventory(link)
+    def test_original_live_process_stops_inventory_without_shutdown(self):
+        server=self.base/'server/server.pid.txt';server.parent.mkdir();server.write_text('722')
+        with patch.object(worker,'server_process',return_value={'state':'S','rss_pages':100,'started':57377179}), \
+             patch.object(subprocess,'run') as commands:
+            with self.assertRaisesRegex(ValueError,'still live'):export.retained_inventory(self.private)
+            commands.assert_not_called()
+        with patch.object(worker,'server_process',return_value={'state':'S','rss_pages':100,'started':99999999}):
+            self.assertEqual(export.retained_inventory(self.private)['status'],'passed')
+
+
 class WorkflowTests(unittest.TestCase):
     def test_exact_dispatch_only_and_no_other_jobs(self):
         flow = yaml.safe_load((ROOT/'.github/workflows/bazel-oci.yml').read_text())
@@ -257,6 +330,18 @@ class WorkflowTests(unittest.TestCase):
         for step in job['steps']:
             if 'run' in step:
                 subprocess.run(['bash','-n'], input=step['run'], text=True, check=True)
+
+    def test_inventory_mode_selects_only_fixed_read_only_step(self):
+        jobs=yaml.safe_load((ROOT/'.github/workflows/bazel-oci.yml').read_text())['jobs']
+        context={'mode':'registry-native-inventory','consumer':'dash'}
+        self.assertEqual([name for name,body in jobs.items() if condition(str(body.get('if','true')),**context)],
+                         ['registry_native_export'])
+        job=jobs['registry_native_export']
+        inventory=[step for step in job['steps'] if 'registry_native_export.py inventory' in step.get('run','')]
+        self.assertEqual(len(inventory),1)
+        self.assertEqual(inventory[0]['if'],"inputs.source_image == 'registry-native-inventory'")
+        recovery=[step for step in job['steps'] if step.get('id')=='recover']
+        self.assertEqual(recovery[0]['if'],"inputs.source_image == 'registry-native-export'")
 
     def test_owned_feature_keeps_no_deb_fixtures_and_vs_guard(self):
         jobs = yaml.safe_load((ROOT/'.github/workflows/bazel-oci.yml').read_text())['jobs']

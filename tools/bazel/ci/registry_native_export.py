@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
+import re
+import xml.etree.ElementTree as ET
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -135,9 +138,119 @@ def repair(args, output):
                                                          'permissions': permissions})
 
 
+
+def retained_inventory(private):
+    """Read only fixed metadata and original DASH outputs, with bounded traversal."""
+    require(private.resolve() == private and not private.is_symlink(), 'Private cache path is not confined')
+    work = private/'work'
+    require(work.resolve()==work, 'Original work path must not traverse symlinks')
+    spec_path = private/'spec.json'
+    require(spec_path.is_file() and not spec_path.is_symlink(), 'Original private spec is missing')
+    spec = json.loads(spec_path.read_text())
+    builds = ['@sonic-dash//:runtime', '@sonic-dash//:runtime.debug_symbols',
+              '@sonic-dash//:sdk', '@sonic-dash//:runtime_packages.json']
+    tests = ['@sonic-dash//bazel:runtime_test', '@sonic-dash//bazel:make_flags_test']
+    require(spec['work'] == str(work) and spec['artifacts'] == str(ORIGINAL_ARTIFACTS) and
+            spec['config']['build_targets'] == builds and spec['config']['test_targets'] == tests,
+            'Retained original consumer identity differs')
+    records = {}
+    hash_remaining = 64*1024**2
+    def record(path):
+        nonlocal hash_remaining
+        relative = path.relative_to(private).as_posix()
+        if relative in records:
+            return
+        require(len(records)<1024, 'Retained metadata inventory exceeds bound')
+        try:
+            before = path.lstat()
+        except FileNotFoundError:
+            records[relative] = {'kind':'missing'}
+            return
+        item = {'mode':stat.S_IMODE(before.st_mode), 'uid':before.st_uid, 'gid':before.st_gid,
+                'bytes':before.st_size, 'mtime_ns':before.st_mtime_ns}
+        if stat.S_ISLNK(before.st_mode):
+            item.update(kind='symlink', target_within_original_work=path.resolve().is_relative_to(private))
+        elif stat.S_ISDIR(before.st_mode):
+            item['kind']='directory'
+        else:
+            require(stat.S_ISREG(before.st_mode) and path.resolve().is_relative_to(private),
+                    'Unexpected retained metadata object')
+            item['kind']='file'
+            if before.st_size <= min(16*1024**2,hash_remaining):
+                with os.fdopen(os.open(path,os.O_RDONLY|os.O_NOFOLLOW),'rb') as stream:
+                    data=stream.read(16*1024**2+1);after=os.fstat(stream.fileno())
+                require((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns) ==
+                        (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns),
+                        'Retained metadata changed while reading')
+                hash_remaining -= len(data)
+                item['sha256']=hashlib.sha256(data).hexdigest()
+                if path.name=='test.xml':
+                    root=ET.fromstring(data);cases=list(root.iter('testcase'))
+                    item['xml']={'cases':len(cases), **{key:sum(case.find(tag) is not None for case in cases)
+                        for key,tag in [('failures','failure'),('errors','error'),('skipped','skipped')]}}
+            else:
+                item['hash_deferred']=True
+        records[relative]=item
+    record(spec_path)
+    for name in ('MODULE.bazel','MODULE.bazel.lock','WORKSPACE.bazel','.bazelrc'):
+        record(work/'consumer'/name)
+    for name in ('build-events.jsonl','test-events.jsonl','outputs.json','declared-output-trees.jsonl'):
+        record(work/name)
+    candidates=[p for p in (work/'bazel').iterdir() if re.fullmatch(r'[0-9a-f]{32}',p.name)
+                and p.is_dir() and not p.is_symlink() and (p/'execroot/_main').is_dir()]
+    require(len(candidates)==1,'Expected exactly the original consumer output base')
+    base=candidates[0]
+    require(base.resolve().is_relative_to(work),'Original output base escapes private work')
+    for name in ('build-events.jsonl','test-events.jsonl','outputs.json','declared-output-trees.jsonl',
+                 'command.log','command.profile.gz','server/server.pid.txt'):
+        record(base/name)
+    pid_path=base/'server/server.pid.txt'
+    process=None
+    if pid_path.is_file():
+        raw=pid_path.read_text().strip();require(re.fullmatch(r'[1-9][0-9]{0,9}',raw),'Invalid retained server PID')
+        process=worker.server_process(int(raw))
+        require(process is None or int(raw)!=722 or process['started']!=57377179 or
+                (process['state']=='Z' and process['rss_pages']==0),'Original consumer process is still live')
+    external=base/'external'
+    repos=[p for p in external.iterdir() if re.fullmatch(r'sonic-dash\+(?:[A-Za-z0-9_.-]+)?',p.name)] if external.is_dir() else []
+    require(len(repos)<=2,'Unexpected retained DASH repository inventory')
+    for repo in repos:
+        for name in ('MODULE.bazel','BUILD.bazel','bazel/BUILD.bazel','.bazelversion'):
+            record(repo/name)
+    outputs=base/'execroot/_main/bazel-out'
+    configs=[p for p in outputs.iterdir() if re.fullmatch(r'[A-Za-z0-9_.-]+-(?:opt|dbg|fastbuild)(?:-[A-Za-z0-9_.-]+)?',p.name)
+             and '-exec-' not in p.name and p.is_dir()] if outputs.is_dir() else []
+    require(len(configs)<=16,'Unexpected configured output inventory')
+    for config in configs:
+        require(config.resolve().is_relative_to(work),'Configured outputs escape original work')
+        directory=config/'bin/external'
+        selected=[p for p in directory.iterdir() if re.fullmatch(r'sonic-dash\+(?:[A-Za-z0-9_.-]+)?',p.name)] if directory.is_dir() else []
+        require(len(selected)<=2,'Unexpected selected output repositories')
+        for repo in selected:
+            children=list(repo.iterdir());require(len(children)<=128,'Selected output directory exceeds bound')
+            for path in sorted(children):
+                record(path)
+                if path.is_dir() and not path.is_symlink() and ('sdk' in path.name or path.name=='bazel'):
+                    children2=list(path.iterdir());require(len(children2)<=64,'Selected SDK directory exceeds bound')
+                    for child in sorted(children2):record(child)
+        logs=config/'testlogs/external'
+        selected_logs=[p for p in logs.iterdir() if re.fullmatch(r'sonic-dash\+(?:[A-Za-z0-9_.-]+)?',p.name)] if logs.is_dir() else []
+        require(len(selected_logs)<=2,'Unexpected test repositories')
+        for repo in selected_logs:
+            for test in ('runtime_test','make_flags_test'):
+                for name in ('test.xml','test.log','test.cache_status'):
+                    record(repo/'bazel'/test/name)
+    return {'status':'passed','kind':'retained-registry-metadata-inventory',
+            'original_run':ORIGINAL_RUN,'registry_revision':REVISION,'worker':WORKER,
+            'native_execution':False,'configured_query_executed':False,'records':records,
+            'metadata_bytes_hashed':64*1024**2-hash_remaining,'metadata_hash_limit_bytes':64*1024**2,
+            'build_targets':builds,'test_targets':tests,
+            'original_outputbase_count':len(candidates),'source_repository_count':len(repos),
+            'target_configuration_count':len(configs),'observed_pid_state':process}
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('verify', 'recover', 'repair'))
+    parser.add_argument('phase', choices=('verify', 'recover', 'repair', 'inventory', 'inspect'))
     parser.add_argument('--consumer', required=True)
     parser.add_argument('--revision', required=True)
     parser.add_argument('--worker', required=True)
@@ -154,12 +267,17 @@ def main():
                'original_job': ORIGINAL_JOB, 'original_control': ORIGINAL_CONTROL, 'registry_revision': REVISION,
                'export_run': int(os.environ['GITHUB_RUN_ID']), 'worker': WORKER,
                'native_execution': False, 'available': available_state(), 'failed_stage': None}
-    stage = {'repair': 'root_repair', 'recover': 'preflight', 'verify': 'original_workflow'}[args.phase]
+    stage = {'repair': 'root_repair', 'recover': 'preflight', 'verify': 'original_workflow',
+             'inventory':'preflight','inspect':'read_only_inventory'}[args.phase]
     try:
         if args.phase == 'verify':
             verify_remote(output)
         elif args.phase == 'repair':
             repair(args, output)
+        elif args.phase == 'inspect':
+            require(os.geteuid()==0 and Path('/.dockerenv').is_file(),'Inventory requires real disposable root')
+            worker.marker_identity(Path('/etc/sonic-slave-github-runner.json'))
+            worker.write(output/'worker-cache-inventory.json', retained_inventory(PRIVATE))
         else:
             require(os.getuid() == os.getgid() == 1000, 'Outer exporter must remain UID/GID1000')
             origin = json.loads((output/'worker-export-origin.json').read_text())
@@ -170,6 +288,14 @@ def main():
             preflight = worker.measure(WORKER)
             worker.write(output/'worker-export-preflight.json', preflight)
             require(preflight['status'] == 'passed', 'Recovery resource/isolation preflight failed')
+            if args.phase == 'inventory':
+                stage='read_only_inventory'
+                cache=Path('/bazel_cache/registry-native')/WORKER
+                environment=worker.child_environment(os.environ,args.workspace,cache)
+                subprocess.run(['sudo','-n','/usr/bin/env','-i',*[k+'='+v for k,v in environment.items()],
+                                sys.executable,'-B',str(Path(__file__).resolve()),'inspect',*sys.argv[2:]],check=True)
+                receipt['status']='passed'
+                return
             stage = 'retained_evidence'
             require(receipt['available']['original_output_index_present'], 'Original evidence is unavailable')
             stage = 'root_repair'
