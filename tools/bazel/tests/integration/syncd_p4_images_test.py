@@ -43,18 +43,14 @@ def check_p4_inputs(contract_path, receipt_path):
                          for item in packages]}
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    for name in (*IMAGE_INPUTS, *SOURCE_BASE_INPUTS, "policy", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy"):
-        parser.add_argument("--" + name.replace("_", "-"), required=True, type=Path)
-    inputs = vars(parser.parse_args())
+def validate(inputs, *, source_root=None, verify_make=True):
     policy = read_policy(inputs["policy"])
     p4 = check_p4_inputs(inputs["source_contract_path"], inputs["source_receipt"])
-    for variant in ("runtime", "debug"):
+    for variant in (("runtime", "debug") if verify_make else ()):
         require(sha(inputs["make_" + variant + "_archive"]) == sha(inputs[variant + "_archive"]),
                 variant + " Make archive differs from the Bazel output")
     images = image_validation.validate_images(
-        source_root=Path.cwd(), policy=policy, runtime_handoff=None, debug_handoff=None,
+        source_root=source_root or Path.cwd(), policy=policy, runtime_handoff=None, debug_handoff=None,
         **{name: inputs[name] for name in IMAGE_INPUTS})
     native = native_packages.validate_native(
         None, None, policy=policy,
@@ -69,7 +65,16 @@ def main():
     report = {"_generated": {"notice": "AUTO-GENERATED. DO NOT EDIT MANUALLY.",
                              "generator": "tools/bazel/tests/integration/syncd_p4_images_test.py"},
               "schema": 1, "p4": p4, "images": images, "native": native, "source_base": inherited,
-              "scope": "Actual AMD64 Syncd runtime/debug images, package inputs and exported archives; boot and forwarding are separate."}
+              "scope": "Actual AMD64 Syncd runtime/debug images, package inputs and exported archives; loaded service and forwarding checks are separate."}
+    return report
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in (*IMAGE_INPUTS, *SOURCE_BASE_INPUTS, "policy", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy"):
+        parser.add_argument("--" + name.replace("_", "-"), required=True, type=Path)
+    inputs = vars(parser.parse_args())
+    report = validate(inputs)
     output = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", ".")) / "validation.json"
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("Validated both Syncd images and archives against all four P4 source runtime/debug TAR pairs.")

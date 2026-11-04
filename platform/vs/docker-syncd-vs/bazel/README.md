@@ -182,3 +182,55 @@ Strict guest service validation is maintained separately in
 Packet forwarding requires a connected test topology and is a separate check.
 Building an installer or passing helper tests does not establish forwarding or
 guest service health.
+
+
+## Current source completion review
+
+The isolated Syncd consumer feature stacks on Gearbox #154 at
+`1c2e57d58ad03d5e33ca23f9dc1a6a770df36368`. It reuses that shared package map,
+including the source-owned libnl development files. Review catalog
+`13c3c9d7493d748a39c98d570334f540bb8e7c19` starts from maintained registry
+`d33cf63059703c5f981532b4357d416b8352db1d`, preserves all published entries,
+and combines the exact P4RT catalog `9792cc152f976da9607d38917ee1e9ce45cd7135`
+with Gearbox's BMv2 `.3` and DASH `.3-53e524a3` entries. Registry #213's
+Sairedis `.4-706cc3d1` replaces `.3-5e765149` in both the direct dependency
+and root override. Production C++/header/script inputs and runtime TAR rules
+are unchanged; its public owner metadata and test loader now use Common
+`.8-43598143`, normalized libnl `.7`, infrastructure `.26-2cfc059c` and
+Distroless `.16`. FIPS remains `.3-e910ec22`, PI `.2` and p4c `.2`.
+
+The source-only AMD64/Trixie path is:
+
+```sh
+export SONIC_BAZEL_REGISTRY_REVISION=13c3c9d7493d748a39c98d570334f540bb8e7c19
+python3 -B tools/bazel/ci/syncd_image.py build --bazel tools/bazel/ci/review_bazel.sh --artifacts artifacts/syncd
+python3 -B tools/bazel/ci/syncd_image.py validate --artifacts artifacts/syncd
+python3 -B tools/bazel/ci/syncd_image.py incremental --bazel tools/bazel/ci/review_bazel.sh --artifacts artifacts/syncd
+python3 -B tools/bazel/ci/syncd_loaded.py --artifacts artifacts/syncd
+```
+
+Build performs only metadata preparation through Make, then audits the selected
+Bazel action graph for DEB outputs and packaging commands before execution.
+Static acceptance reuses the original `syncd_p4_images_test` checks, complete
+config-engine/source symbol validation, and adds ordered account preservation,
+exact embedded package-state checks and complete inherited file preservation.
+The original test still checks Make-exported archive parity in the installer
+workflow. The standalone producer exports Bazel's identical archive targets.
+The debug image explicitly redirects `vim` to the full Vim alternative;
+runtime Tiny Vim and every runtime ELF remain intact.
+
+Loaded acceptance uses the unchanged installed Supervisor, `start.sh`,
+`syncd_start.sh` and VS profile with private Redis and a disposable network/TAP
+namespace. It checks real regular-VS Syncd startup, database connections,
+stable executable identity, original listener completion, dynamic loading,
+GDB positive/negative controls and Huge Vim. The device fixture's historical
+`kvm` directory name does not imply a VM or KVM invocation. DASH programs and
+libraries are checked as installed source/debug payloads; this probe does not
+claim DASH dataplane forwarding, DPU failover or physical hardware acceptance.
+The existing `sonic-vs.bin` installer checks remain the final integration gate.
+
+Review dependencies remain explicit: buildimage #154/#133, registry
+#181/#197/#200/#201/#209/#211/#213/#215 and their source owners. Existing
+source-package acceptance does not establish full image acceptance: this
+consumer's configured graph, archives, loaded services and incremental proof
+remain pending until the actual commands finish.

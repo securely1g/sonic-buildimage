@@ -85,17 +85,26 @@ _PACKAGE_POLICY = dict(
             },
         },
         "required_elf_paths": ["usr/bin/syncd"],
-        "debug_alternatives": [{
-            "paths": ["etc/alternatives/" + name for name in [
-                "editor",
-                "ex",
-                "rview",
-                "vi",
-                "view",
-            ]],
-            "before": "/usr/bin/vim.tiny",
-            "after": "/usr/bin/vim.basic",
-        }],
+        "debug_alternatives": [
+            {
+                "paths": ["etc/alternatives/" + name for name in [
+                    "editor",
+                    "ex",
+                    "rview",
+                    "vi",
+                    "view",
+                ]],
+                "before": "/usr/bin/vim.tiny",
+                "after": "/usr/bin/vim.basic",
+            },
+            {
+                "paths": ["usr/bin/vim"],
+                "before": "usr/bin/vim.tiny",
+                "before_kind": "hardlink",
+                "before_mode": 0o755,
+                "after": "/etc/alternatives/vim",
+            },
+        ],
         "runtime_tag": "docker-syncd-vs:latest",
         "debug_tag": "docker-syncd-vs-dbg:latest",
         "package_state": False,
@@ -340,11 +349,17 @@ filegroup(
 
 # Debug adds tools and native symbols while retaining the runtime FIPS packages
 # and ELF files. Reuse the existing Vim alternatives implementation.
+tar(
+    name = "debug_vim_link",
+    mtree = ["usr/bin/vim uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/vim"],
+)
+
 sonic_layer(
     name = "debug_tools",
     tars = [
         ":debug_layer",
         "@sonic_build_infra//deps/vim:vim_alternatives_pkg",
+        ":debug_vim_link",
     ],
 )
 
