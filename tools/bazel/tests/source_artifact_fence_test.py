@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.bazel.ci import gbsyncd_image, sysmgr_image
+from tools.bazel.ci import gbsyncd_image, syncd_image, sysmgr_image
 
 
 class SourceArtifactFenceTest(unittest.TestCase):
@@ -49,6 +49,10 @@ class SourceArtifactFenceTest(unittest.TestCase):
 
 class GearboxSourceArtifactFenceTest(SourceArtifactFenceTest):
     driver = gbsyncd_image
+
+
+class SyncdSourceArtifactFenceTest(SourceArtifactFenceTest):
+    driver = syncd_image
 
 
 if __name__ == '__main__':
