@@ -4,6 +4,7 @@
 import argparse
 from functools import partial
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -45,6 +46,36 @@ TARGETS = {
 }
 
 
+def clean_source(directory):
+    check.require(not ROOT.is_relative_to(directory), "artifact directory cannot contain the source checkout")
+    if directory.is_relative_to(ROOT):
+        relative = directory.relative_to(ROOT)
+        check.require(len(relative.parts) > 1 and relative.parts[0] == "artifacts",
+                      "in-checkout evidence must use artifacts/<name>")
+    subprocess.run(["git", "diff", "--exit-code", "--ignore-submodules=none", "HEAD"], cwd=ROOT, check=True)
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
+    unexpected = [name for name in untracked if name and
+                  not (ROOT / name).is_relative_to(directory) and
+                  not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")]
+    check.require(not unexpected, "untracked source inputs: " + repr(unexpected))
+
+
+def source_identity():
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    headers = subprocess.check_output(["git", "cat-file", "-p", "HEAD"], cwd=ROOT, text=True).split("\n\n", 1)[0]
+    # The default Actions checkout is shallow: revision traversal hides its
+    # parent list, but the immutable commit object retains the actual parents.
+    parents = [line.split()[1] for line in headers.splitlines() if line.startswith("parent ")]
+    expected_head, expected_base = os.environ.get("CI_HEAD_SHA"), os.environ.get("CI_BASE_SHA")
+    if expected_head:
+        check.require(expected_head in [revision, *parents], "tested source does not contain the requested PR head")
+    if expected_base:
+        check.require(expected_base in parents, "tested merge does not contain the requested base")
+    return {"revision": revision, "tested_revision_parents": parents}
+
+
+
 def build_images(args, directory):
     check.require(platform.machine() == "x86_64" and
                   platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
@@ -52,7 +83,8 @@ def build_images(args, directory):
     receipt = {"status": "building", "architecture": "amd64", "commands": []}
     execute = partial(command_log.execute, cwd=ROOT)
     try:
-        receipt["revision"] = execute(["git", "rev-parse", "HEAD"], directory, receipt, "revision").strip()
+        clean_source(directory)
+        receipt.update(source_identity())
         execute(["make", "-f", "tools/bazel/prepare_manifests.mk",
                  "MANIFEST_METADATA=rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk rules/docker-swss-layer-trixie.mk rules/docker-teamd.mk",
                  "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "BLDENV=trixie", "CONFIGURED_PLATFORM=vs",
@@ -70,6 +102,8 @@ def build_images(args, directory):
         receipt["base_layout"] = execute([args.bazel, "cquery", *OPTIONS, "--output=files", BASE],
             directory, receipt, "base.layout").strip()
         receipt["resolution"] = resolution.collect(ROOT, directory, bazel=[args.bazel])
+        clean_source(directory)
+        check.require(source_identity()["revision"] == receipt["revision"], "build checkout changed")
         receipt["status"] = "built"
     except Exception as error:
         receipt.update(status="failed", error=str(error))
@@ -93,8 +127,11 @@ def verify_inherited_accounts(inherited, installed, inherited_groups, groups, *,
 
 
 def validate_images(directory):
+    clean_source(directory)
+    identity = source_identity()
     receipt = json.loads((directory / "build-receipt.json").read_text())
-    check.require(receipt["status"] == "built", "Teamd image build did not finish")
+    check.require(receipt["status"] == "built" and receipt["revision"] == identity["revision"],
+                  "Teamd image build or source identity differs")
     selection = json.loads((directory / "runtime-apt.json").read_text())
     check.require(not selection["selected"], "Teamd unexpectedly adds external libraries already owned by its parent")
     for name, artifact in receipt["artifacts"].items():
@@ -213,12 +250,18 @@ def validate_images(directory):
               "source_debug_pairs": pairs, "native": native,
               "runtime_native": {path: item for path, item in native.items() if path in runtime},
               "artifacts": receipt["artifacts"]}
+    clean_source(directory)
+    check.require(source_identity() == identity, "validation checkout changed")
     (directory / "validation.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"status": "passed", "source_elf_debug_pairs": len(pairs)}))
 
 
 def incremental(args, directory):
+    clean_source(directory)
+    identity = source_identity()
     baseline = json.loads((directory / "build-receipt.json").read_text())
+    check.require(baseline["status"] == "built" and baseline["revision"] == identity["revision"],
+                  "incremental source differs from built source")
     def output(label):
         return ROOT / subprocess.check_output([args.bazel, "cquery", *OPTIONS, "--output=files", label], cwd=ROOT, text=True).strip()
     archives = {name: output(OWNER + name + ".gz") for name in IMAGES}
@@ -260,6 +303,8 @@ def incremental(args, directory):
     timed_build("restored")
     restored = snapshot()
     check.require(restored == original, "restoring the template did not reproduce exact image/archive bytes")
+    clean_source(directory)
+    check.require(source_identity() == identity, "incremental checkout changed")
     (directory / "incremental.json").write_text(json.dumps({"status": "passed", "input": str(source.relative_to(ROOT)),
         "timings_seconds": timings, "baseline": original, "unchanged": unchanged, "changed": changed, "restored": restored}, indent=2) + "\n")
 
