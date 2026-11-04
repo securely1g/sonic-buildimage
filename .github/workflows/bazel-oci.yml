@@ -316,7 +316,7 @@ jobs:
         worker: [sonic-slave-lgh114-1, sonic-slave-lgh114-2, sonic-slave-lgh114-3, sonic-slave-lgh114-4]
     env:
       PREFLIGHT_CONTROL: source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker }}
-      PREFLIGHT_RECEIPT: ${{ runner.temp }}/source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker }}.json
+      PREFLIGHT_RECEIPT: source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker }}.json
     steps:
       - name: Require fresh preflight paths
         run: |
@@ -330,7 +330,7 @@ jobs:
               raise SystemExit("Unexpected preflight run or worker identity")
           name = f"source-worker-preflight-{run_id}-{attempt}-{worker}"
           control = Path(os.environ["GITHUB_WORKSPACE"]) / os.environ["PREFLIGHT_CONTROL"]
-          receipt = Path(os.environ["PREFLIGHT_RECEIPT"])
+          receipt = Path(os.environ["RUNNER_TEMP"]) / os.environ["PREFLIGHT_RECEIPT"]
           if control.name != name or control.parent != Path(os.environ["GITHUB_WORKSPACE"]) or receipt != Path(os.environ["RUNNER_TEMP"]) / (name + ".json"):
               raise SystemExit("Preflight paths do not match this run")
           if any(path.exists() or path.is_symlink() for path in (control, receipt)):
@@ -350,13 +350,13 @@ jobs:
           EXPECTED_WORKER: ${{ matrix.worker }}
         run: |
           python3 -B "$GITHUB_WORKSPACE/$PREFLIGHT_CONTROL/tools/bazel/ci/source_worker_preflight.py" \
-            --worker "$EXPECTED_WORKER" --output "$PREFLIGHT_RECEIPT"
+            --worker "$EXPECTED_WORKER" --output "$RUNNER_TEMP/$PREFLIGHT_RECEIPT"
       - name: Retain measured resource evidence
         if: always() && (steps.measure.outcome == 'success' || steps.measure.outcome == 'failure')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: source-worker-${{ matrix.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.PREFLIGHT_RECEIPT }}
+          path: ${{ runner.temp }}/${{ env.PREFLIGHT_RECEIPT }}
           if-no-files-found: error
           retention-days: 14
 

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tempfile
@@ -22,6 +23,17 @@ class WorkerPreflightTest(unittest.TestCase):
     def preflight_job(self):
         import yaml
         return yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["source_worker_preflight"]
+
+    def test_job_environment_uses_only_contexts_available_before_runner_assignment(self):
+        # GitHub contexts reference: jobs.<job_id>.env excludes runner and env.
+        allowed = {"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"}
+        def contexts(value):
+            return {name for expression in re.findall(r"\$\{\{(.*?)\}\}", value)
+                    for name in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\.", expression)}
+        for name, value in self.preflight_job()["env"].items():
+            with self.subTest(name=name):
+                self.assertLessEqual(contexts(value), allowed)
+        self.assertFalse(contexts("${{ runner.temp }}/receipt.json") <= allowed)
 
     def test_preflight_uses_a_fresh_checkout_and_receipt_without_touching_previous_work(self):
         job = self.preflight_job()
@@ -44,7 +56,7 @@ class WorkerPreflightTest(unittest.TestCase):
             receipt = temporary / (name + ".json")
             environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temporary),
                            "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "EXPECTED_WORKER": worker.WORKERS[0],
-                           "PREFLIGHT_CONTROL": name, "PREFLIGHT_RECEIPT": str(receipt)}
+                           "PREFLIGHT_CONTROL": name, "PREFLIGHT_RECEIPT": receipt.name}
             subprocess.run(["bash", "-e", "-c", guard], env=environment, check=True, capture_output=True)
             self.assertFalse((workspace / name).exists())
             self.assertFalse(receipt.exists())
@@ -59,7 +71,7 @@ class WorkerPreflightTest(unittest.TestCase):
             self.assertEqual(json.loads(receipt.read_text()), {"status": "fixture"})
             self.assertEqual(old_output.read_text(), "previous build")
             self.assertEqual(old_receipt.read_text(), "previous receipt")
-            self.assertEqual(steps["Retain measured resource evidence"]["with"]["path"], "${{ env.PREFLIGHT_RECEIPT }}")
+            self.assertEqual(steps["Retain measured resource evidence"]["with"]["path"], "${{ runner.temp }}/${{ env.PREFLIGHT_RECEIPT }}")
 
     def test_preflight_refuses_existing_or_misdirected_paths_without_cleaning_them(self):
         script = self.preflight_job()["steps"][0]["run"]
@@ -72,7 +84,7 @@ class WorkerPreflightTest(unittest.TestCase):
                 keep = workspace / "existing-output"; keep.write_text("keep")
                 environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temporary),
                                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "EXPECTED_WORKER": worker.WORKERS[0],
-                               "PREFLIGHT_CONTROL": name, "PREFLIGHT_RECEIPT": str(receipt)}
+                               "PREFLIGHT_CONTROL": name, "PREFLIGHT_RECEIPT": receipt.name}
                 if case == "existing checkout": control.mkdir(); (control / "keep").write_text("keep")
                 if case == "existing receipt": receipt.write_text("keep")
                 if case == "linked checkout": control.symlink_to(workspace / "missing")
