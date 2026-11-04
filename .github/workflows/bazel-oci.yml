@@ -765,7 +765,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/swss_rebuild.py --bazel "$BAZEL" \
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
             --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true \
             --runtime-target //dockers/docker-orchagent:docker-orchagent.gz \
             --additional-runtime-target //dockers/docker-orchagent:docker-orchagent-dbg.gz \
