@@ -6,6 +6,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -13,9 +14,46 @@ from unittest import mock
 from tools.bazel.ci import dash_engine_image as driver
 from tools.bazel.ci import dash_engine_validate as validate
 from tools.bazel.ci import dash_engine_public as public
+from tools.bazel.oci import image_validation
 
 
 class DashEngineImageTest(unittest.TestCase):
+    def test_source_symlink_matches_installed_linux_mode_without_losing_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / 'source.tar'
+            name = 'usr/lib/x86_64-linux-gnu/libpi.so'
+            with tarfile.open(archive, 'w') as output:
+                member = tarfile.TarInfo(name)
+                member.type = tarfile.SYMTYPE
+                member.mode = 0
+                member.linkname = './libpi.so.0.0.0'
+                output.addfile(member)
+            raw = validate.check.payload(archive)[name]
+            installed = {}
+            image_validation.apply_layer(archive, installed)
+            self.assertEqual(raw['mode'], 0)
+            self.assertEqual(installed[name]['mode'], 0o777)
+            validate.require_item(installed, name, raw)
+            self.assertEqual(raw['mode'], 0)
+            for key, value in [('kind', 'file'), ('mode', 0), ('uid', 1), ('gid', 1),
+                               ('linkname', 'different.so')]:
+                with self.subTest(key=key):
+                    changed = {name: {**installed[name], key: value}}
+                    with self.assertRaises(ValueError): validate.require_item(changed, name, raw)
+
+    def test_installed_regular_files_and_hardlinks_keep_exact_modes(self):
+        for kind in ('file', 'hardlink'):
+            expected = {'kind': kind, 'mode': 0o644, 'uid': 0, 'gid': 0}
+            if kind == 'file':
+                expected.update(sha256='source-hash', size=1)
+            else:
+                expected['linkname'] = 'usr/lib/original.so'
+            validate.require_item({'member': expected}, 'member', expected)
+            for key, value in [('mode', 0o777), ('uid', 1), ('gid', 1)]:
+                with self.subTest(kind=kind, key=key):
+                    with self.assertRaises(ValueError):
+                        validate.require_item({'member': {**expected, key: value}}, 'member', expected)
+
     def test_actual_metadata_only_make_has_no_image_env_or_owner_build(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / 'target'

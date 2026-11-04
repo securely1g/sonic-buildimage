@@ -11,7 +11,11 @@ from tools.bazel.oci import image_validation, oci_layout, source_base_validation
 
 
 def require_item(files, path, item):
-    check.require(all(files.get(path, {}).get(key) == value for key, value in item.items()),
+    # The shared OCI inventory records Linux's installed symlink mode (0777),
+    # even when an owner's TAR header has mode 0000. Keep the raw TAR-to-TAR
+    # comparison below exact; only the installed link's mode has this meaning.
+    expected = {**item, "mode": 0o777} if item.get("kind") == "symlink" else item
+    check.require(all(files.get(path, {}).get(key) == value for key, value in expected.items()),
                   "installed payload differs: " + path)
 
 
