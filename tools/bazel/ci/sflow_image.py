@@ -60,7 +60,8 @@ def clean_source(directory):
     untracked = subprocess.check_output(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
     unexpected = [name for name in untracked if name and
-                  not (ROOT / name).is_relative_to(directory)]
+                  not (ROOT / name).is_relative_to(directory) and
+                  not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")]
     check.require(not unexpected, "untracked source inputs: " + repr(unexpected))
 
 

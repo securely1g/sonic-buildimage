@@ -76,7 +76,7 @@ def clean_source(directory):
     # The reserved artifacts tree supplies no source inputs; tracked files and
     # submodules are still covered by the complete HEAD diff above.
     unexpected = [name for name in untracked if name and
-                  not (ROOT / name).is_relative_to(ROOT / "artifacts")]
+                  not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")]
     check.require(not unexpected, "untracked source inputs: " + repr(unexpected))
 
 

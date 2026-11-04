@@ -50,9 +50,16 @@ TARGETS = {
 
 
 def identity(directory):
+    check.require(not ROOT.is_relative_to(directory), "artifact directory cannot contain the source checkout")
+    if directory.is_relative_to(ROOT):
+        relative = directory.relative_to(ROOT)
+        check.require(len(relative.parts) > 1 and relative.parts[0] == "artifacts",
+                      "in-checkout evidence must use artifacts/<name>")
     subprocess.run(["git", "diff", "--exit-code", "--ignore-submodules=none", "HEAD"], cwd=ROOT, check=True)
     untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
-    check.require(not any(name and not (ROOT / name).is_relative_to(directory) for name in untracked),
+    check.require(not any(name and not (ROOT / name).is_relative_to(directory) and
+                          not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")
+                          for name in untracked),
                   "untracked source inputs")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     commit = subprocess.check_output(["git", "cat-file", "-p", "HEAD"], cwd=ROOT, text=True)

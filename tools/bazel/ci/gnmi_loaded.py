@@ -13,7 +13,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
-from tools.bazel.ci import validate_runtime
+from tools.bazel.ci import gnmi_image, validate_runtime
 from tools.bazel.ci.public_artifacts import safe_json
 
 
@@ -25,10 +25,8 @@ def main():
     report_path = directory / "validation.json"
     report = json.loads(report_path.read_text())
     check.require(report["status"] == "passed" and report["architecture"] == "amd64", "image validation did not pass")
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    revision = gnmi_image.source_revision()
     check.require(report["revision"] == revision, "runtime checkout differs from built source")
-    check.require(not subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True),
-                  "runtime acceptance requires the committed source checkout")
     probe = ROOT / "dockers/docker-sonic-gnmi/bazel/runtime_probe.py"
     results = {}
     with tempfile.TemporaryDirectory(prefix="gnmi-redis-") as temporary:

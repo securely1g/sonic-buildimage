@@ -83,13 +83,15 @@ def write(path, value):
 def source_identity(directory):
     check.require(not ROOT.is_relative_to(directory), 'Artifacts cannot contain the checkout')
     if directory.is_relative_to(ROOT):
-        check.require(directory.relative_to(ROOT).parts[0] == 'artifacts', 'Use artifacts/<name> for in-checkout evidence')
+        relative = directory.relative_to(ROOT)
+        check.require(len(relative.parts) > 1 and relative.parts[0] == 'artifacts',
+                      'Use artifacts/<name> for in-checkout evidence')
     subprocess.run(['git', 'diff', '--exit-code', '--ignore-submodules=none', 'HEAD'], cwd=ROOT, check=True)
     untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z'], cwd=ROOT).decode().split('\0')
     # Full VS Make and preceding CI steps keep their independent receipts here.
     # This reserved evidence tree supplies no Bazel source inputs; tracked files
     # and submodules remain covered by the complete HEAD diff above.
-    check.require(not [name for name in untracked if name and not (ROOT / name).is_relative_to(ROOT / 'artifacts')],
+    check.require(not [name for name in untracked if name and not (len(Path(name).parts) > 1 and Path(name).parts[0] == 'artifacts')],
                   'Image source checkout has undeclared inputs')
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
 

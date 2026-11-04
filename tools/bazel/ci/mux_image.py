@@ -46,8 +46,12 @@ CONFIGS = {
 
 
 def checkout_revision():
-    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip()
-    check.require(not status, "Commit the image inputs before acceptance:\n" + status)
+    subprocess.run(["git", "diff", "--exit-code", "--ignore-submodules=none", "HEAD"], cwd=ROOT, check=True)
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
+    unexpected = [name for name in untracked if name and
+                  not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")]
+    check.require(not unexpected, "untracked source inputs: " + repr(unexpected))
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
 
 

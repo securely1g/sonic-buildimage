@@ -48,9 +48,12 @@ OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=1000
 
 
 def source_revision():
-    check.require(not subprocess.check_output(
-        ["git", "status", "--porcelain"], cwd=ROOT, text=True),
-        "Commit image inputs before acceptance")
+    subprocess.run(["git", "diff", "--exit-code", "--ignore-submodules=none", "HEAD"], cwd=ROOT, check=True)
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
+    unexpected = [name for name in untracked if name and
+                  not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")]
+    check.require(not unexpected, "untracked source inputs: " + repr(unexpected))
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
 
 
