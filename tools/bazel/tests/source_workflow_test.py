@@ -123,6 +123,45 @@ class SourceWorkflowTest(unittest.TestCase):
     def recorded(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
+    def test_owned_libteam_companion_keeps_source_only_scope(self):
+        text = WORKFLOW.read_text()
+        fixture_conditions = re.findall(r"SOURCE_ONLY_NO_DEBS: \$\{\{ (.*?) \}\}", text)
+        self.assertEqual(len(fixture_conditions), 2)
+        vs_condition = re.search(r"^    if: >-\n(.*?)(?=^    runs-on:)",
+                                 jobs()["vs_container"], re.MULTILINE | re.DOTALL)[1]
+
+        def evaluate(expression, number, branch, owner):
+            values = {
+                "github.event_name": "pull_request",
+                "github.event.pull_request.number": number,
+                "github.event.pull_request.head.ref": branch,
+                "github.event.pull_request.head.repo.full_name": owner,
+                "github.repository": "securely1g/sonic-buildimage",
+                "github.head_ref": branch,
+                "inputs.source_image": "none",
+                "github.ref": "refs/pull/999/merge",
+                "inputs.skip_vs": False,
+            }
+            expression = re.sub(r"(?:github|inputs)\.[A-Za-z0-9_.]+",
+                                lambda item: repr(values[item[0]]), expression)
+            expression = expression.replace("&&", " and ").replace("||", " or ")
+            expression = re.sub(r"!(?!=)", " not ", expression)
+            return eval(" ".join(expression.split()), {"__builtins__": {},
+                "contains": lambda values, item: item in values, "fromJSON": json.loads})
+
+        for number, branch, owner, source_only, run_vs in (
+            (51, "frr-native-bazel", "songqing-sq/sonic-buildimage", True, False),
+            (61, "pr/bazel-libteam", "songqing-sq/sonic-buildimage", True, False),
+            (999, "codex/libteam-current-native-inputs", "securely1g/sonic-buildimage", True, False),
+            (999, "codex/libteam-current-native-inputs", "example/sonic-buildimage", False, False),
+            (999, "codex/libteam-current-native-inputs-extra", "securely1g/sonic-buildimage", False, True),
+            (999, "unrelated", "securely1g/sonic-buildimage", False, True),
+        ):
+            with self.subTest(number=number, branch=branch, owner=owner):
+                for expression in fixture_conditions:
+                    self.assertEqual(evaluate(expression, number, branch, owner), source_only)
+                self.assertEqual(evaluate(vs_condition, number, branch, owner), run_vs)
+
     def test_hosted_regressions_gate_vs_without_source_compilation(self):
         workflow_jobs = jobs()
         self.assertNotIn("source", workflow_jobs)
