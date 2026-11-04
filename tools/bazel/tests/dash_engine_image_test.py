@@ -18,7 +18,147 @@ from tools.bazel.ci import dash_engine_public as public
 from tools.bazel.oci import image_validation
 
 
+def successful_build_events(*, processes=0, action_cache_hits=0, runners=None):
+    return [
+        {'id': {'started': {}}, 'started': {'command': 'build', 'buildToolVersion': '8.5.1'}},
+        {'id': {'targetCompleted': {'label': driver.OWNER + driver.IMAGES[0] + '.gz'}},
+         'completed': {'success': True}},
+        {'id': {'buildFinished': {}}, 'finished': {'overallSuccess': True, 'exitCode': {'code': 0}}},
+        {'id': {'buildMetrics': {}}, 'lastMessage': True,
+         'buildMetrics': {'actionSummary': {
+             'actionsExecuted': str(processes), 'actionCacheStatistics': {'hits': action_cache_hits},
+             'runnerCount': [{'name': name, 'count': count}
+                             for name, count in {'total': processes, **(runners or {})}.items()]}}},
+    ]
+
+
 class DashEngineImageTest(unittest.TestCase):
+    def test_noop_accepts_zero_singular_and_plural_process_summaries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            execution, events, log = (root / n for n in ('execution.json', 'events.jsonl', 'build.log'))
+            events.write_text('\n'.join(json.dumps(v) for v in successful_build_events()) + '\n')
+            record = {'mnemonic': 'Unpack', 'targetLabel': '@@owner+//:payload',
+                      'runner': 'disk cache hit', 'cacheHit': True}
+            for summary, records, expected in [
+                ('INFO: 0 processes.\n', [], {'total': 0, 'runners': {}}),
+                ('INFO: 1 process: 1 internal.\n', [],
+                 {'total': 1, 'runners': {'internal': 1}}),
+                ('INFO: 1 process: 1 disk cache hit.\n', [record],
+                 {'total': 1, 'runners': {'disk cache hit': 1}}),
+                ('INFO: 2 processes: 1 internal, 1 disk cache hit.\n', [record],
+                 {'total': 2, 'runners': {'internal': 1, 'disk cache hit': 1}}),
+                ('INFO: 1 process: 144 action cache hit, 1 internal.\n', [],
+                 {'total': 1, 'runners': {'action cache hit': 144, 'internal': 1}}),
+                ('INFO: 2 processes: 144 action cache hit, 1 disk cache hit, 1 internal.\n', [record],
+                 {'total': 2, 'runners': {'action cache hit': 144, 'disk cache hit': 1, 'internal': 1}}),
+            ]:
+                with self.subTest(summary=summary):
+                    events.write_text('\n'.join(json.dumps(v) for v in successful_build_events(
+                        processes=expected['total'], action_cache_hits=expected['runners'].get('action cache hit', 0),
+                        runners={k: v for k, v in expected['runners'].items() if k != 'action cache hit'})) + '\n')
+                    execution.write_text('\n'.join(json.dumps(v) for v in records))
+                    log.write_text(summary)
+                    executed, result = driver.incremental_actions(execution, events, log, no_op=True)
+                    self.assertEqual(executed, {})
+                    self.assertEqual(result['process_summary'], expected)
+                    self.assertEqual(result['executed_count'], 0)
+                    self.assertEqual(result['cache_hit_count'], len(records))
+
+    def test_noop_requires_cache_hit_runner_bep_and_process_count_agreement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            execution, events, log = (root / n for n in ('execution.json', 'events.jsonl', 'build.log'))
+            events.write_text('\n'.join(json.dumps(v) for v in successful_build_events(
+                processes=2, runners={'internal': 1, 'disk cache hit': 1})) + '\n')
+            record = {'mnemonic': 'Unpack', 'targetLabel': '@@owner+//:payload',
+                      'runner': 'disk cache hit', 'cacheHit': True}
+            execution.write_text(json.dumps(record))
+            log.write_text('INFO: 2 processes: 1 internal, 1 disk cache hit.\n')
+            executed, result = driver.incremental_actions(execution, events, log, no_op=True)
+            self.assertEqual(executed, {})
+            self.assertEqual((result['action_count'], result['cache_hit_count'], result['executed_count']), (1, 1, 0))
+            public.safe_json(result)
+            failed = {}
+            execution.write_text(json.dumps({**record, 'runner': 'processwrapper-sandbox', 'cacheHit': False}))
+            with self.assertRaises(ValueError):
+                driver.incremental_actions(execution, events, log, no_op=True, evidence=failed)
+            self.assertEqual(failed['executed_count'], 1)
+            self.assertEqual(failed['actions'][0]['cache_hit'], False)
+            public.safe_json(failed)
+            for changes in [dict(runner='processwrapper-sandbox', cacheHit=False),
+                            dict(cacheHit=False), dict(cacheHit='true'), dict(runner='local'),
+                            dict(exitCode=1), dict(status='failed')]:
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    execution.write_text(json.dumps({**record, **changes}))
+                    driver.incremental_actions(execution, events, log, no_op=True)
+            for missing in ('cacheHit', 'runner'):
+                bad = dict(record); bad.pop(missing)
+                execution.write_text(json.dumps(bad))
+                with self.assertRaises(ValueError): driver.incremental_actions(execution, events, log, no_op=True)
+            execution.write_text(json.dumps(record))
+            for summary in ['INFO: 0 processes.\n', 'INFO: 1 process: 1 local.\n', '',
+                            'INFO: 2 processes: 1 disk cache hit.\n',
+                            'INFO: 1 process: 1 disk cache hit.\nINFO: 0 processes.\n']:
+                log.write_text(summary)
+                with self.assertRaises(ValueError): driver.incremental_actions(execution, events, log, no_op=True)
+            log.write_text('INFO: 1 process: 1 disk cache hit.\n')
+            events.write_text('\n'.join(json.dumps(v) for v in successful_build_events()[:-1]) + '\n')
+            with self.assertRaises(ValueError): driver.incremental_actions(execution, events, log, no_op=True)
+
+    def test_empty_noop_and_real_source_actions_remain_distinct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            execution, events, log = (root / n for n in ('execution.json', 'events.jsonl', 'build.log'))
+            events.write_text('\n'.join(json.dumps(v) for v in successful_build_events()) + '\n')
+            execution.write_text(''); log.write_text('INFO: 0 processes.\n')
+            executed, result = driver.incremental_actions(execution, events, log, no_op=True)
+            self.assertEqual(executed, {}); self.assertEqual(result['action_count'], 0)
+            for mnemonic in ('CppCompile', 'CppLink', 'Rustc', 'GoCompilePkg', 'GoLink'):
+                execution.write_text(json.dumps({'mnemonic': mnemonic, 'runner': 'processwrapper-sandbox', 'cacheHit': False}))
+                with self.assertRaises(ValueError): driver.incremental_actions(execution, events, log)
+
+    def test_noop_requires_matching_structured_cache_and_runner_metrics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            execution, events, log = (root / n for n in ('execution.json', 'events.jsonl', 'build.log'))
+            execution.write_text('')
+            log.write_text('INFO: 1 process: 144 action cache hit, 1 internal.\n')
+            baseline = successful_build_events(processes=1, action_cache_hits=144, runners={'internal': 1})
+            for change in ('missing-metrics', 'missing-stats', 'missing-runners', 'hits', 'total',
+                           'executed', 'duplicate-runner', 'unknown-runner', 'negative', 'boolean',
+                           'unknown-runner-field', 'duplicate-metrics'):
+                with self.subTest(change=change):
+                    records = deepcopy(baseline)
+                    metrics = records[-1]['buildMetrics']['actionSummary']
+                    if change == 'missing-metrics': records[-1].pop('buildMetrics')
+                    elif change == 'missing-stats': metrics.pop('actionCacheStatistics')
+                    elif change == 'missing-runners': metrics.pop('runnerCount')
+                    elif change == 'hits': metrics['actionCacheStatistics']['hits'] = 143
+                    elif change == 'total': metrics['runnerCount'][0]['count'] = 2
+                    elif change == 'executed': metrics['actionsExecuted'] = '2'
+                    elif change == 'duplicate-runner': metrics['runnerCount'].append({'name': 'internal', 'count': 1})
+                    elif change == 'unknown-runner': metrics['runnerCount'][1]['name'] = 'local'
+                    elif change == 'negative': metrics['actionCacheStatistics']['hits'] = -1
+                    elif change == 'boolean': metrics['actionsExecuted'] = True
+                    elif change == 'unknown-runner-field': metrics['runnerCount'][1]['command'] = 'private'
+                    else: records.insert(-1, deepcopy(records[-1]))
+                    events.write_text('\n'.join(json.dumps(v) for v in records) + '\n')
+                    evidence = {}
+                    with self.assertRaises(ValueError):
+                        driver.incremental_actions(execution, events, log, no_op=True, evidence=evidence)
+                    public.safe_json(evidence)
+                    if change == 'hits':
+                        self.assertEqual(evidence['process_summary']['runners']['action cache hit'], 144)
+                        self.assertEqual(evidence['build_action_summary']['action_cache_hits'], 143)
+            # Bazel suppresses all details for zero processes, including action
+            # cache hits. Keep the separately validated BEP count in the receipt.
+            events.write_text('\n'.join(json.dumps(v) for v in successful_build_events(action_cache_hits=144)) + '\n')
+            log.write_text('INFO: 0 processes.\n')
+            _, result = driver.incremental_actions(execution, events, log, no_op=True)
+            self.assertEqual(result['build_action_summary']['action_cache_hits'], 144)
+            self.assertEqual(result['process_summary'], {'total': 0, 'runners': {}})
+
     def test_source_symlink_matches_installed_linux_mode_without_losing_metadata(self):
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / 'source.tar'
@@ -217,6 +357,9 @@ class DashEngineImageTest(unittest.TestCase):
                 phase = execution.name.removeprefix('incremental-').removesuffix('.execution.json')
                 calls.append(phase)
                 execution.write_text('')
+                events = Path(next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--build_event_json_file=')))
+                events.write_text('\n'.join(json.dumps(v) for v in successful_build_events()) + '\n')
+                kwargs['stdout'].write('INFO: 0 processes.\n')
                 if phase == 'launcher-source-edit':
                     self.assertNotEqual(source.read_bytes(), original)
                     return subprocess.CompletedProcess(argv, 23)

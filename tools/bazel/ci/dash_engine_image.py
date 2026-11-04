@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.build_helpers import cache_options
 from tools.bazel.ci import artifact_validation as check
-from tools.bazel.ci import bazel_commands, build, command_log, resolution
+from tools.bazel.ci import bazel_commands, build, cache_reuse, command_log, resolution
 from tools.bazel.oci import oci_layout
 
 OWNER = "//platform/vs/docker-dash-engine:"
@@ -134,6 +135,58 @@ def validate_images(directory):
     return validate(directory)
 
 
+def incremental_actions(execution, events, log, *, no_op=False, evidence=None):
+    """Distinguish proven cache materialization from actual image/source work."""
+    result = cache_reuse.collect(execution, events, OWNER + IMAGES[0] + ".gz", allow_empty=True,
+                                 include_action_summary=no_op)
+    result["phase"] = "incremental"
+    if evidence is not None:
+        evidence.update(result)
+        result = evidence
+    executed = {}
+    for action in result["actions"]:
+        if not action["cache_hit"]:
+            mnemonic = action["mnemonic"]
+            executed[mnemonic] = executed.get(mnemonic, 0) + action["count"]
+    check.require(not any(key.startswith(("Cpp", "Rustc", "GoCompile", "GoLink")) for key in executed),
+                  "image-only probe unexpectedly compiled source owners: " + repr(executed))
+    if no_op:
+        check.require(result["executed_count"] == 0, "no-op build executed actions: " + repr(executed))
+        # Compare this build's process summary with its validated spawn records.
+        # Internal Bazel bookkeeping is absent from the spawn log; every cache
+        # hit must agree by runner and count. Persistent action-cache hits are
+        # reported separately from processes by Bazel's SpawnStats; bind them
+        # to this invocation's BEP statistics instead of counting them as spawns.
+        matches = re.findall(r"^INFO: ([0-9]+) process(?:es)?(?:: (.*))?\.$", log.read_text(), re.M)
+        check.require(len(matches) == 1, "missing or ambiguous no-op process summary")
+        total, details = matches[0]
+        counts = {}
+        result["process_summary"] = {"total": int(total), "runners": counts}
+        for item in details.split(", ") if details else []:
+            match = re.fullmatch(r"([0-9]+) (internal|action cache hit|disk cache hit|remote cache hit)", item)
+            check.require(match is not None, "no-op process summary contains actual or unknown work")
+            count, runner = match.groups()
+            check.require(runner not in counts, "duplicate no-op process runner")
+            counts[runner] = int(count)
+        processes = {name: count for name, count in counts.items() if name != "action cache hit"}
+        check.require(sum(processes.values()) == int(total), "no-op process count differs")
+        metrics = result["build_action_summary"]
+        runners = metrics["runners"]
+        check.require(set(runners) <= {"total", "internal", "disk cache hit", "remote cache hit"},
+                      "no-op BEP contains actual or unknown work")
+        check.require(int(total) == metrics["actions_executed"] == runners["total"] and
+                      processes == {name: count for name, count in runners.items() if name != "total"},
+                      "no-op process and BEP runner evidence differ")
+        # SpawnStats deliberately prints only '0 processes.' for a zero total,
+        # even when the persistent action-cache counter is nonzero.
+        check.require((int(total) > 0 and counts.get("action cache hit", 0) == metrics["action_cache_hits"]) or
+                      (int(total) == 0 and not counts), "no-op process and BEP action-cache evidence differ")
+        for runner in ("disk cache hit", "remote cache hit"):
+            expected = sum(action["count"] for action in result["actions"] if action["runner"] == runner)
+            check.require(counts.get(runner, 0) == expected, "no-op process and cache evidence differ")
+    return executed, result
+
+
 def incremental(args, directory):
     clean_source(directory)
     identity = source_identity()
@@ -156,40 +209,41 @@ def incremental(args, directory):
                 "archives": {name: check.sha(path) for name, path in archives.items()},
                 "owners": {name: check.sha(path) for name, path in owners.items()},
                 "base": oci_layout.validate_layout(base, "linux/amd64").descriptor["digest"]}
-    timings, actions = {}, {}
+    timings, actions, cache_evidence = {}, {}, {}
     def timed_build(name):
         started = time.monotonic()
         execution = directory / ("incremental-" + name + ".execution.json")
-        with (directory / ("incremental-" + name + ".log")).open("w") as log:
+        log_path = directory / ("incremental-" + name + ".log")
+        events = directory / ("incremental-" + name + ".events.jsonl")
+        with log_path.open("w") as log:
             result = subprocess.run([args.bazel, "build", *root_options(),
                 "--execution_log_json_file=" + str(execution),
-                "--build_event_json_file=" + str(directory / ("incremental-" + name + ".events.jsonl")),
+                "--build_event_json_file=" + str(events),
                 *targets], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
         timings[name] = round(time.monotonic() - started, 3)
         result.check_returncode()
-        # Bazel's JSON execution log contains adjacent records, not an array.
-        decoder, text, offset, mnemonics = json.JSONDecoder(), execution.read_text(), 0, {}
-        while offset < len(text):
-            while offset < len(text) and text[offset].isspace(): offset += 1
-            if offset == len(text): break
-            record, offset = decoder.raw_decode(text, offset)
-            mnemonic = record.get("mnemonic", "unknown")
-            mnemonics[mnemonic] = mnemonics.get(mnemonic, 0) + 1
-        actions[name] = mnemonics
-        check.require(not any(key.startswith(("Cpp", "Rustc", "GoCompile", "GoLink")) for key in mnemonics),
-                      "image-only probe unexpectedly compiled source owners: " + repr(mnemonics))
-    timed_build("baseline")
-    original = snapshot()
-    check.require(all(original["archives"][name] == baseline["artifacts"][name + ".gz"]["sha256"] for name in IMAGES),
-                  "incremental baseline differs from verified archives")
-    timed_build("no-op")
-    check.require(not actions["no-op"], "no-op build executed actions: " + repr(actions["no-op"]))
-    unchanged = snapshot()
-    check.require(unchanged == original, "no-op build changed installed source/image bytes")
+        cache_evidence[name] = {}
+        actions[name], _ = incremental_actions(execution, events, log_path, no_op=name == "no-op",
+                                               evidence=cache_evidence[name])
+    evidence = {"status": "running", "timings_seconds": timings, "executed_actions": actions,
+                "spawn_cache_evidence": cache_evidence}
+    try:
+        timed_build("baseline")
+        original = snapshot()
+        evidence["baseline"] = original
+        check.require(all(original["archives"][name] == baseline["artifacts"][name + ".gz"]["sha256"] for name in IMAGES),
+                      "incremental baseline differs from verified archives")
+        timed_build("no-op")
+        unchanged = snapshot()
+        evidence["unchanged"] = unchanged
+        check.require(unchanged == original, "no-op build changed installed source/image bytes")
+    except Exception as error:
+        evidence.update(status="failed", error=str(error))
+        (directory / "incremental.json").write_text(json.dumps(evidence, indent=2) + "\n")
+        raise
     source = ROOT / "platform/vs/docker-dash-engine/start.sh"
     saved, mode = source.read_bytes(), source.stat().st_mode
-    evidence = {"status": "running", "input": str(source.relative_to(ROOT)), "baseline": original,
-                "unchanged": unchanged, "timings_seconds": timings, "executed_actions": actions}
+    evidence["input"] = str(source.relative_to(ROOT))
     try:
         source.write_bytes(saved + b"\n# Bazel incremental source input probe\n")
         timed_build("launcher-source-edit")
