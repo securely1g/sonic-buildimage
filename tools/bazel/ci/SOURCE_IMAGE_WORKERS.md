@@ -61,7 +61,7 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd` or `gearbox`, a `source_worker` affinity label and a full `source_revision` SHA.
+`otel`, `syncd`, `gearbox` or `dash-engine`, a `source_worker` affinity label and a full `source_revision` SHA.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
@@ -77,7 +77,7 @@ static validation, incremental edit/restore and loaded-container checks.
 The disposable slave installs only missing archive/debug execution packages
 (`libarchive-tools`, GDB and binutils), checks their tools before building and
 retains the installed package versions. These do not enter the image layers.
-Sysmgr, OTEL, Syncd and Gearbox use `review_bazel.sh` with each workflow's immutable catalog;
+Sysmgr, OTEL, Syncd, Gearbox and DASH engine use `review_bazel.sh` with each workflow's immutable catalog;
 the other three use their compatibility entrypoint and verify any workflow catalog
 agrees. No module or source-owner override is added. Selected Rust modules use
 `rules_rs` with tracked Cargo inputs; their normal module extension prepares
@@ -93,6 +93,13 @@ DASH forwarding run. Before its image build, the worker verifies the standard
 in a disposable network namespace. The retained `worker-tap.json` proves this
 capability without creating a VM or using KVM. An already active Gearbox acceptance run must finish
 before another worker run for that image is considered.
+
+DASH engine reuses its `dash_engine_image.py` and `dash_engine_loaded.py`
+drivers. Its loaded check creates disposable `eth1`/`eth2` interfaces inside
+the private image container and runs the original startup script and installed
+BMv2 Python clients. It requires no host TAP device, VM or KVM. The dispatcher
+entry makes this acceptance runnable; it does not establish a passing image
+build or replace the separate owner tests for PI, BMv2 and nnpy.
 
 The hosted source-download job reuses the existing VS handoff for the five
 GitLab-hosted `rules_gzip` dependencies. It fetches repositories only, then

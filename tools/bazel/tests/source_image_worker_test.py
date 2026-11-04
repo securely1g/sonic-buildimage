@@ -214,7 +214,7 @@ class ImageWorkerTest(unittest.TestCase):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
         wrapper = "/source/tools/bazel/ci/review_bazel.sh"
-        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd")):
+        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine")):
             with self.subTest(image=image):
                 driver = f"/source/tools/bazel/ci/{stem}_image.py"
                 for phase in ("build", "validate", "incremental"):
@@ -245,6 +245,7 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(worker.catalog_for("otel", root), "a" * 40)
             self.assertEqual(worker.catalog_for("syncd", root), "a" * 40)
             self.assertEqual(worker.catalog_for("gearbox", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("dash-engine", root), "a" * 40)
             workflow.write_text("env:\n  BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
             wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
