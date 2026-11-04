@@ -6,6 +6,19 @@ on:
     branches: [master]
   workflow_dispatch:
     inputs:
+      source_image:
+        description: Optional reviewed sFlow hosted validation
+        type: choice
+        options: [none, sflow-hosted]
+        default: none
+      source_revision:
+        description: Reviewed immutable source SHA for the sFlow task
+        type: string
+        default: ''
+      registry_revision:
+        description: Reviewed immutable registry SHA for the sFlow task
+        type: string
+        default: ''
       skip_vs:
         description: Skip the full VS image build
         type: boolean
@@ -16,7 +29,7 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image }}-${{ inputs.source_revision }}-${{ inputs.registry_revision }}
   cancel-in-progress: true
 
 env:
@@ -30,30 +43,49 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: AMD64
-            architecture: amd64
-            machine: x86_64
-            runner: ubuntu-24.04
-            platform: x86_64_trixie
-            # Reuse the shared image cache and allow time for archive + image checks.
-            disk_cache: swss-layer-amd64
-            timeout: 240
-          - name: ARM64
-            architecture: arm64
-            machine: aarch64
-            runner: ubuntu-24.04-arm
-            platform: aarch64_trixie
-            disk_cache: buildimage-gzip-arm64
-            timeout: 60
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+        include: ${{ fromJSON(inputs.source_image == 'sflow-hosted' && '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":240}]' || '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":240},{"name":"ARM64","architecture":"arm64","machine":"aarch64","runner":"ubuntu-24.04-arm","platform":"aarch64_trixie","disk_cache":"buildimage-gzip-arm64","timeout":60}]') }}
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+        - /usr/local/lib/android:/runner-unused/android
+        - /usr/share/dotnet:/runner-unused/dotnet
+        - /opt/ghc:/runner-unused/ghc
     env:
       # Draft catalog for root-module resolution; the full Make VS job is separate.
-      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/${{ inputs.source_image == 'sflow-hosted' && 'review_bazel.sh' || 'libteam_draft_bazel.sh' }}
+      SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.source_image == 'sflow-hosted' && inputs.registry_revision || '' }}
     defaults:
       run:
         shell: bash
     steps:
+      - name: Validate the reviewed sFlow source selection
+        if: inputs.source_image == 'sflow-hosted'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+              echo 'Select paired immutable source and registry SHAs.' >&2
+              exit 2
+            }
+      - name: Allocate source-build space on this disposable runner
+        if: inputs.source_image == 'sflow-hosted'
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
+          available_bytes=$(df --output=avail --block-size=1 "$GITHUB_WORKSPACE" | tail -n 1)
+          (( available_bytes >= 45 * 1024 * 1024 * 1024 )) || {
+            echo 'Source image validation requires 45 GiB of free build space.' >&2
+            exit 1
+          }
       - name: Install execution tools
         run: |
           apt-get update
@@ -63,6 +95,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.source_image == 'sflow-hosted' && inputs.source_revision || github.sha }}
           persist-credentials: false
 
       - name: Check native architecture and generated dependency state
@@ -73,6 +106,10 @@ jobs:
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
 
+      - name: Initialize the reviewed source's pinned gNOI dependency
+        if: inputs.source_image == 'sflow-hosted'
+        run: |
+          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -83,6 +120,7 @@ jobs:
           cache-version: "8.5.1"
 
       - name: Configure the verified source mirror
+        if: inputs.source_image != 'sflow-hosted'
         run: |
           python3 - <<'PYCFG'
           import hashlib
@@ -102,6 +140,26 @@ jobs:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
 
+      - name: Preserve caches and verified transport for the reviewed source
+        if: inputs.source_image == 'sflow-hosted'
+        run: |
+          python3 -B tools/bazel/ci/lldp_draft_cache.py
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/b7b92bcfa5857685ee7cd7953fdbf55264989932/ci/source_mirrors.cfg"
+          expected = "9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Reviewed downloader configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "reviewed-sflow-downloads.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -178,7 +236,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/sflow-oci-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'workflow_dispatch' && inputs.source_image == 'sflow-hosted') || github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/sflow-oci-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
         run: |
           # This review-helper PR is scoped to source/TAR builds only.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -349,7 +407,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
+          python3 -B "tools/bazel/ci/${{ inputs.source_image == 'sflow-hosted' && 'swss_rebuild.py' || 'swss_image_rebuild.py' }}" --bazel "$BAZEL" \
             --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
             --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
             --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
@@ -412,7 +470,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: f87ec1d97b0493d895e34733ea4aae92a90cf75d
+          SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.source_image == 'sflow-hosted' && inputs.registry_revision || 'f87ec1d97b0493d895e34733ea4aae92a90cf75d' }}
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
         if: matrix.architecture == 'amd64'
@@ -450,6 +508,29 @@ jobs:
       - name: Verify sFlow no-op, Python source edit and restored archives
         if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/sflow_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sflow
+      - name: Bind the completed sFlow artifacts to the reviewed source
+        if: inputs.source_image == 'sflow-hosted'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          python3 - <<'PYBIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          expected = os.environ['SOURCE_REVISION']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == expected
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True)
+          root = Path('artifacts/sflow')
+          for name, status in [('build-receipt.json', 'built'), ('validation.json', 'passed')]:
+              value = json.loads((root / name).read_text())
+              assert value['revision'] == expected and value['status'] == status
+              if name == 'build-receipt.json':
+                  assert value['invocation']['review_registry_revision'] == os.environ['REGISTRY_REVISION']
+          value = {'source_revision': expected, 'registry_revision': os.environ['REGISTRY_REVISION'],
+                   'control_revision': os.environ['GITHUB_SHA'],
+                   'loaded_driver_sha256': hashlib.sha256(Path('tools/bazel/ci/sflow_loaded.py').read_bytes()).hexdigest()}
+          (root / 'reviewed-selection.json').write_text(json.dumps(value, indent=2) + '\n')
+          PYBIND
       - name: Review public sFlow evidence
         id: sflow_public
         if: always() && matrix.architecture == 'amd64'
@@ -493,6 +574,7 @@ jobs:
             artifacts/sflow/*.validation.json
             artifacts/sflow/validation.json
             artifacts/sflow/public-receipt.json
+            artifacts/sflow/reviewed-selection.json
             artifacts/sflow/action-audit.json
             artifacts/sflow/owner-action-audit.json
             artifacts/sflow/incremental.json
@@ -510,8 +592,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Validate the reviewed sFlow source selection
+        if: inputs.source_image == 'sflow-hosted'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+              echo 'Select paired immutable source and registry SHAs.' >&2
+              exit 2
+            }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.source_image == 'sflow-hosted' && inputs.source_revision || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -559,6 +653,26 @@ jobs:
         with:
           name: sflow-source-amd64
           path: artifacts/sflow
+      - name: Verify the selected source against the downloaded sFlow evidence
+        if: inputs.source_image == 'sflow-hosted'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          python3 - <<'PYBIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          root = Path('artifacts/sflow')
+          value = json.loads((root / 'reviewed-selection.json').read_text())
+          assert value['source_revision'] == os.environ['SOURCE_REVISION']
+          assert value['registry_revision'] == os.environ['REGISTRY_REVISION']
+          assert value['control_revision'] == os.environ['GITHUB_SHA']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == value['source_revision']
+          assert hashlib.sha256(Path('tools/bazel/ci/sflow_loaded.py').read_bytes()).hexdigest() == value['loaded_driver_sha256']
+          for name, status in [('public-receipt.json', 'built'), ('validation.json', 'passed')]:
+              receipt = json.loads((root / name).read_text())
+              assert receipt['revision'] == value['source_revision'] and receipt['status'] == status
+          PYBIND
       - name: Exercise installed sFlow manager, mapper and exporter variants
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -574,6 +688,7 @@ jobs:
           retention-days: 14
 
   checks:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image != 'sflow-hosted'
     name: OCI regression checks (AMD64)
     runs-on: ubuntu-24.04
     outputs:
@@ -645,7 +760,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/sflow-oci-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'workflow_dispatch' && inputs.source_image == 'sflow-hosted') || github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/sflow-oci-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
         run: |
           # This review-helper PR is scoped to source/TAR builds only.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -1094,12 +1209,13 @@ jobs:
     needs: [checks]
     # PRs #51/#61 and the SWSS source/OCI follow-ups exclude DEB generation.
     if: >-
+      !(github.event_name == 'workflow_dispatch' && inputs.source_image == 'sflow-hosted') && (
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
        github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/sflow-oci-amd64' && github.head_ref != 'codex/review-registry-catalog') ||
-      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
+      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
     # The four registered slots share lgh4. Only one full native build may
