@@ -255,6 +255,26 @@ def p4_service_check(config):
                 'scope': 'Installed compiler plus local BMv2/PI gRPC listener; no packets or remote services.'}
 
 
+def _redis_tcp_port(config, instance):
+    """Support the two existing private-fixture selectors without weakening either."""
+    port = config.get('tcp_port', 0)
+    if type(port) is not int or not 0 <= port <= 65535:
+        raise ValueError('Invalid private Redis TCP port')
+    loopback = config.get('loopback_tcp', False)
+    if type(loopback) is not bool:
+        raise ValueError('Invalid private Redis loopback selector')
+    if loopback:
+        selected = instance.get('port')
+        if type(selected) is not int or not 1024 <= selected <= 65535:
+            raise ValueError('Redis fixture TCP endpoint must be unprivileged loopback')
+        if 'tcp_port' in config and port != selected:
+            raise ValueError('Conflicting private Redis TCP selectors')
+        port = selected
+    if port and (instance.get('hostname') != '127.0.0.1' or port != instance.get('port')):
+        raise ValueError('Private Redis TCP listener must match the loopback owner configuration')
+    return port
+
+
 @contextlib.contextmanager
 def redis_fixture(config):
     """Run only the supplied test helper, inside this isolated container."""
@@ -274,12 +294,7 @@ def redis_fixture(config):
     socket_path = data['INSTANCES']['redis']['unix_socket_path']
     if Path(socket_path).resolve() != Path('/run/redis/redis.sock'):
         raise ValueError('Unexpected Redis socket path in installed database config')
-    tcp_port = config.get('tcp_port', 0)
-    if type(tcp_port) is not int or not 0 <= tcp_port <= 65535:
-        raise ValueError('Invalid private Redis TCP port')
-    if tcp_port and (data['INSTANCES']['redis']['hostname'] != '127.0.0.1' or
-                     tcp_port != data['INSTANCES']['redis']['port']):
-        raise ValueError('Private Redis TCP listener must match the loopback owner configuration')
+    tcp_port = _redis_tcp_port(config, data["INSTANCES"]["redis"])
     with tempfile.TemporaryDirectory(prefix='sonic-redis-smoke-') as name:
         directory = Path(name)
         # Some unchanged service scripts use sonic-db-cli's default TCP mode.
