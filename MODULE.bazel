@@ -72,6 +72,9 @@ bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_
 bazel_dep(name = "sonic-snmpagent", version = "2.1.0", repo_name = "sonic_snmpagent")
 bazel_dep(name = "sonic-swss-common", version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed", repo_name = "sonic_swss_common")
 bazel_dep(name = "scapy", version = "2.6.1.sonic.1")
+bazel_dep(name = "hsflowd", version = "2.1.26.sonic.1")
+bazel_dep(name = "sflowtool", version = "6.11.0.sonic.2")
+bazel_dep(name = "libpsample", version = "1.1.0.sonic.1")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -375,6 +378,9 @@ source_modules(
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
         "@scapy//:MODULE.bazel": "scapy",
+        "@hsflowd//:MODULE.bazel": "hsflowd",
+        "@sflowtool//:MODULE.bazel": "sflowtool",
+        "@libpsample//:MODULE.bazel": "libpsample",
         "@libyang//:MODULE.bazel": "libyang",
         "@libyang_python//:MODULE.bazel": "libyang-python",
         "@libnl3//:MODULE.bazel": "libnl3",
@@ -468,4 +474,13 @@ use_repo(apt, "snmp_debian", "snmp_debug_debian", "snmp_test_debian")
 apt_inputs(
     name = "snmp_apt_inputs",
     lock = "//dockers/docker-snmp/bazel:apt.lock.json",
+)
+
+# sFlow adds only locked distro runtime/debug tools to its source-built parent.
+apt.import_lock(lock = "//dockers/docker-sflow/bazel:apt.lock.json")
+use_repo(apt, "sflow_debian", "sflow_debug_debian", "sflow_test_debian")
+
+apt_inputs(
+    name = "sflow_apt_inputs",
+    lock = "//dockers/docker-sflow/bazel:apt.lock.json",
 )
