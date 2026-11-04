@@ -123,6 +123,52 @@ jobs:
           mkdir -p artifacts/source-downloads
           python3 -B tools/bazel/gzip/prepare_pigz.py --output "$PWD/artifacts/source-downloads"
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+      - name: Prepare the reviewed libpcre2-dev download
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.source_revision == 'a5a1f8dfa22b0b99226968f8d11dfe9d654e9a97' &&
+          inputs.registry_revision == '6a69c2d89070d4d2ffc80b1e13626da387f7ea65'
+        run: |
+          python3 - <<'PYDEB'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.request import urlopen
+          from tools.bazel.gzip.source_archive import publish
+
+          # Snapshot's content address changes transport only; Bazel still checks
+          # the original SHA256 declared by the reviewed graph's APT lock.
+          URL = "https://snapshot.debian.org/file/648dd0b86870e854e02868553a2246b3470b96dd"
+          SHA256 = "b5cb023bfaad356053583af384f7b75caec3ac127a197f889164ef4d96397cef"
+          SIZE = 852668
+          FILENAME = "libpcre2-dev_10.46-1~deb13u1_amd64.deb"
+
+          def prepare():
+              destination = Path("artifacts/source-downloads") / FILENAME
+              receipt = Path("artifacts/eventd/libpcre2-dev-download.json")
+              if destination.is_symlink() or receipt.is_symlink():
+                  raise ValueError("Reviewed download path must not be a symlink")
+              cached = destination.is_file() and destination.stat().st_size == SIZE
+              if cached:
+                  cached = hashlib.sha256(destination.read_bytes()).hexdigest() == SHA256
+              if not cached:
+                  with urlopen(URL, timeout=60) as response:
+                      if response.status != 200:
+                          raise ValueError("Reviewed download did not return HTTP 200")
+                      data = response.read(SIZE + 1)
+                  if len(data) != SIZE or hashlib.sha256(data).hexdigest() != SHA256:
+                      raise ValueError("Reviewed download differs from the locked SHA256 or size")
+                  # The existing helper atomically replaces only verified bytes.
+                  publish(data, destination)
+              result = {"url": URL, "sha256": SHA256, "bytes": SIZE,
+                        "filename": FILENAME, "reused_verified_file": cached}
+              publish((json.dumps(result, sort_keys=True) + "\n").encode(), receipt)
+              print(json.dumps(result, sort_keys=True))
+
+          if __name__ == "__main__":
+              prepare()
+          PYDEB
+
       - name: Validate Make handoff and version inputs
         run: python3 -B tools/bazel/tests/eventd_make_test.py
       - name: Build runtime and debug images from owner TARs
@@ -172,7 +218,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'image_version', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'debug-packages.json'):
+          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'debug-packages.json', 'libpcre2-dev-download.json'):
               path = root / name
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -193,6 +239,7 @@ jobs:
             artifacts/eventd/*.tar
             artifacts/eventd/public-receipt.json
             artifacts/eventd/reviewed-selection.json
+            artifacts/eventd/libpcre2-dev-download.json
             artifacts/eventd/validation.json
             artifacts/eventd/incremental.json
             artifacts/eventd/action-audit.json

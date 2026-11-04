@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the hosted Eventd selection, receipt binding and CI boundary."""
+import contextlib
+import hashlib
+import io
+import sys
 import json
 import os
 from pathlib import Path
@@ -8,6 +12,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 BRANCH = "codex/eventd-review-source-inputs"
@@ -140,6 +145,126 @@ class EventdReviewWorkflowTest(unittest.TestCase):
         self.assertTrue(evaluate(gate, number=6))
         self.assertTrue(evaluate(gate, event="push"))
         self.assertTrue(evaluate(gate, event="workflow_dispatch"))
+
+
+class ReviewedDownloadTest(unittest.TestCase):
+    STEP = "Prepare the reviewed libpcre2-dev download"
+    SOURCE = "a5a1f8dfa22b0b99226968f8d11dfe9d654e9a97"
+    REGISTRY = "6a69c2d89070d4d2ffc80b1e13626da387f7ea65"
+
+    def implementation(self):
+        script = step_script(WORKFLOW.read_text(), self.STEP)
+        code = script.split("python3 - <<'PYDEB'\n", 1)[1].rsplit("\nPYDEB", 1)[0]
+        namespace = {"__name__": "download_test"}
+        with mock.patch.object(sys, "path", [str(ROOT), *sys.path]):
+            exec(compile(code, str(WORKFLOW), "exec"), namespace)
+        return namespace
+
+    def test_exact_manual_graph_only_and_before_analysis(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: " + self.STEP + "\n", 1)[1].split("\n      - ", 1)[0]
+        gate = textwrap.dedent(step.split("        if: >-\n", 1)[1].split("        run:", 1)[0])
+        valid = {"event": "workflow_dispatch", "source": self.SOURCE, "registry": self.REGISTRY}
+        self.assertTrue(evaluate(gate, **valid))
+        for changed in ({"event": "pull_request"}, {"event": "push"}, {"source": ""},
+                        {"registry": ""}, {"source": "b" * 40}, {"registry": "c" * 40}):
+            self.assertFalse(evaluate(gate, **{**valid, **changed}), changed)
+        self.assertLess(workflow.index("Prepare the verified compression source and caches"), workflow.index(self.STEP))
+        self.assertLess(workflow.index(self.STEP), workflow.index("Validate Make handoff and version inputs"))
+        self.assertLess(workflow.index(self.STEP), workflow.index("Build runtime and debug images from owner TARs"))
+        self.assertIn("artifacts/eventd/libpcre2-dev-download.json", workflow)
+        self.assertIn("'libpcre2-dev-download.json'", workflow)
+
+    def test_fixed_official_address_and_original_locked_identity(self):
+        ns = self.implementation()
+        self.assertEqual(ns["URL"], "https://snapshot.debian.org/file/648dd0b86870e854e02868553a2246b3470b96dd")
+        self.assertEqual(ns["SHA256"], "b5cb023bfaad356053583af384f7b75caec3ac127a197f889164ef4d96397cef")
+        self.assertEqual(ns["SIZE"], 852668)
+        self.assertEqual(ns["FILENAME"], "libpcre2-dev_10.46-1~deb13u1_amd64.deb")
+
+    @contextlib.contextmanager
+    def fixture(self):
+        # Plain bytes test download integrity; no Debian package is produced.
+        payload = b"ordinary download test bytes"
+        ns = self.implementation()
+        ns["SIZE"] = len(payload)
+        ns["SHA256"] = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary, contextlib.chdir(temporary):
+            destination = Path("artifacts/source-downloads") / ns["FILENAME"]
+            receipt = Path("artifacts/eventd/libpcre2-dev-download.json")
+            with contextlib.redirect_stdout(io.StringIO()):
+                yield ns, payload, destination, receipt
+
+    def response(self, payload, *, status=200):
+        response = io.BytesIO(payload)
+        response.status = status
+        return response
+
+    def test_verified_download_atomic_publication_and_reuse(self):
+        with self.fixture() as (ns, payload, destination, receipt):
+            fetch = mock.Mock(return_value=self.response(payload))
+            ns["urlopen"] = fetch
+            ns["prepare"]()
+            fetch.assert_called_once_with(ns["URL"], timeout=60)
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(json.loads(receipt.read_text())["reused_verified_file"])
+            self.assertEqual(sorted(x.name for x in destination.parent.iterdir()), [ns["FILENAME"]])
+            ns["urlopen"] = mock.Mock(side_effect=AssertionError("Verified cache must avoid network"))
+            ns["prepare"]()
+            self.assertTrue(json.loads(receipt.read_text())["reused_verified_file"])
+            self.assertEqual(set(json.loads(receipt.read_text())), {"url", "sha256", "bytes", "filename", "reused_verified_file"})
+
+    def test_corrupt_short_oversized_and_http_payloads_are_rejected(self):
+        for mode in ("corrupt", "short", "oversized", "http"):
+            with self.subTest(mode=mode), self.fixture() as (ns, payload, destination, receipt):
+                bad = {"corrupt": b"X" * len(payload), "short": payload[:-1],
+                       "oversized": payload + b"X", "http": payload}[mode]
+                ns["urlopen"] = mock.Mock(return_value=self.response(bad, status=503 if mode == "http" else 200))
+                with self.assertRaises(ValueError):
+                    ns["prepare"]()
+                self.assertFalse(destination.exists())
+                self.assertFalse(receipt.exists())
+
+    def test_interrupted_download_does_not_replace_existing_file(self):
+        with self.fixture() as (ns, payload, destination, receipt):
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(b"old unverified download")
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.status = 200
+            response.read.side_effect = OSError("interrupted transfer")
+            ns["urlopen"] = mock.Mock(return_value=response)
+            with self.assertRaises(OSError):
+                ns["prepare"]()
+            response.read.assert_called_once_with(len(payload) + 1)
+            self.assertEqual(destination.read_bytes(), b"old unverified download")
+            self.assertFalse(receipt.exists())
+
+    def test_interrupted_atomic_replace_removes_only_temporary_file(self):
+        with self.fixture() as (ns, payload, destination, receipt):
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(b"old unverified download")
+            ns["urlopen"] = mock.Mock(return_value=self.response(payload))
+            with mock.patch.object(Path, "replace", side_effect=OSError("interrupted replace")):
+                with self.assertRaises(OSError):
+                    ns["prepare"]()
+            self.assertEqual(destination.read_bytes(), b"old unverified download")
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+            self.assertFalse(receipt.exists())
+
+    def test_symlink_destination_is_not_read_or_replaced(self):
+        with self.fixture() as (ns, payload, destination, receipt):
+            destination.parent.mkdir(parents=True)
+            target = Path("unrelated")
+            target.write_bytes(payload)
+            destination.symlink_to(target.resolve())
+            ns["urlopen"] = mock.Mock(side_effect=AssertionError("No download for unsafe path"))
+            with self.assertRaises(ValueError):
+                ns["prepare"]()
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertFalse(receipt.exists())
 
 
 if __name__ == "__main__":
