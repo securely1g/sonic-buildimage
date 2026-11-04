@@ -218,7 +218,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -1531,7 +1531,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -1996,7 +1996,7 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image"]'), github.head_ref))) ||
+       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring"]'), github.head_ref))) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
@@ -2180,3 +2180,173 @@ jobs:
           if test -s "$RUNNER_TEMP/sonic-dockerd.pid"; then
             sudo -n kill -TERM "$(cat "$RUNNER_TEMP/sonic-dockerd.pid")"
           fi
+
+  gnmi_native:
+    name: Build gNMI OCI images and symbols (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    env:
+      BAZEL: tools/bazel/ci/review_bazel.sh
+      SONIC_BAZEL_REGISTRY_REVISION: 07fbb2e9bec4f6f9600092726567efb3718a55f8
+      BAZELISK_GITHUB_TOKEN: ""
+    steps:
+      - name: Install execution and inspection tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends binutils binutils-gold build-essential ca-certificates gdb git j2cli jq libarchive-tools libxml2 python3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: gnmi-image-amd64
+          cache-version: "8.5.1"
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Registry #186 changes only transport; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+
+      - name: Validate Make handoff and version inputs
+        run: |
+          python3 -B tools/bazel/tests/gnmi_make_test.py
+          PYTHONPATH="$PWD" python3 -B tools/bazel/ci/gnmi_image_test.py
+      - name: Build gNMI runtime and debug images (dialout enabled)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B tools/bazel/ci/gnmi_image.py build --bazel "$BAZEL" --dialout enabled --artifacts artifacts/gnmi/enabled
+      - name: Validate completed gNMI images and symbols (dialout enabled)
+        run: python3 -B tools/bazel/ci/gnmi_image.py validate --artifacts artifacts/gnmi/enabled
+      - name: Verify no-op and restored image hashes (dialout enabled)
+        run: |
+          python3 -B tools/bazel/ci/gnmi_image.py incremental --bazel "$BAZEL" --artifacts artifacts/gnmi/enabled
+          git diff --exit-code
+      - name: Build gNMI runtime and debug images (dialout disabled)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B tools/bazel/ci/gnmi_image.py build --bazel "$BAZEL" --dialout disabled --artifacts artifacts/gnmi/disabled
+      - name: Validate completed gNMI images and symbols (dialout disabled)
+        run: python3 -B tools/bazel/ci/gnmi_image.py validate --artifacts artifacts/gnmi/disabled
+      - name: Verify no-op and restored image hashes (dialout disabled)
+        run: |
+          python3 -B tools/bazel/ci/gnmi_image.py incremental --bazel "$BAZEL" --artifacts artifacts/gnmi/disabled
+          git diff --exit-code
+      - name: Prepare public evidence
+        id: public_evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          for profile in ('enabled', 'disabled'):
+              root = Path('artifacts/gnmi') / profile
+              root.mkdir(parents=True, exist_ok=True)
+              if (root / 'build-receipt.json').exists():
+                  receipt = json.loads((root / 'build-receipt.json').read_text())
+                  public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'image_version', 'artifacts') if key in receipt}
+                  safe_json(public)
+                  (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+              for name in ('validation.json', 'incremental.json', 'action-audit.json', 'debug-packages.json',
+                           'packages.json', 'base-packages.json', 'config-engine-packages.json',
+                           'runtime-apt.json', 'debug-apt.json'):
+                  path = root / name
+                  if path.exists():
+                      safe_json(json.loads(path.read_text()))
+              for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+                  path = root / name
+                  if path.exists():
+                      dependency_json(json.loads(path.read_text()), kind)
+              if (root / 'build-events.jsonl').exists():
+                  value = bep_summary((root / 'build-events.jsonl').read_text().splitlines(), partial=True)
+                  (root / 'build-summary.json').write_text(json.dumps(value, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.public_evidence.outcome == 'success'
+        with:
+          name: gnmi-image-amd64
+          path: |
+            artifacts/gnmi/*/*.gz
+            artifacts/gnmi/*/*.tar
+            artifacts/gnmi/*/gnmi-installed-probe.py
+            artifacts/gnmi/*/public-receipt.json
+            artifacts/gnmi/*/validation.json
+            artifacts/gnmi/*/incremental.json
+            artifacts/gnmi/*/action-audit.json
+            artifacts/gnmi/*/debug-packages.json
+            artifacts/gnmi/*/packages.json
+            artifacts/gnmi/*/base-packages.json
+            artifacts/gnmi/*/config-engine-packages.json
+            artifacts/gnmi/*/runtime-apt.json
+            artifacts/gnmi/*/debug-apt.json
+            artifacts/gnmi/*/*.status
+            artifacts/gnmi/*/build-summary.json
+            artifacts/gnmi/*/MODULE.bazel.lock
+            artifacts/gnmi/*/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  gnmi_runtime:
+    name: Run installed gNMI images (AMD64)
+    needs: gnmi_native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gnmi-image-amd64
+          path: artifacts/gnmi
+      - name: Verify loaded archives, gNMI services and installed source symbols
+        run: |
+          for profile in enabled disabled; do
+            python3 -B tools/bazel/ci/gnmi_loaded.py --artifacts "artifacts/gnmi/$profile"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: gnmi-runtime-amd64
+          path: |
+            artifacts/gnmi/*/*.runtime.json
+            artifacts/gnmi/*/loaded-validation.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  gnmi_acceptance:
+    name: gNMI acceptance (AMD64)
+    if: always() && !cancelled()
+    needs: [gnmi_native, gnmi_runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both image construction and installed-service checks
+        env:
+          BUILD_RESULT: ${{ needs.gnmi_native.result }}
+          RUNTIME_RESULT: ${{ needs.gnmi_runtime.result }}
+        run: |
+          test "$BUILD_RESULT" = success
+          test "$RUNTIME_RESULT" = success
