@@ -28,6 +28,7 @@ PROVENANCE = "kernel-provenance.json"
 TARGET = "@sonic_linux_kernel//:kernel_packages"
 DEBS_DIRECTORY = Path("target/debs/trixie")
 KERNEL_PATH = Path("src/sonic-linux-kernel")
+DOWNLOADER_CONFIG = Path("tools/bazel/debian-pool.cfg")
 REGISTRY_PREFIX = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
 DEFAULT_REGISTRY = REGISTRY_PREFIX + "main"
 WATCHED = [
@@ -35,7 +36,7 @@ WATCHED = [
     "tools/bazel/ci/resolution.py", "tools/bazel/ci/kernel_make_smoke.py", "rules/config",
     "tools/bazel/kernel", "build_debian.sh", "slave.mk", "Makefile.cache",
     "tools/bazel/ci/kernel_install_smoke.sh", "scripts/build_sbom.py",
-    "scripts/sbom_kernel_deb.py", str(KERNEL_PATH),
+    "scripts/sbom_kernel_deb.py", str(KERNEL_PATH), str(DOWNLOADER_CONFIG),
 ]
 
 
@@ -662,6 +663,10 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
     state.mkdir(parents=True, mode=0o700, exist_ok=False)
     consumer = state / "consumer"
     shutil.copytree(workspace / "tools/bazel/kernel", consumer)
+    shutil.copyfile(regular(workspace / DOWNLOADER_CONFIG), consumer / DOWNLOADER_CONFIG.name)
+    # Share the download policy without importing the image root's build flags.
+    with (consumer / ".bazelrc").open("a") as rc:
+        rc.write("\ncommon --experimental_downloader_config=" + DOWNLOADER_CONFIG.name + "\n")
     require(configure_registry(consumer) == prepared["registry"], "kernel registry selection changed")
     (state / "plan.json").write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n")
     if execute is None:

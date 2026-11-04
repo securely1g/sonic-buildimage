@@ -59,8 +59,11 @@ def mirror_configuration(original):
         expression = re.escape(original_url)
         lines.extend(["rewrite " + expression + " https://snapshot.debian.org/file/" + identifier,
                       "rewrite " + expression + " https://" + original_url])
+    # This private configuration replaces the shared rc default. Retain its
+    # Debian rules as well, with existing source-specific alternatives first.
+    # Policy belongs to this control checkout; the reviewed source may predate it.
     return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
-                       "\n".join(lines) + "\n").encode()
+                       "\n".join(lines) + "\n").encode() + (ROOT / "tools/bazel/debian-pool.cfg").read_bytes()
 
 
 def require(value, message):

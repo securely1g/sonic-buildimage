@@ -25,32 +25,36 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
-    def test_teamd_owned_dispatcher_branch_preserves_ci_scope(self):
+    def test_worker_branches_follow_normal_ci_routing(self):
         workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
-        guards = re.findall(r'SOURCE_ONLY_NO_DEBS: \$\{\{ (.*?) \}\}', workflow)
-        self.assertEqual(len(guards), 2)
+        self.assertNotIn('SOURCE_ONLY_NO_DEBS', workflow)
         vs = workflow.split('\n  vs_container:\n', 1)[1].split('    if: >-\n', 1)[1].split('    runs-on:', 1)[0]
-        for event, branch, same_repo, image, skip, source_only, full_vs in (
-            ('pull_request', 'codex/teamd-source-worker', True, 'none', True, True, False),
-            ('pull_request', 'codex/teamd-source-worker', False, 'none', True, False, False),
-            ('pull_request', 'codex/source-image-worker-dispatch', True, 'none', True, True, False),
-            ('pull_request', 'ordinary', True, 'none', True, False, True),
-            ('pull_request', 'ordinary', False, 'none', True, False, False),
-            ('push', '', True, 'none', True, False, True),
-            ('workflow_dispatch', '', True, 'none', False, False, True),
-            ('workflow_dispatch', '', True, 'teamd', False, False, False),
+        for branch in (
+            'ordinary',
+            'codex/teamd-source-worker',
+            'codex/source-image-worker-dispatch',
+            'codex/image-environment',
+            'codex/sysmgr-source-image',
         ):
-            github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
-                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
-                    head=SimpleNamespace(repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
-            inputs = SimpleNamespace(source_image=image, skip_vs=skip)
-            def evaluate(expression):
-                expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
-                return bool(eval(re.sub(r'!(?!=)', 'not ', expression), {'__builtins__': {}},
-                                 {'github': github, 'inputs': inputs}))
-            with self.subTest(event=event, branch=branch, same_repo=same_repo, image=image):
-                for guard in guards: self.assertEqual(evaluate(guard), source_only)
-                self.assertEqual(evaluate(vs), full_vs)
+            for event, same_repo, image, skip, full_vs in (
+                ('pull_request', True, 'none', True, True),
+                ('pull_request', False, 'none', True, False),
+                ('push', True, 'none', True, True),
+                ('workflow_dispatch', True, 'none', False, True),
+                ('workflow_dispatch', True, 'none', True, False),
+                ('workflow_dispatch', True, 'teamd', False, False),
+                ('workflow_dispatch', True, 'teamd', True, False),
+                ('workflow_dispatch', True, 'preflight', False, False),
+            ):
+                github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
+                    ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
+                        head=SimpleNamespace(repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
+                inputs = SimpleNamespace(source_image=image, skip_vs=skip)
+                expression = ' '.join(vs.split()).replace('&&', ' and ').replace('||', ' or ')
+                with self.subTest(event=event, branch=branch, same_repo=same_repo, image=image, skip=skip):
+                    actual = bool(eval(re.sub(r'!(?!=)', 'not ', expression), {'__builtins__': {}},
+                                       {'github': github, 'inputs': inputs}))
+                    self.assertEqual(actual, full_vs)
 
     def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -234,7 +238,7 @@ class ImageWorkerTest(unittest.TestCase):
         with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
             config = worker.mirror_configuration(original).decode()
         rules = [line.split()[1:] for line in config.splitlines()
-                 if line.startswith('rewrite ') and 'snapshot' in line]
+                 if line.startswith('rewrite ') and '/20260727T143429Z/' in line]
         self.assertEqual(len(rules), 8)
         self.assertEqual(len(worker.SNAPSHOT_FALLBACKS), 4)
         for path, identifier in worker.SNAPSHOT_FALLBACKS.items():
@@ -245,6 +249,24 @@ class ImageWorkerTest(unittest.TestCase):
                             url.replace('_amd64.deb', '_arm64.deb'), url + '?query=1',
                             url.replace('snapshot.debian.org', 'elsewhere.example')):
                 self.assertFalse(any(re.fullmatch(expression, altered) for expression, _ in rules))
+
+    def test_private_downloader_keeps_shared_debian_payload_fallbacks(self):
+        original = b'prior verified mirror rules\n'
+        with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
+            config = worker.mirror_configuration(original).decode()
+        url = ('snapshot.debian.org/archive/debian/20260727T143429Z/pool/'
+               'main/libx/libxt/libxt6t64_1.2.1-1.2+b2_amd64.deb')
+        alternatives = []
+        for line in config.splitlines():
+            if not line.startswith('rewrite '):
+                continue
+            _, expression, replacement = line.split()
+            match = re.fullmatch(expression, url)
+            if match:
+                alternatives.append(re.sub(r'\$(\d+)', lambda group: match[int(group[1])], replacement))
+        self.assertEqual(alternatives, [
+            'https://deb.debian.org/debian/pool/main/libx/libxt/libxt6t64_1.2.1-1.2+b2_amd64.deb',
+            'https://' + url])
 
     def test_selected_profile_overrides_driver_defaults_in_actual_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
