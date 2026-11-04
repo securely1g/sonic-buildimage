@@ -380,6 +380,7 @@ source_modules(
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
         "@sonic_wpa_supplicant//:MODULE.bazel": "sonic-wpa-supplicant",
+        "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
         "@scapy//:MODULE.bazel": "scapy",
         "@hsflowd//:MODULE.bazel": "hsflowd",
         "@sflowtool//:MODULE.bazel": "sflowtool",
@@ -540,4 +541,15 @@ use_repo(apt, "sysmgr_debian", "sysmgr_debug_debian", "sysmgr_test_debian")
 apt_inputs(
     name = "sysmgr_apt_inputs",
     lock = "//dockers/docker-sysmgr/bazel:apt.lock.json",
+)
+
+# Reuse the Linkmgrd source owner and the image's external Boost/debug closure.
+bazel_dep(name = "sonic-linkmgrd", version = "1.0.0-803c4b170de1ebdf38d638517fd1115368ec9a5c", repo_name = "sonic_linkmgrd")
+
+apt.import_lock(lock = "//dockers/docker-mux/bazel:apt.lock.json")
+use_repo(apt, "mux_debug_debian", "mux_runtime_debian", "mux_test_debian")
+
+apt_inputs(
+    name = "mux_apt_inputs",
+    lock = "//dockers/docker-mux/bazel:apt.lock.json",
 )

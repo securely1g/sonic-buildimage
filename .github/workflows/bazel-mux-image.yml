@@ -1,0 +1,160 @@
+name: Bazel mux images
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bazel-mux-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Build MUX OCI images and symbols (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    env:
+      BAZEL: ./tools/bazel/ci/review_bazel.sh
+      SONIC_BAZEL_REGISTRY_REVISION: 09291b51d164a7bf3d06fa7f1d823c4ef04733d0
+      BAZELISK_GITHUB_TOKEN: ""
+    steps:
+      - name: Install execution and inspection tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends binutils binutils-gold build-essential ca-certificates gdb git j2cli jq libarchive-tools libxml2 python3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: mux-image-amd64
+          cache-version: "8.5.1"
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Registry #186 changes only transport; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+      - name: Validate Make selection and prerequisites
+        run: python3 -B tools/bazel/tests/mux_make_test.py
+      - name: Build runtime and debug images from owner TARs
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          python3 -B tools/bazel/ci/mux_image.py build --bazel "$BAZEL" --artifacts artifacts/mux
+      - name: Validate completed image contents and matching source symbols
+        run: python3 -B tools/bazel/ci/mux_image.py validate --artifacts artifacts/mux
+      - name: Verify no-op and restored image hashes
+        run: |
+          python3 -B tools/bazel/ci/mux_image.py incremental --bazel "$BAZEL" --artifacts artifacts/mux
+          git diff --exit-code
+      - name: Prepare public evidence
+        id: public_evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/mux')
+          root.mkdir(parents=True, exist_ok=True)
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'image_version', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'debug-packages.json'):
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          if (root / 'build-events.jsonl').exists():
+              value = bep_summary((root / 'build-events.jsonl').read_text().splitlines(), partial=True)
+              (root / 'build-summary.json').write_text(json.dumps(value, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.public_evidence.outcome == 'success'
+        with:
+          name: mux-image-amd64
+          path: |
+            artifacts/mux/*.gz
+            artifacts/mux/*.tar
+            artifacts/mux/public-receipt.json
+            artifacts/mux/validation.json
+            artifacts/mux/incremental.json
+            artifacts/mux/action-audit.json
+            artifacts/mux/debug-packages.json
+            artifacts/mux/build-summary.json
+            artifacts/mux/MODULE.bazel.lock
+            artifacts/mux/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  runtime:
+    name: Run installed MUX images (AMD64)
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mux-image-amd64
+          path: artifacts/mux
+      - name: Verify loaded archives and installed MUX startup and Redis interaction
+        run: python3 -B tools/bazel/ci/mux_loaded.py --artifacts artifacts/mux
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mux-runtime-amd64
+          path: |
+            artifacts/mux/*.runtime.json
+            artifacts/mux/loaded-validation.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  acceptance:
+    name: MUX acceptance (AMD64)
+    if: always() && !cancelled()
+    needs: [native, runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both image construction and installed-service checks
+        env:
+          BUILD_RESULT: ${{ needs.native.result }}
+          RUNTIME_RESULT: ${{ needs.runtime.result }}
+        run: |
+          test "$BUILD_RESULT" = success
+          test "$RUNTIME_RESULT" = success
