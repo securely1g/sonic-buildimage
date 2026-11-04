@@ -7,6 +7,8 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/lldp_draft_bazel.sh
+      - tools/bazel/ci/lldp_draft_cache.py
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -15,6 +17,8 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/lldp_draft_bazel.sh
+      - tools/bazel/ci/lldp_draft_cache.py
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -63,6 +67,9 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
+
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
 
       - name: Verify native architecture and clean dependency inputs
         env:

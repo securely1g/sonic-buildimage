@@ -31,8 +31,7 @@ bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
-
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.14")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -41,7 +40,7 @@ bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
-bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
+bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.1")
 bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
@@ -98,11 +97,6 @@ single_version_override(
 single_version_override(
     module_name = "rules_cc",
     version = "0.2.20",
-)
-
-single_version_override(
-    module_name = "tar.bzl",
-    version = "0.10.5-sonic.1",
 )
 
 single_version_override(
@@ -299,15 +293,26 @@ apt_inputs(
     lock = "//dockers/docker-router-advertiser/bazel:apt.lock.json",
 )
 
-bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
-bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
+# LLDP and DBSyncd expose source runtime outputs; no DEB packaging is selected.
+bazel_dep(name = "lldpd", version = "1.0.16.sonic.1")
+bazel_dep(name = "sonic-dbsyncd", version = "2.0.0-a4025c14068b3afdf2eac3e73094f0fd2cfcf746", repo_name = "sonic_dbsyncd")
+
+apt.import_lock(lock = "//dockers/docker-lldp/bazel:apt.lock.json")
+use_repo(apt, "lldp_runtime_debian", "lldp_debug_debian")
+apt_inputs(
+    name = "lldp_apt_inputs",
+    lock = "//dockers/docker-lldp/bazel:apt.lock.json",
+)
+
+bazel_dep(name = "socat", version = "1.8.0.2.sonic.4")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.4")
 
 single_version_override(
     module_name = "sonic-rust-deps",
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.3-d1a2c8f692d4197295269ed445022c3890b0f1a6", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.3-72079e48d9ae33174efd98b09fea41712c7fa2c9", repo_name = "sonic_fips")
 
 # Fixed target C/C++ runtime and JSON headers for sonic-fib.
 apt.install(
@@ -362,7 +367,7 @@ single_version_override(
 
 single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.3-d1a2c8f692d4197295269ed445022c3890b0f1a6",
+    version = "0.0.3-72079e48d9ae33174efd98b09fea41712c7fa2c9",
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.

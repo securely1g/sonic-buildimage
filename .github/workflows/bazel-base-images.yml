@@ -65,6 +65,9 @@ jobs:
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+
       - name: Prepare the checksum-pinned pigz source archive
         run: |
           mkdir -p artifacts/source-downloads

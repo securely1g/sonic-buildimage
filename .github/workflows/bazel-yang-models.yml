@@ -6,6 +6,8 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/ci/lldp_draft_bazel.sh'
+      - 'tools/bazel/ci/lldp_draft_cache.py'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'tools/bazel/ci/libteam_draft_bazel.sh'
       - 'src/sonic-yang-models/**'
@@ -16,6 +18,8 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/ci/lldp_draft_bazel.sh'
+      - 'tools/bazel/ci/lldp_draft_cache.py'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'tools/bazel/ci/libteam_draft_bazel.sh'
       - 'src/sonic-yang-models/**'
@@ -51,6 +55,9 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
           disk-cache: yang-models-${{ matrix.architecture }}
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash

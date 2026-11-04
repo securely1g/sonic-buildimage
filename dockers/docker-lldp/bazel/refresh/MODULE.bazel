@@ -1,0 +1,70 @@
+module(name = "lldp_image_lock")
+
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+
+apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+    ],
+    uris = ["https://snapshot.debian.org/archive/debian/20260727T143429Z"],
+)
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = ["trixie-security"],
+    uris = ["https://snapshot.debian.org/archive/debian-security/20260726T121236Z"],
+)
+
+# Legacy debug tools plus the external libraries of source-built FIPS OpenSSH.
+apt.install(
+    dependency_set = "lldp_debug_debian",
+    packages = [
+        "gdb:amd64",
+        "gdbserver:amd64",
+        "libaudit1:amd64",
+        "libcap-ng0:amd64",
+        "libcbor0.10:amd64",
+        "libcrypt1:amd64",
+        "libedit2:amd64",
+        "libfido2-1:amd64",
+        "libpam0g:amd64",
+        "libselinux1:amd64",
+        "libtinfo6:amd64",
+        "libudev1:amd64",
+        "libwrap0:amd64",
+        "libwtmpdb0:amd64",
+        "sshpass:amd64",
+        "strace:amd64",
+        "vim:amd64",
+        "zlib1g:amd64",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "lldp_debug_debian")
+
+# External shared libraries linked by the source-built LLDP package.
+apt.install(
+    dependency_set = "lldp_runtime_debian",
+    packages = [
+        "libbsd0:amd64",
+        "libcap2:amd64",
+        "libevent-2.1-7t64:amd64",
+        "libreadline8t64:amd64",
+        "libsnmp40t64:amd64",
+        "libxml2:amd64",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "lldp_runtime_debian")
