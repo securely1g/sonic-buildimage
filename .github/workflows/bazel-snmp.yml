@@ -68,6 +68,24 @@ jobs:
           mkdir -p artifacts/snmp
           python3 tools/bazel/gzip/prepare_pigz.py --output "$RUNNER_TEMP/pigz-distdir" > artifacts/snmp/pigz-source.json
           printf 'common --distdir=%s\n' "$RUNNER_TEMP/pigz-distdir" > .bazelrc.user
+      - name: Configure verified Debian payload transport
+        if: github.event_name == 'workflow_dispatch' && inputs.source_revision != '' && inputs.registry_revision != ''
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/18e7c652222449b906a17c2fd948e37bcad3324e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != "fa60a63fd62f11e3c097905a3ff2a5dc4b25bd7ba42ebc9877fe7ea4dd1d3ee2":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "snmp-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PY
       - name: Build runtime and debug images from source owners
         env:
           BAZELISK_GITHUB_TOKEN: ""
