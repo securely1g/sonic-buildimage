@@ -273,6 +273,23 @@ apt_inputs(
     lock = "//dockers/docker-eventd/bazel:apt.lock.json",
 )
 
+# Database imports only pinned external Redis/debug tools. Common and DASH
+# runtime libraries continue to come from their source-owning repositories.
+apt.import_lock(lock = "//dockers/docker-database/bazel:apt.lock.json")
+use_repo(apt, "database_debug_debian", "database_runtime_debian")
+
+apt_inputs(
+    name = "database_apt_inputs",
+    lock = "//dockers/docker-database/bazel:apt.lock.json",
+)
+
+pip.parse(
+    hub_name = "database_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-database/bazel:requirements_lock.txt",
+)
+use_repo(pip, "database_pip")
+
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
 
