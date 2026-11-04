@@ -26,7 +26,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.16")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -45,7 +45,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
+    version = "0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -253,13 +253,13 @@ single_version_override(
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.4-ef423363e8fd50358f0aa2a8a20d3e08d4450a56", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.5-15fcb926a302059ec379f0c2fd15eb3d88bda4c9", repo_name = "sonic_fips")
 
-# Select the shared producer-file checks while older consumers retain
-# their previous infrastructure declarations.
+# Select the landed build interfaces even when a consumer requests the older
+# combined candidate, whose numeric release is higher.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
+    version = "0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -293,7 +293,7 @@ single_version_override(
 
 single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.4-ef423363e8fd50358f0aa2a8a20d3e08d4450a56",
+    version = "0.0.5-15fcb926a302059ec379f0c2fd15eb3d88bda4c9",
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.
