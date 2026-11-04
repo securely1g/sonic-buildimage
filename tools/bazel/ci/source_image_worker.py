@@ -22,10 +22,12 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import BUILD_PROFILE, measure
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
+WRAPPERS["syncd"] = "review_bazel.sh"
+WRAPPERS["gearbox"] = "review_bazel.sh"
 MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
 MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
 
@@ -151,6 +153,32 @@ def source_check(workspace, revision):
     run(["git", "-C", str(workspace), "diff", "--exit-code", "--ignore-submodules=none", "HEAD"])
 
 
+def prepare_tap_fixture(artifacts):
+    """Prove the original VS profile's TAP support before building its image."""
+    device = Path("/dev/net/tun").lstat()
+    require(stat.S_ISCHR(device.st_mode) and os.major(device.st_rdev) == 10 and os.minor(device.st_rdev) == 200,
+            "Syncd requires the standard /dev/net/tun character device")
+    parent_namespace = Path("/proc/self/ns/net").stat().st_ino
+    script = '''import fcntl, json, os, struct, sys
+namespace = os.stat("/proc/self/ns/net").st_ino
+if namespace == int(sys.argv[1]):
+    raise SystemExit("TAP probe is not in a private network namespace")
+with open("/dev/net/tun", "r+b", buffering=0) as device:
+    result = fcntl.ioctl(device.fileno(), 0x400454ca, struct.pack("16sH", b"sonic-probe%d", 0x0002 | 0x1000))
+    interface = result[:16].split(b"\\0", 1)[0].decode()
+    if not interface.startswith("sonic-probe"):
+        raise SystemExit("Unexpected private TAP name")
+# Closing this nonpersistent descriptor removes the TAP; unshare removes its namespace.
+print(json.dumps({"private_network_namespace": True, "tap_created_and_closed": True}))
+'''
+    proof = json.loads(output(["sudo", "-n", "unshare", "--net", "--", sys.executable, "-I", "-c", script,
+                               str(parent_namespace)], timeout=30))
+    require(proof == {"private_network_namespace": True, "tap_created_and_closed": True},
+            "Incomplete private TAP proof")
+    (artifacts / "worker-tap.json").write_text(json.dumps({"status": "passed", **proof,
+        "device_major": 10, "device_minor": 200, "scope": "disposable network namespace; no VM or KVM"}, indent=2) + "\n")
+
+
 def prepare_validation_tools(artifacts):
     """Install only missing execution tools in the disposable slave container."""
     packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils", "objcopy": "binutils"}
@@ -258,6 +286,8 @@ def prepare(args):
     for mount in ("/actions", "/bazel_cache"):
         run(["mountpoint", "-q", mount])
     require(output(["findmnt", "-n", "-o", "FSTYPE", "-T", "/actions"]) in ("ext4", "xfs"), "Docker storage requires ext4 or XFS")
+    if args.image == "syncd":
+        prepare_tap_fixture(artifacts)
     prepare_validation_tools(artifacts)
     source_check(workspace, args.revision)
     for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):

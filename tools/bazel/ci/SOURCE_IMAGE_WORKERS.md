@@ -50,8 +50,8 @@ This profile remains a pilot until the actual graph and image acceptance pass.
 The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
-To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow` or
-`otel`, a `source_worker` affinity label and a full `source_revision` SHA.
+To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
+`otel`, `syncd` or `gearbox`, a `source_worker` affinity label and a full `source_revision` SHA.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
@@ -67,7 +67,7 @@ static validation, incremental edit/restore and loaded-container checks.
 The disposable slave installs only missing archive/debug execution packages
 (`libarchive-tools`, GDB and binutils), checks their tools before building and
 retains the installed package versions. These do not enter the image layers.
-Sysmgr and OTEL use `review_bazel.sh` with each workflow's immutable catalog;
+Sysmgr, OTEL, Syncd and Gearbox use `review_bazel.sh` with each workflow's immutable catalog;
 the other three use their compatibility entrypoint and verify any workflow catalog
 agrees. No module or source-owner override is added. Selected Rust modules use
 `rules_rs` with tracked Cargo inputs; their normal module extension prepares
@@ -75,7 +75,14 @@ crate repositories. Sysmgr initializes its existing gNOI submodule. The image
 drivers retain their metadata-only `prepare_manifests.mk` step. OTEL reuses its
 existing runtime/debug image driver and installed collector probe, including
 private Redis and Supervisor checks. Its hosted producer-contract tests remain
-a separate required validation; the worker does not replace them.
+a separate required validation; the worker does not replace them. Syncd and
+Gearbox reuse their existing source image drivers and installed service probes.
+Syncd uses the declared regular VS startup fixture; this is not a full VS or
+DASH forwarding run. Before its image build, the worker verifies the standard
+`/dev/net/tun` character device and creates then closes a nonpersistent TAP
+in a disposable network namespace. The retained `worker-tap.json` proves this
+capability without creating a VM or using KVM. An already active Gearbox acceptance run must finish
+before another worker run for that image is considered.
 
 The hosted source-download job reuses the existing VS handoff for the five
 GitLab-hosted `rules_gzip` dependencies. It fetches repositories only, then

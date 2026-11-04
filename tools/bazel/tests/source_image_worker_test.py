@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 import re
+import inspect
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +25,68 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def test_syncd_tap_requires_exact_device_and_private_namespace_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            device = SimpleNamespace(st_mode=stat.S_IFCHR | 0o666, st_rdev=os.makedev(10, 200))
+            proof = {"private_network_namespace": True, "tap_created_and_closed": True}
+            with patch.object(worker.Path, 'lstat', return_value=device), \
+                    patch.object(worker.Path, 'stat', return_value=SimpleNamespace(st_ino=42)), \
+                    patch.object(worker, 'output', return_value=json.dumps(proof)) as output:
+                worker.prepare_tap_fixture(artifacts)
+                command = output.call_args.args[0]
+                self.assertEqual(command[:5], ['sudo', '-n', 'unshare', '--net', '--'])
+                self.assertEqual(command[5:8], [sys.executable, '-I', '-c'])
+                self.assertEqual(command[-1], '42')
+                self.assertEqual(output.call_args.kwargs, {'timeout': 30})
+                self.assertEqual(json.loads((artifacts / 'worker-tap.json').read_text())['status'], 'passed')
+                for mode, number in ((stat.S_IFREG, os.makedev(10, 200)),
+                                     (stat.S_IFCHR, os.makedev(10, 201)),
+                                     (stat.S_IFLNK, os.makedev(10, 200))):
+                    device.st_mode, device.st_rdev = mode, number
+                    with self.assertRaisesRegex(ValueError, 'character device'):
+                        worker.prepare_tap_fixture(artifacts)
+                device.st_mode, device.st_rdev = stat.S_IFCHR, os.makedev(10, 200)
+                output.return_value = json.dumps({**proof, 'private_network_namespace': False})
+                with self.assertRaisesRegex(ValueError, 'Incomplete private TAP proof'):
+                    worker.prepare_tap_fixture(artifacts)
+                output.side_effect = subprocess.CalledProcessError(1, command)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    worker.prepare_tap_fixture(artifacts)
+
+    def test_syncd_tap_child_rejects_shared_namespace_and_closes_descriptor(self):
+        import fcntl
+        import struct
+        from unittest.mock import mock_open
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(worker.Path, 'lstat', return_value=SimpleNamespace(
+                    st_mode=stat.S_IFCHR, st_rdev=os.makedev(10, 200))), \
+                patch.object(worker.Path, 'stat', return_value=SimpleNamespace(st_ino=42)), \
+                patch.object(worker, 'output', return_value='{"private_network_namespace":true,"tap_created_and_closed":true}') as output:
+            worker.prepare_tap_fixture(Path(directory))
+            script = output.call_args.args[0][-2]
+        with patch.object(sys, 'argv', ['tap-probe', '42']), \
+                patch.object(os, 'stat', return_value=SimpleNamespace(st_ino=42)), \
+                patch('builtins.open') as opened, self.assertRaisesRegex(SystemExit, 'private network namespace'):
+            exec(compile(script, '<tap-probe>', 'exec'), {})
+            opened.assert_not_called()
+        opened = mock_open()
+        opened.return_value.fileno.return_value = 7
+        with patch.object(sys, 'argv', ['tap-probe', '42']), \
+                patch.object(os, 'stat', return_value=SimpleNamespace(st_ino=99)), \
+                patch('builtins.open', opened), patch.object(fcntl, 'ioctl', return_value=b'sonic-probe0\0' + b'\0' * 6) as ioctl, \
+                patch('sys.stdout', new_callable=io.StringIO) as stdout:
+            exec(compile(script, '<tap-probe>', 'exec'), {})
+            ioctl.assert_called_once_with(7, 0x400454ca, struct.pack('16sH', b'sonic-probe%d', 0x0002 | 0x1000))
+            opened.return_value.__exit__.assert_called_once()
+            self.assertTrue(json.loads(stdout.getvalue())['tap_created_and_closed'])
+
+    def test_syncd_tap_gate_precedes_downloads_and_bazel_setup(self):
+        source = inspect.getsource(worker.prepare)
+        self.assertIn('if args.image == "syncd":\n        prepare_tap_fixture(artifacts)', source)
+        self.assertLess(source.index('prepare_tap_fixture(artifacts)'), source.index('prepare_source_downloads('))
+        self.assertLess(source.index('prepare_tap_fixture(artifacts)'), source.index('launcher_text('))
+
     def test_validation_bootstrap_installs_only_missing_execution_tools(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
@@ -103,18 +167,20 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertIn("//dockers/docker-orchagent:docker-orchagent-dbg.gz", command)
         self.assertIn("/source/tools/bazel/ci/review_bazel.sh", worker.phase_command("sysmgr", "build", root, artifacts))
 
-    def test_otel_reuses_fixed_review_driver_phases(self):
+    def test_review_wrapped_images_reuse_fixed_driver_phases(self):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
-        driver = "/source/tools/bazel/ci/otel_image.py"
         wrapper = "/source/tools/bazel/ci/review_bazel.sh"
-        for phase in ("build", "validate", "incremental"):
-            expected = prefix + [driver, phase, "--artifacts", str(artifacts)]
-            if phase != "validate":
-                expected += ["--bazel", wrapper]
-            self.assertEqual(worker.phase_command("otel", phase, root, artifacts), expected)
-        self.assertEqual(worker.phase_command("otel", "loaded", root, artifacts),
-                         prefix + ["/source/tools/bazel/ci/otel_loaded.py", "--artifacts", str(artifacts)])
+        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd")):
+            with self.subTest(image=image):
+                driver = f"/source/tools/bazel/ci/{stem}_image.py"
+                for phase in ("build", "validate", "incremental"):
+                    expected = prefix + [driver, phase, "--artifacts", str(artifacts)]
+                    if phase != "validate":
+                        expected += ["--bazel", wrapper]
+                    self.assertEqual(worker.phase_command(image, phase, root, artifacts), expected)
+                self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
+                                 prefix + [f"/source/tools/bazel/ci/{stem}_loaded.py", "--artifacts", str(artifacts)])
 
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
@@ -134,6 +200,8 @@ class ImageWorkerTest(unittest.TestCase):
             workflow.write_text("env:\n  BAZEL: tools/bazel/ci/review_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
             self.assertEqual(worker.catalog_for("sysmgr", root), "a" * 40)
             self.assertEqual(worker.catalog_for("otel", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("syncd", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("gearbox", root), "a" * 40)
             workflow.write_text("env:\n  BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
             wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
