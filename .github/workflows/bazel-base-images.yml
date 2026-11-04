@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -65,6 +65,13 @@ jobs:
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
       - name: Check clean dependency inputs
         run: |
@@ -75,11 +82,15 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          set -euo pipefail
+          mkdir -p artifacts/base-images
+          cp tools/bazel/ci/libteam_draft_bazel.sh artifacts/base-images/registry-input.txt
           acceptance=()
           if [[ '${{ matrix.architecture }}' == amd64 ]]; then
             acceptance+=(--config-engine-acceptance)
           fi
           python3 -B tools/bazel/ci/base_images.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images "${acceptance[@]}"
           git diff --exit-code
       - name: Verify config-engine no-op and template rebuilds
@@ -88,6 +99,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/ci/config_engine_rebuild.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
             --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
       - name: Retain images, symbols and build evidence
@@ -101,6 +113,7 @@ jobs:
             artifacts/base-images/*.json
             artifacts/base-images/*.jsonl
             artifacts/base-images/*.log
+            artifacts/base-images/registry-input.txt
             artifacts/base-images/MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
