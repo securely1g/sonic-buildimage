@@ -1,10 +1,16 @@
 """Exercise MACsec's real Make selector without executing image/package recipes."""
 
 from pathlib import Path
+import json
+import re
 import subprocess
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+
+from tools.bazel.tests.docker_test import ArchiveRecipeFixture
 
 
 class MacsecMakeTest(unittest.TestCase):
@@ -26,7 +32,7 @@ class MacsecMakeTest(unittest.TestCase):
                      "docker-macsec.gz_CONTAINER_PRIVILEGED", "docker-macsec.gz_CONTAINER_VOLUMES",
                      "docker-macsec.gz_CLI_CONFIG_PLUGIN", "docker-macsec.gz_CLI_SHOW_PLUGIN",
                      "docker-macsec.gz_CLI_CLEAR_PLUGIN", "SONIC_PACKAGES_LOCAL"]
-        recipe = "include rules/docker-macsec.mk\n.PHONY: result\nresult:\n\t@printf '%s\\n' "
+        recipe = "include rules/docker-macsec.mk\ninclude tools/bazel/docker.mk\n.PHONY: result\nresult:\n\t@printf '%s\\n' "
         recipe += " ".join("'$(" + variable + ")'" for variable in variables) + "\n"
         return subprocess.check_output(["make", "--no-print-directory", "-f", "-", "result",
                                         *[key + "=" + value for key, value in values.items()]],
@@ -68,6 +74,157 @@ class MacsecMakeTest(unittest.TestCase):
     def test_existing_install_flags_select_local_image_variant(self):
         self.assertEqual(self.evaluate(INCLUDE_MACSEC="n")[17], "")
         self.assertEqual(self.evaluate(INSTALL_DEBUG_TOOLS="y")[17], "docker-macsec-dbg.gz")
+
+
+class MacsecArchiveRecipeTest(ArchiveRecipeFixture, unittest.TestCase):
+    """Run actual Make manifests/export; replace only the Bazel executable."""
+
+    archives = ("docker-macsec.gz", "docker-macsec-dbg.gz")
+    labels = {name: "//dockers/docker-macsec:" + name for name in archives}
+
+    def setUp(self):
+        super().setUp()
+        for directory in ("dockers", "rules", "files"):
+            (self.root / directory).symlink_to(ROOT / directory, target_is_directory=True)
+        (self.root / "scripts/j2cli").symlink_to(ROOT / "scripts/j2cli", target_is_directory=True)
+        generator = (ROOT / "rules/functions").read_text().split("define generate_manifest\n", 1)[1].split("endef", 1)[0]
+        self.makefile += "\ndefine generate_manifest\n" + generator + "endef\n"
+        parents = ("docker-base-trixie", "docker-config-engine-trixie", "docker-swss-layer-trixie", "docker-macsec")
+        self.prerequisites = {name: ["target/bazel-manifests/" + parent + "/manifest.json" for parent in parents]
+                              for name in self.archives}
+        self.prerequisites[self.archives[1]].append("target/bazel-manifests/docker-macsec-dbg/manifest.json")
+        self.makefile += """
+BUILD_WITH_BAZEL_WHEN_AVAILABLE = y
+BLDENV = trixie
+CONFIGURED_PLATFORM = vs
+CONFIGURED_ARCH = amd64
+INCLUDE_FIPS = y
+INCLUDE_MACSEC = y
+INSTALL_DEBUG_TOOLS = n
+DBG_IMAGE_MARK = dbg
+DOCKERS_PATH = dockers
+include rules/docker-base-trixie.mk
+include rules/docker-config-engine-trixie.mk
+include rules/docker-swss-layer-trixie.mk
+include rules/docker-macsec.mk
+include tools/bazel/docker.mk
+"""
+        # Use the installer's actual export expression, including owner/state fields.
+        slave = (ROOT / "slave.mk").read_text()
+        local_export = slave.split('\texport sonic_local_packages="', 1)[1].split('"\n', 1)[0]
+        self.makefile += '\n.PHONY: local-package\nlocal-package:\n\texport sonic_local_packages="' + local_export + '"\n'
+        self.makefile += '\t@printf "local=%s\\n" "$$sonic_local_packages"\n'
+
+    def test_both_local_variants_export_with_real_manifests(self):
+        original = self.makefile
+        for debug, archive in zip(("n", "y"), self.archives):
+            with self.subTest(debug=debug):
+                self.makefile = original.replace("INSTALL_DEBUG_TOOLS = n", "INSTALL_DEBUG_TOOLS = " + debug)
+                selection = self.run_make(goals=["local-package"])
+                self.assert_success(selection)
+                # Keep the original local-package metadata, including its debug defaults.
+                state = "y" if debug == "n" else ""
+                selected = next(line.removeprefix("local=").strip() for line in selection.stdout.splitlines()
+                                if line.startswith("local="))
+                self.assertEqual(selected, archive + "|target/" + archive + "||" + state)
+                before = len(self.recorded_calls())
+                self.assert_success(self.run_make(archive))
+                calls = self.recorded_calls()[before:]
+                self.assertEqual([call["arguments"][0] for call in calls], ["build", "cquery"])
+                self.assertTrue(all(call["prerequisites_ready"] for call in calls))
+                self.assertTrue(all(call["arguments"][-1] == self.labels[archive] for call in calls))
+                self.assertEqual((self.target / archive).read_bytes(), ("new " + archive).encode())
+                manifest = json.loads((self.target / "bazel-manifests" / archive.removesuffix(".gz") / "manifest.json").read_text())
+                self.assertEqual(manifest["package"]["name"], "macsec")
+                self.assertEqual(manifest["package"]["version"], "1.0.0" + ("+dbg" if debug == "y" else ""))
+                self.assertEqual(manifest["service"]["name"], "macsec")
+                self.assertEqual(manifest["service"]["requires"], ["config-setup"])
+                self.assertEqual(manifest["service"]["after"], ["swss", "syncd"])
+                self.assertFalse(manifest["container"]["privileged"])
+                self.assertEqual(manifest["cli"]["config"], "/cli/config/plugins/macsec.py")
+
+    def test_missing_parent_manifest_still_stops_before_bazel(self):
+        self.makefile += "\ndocker-swss-layer-trixie_MANIFEST_IMAGE :=\n"
+        result = self.run_make(self.archives[1])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("docker-swss-layer-trixie_MANIFEST_IMAGE is required", result.stderr)
+        self.assertEqual(self.recorded_calls(), [])
+        for archive in self.archives:
+            self.assertEqual((self.target / archive).read_bytes(), b"previous image")
+
+
+class MacsecLocalInstallerTest(unittest.TestCase):
+    def test_owned_followup_excludes_deb_fixtures_and_full_vs_only(self):
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        branch = "codex/macsec-local-package-handoff"
+
+        def condition(expression, **changes):
+            context = {"github.event_name": "pull_request", "github.head_ref": branch,
+                       "github.event.pull_request.number": 10000,
+                       "github.event.pull_request.head.repo.full_name": "securely1g/sonic-buildimage",
+                       "github.repository": "securely1g/sonic-buildimage",
+                       "github.ref": "refs/pull/10000/merge", "inputs.skip_vs": True}
+            context.update(changes)
+            expression = expression.removeprefix("${{").removesuffix("}}").strip()
+            for key in sorted(context, key=len, reverse=True):
+                expression = expression.replace(key, repr(context[key]))
+            expression = expression.replace("&&", " and ").replace("||", " or ")
+            expression = re.sub(r"!(?!=)", " not ", expression)
+            expression = re.sub(r"\btrue\b", "True", expression)
+            expression = re.sub(r"\bfalse\b", "False", expression)
+            return eval(" ".join(expression.split()), {"__builtins__": {}}, {})
+
+        guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
+                  for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
+        self.assertEqual(len(guards), 2)
+        for guard in guards:
+            self.assertTrue(condition(guard))
+            for changes in ({"github.head_ref": branch + "-suffix"}, {"github.head_ref": "unrelated"},
+                            {"github.event.pull_request.head.repo.full_name": "other/fork"},
+                            {"github.event_name": "push"}, {"github.event_name": "workflow_dispatch"}):
+                with self.subTest(changes=changes):
+                    self.assertFalse(condition(guard, **changes))
+        self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"]))
+        self.assertTrue(condition(workflow["jobs"]["vs_container"]["if"], **{"github.head_ref": branch + "-suffix"}))
+        self.assertFalse(condition(workflow["jobs"]["vs"]["if"]))
+        for name in ("archive", "checks"):
+            self.assertTrue(condition(workflow["jobs"][name].get("if", "true")))
+        kernel = yaml.safe_load((ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text())
+        self.assertFalse(condition(kernel["jobs"]["kernel-bundle"]["if"]))
+
+    def test_existing_local_installer_handles_latest_and_version_tags(self):
+        """Execute only the real rendered local-package block with a command recorder."""
+        import jinja2
+
+        template = (ROOT / "files/build_templates/sonic_debian_extension.j2").read_text()
+        options = "{% macro get_install_options" + template.split("{% macro get_install_options", 1)[1].split("{% endmacro -%}", 1)[0] + "{% endmacro -%}"
+        local = "{% for package in sonic_local_packages" + template.split("{% for package in sonic_local_packages", 1)[1].split("{% endfor -%}", 1)[0] + "{% endfor -%}"
+        recorder = r'''
+set -eu
+sudo() {
+    case "$*" in
+        *" sonic-package-manager install --from-tarball "*) printf 'install %s\n' "$*" ;;
+        *" docker images --format "*) printf '%s\n' "$RECORDED_TAG" ;;
+        *" docker tag "*) printf 'tag %s\n' "$*" ;;
+        *) printf 'unexpected command\n' >&2; return 1 ;;
+    esac
+}
+FILESYSTEM_ROOT=/fixture
+DOCKER_HOST=unix:///fixture/docker.sock
+SONIC_IMAGE_VERSION=20261104.1
+'''
+        for image in ("docker-macsec", "docker-macsec-dbg"):
+            for existing in ("latest", "20261104.1"):
+                with self.subTest(image=image, existing=existing):
+                    rendered = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(options + local).render(
+                        sonic_local_packages=f"{image}.gz|target/{image}.gz|kube|y")
+                    result = subprocess.run(["bash", "-c", recorder + "\nRECORDED_TAG=" + existing + "\n" + rendered],
+                                            capture_output=True, text=True, check=True)
+                    self.assertIn(f"sonic-package-manager install --from-tarball target/{image}.gz -y -v DEBUG --set-owner kube --enable", result.stdout)
+                    source, target = ("latest", "20261104.1") if existing == "latest" else ("20261104.1", "latest")
+                    self.assertIn(f"docker tag {image}:{source} {image}:{target}", result.stdout)
 
 
 if __name__ == "__main__":
