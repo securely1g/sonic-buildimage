@@ -198,10 +198,12 @@ class NativeDebugTests(unittest.TestCase):
             provider, launcher = root / 'libforward.so.0', root / 'launcher'
             source = root / 'implementation.c'
             source.write_text('int unrelated(void) { return 42; }\nint main(void) { return 0; }\n')
-            subprocess.run(['cc', '-shared', '-fPIC', '-g', '-Wl,--build-id=sha1',
+            # Distinct build IDs share a prefix so both symbol files use the
+            # same directory, exercising the collision on every architecture.
+            subprocess.run(['cc', '-shared', '-fPIC', '-g', '-Wl,--build-id=0x2f11111111111111111111111111111111111111',
                             '-Wl,-soname,libforward.so.0', str(source), '-o', str(provider)],
                            check=True, capture_output=True)
-            subprocess.run(['cc', '-Wl,--build-id=sha1', '-Wl,--no-as-needed', str(provider), '-o', str(launcher)],
+            subprocess.run(['cc', '-Wl,--build-id=0x2f22222222222222222222222222222222222222', '-Wl,--no-as-needed', str(provider), '-o', str(launcher)],
                            check=True, capture_output=True)
             debug = root / 'symbols'
             symbol_files = {}
@@ -209,7 +211,7 @@ class NativeDebugTests(unittest.TestCase):
                 notes = subprocess.check_output(['readelf', '-n', str(binary)], text=True)
                 identifier = notes.split('Build ID: ', 1)[1].split()[0]
                 symbols = debug / '.build-id' / identifier[:2] / (identifier[2:] + '.debug')
-                symbols.parent.mkdir(parents=True)
+                symbols.parent.mkdir(parents=True, exist_ok=True)
                 subprocess.run(['objcopy', '--only-keep-debug', str(binary), str(symbols)], check=True, capture_output=True)
                 subprocess.run(['objcopy', '--strip-debug', '--add-gnu-debuglink=' + str(symbols), str(binary)],
                                check=True, capture_output=True)
