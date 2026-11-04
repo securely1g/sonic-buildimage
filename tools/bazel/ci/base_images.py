@@ -57,6 +57,25 @@ def verify_source_files(files, metadata, machine):
     return native
 
 
+def verify_installed_layer(files, archive):
+    """Require final installed Python, model and startup files to match their owner TAR."""
+    checked = {}
+    for name, expected in validation.payload(archive).items():
+        if expected["kind"] == "directory":
+            continue
+        validation.require(expected["kind"] in ("file", "symlink"),
+                           "unsupported config-engine payload kind: " + name)
+        actual = files.get(name, {})
+        keys = ["kind", "uid", "gid"]
+        # Linux gives ordinary symlinks 0777 regardless of their TAR mode.
+        keys += ["sha256", "mode"] if expected["kind"] == "file" else ["linkname"]
+        validation.require(all(actual.get(key) == expected[key] for key in keys),
+                           "image changed config-engine payload: " + name)
+        checked[name] = {key: expected[key] for key in keys}
+    validation.require(checked, "config-engine owner layer has no installed files")
+    return checked
+
+
 def verify_editor_commands(files):
     for name in ("editor", "ex", "rview", "vi", "view"):
         for path, target in (("usr/bin/" + name, "/etc/alternatives/" + name),
