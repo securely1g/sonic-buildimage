@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Exercise the existing Sysmgr jobs' optional reviewed-source selection."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import textwrap
 import tempfile
@@ -13,6 +15,19 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 BRANCH = "codex/sysmgr-review-source-inputs"
 MODE = "sysmgr-hosted"
+MIRROR_CONFIG = r"""# BCR pigz@2.8.bcr.2 keeps its original source integrity and upstream patches.
+# Original SHA256: eb872b4f0e1f0ebe59c9f7bd8c506c4204893ba6a8492de31df416f0d5170fd0
+# Bazel matches the complete URL without its https:// prefix.
+rewrite zlib\.net/pigz/pigz-2\.8\.tar\.gz https://distfiles.macports.org/pigz/pigz-2.8.tar.gz
+""".encode()
+POOL_CONFIG = r"""# Prefer the official pool for pinned Debian binary packages. Bazel keeps the
+# repository rule's checksum; the original snapshot remains the second URL.
+# Indexes and source archives must retain their snapshot URLs.
+rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian/pool/$2
+rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
+rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian-security/pool/$2
+rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
+""".encode()
 
 
 def evaluate(expression, *, event="pull_request", branch=BRANCH,
@@ -107,6 +122,115 @@ class SysmgrWorkflowTest(unittest.TestCase):
         self.assertIn('sysmgr_image.py build --bazel "$BAZEL"', self.workflow)
         self.assertIn('sysmgr_image.py incremental --bazel "$BAZEL"', self.workflow)
         self.assertIn("submodule update --init -- src/sonic-sysmgr/gnoi", self.workflow)
+
+    def run_transport(self, corrupt):
+        """Run the actual shell with inert network/cache/Bazel command fixtures."""
+        script = step_script(self.workflow, "Preserve caches and verified transport for the reviewed source")
+        with tempfile.TemporaryDirectory(prefix="sysmgr transport ") as directory:
+            root = Path(directory)
+            commands = root / "commands"
+            commands.mkdir()
+            (root / "runner temp").mkdir()
+            (root / "mirror.cfg").write_bytes(MIRROR_CONFIG)
+            (root / "pool.cfg").write_bytes(POOL_CONFIG)
+            caches = ("build --disk_cache=/retained/disk\n"
+                      "common --repository_cache=/retained/repository\n"
+                      "common --distdir=/retained/distdir\n")
+            (root / ".bazelrc.user").write_text(caches)
+            python = commands / "python3"
+            python.write_text("#!/usr/bin/python3\n" + textwrap.dedent('''
+                import io, json, os, sys, urllib.request
+                from pathlib import Path
+                if sys.argv[1:] == ['-B', 'tools/bazel/ci/lldp_draft_cache.py']:
+                    # The unchanged cache helper has a separate retained actual-source proof.
+                    Path('cache-helper-call.json').write_text(json.dumps(sys.argv[1:]))
+                    sys.exit(0)
+                assert sys.argv[1:] == ['-'], sys.argv
+                urls = [
+                    'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg',
+                    'https://raw.githubusercontent.com/securely1g/sonic-buildimage/ba746670df1c30d0e6913d018ef0ff88d5b88679/tools/bazel/debian-pool.cfg',
+                ]
+                files = ['mirror.cfg', 'pool.cfg']
+                def urlopen(url, timeout):
+                    assert timeout == 60
+                    index = urls.index(url)
+                    with Path('fetches.jsonl').open('a') as out:
+                        out.write(json.dumps(url) + '\\n')
+                    data = Path(files[index]).read_bytes()
+                    if str(index) == os.environ['CORRUPT']: data += b'changed'
+                    return io.BytesIO(data)
+                urllib.request.urlopen = urlopen
+                exec(compile(sys.stdin.read(), 'actual-workflow-config', 'exec'), {})
+            '''))
+            python.chmod(0o755)
+            # This sentinel only records whether the shell reached the next command.
+            bazel = commands / "bazel"
+            bazel.write_text("#!/bin/sh\nprintf invoked > bazel-called\n")
+            bazel.chmod(0o755)
+            result = subprocess.run(["/bin/bash", "-e", "-o", "pipefail", "-c", script + "\nbazel fixture"],
+                cwd=root, capture_output=True, text=True,
+                env={"PATH": str(commands) + ":/usr/bin:/bin", "RUNNER_TEMP": str(root / "runner temp"),
+                     "CORRUPT": str(corrupt)})
+            config = root / "runner temp/reviewed-sysmgr-downloads.cfg"
+            return {"returncode": result.returncode, "stderr": result.stderr,
+                    "config": config.read_bytes() if config.exists() else None,
+                    "rc": (root / ".bazelrc.user").read_text(), "original_rc": caches,
+                    "config_path": str(config), "bazel_called": (root / "bazel-called").exists(),
+                    "cache_call": json.loads((root / "cache-helper-call.json").read_text()),
+                    "fetches": (root / "fetches.jsonl").read_text().splitlines()}
+
+    def test_actual_transport_shell_preserves_caches_and_rejects_corrupt_configs(self):
+        self.assertEqual(hashlib.sha256(MIRROR_CONFIG).hexdigest(),
+                         "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18")
+        self.assertEqual(hashlib.sha256(POOL_CONFIG).hexdigest(),
+                         "43dce3f1b98b76ffa9db403e47139497dfb702126282747446463356c58133ee")
+        for corrupt in [-1, 0, 1]:
+            with self.subTest(corrupt=corrupt):
+                result = self.run_transport(corrupt)
+                self.assertEqual(result["cache_call"], ['-B', 'tools/bazel/ci/lldp_draft_cache.py'])
+                self.assertEqual(result["returncode"] == 0, corrupt == -1, result["stderr"])
+                self.assertEqual(result["bazel_called"], corrupt == -1)
+                if corrupt == -1:
+                    self.assertEqual(len(result["fetches"]), 2)
+                    self.assertTrue(result["rc"].startswith(result["original_rc"]))
+                    suffix = result["rc"][len(result["original_rc"]):]
+                    self.assertEqual(shlex.split(suffix, comments=True),
+                                     ["common", "--experimental_downloader_config=" + result["config_path"]])
+                    self.assertTrue(result["config"].endswith(MIRROR_CONFIG + POOL_CONFIG))
+                else:
+                    self.assertIn("Reviewed downloader configuration checksum mismatch", result["stderr"])
+                    self.assertIsNone(result["config"])
+                    self.assertEqual(result["rc"], result["original_rc"])
+
+    def test_single_historical_route_is_exact_and_keeps_original_fallbacks(self):
+        config = self.run_transport(-1)["config"]
+        baseline = MIRROR_CONFIG + POOL_CONFIG
+        self.assertTrue(config.endswith(baseline))
+        added = config[:-len(baseline)].decode().splitlines()
+        self.assertEqual(len(added), 1)
+        original = "snapshot.debian.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc-dev-bin_2.41-12+deb13u3_amd64.deb"
+        content = "https://snapshot.debian.org/file/4a63880454e8cdb1c0fb13d23f472d8244039aad"
+        rules = [line.split() for line in config.decode().splitlines() if line.startswith("rewrite ")]
+        def routes(url):
+            result = []
+            for kind, pattern, replacement in rules:
+                self.assertEqual(kind, "rewrite")
+                match = re.fullmatch(pattern, url)
+                if match:
+                    value = re.sub(r"\$(\d+)", lambda group: match.group(int(group[1])), replacement)
+                    if value not in result: result.append(value)
+            return result or ["https://" + url]
+        self.assertEqual(routes(original), [content,
+            "https://deb.debian.org/debian/pool/main/g/glibc/libc-dev-bin_2.41-12+deb13u3_amd64.deb",
+            "https://" + original])
+        for neighbor in [original + "?query=1", original + "#fragment",
+                         original.replace("20260727", "20260728"),
+                         original.replace("_amd64.deb", "_arm64.deb"),
+                         original.replace("deb13u3", "deb13u4"),
+                         original.replace("snapshot.debian.org", "example.invalid")]:
+            self.assertNotIn(content, routes(neighbor))
+        self.assertEqual(routes("zlib.net/pigz/pigz-2.8.tar.gz"),
+                         ["https://distfiles.macports.org/pigz/pigz-2.8.tar.gz"])
 
     def test_exact_owned_no_deb_guards_preserve_foreign_and_suffix_events(self):
         guards = re.findall(r"SOURCE_ONLY_NO_DEBS: \$\{\{ (.+?) \}\}", self.workflow)

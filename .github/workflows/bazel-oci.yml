@@ -327,7 +327,12 @@ jobs:
               ("https://raw.githubusercontent.com/securely1g/sonic-buildimage/ba746670df1c30d0e6913d018ef0ff88d5b88679/tools/bazel/debian-pool.cfg",
                "43dce3f1b98b76ffa9db403e47139497dfb702126282747446463356c58133ee"),
           ]
-          parts = []
+          # Exact historical libc-dev-bin payload; its repository SHA256 remains
+          # 2eb5db4cb16a42850ed9d3ca8b2b1aeda91dd00d248f6068f49d641321748308.
+          parts = [
+              br"rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc\-dev\-bin_2\.41\-12\+deb13u3_amd64\.deb "
+              b"https://snapshot.debian.org/file/4a63880454e8cdb1c0fb13d23f472d8244039aad\n",
+          ]
           for url, expected in inputs:
               with urlopen(url, timeout=60) as response:
                   data = response.read()
