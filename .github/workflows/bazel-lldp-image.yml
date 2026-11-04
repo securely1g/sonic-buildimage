@@ -118,6 +118,7 @@ jobs:
           python3 -B tools/bazel/tests/lldp_make_test.py
           python3 -B tools/bazel/tests/lldp_identity_test.py
       - name: Build runtime and debug images from source owners
+        id: native_images
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -126,6 +127,94 @@ jobs:
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           test ! -e MODULE.bazel.lock
           python3 -B tools/bazel/ci/lldp_image.py build --artifacts artifacts/lldp --bazel "$BAZEL"
+      - name: Prepare public failed graph evidence
+        id: graph_diagnostics
+        if: always() && steps.native_images.outcome == 'failure'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          CONTROL_REVISION: ${{ github.sha }}
+        run: |
+          python3 - <<'PYDIAG'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import (
+              PublicArtifactError, REVISION, dependency_json, integer, load_json, require, safe_json, safe_text,
+          )
+          root = Path('artifacts/lldp')
+          graph_path = root / 'module-graph.json'
+          inspection_path = root / 'module-graph-inspection.json'
+          stderr_path = root / 'module-graph.stderr'
+          lock_path = Path('MODULE.bazel.lock')
+          receipt_path = root / 'build-receipt.json'
+          if not all(path.is_file() for path in (graph_path, inspection_path, stderr_path, lock_path, receipt_path)):
+              raise SystemExit('The failed build did not retain complete graph inspection inputs.')
+          for path, maximum in ((graph_path, 64), (inspection_path, 64),
+                                (stderr_path, 64), (lock_path, 128), (receipt_path, 64)):
+              require(not path.is_symlink() and path.stat().st_size <= maximum * 1024 * 1024,
+                      'unsafe-diagnostic-input')
+          graph, lock = graph_path.read_bytes(), lock_path.read_bytes()
+          dependency_json(load_json(graph), 'graph')
+          locked = load_json(lock)
+          dependency_json(locked, 'lock')
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          control = os.environ['CONTROL_REVISION']
+          require(REVISION.fullmatch(source) and source == os.environ['SOURCE_REVISION'],
+                  'diagnostic-source-mismatch')
+          require(REVISION.fullmatch(control) and control == os.environ['GITHUB_SHA'],
+                  'diagnostic-controller-mismatch')
+          receipt = load_json(receipt_path.read_bytes())
+          require(receipt.get('revision') == source and receipt.get('status') == 'failed',
+                  'diagnostic-build-receipt-mismatch')
+          prefix = 'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/'
+          catalogs = {url[len(prefix):].split('/', 1)[0]
+                      for url in locked['registryFileHashes'] if url.startswith(prefix)}
+          require(len(catalogs) == 1, 'diagnostic-registry-mismatch')
+          catalog = next(iter(catalogs))
+          require(REVISION.fullmatch(catalog) and
+                  (not os.environ['REGISTRY_REVISION'] or catalog == os.environ['REGISTRY_REVISION']),
+                  'diagnostic-registry-mismatch')
+          inspection = load_json(inspection_path.read_bytes())
+          stderr = stderr_path.read_bytes()
+          lines = stderr.decode('utf-8', errors='replace').splitlines()
+          approved = []
+          for raw in lines:
+              line = raw.strip()
+              if not line.startswith(('ERROR:', 'Error:', 'WARNING:')):
+                  continue
+              try:
+                  safe_text(line)
+              except PublicArtifactError:
+                  continue
+              approved.append(line)
+          summary = {
+              'selection': {'source_revision': source, 'registry_revision': catalog,
+                            'control_revision': control},
+              'returncode': integer(inspection['returncode']),
+              'stderr_sha256': hashlib.sha256(stderr).hexdigest(),
+              'stderr_bytes': len(stderr),
+              'safe_error_lines': approved,
+              'omitted_lines': len(lines) - len(approved),
+          }
+          safe_json(summary)
+          output = root / 'graph-failure'
+          output.mkdir(exist_ok=False)
+          (output / 'module-graph.json').write_bytes(graph)
+          (output / 'MODULE.bazel.lock').write_bytes(lock)
+          (output / 'inspection-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYDIAG
+      - name: Retain public failed graph evidence
+        if: always() && steps.native_images.outcome == 'failure' && steps.graph_diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lldp-module-graph-failure-amd64
+          path: |
+            artifacts/lldp/graph-failure/module-graph.json
+            artifacts/lldp/graph-failure/MODULE.bazel.lock
+            artifacts/lldp/graph-failure/inspection-summary.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
       - name: Validate completed image contents and source symbols
         run: python3 -B tools/bazel/ci/lldp_image.py validate --artifacts artifacts/lldp
       - name: Check incremental rebuild and restored image digests
