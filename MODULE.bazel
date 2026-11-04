@@ -229,6 +229,15 @@ apt_inputs(
     lock = "//dockers/docker-swss-layer-trixie/bazel:apt.lock.json",
 )
 
+# Teamd consumes owner TARs; its external runtime candidates are already in
+# the parent. The standard selector checks their identities against that parent.
+apt.import_lock(lock = "//dockers/docker-teamd/bazel:apt.lock.json")
+use_repo(apt, "teamd_debian", "teamd_debug_debian", "teamd_test_debian")
+apt_inputs(
+    name = "teamd_apt_inputs",
+    lock = "//dockers/docker-teamd/bazel:apt.lock.json",
+)
+
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
