@@ -234,6 +234,9 @@ jobs:
             runner: ubuntu-24.04-arm
             platform: aarch64_trixie
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    env:
+      # Draft catalog for root-module resolution; the full Make VS job is separate.
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/frr_draft_bazel.sh
     defaults:
       run:
         shell: bash
@@ -342,7 +345,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || (github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel'))) }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -512,6 +515,9 @@ jobs:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       # Reap any Bazel processes used for dependency resolution.
       options: --init
+    env:
+      # Draft catalog for root-module resolution; the full Make VS job is separate.
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/frr_draft_bazel.sh
     defaults:
       run:
         shell: bash
@@ -550,7 +556,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || (github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel'))) }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1009,13 +1015,17 @@ jobs:
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
+    # Source-only PRs #5/#51/#61 and the owned FRR branch exclude DEB generation.
     if: >-
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.number != 5 &&
+       github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
+       github.head_ref != 'frr-native-bazel') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720

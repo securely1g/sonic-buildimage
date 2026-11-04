@@ -13,6 +13,9 @@ bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "googletest", version = "1.16.0")
+
+# Match the selected Common runtime test launcher.
+bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # P4 producers retain their upstream Make/configure builds and export TARs.
@@ -30,7 +33,8 @@ bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.14")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.16")
+
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -47,7 +51,7 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.25-f27d1bc8b5c148aedb408df73d3a3eb06b43e98f",
+    version = "0.0.26-2a6fc39c55be05e849b0e3a2d1808a4a59f123a6",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -61,7 +65,7 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.7-f7fda40c02b3a8b4bbbff3d17fca3dff83f4cbad", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -258,8 +262,17 @@ bazel_dep(name = "sonic-fips", version = "0.0.3-d1a2c8f692d4197295269ed445022c38
 # Fixed target C/C++ runtime and JSON headers for sonic-fib.
 apt.install(
     dependency_set = "fib_deps",
-    packages = ["libc6", "libstdc++6", "libgcc-s1", "nlohmann-json3-dev"],
-    suites = ["trixie", "trixie-updates", "trixie-security"],
+    packages = [
+        "libc6",
+        "libgcc-s1",
+        "libstdc++6",
+        "nlohmann-json3-dev",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
 )
 use_repo(apt, "fib_deps")
 
@@ -267,14 +280,23 @@ use_repo(apt, "fib_deps")
 apt_bookworm_metadata = use_extension("@sonic_build_infra//toolchains/bookworm:apt.bzl", "apt")
 apt_bookworm_metadata.install(
     dependency_set = "fib_bookworm_deps",
-    packages = ["libc6", "libstdc++6", "libgcc-s1", "nlohmann-json3-dev"],
-    suites = ["bookworm", "bookworm-updates", "bookworm-security"],
+    packages = [
+        "libc6",
+        "libgcc-s1",
+        "libstdc++6",
+        "nlohmann-json3-dev",
+    ],
+    suites = [
+        "bookworm",
+        "bookworm-updates",
+        "bookworm-security",
+    ],
 )
 use_repo(apt_bookworm_metadata, "fib_bookworm_deps")
 
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.25-f27d1bc8b5c148aedb408df73d3a3eb06b43e98f",
+    version = "0.0.26-2a6fc39c55be05e849b0e3a2d1808a4a59f123a6",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -296,7 +318,7 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.7-f7fda40c02b3a8b4bbbff3d17fca3dff83f4cbad",
+    version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed",
 )
 
 single_version_override(

@@ -23,8 +23,52 @@ accounts, writable directories, service startup and cache generation. The TARs
 can be layered directly; no intermediate DEB assembly or maintainer-script
 execution is provided by this component build.
 
-`:check_programs` builds the upstream check binaries. `:upstream_check` executes
-the upstream check suite, including its Valgrind memory checks. The known
-Valgrind/tcmalloc incompatibility remains documented in the FRR contribution
-notes; this installation-output change preserves tcmalloc and the upstream test
-behavior.
+`:check_programs` builds the upstream check binaries. `:upstream_native_check`
+runs the ordinary upstream checks with the default tcmalloc configuration.
+`:upstream_check` retains the complete suite, including all six Valgrind checks;
+run it with `--//src/sonic-frr:tcmalloc=false` so Valgrind owns allocation
+instrumentation. Both suites support native AMD64 and ARM64 execution.
+CI keeps the production TARs and ordinary tests on the default allocator and
+runs the complete memory-check suite separately on native AMD64/Trixie. Cross-compiling the check programs does not execute them.
+This avoids the observed tcmalloc initialization errors under Bookworm Valgrind
+and preserves strict memory-error exit codes without suppressions.
+
+## Native source CI
+
+The `Bazel FRR and sonic-fib` workflow builds the installation TARs, matching
+symbols and upstream check programs on native AMD64/Trixie. This matches the
+current migration scope; the retained ARM64 and Bookworm target definitions are
+not current CI coverage. It runs the original FRR checks, including Valgrind,
+both sonic-fib tests, and the installed SDK/runtime and schema-invalidation
+checks documented in `../libraries/sonic-fib/README.bazel.md`. A failing upstream
+check remains a failing job. The full VS installer is outside this source-only
+PR's no-DEB scope and its skipped job is not image validation.
+
+`verify_runtime.py` checks the deployed FRR and SNMP ELF modes, architecture,
+build IDs, debug-link CRCs and matching DWARF. It preserves the owner debug
+documentation symlinks and verifies isolated BGPD source lookup succeeds only
+with the matching symbol TAR. The receipt records actual SONAME/DT_NEEDED
+entries. In the selected source, the SONiC FPM module includes libFIB's public
+header but makes no libFIB API call, so the linker drops its unused shared
+library. The existing Make build and runtime metadata declarations are retained;
+a recipe dependency alone is not proof of an ELF loader dependency.
+
+Draft validation uses the same frozen candidate registry in the workflow and
+`tools/bazel/ci/frr_draft_bazel.sh`. It preserves published registry entries and
+adds the reviewed native infrastructure, libnl3 and Net-SNMP candidates from
+registry PRs #218 (stacked on #209), #181 and #150. Native builds select infrastructure `.26`,
+libnl3 `.sonic.7`, published Distroless `.sonic.16`, libyang `.sonic.6` and
+Net-SNMP `5.9.3.sonic.1`. The exact source versions are declared in `MODULE.bazel`.
+This replaces the historical catalog's modified published versions without
+changing the FRR/libFIB sources, their SONiC patches or their tests. The default
+`.bazelrc` still uses maintained `main`; the candidate dependencies must land
+before this PR is ready for review.
+
+For local candidate validation, use the command and explicit platform flags in
+`.github/workflows/bazel-frr.yml`: its startup flags load `common.bazelrc`
+without also loading the default registry endpoint. Do not append the candidate
+to the default endpoint as a fallback. Replace the temporary CI endpoint with
+canonical `main` and verify landed source revisions before review readiness.
+The workflow retains checkout inputs, resolution lock, build/test events and
+named output files with SHA-256 checksums. These component results do not
+establish a complete SONiC image or the inherited image workflows' success.
