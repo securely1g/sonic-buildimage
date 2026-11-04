@@ -53,14 +53,16 @@ header but makes no libFIB API call, so the linker drops its unused shared
 library. The existing Make build and runtime metadata declarations are retained;
 a recipe dependency alone is not proof of an ELF loader dependency.
 
-While registry PRs #146–#150 are unmerged, the workflow uses the single frozen
-candidate registry `e0bf141cea82764b18d15d7d2c8516cbf3e99290`. Its
-`DRAFT_VALIDATION_INPUTS.json` records every composed prerequisite. The candidate
-selects infrastructure `0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c`,
-Distroless `.sonic.13`, libnl3 `.sonic.6`, libyang `.sonic.6` and Net-SNMP
-`5.9.3.sonic.1`. The infrastructure and libnl3 entries retain their published
-versions and source archives, with the reviewed native changes applied as registry
-patches. The default `.bazelrc` still uses maintained `main`.
+Draft validation uses the same frozen candidate registry in the workflow and
+`tools/bazel/ci/frr_draft_bazel.sh`. It preserves published registry entries and
+adds the reviewed native infrastructure, libnl3 and Net-SNMP candidates from
+registry PRs #218 (stacked on #209), #181 and #150. Native builds select infrastructure `.26`,
+libnl3 `.sonic.7`, published Distroless `.sonic.16`, libyang `.sonic.6` and
+Net-SNMP `5.9.3.sonic.1`. The exact source versions are declared in `MODULE.bazel`.
+This replaces the historical catalog's modified published versions without
+changing the FRR/libFIB sources, their SONiC patches or their tests. The default
+`.bazelrc` still uses maintained `main`; the candidate dependencies must land
+before this PR is ready for review.
 
 For local candidate validation, use the command and explicit platform flags in
 `.github/workflows/bazel-frr.yml`: its startup flags load `common.bazelrc`
