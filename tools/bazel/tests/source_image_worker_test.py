@@ -117,13 +117,31 @@ class ImageWorkerTest(unittest.TestCase):
             config = worker.mirror_configuration(original).decode()
             with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
                 worker.mirror_configuration(original + b'changed')
-        rewrites = [line.split() for line in config.splitlines() if line.startswith('rewrite ')]
+        rewrites = [line.split() for line in config.splitlines()
+                    if line.startswith('rewrite ') and 'gawk' in line]
         self.assertEqual(len(rewrites), 3)
         for host, (_, expression, destination) in zip(
                 ('mirrors.kernel.org', 'ftp.gnu.org', 'ftpmirror.gnu.org'), rewrites):
             self.assertTrue(re.fullmatch(expression, host + '/gnu/gawk/gawk-5.3.2.tar.xz'))
             self.assertFalse(re.fullmatch(expression, host + '/gnu/gawk/gawk-5.3.3.tar.xz'))
             self.assertEqual(destination, 'https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz')
+
+    def test_snapshot_fallbacks_keep_original_and_only_exact_observed_urls(self):
+        original = b'prior verified mirror rules\n'
+        with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
+            config = worker.mirror_configuration(original).decode()
+        rules = [line.split()[1:] for line in config.splitlines()
+                 if line.startswith('rewrite ') and 'snapshot' in line]
+        self.assertEqual(len(rules), 8)
+        self.assertEqual(len(worker.SNAPSHOT_FALLBACKS), 4)
+        for path, identifier in worker.SNAPSHOT_FALLBACKS.items():
+            url = 'snapshot.debian.org/archive/debian/20260727T143429Z/' + path
+            alternatives = [destination for expression, destination in rules if re.fullmatch(expression, url)]
+            self.assertEqual(alternatives, ['https://snapshot.debian.org/file/' + identifier, 'https://' + url])
+            for altered in (url.replace('20260727T143429Z', '20260728T143429Z'),
+                            url.replace('_amd64.deb', '_arm64.deb'), url + '?query=1',
+                            url.replace('snapshot.debian.org', 'elsewhere.example')):
+                self.assertFalse(any(re.fullmatch(expression, altered) for expression, _ in rules))
 
     def test_selected_profile_overrides_driver_defaults_in_actual_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -301,6 +319,38 @@ class ImageWorkerTest(unittest.TestCase):
                 worker.check_source_inventory(root, False)
             with patch.dict(os.environ, {"SOURCE_INPUTS_RUN": "../41689621493"}), self.assertRaises(ValueError):
                 worker.input_run_id()
+
+    def test_publication_preserves_exact_checked_syncd_and_gearbox_policy_bytes(self):
+        cases = ({"DEBIAN_FRONTEND": "noninteractive"}, {"DEBIAN_FRONTEND": "interactive"},
+                 {"DEBIAN_FRONTEND": "noninteractive", "UNRELATED": "value"})
+        for image in ('syncd', 'gearbox'):
+            for environment in cases:
+                with self.subTest(image=image, environment=environment), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    policy = root / 'policy.json'
+                    policy.write_text(json.dumps({'image_validation': {'environment': environment}}))
+                    original = policy.read_bytes()
+                    (root / 'build-receipt.json').write_text(json.dumps({'status': 'built', 'artifacts': {
+                        policy.name: {'bytes': len(original), 'sha256': hashlib.sha256(original).hexdigest()}}}))
+                    args = SimpleNamespace(artifacts=root, image=image)
+                    if environment == {"DEBIAN_FRONTEND": "noninteractive"}:
+                        worker.publish(args)
+                        self.assertEqual((root / 'public/policy.json').read_bytes(), original)
+                        self.assertEqual(policy.read_bytes(), original)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'Unexpected image policy environment'):
+                            worker.publish(args)
+                        self.assertFalse((root / 'public/policy.json').exists())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / 'policy.json'
+            policy.write_text(json.dumps({'image_validation': {'environment': cases[0]},
+                                          'diagnostic': {'environment': {'UNRELATED': 'value'}}}))
+            (root / 'build-receipt.json').write_text(json.dumps({'artifacts': {policy.name: {
+                'bytes': policy.stat().st_size, 'sha256': worker.digest(policy)}}}))
+            with self.assertRaises(ValueError):
+                worker.publish(SimpleNamespace(artifacts=root, image='syncd'))
+            self.assertFalse((root / 'public/policy.json').exists())
 
     def test_publication_keeps_declared_bytes_and_excludes_private_state(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -30,6 +30,12 @@ WRAPPERS["syncd"] = "review_bazel.sh"
 WRAPPERS["gearbox"] = "review_bazel.sh"
 MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
 MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+SNAPSHOT_FALLBACKS = {
+    "pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u4_amd64.deb": "d63097e4bb174c04bfc29e38e6270b43c2db9c0b",
+    "pool/main/p/python3.13/libpython3.13_3.13.5-2+deb13u4_amd64.deb": "a817f92905b030fcbca7d433db7dc4dcccf91c3d",
+    "pool/main/c/cdebconf/libdebconfclient0_0.280_amd64.deb": "219dec5cd95ea5be91161ab1d30dc3f19efb6e01",
+    "pool/main/libs/libselinux/libselinux1_3.8.1-1_amd64.deb": "44b247687c034c8a4142204f0827f7286614b354",
+}
 
 
 def mirror_configuration(original):
@@ -40,8 +46,17 @@ def mirror_configuration(original):
     expressions = [r"mirrors\.kernel\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
                    r"ftp\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
                    r"ftpmirror\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz"]
-    return original + ("\n# Exact BCR gawk source mirror; integrity remains enforced by Bazel.\n" +
-                       "\n".join("rewrite " + expression + " " + destination for expression in expressions) + "\n").encode()
+    lines = ["rewrite " + expression + " " + destination for expression in expressions]
+    # These four observed snapshot503 failures have verified byte-identical official
+    # /file endpoints. Their SHA1 URL identifiers do not replace the locked SHA256.
+    # Retain the original URL as a second download alternative.
+    for path, identifier in SNAPSHOT_FALLBACKS.items():
+        original_url = "snapshot.debian.org/archive/debian/20260727T143429Z/" + path
+        expression = re.escape(original_url)
+        lines.extend(["rewrite " + expression + " https://snapshot.debian.org/file/" + identifier,
+                      "rewrite " + expression + " https://" + original_url])
+    return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
+                       "\n".join(lines) + "\n").encode()
 
 
 def require(value, message):
@@ -434,7 +449,13 @@ def publish(args):
             require(path.is_file() and not path.is_symlink() and path.stat().st_size == item["bytes"] and digest(path) == item["sha256"],
                     "Declared artifact differs: " + name)
             if path.suffix == ".json":
-                safe_json(json.loads(path.read_text()))
+                value = json.loads(path.read_text())
+                if name == "policy.json" and getattr(args, "image", None) in ("syncd", "gearbox"):
+                    # Reviewed image policy, not a captured process environment.
+                    # Validate only this known public constant; retain original bytes.
+                    require(value["image_validation"].pop("environment") == {"DEBIAN_FRONTEND": "noninteractive"},
+                            "Unexpected image policy environment")
+                safe_json(value)
             target = destination / name
             if target.exists():
                 require(target.is_file() and not target.is_symlink() and digest(target) == item["sha256"],

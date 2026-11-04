@@ -129,3 +129,12 @@ Only the three selected GNU/kernel source URLs are rewritten; the original
 checksum-verified pigz downloader configuration is retained. Phase resource
 receipts include the observed cgroup memory/swap limits as well as usage and OOM
 counters, so a runtime limit change is not confused with a successful capacity test.
+
+For four observed Debian snapshot HTTP 503 failures, the downloader retains the
+original timestamped URL and adds its verified official content-addressed
+`snapshot.debian.org/file/` endpoint. Both endpoints returned identical bytes
+matching the checked-in SHA256 and size. The URL's SHA1 identifier only locates
+the file; Bazel continues enforcing the original SHA256. Other snapshots,
+package versions and architectures are unchanged. Public Syncd/Gearbox policy
+validation recognizes only the exact checked-in `DEBIAN_FRONTEND=noninteractive`
+constant and retains the policy's original bytes and hash.
