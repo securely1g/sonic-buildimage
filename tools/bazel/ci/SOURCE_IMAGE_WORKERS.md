@@ -156,3 +156,36 @@ selected fixed profile. Both profiles are required for changed-input gNMI
 acceptance; a pass for one does not establish the other. They can use separate
 idle workers with the same immutable source/catalog. Neither selector adds a
 capability, command input, source override or new executor path.
+
+## Explicit ordinary registry consumers
+
+The registry-native choice is a separate manual task, not an image selector.
+It schedules only registry_native for a securely1g dispatch in the owned
+buildimage repository. registry_consumer=common|fips, the matching full fixed
+registry SHA and one worker affinity select the reviewed AMD64 consumer.
+The original registry runner and target inventories remain unchanged:
+Common: 16 build targets and 24 tests; FIPS: 18 build targets and 6 tests. Hosted ARM64 and normal registry
+checks remain independent requirements.
+
+UID 1000 preflight retains native Trixie, the immutable slave marker, 20 GiB memory
+and 50 GiB free workspace/cache gates. Only the fixed registry runner uses sudo
+in the same disposable container. No Docker daemon, image driver, Make package
+build, KVM or hosted source-download prerequisite is added. Common fails before
+sudo/APT until an actual provisioner-pinned image reference is known; a local
+image ID is never replaced with the hosted Debian reference. FIPS has no
+runtime-preparation requirement.
+
+The existing --bazel hook adds measured scheduling and audits all original
+build/test targets for DEB/package wrappers before each build/test command.
+Fresh work-directory and output confinement remain intact. Persistent
+repository/disk caches use /bazel_cache/registry-native/<worker>/, with a fresh
+confined per-attempt work root. Existing image caches are untouched. No GitHub
+Actions cache restore is added. Original tests remain uncached.
+
+Evidence includes verified declared outputs, original test records,
+source/fetched MODULE/runtime receipts, no-DEB audits and measured worker
+identity/resources. Raw invocation BEP, root build logs, failed-action
+diagnostics and private control/environment state are excluded; checked BEP
+summaries remain. A worker pass proves this ordinary AMD64 consumer, not
+hosted required checks, ARM64 acceptance or final VS integration.
+\nThe original resolution lock remains byte-exact. Only its known local registry\nURL is mapped to the selected immutable public URL for safety validation; other\nlocal URLs are rejected. Phase failures retain safe status/error-class receipts\neven when payload publication fails. UID 1000 copies readable root-owned native\noutputs before the original registry transport archives them. Consumer shutdown\nuses the exact ordinary workspace and verifies that its observed JVM exited;\ncaches and generated outputs remain on the worker.\n
