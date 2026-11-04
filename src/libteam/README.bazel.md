@@ -13,7 +13,7 @@ entry from registry #181 and cumulative infrastructure entry from #218 (includin
 `51a3b267cfe4ca177c0ecfd6b47ed9bcd1b05c2d`.
 
 The native interfaces are declared explicitly: libnl3 is `3.7.0.sonic.7`,
-infrastructure is `0.0.26-2a6fc39c55be05e849b0e3a2d1808a4a59f123a6`, and
+infrastructure is `0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e`, and
 Distroless is the published `0.9.4.sonic.16`. Every maintained registry version
 is preserved. The old catalog's native overlays on published libnl3 `.6`,
 Distroless `.13`, and infrastructure `17a1e555` are no longer selected.
