@@ -214,7 +214,7 @@ class ImageWorkerTest(unittest.TestCase):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
         wrapper = "/source/tools/bazel/ci/review_bazel.sh"
-        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine")):
+        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine"), ("framework", "mgmt_framework")):
             with self.subTest(image=image):
                 driver = f"/source/tools/bazel/ci/{stem}_image.py"
                 for phase in ("build", "validate", "incremental"):
@@ -260,11 +260,27 @@ class ImageWorkerTest(unittest.TestCase):
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
-        self.assertEqual(set(choices), set(worker.DRIVERS))
+        self.assertEqual(set(choices), set(worker.DRIVERS) | {"worker-provenance", "registry-native"})
         gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
         self.assertEqual(len(gates), 2)
         for gate in gates:
             self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
+
+    def test_framework_worker_pr_preserves_source_only_scope(self):
+        import yaml
+        from tools.bazel.tests.registry_native_worker_test import condition
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        branch = "codex/framework-native-worker"
+        guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
+                  for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
+        self.assertEqual(len(guards), 2)
+        for guard in guards:
+            self.assertTrue(condition(guard, event="pull_request", branch=branch))
+            self.assertFalse(condition(guard, event="pull_request", branch=branch + "-suffix"))
+            self.assertFalse(condition(guard, event="pull_request", branch=branch, head_repo="other/fork"))
+        self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch))
+        self.assertFalse(condition(workflow["jobs"]["registry_native"]["if"], event="pull_request", branch=branch))
 
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -278,6 +294,7 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(worker.catalog_for("syncd", root), "a" * 40)
             self.assertEqual(worker.catalog_for("gearbox", root), "a" * 40)
             self.assertEqual(worker.catalog_for("dash-engine", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("framework", root), "a" * 40)
             workflow.write_text("env:\n  BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
             wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")

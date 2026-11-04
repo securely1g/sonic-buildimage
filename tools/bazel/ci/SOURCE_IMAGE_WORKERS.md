@@ -61,7 +61,8 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi` or `gnmi-no-dialout`, a `source_worker` affinity label and a full `source_revision` SHA.
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `framework`,
+a `source_worker` affinity label and a full `source_revision` SHA.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
@@ -156,6 +157,18 @@ selected fixed profile. Both profiles are required for changed-input gNMI
 acceptance; a pass for one does not establish the other. They can use separate
 idle workers with the same immutable source/catalog. Neither selector adds a
 capability, command input, source override or new executor path.
+
+The `framework` selector runs the existing `mgmt_framework_image.py` build,
+static validation and incremental checks, followed by `mgmt_framework_loaded.py`
+for the installed service checks. It consumes the source-built runtime/debug
+images from `docker-sonic-mgmt-framework`; source-owner tests remain separate.
+The worker passes `review_bazel.sh` to the existing driver so its private output
+base, measured resource limits and persistent caches apply. The source checkout
+supplies the reviewed registry revision, just as for gNMI. This enables
+[Framework image PR #138](https://github.com/securely1g/sonic-buildimage/pull/138)
+to run the same image checks on an idle native AMD64 worker. Select an immutable
+source commit and retain the source/catalog and all four phase receipts; adding
+the selector alone does not establish image acceptance.
 
 ## Explicit ordinary registry consumers
 
