@@ -20,6 +20,12 @@ source dependencies produce runtime tar layers and matching debug symbols.
 Pinned Debian packages supply external runtime dependencies; Bazel does not
 create Debian packages in this path.
 
+The source runtime added over config-engine now comes from
+`//dockers/docker-swss-layer-trixie:source_runtime`. It includes the patched
+libteam and libteamdctl used by SWSS's source link; the Orchagent APT roots no
+longer request their distribution replacements. This source-only TAR is shared
+with the new SWSS parent without changing Orchagent's config-engine selector.
+
 Make selects the builder before starting the build. Missing or invalid metadata
 for a selected Bazel target, a missing Bazel executable, or a Bazel build failure
 fails the build; it does not trigger a retry with Make.

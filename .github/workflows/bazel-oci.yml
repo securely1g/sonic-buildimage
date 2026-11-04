@@ -218,7 +218,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -228,11 +228,16 @@ jobs:
             machine: x86_64
             runner: ubuntu-24.04
             platform: x86_64_trixie
+            # Reuse the shared image cache and allow time for archive + image checks.
+            disk_cache: swss-layer-amd64
+            timeout: 240
           - name: ARM64
             architecture: arm64
             machine: aarch64
             runner: ubuntu-24.04-arm
             platform: aarch64_trixie
+            disk_cache: buildimage-gzip-arm64
+            timeout: 60
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     env:
       # Shared CI entry point with the canonical registry; the full Make VS job is separate.
@@ -245,7 +250,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -266,8 +271,16 @@ jobs:
           bazelisk-version: 1.29.0
           bazelisk-cache: true
           repository-cache: true
-          disk-cache: buildimage-gzip-${{ matrix.architecture }}
+          disk-cache: ${{ matrix.disk_cache }}
           cache-version: "8.5.1"
+
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through the shared CI entry point.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
@@ -502,6 +515,126 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
+
+      - name: Build and inspect the shared runtime and symbols
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/tests/swss_layer_payload_test.py
+          python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
+      - name: Check cached no-op and source edit through the image
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
+            --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
+            --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
+            --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
+            --unchanged-target //dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz \
+            --output artifacts/swss-layer/rebuild
+          git diff --exit-code
+      - name: Prepare shared SWSS image evidence
+        id: swss_layer_public
+        if: always() && matrix.architecture == 'amd64'
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/swss-layer')
+          if (root / 'receipt.json').exists():
+              receipt = json.loads((root / 'receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          for name in ('validation.json', 'action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json'):
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PY
+      - name: Retain reviewed artifacts and receipts
+        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-layer-amd64
+          path: |
+            artifacts/swss-layer/docker-swss-layer-trixie.gz
+            artifacts/swss-layer/source-runtime.tar
+            artifacts/swss-layer/source-debug.tar
+            artifacts/swss-layer/image-debug.tar
+            artifacts/swss-layer/public-receipt.json
+            artifacts/swss-layer/validation.json
+            artifacts/swss-layer/action-audit.json
+            artifacts/swss-layer/apt-selection.json
+            artifacts/swss-layer/packages.json
+            artifacts/swss-layer/build-summary.json
+            artifacts/swss-layer/rebuild/rebuild.json
+            artifacts/swss-layer/MODULE.bazel.lock
+            artifacts/swss-layer/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  swss_layer_runtime:
+    name: Load and run the shared SWSS image (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: swss-layer-amd64
+          path: artifacts/swss-layer
+      - name: Verify and load this run's archive
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
+          root = Path('artifacts/swss-layer')
+          receipt = json.loads((root / 'public-receipt.json').read_text())
+          assert receipt['status'] == 'passed' and receipt['architecture'] == 'amd64'
+          assert receipt['revision'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          name = 'docker-swss-layer-trixie.gz'
+          assert hashlib.sha256((root / name).read_bytes()).hexdigest() == receipt['artifacts'][name]['sha256']
+          report = json.loads((root / 'validation.json').read_text())
+          actual, config, _ = load_archive(root / name, report['archive']['tag'], report['config_digest'])
+          verify_loaded_image(actual, config, report['config_digest'])
+          assert actual['Architecture'] == report['architecture'] == 'amd64'
+          assert actual['RootFS']['Layers'] == report['rootfs']['diff_ids']
+          PY
+      - name: Verify installed source hashes and complete loader closure
+        run: |
+          set -o pipefail
+          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+            --read-only --pids-limit=128 --memory=4g --cpus=2 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
+            --mount "type=bind,src=$PWD/tools/bazel/oci/swss_layer_runtime.py,dst=/probe/swss_layer_runtime.py,readonly" \
+            --mount "type=bind,src=$PWD/tools/bazel/oci/runtime_smoke.py,dst=/probe/runtime_smoke.py,readonly" \
+            --mount "type=bind,src=$PWD/artifacts/swss-layer/validation.json,dst=/probe/validation.json,readonly" \
+            --entrypoint /usr/bin/python3 docker-swss-layer-trixie:latest \
+            -B /probe/swss_layer_runtime.py /probe/validation.json | tee artifacts/swss-layer/runtime-smoke.json
+      - name: Retain installed-image evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-layer-runtime-amd64
+          path: artifacts/swss-layer/runtime-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
 
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
