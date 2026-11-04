@@ -74,7 +74,9 @@ def verify_debug_sai(runtime, symbols, debug, metadata, payloads, hashes, owner)
                       definition.get('payload_sha256') == hashes[package],
                       'owner library metadata differs from retained source TAR: ' + package)
         record = records.get(package, {})
-        check.require(record.get('target') == target and record.get('source_revision') and
+        # Installed metadata records Bazel's canonical external label; the
+        # owner's package contract records the target within its own repository.
+        check.require(record.get('target') == '@@sonic-sairedis+' + target and record.get('source_revision') and
                       record.get('payload_sha256') == hashes[package] and
                       record.get('version') == definition['control_fields']['Version'],
                       'missing source-owned debug package metadata: ' + package)
