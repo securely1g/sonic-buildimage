@@ -18,7 +18,7 @@ Example, using the reviewed workflow branch:
 
 ```sh
 gh workflow run bazel-oci.yml --repo securely1g/sonic-buildimage \
-  --ref codex/source-image-worker-dispatch \
+  --ref master \
   -f source_image=preflight -f skip_vs=true
 ```
 
@@ -61,12 +61,12 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi` or `gnmi-no-dialout`, a `source_worker` affinity label and a full `source_revision` SHA.
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `mgmt-framework`, a `source_worker` affinity label and a full `source_revision` SHA.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
 gh workflow run bazel-oci.yml --repo securely1g/sonic-buildimage \
-  --ref codex/source-image-worker-dispatch \
+  --ref master \
   -f source_image=dash-ha -f source_worker=sonic-slave-lgh114-1 \
   -f source_revision=e9178c15401018fa7b6bf944574cdad678660c87 -f skip_vs=true
 ```
@@ -77,7 +77,7 @@ static validation, incremental edit/restore and loaded-container checks.
 The disposable slave installs only missing archive/debug execution packages
 (`libarchive-tools`, GDB and binutils), checks their tools before building and
 retains the installed package versions. These do not enter the image layers.
-Sysmgr, OTEL, Syncd, Gearbox, DASH engine and both gNMI profiles use `review_bazel.sh` with each workflow's immutable catalog;
+Sysmgr, OTEL, Syncd, Gearbox, DASH engine, Framework and both gNMI profiles use `review_bazel.sh` with each workflow's immutable catalog;
 the other three use their compatibility entrypoint and verify any workflow catalog
 agrees. No module or source-owner override is added. Selected Rust modules use
 `rules_rs` with tracked Cargo inputs; their normal module extension prepares
@@ -156,3 +156,14 @@ selected fixed profile. Both profiles are required for changed-input gNMI
 acceptance; a pass for one does not establish the other. They can use separate
 idle workers with the same immutable source/catalog. Neither selector adds a
 capability, command input, source override or new executor path.
+
+The fixed `mgmt-framework` selector runs the reviewed source checkout's
+`mgmt_framework_image.py` build, static validation and incremental restoration,
+then `mgmt_framework_loaded.py` against the same runtime/debug archives. It
+uses `review_bazel.sh` and the checkout's immutable registry catalog. The driver
+builds Framework and Management Common from their owner targets. Its declared
+image, source TAR, package metadata and installed-status outputs are retained,
+along with the loaded-service receipt. Startup checks use the original
+Supervisor configuration and a private Redis fixture; Framework does not need
+the Syncd TAP fixture. The existing source-download artifact can be reused.
+Before this selector lands on master, use its reviewed dispatcher PR branch.
