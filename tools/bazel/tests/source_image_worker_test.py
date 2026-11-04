@@ -194,6 +194,60 @@ class ImageWorkerTest(unittest.TestCase):
             with self.subTest(image=image, revision=revision), self.assertRaises(ValueError):
                 worker.selection(image, revision)
 
+    def test_dedicated_checks_precede_build_and_stop_on_failure(self):
+        checks = {
+            "database": ("database_make_test.py",),
+            "eventd": ("eventd_make_test.py",),
+            "lldp": ("lldp_make_test.py", "lldp_identity_test.py"),
+            "radv": ("radv_make_test.py",),
+            "macsec": (),
+            "mux": ("mux_make_test.py",),
+        }
+        memory = {"limit": str(20 * 1024**3), "cpu_max": "400000 100000", "events": {"oom": 0, "oom_kill": 0}}
+        for image, scripts in checks.items():
+            for failure in (None, *range(len(scripts))):
+                with self.subTest(image=image, failure=failure), tempfile.TemporaryDirectory() as directory:
+                    artifacts = Path(directory)
+                    args = SimpleNamespace(image=image, revision="a" * 40, phase="build",
+                                           workspace=Path("/source"), artifacts=artifacts)
+                    state = {"image": image, "revision": args.revision, "workspace": str(args.workspace),
+                             "environment": {}, "build_profile": worker.select_build_profile(20 * 1024**3, 4)}
+                    (artifacts / "worker-private.json").write_text(json.dumps(state))
+                    expected = [[sys.executable, "-B", "/source/tools/bazel/tests/" + script] for script in scripts]
+                    expected.append(worker.phase_command(image, "build", args.workspace, artifacts))
+                    results = [SimpleNamespace(returncode=0) for _ in expected]
+                    if failure is not None:
+                        results[failure].returncode = 7
+                    with patch.object(worker, "source_check") as source_check, \
+                            patch.object(worker, "memory_snapshot", return_value=memory), \
+                            patch.object(worker.subprocess, "run", side_effect=results) as run:
+                        if failure is None:
+                            worker.execute_phase(args)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "Image phase failed: build"):
+                                worker.execute_phase(args)
+                        self.assertEqual([call.args[0] for call in run.call_args_list],
+                                         expected if failure is None else expected[:failure + 1])
+                        self.assertEqual(source_check.call_count, 2)
+                    receipt = json.loads((artifacts / "worker-build.json").read_text())
+                    self.assertEqual(receipt["status"], "passed" if failure is None else "failed")
+                    self.assertEqual(receipt["exit_code"], 0 if failure is None else 7)
+
+    def test_dedicated_build_checks_do_not_repeat_during_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            args = SimpleNamespace(image="lldp", revision="a" * 40, phase="validate",
+                                   workspace=Path("/source"), artifacts=artifacts)
+            memory = {"limit": str(20 * 1024**3), "cpu_max": "400000 100000", "events": {"oom": 0, "oom_kill": 0}}
+            state = {"image": args.image, "revision": args.revision, "workspace": str(args.workspace),
+                     "environment": {}, "build_profile": worker.select_build_profile(20 * 1024**3, 4)}
+            (artifacts / "worker-private.json").write_text(json.dumps(state))
+            with patch.object(worker, "source_check"), patch.object(worker, "memory_snapshot", return_value=memory), \
+                    patch.object(worker.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+                worker.execute_phase(args)
+            self.assertEqual([call.args[0] for call in run.call_args_list],
+                             [worker.phase_command("lldp", "validate", args.workspace, artifacts)])
+
     def test_fixed_interfaces_do_not_expand_into_owner_suites(self):
         root, artifacts = Path("/source"), Path("/evidence")
         for image in worker.DRIVERS:
@@ -214,7 +268,9 @@ class ImageWorkerTest(unittest.TestCase):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
         wrapper = "/source/tools/bazel/ci/review_bazel.sh"
-        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine"), ("framework", "mgmt_framework")):
+        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine"), ("framework", "mgmt_framework"),
+                            ("database", "database"), ("eventd", "eventd"), ("lldp", "lldp"),
+                            ("radv", "radv"), ("macsec", "macsec"), ("mux", "mux")):
             with self.subTest(image=image):
                 driver = f"/source/tools/bazel/ci/{stem}_image.py"
                 for phase in ("build", "validate", "incremental"):
@@ -300,31 +356,50 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch))
         self.assertFalse(condition(workflow["jobs"]["registry_native"]["if"], event="pull_request", branch=branch))
 
-    def test_orchagent_worker_followup_skips_only_its_owned_deb_fixtures_and_vs(self):
+    def test_six_service_dispatches_select_only_the_existing_native_image_job(self):
         import yaml
         from tools.bazel.tests.registry_native_worker_test import condition
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        branch = "codex/orchagent-source-worker-current"
+        jobs = workflow["jobs"]
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux"):
+            with self.subTest(image=image):
+                selected = [name for name, job in jobs.items() if condition(
+                    str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
+                self.assertEqual(selected, ["source_image"])
+                self.assertTrue(condition(jobs["source_image_inputs"]["if"], mode=image))
+                self.assertFalse(condition(jobs["source_image"]["if"], mode=image))
+        self.assertEqual(jobs["source_image"]["runs-on"],
+                         ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
+        for image in ("snmp", "frr", "base", "config-engine", "swss-layer"):
+            with self.subTest(unsupported=image), self.assertRaises(ValueError):
+                worker.selection(image, "a" * 40)
+
+    def test_worker_followups_skip_only_their_owned_deb_fixtures_and_vs(self):
+        import yaml
+        from tools.bazel.tests.registry_native_worker_test import condition
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        kernel = yaml.safe_load((ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text())
         guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
                   for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
         self.assertEqual(len(guards), 2)
-        for guard in guards:
-            self.assertTrue(condition(guard, event="pull_request", branch=branch))
-            for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
-                            {"head_repo": "other/fork"}, {"event": "push"},
-                            {"event": "workflow_dispatch"}):
-                with self.subTest(changes=changes):
-                    context = {"event": "pull_request", "branch": branch, **changes}
-                    self.assertFalse(condition(guard, **context))
-        for name in ("vs", "vs_container", "source_image", "source_image_inputs", "registry_native",
-                     "source_worker_preflight", "worker_provenance"):
-            self.assertFalse(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
-        self.assertTrue(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch + "-suffix"))
-        for name in ("archive", "checks"):
-            self.assertTrue(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
-        kernel = yaml.safe_load((ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text())
-        self.assertFalse(condition(kernel["jobs"]["kernel-bundle"]["if"], event="pull_request", branch=branch))
+        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families"):
+            for guard in guards:
+                self.assertTrue(condition(guard, event="pull_request", branch=branch))
+                for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
+                                {"head_repo": "other/fork"}, {"event": "push"},
+                                {"event": "workflow_dispatch"}):
+                    with self.subTest(branch=branch, changes=changes):
+                        context = {"event": "pull_request", "branch": branch, **changes}
+                        self.assertFalse(condition(guard, **context))
+            for name in ("vs", "vs_container", "source_image", "source_image_inputs", "registry_native",
+                         "source_worker_preflight", "worker_provenance"):
+                self.assertFalse(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
+            self.assertTrue(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch + "-suffix"))
+            for name in ("archive", "checks"):
+                self.assertTrue(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
+            self.assertFalse(condition(kernel["jobs"]["kernel-bundle"]["if"], event="pull_request", branch=branch))
 
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -469,6 +544,21 @@ class ImageWorkerTest(unittest.TestCase):
             payload.write_bytes(b"tampered")
             with self.assertRaises(ValueError):
                 worker.publish(SimpleNamespace(artifacts=root))
+
+    def test_publication_retains_checked_loaded_validation_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "build-receipt.json").write_text('{"artifacts":{}}')
+            receipt = {"status": "passed", "images": {"runtime": {"status": "passed"},
+                                                      "debug": {"status": "passed"}}}
+            source = root / "loaded-validation.json"
+            source.write_text(json.dumps(receipt))
+            worker.publish(SimpleNamespace(artifacts=root))
+            self.assertEqual(json.loads((root / "public/loaded-validation.json").read_text()), receipt)
+            source.write_text(json.dumps({**receipt, "environment": {"TOKEN": "private"}}))
+            with self.assertRaises(ValueError):
+                worker.publish(SimpleNamespace(artifacts=root))
+            self.assertEqual(json.loads((root / "public/loaded-validation.json").read_text()), receipt)
 
 
 if __name__ == "__main__":

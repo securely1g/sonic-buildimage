@@ -22,7 +22,9 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework",
+           "database": "database", "eventd": "eventd", "lldp": "lldp",
+           "radv": "radv", "macsec": "macsec", "mux": "mux"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -32,6 +34,17 @@ WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 WRAPPERS["framework"] = "review_bazel.sh"
+for name in ("database", "eventd", "lldp", "radv", "macsec", "mux"):
+    WRAPPERS[name] = "review_bazel.sh"
+# Preserve the existing dedicated image workflows' fast Make/identity gates.
+# These are fixed tests from the selected source, not additional owner suites.
+BUILD_CHECKS = {
+    "database": ("database_make_test.py",),
+    "eventd": ("eventd_make_test.py",),
+    "lldp": ("lldp_make_test.py", "lldp_identity_test.py"),
+    "radv": ("radv_make_test.py",),
+    "mux": ("mux_make_test.py",),
+}
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
 MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
 MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
@@ -315,6 +328,9 @@ def prepare(args):
     for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
+    for name in BUILD_CHECKS.get(args.image, ()):
+        path = workspace / "tools/bazel/tests" / name
+        require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed image check: " + name)
     catalog = catalog_for(args.image, workspace)
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
@@ -422,8 +438,14 @@ def execute_phase(args):
     monitor = threading.Thread(target=sample, daemon=True)
     monitor.start()
     try:
-        completed = subprocess.run(phase_command(args.image, args.phase, args.workspace, args.artifacts),
-                                   cwd=args.workspace, env={**os.environ, **state["environment"]})
+        checks = BUILD_CHECKS.get(args.image, ()) if args.phase == "build" else ()
+        commands = [[sys.executable, "-B", str(args.workspace / "tools/bazel/tests" / name)] for name in checks]
+        commands.append(phase_command(args.image, args.phase, args.workspace, args.artifacts))
+        for command in commands:
+            completed = subprocess.run(command, cwd=args.workspace,
+                                       env={**os.environ, **state["environment"]})
+            if completed.returncode:
+                break
     finally:
         finished.set()
         monitor.join()
@@ -471,7 +493,7 @@ def publish(args):
                         "Existing public artifact differs: " + name)
             else:
                 os.link(path, target)
-    names = ["worker.json", "action-audit.json", "validation.json", "incremental.json", "rebuild/rebuild.json"]
+    names = ["worker.json", "action-audit.json", "validation.json", "loaded-validation.json", "incremental.json", "rebuild/rebuild.json"]
     names += [p.name for pattern in ("worker-*.json", "*.validation.json", "*.runtime.json") for p in source.glob(pattern)
               if p.name != "worker-private.json"]
     for name in sorted(set(names)):
