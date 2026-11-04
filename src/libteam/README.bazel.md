@@ -22,7 +22,7 @@ Dependencies resolve from the canonical `securely1g/sonic-bazel-registry`
 and `rules_distroless 0.9.4.sonic.15`. Standalone libteam declares
 `sonic-build-infra 0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88`;
 the root dependency and override select
-`0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568` for root builds.
+`0.0.26-2cfc059c2cf1dc3b2f2b2ec1bcd70400b04ecb75` for root builds.
 `tools/bazel/ci/libteam_draft_bazel.sh` is only a pass-through
 that loads `tools/bazel/common.bazelrc` with that canonical registry; it pins
 no registry snapshot or module version. For local validation run
