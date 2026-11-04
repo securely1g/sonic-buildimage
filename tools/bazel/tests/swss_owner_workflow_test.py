@@ -25,6 +25,17 @@ def calls(path, function):
 
 
 class SwssOwnerWorkflowTest(unittest.TestCase):
+    def test_filtered_workflows_include_local_downloader_input(self):
+        filenames = {filename for filename, _job in JOBS} | {"bazel-libteam.yml"}
+        for filename in filenames:
+            # PyYAML's YAML 1.1 loader reads GitHub's `on` key as True.
+            triggers = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())[True]
+            for event in ("pull_request", "push"):
+                paths = (triggers.get(event) or {}).get("paths")
+                if paths is not None:
+                    with self.subTest(filename=filename, event=event):
+                        self.assertIn("tools/bazel/debian_mirrors.cfg", paths)
+
     def test_swss_evidence_does_not_run_before_the_build_starts(self):
         steps = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["archive"]["steps"]
         build = next(s for s in steps if s.get("id") == "swss_layer_build")
