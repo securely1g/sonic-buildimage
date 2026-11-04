@@ -225,6 +225,38 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
                                  prefix + [f"/source/tools/bazel/ci/{stem}_loaded.py", "--artifacts", str(artifacts)])
 
+    def test_gnmi_profiles_have_fixed_flags_for_existing_four_phases(self):
+        root, artifacts = Path("/source"), Path("/evidence")
+        prefix = [sys.executable, "-B"]
+        for image, mode in (("gnmi", "enabled"), ("gnmi-no-dialout", "disabled")):
+            for phase in ("build", "validate", "incremental"):
+                expected = prefix + ["/source/tools/bazel/ci/gnmi_image.py", phase,
+                                      "--artifacts", str(artifacts), "--dialout", mode]
+                if phase != "validate":
+                    expected += ["--bazel", "/source/tools/bazel/ci/review_bazel.sh"]
+                self.assertEqual(worker.phase_command(image, phase, root, artifacts), expected)
+            self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
+                             prefix + ["/source/tools/bazel/ci/gnmi_loaded.py", "--artifacts", str(artifacts)])
+        with self.assertRaises(ValueError):
+            worker.phase_command("gnmi --dialout other", "build", root, artifacts)
+
+    def test_gnmi_publication_preserves_and_checks_selected_profile(self):
+        for image, enabled in (("gnmi", True), ("gnmi-no-dialout", False)):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "build-receipt.json"
+                receipt = {"status": "built", "revision": "a" * 40, "architecture": "amd64",
+                           "dialout_enabled": enabled, "artifacts": {}}
+                path.write_text(json.dumps(receipt))
+                worker.publish(SimpleNamespace(artifacts=root, image=image))
+                public = json.loads((root / "public/public-receipt.json").read_text())
+                self.assertIs(public["dialout_enabled"], enabled)
+                for bad in (not enabled, None, int(enabled)):
+                    receipt["dialout_enabled"] = bad
+                    path.write_text(json.dumps(receipt))
+                    with self.assertRaises(ValueError):
+                        worker.publish(SimpleNamespace(artifacts=root, image=image))
+
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")

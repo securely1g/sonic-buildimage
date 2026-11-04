@@ -22,13 +22,16 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
 WRAPPERS["syncd"] = "review_bazel.sh"
 WRAPPERS["gearbox"] = "review_bazel.sh"
 WRAPPERS["dash-engine"] = "review_bazel.sh"
+WRAPPERS["gnmi"] = "review_bazel.sh"
+WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
+GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
 MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
 MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
 SNAPSHOT_FALLBACKS = {
@@ -272,6 +275,8 @@ def phase_command(image, phase, workspace, artifacts):
                          "--unchanged-target", "@scapy//:wheel", "--output", str(artifacts / "rebuild")]
     command = prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_image.py"), phase,
                         "--artifacts", str(artifacts)]
+    if image in GNMI_PROFILES:
+        command += ["--dialout", GNMI_PROFILES[image]]
     return command + (["--bazel", wrapper] if phase != "validate" else [])
 
 
@@ -441,7 +446,10 @@ def publish(args):
     receipt_path = source / "build-receipt.json"
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
-        public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "artifacts") if k in receipt}
+        if getattr(args, "image", None) in GNMI_PROFILES:
+            require(receipt.get("dialout_enabled") is (GNMI_PROFILES[args.image] == "enabled"),
+                    "gNMI receipt differs from the selected fixed dialout profile")
+        public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "dialout_enabled", "artifacts") if k in receipt}
         safe_json(public)
         (destination / "public-receipt.json").write_text(json.dumps(public, indent=2) + "\n")
         for name, item in receipt.get("artifacts", {}).items():

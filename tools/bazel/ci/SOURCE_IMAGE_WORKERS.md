@@ -61,7 +61,7 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox` or `dash-engine`, a `source_worker` affinity label and a full `source_revision` SHA.
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi` or `gnmi-no-dialout`, a `source_worker` affinity label and a full `source_revision` SHA.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
@@ -77,7 +77,7 @@ static validation, incremental edit/restore and loaded-container checks.
 The disposable slave installs only missing archive/debug execution packages
 (`libarchive-tools`, GDB and binutils), checks their tools before building and
 retains the installed package versions. These do not enter the image layers.
-Sysmgr, OTEL, Syncd, Gearbox and DASH engine use `review_bazel.sh` with each workflow's immutable catalog;
+Sysmgr, OTEL, Syncd, Gearbox, DASH engine and both gNMI profiles use `review_bazel.sh` with each workflow's immutable catalog;
 the other three use their compatibility entrypoint and verify any workflow catalog
 agrees. No module or source-owner override is added. Selected Rust modules use
 `rules_rs` with tracked Cargo inputs; their normal module extension prepares
@@ -145,3 +145,14 @@ the file; Bazel continues enforcing the original SHA256. Other snapshots,
 package versions and architectures are unchanged. Public Syncd/Gearbox policy
 validation recognizes only the exact checked-in `DEBIAN_FRONTEND=noninteractive`
 constant and retains the policy's original bytes and hash.
+
+The two fixed gNMI selectors use the existing `gnmi_image.py` driver:
+`gnmi` always passes `--dialout enabled`, and `gnmi-no-dialout` always passes
+`--dialout disabled`. Each job retains its own artifact directory and complete
+build/static/incremental/loaded receipts. Static and incremental checks read the
+built profile from that receipt; the unchanged `gnmi_loaded.py` does the same.
+Public publication rejects a receipt whose dialout setting differs from the
+selected fixed profile. Both profiles are required for changed-input gNMI
+acceptance; a pass for one does not establish the other. They can use separate
+idle workers with the same immutable source/catalog. Neither selector adds a
+capability, command input, source override or new executor path.
