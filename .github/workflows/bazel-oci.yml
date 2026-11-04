@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated source-image worker task
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout]
+        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
@@ -43,7 +43,7 @@ env:
 jobs:
   source_image_inputs:
     name: Fetch pinned source-image downloads
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -83,7 +83,7 @@ jobs:
   source_image:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
-    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout"]'), inputs.source_image)
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image)
     runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
     timeout-minutes: 360
     permissions:
@@ -105,6 +105,13 @@ jobs:
       - name: Validate the fixed image selection
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py selection \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Verify Teamd kernel prerequisites without host changes
+        id: teamd_kernel
+        if: inputs.source_image == 'teamd'
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py kernel-preflight \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Checkout the exact reviewed source
@@ -164,7 +171,7 @@ jobs:
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Prepare declared artifacts and public evidence
         id: public_artifacts
-        if: always() && steps.prepare.outcome != 'skipped'
+        if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py publish \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
@@ -342,7 +349,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -550,7 +557,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1012,6 +1019,7 @@ jobs:
     if: >-
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
+      github.head_ref != 'codex/teamd-source-worker' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
