@@ -25,9 +25,9 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
-    def test_normal_ci_has_no_branch_specific_exceptions(self):
+    def test_normal_ci_preserves_defaults_outside_reviewed_control(self):
         workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
-        self.assertNotIn('SOURCE_ONLY_NO_DEBS', workflow)
+        self.assertEqual(len(re.findall(r'^          SOURCE_ONLY_NO_DEBS:', workflow, re.MULTILINE)), 2)
         for name in ('Check shared Make rules with unrelated container targets',
                      'Check Make handoff and archive validation'):
             step = workflow.split('- name: ' + name, 1)[1].split('\n      - name:', 1)[0]
@@ -38,6 +38,9 @@ class ImageWorkerTest(unittest.TestCase):
             ('pull_request', 'codex/teamd-source-worker', False, 'none', True, False),
             ('pull_request', 'codex/source-image-worker-dispatch', True, 'none', True, True),
             ('pull_request', 'codex/image-environment', True, 'none', True, True),
+            ('pull_request', 'codex/base-review-source-inputs', True, 'none', True, False),
+            ('pull_request', 'codex/base-review-source-inputs', False, 'none', True, False),
+            ('pull_request', 'codex/base-review-source-inputs-suffix', True, 'none', True, True),
             ('pull_request', 'ordinary', True, 'none', True, True),
             ('pull_request', 'ordinary', False, 'none', True, False),
             ('push', '', True, 'none', True, True),
@@ -47,8 +50,8 @@ class ImageWorkerTest(unittest.TestCase):
             ('workflow_dispatch', '', True, 'preflight', False, False),
         ):
             github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
-                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
-                    head=SimpleNamespace(repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
+                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(number=999,
+                    head=SimpleNamespace(ref=branch, repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
             inputs = SimpleNamespace(source_image=image, skip_vs=skip)
             def evaluate(expression):
                 expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
