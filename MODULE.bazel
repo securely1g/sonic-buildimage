@@ -71,6 +71,7 @@ bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
 bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_platform_common")
 bazel_dep(name = "sonic-snmpagent", version = "2.1.0", repo_name = "sonic_snmpagent")
 bazel_dep(name = "sonic-swss-common", version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-wpa-supplicant", version = "2.9.0.sonic.1", repo_name = "sonic_wpa_supplicant")
 bazel_dep(name = "scapy", version = "2.6.1.sonic.1")
 bazel_dep(name = "hsflowd", version = "2.1.26.sonic.1")
 bazel_dep(name = "sflowtool", version = "6.11.0.sonic.2")
@@ -378,6 +379,7 @@ source_modules(
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
+        "@sonic_wpa_supplicant//:MODULE.bazel": "sonic-wpa-supplicant",
         "@scapy//:MODULE.bazel": "scapy",
         "@hsflowd//:MODULE.bazel": "hsflowd",
         "@sflowtool//:MODULE.bazel": "sflowtool",
@@ -528,4 +530,13 @@ use_repo(apt, "dash_ha_debian", "dash_ha_debug_debian", "dash_ha_test_debian")
 apt_inputs(
     name = "dash_ha_apt_inputs",
     lock = "//dockers/docker-dash-ha/bazel:apt.lock.json",
+)
+
+# WPA supplies source runtime and symbols; pinned distro inputs remain external.
+apt.import_lock(lock = "//dockers/docker-macsec/bazel:apt.lock.json")
+use_repo(apt, "macsec_debian", "macsec_debug_debian", "macsec_test_debian")
+
+apt_inputs(
+    name = "macsec_apt_inputs",
+    lock = "//dockers/docker-macsec/bazel:apt.lock.json",
 )
