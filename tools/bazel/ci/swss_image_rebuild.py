@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe an installed SWSS source-file edit through its declared repository patch."""
+"""Probe an installed SWSS source edit through the consuming OCI image."""
 
 import argparse
 import json
@@ -18,7 +18,7 @@ PROBE = b'''\ndiff --git a/fpmsyncd/bgp_eoiu_marker.py b/fpmsyncd/bgp_eoiu_marke
 @@ -1,2 +1,3 @@
  #!/usr/bin/env python
 +# SWSS source-TAR invalidation probe; removed after this check.
- 
+\x20
 '''
 
 
@@ -27,8 +27,8 @@ def main():
     parser.add_argument("--bazel", required=True)
     parser.add_argument("--bazel-arg", action="append", default=[])
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--runtime-target", default="@sonic_swss//dist:swss_pkg")
-    parser.add_argument("--symbols-target", default="@sonic_swss//dist:swss_pkg.debug_symbols")
+    parser.add_argument("--runtime-target", required=True)
+    parser.add_argument("--symbols-target", required=True)
     parser.add_argument("--additional-runtime-target", action="append", default=[])
     parser.add_argument("--unchanged-target", action="append", default=[])
     args = parser.parse_args()
