@@ -72,6 +72,9 @@ def require(value, message):
 def selection(image, revision):
     require(image in DRIVERS, "Unknown source image")
     require(re.fullmatch(r"[0-9a-f]{40}", revision), "Source revision must be a full lowercase Git SHA")
+    catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
+    require(not catalog or re.fullmatch(r"[0-9a-f]{40}", catalog),
+            "Registry revision must be a full lowercase Git SHA paired with the source")
 
 
 def run(argv, **kwargs):
@@ -215,7 +218,9 @@ def prepare_validation_tools(artifacts):
          "scope": "disposable_worker_execution_tools"}, indent=2) + "\n")
 
 
-def catalog_for(image, workspace):
+def catalog_for(image, workspace, registry_revision=""):
+    require(not registry_revision or re.fullmatch(r"[0-9a-f]{40}", registry_revision),
+            "Registry revision must be a full lowercase Git SHA")
     workflow = (workspace / ".github/workflows/bazel-oci.yml").read_text()
     catalogs = sorted(set(re.findall(r"^ +SONIC_BAZEL_REGISTRY_REVISION: ([0-9a-f]{40})$", workflow, re.M)))
     wrapper = WRAPPERS[image]
@@ -226,9 +231,11 @@ def catalog_for(image, workspace):
         selected = re.findall(r"^export SONIC_BAZEL_REGISTRY_REVISION=([0-9a-f]{40})$", text, re.M)
         require(len(selected) == 1 and (not catalogs or selected == catalogs),
                 "Workflow and compatibility entrypoint catalogs differ")
+        require(not registry_revision or registry_revision == selected[0],
+                "Compatibility entrypoint cannot override its pinned catalog")
         return selected[0]
     require(len(catalogs) == 1, "Expected one immutable global workflow catalog")
-    return catalogs[0]
+    return registry_revision or catalogs[0]
 
 
 def memory_snapshot():
@@ -315,7 +322,7 @@ def prepare(args):
     for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
-    catalog = catalog_for(args.image, workspace)
+    catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
     cache = Path("/bazel_cache/source-images") / runner
@@ -392,6 +399,9 @@ def state_for(args):
     state = json.loads((args.artifacts / "worker-private.json").read_text())
     require(state["image"] == args.image and state["revision"] == args.revision and state["workspace"] == str(args.workspace),
             "Worker preparation does not match this selection")
+    catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
+    require(not catalog or state["environment"]["SONIC_BAZEL_REGISTRY_REVISION"] == catalog,
+            "Prepared catalog differs from the requested source/catalog pair")
     return state
 
 

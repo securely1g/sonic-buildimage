@@ -15,6 +15,10 @@ on:
         description: Reviewed 40-character image source or fixed registry commit
         type: string
         default: ''
+      registry_revision:
+        description: Optional immutable registry paired with source_revision (image mode only)
+        type: string
+        default: ''
       registry_consumer:
         description: Fixed ordinary registry consumer (registry-native mode only)
         type: choice
@@ -184,6 +188,7 @@ jobs:
     env:
       SELECTED_IMAGE: ${{ inputs.source_image }}
       SOURCE_REVISION: ${{ inputs.source_revision }}
+      SOURCE_REGISTRY_REVISION: ${{ inputs.registry_revision }}
       SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
     steps:
       - name: Checkout reviewed dispatcher
@@ -309,23 +314,49 @@ jobs:
       fail-fast: false
       matrix:
         worker: [sonic-slave-lgh114-1, sonic-slave-lgh114-2, sonic-slave-lgh114-3, sonic-slave-lgh114-4]
+    env:
+      PREFLIGHT_CONTROL: source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker }}
+      PREFLIGHT_RECEIPT: ${{ runner.temp }}/source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker }}.json
     steps:
+      - name: Require fresh preflight paths
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          run_id, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+          worker = os.environ["EXPECTED_WORKER"]
+          if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) or not re.fullmatch(r"sonic-slave-lgh114-[1-4]", worker):
+              raise SystemExit("Unexpected preflight run or worker identity")
+          name = f"source-worker-preflight-{run_id}-{attempt}-{worker}"
+          control = Path(os.environ["GITHUB_WORKSPACE"]) / os.environ["PREFLIGHT_CONTROL"]
+          receipt = Path(os.environ["PREFLIGHT_RECEIPT"])
+          if control.name != name or control.parent != Path(os.environ["GITHUB_WORKSPACE"]) or receipt != Path(os.environ["RUNNER_TEMP"]) / (name + ".json"):
+              raise SystemExit("Preflight paths do not match this run")
+          if any(path.exists() or path.is_symlink() for path in (control, receipt)):
+              raise SystemExit("Preflight paths already exist; preserve the previous work")
+          PY
+        env:
+          EXPECTED_WORKER: ${{ matrix.worker }}
       - name: Checkout dispatcher
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: ${{ env.PREFLIGHT_CONTROL }}
+          clean: false
           persist-credentials: false
       - name: Measure this worker's resources and namespace capabilities
+        id: measure
         env:
           EXPECTED_WORKER: ${{ matrix.worker }}
         run: |
-          python3 -B tools/bazel/ci/source_worker_preflight.py \
-            --worker "$EXPECTED_WORKER" --output artifacts/source-worker/preflight.json
+          python3 -B "$GITHUB_WORKSPACE/$PREFLIGHT_CONTROL/tools/bazel/ci/source_worker_preflight.py" \
+            --worker "$EXPECTED_WORKER" --output "$PREFLIGHT_RECEIPT"
       - name: Retain measured resource evidence
-        if: always()
+        if: always() && (steps.measure.outcome == 'success' || steps.measure.outcome == 'failure')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: source-worker-${{ matrix.worker }}-${{ github.run_id }}
-          path: artifacts/source-worker/preflight.json
+          name: source-worker-${{ matrix.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PREFLIGHT_RECEIPT }}
           if-no-files-found: error
           retention-days: 14
 

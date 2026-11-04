@@ -3,8 +3,10 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -17,6 +19,90 @@ SPEC.loader.exec_module(worker)
 
 
 class WorkerPreflightTest(unittest.TestCase):
+    def preflight_job(self):
+        import yaml
+        return yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["source_worker_preflight"]
+
+    def test_preflight_uses_a_fresh_checkout_and_receipt_without_touching_previous_work(self):
+        job = self.preflight_job()
+        steps = {step["name"]: step for step in job["steps"]}
+        checkout = steps["Checkout dispatcher"]["with"]
+        self.assertEqual(checkout["path"], "${{ env.PREFLIGHT_CONTROL }}")
+        self.assertIs(checkout["clean"], False)
+        self.assertIs(checkout["persist-credentials"], False)
+        guard = steps["Require fresh preflight paths"]["run"]
+        measure = steps["Measure this worker's resources and namespace capabilities"]["run"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, temporary = root / "workspace", root / "temporary"
+            workspace.mkdir(); temporary.mkdir()
+            old_checkout = workspace / "source"; old_checkout.mkdir()
+            old_output = old_checkout / "retained-output"; old_output.write_text("previous build")
+            old_receipt = workspace / "artifacts/source-worker/preflight.json"
+            old_receipt.parent.mkdir(parents=True); old_receipt.write_text("previous receipt")
+            name = "source-worker-preflight-123-2-sonic-slave-lgh114-1"
+            receipt = temporary / (name + ".json")
+            environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temporary),
+                           "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "EXPECTED_WORKER": worker.WORKERS[0],
+                           "PREFLIGHT_CONTROL": name, "PREFLIGHT_RECEIPT": str(receipt)}
+            subprocess.run(["bash", "-e", "-c", guard], env=environment, check=True, capture_output=True)
+            self.assertFalse((workspace / name).exists())
+            self.assertFalse(receipt.exists())
+            # Execute the actual workflow command against a harmless checkout fixture.
+            helper = workspace / name / "tools/bazel/ci/source_worker_preflight.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_text("import json,sys\nfrom pathlib import Path\n"
+                              "assert sys.argv[1:3] == ['--worker','sonic-slave-lgh114-1']\n"
+                              "assert sys.argv[3] == '--output'\n"
+                              "Path(sys.argv[4]).write_text(json.dumps({'status':'fixture'}))\n")
+            subprocess.run(["bash", "-e", "-c", measure], env=environment, check=True, capture_output=True)
+            self.assertEqual(json.loads(receipt.read_text()), {"status": "fixture"})
+            self.assertEqual(old_output.read_text(), "previous build")
+            self.assertEqual(old_receipt.read_text(), "previous receipt")
+            self.assertEqual(steps["Retain measured resource evidence"]["with"]["path"], "${{ env.PREFLIGHT_RECEIPT }}")
+
+    def test_preflight_refuses_existing_or_misdirected_paths_without_cleaning_them(self):
+        script = self.preflight_job()["steps"][0]["run"]
+        for case in ("existing checkout", "existing receipt", "linked checkout", "wrong path", "wrong worker", "wrong attempt"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); workspace = root / "workspace"; workspace.mkdir()
+                temporary = root / "temporary"; temporary.mkdir()
+                name = "source-worker-preflight-123-2-sonic-slave-lgh114-1"
+                control, receipt = workspace / name, temporary / (name + ".json")
+                keep = workspace / "existing-output"; keep.write_text("keep")
+                environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temporary),
+                               "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "EXPECTED_WORKER": worker.WORKERS[0],
+                               "PREFLIGHT_CONTROL": name, "PREFLIGHT_RECEIPT": str(receipt)}
+                if case == "existing checkout": control.mkdir(); (control / "keep").write_text("keep")
+                if case == "existing receipt": receipt.write_text("keep")
+                if case == "linked checkout": control.symlink_to(workspace / "missing")
+                if case == "wrong path": environment["PREFLIGHT_CONTROL"] = "../" + name
+                if case == "wrong worker": environment["EXPECTED_WORKER"] = "sonic-slave-lgh114-1-extra"
+                if case == "wrong attempt": environment["GITHUB_RUN_ATTEMPT"] = "../2"
+                result = subprocess.run(["bash", "-e", "-c", script], env=environment, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(keep.read_text(), "keep")
+                if case == "existing checkout": self.assertEqual((control / "keep").read_text(), "keep")
+                if case == "existing receipt": self.assertEqual(receipt.read_text(), "keep")
+                if case == "linked checkout": self.assertTrue(control.is_symlink())
+
+    def test_preflight_routes_only_existing_four_workers_and_uploads_only_new_measurement(self):
+        import yaml
+        from tools.bazel.tests.registry_native_worker_test import condition
+        flow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        self.assertEqual([name for name, job in flow["jobs"].items()
+                          if condition(str(job.get("if", "true")), mode="preflight")], ["source_worker_preflight"])
+        job = flow["jobs"]["source_worker_preflight"]
+        self.assertEqual(job["strategy"]["matrix"]["worker"], list(worker.WORKERS))
+        self.assertEqual(job["runs-on"], ["sonic-slave-container-dpool", "${{ matrix.worker }}"])
+        upload = job["steps"][-1]
+        self.assertIn("github.run_attempt", upload["with"]["name"])
+        expression = upload["if"].replace("&&", " and ").replace("||", " or ")
+        for outcome, expected in (("success", True), ("failure", True), ("skipped", False), ("", False)):
+            actual = eval(expression, {"__builtins__": {}}, {"always": lambda: True,
+                "steps": SimpleNamespace(measure=SimpleNamespace(outcome=outcome))})
+            self.assertEqual(actual, expected)
+
     def test_real_cgroup_cpu_format(self):
         self.assertEqual(worker.cpu_limit("600000 100000\n"), 6)
         self.assertEqual(worker.cpu_limit("250000 100000\n"), 2.5)

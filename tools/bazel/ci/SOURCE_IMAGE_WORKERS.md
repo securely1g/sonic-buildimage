@@ -22,9 +22,14 @@ gh workflow run bazel-oci.yml --repo securely1g/sonic-buildimage \
   -f source_image=preflight -f skip_vs=true
 ```
 
-Each job uploads its measured `preflight.json`, including failures. The job log
-prints the same safe receipt; no environment dump or host credentials are
-included. Affinity labels are managed by the runner operator, not this job.
+Each preflight uses a new checkout directory named by run, attempt and worker,
+with checkout cleaning disabled. It refuses an existing directory or receipt
+instead of removing previous work. The receipt lives in the runner's temporary
+directory under the same unique name; previous source checkouts, outputs and
+caches are untouched. A successful or failed measurement uploads that new
+receipt, while a path-admission failure uploads no old receipt. The job log
+prints the same safe data; no environment dump or host credentials are included.
+Affinity labels are managed by the runner operator, not this job.
 
 The initial [four-worker measurement](https://github.com/securely1g/sonic-buildimage/actions/runs/41693647811)
 found 4 CPUs and 10 GiB per worker. All isolation and tool checks passed, but
@@ -63,6 +68,13 @@ existing native launchers do; certificate verification remains enabled.
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
 `otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `framework`,
 a `source_worker` affinity label and a full `source_revision` SHA.
+An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
+with that source. Leaving it blank retains the source workflow's existing
+catalog selection. The `review_bazel.sh` entrypoint accepts the explicit
+catalog and records it in `worker.json`; later phases reject a catalog that
+differs from preparation. Compatibility entrypoints keep their fixed pin and
+reject an explicit different catalog. No module, lockfile or source is edited
+by this selection.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
@@ -78,7 +90,7 @@ static validation, incremental edit/restore and loaded-container checks.
 The disposable slave installs only missing archive/debug execution packages
 (`libarchive-tools`, GDB and binutils), checks their tools before building and
 retains the installed package versions. These do not enter the image layers.
-Sysmgr, OTEL, Syncd, Gearbox, DASH engine and both gNMI profiles use `review_bazel.sh` with each workflow's immutable catalog;
+Sysmgr, OTEL, Syncd, Gearbox, DASH engine, Framework and both gNMI profiles use `review_bazel.sh` with the explicitly selected catalog or each workflow's immutable default;
 the other three use their compatibility entrypoint and verify any workflow catalog
 agrees. No module or source-owner override is added. Selected Rust modules use
 `rules_rs` with tracked Cargo inputs; their normal module extension prepares

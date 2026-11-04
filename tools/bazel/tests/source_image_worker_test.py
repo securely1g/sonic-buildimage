@@ -25,6 +25,49 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def test_optional_catalog_requires_an_immutable_source_pair(self):
+        for catalog in ("", "b" * 40):
+            with patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": catalog}):
+                worker.selection("dash-engine", "a" * 40)
+                with self.assertRaises(ValueError): worker.selection("dash-engine", "main")
+        for catalog in ("main", "B" * 40, "b" * 39, "b" * 40 + ";id"):
+            with self.subTest(catalog=catalog), patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": catalog}), \
+                    self.assertRaises(ValueError):
+                worker.selection("dash-engine", "a" * 40)
+
+    def test_explicit_catalog_uses_review_entrypoint_without_changing_blank_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / "tools/bazel/ci").mkdir(parents=True)
+            path = root / ".github/workflows/bazel-oci.yml"
+            path.write_text("env:\n  BAZEL: tools/bazel/ci/review_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
+            self.assertEqual(worker.catalog_for("dash-engine", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("dash-engine", root, "b" * 40), "b" * 40)
+            for catalog in ("main", "B" * 40, "b" * 39):
+                with self.subTest(catalog=catalog), self.assertRaises(ValueError):
+                    worker.catalog_for("dash-engine", root, catalog)
+            path.write_text(path.read_text().replace("review_bazel.sh", "libteam_draft_bazel.sh"))
+            (root / "tools/bazel/ci/libteam_draft_bazel.sh").write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
+            self.assertEqual(worker.catalog_for("dash-ha", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("dash-ha", root, "a" * 40), "a" * 40)
+            with self.assertRaisesRegex(ValueError, "cannot override"):
+                worker.catalog_for("dash-ha", root, "b" * 40)
+
+    def test_changed_explicit_catalog_is_rejected_before_a_phase_executes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(image="dash-engine", revision="a" * 40, workspace=Path("/source"),
+                                   artifacts=Path(directory), phase="build")
+            state = {"image": args.image, "revision": args.revision, "workspace": str(args.workspace),
+                     "environment": {"SONIC_BAZEL_REGISTRY_REVISION": "b" * 40}}
+            (args.artifacts / "worker-private.json").write_text(json.dumps(state))
+            with patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": "b" * 40}):
+                self.assertEqual(worker.state_for(args), state)
+            with patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": "c" * 40}), \
+                    patch.object(worker.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "Prepared catalog"):
+                worker.execute_phase(args)
+            run.assert_not_called()
+
     def test_syncd_tap_requires_exact_device_and_private_namespace_proof(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
