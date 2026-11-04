@@ -22,7 +22,7 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "mgmt-framework": "mgmt_framework"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -31,6 +31,7 @@ WRAPPERS["gearbox"] = "review_bazel.sh"
 WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
+WRAPPERS["mgmt-framework"] = "review_bazel.sh"
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
 MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
 MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
@@ -449,7 +450,7 @@ def publish(args):
         if getattr(args, "image", None) in GNMI_PROFILES:
             require(receipt.get("dialout_enabled") is (GNMI_PROFILES[args.image] == "enabled"),
                     "gNMI receipt differs from the selected fixed dialout profile")
-        public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "dialout_enabled", "artifacts") if k in receipt}
+        public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "dialout_enabled", "review_registry_revision", "artifacts") if k in receipt}
         safe_json(public)
         (destination / "public-receipt.json").write_text(json.dumps(public, indent=2) + "\n")
         for name, item in receipt.get("artifacts", {}).items():
@@ -472,6 +473,8 @@ def publish(args):
             else:
                 os.link(path, target)
     names = ["worker.json", "action-audit.json", "validation.json", "incremental.json", "rebuild/rebuild.json"]
+    if getattr(args, "image", None) == "mgmt-framework":
+        names.append("loaded-validation.json")
     names += [p.name for pattern in ("worker-*.json", "*.validation.json", "*.runtime.json") for p in source.glob(pattern)
               if p.name != "worker-private.json"]
     for name in sorted(set(names)):

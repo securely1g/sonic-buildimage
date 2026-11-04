@@ -214,7 +214,7 @@ class ImageWorkerTest(unittest.TestCase):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
         wrapper = "/source/tools/bazel/ci/review_bazel.sh"
-        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine")):
+        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine"), ("mgmt-framework", "mgmt_framework")):
             with self.subTest(image=image):
                 driver = f"/source/tools/bazel/ci/{stem}_image.py"
                 for phase in ("build", "validate", "incremental"):
@@ -257,6 +257,23 @@ class ImageWorkerTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         worker.publish(SimpleNamespace(artifacts=root, image=image))
 
+    def test_framework_publication_retains_catalog_and_loaded_service_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = {"status": "built", "revision": "a" * 40,
+                       "review_registry_revision": "b" * 40, "artifacts": {}}
+            (root / "build-receipt.json").write_text(json.dumps(receipt))
+            loaded = {"status": "passed", "revision": "a" * 40, "images": {}}
+            (root / "loaded-validation.json").write_text(json.dumps(loaded))
+            args = SimpleNamespace(artifacts=root, image="mgmt-framework")
+            worker.publish(args)
+            public = json.loads((root / "public/public-receipt.json").read_text())
+            self.assertEqual(public["review_registry_revision"], "b" * 40)
+            self.assertEqual(json.loads((root / "public/loaded-validation.json").read_text()), loaded)
+            (root / "loaded-validation.json").write_text('{"environment":{"private":"unpublishable"}}')
+            with self.assertRaises(ValueError):
+                worker.publish(args)
+
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
@@ -278,6 +295,7 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(worker.catalog_for("syncd", root), "a" * 40)
             self.assertEqual(worker.catalog_for("gearbox", root), "a" * 40)
             self.assertEqual(worker.catalog_for("dash-engine", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("mgmt-framework", root), "a" * 40)
             workflow.write_text("env:\n  BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
             wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
