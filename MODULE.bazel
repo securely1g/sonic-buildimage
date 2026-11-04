@@ -64,7 +64,7 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-706cc3d1f6182dea18deed36a2ddb0fbcf1a59fc",
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
@@ -378,6 +378,7 @@ source_modules(
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
+        "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
         "@sonic_wpa_supplicant//:MODULE.bazel": "sonic-wpa-supplicant",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
@@ -397,7 +398,7 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-706cc3d1f6182dea18deed36a2ddb0fbcf1a59fc",
 )
 
 single_version_override(
@@ -670,4 +671,21 @@ go_patches.module_override(
 single_version_override(
     module_name = "sonic-mgmt-common",
     version = "1.0.0-20afb37991752fb83f2f79cc3c9c3377636d34ce",
+)
+
+# P4RT retains its source-owned Bazel 6 build. The explicit preparation step
+# verifies and stages its runtime/debug TARs and source contracts here.
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+
+local_repository(
+    name = "p4rt_owner_payload",
+    path = ".bazel-inputs/p4rt-owner",
+)
+
+apt.import_lock(lock = "//dockers/docker-sonic-p4rt/bazel:apt.lock.json")
+use_repo(apt, "p4rt_debian", "p4rt_debug_debian", "p4rt_test_debian")
+
+apt_inputs(
+    name = "p4rt_apt_inputs",
+    lock = "//dockers/docker-sonic-p4rt/bazel:apt.lock.json",
 )
