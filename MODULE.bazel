@@ -13,6 +13,7 @@ bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
 bazel_dep(name = "googletest", version = "1.16.0")
+# Match the shared gzip toolchain source identity checked by prepare_pigz.py.
 bazel_dep(name = "pigz", version = "2.8.bcr.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 
@@ -207,6 +208,15 @@ apt_inputs = use_repo_rule("@sonic_build_infra//apt:inputs_repository.bzl", "apt
 apt_inputs(
     name = "orchagent_apt_inputs",
     lock = "//dockers/docker-orchagent/bazel:apt.lock.json",
+)
+
+# FRR's OCI layer imports distro runtime/debug inputs, never its source DEBs.
+apt.import_lock(lock = "//dockers/docker-fpm-frr/bazel:apt.lock.json")
+use_repo(apt, "frr_image_debian", "frr_image_debug_debian", "frr_image_test_debian")
+
+apt_inputs(
+    name = "frr_image_apt_inputs",
+    lock = "//dockers/docker-fpm-frr/bazel:apt.lock.json",
 )
 
 # Shared SWSS base adds only its external runtime closure; project payloads
