@@ -6,6 +6,7 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/go/**'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
@@ -15,6 +16,7 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/go/**'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
@@ -60,8 +62,8 @@ jobs:
           registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
-          # The standalone module and image root use the same maintained registry.
-          (cd ../.. && bazel cquery --lockfile_mode=update \
+          # The standalone module uses main; the image root selects its Draft catalog explicitly.
+          (cd ../.. && tools/bazel/go/bazel-with-draft-registry cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt
           uname -m > artifacts/execution-machine.txt

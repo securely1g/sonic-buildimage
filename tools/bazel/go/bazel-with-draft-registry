@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Select the reviewed registry only for buildimage Draft validation."""
+
+import os
+from pathlib import Path
+import sys
+
+
+root = Path(__file__).resolve().parents[3]
+workspace = Path.cwd().resolve()
+while workspace != workspace.parent and not (workspace / "MODULE.bazel").is_file():
+    workspace = workspace.parent
+
+args = sys.argv[1:]
+if workspace == root and args != ["--version"]:
+    args = [
+        "--noworkspace_rc",
+        "--bazelrc=" + str(Path(__file__).resolve().with_name("draft.bazelrc")),
+        *args,
+    ]
+
+bazel = os.environ.get("GO_CACHE_BAZEL", "bazel")
+os.execvp(bazel, [bazel, *args])

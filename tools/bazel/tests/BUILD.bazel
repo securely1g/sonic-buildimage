@@ -22,6 +22,7 @@ sh_test(
     name = "swss_common_rust_test",
     srcs = ["@sonic_swss_common//tools/bazel/runtime:run_with_runtime.py"],
     args = [
+        "$(rootpath @patchelf//:patchelf)",
         "$(rootpath @sonic_swss_common//tools/bazel/runtime:test_runtime)",
         "-",
     ] + select({
@@ -29,6 +30,7 @@ sh_test(
         "//conditions:default": ["disabled"],
     }) + ["$(rootpath @sonic_swss//crates/countersyncd:common_rust_test)"],
     data = [
+        "@patchelf//:patchelf",
         "@sonic_swss//crates/countersyncd:common_rust_test",
         "@sonic_swss_common//tools/bazel/runtime:test_runtime",
     ],
