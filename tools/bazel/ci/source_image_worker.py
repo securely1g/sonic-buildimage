@@ -287,6 +287,21 @@ def phase_command(image, phase, workspace, artifacts):
     return command + (["--bazel", wrapper] if phase != "validate" else [])
 
 
+def temporary_directory():
+    root = Path(os.environ["RUNNER_TEMP"]).resolve()
+    name = os.environ.get("SOURCE_WORKER_SCRATCH", "")
+    if not name:
+        return root
+    run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    runner = os.environ.get("RUNNER_NAME", "")
+    require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) and
+            re.fullmatch(r"sonic-slave-lgh114-[1-4]", runner), "Invalid worker scratch identity")
+    require(name == f"source-image-scratch-{run_id}-{attempt}-{runner}", "Worker scratch path differs from this run")
+    path = root / name
+    require(not path.is_symlink() and path.resolve() == path, "Worker scratch path must not traverse symlinks")
+    return path
+
+
 def prepare(args):
     workspace, artifacts = args.workspace, args.artifacts
     preflight = measure(os.environ.get("RUNNER_NAME", ""))
@@ -329,8 +344,9 @@ def prepare(args):
     require(cache.resolve() == cache, "Cache path must not traverse symlinks")
     for name in ("repository", "disk", "bazelisk", args.image + "/output-base"):
         (cache / name).mkdir(parents=True, exist_ok=True)
-    temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+    temporary = temporary_directory()
     require(temporary.is_relative_to("/actions/_work"), "Expected a worker-private temporary directory")
+    temporary.mkdir(parents=True, exist_ok=True)
     distdirs, download_receipt = prepare_source_downloads(temporary / "source-image-inputs", cache)
     (artifacts / "worker-source-downloads.json").write_text(json.dumps(download_receipt, indent=2) + "\n")
     launch = temporary / "source-image-bazel"
@@ -524,7 +540,7 @@ def stop(args):
             time.sleep(0.5)
         require(not process.exists(), "Private Docker has not stopped; retain its data")
     root = Path(state["docker_root"])
-    temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+    temporary = temporary_directory()
     require(root.parent == temporary and temporary.is_relative_to("/actions/_work")
             and re.fullmatch(r"source-image-docker-[0-9]+-[0-9]+", root.name), "Unexpected private Docker data path")
     # Delete only this stopped job's Docker data, never its persistent Bazel caches.

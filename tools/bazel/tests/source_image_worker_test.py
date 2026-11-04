@@ -25,6 +25,107 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def native_job(self):
+        import yaml
+        return yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["source_image"]
+
+    def native_paths(self, root):
+        workspace, temporary = root / "workspace", root / "temporary"
+        workspace.mkdir(); temporary.mkdir()
+        environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temporary),
+                       "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_NAME": "sonic-slave-lgh114-1",
+                       "EXPECTED_WORKER": "sonic-slave-lgh114-1", "SELECTED_IMAGE": "dash-engine",
+                       "SOURCE_REVISION": "a" * 40}
+        for kind in ("CONTROL", "SOURCE", "SCRATCH"):
+            environment["SOURCE_WORKER_" + kind] = "source-image-" + kind.lower() + "-123-2-sonic-slave-lgh114-1"
+        return workspace, temporary, environment
+
+    def test_native_workflow_preserves_old_work_and_binds_every_driver_invocation(self):
+        job = self.native_job()
+        steps = {step["name"]: step for step in job["steps"]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, temporary, environment = self.native_paths(root)
+            old = [workspace / "control/keep", workspace / "source/target/output",
+                   workspace / "source/.bazelrc.user", temporary / "source-image-artifacts/receipt.json",
+                   temporary / "source-image-inputs/input.tar.gz"]
+            for path in old:
+                path.parent.mkdir(parents=True, exist_ok=True); path.write_text("retained")
+            subprocess.run(["bash", "-e", "-c", steps["Require fresh native worker paths"]["run"]],
+                           env=environment, cwd=workspace, check=True, capture_output=True)
+            control = workspace / environment["SOURCE_WORKER_CONTROL"]
+            helper = control / "tools/bazel/ci/source_image_worker.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_text("import json,os,sys\nfrom pathlib import Path\n"
+                              "with Path(os.environ['TRACE']).open('a') as out: out.write(json.dumps(sys.argv[1:])+'\\n')\n")
+            trace = root / "trace.jsonl"; environment["TRACE"] = str(trace)
+            for step in job["steps"][1:]:
+                if "run" in step:
+                    subprocess.run(["bash", "-e", "-c", step["run"]], env=environment,
+                                   cwd=workspace, check=True, capture_output=True)
+            commands = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual([cmd[0] for cmd in commands],
+                             ["selection", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"])
+            for cmd in commands:
+                self.assertEqual(cmd[1:], ["--image", "dash-engine", "--revision", "a" * 40,
+                    "--workspace", str(workspace / environment["SOURCE_WORKER_SOURCE"]),
+                    "--artifacts", str(temporary / environment["SOURCE_WORKER_SCRATCH"] / "artifacts")])
+            for path in old:
+                self.assertEqual(path.read_text(), "retained")
+        for name, variable in (("Checkout reviewed dispatcher", "SOURCE_WORKER_CONTROL"),
+                               ("Checkout the exact reviewed source", "SOURCE_WORKER_SOURCE")):
+            self.assertEqual(steps[name]["with"]["path"], "${{ env." + variable + " }}")
+            self.assertIs(steps[name]["with"]["clean"], False)
+            self.assertIs(steps[name]["with"]["persist-credentials"], False)
+        for name in ("Reuse the existing source-download artifact", "Download the verified source archives"):
+            self.assertEqual(steps[name]["with"]["path"], "${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/source-image-inputs")
+        self.assertEqual(steps["Upload source images and acceptance receipts"]["with"]["path"],
+                         "${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/artifacts/public/")
+
+    def test_native_path_gate_refuses_collisions_and_wrong_identities_without_deleting(self):
+        guard = self.native_job()["steps"][0]["run"]
+        cases = [(kind, linked) for kind in ("CONTROL", "SOURCE", "SCRATCH") for linked in (False, True)]
+        cases += [("worker", False), ("attempt", False), ("traversal", False)]
+        for kind, linked in cases:
+            with self.subTest(kind=kind, linked=linked), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace, temporary, environment = self.native_paths(root)
+                keep = root / "keep"; keep.write_text("retained")
+                collision = None
+                if kind in ("CONTROL", "SOURCE", "SCRATCH"):
+                    collision = (temporary if kind == "SCRATCH" else workspace) / environment["SOURCE_WORKER_" + kind]
+                    if linked:
+                        collision.symlink_to(root / "missing")
+                    else:
+                        collision.mkdir(); (collision / "keep").write_text("retained")
+                elif kind == "worker": environment["RUNNER_NAME"] = "sonic-slave-lgh114-2"
+                elif kind == "attempt": environment["GITHUB_RUN_ATTEMPT"] = "../2"
+                else: environment["SOURCE_WORKER_SOURCE"] = "../" + environment["SOURCE_WORKER_SOURCE"]
+                result = subprocess.run(["bash", "-e", "-c", guard], env=environment, cwd=workspace, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(keep.read_text(), "retained")
+                if collision is not None:
+                    if linked: self.assertTrue(collision.is_symlink())
+                    else: self.assertEqual((collision / "keep").read_text(), "retained")
+
+    def test_worker_temporary_directory_is_bound_to_run_attempt_and_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, temporary, environment = self.native_paths(root)
+            with patch.dict(os.environ, environment):
+                expected = temporary / environment["SOURCE_WORKER_SCRATCH"]
+                self.assertEqual(worker.temporary_directory(), expected)
+                self.assertFalse(expected.exists())
+                for changed in ("../scratch", "source-image-scratch-123-1-sonic-slave-lgh114-1",
+                                "source-image-scratch-123-2-sonic-slave-lgh114-2"):
+                    with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": changed}), self.assertRaises(ValueError):
+                        worker.temporary_directory()
+                expected.symlink_to(root / "missing")
+                with self.assertRaisesRegex(ValueError, "symlinks"):
+                    worker.temporary_directory()
+                with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": ""}):
+                    self.assertEqual(worker.temporary_directory(), temporary)
+
     def test_optional_catalog_requires_an_immutable_source_pair(self):
         for catalog in ("", "b" * 40):
             with patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": catalog}):

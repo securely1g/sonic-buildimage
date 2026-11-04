@@ -31,6 +31,17 @@ receipt, while a path-admission failure uploads no old receipt. The job log
 prints the same safe data; no environment dump or host credentials are included.
 Affinity labels are managed by the runner operator, not this job.
 
+Native image jobs likewise use new control/source checkouts and a private
+scratch directory named by run, attempt and worker. The path gate runs before
+checkout, rejects existing paths or a different assigned worker, and never
+cleans old workspaces. Every phase uses that exact source and scratch directory;
+downloaded inputs, receipts, launchers and private Docker state stay within the
+new scratch directory. Repository, disk, Bazelisk, distdir and image output-base
+cache locations under `/bazel_cache/source-images/<worker>/` are unchanged.
+This preserves previous checkout contents without claiming reuse of another
+machine's output-base. Runner-managed temporary storage is still temporary;
+uploaded artifacts and separately retained evidence provide durable receipts.
+
 The initial [four-worker measurement](https://github.com/securely1g/sonic-buildimage/actions/runs/41693647811)
 found 4 CPUs and 10 GiB per worker. All isolation and tool checks passed, but
 that allocation did not meet the original 16 GiB requirement. The later
