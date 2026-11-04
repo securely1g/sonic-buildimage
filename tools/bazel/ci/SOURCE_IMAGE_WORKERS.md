@@ -156,3 +156,72 @@ selected fixed profile. Both profiles are required for changed-input gNMI
 acceptance; a pass for one does not establish the other. They can use separate
 idle workers with the same immutable source/catalog. Neither selector adds a
 capability, command input, source override or new executor path.
+
+## Explicit ordinary registry consumers
+
+The registry-native choice is a separate manual task, not an image selector.
+It schedules only registry_native for a securely1g dispatch in the owned
+buildimage repository. registry_consumer selects one of the fixed profiles below. The matching full fixed
+registry SHA and one worker affinity select the reviewed AMD64 consumer.
+The original registry runner and target inventories remain unchanged:
+Common: 16 build targets and 24 tests; FIPS: 18 build targets and 6 tests. Hosted ARM64 and normal registry
+checks remain independent requirements.
+
+UID 1000 preflight retains native Trixie, the immutable slave marker, 20 GiB memory
+and 50 GiB free workspace/cache gates. Only the fixed registry runner uses sudo
+in the same disposable container. No Docker daemon, image driver, Make package
+build, KVM or hosted source-download prerequisite is added. Common fails before
+sudo/APT until an actual provisioner-pinned image reference is known; a local
+image ID is never replaced with the hosted Debian reference. FIPS has no
+runtime-preparation requirement.
+
+The existing --bazel hook adds measured scheduling and audits all original
+build/test targets for DEB/package wrappers before each build/test command.
+Fresh work-directory and output confinement remain intact. Persistent
+repository/disk caches use /bazel_cache/registry-native/<worker>/, with a fresh
+confined per-attempt work root. Existing image caches are untouched. No GitHub
+Actions cache restore is added. Original tests remain uncached.
+
+Evidence includes verified declared outputs, original test records,
+source/fetched MODULE/runtime receipts, no-DEB audits and measured worker
+identity/resources. Raw invocation BEP, root build logs, failed-action
+diagnostics and private control/environment state are excluded; checked BEP
+summaries remain. A worker pass proves this ordinary AMD64 consumer, not
+hosted required checks, ARM64 acceptance or final VS integration.
+
+The original resolution lock remains byte-exact. Only its known local registry
+URL is mapped to the selected immutable public URL for safety validation; other
+local URLs are rejected. Phase failures retain safe status/error-class receipts
+even when payload publication fails. UID 1000 copies readable root-owned native
+outputs before the original registry transport archives them. Consumer shutdown
+uses the exact ordinary workspace and verifies that its observed JVM exited;
+caches and generated outputs remain on the worker.
+
+Additional reviewed ordinary consumers use the same executor and complete
+original target/test lists, without runtime-preparation image requirements:
+
+| Selector | Registry PR and exact commit | Build targets | Tests |
+| --- | --- | ---: | ---: |
+| sairedis | #213, dd35a932bfebdcb8f9c31c1127ed7496cf334df2 | 19 | 7 |
+| dash | #215, 28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623 | 4 | 2 |
+| linkmgrd | #183, b6b0b1bfcd784c7b2fa4bc7ada101c276d0258aa | 4 | 3 |
+
+Each exact presubmit is hash-bound before the original runner validates it.
+Their declared flags, platforms and integration consumer files are unchanged.
+Use only idle workers and recheck that the same native acceptance is not
+already actively building on a hosted runner before dispatch.
+
+
+When the fixed upstream Arm GitLab archives are unavailable, set
+source_inputs_run to an existing successful source-download run in this
+repository (for example, 41689621493). The outer UID 1000 step verifies its
+producer and artifact provenance, then downloads only that source artifact.
+The root execution step reuses the existing five-archive BCR SHA512 verifier
+and per-module persistent distdirs before any audit/build. The artifact's unused
+Redis test helper is never executed. Actions credentials stay in the outer
+verification/download steps. This is source transport, not an Actions build-cache
+restore or a replacement of the selected registry runner, recipes or tests.
+The registry worker also checks the exact selected downloader-config hash and
+reuses the source-image worker's existing verified official mirrors, including
+gawk 5.3.2. The selected checkout and all archive checksums remain unchanged;
+only the private execution config is extended, for both audits and builds.
