@@ -1,10 +1,24 @@
 """Build and export declared wheel archives and container CI artifact groups."""
 
 from functools import partial
+import json
 from pathlib import Path
 
 from tools.bazel.build_helpers import export_archive
 from tools.bazel.ci import artifact_validation, command_log
+
+
+def execution_root(events):
+    """Resolve cquery paths against the execution root recorded by this build."""
+    with events.open() as stream:
+        for line in stream:
+            event = json.loads(line)
+            if "workspaceInfo" in event:
+                root = Path(event["workspaceInfo"].get("localExecRoot", ""))
+                if not root.is_absolute() or not root.is_dir():
+                    raise ValueError("Build events lack a usable absolute execution root")
+                return root
+    raise ValueError("Build events lack the execution root")
 
 
 def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", options=()):
@@ -22,13 +36,14 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
     execute([bazel, "build", *options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"),
              *targets.values()], directory, receipt, "build")
+    root = execution_root(directory / "build-events.jsonl")
     paths = {}
     for name, target in targets.items():
         files = execute([bazel, "cquery", *options, "--output=files", target],
                         directory, receipt, name + ".query").splitlines()
         if len(files) != 1:
             raise ValueError("Expected exactly one nonempty archive output for " + target)
-        source = workspace / files[0]
+        source = root / files[0]
         if not source.is_file() or not source.stat().st_size:
             raise ValueError("Expected exactly one nonempty archive output for " + target)
         destination = directory / name
@@ -46,12 +61,13 @@ def collect_artifacts(workspace, directory, receipt, target, *, bazel="bazel", o
     execute([bazel, "build", *options, *log_options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"), target],
             directory, receipt, "build")
+    root = execution_root(directory / "build-events.jsonl")
     files = execute([bazel, "cquery", *options, "--output=files", target],
                     directory, receipt, "artifacts.query").splitlines()
     names = [Path(name).name for name in files]
     if len(names) != len(set(names)):
         raise ValueError("CI artifacts must have unique output filenames")
-    sources = [workspace / name for name in files]
+    sources = [root / name for name in files]
     for source in sources:
         if not source.is_file() or not source.stat().st_size:
             raise ValueError("Expected a nonempty CI artifact file: " + str(source))
