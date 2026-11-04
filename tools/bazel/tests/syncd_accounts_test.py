@@ -1,5 +1,6 @@
 """Reject account corruption hidden by the runtime image's added SSH group."""
 
+import ast
 import copy
 import json
 from pathlib import Path
@@ -11,6 +12,30 @@ from tools.bazel.ci.syncd_image import ROOT, manifest_command, verify_environmen
 
 
 class SyncdPreparationTest(unittest.TestCase):
+    def test_retained_apt_payload_is_the_actual_installed_layer(self):
+        from tools.bazel.ci import syncd_image
+        owner = ROOT / "platform/vs/docker-syncd-vs/BUILD.bazel"
+        declarations = ast.parse(owner.read_text())
+        runtime = next(node.value for node in declarations.body
+                       if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                       and isinstance(node.value.func, ast.Name) and node.value.func.id == "oci_image"
+                       and any(key.arg == "name" and ast.literal_eval(key.value) == syncd_image.IMAGES[0]
+                               for key in node.value.keywords))
+        layers = ast.literal_eval(next(key.value for key in runtime.keywords if key.arg == "tars"))
+        exported = syncd_image.TARGETS["runtime-apt.tar"]
+        self.assertTrue(exported.startswith(syncd_image.OWNER))
+        self.assertIn(":" + exported.removeprefix(syncd_image.OWNER), layers)
+        # Preserve the existing full-image test's declared input contract too.
+        tests = ast.parse((ROOT / "tools/bazel/tests/BUILD.bazel").read_text())
+        mapping = next(node.value for node in tests.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "_SYNCD_P4_IMAGE_INPUTS"
+                               for target in node.targets))
+        apt = next(value for key, value in zip(mapping.keys, mapping.values)
+                   if ast.literal_eval(key) == "apt_layer")
+        self.assertIsInstance(apt, ast.BinOp)
+        self.assertEqual(apt.left.id, "_SYNCD_OWNER")
+        self.assertEqual(exported, syncd_image.OWNER.rstrip(":") + ast.literal_eval(apt.right))
+
     def test_actual_metadata_preparation_from_empty_target_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / 'target'

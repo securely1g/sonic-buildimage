@@ -33,7 +33,7 @@ TARGETS = {
     "source-receipt.json": OWNER + "source_package_receipt",
     "policy.json": OWNER + "package_policy",
     "config-files.tar": "//platform/vs/docker-syncd-vs/config:files",
-    "runtime-apt.tar": OWNER + "runtime_layer",
+    "runtime-apt.tar": OWNER + "apt_deps",
     "runtime-apt.json": OWNER + "runtime_apt_selection",
     "debug-tools.tar": OWNER + "debug_tools",
     "debug-apt.json": OWNER + "debug_apt_selection",

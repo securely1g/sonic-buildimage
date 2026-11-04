@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
-from tools.bazel.ci import base_images, p4rt_handoff, p4rt_image
+from tools.bazel.ci import base_images, build, p4rt_handoff, p4rt_image
 from tools.bazel.oci import image_validation, oci_layout, source_base_validation
 
 IMAGES = p4rt_image.IMAGES
@@ -394,7 +394,8 @@ def incremental(args):
     layouts = {name: ROOT / path for name, path in receipt['layouts'].items()}
     base = ROOT / receipt['base_layout']
     options = p4rt_image.root_options()
-    outputs = {name: ROOT / subprocess.check_output([args.bazel, 'cquery', *options,
+    execution_root = build.execution_root(directory / 'build-events.jsonl')
+    outputs = {name: execution_root / subprocess.check_output([args.bazel, 'cquery', *options,
         '--output=files', p4rt_image.TARGETS[name]], cwd=ROOT, text=True).strip() for name in
         (*[image + '.gz' for image in IMAGES], 'p4rt.source.tar', 'p4rt.debug.tar')}
     command = [args.bazel, 'build', *options, p4rt_image.BASE,
