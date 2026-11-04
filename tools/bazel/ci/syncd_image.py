@@ -33,7 +33,7 @@ TARGETS = {
     "source-receipt.json": OWNER + "source_package_receipt",
     "policy.json": OWNER + "package_policy",
     "config-files.tar": "//platform/vs/docker-syncd-vs/config:files",
-    "runtime-apt.tar": OWNER + "runtime_layer",
+    "runtime-apt.tar": OWNER + "apt_deps",
     "runtime-apt.json": OWNER + "runtime_apt_selection",
     "debug-tools.tar": OWNER + "debug_tools",
     "debug-apt.json": OWNER + "debug_apt_selection",
@@ -52,9 +52,17 @@ TARGETS = {
 
 def clean_source(directory):
     check.require(not ROOT.is_relative_to(directory), "artifact directory contains checkout")
+    if directory.is_relative_to(ROOT):
+        relative = directory.relative_to(ROOT)
+        check.require(len(relative.parts) > 1 and relative.parts[0] == "artifacts",
+                      "in-checkout evidence must use artifacts/<name>")
     subprocess.run(["git", "diff", "--exit-code", "--ignore-submodules=none", "HEAD"], cwd=ROOT, check=True)
     untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
-    unexpected = [name for name in untracked if name and not (ROOT / name).is_relative_to(directory)]
+    # Preceding archive/owner CI steps retain independent evidence here. The
+    # reserved artifacts tree supplies no Bazel source inputs; tracked source
+    # and submodules remain covered by the complete HEAD diff above.
+    unexpected = [name for name in untracked if name and
+                  not (len(Path(name).parts) > 1 and Path(name).parts[0] == "artifacts")]
     check.require(not unexpected, "commit all source inputs before acceptance: " + repr(unexpected))
 
 

@@ -1,6 +1,8 @@
 """Reject account corruption hidden by the runtime image's added SSH group."""
 
+import ast
 import copy
+import shutil
 import json
 from pathlib import Path
 import subprocess
@@ -11,6 +13,30 @@ from tools.bazel.ci.syncd_image import ROOT, manifest_command, verify_environmen
 
 
 class SyncdPreparationTest(unittest.TestCase):
+    def test_retained_apt_payload_is_the_actual_installed_layer(self):
+        from tools.bazel.ci import syncd_image
+        owner = ROOT / "platform/vs/docker-syncd-vs/BUILD.bazel"
+        declarations = ast.parse(owner.read_text())
+        runtime = next(node.value for node in declarations.body
+                       if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                       and isinstance(node.value.func, ast.Name) and node.value.func.id == "oci_image"
+                       and any(key.arg == "name" and ast.literal_eval(key.value) == syncd_image.IMAGES[0]
+                               for key in node.value.keywords))
+        layers = ast.literal_eval(next(key.value for key in runtime.keywords if key.arg == "tars"))
+        exported = syncd_image.TARGETS["runtime-apt.tar"]
+        self.assertTrue(exported.startswith(syncd_image.OWNER))
+        self.assertIn(":" + exported.removeprefix(syncd_image.OWNER), layers)
+        # Preserve the existing full-image test's declared input contract too.
+        tests = ast.parse((ROOT / "tools/bazel/tests/BUILD.bazel").read_text())
+        mapping = next(node.value for node in tests.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "_SYNCD_P4_IMAGE_INPUTS"
+                               for target in node.targets))
+        apt = next(value for key, value in zip(mapping.keys, mapping.values)
+                   if ast.literal_eval(key) == "apt_layer")
+        self.assertIsInstance(apt, ast.BinOp)
+        self.assertEqual(apt.left.id, "_SYNCD_OWNER")
+        self.assertEqual(exported, syncd_image.OWNER.rstrip(":") + ast.literal_eval(apt.right))
+
     def test_actual_metadata_preparation_from_empty_target_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / 'target'
@@ -111,6 +137,47 @@ class SyncdParentTest(unittest.TestCase):
         verify_parent_files(parent, runtime, debug, {"usr/bin/start.sh": {}}, [{"paths": ["usr/bin/vim"]}])
         with self.assertRaisesRegex(ValueError, "inherited runtime file"):
             verify_parent_files(parent, runtime, debug, {"usr/bin/start.sh": {}}, [])
+
+
+class SyncdSourceFenceTest(unittest.TestCase):
+    def test_reserved_ci_receipts_coexist_but_source_changes_fail(self):
+        from unittest.mock import patch
+        from tools.bazel.ci import syncd_image
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "checkout"
+            root.mkdir()
+            def git(*args):
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            git("init", "-q")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            tracked = root / "source.txt"
+            tracked.write_text("declared source\n")
+            git("add", "source.txt")
+            git("commit", "-qm", "fixture")
+            for name in ("archive/revision.json", "config-engine/test.xml", "syncd/build-receipt.json"):
+                path = root / "artifacts" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}")
+            with patch.object(syncd_image, "ROOT", root):
+                syncd_image.clean_source(root / "artifacts/syncd")
+                syncd_image.clean_source(Path(temporary) / "outside-evidence")
+                for directory in (root, root.parent, root / "artifacts", root / "other-output"):
+                    with self.subTest(directory=directory), self.assertRaises(ValueError):
+                        syncd_image.clean_source(directory)
+                unexpected = root / "unexpected.cc"
+                unexpected.write_text("undeclared")
+                with self.assertRaisesRegex(ValueError, "unexpected.cc"):
+                    syncd_image.clean_source(root / "artifacts/syncd")
+                unexpected.unlink()
+                tracked.write_text("changed\n")
+                with self.assertRaises(subprocess.CalledProcessError):
+                    syncd_image.clean_source(root / "artifacts/syncd")
+                tracked.write_text("declared source\n")
+                shutil.rmtree(root / "artifacts")
+                (root / "artifacts").write_text("undeclared source")
+                with self.assertRaisesRegex(ValueError, "artifacts"):
+                    syncd_image.clean_source(Path(temporary) / "outside-evidence")
 
 
 if __name__ == "__main__":
