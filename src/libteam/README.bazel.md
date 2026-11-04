@@ -24,7 +24,7 @@ base reuses #166's verified download mirrors and unchanged integrity checks.
 Current CI must validate this selection; the earlier compiler-probe error
 alone does not establish its underlying cause.
 
-The libteam sources, SONiC patches, native tests, SWSS consumer patch and
+The libteam sources, SONiC patches, native consumer test, SWSS consumer patch and
 Common ZeroMQ patch are unchanged. The current review base selects Common
 `0.0.8-a0450924719a9f706125cc44a07dc88934935003`; its declared-runtime helper
 accepts the maintained caller's explicit `patchelf` argument. The original
@@ -47,7 +47,12 @@ CI retains checkout inputs, the generated resolution lock, build/test events,
 named outputs and SHA-256 checksums. New acceptance is AMD64-only; the existing
 ARM64 source job remains unchanged. On AMD64 CI also compiles the public C consumer
 against the installed SDK/pkg-config interface and verifies all five detached
-symbol pairs, including isolated positive/negative GDB source lookup. A config
+symbol pairs, including isolated positive/negative GDB source lookup. The
+development TAR uses an mtree timestamp of zero for every member, so generated
+pkg-config files and the compressed changelog cannot introduce build-time
+timestamps. Installed SDK validation rejects nonzero member timestamps.
+Run `python3 tools/bazel/tests/libteam_sdk_timestamp_test.py` to check that
+validation, including rejection of a PAX timestamp override. A config
 edit probe verifies that the declared input changes the utils TAR and restoring
 the exact source reproduces the original TAR. Its unchanged-input rebuild is a
 same-output-base determinism check, not a fresh-cache or remote-hit claim.

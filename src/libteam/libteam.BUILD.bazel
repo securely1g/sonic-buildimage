@@ -158,6 +158,8 @@ sonic_deploy_tar(
         name = "libteam_dev_" + arch,
         srcs = ["include/team.h", "include/teamdctl.h", ":libteam_pc_" + arch, ":libteamdctl_pc_" + arch] + DOC_SRCS,
         mtree = [
+            # Generated pkg-config and gzip inputs carry execution-time mtimes.
+            "/set time=0",
             "usr/share/doc/libteam-dev/changelog.Debian.gz uid=0 gid=0 mode=0644 type=file content=$(location :changelog_gz)",
             "usr/share/doc/libteam-dev/copyright uid=0 gid=0 mode=0644 type=file content=$(location @libteam_debian//:debian/copyright)",
             "usr/include/team.h uid=0 gid=0 mode=0644 type=file content=$(location include/team.h)",
