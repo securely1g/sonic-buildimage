@@ -53,6 +53,17 @@ jobs:
           mkdir -p artifacts/source-downloads
           python3 -B tools/bazel/gzip/prepare_pigz.py --output "$PWD/artifacts/source-downloads"
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+      - name: Add verified official Debian pool fallbacks
+        run: |
+          # Prefer the official pools while retaining each original snapshot URL.
+          # Bazel still verifies the SHA256 declared by each source repository.
+          cat > "$RUNNER_TEMP/debian-pool-downloader.cfg" <<'CONFIG'
+          rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://deb.debian.org/debian/pool/$2
+          rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://$1
+          rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://deb.debian.org/debian-security/pool/$2
+          rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://$1
+          CONFIG
+          printf 'common --experimental_downloader_config=%s\n' "$RUNNER_TEMP/debian-pool-downloader.cfg" >> .bazelrc.user
       - name: Build and inspect the shared runtime and symbols
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
