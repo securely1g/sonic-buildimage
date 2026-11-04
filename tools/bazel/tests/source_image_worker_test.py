@@ -25,20 +25,26 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
-    def test_teamd_owned_dispatcher_branch_preserves_ci_scope(self):
+    def test_normal_ci_has_no_branch_specific_exceptions(self):
         workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
-        guards = re.findall(r'SOURCE_ONLY_NO_DEBS: \$\{\{ (.*?) \}\}', workflow)
-        self.assertEqual(len(guards), 2)
+        self.assertNotIn('SOURCE_ONLY_NO_DEBS', workflow)
+        for name in ('Check shared Make rules with unrelated container targets',
+                     'Check Make handoff and archive validation'):
+            step = workflow.split('- name: ' + name, 1)[1].split('\n      - name:', 1)[0]
+            self.assertIn("python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'", step)
         vs = workflow.split('\n  vs_container:\n', 1)[1].split('    if: >-\n', 1)[1].split('    runs-on:', 1)[0]
-        for event, branch, same_repo, image, skip, source_only, full_vs in (
-            ('pull_request', 'codex/teamd-source-worker', True, 'none', True, True, False),
-            ('pull_request', 'codex/teamd-source-worker', False, 'none', True, False, False),
-            ('pull_request', 'codex/source-image-worker-dispatch', True, 'none', True, True, False),
-            ('pull_request', 'ordinary', True, 'none', True, False, True),
-            ('pull_request', 'ordinary', False, 'none', True, False, False),
-            ('push', '', True, 'none', True, False, True),
-            ('workflow_dispatch', '', True, 'none', False, False, True),
-            ('workflow_dispatch', '', True, 'teamd', False, False, False),
+        for event, branch, same_repo, image, skip, full_vs in (
+            ('pull_request', 'codex/teamd-source-worker', True, 'none', True, True),
+            ('pull_request', 'codex/teamd-source-worker', False, 'none', True, False),
+            ('pull_request', 'codex/source-image-worker-dispatch', True, 'none', True, True),
+            ('pull_request', 'codex/image-environment', True, 'none', True, True),
+            ('pull_request', 'ordinary', True, 'none', True, True),
+            ('pull_request', 'ordinary', False, 'none', True, False),
+            ('push', '', True, 'none', True, True),
+            ('workflow_dispatch', '', True, 'none', False, True),
+            ('workflow_dispatch', '', True, 'none', True, False),
+            ('workflow_dispatch', '', True, 'teamd', False, False),
+            ('workflow_dispatch', '', True, 'preflight', False, False),
         ):
             github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
                 ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
@@ -49,7 +55,6 @@ class ImageWorkerTest(unittest.TestCase):
                 return bool(eval(re.sub(r'!(?!=)', 'not ', expression), {'__builtins__': {}},
                                  {'github': github, 'inputs': inputs}))
             with self.subTest(event=event, branch=branch, same_repo=same_repo, image=image):
-                for guard in guards: self.assertEqual(evaluate(guard), source_only)
                 self.assertEqual(evaluate(vs), full_vs)
 
     def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
