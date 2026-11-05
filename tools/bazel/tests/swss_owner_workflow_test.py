@@ -48,9 +48,15 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
             self.assertFalse((root / "public-receipt.json").exists())
 
     def test_bootstrap_verifies_config_before_appending_to_existing_caches(self):
-        data = (ROOT / "tools/bazel/tests/fixtures/source-mirrors-6e305126.cfg").read_bytes()
-        self.assertEqual(hashlib.sha256(data).hexdigest(), CONFIG_SHA)
         for filename, job in JOBS:
+            fixture, config_url, config_sha = (
+                ("source-mirrors-ebb539d1.cfg",
+                 "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/ebb539d16742d632b74f391864ac54525f61bf16/ci/source_mirrors.cfg",
+                 "682fd77121ccac9de7bdb6a68f66ceda952ad3a66a611d98c9ed8e0c73aef636")
+                if (filename, job) == ("bazel-base-images.yml", "native") else
+                ("source-mirrors-6e305126.cfg", CONFIG_URL, CONFIG_SHA))
+            data = (ROOT / "tools/bazel/tests/fixtures" / fixture).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), config_sha)
             steps = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())["jobs"][job]["steps"]
             mirror = next(s for s in steps if s.get("name") == "Configure the verified source mirror")
             self.assertLess(next(i for i,s in enumerate(steps) if "preserve_setup_bazel_cache.py" in s.get("run", "")), steps.index(mirror))
@@ -67,7 +73,7 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
                                     exec(compile(code, filename, "exec"), {})
                             else:
                                 exec(compile(code, filename, "exec"), {})
-                        fetch.assert_called_once_with(CONFIG_URL, timeout=60)
+                        fetch.assert_called_once_with(config_url, timeout=60)
                     selected = root / "sonic-source-mirrors.cfg"
                     self.assertEqual(selected.exists(), not corrupt)
                     self.assertEqual((root / ".bazelrc.user").read_text(), before + (
