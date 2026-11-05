@@ -74,11 +74,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #186 (landed 6974c59) changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
+          # Reviewed PR228 candidate; Bazel retains every locked payload checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/45065949f5163bd5d99793026b076eafec213ef8/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
