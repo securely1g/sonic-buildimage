@@ -274,6 +274,7 @@ jobs:
         with:
           bazelisk-version: 1.29.0
           bazelisk-cache: true
+          bazelrc: ${{ matrix.architecture == 'amd64' && 'common --downloader_config=tools/bazel/ci/archive_debian_downloader.cfg' || '' }}
           repository-cache: true
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
