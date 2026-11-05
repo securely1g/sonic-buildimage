@@ -58,6 +58,57 @@ rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/(
 """
 
 
+# Exact Eventd/OCI archive transport input; other jobs retain their existing pins.
+SOURCE_IMAGE_CONFIG_FIXTURE = r"""# BCR pigz@2.8.bcr.2 keeps its original source integrity and upstream patches.
+# Original SHA256: eb872b4f0e1f0ebe59c9f7bd8c506c4204893ba6a8492de31df416f0d5170fd0
+# Bazel matches the complete URL without its https:// prefix.
+rewrite zlib\.net/pigz/pigz-2\.8\.tar\.gz https://distfiles.macports.org/pigz/pigz-2.8.tar.gz
+
+# Exact Bookworm security header payload; the repository SHA256 remains
+# ea265b1dff21ab2e4b22b38097031f8d63fb940ecb89427659655598860efc0f.
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/l/linux/linux-libc-dev_6\.1\.177-1_amd64\.deb https://snapshot.debian.org/file/aed472fca7f9b98fdb7103b974db264cb60c2248
+
+# Prefer the official pool for pinned Debian binary packages. Bazel keeps the
+# repository rule's checksum; the original snapshot remains a fallback.
+# Indexes and source archives must retain their snapshot URLs.
+rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian/pool/$2
+
+# Exact historical AMD64 payloads selected by declared build tools and source
+# images. Reuse their verified content IDs before the dated Snapshot fallback.
+# SHA256: 25acadc8b394bc86d05df16e70975e523f8f839a7d8d6d5e22c1cafdcef741aa
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/c/cdebconf/libdebconfclient0_0\.280_amd64\.deb https://snapshot.debian.org/file/219dec5cd95ea5be91161ab1d30dc3f19efb6e01
+# SHA256: 2381bdaa2462b186db27671507e53eba9515c5341575fb72189b6228c73e3df8
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/python3\.13/libpython3\.13_3\.13\.5\-2\+deb13u4_amd64\.deb https://snapshot.debian.org/file/a817f92905b030fcbca7d433db7dc4dcccf91c3d
+# SHA256: e3a45504aaf395acb5c57efb5ccfdf85efa6eaffc165653d1f03532bbf5b92c5
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/python3\.13/libpython3\.13\-minimal_3\.13\.5\-2\+deb13u4_amd64\.deb https://snapshot.debian.org/file/d63097e4bb174c04bfc29e38e6270b43c2db9c0b
+# SHA256: 68bb8d32bd8d6d7d2f5952a169db03d1484b46ae1e52abccdec42a19dccea5d5
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libs/libselinux/libselinux1_3\.8\.1\-1_amd64\.deb https://snapshot.debian.org/file/44b247687c034c8a4142204f0827f7286614b354
+
+# SHA256: 06460065e7768d7a4a72cb02a0eddd386936756a33596bb23901faeb72dc8f68
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libh/libheif/libheif1_1\.19\.8\-1_amd64\.deb https://snapshot.debian.org/file/04d63b7e722e47ed3e0cd74aa01066c6d382621d
+# SHA256: 4104cf1149947db1a3450b2a13aab23000a695aa6981f515216129ad8b884423
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/a/audit/libaudit-dev_4\.0\.2\-2\+b2_amd64\.deb https://snapshot.debian.org/file/930f8fe502ed2d1b79243a03d1e1318c1bf30524
+# SHA256: fbc76c5c549192f52e7a03949108cdf28b1dc0751261495b7ef17cb8bf39dd8d
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util-linux/uuid-dev_2\.41\-5_amd64\.deb https://snapshot.debian.org/file/05b9652f442e9b33da16bb41cc69283e2a9b7c33
+# SHA256: 53a9b789bb02415d758f652ef5ac913d89fed29782610e9fe0fd2488e4f2e465
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc6-dev_2\.41\-12\+deb13u3_amd64\.deb https://snapshot.debian.org/file/fbb9e46e11e1a8365a4f067eb9d6ec10251df100
+
+# Exact AMD64 Graphviz dependency selected by libteam's native analysis.
+# SHA256: cd9efc7addd2556062f6d148b502e38a64e08c0ab220806219cfffd865f0f6f6
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util-linux/libmount1_2\.41-5_amd64\.deb https://snapshot.debian.org/file/a82622f9dbedc5d438d8791f4e3a59f6f9976d88
+
+# Exact AMD64 base-image input selected by FRR's Sysmgr image analysis.
+# SHA256: c6464bdc20086222fa9295481367e9a52f3fb78120a14089bae5f0d36f1b8a74
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/j/jq/jq_1\.7\.1-6\+deb13u2_amd64\.deb https://snapshot.debian.org/file/5556211154d1adb33a69780c9b9385f7cf79fda9
+
+rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
+rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian-security/pool/$2
+# Exact Trixie headers selected by FRR's Eventd AMD64 analysis.
+# SHA256: c514b81492fc01c573ecfc809f9b460023d50e5006848c4caf78997bf1f776a5
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/l/linux/linux-libc-dev_6\.12\.96-1_all\.deb https://snapshot.debian.org/file/66b33fe93d5d572e06cdabdd49d01c7b4947cfc7
+rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
+"""
+
 def rewritten_urls(url):
     # Bazel 8.5.1 UrlRewriter.applyRewriteRules matches the complete URL without
     # its scheme, collecting every matching replacement in configuration order.
@@ -140,25 +191,32 @@ class DebianPoolTest(unittest.TestCase):
         for name, expected in (("bazel-base-images.yml", 1), ("bazel-oci.yml", 2),
                                ("bazel-eventd.yml", 1)):
             workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
-            steps = [step for job in workflow["jobs"].values() for step in job.get("steps", [])
+            steps = [(job_name, step["run"]) for job_name, job in workflow["jobs"].items()
+                     for step in job.get("steps", [])
                      if step.get("name") == "Configure the verified source mirror"]
             self.assertEqual(len(steps), expected)
-            found.extend((name, step["run"]) for step in steps)
+            found.extend((name, job_name, script) for job_name, script in steps)
         return found
 
-    def mirror_bytes(self):
-        # Exact immutable shared config, including the selected historical fallbacks.
-        data = SHARED_CONFIG_FIXTURE.encode()
-        self.assertEqual(hashlib.sha256(data).hexdigest(),
-                         "9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9")
+    def mirror_bytes(self, workflow=None, job=None):
+        # Keep each workflow on its separately verified immutable transport input.
+        if workflow == "bazel-eventd.yml" or (workflow == "bazel-oci.yml" and job == "archive"):
+            data = SOURCE_IMAGE_CONFIG_FIXTURE.encode()
+            expected = "d71c0e8152d6f717de11615b7d20d9ff47f1b0004fd908902d163654f2a09a00"
+        else:
+            data = SHARED_CONFIG_FIXTURE.encode()
+            expected = "9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9"
+        self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
         return data
 
     def test_all_four_workflow_overrides_preserve_pigz_and_pool_transport(self):
-        data = self.mirror_bytes()
-        url = ("https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
-               "b7b92bcfa5857685ee7cd7953fdbf55264989932/ci/source_mirrors.cfg")
-        for name, script in self.mirror_steps():
-            with self.subTest(workflow=name), tempfile.TemporaryDirectory() as directory:
+        for name, job, script in self.mirror_steps():
+            data = self.mirror_bytes(name, job)
+            selected = name == "bazel-eventd.yml" or (name == "bazel-oci.yml" and job == "archive")
+            revision = ("1609822832b591fcd31e8266a8a0dee5922e5685" if selected
+                        else "b7b92bcfa5857685ee7cd7953fdbf55264989932")
+            url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/" + revision + "/ci/source_mirrors.cfg"
+            with self.subTest(workflow=name, job=job), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 before = "common --repository_cache=/retained/repository\ncommon --disk_cache=/retained/disk\ncommon --distdir=/retained/downloads\n"
                 code = script.split("python3 - <<'PYCFG'\n", 1)[1].rsplit("\nPYCFG", 1)[0]
@@ -173,8 +231,8 @@ class DebianPoolTest(unittest.TestCase):
                                      "common --experimental_downloader_config=" + str(destination) + "\n")
 
     def test_corrupt_transport_leaves_existing_config_and_cache_options_untouched(self):
-        for name, script in self.mirror_steps():
-            with self.subTest(workflow=name), tempfile.TemporaryDirectory() as directory:
+        for name, job, script in self.mirror_steps():
+            with self.subTest(workflow=name, job=job), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 code = script.split("python3 - <<'PYCFG'\n", 1)[1].rsplit("\nPYCFG", 1)[0]
                 with contextlib.chdir(root), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}):
