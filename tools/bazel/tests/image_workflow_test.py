@@ -15,6 +15,50 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_native_resource_step_activates_root_bazel_before_source_preparation(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        active = workflow.split("\n  vs_container:\n", 1)[1]
+        self.assertIn("EXPECTED_MANAGER_REVISION:", active)
+        self.assertNotIn("BAZEL_REMOTE_AUTH", active)
+        block = active.split("      - name: Apply build resource limits, activate root Bazel, and prepare source archives\n", 1)[1].split(
+            "\n      - ", 1)[0]
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        activation_path = "/opt/sonic-runner/activate-root-bazel"
+        self.assertEqual(script.count(activation_path), 1)
+        for activation_exit in (0, 7):
+            with self.subTest(activation_exit=activation_exit), tempfile.TemporaryDirectory(prefix="native-resource-step-") as temporary:
+                directory = Path(temporary)
+                (directory / "artifacts/vs").mkdir(parents=True)
+                calls = directory / "calls.jsonl"
+                python = directory / "python3"
+                python.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                                  "with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(['python3', *sys.argv[1:]]) + '\\n')\n"
+                                  "print('{}')\n")
+                python.chmod(0o755)
+                activation = directory / "activate-root-bazel"
+                activation.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                                      "with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(['activate-root-bazel', *sys.argv[1:]]) + '\\n')\n"
+                                      "raise SystemExit(int(os.environ['ACTIVATION_EXIT']))\n")
+                activation.chmod(0o755)
+                command = script.replace(activation_path, shlex.quote(str(activation)))
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", command], cwd=directory,
+                                        env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                                                 CALLS=str(calls), ACTIVATION_EXIT=str(activation_exit)),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, activation_exit, result.stderr)
+                expected = [
+                    ["python3", "-B", "tools/bazel/ci/configure_runner_cache.py", "--jobs=4", "--local-memory-mb=12288"],
+                    ["activate-root-bazel"],
+                ]
+                if activation_exit == 0:
+                    expected.append(["python3", "-B", "tools/bazel/gzip/source_archive.py", "--archives-dir",
+                                     "artifacts/vs/repository-inputs", "--output", "/bazel_cache/distdir"])
+                self.assertEqual([json.loads(line) for line in calls.read_text().splitlines()], expected)
+                receipt = directory / "artifacts/vs/source-download-receipt.json"
+                self.assertEqual(receipt.exists(), activation_exit == 0)
+                if receipt.exists():
+                    self.assertEqual(json.loads(receipt.read_text()), {})
+
     def test_static_checks_match_make_configs_and_stop_publication_on_failure(self):
         verifier = (ROOT / "tools/bazel/ci/verify_vs_oci.sh").read_text()
         script = "set -euo pipefail\n" + verifier[verifier.index("# Match the archive recipes"):].split(
