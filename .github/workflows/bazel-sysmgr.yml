@@ -56,12 +56,14 @@ jobs:
           mkdir -p artifacts/sysmgr
           bazel_path=$(command -v bazel)
           runner_bazelrc="$HOME/.bazelrc"
+          # The root sandbox cannot traverse the runner's private home.
           sudo -n -H --preserve-env=BAZELISK_GITHUB_TOKEN,CI_HEAD_SHA \
             /usr/bin/python3 -B src/sonic-sysmgr/bazel/ci.py \
             --bazel "$bazel_path" \
             --startup-arg=--nohome_rc \
             --startup-arg="--bazelrc=$runner_bazelrc" \
             --startup-arg=--bazelrc=/root/.bazelrc \
+            --startup-arg=--output_base=/root/.bazel \
             --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main \
             --artifacts artifacts/sysmgr 2>&1 | tee artifacts/sysmgr/ci.log
       - name: Hand Sysmgr evidence to the upload action
