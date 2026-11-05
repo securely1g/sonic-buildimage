@@ -24,6 +24,10 @@ SNAPSHOT_FALLBACKS = {
         'a6e3b3b45aaf7799d6ab6ad71e09218a813866c8',
     SECURITY_SNAPSHOT + 'pool/updates/main/o/openssl/libssl3t64_3.5.6-1~deb13u2_arm64.deb':
         '6e3fe344496850bb946e702685bacc5df1332dab',
+    DEBIAN_SNAPSHOT + 'pool/main/b/bubblewrap/bubblewrap_0.11.0-2+deb13u1_amd64.deb':
+        '817a2e6186906394f63696c2b289f0f19e45b8d3',
+    DEBIAN_SNAPSHOT + 'pool/main/g/glibc/libc6-dev_2.41-12+deb13u3_amd64.deb':
+        'fbb9e46e11e1a8365a4f067eb9d6ec10251df100',
     DEBIAN_SNAPSHOT + 'pool/main/g/glibc/libc6-dev_2.41-12+deb13u3_arm64.deb':
         'b009545d0ef35bce018084a2ca524f3cbe3481e0',
     DEBIAN_SNAPSHOT + 'pool/main/g/glibc/libc6-dev_2.41-12+deb13u3_armhf.deb':

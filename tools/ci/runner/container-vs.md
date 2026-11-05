@@ -51,9 +51,21 @@ equivalence with the archive named by the descriptor. The original descriptor
 and existing `dget -u` behavior are preserved; no checksum rows are rewritten.
 PI and BMv2 must match their descriptors normally.
 
-This source handoff uses a fresh CI artifact. It adds no persistent P4 source
-cache and changes no shared Make-cache logic. The tracked source pins are
-already covered by the P4 recipes' existing input-file hashing.
+This source handoff creates a fresh artifact for each CI run. The fetcher first
+requests the canonical OpenSUSE URL. After a retryable transport failure, it can
+retrieve the six archive files from the pinned registry release and use the
+three unchanged descriptors tracked in `src/p4lang/source-descriptors`. The
+descriptors were recovered from successful run `42093345228`, artifact
+`13444914604`; the fetch receipt records that provenance and the actual source
+used for every attempt. All nine manifest size/SHA256 pins and the descriptor
+checks above remain required. An HTTP success with different bytes, a changed
+descriptor fixture, a nonretryable response, or a rate limit fails verification.
+
+A fallback run establishes identity with the pinned published bytes; it does
+not establish that the upstream server is currently reachable. These stored
+copies replace the previous requirement to fetch every byte live from OpenSUSE.
+Shared Make-cache behavior remains unchanged, and the tracked source pins are
+still covered by the P4 recipes' existing input-file hashing.
 
 The worker manager is maintained in
 [agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/codex/sonic-slave-wrk-mgr/sonic-slave-wrk-mgr).
