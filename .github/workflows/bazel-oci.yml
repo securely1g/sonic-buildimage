@@ -607,6 +607,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Start a private Docker daemon for runtime validation
+        run: bash tools/bazel/ci/private_docker.sh start
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sysmgr-images-amd64-${{ github.sha }}
@@ -624,6 +626,9 @@ jobs:
           path: artifacts/sysmgr/*.runtime.json
           if-no-files-found: error
           retention-days: 14
+      - name: Stop this job's private Docker daemon
+        if: always()
+        run: bash tools/bazel/ci/private_docker.sh stop
 
 
 

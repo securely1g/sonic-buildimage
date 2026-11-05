@@ -86,6 +86,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Install GitHub publication tools
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends gh
       - name: Restore durable timing history
         shell: bash
         run: |

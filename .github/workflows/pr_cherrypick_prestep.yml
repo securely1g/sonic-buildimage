@@ -13,6 +13,10 @@ jobs:
     if: false && github.repository_owner == 'sonic-net' && github.event.pull_request.merged == true && ( (github.event.action == 'closed' && contains(join(github.event.pull_request.labels.*.name, ','), 'Approved for 20')) || (github.event.action == 'labeled' && startsWith(github.event.label.name, 'Approved for 20')) )
     runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
+    - name: Install GitHub workflow tools
+      run: |
+        sudo -n apt-get update
+        sudo -n apt-get install -y --no-install-recommends gh jq
     - name: Checkout
       uses: actions/checkout@v3
       with:

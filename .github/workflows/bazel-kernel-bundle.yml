@@ -33,6 +33,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Configure verified kernel download mirrors
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends ca-certificates-java
+          python3 -B tools/bazel/ci/configure_debian_bazel.py
+          printf 'SONIC_BAZEL_DOWNLOADER_CONFIG=%s/sonic-source-mirrors-%s.cfg\n' "$RUNNER_TEMP" "$(id -u)" >> "$GITHUB_ENV"
+          printf 'SONIC_BAZEL_JAVA_TRUST_STORE=%s\n' "${SONIC_BAZEL_JAVA_TRUST_STORE:-/etc/ssl/certs/java/cacerts}" >> "$GITHUB_ENV"
       - name: Initialize the pinned kernel source
         run: git submodule update --init -- src/sonic-linux-kernel
       - name: Check the producer and artifact contracts

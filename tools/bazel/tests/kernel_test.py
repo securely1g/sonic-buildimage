@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import stat
 import subprocess
@@ -358,6 +359,37 @@ class KernelBundleTest(unittest.TestCase):
                                           "--state-dir", str(self.root / "trust-plan")]), \
                 self.assertRaises(FileNotFoundError):
             kernel.main()
+
+    def test_downloader_rules_reach_isolated_consumer_without_replacing_policy(self):
+        rules = self.root / "download rules.cfg"
+        rules.write_text('rewrite example.invalid/source https://example.invalid/mirror\n')
+        state = self.root / "mirror build"
+        with patch.dict(os.environ, {"SONIC_BAZEL_DOWNLOADER_CONFIG": str(rules)}), \
+                patch.object(sys, "argv", ["prepare.py", "plan", "--workspace", str(self.root),
+                                          "--state-dir", str(state)]), \
+                redirect_stdout(io.StringIO()) as output:
+            kernel.main()
+        planned = json.loads(output.getvalue())
+        self.assertEqual(planned["downloader_config"], {"path": str(rules), "sha256": kernel.sha256(rules)})
+        policy = (self.root / "tools/bazel/kernel/.bazelrc").read_text()
+
+        def inspect_before_build(argv, workspace):
+            consumer = state / "consumer"
+            contents = (consumer / ".bazelrc").read_text()
+            self.assertTrue(contents.startswith(policy))
+            self.assertEqual(shlex.split(contents.splitlines()[-1]),
+                             ["common", "--experimental_downloader_config=" + str(consumer / "source-mirrors.cfg")])
+            self.assertEqual((consumer / "source-mirrors.cfg").read_bytes(), rules.read_bytes())
+            raise RuntimeError('inspected before Bazel execution')
+
+        with self.assertRaisesRegex(RuntimeError, 'inspected before Bazel execution'):
+            kernel._build(self.root, state, None, False, downloader_config=rules,
+                          execute=inspect_before_build)
+        previous = (state / "consumer/.bazelrc").read_bytes()
+        rules.write_text('changed after planning\n')
+        with self.assertRaisesRegex(ValueError, 'changed after planning'):
+            kernel.configure_downloader(state / "consumer", planned["downloader_config"])
+        self.assertEqual((state / "consumer/.bazelrc").read_bytes(), previous)
 
     def test_cli_verify_ignores_managed_trust(self):
         with patch.dict(os.environ, {"SONIC_BAZEL_JAVA_TRUST_STORE": str(self.root / "missing-cacerts")}), \

@@ -10,6 +10,10 @@ jobs:
     if: github.repository_owner == 'sonic-net' && false
     runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
+    - name: Install GitHub workflow tools
+      run: |
+        sudo -n apt-get update
+        sudo -n apt-get install -y --no-install-recommends gh jq
     - name: Debug
       env:
         TOKEN: ${{ secrets.TOKEN }}

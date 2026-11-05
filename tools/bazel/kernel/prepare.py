@@ -11,6 +11,7 @@ import fcntl
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -578,7 +579,7 @@ def stage_outputs(workdir, destination, workspace, source, selected):
         return result
 
 
-def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, debs_directory=None):
+def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, debs_directory=None, downloader_config=None):
     workspace = workspace.resolve(strict=True)
     state = state.resolve()
     require(state != workspace and state not in workspace.parents and not state.exists(),
@@ -639,12 +640,31 @@ def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_co
                 require("PRIVATE KEY" not in path.read_text(), "CA bundle must not contain a private key")
             command += ["--" + option, str(path)]
             trust[option.replace("-", "_") + "_sha256"] = sha256(path)
+    downloader = None
+    if downloader_config:
+        path = regular(Path(downloader_config).resolve(strict=True))
+        require(0 < path.stat().st_size <= 1024 * 1024,
+                "kernel downloader configuration must be nonempty and at most 1 MiB")
+        downloader = {"path": str(path), "sha256": sha256(path)}
     return {"schema": 1, "source": source, "registry": registry, "target": TARGET,
             "source_kind": "registry", "state": str(state), "debs_directory": str(make_inputs),
             "remote_cache": remote_cache, "upload_local_results": upload,
             "disk_cache": str(disk_cache) if disk_cache else None,
-            "execution_trust": trust, "distdir": source_directory,
+            "execution_trust": trust, "distdir": source_directory, "downloader_config": downloader,
             "argv": command}
+
+
+def configure_downloader(consumer, downloader):
+    """Copy the planned transport rules without changing source integrity checks."""
+    if downloader is None:
+        return
+    data = regular(Path(downloader["path"])).read_bytes()
+    require(hashlib.sha256(data).hexdigest() == downloader["sha256"],
+            "kernel downloader configuration changed after planning")
+    config = consumer / "source-mirrors.cfg"
+    config.write_bytes(data)
+    with (consumer / ".bazelrc").open("a") as output:
+        output.write("\ncommon --experimental_downloader_config=" + shlex.quote(str(config)) + "\n")
 
 
 def build(workspace, state, remote_cache, upload, **options):
@@ -652,10 +672,11 @@ def build(workspace, state, remote_cache, upload, **options):
         return _build(workspace, state, remote_cache, upload, **options)
 
 
-def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, debs_directory=None, execute=None, fetch=None):
+def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, debs_directory=None, downloader_config=None, execute=None, fetch=None):
     prepared = plan(workspace, state, remote_cache, upload,
                     architecture=architecture, kernel_config=kernel_config, ca_bundle=ca_bundle, java_trust_store=java_trust_store,
-                    distdir=distdir, cache_directory=cache_directory, debs_directory=debs_directory)
+                    distdir=distdir, cache_directory=cache_directory, debs_directory=debs_directory,
+                    downloader_config=downloader_config)
     workspace = workspace.resolve(strict=True)
     architecture = prepared["source"]["launcher"]["architecture"]
     state = Path(prepared["state"])
@@ -663,6 +684,7 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
     consumer = state / "consumer"
     shutil.copytree(workspace / "tools/bazel/kernel", consumer)
     require(configure_registry(consumer) == prepared["registry"], "kernel registry selection changed")
+    configure_downloader(consumer, prepared["downloader_config"])
     (state / "plan.json").write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n")
     if execute is None:
         subprocess.run(prepared["argv"], cwd=workspace, check=True)
@@ -708,7 +730,7 @@ def remove_build_tree(path):
 
 def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cache_directory=None,
            remote_cache=None, upload=False, ca_bundle=None,
-           java_trust_store=None, distdir=None, debs_directory=None, builder=None):
+           java_trust_store=None, distdir=None, debs_directory=None, downloader_config=None, builder=None):
     """Verify/reuse or build the kernel packages in Make's normal DEB directory."""
     workspace = workspace.resolve(strict=True)
     with package_lock(workspace):
@@ -760,7 +782,7 @@ def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cach
         receipt = build_function(workspace, state, remote_cache, upload,
                                  architecture=architecture, kernel_config=source["kernel_config"], cache_directory=cache_directory,
                                  ca_bundle=ca_bundle, java_trust_store=java_trust_store, distdir=distdir,
-                                 debs_directory=destination)
+                                 debs_directory=destination, downloader_config=downloader_config)
         require(source_state(workspace, architecture, source["kernel_config"]) == source, "kernel source changed during automatic build")
         result = verify(destination, workspace, source=source, architecture=architecture)
         if temporary_state:
@@ -791,6 +813,8 @@ def main():
     parser.add_argument("--java-trust-store", type=Path,
                         help="Java trust store; overrides SONIC_BAZEL_JAVA_TRUST_STORE for build commands")
     parser.add_argument("--distdir", type=Path)
+    parser.add_argument("--downloader-config", type=Path,
+                        help="Bazel URL rewrite rules; defaults to SONIC_BAZEL_DOWNLOADER_CONFIG")
     parser.add_argument("--cache-directory", type=Path,
                         help="persistent Bazel download/action cache visible to this process")
     args = parser.parse_args()
@@ -800,6 +824,10 @@ def main():
         configured_trust = os.environ.get("SONIC_BAZEL_JAVA_TRUST_STORE")
         if configured_trust:
             args.java_trust_store = Path(configured_trust)
+    if args.command in {"ensure", "plan", "build"} and args.downloader_config is None:
+        configured_downloader = os.environ.get("SONIC_BAZEL_DOWNLOADER_CONFIG")
+        if configured_downloader:
+            args.downloader_config = Path(configured_downloader)
     workspace = args.workspace.resolve(strict=True)
     configuration = parse_kernel_config(args.kernel_config)
     if args.command == "ensure":
@@ -807,7 +835,7 @@ def main():
                         cache_directory=args.cache_directory, remote_cache=args.remote_cache,
                         upload=args.upload_local_results,
                         ca_bundle=args.ca_bundle, java_trust_store=args.java_trust_store, distdir=args.distdir,
-                        debs_directory=args.debs_directory)
+                        debs_directory=args.debs_directory, downloader_config=args.downloader_config)
     elif args.command in {"plan", "build"}:
         if args.state_dir is None:
             parser.error("plan/build require --state-dir")
@@ -815,9 +843,10 @@ def main():
         result = function(workspace, args.state_dir, args.remote_cache, args.upload_local_results,
                           architecture=args.architecture, kernel_config=configuration, ca_bundle=args.ca_bundle,
                           java_trust_store=args.java_trust_store, distdir=args.distdir,
-                          cache_directory=args.cache_directory, debs_directory=args.debs_directory)
+                          cache_directory=args.cache_directory, debs_directory=args.debs_directory,
+                          downloader_config=args.downloader_config)
     else:
-        if args.state_dir or args.remote_cache or args.upload_local_results or args.ca_bundle or args.java_trust_store or args.distdir or args.cache_directory:
+        if args.state_dir or args.remote_cache or args.upload_local_results or args.ca_bundle or args.java_trust_store or args.distdir or args.cache_directory or args.downloader_config:
             parser.error("verify does not accept build options")
         result = verify(debs_path(workspace, args.debs_directory), workspace, architecture=args.architecture, kernel_config=configuration)
     print(json.dumps(result, indent=2, sort_keys=True))

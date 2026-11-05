@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from pathlib import Path
+import re
 import shlex
 import sys
 import tempfile
@@ -93,9 +94,29 @@ class DebianBazelTest(unittest.TestCase):
                 config = self.runner_temp / f"sonic-source-mirrors-{uid}.cfg"
                 self.assertEqual(shlex.split(downloader[0]),
                                  ["common", "--experimental_downloader_config=" + str(config)])
-                self.assertEqual(config.read_bytes(), payload)
+                self.assertEqual(config.read_bytes()[-len(payload):], payload)
         self.assertEqual({path.name for path in self.runner_temp.iterdir()},
                          {"sonic-source-mirrors-0.cfg", "sonic-source-mirrors-1000.cfg"})
+
+    def test_download_fallbacks_are_exact_and_keep_original_urls(self):
+        original = b"# verified registry configuration\n"
+        configured = debian_bazel.with_download_fallbacks(original)
+        self.assertEqual(configured[-len(original):], original)
+        companion = configured[:-len(original)].decode().splitlines()
+        directives = [line.split(maxsplit=2) for line in companion if line and not line.startswith("#")]
+        self.assertTrue(all(parts[0] == "rewrite" for parts in directives))
+        expected = {source: f"https://snapshot.debian.org/file/{identifier}"
+                    for source, identifier in debian_bazel.SNAPSHOT_FALLBACKS.items()}
+        expected.update(debian_bazel.GNU_FALLBACKS)
+        self.assertEqual(len(directives), 2 * (len(debian_bazel.SNAPSHOT_FALLBACKS)
+                                               + len(debian_bazel.GNU_FALLBACKS)))
+        for source, destination in expected.items():
+            with self.subTest(source=source):
+                matches = [target for _, pattern, target in directives if re.fullmatch(pattern, source)]
+                self.assertEqual(matches, [destination, "https://" + source])
+                for changed in ("x" + source, source + "x",
+                                source.replace(".", "X", 1)):
+                    self.assertFalse(any(re.fullmatch(pattern, changed) for _, pattern, _ in directives))
 
 
 if __name__ == "__main__":
