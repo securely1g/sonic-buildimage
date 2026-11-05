@@ -52,11 +52,14 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
     def test_bootstrap_verifies_config_before_appending_to_existing_caches(self):
         for filename, job in JOBS:
             fixture, config_url, config_sha = (
+                ("source-mirrors-bc9a3a0f.cfg",
+                 "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/bc9a3a0f684d3f0d42d20b47ea5387d448acf9c4/ci/source_mirrors.cfg",
+                 "bf85cf7e4f277197732321a8f72086c296698fc495002a68e16fc7e7ef239014")
+                if (filename, job) == ("bazel-oci.yml", "archive") else
                 ("source-mirrors-a32c87f0.cfg",
                  "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a32c87f0658e20f5fecd6459ef006caed96d905f/ci/source_mirrors.cfg",
                  "354c7d6ea5931c8ecb1c4a96fafa1269802b1547bde3b3b64dfc55a89a35cb46")
-                if (filename, job) in (("bazel-base-images.yml", "native"),
-                                       ("bazel-oci.yml", "archive")) else
+                if (filename, job) == ("bazel-base-images.yml", "native") else
                 ("source-mirrors-264002ba.cfg", OCI_CONFIG_URL, OCI_CONFIG_SHA)
                 if filename == "bazel-oci.yml" else
                 ("source-mirrors-6e305126.cfg", CONFIG_URL, CONFIG_SHA))
