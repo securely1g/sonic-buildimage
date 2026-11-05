@@ -47,6 +47,8 @@
         "amd64": {
           "/trixie/gdb:amd64": "16.3-1",
           "/trixie/gdbserver:amd64": "16.3-1",
+          "/trixie/libedit2:amd64": "3.1-20250104-1",
+          "/trixie/libfido2-1:amd64": "1.15.0-1+b1",
           "/trixie/sshpass:amd64": "1.10-0.1",
           "/trixie/strace:amd64": "6.13+ds-1",
           "/trixie/vim:amd64": "2:9.1.1230-2"
@@ -1549,6 +1551,22 @@
       "suite": "trixie",
       "version": "1.1.0-2+b7"
     },
+    "/trixie/libbsd0:amd64=0.12.2-2": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libmd0:amd64=1.1.0-2+b1",
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19"
+      ],
+      "filename": "pool/main/libb/libbsd/libbsd0_0.12.2-2_amd64.deb",
+      "name": "libbsd0",
+      "section": "libs",
+      "sha256": "e5a85986fa6bec3307ab1bc860736b478b331882bc45e17675a7bdf88eecb43a",
+      "size": 130968,
+      "suite": "trixie",
+      "version": "0.12.2-2"
+    },
     "/trixie/libbz2-1.0:amd64=1.0.8-6": {
       "architecture": "amd64",
       "depends_on": [
@@ -1627,6 +1645,21 @@
       "size": 28988,
       "suite": "trixie",
       "version": "1:2.75-10+deb13u1+b1"
+    },
+    "/trixie/libcbor0.10:amd64=0.10.2-2": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19"
+      ],
+      "filename": "pool/main/libc/libcbor/libcbor0.10_0.10.2-2_amd64.deb",
+      "name": "libcbor0.10",
+      "section": "libs",
+      "sha256": "2457686e375dcb7567ba01da6638a0711e2a55725d084d65de44dd11bb1f52e2",
+      "size": 28296,
+      "suite": "trixie",
+      "version": "0.10.2-2"
     },
     "/trixie/libcc1-0:amd64=14.2.0-19": {
       "architecture": "amd64",
@@ -1936,6 +1969,24 @@
       "suite": "trixie",
       "version": "0.192-4"
     },
+    "/trixie/libedit2:amd64=3.1-20250104-1": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libtinfo6:amd64=6.5+20250216-2",
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19",
+        "/trixie/libbsd0:amd64=0.12.2-2",
+        "/trixie/libmd0:amd64=1.1.0-2+b1"
+      ],
+      "filename": "pool/main/libe/libedit/libedit2_3.1-20250104-1_amd64.deb",
+      "name": "libedit2",
+      "section": "libs",
+      "sha256": "b002ea172b9c1e34a67bc497c523c67bb74c3f0a4e98113cb083990a1f1d3bfe",
+      "size": 93832,
+      "suite": "trixie",
+      "version": "3.1-20250104-1"
+    },
     "/trixie/libelf1t64:amd64=0.192-4": {
       "architecture": "amd64",
       "depends_on": [
@@ -2012,6 +2063,28 @@
       "size": 24144,
       "suite": "trixie",
       "version": "3.4.8-2"
+    },
+    "/trixie/libfido2-1:amd64=1.15.0-1+b1": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/zlib1g:amd64=1:1.3.dfsg+really1.3.1-1+b1",
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19",
+        "/trixie/libudev1:amd64=257.13-1~deb13u1",
+        "/trixie/libcap2:amd64=1:2.75-10+deb13u1+b1",
+        "/trixie-security/libssl3t64:amd64=3.5.6-1~deb13u2",
+        "/trixie-security/openssl-provider-legacy:amd64=3.5.6-1~deb13u2",
+        "/trixie/libzstd1:amd64=1.5.7+dfsg-1",
+        "/trixie/libcbor0.10:amd64=0.10.2-2"
+      ],
+      "filename": "pool/main/libf/libfido2/libfido2-1_1.15.0-1+b1_amd64.deb",
+      "name": "libfido2-1",
+      "section": "libs",
+      "sha256": "094fc0fe20c652be848ab2a8b3793eb03bc4327140ebd232145356352004e6c0",
+      "size": 78728,
+      "suite": "trixie",
+      "version": "1.15.0-1+b1"
     },
     "/trixie/libgcc-14-dev:amd64=14.2.0-19": {
       "architecture": "amd64",
@@ -3486,6 +3559,22 @@
       "size": 1074340,
       "suite": "trixie",
       "version": "14.2.0-19"
+    },
+    "/trixie/libudev1:amd64=257.13-1~deb13u1": {
+      "architecture": "amd64",
+      "depends_on": [
+        "/trixie/libcap2:amd64=1:2.75-10+deb13u1+b1",
+        "/trixie/libc6:amd64=2.41-12+deb13u3",
+        "/trixie/libgcc-s1:amd64=14.2.0-19",
+        "/trixie/gcc-14-base:amd64=14.2.0-19"
+      ],
+      "filename": "pool/main/s/systemd/libudev1_257.13-1~deb13u1_amd64.deb",
+      "name": "libudev1",
+      "section": "libs",
+      "sha256": "5d41c284f5a93b05bc7d648b61a02dd2bb9ff05b2261ad1a8b7d96044a0cfa88",
+      "size": 152300,
+      "suite": "trixie",
+      "version": "257.13-1~deb13u1"
     },
     "/trixie/libunistring5:amd64=1.3-2": {
       "architecture": "amd64",

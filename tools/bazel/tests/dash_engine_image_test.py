@@ -33,6 +33,43 @@ def successful_build_events(*, processes=0, action_cache_hits=0, runners=None):
 
 
 class DashEngineImageTest(unittest.TestCase):
+    def test_debug_lock_supplies_source_openssh_dependency_closure(self):
+        # Actual openssh-client Depends from source 15fcb926's retained AMD64
+        # runtime_packages.json (registry CI run 41958251171). This is a presence
+        # regression; installed_packages still validates actual control versions.
+        depends = (
+            "adduser, init-system-helpers (>= 1.66~), passwd, libc6 (>= 2.38), "
+            "libedit2 (>= 2.11-20080614-0), libfido2-1 (>= 1.8.0), "
+            "libgssapi-krb5-2 (>= 1.17), libselinux1 (>= 3.1~), "
+            "libssl3t64 (>= 3.0.0), zlib1g (>= 1:1.1.4)"
+        )
+        required = {clause.split()[0] for clause in depends.split(",")}
+        base = json.loads((driver.ROOT / "dockers/docker-base-trixie/bazel/apt.lock.json").read_bytes())
+        engine = json.loads((driver.ROOT / "platform/vs/docker-dash-engine/bazel/apt.lock.json").read_bytes())
+
+        def closure(lock, group):
+            roots = lock["dependency_sets"][group]["sets"]["amd64"]
+            pending = [key + "=" + version for key, version in roots.items()]
+            records = {}
+            while pending:
+                key = pending.pop()
+                if key not in records:
+                    records[key] = lock["packages"][key]
+                    pending.extend(records[key]["depends_on"])
+            return {record["name"] for record in records.values()}
+
+        inherited = closure(base, "base_debian") | closure(engine, "dash_engine_debian")
+        debug = closure(engine, "dash_engine_debug_debian")
+        self.assertEqual(required - inherited - debug, set())
+        self.assertIn("libcbor0.10", debug)  # libfido2's transitive runtime input.
+        for name in ("libedit2", "libfido2-1"):
+            with self.subTest(root=name):
+                missing_root = deepcopy(engine)
+                del missing_root["dependency_sets"]["dash_engine_debug_debian"]["sets"]["amd64"][
+                    "/trixie/" + name + ":amd64"]
+                # Keeping an unused record in the lock cannot satisfy Depends.
+                self.assertEqual(required - inherited - closure(missing_root, "dash_engine_debug_debian"), {name})
+
     def test_noop_accepts_zero_singular_and_plural_process_summaries(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
