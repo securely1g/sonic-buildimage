@@ -253,7 +253,7 @@ def make_environment():
 
 def prepare(architecture, checkout):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
+    require(os.geteuid() != 0, "Run outer Make as the runner user, not root")
     helpers = common_helpers(checkout)
     seed, seed_hash = seed_receipt(architecture)
     helpers.check_actions(seed["phases"][0], remote=False)
@@ -299,7 +299,7 @@ def prepare(architecture, checkout):
 
 def build(architecture):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
+    require(os.geteuid() != 0, "Run outer Make as the runner user, not root")
     build_helpers.credentials.authorization()
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     private = ROOT / PRIVATE

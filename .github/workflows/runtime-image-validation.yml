@@ -49,12 +49,12 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner_arch: x64
             machine: x86_64
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner_arch: arm64
             machine: aarch64
-    runs-on: ${{ matrix.runner }}
+    runs-on: [self-hosted, linux, debian-trixie-container, '${{ matrix.runner_arch }}']
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

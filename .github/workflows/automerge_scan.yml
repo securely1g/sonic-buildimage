@@ -8,7 +8,7 @@ jobs:
   automerge_scan:
     # Disable workflow, and use pipeline instead to have same logic with other automation
     if: github.repository_owner == 'sonic-net' && false
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
     - name: Debug
       env:

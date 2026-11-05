@@ -11,7 +11,7 @@ jobs:
   pre_cherry_pick:
     # Use azpw instead of workflow to have stable performance.
     if: false && github.repository_owner == 'sonic-net' && github.event.pull_request.merged == true && ( (github.event.action == 'closed' && contains(join(github.event.pull_request.labels.*.name, ','), 'Approved for 20')) || (github.event.action == 'labeled' && startsWith(github.event.label.name, 'Approved for 20')) )
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
     - name: Checkout
       uses: actions/checkout@v3

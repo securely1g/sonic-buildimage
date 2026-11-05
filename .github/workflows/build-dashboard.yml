@@ -44,7 +44,7 @@ concurrency:
 jobs:
   checks:
     name: Build dashboard checks
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,7 +64,7 @@ jobs:
       github.repository == 'securely1g/sonic-buildimage' &&
       github.ref == 'refs/heads/master' &&
       github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     timeout-minutes: 30
     permissions:
       actions: read
@@ -131,7 +131,7 @@ jobs:
   deploy:
     name: Publish build dashboard
     needs: publish
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     timeout-minutes: 10
     permissions:
       pages: write

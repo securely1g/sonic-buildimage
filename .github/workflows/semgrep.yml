@@ -12,7 +12,7 @@ jobs:
   semgrep:
     if: github.repository_owner == 'sonic-net'
     name: Semgrep
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     container:
       image: returntocorp/semgrep
     steps:

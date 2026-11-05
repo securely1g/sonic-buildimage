@@ -129,7 +129,7 @@ class SourceWorkflowTest(unittest.TestCase):
         self.assertNotIn("syncd-contracts", workflow_jobs)
         checks = workflow_jobs["checks"]
         self.assertIn("name: OCI regression checks (AMD64)", checks)
-        self.assertIn("runs-on: ubuntu-24.04", checks)
+        self.assertIn("runs-on: [self-hosted, linux, x64, debian-trixie-container]", checks)
         self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: (?:checks|\[checks\])$")
         for name, step in steps(checks).items():
             script = shell(step)

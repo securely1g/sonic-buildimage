@@ -32,7 +32,7 @@ fixes remain a separate component change in
 
 The native P4 dependencies still use their existing Make/Debian producers.
 The lgh4 worker cannot currently connect to the OpenSUSE source endpoint, so
-the hosted checks download the nine published source files pinned in
+the OCI checks download the nine published source files pinned in
 [`src/p4lang/source-inputs.json`](../../../src/p4lang/source-inputs.json).
 They upload a per-run artifact; the native job selects its exact artifact ID
 and independently checks every file's SHA256, size and descriptor identity.

@@ -21,14 +21,14 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-22.04
+            runner_arch: x64
             cache_sha256: 6a6b64666c2238ec6b49b7b29f5e41e4149de09417a0028897c9bffe40376876
           - arch: arm64
-            runner: ubuntu-22.04-arm
+            runner_arch: arm64
             cache_sha256: 295e54fd58841211b00fb204cafc13affc6a13d8946a4520c0ecdce22626ef93
     # Keep the integration check scoped to the requested kernel PR.
     if: github.event_name != 'pull_request' || github.event.pull_request.number == 6
-    runs-on: ${{ matrix.runner }}
+    runs-on: [self-hosted, linux, debian-trixie-container, '${{ matrix.runner_arch }}']
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,9 +44,8 @@ jobs:
           python3 -B tools/bazel/tests/kernel_sbom_test.py
           python3 -B tools/bazel/tests/public_artifacts_test.py
           python3 -B tools/bazel/tests/kernel_artifacts_test.py
-      - name: Allocate space on this disposable runner
+      - name: Check available runner space
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           python3 - <<'PY'
           import os, shutil
           if shutil.disk_usage(os.environ['RUNNER_TEMP']).free < 45 * 2**30:
