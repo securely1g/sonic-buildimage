@@ -21,6 +21,7 @@ import tarfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel import build_helpers
+from tools.bazel.cache import managed
 from tools.bazel.ci import make_cache_sandbox
 
 ARCHITECTURES = {"amd64": "x86_64", "arm64": "aarch64"}
@@ -34,6 +35,11 @@ OUTPUT_BASE = CONTAINER_PRIVATE / "read-output"
 INSTALL_BASE = CONTAINER_PRIVATE / "bazel-install"
 ACTION_LOG = CONTAINER_PRIVATE / "make-actions.json"
 GIB = 1024 ** 3
+SEED_INPUTS = (
+    ".bazelrc", ".bazelversion", "MODULE.bazel", "tools/bazel/common.bazelrc",
+    "src/sonic-supervisord-utilities-rs/deps.MODULE.bazel",
+    "src/sonic-supervisord-utilities-rs/bazel/release.bzl",
+)
 
 
 def require(condition, message):
@@ -143,6 +149,12 @@ def common_helpers(checkout):
     return importlib.import_module("cross_repo")
 
 
+def seed_inputs(root):
+    require(all((root / name).is_file() and not (root / name).is_symlink() for name in SEED_INPUTS),
+            "Seed configuration inputs must be ordinary files")
+    return {name: sha256(root / name) for name in SEED_INPUTS}
+
+
 def seed_receipt(architecture):
     path = ROOT / PUBLIC / "seed/cross-repo.json"
     seed = json.loads(path.read_text())
@@ -155,6 +167,16 @@ def seed_receipt(architecture):
     for field in ("common_revision", "buildimage_revision"):
         require(bool(re.fullmatch(r"[0-9a-f]{40}", seed.get(field, ""))),
                 "Seed must record the full " + field)
+    if managed.enabled():
+        require(all(seed.get(key) == value for key, value in managed.selection().items()),
+                "Common seed must use this runner-managed cache and cache runtime")
+        require(seed.get("buildimage_inputs") == seed_inputs(ROOT),
+                "Buildimage dependency and toolchain inputs differ from the Common seed")
+        resolution = seed.get("module_resolution", {})
+        require(isinstance(resolution, dict) and resolution.get("matched") is True
+                and type(resolution.get("seed_module_count")) is int and resolution["seed_module_count"] > 0
+                and bool(re.fullmatch(r"[0-9a-f]{64}", resolution.get("shared_graph_sha256", ""))),
+                "Common seed must retain matching module resolution evidence")
     return seed, sha256(path)
 
 
@@ -208,14 +230,15 @@ def bazel_invocation(arguments):
     """cquery must not replace the execution evidence from the real image build."""
     require(bool(arguments), "A Bazel command is required")
     subcommand, *options = arguments
+    managed.check_options(options)
     if subcommand == "build":
         options = ["--execution_log_json_file=" + str(ACTION_LOG), *options]
-    return ["bazel", "--batch", "--nosystem_rc", "--nohome_rc",
+    return [managed.BAZEL if managed.enabled() else "bazel", "--batch", "--nosystem_rc", "--nohome_rc",
             "--install_base=" + str(INSTALL_BASE), "--output_base=" + str(OUTPUT_BASE), subcommand, *options]
 
 
 def container_options():
-    return ["--override_module=sonic-swss-common=" + str(CONTAINER_PRIVATE / "common-source"),
+    options = ["--override_module=sonic-swss-common=" + str(CONTAINER_PRIVATE / "common-source"),
             "--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
             "--spawn_strategy=linux-sandbox", "--strategy=Genrule=linux-sandbox",
             # Upstream OCI layout copies declare no-sandbox. Keep this exception
@@ -227,11 +250,18 @@ def container_options():
             # Avoid sorting the full execution log in Bazel's heap at shutdown.
             "--execution_log_sort=false",
             "--check_direct_dependencies=off", "--color=no", "--curses=no", "--noshow_progress"]
+    if managed.enabled():
+        options.append(managed.downloader_option())
+    return options
 
 
 def make_command(architecture, builder, cache_root):
     require(bool(re.fullmatch(r"[/A-Za-z0-9_.-]+", str(cache_root))),
             "Make cache path must not contain shell metacharacters or whitespace")
+    extra = ["-e BAZEL", "-e BAZEL_CONTAINER_ARGS"]
+    if managed.enabled():
+        extra += ["-e " + managed.FLAG, "-e " + managed.DOWNLOADER_FLAG]
+        extra += ["-v " + path + ":" + path + ":ro" for path in managed.runtime_paths()]
     return ["make", "-f", "Makefile.work", "BLDENV=trixie", "PLATFORM=vs",
             "PLATFORM_ARCH=" + architecture, "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "INCLUDE_FIPS=y",
             "SONIC_BUILD_JOBS=4", "SONIC_DPKG_CACHE_METHOD=none",
@@ -242,18 +272,21 @@ def make_command(architecture, builder, cache_root):
             "SONIC_SLAVE_REUSE_TRIXIE_IMAGE=" + builder["local_image"],
             "SONIC_SLAVE_REUSE_TRIXIE_TAG=" + builder["local_tag"],
             "SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n",
-            "SONIC_BUILDER_EXTRA_CMDLINE=-e BAZEL -e BAZEL_CONTAINER_ARGS", "UNATTENDED=y"]
+            "SONIC_BUILDER_EXTRA_CMDLINE=" + " ".join(extra), "UNATTENDED=y"]
 
 
 def make_environment():
-    return dict(os.environ, BAZEL=str(CONTAINER_PRIVATE / "bazel-read"),
-                BAZEL_CONTAINER_ARGS=shlex.join(container_options()),
-                BAZEL_CONTAINER_CACHE_DIR="", BAZEL_SWSS_CACHE_DIR="")
+    environment = dict(os.environ, BAZEL=str(CONTAINER_PRIVATE / "bazel-read"),
+                       BAZEL_CONTAINER_ARGS=shlex.join(container_options()),
+                       BAZEL_CONTAINER_CACHE_DIR="", BAZEL_SWSS_CACHE_DIR="")
+    if managed.enabled():
+        environment.pop("BAZEL_REMOTE_AUTH", None)
+    return environment
 
 
 def prepare(architecture, checkout):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
+    require(os.geteuid() != 0, "Run outer Make as the runner user, not root")
     helpers = common_helpers(checkout)
     seed, seed_hash = seed_receipt(architecture)
     helpers.check_actions(seed["phases"][0], remote=False)
@@ -278,7 +311,8 @@ def prepare(architecture, checkout):
                        "import os, sys\n"
                        "sys.path.insert(0, '/sonic')\n"
                        "from tools.bazel.ci.make_cache import bazel_invocation\n"
-                       "os.execvp('bazel', bazel_invocation(sys.argv[1:]))\n")
+                       "argv = bazel_invocation(sys.argv[1:])\n"
+                       "os.execvp(argv[0], argv)\n")
     wrapper.chmod(0o755)
     environment = make_environment()
     prefix = make_command(architecture, builder, cache_root)
@@ -288,6 +322,9 @@ def prepare(architecture, checkout):
                "seed_receipt_sha256": seed_hash, "builder": builder, "make_command": [*prefix, IMAGE],
                "cache_writes": False, "disk_cache": False, "fresh_workspace": True,
                "fresh_output_base": True, "yang": True}
+    if managed.enabled():
+        receipt.update(managed.selection())
+        receipt["buildimage_inputs"] = seed_inputs(ROOT)
     write_json(ROOT / PUBLIC / "result.json", receipt)
     write_json(private / "make-plan.json", {"architecture": architecture, "make_prefix": prefix,
                                            "buildimage_revision": revision})
@@ -299,8 +336,11 @@ def prepare(architecture, checkout):
 
 def build(architecture):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
-    build_helpers.credentials.authorization()
+    require(os.geteuid() != 0, "Run outer Make as the runner user, not root")
+    if managed.enabled():
+        managed.selection()
+    else:
+        build_helpers.credentials.authorization()
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     private = ROOT / PRIVATE
     plan = json.loads((private / "make-plan.json").read_text())
@@ -417,7 +457,10 @@ def inspect(architecture):
     native_architecture(architecture)
     require(ROOT == Path("/sonic") and Path("/.dockerenv").is_file(),
             "Inspect must run inside the real sonic-slave through outer Make")
-    build_helpers.credentials.authorization()
+    if managed.enabled():
+        managed.selection()
+    else:
+        build_helpers.credentials.authorization()
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     seed, seed_hash = seed_receipt(architecture)
     receipt_path = ROOT / PUBLIC / "result.json"

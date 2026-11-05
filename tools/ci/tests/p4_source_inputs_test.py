@@ -187,6 +187,75 @@ class SourceInputsTest(unittest.TestCase):
         self.assertNotIn("private-proxy-secret", self.receipt.read_text())
         self.assertEqual(json.loads(self.receipt.read_text())["status"], "failed")
 
+    def test_transport_fallback_preserves_pins_and_records_actual_sources(self):
+        def curl(command, **kwargs):
+            url = command[-1]
+            self.assertNotIn('--insecure', command)
+            self.assertEqual(command[command.index('--proto-redir') + 1], '=https')
+            if url.startswith(helper.BASE_URL):
+                return subprocess.CompletedProcess(command, 35, b'000 0 0.1 0', b'TLS unavailable')
+            self.assertTrue(url.startswith(helper.ARCHIVE_MIRROR))
+            name = url.removeprefix(helper.ARCHIVE_MIRROR)
+            self.assertFalse(name.endswith('.dsc'))
+            data = (self.directory / name).read_bytes()
+            Path(command[command.index('--output') + 1]).write_bytes(data)
+            return subprocess.CompletedProcess(command, 0, f'200 {len(data)} 0.1 1'.encode(), b'')
+        with patch.object(helper.subprocess, 'run', side_effect=curl) as network, \
+                patch.object(helper, 'DESCRIPTORS', self.directory), patch.object(helper.time, 'sleep'):
+            self.assertEqual(helper.run(self.manifest_path, self.root / 'fresh', self.receipt, True), 0)
+        self.assertEqual(network.call_count, 15)
+        receipt = json.loads(self.receipt.read_text())
+        self.assertTrue(receipt['all_published_pins_match'])
+        self.assertFalse(receipt['descriptor_modified'])
+        self.assertEqual(len(receipt['known_inconsistencies']), 1)
+        for name, attempts in receipt['transport'].items():
+            self.assertEqual(attempts[0]['source'], helper.BASE_URL + name)
+            self.assertEqual(attempts[0]['source_kind'], 'canonical')
+            if name.endswith('.dsc'):
+                self.assertEqual(attempts[1]['source_kind'], 'tracked_descriptor')
+                self.assertEqual(attempts[1]['provenance'], helper.DESCRIPTOR_PROVENANCE)
+                self.assertEqual(attempts[1]['sha256'], receipt['files'][name]['sha256'])
+            else:
+                self.assertEqual(attempts[1]['source'], helper.ARCHIVE_MIRROR + name)
+
+    def test_descriptor_fallback_rejects_modified_or_symlinked_fixture(self):
+        name = 'p4lang-pi_0.1.3-2.dsc'
+        pin = self.manifest['packages']['p4lang-pi']['files'][name]
+        fixtures = self.root / 'fixtures'; fixtures.mkdir()
+        original = (self.directory / name).read_bytes()
+        path = fixtures / name
+        failure = subprocess.CompletedProcess([], 35, b'000 0 0.1 0', b'')
+        for kind in ['modified', 'symlink']:
+            with self.subTest(kind=kind):
+                if kind == 'modified':
+                    path.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+                else:
+                    path.unlink(); path.symlink_to(self.directory / name)
+                with patch.object(helper, 'DESCRIPTORS', fixtures), \
+                        patch.object(helper.subprocess, 'run', return_value=failure), \
+                        patch.object(helper.time, 'sleep'), self.assertRaises((helper.InputError, OSError)):
+                    helper.fetch(self.root / kind, {name: pin}, {'transport': {}}, lambda: None)
+
+    def test_nonretryable_response_and_rate_limit_do_not_select_fallback(self):
+        for status, exit_code in [('404', 22), ('429', 22), ('403', 56), ('429', 28), ('000', 60)]:
+            with self.subTest(status=status, exit_code=exit_code):
+                response = subprocess.CompletedProcess([], exit_code, f'{status} 0 0.1 0'.encode(), b'')
+                with patch.object(helper.subprocess, 'run', return_value=response) as network:
+                    self.assertEqual(helper.run(self.manifest_path, self.root / (status + '-' + str(exit_code)),
+                                                self.root / (status + '-' + str(exit_code) + '.json'), True), 1)
+                self.assertEqual(network.call_count, 1)
+                self.assertTrue(network.call_args.args[0][-1].startswith(helper.BASE_URL))
+
+    def test_published_descriptor_fixtures_match_the_unchanged_source_manifest(self):
+        manifest = json.loads((helper.DESCRIPTORS.parent / 'source-inputs.json').read_text())
+        inventory = helper.manifest_contract(manifest)
+        self.assertEqual({p.name for p in helper.DESCRIPTORS.glob('*.dsc')},
+                         {name for name in inventory if name.endswith('.dsc')})
+        for name, pin in inventory.items():
+            if name.endswith('.dsc'):
+                actual, _ = helper.fingerprints(helper.DESCRIPTORS / name, pin['bytes'])
+                self.assertEqual(actual['sha256'], pin['sha256'])
+
 
 if __name__ == "__main__":
     unittest.main()

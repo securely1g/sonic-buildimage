@@ -16,7 +16,7 @@ jobs:
   analyze:
     if: github.repository_owner == 'sonic-net'
     name: Analyze
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     permissions:
       actions: read
       contents: read

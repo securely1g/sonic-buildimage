@@ -15,6 +15,16 @@ import time
 BASE_URL = "https://downloadcontent.opensuse.org/repositories/home:/p4lang/Debian_11/"
 VERSIONS = {"p4lang-pi": "0.1.3-2", "p4lang-bmv2": "1.15.0-9", "p4lang-p4c": "1.2.4.2-3"}
 ALGORITHMS = {"md5": 32, "sha1": 40, "sha256": 64}
+ARCHIVE_MIRROR = "https://github.com/securely1g/sonic-bazel-registry/releases/download/p4-source-inputs-20261021/"
+DESCRIPTORS = Path(__file__).resolve().parents[2] / "src/p4lang/source-descriptors"
+DESCRIPTOR_PROVENANCE = {
+    "repository": "securely1g/sonic-buildimage",
+    "run_id": 42093345228,
+    "revision": "739f795abd396adab0bff87e606479df8965ea84",
+    "artifact_id": 13444914604,
+    "artifact_sha256": "4f8a4fbb3c6ab1f34bf86d5b3e1a759ec3d0741061eaaec307a5e2ff56faaeaa",
+    "receipt_sha256": "85a17affe6a114e8fb5e519635845132408974107b9070c055a4462083bbc12a",
+}
 
 
 class InputError(Exception):
@@ -166,23 +176,44 @@ def fetch(directory, inventory, receipt, save):
         file_deadline = min(deadline, time.monotonic() + 300)
         partial = directory / (name + ".partial")
         downloaded = False
+        fallback = False
         for attempt in range(1, 4):
             seconds = min(120, file_deadline - time.monotonic())
             require(seconds >= 1, "fetch_time_budget_exhausted")
+            if fallback and name.endswith(".dsc"):
+                actual, data = fingerprints(DESCRIPTORS / name, pin["bytes"], capture=True)
+                require(actual["sha256"] == pin["sha256"], "descriptor_fallback_sha256_mismatch:" + name)
+                with partial.open("xb") as output:
+                    output.write(data)
+                attempts.append({"attempt": attempt, "source_kind": "tracked_descriptor",
+                                 "source": "src/p4lang/source-descriptors/" + name,
+                                 "canonical_url": BASE_URL + name, "provenance": DESCRIPTOR_PROVENANCE,
+                                 "bytes": actual["bytes"], "sha256": actual["sha256"]})
+                partial.rename(directory / name)
+                downloaded = True
+                save()
+                break
+            url = (ARCHIVE_MIRROR if fallback else BASE_URL) + name
             command = ["/usr/bin/curl", "--disable", "--silent", "--show-error", "--fail", "--location",
                        "--max-redirs", "3", "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "15",
                        "--max-time", str(seconds), "--max-filesize", str(pin["bytes"]), "--output", str(partial),
-                       "--write-out", "%{http_code} %{size_download} %{time_total} %{num_redirects}", BASE_URL + name]
+                       "--write-out", "%{http_code} %{size_download} %{time_total} %{num_redirects}", url]
+            source = {"source_kind": "release_mirror" if fallback else "canonical",
+                      "source": url, "canonical_url": BASE_URL + name}
             try:
                 proc = subprocess.run(command, capture_output=True, timeout=seconds + 2)
                 metrics = proc.stdout.decode("ascii", errors="replace").split()
-                attempts.append({"attempt": attempt, "curl_exit": proc.returncode,
+                attempts.append({"attempt": attempt, **source, "curl_exit": proc.returncode,
                                  "metrics": dict(zip(["http_status", "bytes", "seconds", "redirects"], metrics)),
                                  "stderr_bytes": len(proc.stderr)})
                 downloaded = proc.returncode == 0 and len(metrics) == 4 and metrics[0] == "200"
-                retry = proc.returncode in {5, 6, 7, 18, 28, 35, 52, 55, 56} or (metrics and metrics[0] in {"408", "429", "500", "502", "503", "504"})
+                status = metrics[0] if metrics else "000"
+                # An observed HTTP refusal takes precedence over a transport
+                # exit code. In particular, never route around rate limits.
+                retry = status in {"408", "500", "502", "503", "504"} or (
+                    status in {"000", "200"} and proc.returncode in {5, 6, 7, 18, 28, 35, 52, 55, 56})
             except subprocess.TimeoutExpired:
-                attempts.append({"attempt": attempt, "status": "process_timeout"})
+                attempts.append({"attempt": attempt, **source, "status": "process_timeout"})
                 retry = True
             save()
             if downloaded:
@@ -190,6 +221,8 @@ def fetch(directory, inventory, receipt, save):
                 break
             if not retry:
                 break
+            partial.unlink(missing_ok=True)
+            fallback = True
             if attempt < 3 and file_deadline - time.monotonic() > 2:
                 time.sleep(2)
         require(downloaded, "download_failed:" + name)

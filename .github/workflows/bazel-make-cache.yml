@@ -21,7 +21,7 @@ permissions:
 jobs:
   checks:
     name: Make cache regression tests
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,6 +29,7 @@ jobs:
       - run: |
           python3 -B -m unittest \
             tools.bazel.tests.remote_cache_test \
+            tools.bazel.tests.managed_cache_test \
             tools.bazel.tests.make_cache_test \
             tools.bazel.tests.make_cache_sandbox_test \
             tools.bazel.tests.build_helpers_test \
@@ -40,36 +41,39 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: checks
     timeout-minutes: 180
+    env:
+      SONIC_BAZEL_MANAGED_CACHE: "1"
     strategy:
       fail-fast: false
       matrix:
+        # Native ARM64 is paused until the Debian runner pool provides it.
         include:
           - architecture: amd64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+            runner_arch: x64
+    runs-on: [self-hosted, linux, debian-trixie-container, '${{ matrix.runner_arch }}']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Prepare space and Make host tools
+      - name: Check space and prepare Make host tools
         run: |
-          # These unused SDKs belong to this disposable GitHub-hosted runner.
-          df -h . /var/lib/docker
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h . "$RUNNER_TEMP"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-venv jq dpkg-dev apparmor
+          sudo apt-get install -y --no-install-recommends ca-certificates-java python3-venv jq dpkg-dev
           python3 -m venv "$RUNNER_TEMP/make-host-tools"
           "$RUNNER_TEMP/make-host-tools/bin/pip" install jinjanator==26.2.0
           echo "$RUNNER_TEMP/make-host-tools/bin" >> "$GITHUB_PATH"
-          df -h . /var/lib/docker
-      - name: Verify cache access without exposing credentials
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+          df -h . "$RUNNER_TEMP"
+      - name: Verify runner-managed cache access
         run: |
-          python3 -B tools/bazel/cache/credentials.py probe \
-            --output artifacts/make-cache/cache-access.json
+          python3 -B tools/bazel/cache/managed.py \
+            --output artifacts/make-cache/cache-selection.json --github-mask
+      - name: Configure verified source mirrors for the Make slave
+        run: |
+          python3 -B tools/bazel/ci/configure_debian_bazel.py
+          printf 'SONIC_BAZEL_DOWNLOADER_CONFIG=%s/sonic-source-mirrors-%s.cfg\n' "$RUNNER_TEMP" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Start a private Docker daemon for runtime validation
+        run: bash tools/bazel/ci/private_docker.sh start
       - name: Pin and pull the native production builder
         run: python3 -B tools/bazel/ci/make_cache.py preflight --architecture '${{ matrix.architecture }}'
       - name: Verify the Common seed run
@@ -120,20 +124,40 @@ jobs:
           ref: ${{ steps.seed.outputs.revision }}
           path: artifacts/private/common-checkout
           persist-credentials: false
-      - name: Prepare fresh sources and probe the sandbox before host changes
+      - name: Prepare fresh sources and probe the sandbox
         if: ${{ !inputs.preflight_only }}
         run: python3 -B tools/bazel/ci/make_cache.py prepare --architecture '${{ matrix.architecture }}'
-      - name: Allow namespaces only for this job's Bazel sandbox
-        if: ${{ !inputs.preflight_only }}
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            python3 tools/bazel/ci/make_cache_sandbox.py install \
-              --job "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.architecture }}" \
-              --receipt artifacts/make-cache/sandbox-host.json
-      - name: Build the actual Make image with cache writes disabled
+      - name: Require the worker's existing namespace support
         if: ${{ !inputs.preflight_only }}
         env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+          EXPECTED_ARCH: ${{ matrix.architecture }}
+        run: |
+          # The build repeats this probe before compiling and checks the sandbox hash.
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from tools.bazel.ci import make_cache_sandbox
+          directory = Path('artifacts/make-cache')
+          probe = json.loads((directory / 'sandbox-probe-before.json').read_text())
+          if (probe.get('passed') is not True or probe.get('returncode') != 0
+                  or probe.get('phase') != 'before'
+                  or probe.get('architecture') != os.environ['EXPECTED_ARCH']
+                  or probe.get('sandbox_path') != make_cache_sandbox.SANDBOX
+                  or probe.get('global_policy_changed') is not False
+                  or probe.get('restriction_before') != probe.get('restriction_after')):
+              raise SystemExit('The worker must already support the non-root Bazel sandbox')
+          receipt = {
+              'executable': probe['sandbox_path'],
+              'installed': False,
+              'restriction_before': probe['restriction_before'],
+              'restriction_after': probe['restriction_after'],
+              'global_policy_changed': False,
+              'source': 'existing-worker',
+          }
+          (directory / 'sandbox-host.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PY
+      - name: Build the actual Make image with cache writes disabled
+        if: ${{ !inputs.preflight_only }}
         run: python3 -B tools/bazel/ci/make_cache.py build --architecture '${{ matrix.architecture }}'
       - name: Run the seeded Common library and Python binding in the image
         if: ${{ !inputs.preflight_only }}
@@ -174,13 +198,6 @@ jobs:
           (directory / 'runtime.json').write_text(json.dumps(result, indent=2) + '\n')
           print('Installed Common library and Python binding match the CI seed')
           PY
-      - name: Remove only this job's sandbox permission
-        if: ${{ always() && !inputs.preflight_only }}
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            python3 tools/bazel/ci/make_cache_sandbox.py remove \
-              --job "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.architecture }}" \
-              --receipt artifacts/make-cache/sandbox-host.json
       - name: Retain sanitized cache and image evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -193,3 +210,7 @@ jobs:
             artifacts/make-cache/seed/*-MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
+
+      - name: Stop this job's private Docker daemon
+        if: always()
+        run: bash tools/bazel/ci/private_docker.sh stop

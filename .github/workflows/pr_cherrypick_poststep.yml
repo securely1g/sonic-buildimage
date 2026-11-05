@@ -10,8 +10,12 @@ jobs:
   post_cherry_pick:
     # Use azpw instead to have stable performance
     if: false && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'automerge') && github.event.pull_request.head.user.login == 'mssonicbld' && startsWith(github.event.pull_request.title, '[action]')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
+    - name: Install GitHub workflow tools
+      run: |
+        sudo -n apt-get update
+        sudo -n apt-get install -y --no-install-recommends gh jq
     - name: Debug
       env:
         GITHUB_CONTEXT: ${{ toJson(github) }}

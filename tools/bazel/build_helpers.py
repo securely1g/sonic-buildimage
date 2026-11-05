@@ -11,7 +11,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.bazel.cache import credentials
+from tools.bazel.cache import credentials, managed
 
 
 def cache_options(cache_directory):
@@ -29,13 +29,20 @@ def cache_options(cache_directory):
 
 def remote_cache_options():
     """Read the shared cache without exposing authentication in Bazel options."""
-    if not os.environ.get("BAZEL_REMOTE_AUTH"):
-        return []
-    credentials.authorization()
-    helper = Path(__file__).resolve().parent / "cache/credentials.py"
+    if managed.enabled():
+        managed.selection()
+        # The installed launcher selects the origin privately. These options
+        # follow its defaults and keep the Make consumer read-only.
+        connection = []
+    else:
+        if not os.environ.get("BAZEL_REMOTE_AUTH"):
+            return []
+        credentials.authorization()
+        helper = Path(__file__).resolve().parent / "cache/credentials.py"
+        connection = ["--remote_cache=" + credentials.ENDPOINT + "/",
+                      "--credential_helper=" + credentials.HOST + "=" + str(helper)]
     return [
-        "--remote_cache=" + credentials.ENDPOINT + "/",
-        "--credential_helper=" + credentials.HOST + "=" + str(helper),
+        *connection,
         "--remote_executor=",
         "--remote_accept_cached=true",
         "--remote_upload_local_results=false",
@@ -71,6 +78,7 @@ def main():
     if args.command == "options":
         arguments = cache_options(args.cache_directory) + shlex.split(args.arguments)
         try:
+            managed.check_options(arguments)
             # Apply the shared cache policy after caller options so Make image
             # builds cannot accidentally upload results or enable remote execution.
             arguments += remote_cache_options()

@@ -3,6 +3,7 @@ name: Bazel event services
 on:
   pull_request:
     paths:
+      - tools/bazel/ci/configure_debian_bazel.py
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
@@ -10,6 +11,7 @@ on:
   push:
     branches: [master]
     paths:
+      - tools/bazel/ci/configure_debian_bazel.py
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
@@ -25,22 +27,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Native ARM64 is paused until the target runner pool is available.
         include:
           - architecture: amd64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+            runner_arch: x64
+    runs-on: [self-hosted, linux, debian-trixie-container, '${{ matrix.runner_arch }}']
     timeout-minutes: 45
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:
         shell: bash
     steps:
       - name: Install execution tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl file git libtool patch pkg-config python3 tar unzip zstd
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends autoconf automake binutils binutils-gold build-essential busybox ca-certificates ca-certificates-java curl file git libtool patch pkg-config python3 tar unzip zstd
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -53,6 +53,8 @@ jobs:
           repository-cache: true
           disk-cache: eventd-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Configure Debian trust and verified source mirrors
+        run: python3 -B tools/bazel/ci/configure_debian_bazel.py
       - name: Audit, build and run all original suites with private Redis
         env:
           # Bazel records its client environment in retained build events.

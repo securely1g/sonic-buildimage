@@ -235,14 +235,14 @@ class ImageWorkerTest(unittest.TestCase):
             config = worker.mirror_configuration(original).decode()
         rules = [line.split()[1:] for line in config.splitlines()
                  if line.startswith('rewrite ') and 'snapshot' in line]
-        self.assertEqual(len(rules), 8)
-        self.assertEqual(len(worker.SNAPSHOT_FALLBACKS), 4)
+        self.assertEqual(len(rules), 10)
+        self.assertEqual(len(worker.SNAPSHOT_FALLBACKS), 5)
         for path, identifier in worker.SNAPSHOT_FALLBACKS.items():
             url = 'snapshot.debian.org/archive/debian/20260727T143429Z/' + path
             alternatives = [destination for expression, destination in rules if re.fullmatch(expression, url)]
-            self.assertEqual(alternatives, ['https://snapshot.debian.org/file/' + identifier, 'https://' + url])
+            self.assertEqual(alternatives, ['https://snapshot.debian.org/file/' + identifier + '/' + path.rsplit('/', 1)[1], 'https://' + url])
             for altered in (url.replace('20260727T143429Z', '20260728T143429Z'),
-                            url.replace('_amd64.deb', '_arm64.deb'), url + '?query=1',
+                            re.sub(r'_(?:amd64|arm64|armhf|all)\.deb$', '_different.deb', url), url + '?query=1',
                             url.replace('snapshot.debian.org', 'elsewhere.example')):
                 self.assertFalse(any(re.fullmatch(expression, altered) for expression, _ in rules))
 

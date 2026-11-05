@@ -19,7 +19,7 @@ on:
 jobs:
   label:
     if: github.repository_owner == 'sonic-net'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
     - uses: actions/labeler@main
       with:

@@ -13,7 +13,7 @@ on:
 jobs:
   check-file:
     if: ${{ github.event.deleted != true }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, debian-trixie-container]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3

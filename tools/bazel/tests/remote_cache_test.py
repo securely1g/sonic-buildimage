@@ -20,6 +20,7 @@ AUTH = "Basic " + base64.b64encode(b"test-client:private-test-password").decode(
 def environment(auth):
     result = dict(os.environ)
     result.pop("BAZEL_REMOTE_AUTH", None)
+    result.pop("SONIC_BAZEL_MANAGED_CACHE", None)
     result.pop("MAKEFLAGS", None)
     result.pop("MFLAGS", None)
     if auth is not None:
