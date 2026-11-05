@@ -38,7 +38,7 @@ py_binary(
         name = "generate_" + mode,
         srcs = ["schema/NextHopGroupFull.json"] + glob(["templates/*.j2"]),
         outs = ["src/" + output],
-        cmd = "$(execpath :render_schema) $(location schema/NextHopGroupFull.json) $$(dirname $(location templates/nexthopgroupfull.h.j2)) $@ " + mode,
+        cmd = "template=$(location templates/nexthopgroupfull.h.j2); $(execpath :render_schema) $(location schema/NextHopGroupFull.json) \"$${template%/*}\" $@ " + mode,
         tools = [":render_schema"],
     )
     for mode, output in [
