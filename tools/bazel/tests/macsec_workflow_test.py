@@ -232,5 +232,70 @@ class MacsecWorkflowTest(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
+class MacsecGraphDiagnosticsTest(unittest.TestCase):
+    def test_rejected_graph_retains_exact_diagnostics_without_accepting_failure(self):
+        import importlib.util
+        helper = ROOT / "tools/bazel/ci/resolution.py"
+        spec = importlib.util.spec_from_file_location("macsec_resolution_fixture", helper)
+        resolution = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(resolution)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifacts = root / "artifacts/macsec"
+            artifacts.mkdir(parents=True)
+            lock = b'{"lockFileVersion":24,"registryFileHashes":{}}\n'
+            (root / "MODULE.bazel.lock").write_bytes(lock)
+            fake = root / "recorded-bazel"
+            fake.write_text("#!/usr/bin/python3\n" + textwrap.dedent('''
+                import json, sys
+                from pathlib import Path
+                Path("command.json").write_text(json.dumps(sys.argv[1:]))
+                print(json.dumps({"key": "<root>", "root": True,
+                                  "dependencies": [{"key": "fixture@1.0"}]}))
+                print("ERROR: fixture extension failed", file=sys.stderr)
+                sys.exit(7)
+            '''))
+            fake.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
+                resolution.collect(root, artifacts, bazel=[str(fake)])
+            self.assertEqual((root / "MODULE.bazel.lock").read_bytes(), lock)
+            command = json.loads((root / "command.json").read_text())
+            self.assertEqual(command, ["mod", "graph", "--output=json", "--extension_info=hidden",
+                                       "--lockfile_mode=off", "--color=no", "--curses=no"])
+            self.assertEqual(json.loads((artifacts / "module-graph.json").read_text())["dependencies"],
+                             [{"key": "fixture@1.0"}])
+            self.assertEqual((artifacts / "module-graph.stderr").read_text(),
+                             "ERROR: fixture extension failed\n")
+            self.assertEqual(json.loads((artifacts / "module-graph-inspection.json").read_text()),
+                             {"argv": [str(fake), *command], "returncode": 7})
+            upload = workflow_step("Retain failed module graph diagnostics")
+            paths = re.search(r"          path: \|\n((?:            .+\n)+)", upload)[1]
+            paths = [line.strip() for line in paths.splitlines()]
+            self.assertEqual(paths, ["artifacts/macsec/module-graph.json",
+                                    "artifacts/macsec/module-graph.stderr",
+                                    "artifacts/macsec/module-graph-inspection.json"])
+            self.assertTrue(all((root / path).is_file() for path in paths))
+            self.assertFalse((artifacts / "MODULE.bazel.lock").exists())
+
+    def test_diagnostic_upload_only_on_build_failure_and_separate_from_image_artifact(self):
+        build = workflow_step("Build runtime and debug images from source owners")
+        self.assertIn("        id: macsec_build\n", build)
+        self.assertNotIn("continue-on-error", build)
+        upload = workflow_step("Retain failed module graph diagnostics")
+        expression = re.search(r"^        if: (.+)$", upload, re.MULTILINE)[1]
+        for outcome in ("success", "failure", "cancelled", "skipped"):
+            with self.subTest(outcome=outcome):
+                condition = expression.replace("always()", "True").replace(
+                    "steps.macsec_build.outcome", repr(outcome)).replace("&&", " and ")
+                self.assertEqual(eval(condition, {"__builtins__": {}}, {}), outcome == "failure")
+        self.assertIn("name: macsec-module-graph-failure", upload)
+        self.assertIn("if-no-files-found: warn", upload)
+        self.assertNotIn("continue-on-error", upload)
+        images = workflow_step("Retain images and reviewed build evidence")
+        self.assertIn("always() && steps.public.outcome == 'success'", images)
+        self.assertNotIn("module-graph.stderr", images)
+        self.assertNotIn("module-graph-inspection.json", images)
+
+
 if __name__ == "__main__":
     unittest.main()

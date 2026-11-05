@@ -110,6 +110,7 @@ jobs:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
       - name: Build runtime and debug images from source owners
+        id: macsec_build
         env:
           CI_HEAD_SHA: ${{ inputs.source_revision || github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
@@ -120,6 +121,17 @@ jobs:
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           test ! -e MODULE.bazel.lock
           python3 -B tools/bazel/ci/macsec_image.py build --artifacts artifacts/macsec
+      - name: Retain failed module graph diagnostics
+        if: always() && steps.macsec_build.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macsec-module-graph-failure
+          path: |
+            artifacts/macsec/module-graph.json
+            artifacts/macsec/module-graph.stderr
+            artifacts/macsec/module-graph-inspection.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Validate completed image contents and source symbols
         env:
           CI_HEAD_SHA: ${{ inputs.source_revision || github.event.pull_request.head.sha || github.sha }}
