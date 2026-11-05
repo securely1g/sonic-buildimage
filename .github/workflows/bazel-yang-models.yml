@@ -51,6 +51,15 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
           disk-cache: yang-models-${{ matrix.architecture }}
+      - name: Use Debian CA certificates for Bazel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates-java
+          test -s /etc/ssl/certs/java/cacerts
+          bazel_java_trust='startup --host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts'
+          touch "$HOME/.bazelrc"
+          grep -Fxq "$bazel_java_trust" "$HOME/.bazelrc" ||
+            printf '\n%s\n' "$bazel_java_trust" >> "$HOME/.bazelrc"
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash
