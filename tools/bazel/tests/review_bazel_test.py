@@ -4,10 +4,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 WRAPPER = ROOT / 'tools/bazel/ci/review_bazel.sh'
@@ -67,6 +70,78 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
                 self.assertNotIn('try-import', record['configuration'])
                 self.assertIn('--host_platform=', record['configuration'])
                 self.assertFalse(Path(record['rc_path']).exists(), 'temporary rc leaked')
+
+    def test_image_root_wrappers_select_the_coherent_engine_catalog(self):
+        expected = '3491db65989fe2dac17e09aae03a00c31d21ca9a'
+        commands = self.directory / 'commands'
+        commands.mkdir()
+        (commands / 'bazel').symlink_to(self.fake)
+        (self.home / '.bazelrc').write_text(
+            'common --repository_cache=/persistent/repository\n'
+            'build --disk_cache=/persistent/disk\n')
+        local = ('common --distdir=/verified/distdir\n'
+                 'common --experimental_downloader_config=/verified/mirrors.cfg\n')
+        (self.workspace / '.bazelrc.user').write_text(local)
+        environment = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ['PATH'],
+                           HOME=str(self.home), BASH_ENV='', BAZEL_REAL=str(self.fake),
+                           REVIEW_TEST_RECORD=str(self.record), SONIC_BAZEL_REGISTRY_REVISION=REVISION)
+        for family in ('libteam', 'lldp', 'frr', 'framework'):
+            wrapper = ROOT / ('tools/bazel/ci/' + family + '_draft_bazel.sh')
+            for command in ('aquery', 'build', 'cquery', 'fetch', 'info', 'mod', 'query', 'test'):
+                with self.subTest(wrapper=family, command=command):
+                    startup = ['--batch', '--output_base=' + str(self.directory / 'persistent output')]
+                    arguments = ['--jobs=2', '--disk_cache=/existing/action-cache', '//owner:runtime']
+                    result = subprocess.run([str(wrapper), *startup, command, *arguments],
+                                            cwd=self.workspace, env=environment, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    record = json.loads(self.record.read_text())
+                    actual = record['arguments']
+                    self.assertEqual(actual[:len(startup)], startup)
+                    self.assertEqual(actual[-len(arguments):], arguments)
+                    self.assertEqual([x for x in actual if x.startswith('--registry=')], [
+                        '--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + expected,
+                        '--registry=https://bcr.bazel.build'])
+                    if family == 'libteam':
+                        for setting in ('--repository_cache=/persistent/repository', '--disk_cache=/persistent/disk',
+                                        '--distdir=/verified/distdir', '--experimental_downloader_config=/verified/mirrors.cfg'):
+                            self.assertIn(setting, record['configuration'])
+                    else:
+                        self.assertEqual(record['configuration'], self.common)
+                        self.assertIn('try-import %workspace%/.bazelrc.user', record['configuration'])
+                    self.assertEqual((self.workspace / '.bazelrc.user').read_text(), local)
+
+    def test_standalone_image_workflow_phases_forward_the_review_wrapper(self):
+        """Parse each real driver's CLI; replace only its native phase body."""
+        expected = str(ROOT / 'tools/bazel/ci/libteam_draft_bazel.sh')
+        for family in ('database', 'eventd', 'radv', 'snmp'):
+            workflow = 'bazel-snmp.yml' if family == 'snmp' else 'bazel-' + family + '-image.yml'
+            text = (ROOT / '.github/workflows' / workflow).read_text()
+            driver = importlib.import_module('tools.bazel.ci.' + family + '_image')
+            if family != 'snmp':
+                selected = re.search(r'^      BAZEL: (.+)$', text, re.MULTILINE)[1]
+                self.assertEqual(selected.replace('${{ github.workspace }}', str(ROOT)), expected)
+            for phase in ('build', 'incremental'):
+                with self.subTest(family=family, phase=phase):
+                    lines = [line.strip() for line in text.splitlines()
+                             if 'tools/bazel/ci/' + family + '_image.py ' + phase + ' ' in line]
+                    self.assertEqual(len(lines), 1)
+                    line = lines[0].replace('$BAZEL', expected).replace('$GITHUB_WORKSPACE', str(ROOT))
+                    argv = shlex.split(line)
+                    self.assertEqual(argv[:2], ['python3', '-B'])
+                    old_directory = Path.cwd()
+                    try:
+                        os.chdir(self.workspace)
+                        with mock.patch.object(sys, 'argv', argv[2:]), \
+                             mock.patch.object(driver, 'build_images') as build, \
+                             mock.patch.object(driver, 'incremental') as incremental:
+                            driver.main()
+                            selected = build if phase == 'build' else incremental
+                            selected.assert_called_once()
+                            self.assertEqual(selected.call_args.args[0].bazel, expected)
+                            self.assertEqual(selected.call_args.args[0].phase, phase)
+                            (incremental if phase == 'build' else build).assert_not_called()
+                    finally:
+                        os.chdir(old_directory)
 
     def test_home_and_local_cache_values_survive(self):
         (self.home / '.bazelrc').write_text('''build --disk_cache='/persistent/action cache'

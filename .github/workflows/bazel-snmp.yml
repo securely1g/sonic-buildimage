@@ -42,6 +42,23 @@ jobs:
           mkdir -p artifacts/snmp
           python3 tools/bazel/gzip/prepare_pigz.py --output "$RUNNER_TEMP/pigz-distdir" > artifacts/snmp/pigz-source.json
           printf 'common --distdir=%s\n' "$RUNNER_TEMP/pigz-distdir" > .bazelrc.user
+      - name: Configure verified Debian payload transport
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "base-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build runtime and debug images from source owners
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -50,14 +67,14 @@ jobs:
           test "$(uname -m)" = x86_64
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           test ! -e MODULE.bazel.lock
-          python3 -B tools/bazel/ci/snmp_image.py build --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py build --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --artifacts artifacts/snmp
       - name: Validate completed image contents and source symbols
         run: python3 -B tools/bazel/ci/snmp_image.py validate --artifacts artifacts/snmp
       - name: Check incremental rebuild and restored image digests
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/snmp_image.py incremental --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --artifacts artifacts/snmp
           git diff --exit-code
       - name: Retain images and exact build evidence
         if: always()

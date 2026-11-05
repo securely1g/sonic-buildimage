@@ -158,6 +158,9 @@ class SourceWorkflowTest(unittest.TestCase):
             (999, "frr-native-bazel", "securely1g/sonic-buildimage", True, False),
             (999, "frr-native-bazel", "example/sonic-buildimage", False, False),
             (999, "frr-native-bazel-extra", "securely1g/sonic-buildimage", False, True),
+            (999, "codex/dash-engine-review-catalog", "securely1g/sonic-buildimage", True, False),
+            (999, "codex/dash-engine-review-catalog", "example/sonic-buildimage", False, False),
+            (999, "codex/dash-engine-review-catalog-extra", "securely1g/sonic-buildimage", False, True),
             (999, "unrelated", "securely1g/sonic-buildimage", False, True),
         ):
             with self.subTest(number=number, branch=branch, owner=owner):
