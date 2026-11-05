@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework]
+        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd]
         default: none
       source_revision:
         description: Reviewed 40-character image source or fixed registry commit
@@ -136,7 +136,7 @@ jobs:
 
   source_image_inputs:
     name: Fetch pinned source-image downloads
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -176,7 +176,7 @@ jobs:
   source_image:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
-    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework"]'), inputs.source_image)
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd"]'), inputs.source_image)
     runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
     timeout-minutes: 360
     permissions:
@@ -221,6 +221,13 @@ jobs:
       - name: Validate the fixed image selection
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" selection \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      - name: Verify Teamd kernel prerequisites without host changes
+        id: teamd_kernel
+        if: inputs.source_image == 'teamd'
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" kernel-preflight \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Checkout the exact reviewed source
@@ -281,7 +288,7 @@ jobs:
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Prepare declared artifacts and public evidence
         id: public_artifacts
-        if: always() && steps.prepare.outcome != 'skipped'
+        if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" publish \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \

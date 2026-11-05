@@ -25,6 +25,82 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            modules, artifacts = root / 'modules', root / 'artifacts'
+            modules.mkdir(); artifacts.mkdir()
+            with patch.object(worker, 'run') as run, patch.object(worker, 'output') as output:
+                for name in ('team', 'team_mode_loadbalance'):
+                    with self.assertRaisesRegex(ValueError, 'preloaded kernel modules'):
+                        worker.prepare_teamd_kernel(artifacts, modules)
+                    receipt = json.loads((artifacts / 'worker-teamd-kernel.json').read_text())
+                    self.assertEqual(receipt['status'], 'failed')
+                    self.assertIn(name, receipt['missing_modules'])
+                    (modules / name).write_text('regular file is not a loaded module')
+                    with self.assertRaises(ValueError):
+                        worker.prepare_teamd_kernel(artifacts, modules)
+                    (modules / name).unlink(); (modules / name).mkdir()
+                worker.prepare_teamd_kernel(artifacts, modules)
+                receipt = json.loads((artifacts / 'worker-teamd-kernel.json').read_text())
+                self.assertEqual(receipt, {'status': 'passed', 'read_only': True,
+                    'required_modules': ['team', 'team_mode_loadbalance'], 'missing_modules': [],
+                    'preloaded_modules': ['team', 'team_mode_loadbalance']})
+                run.assert_not_called(); output.assert_not_called()
+
+    def test_teamd_missing_modules_precede_all_direct_preparation_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary)
+            gate = worker.prepare_teamd_kernel
+            with patch.object(worker, 'prepare_teamd_kernel',
+                              side_effect=lambda out: gate(out, artifacts / 'missing')) as checked, \
+                    patch.object(worker, 'measure') as measure, \
+                    patch.object(worker, 'prepare_validation_tools') as tools, \
+                    patch.object(worker, 'prepare_source_downloads') as downloads, \
+                    patch.object(worker, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'preloaded kernel modules'):
+                    worker.prepare(SimpleNamespace(image='teamd', workspace=Path('/source'), artifacts=artifacts))
+                checked.assert_called_once_with(artifacts)
+                for command in (measure, tools, downloads, run): command.assert_not_called()
+            worker.publish(SimpleNamespace(artifacts=artifacts, image='teamd'))
+            retained = json.loads((artifacts / 'public/worker-teamd-kernel.json').read_text())
+            self.assertEqual(retained['status'], 'failed')
+            self.assertEqual(retained['missing_modules'], ['team', 'team_mode_loadbalance'])
+
+    def test_teamd_workflow_checks_modules_before_checkout_download_or_setup(self):
+        workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
+        gate = workflow.index('- name: Verify Teamd kernel prerequisites without host changes')
+        end = workflow.index('- name: Checkout the exact reviewed source', gate)
+        step = workflow[gate:end]
+        self.assertIn("if: inputs.source_image == 'teamd'", step)
+        self.assertIn('source_image_worker.py" kernel-preflight', step)
+        for name in ('Checkout the exact reviewed source', 'Reuse the existing source-download artifact',
+                     'Download the verified source archives', 'Prepare private Docker and persistent worker caches'):
+            self.assertLess(gate, workflow.index('- name: ' + name))
+        self.assertIn("inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'", workflow)
+
+    def test_publication_retains_the_actual_aggregate_loaded_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary)
+            receipt = {'status': 'passed', 'revision': 'a' * 40, 'architecture': 'amd64',
+                       'images': {'docker-teamd': {'status': 'passed'},
+                                  'docker-teamd-dbg': {'status': 'passed'}}}
+            source = artifacts / 'loaded-validation.json'
+            source.write_text(json.dumps(receipt, indent=2) + '\n')
+            worker.publish(SimpleNamespace(artifacts=artifacts, image='teamd'))
+            self.assertEqual((artifacts / 'public/loaded-validation.json').read_bytes(), source.read_bytes())
+
+    def test_teamd_fixed_driver_reuses_compatibility_wrapper_and_four_phases(self):
+        workspace, artifacts = Path('/source'), Path('/evidence')
+        self.assertEqual(worker.WRAPPERS['teamd'], 'libteam_draft_bazel.sh')
+        for phase in ('build', 'validate', 'incremental'):
+            expected = [sys.executable, '-B', '/source/tools/bazel/ci/teamd_image.py', phase,
+                        '--artifacts', str(artifacts)]
+            if phase != 'validate': expected += ['--bazel', '/source/tools/bazel/ci/libteam_draft_bazel.sh']
+            self.assertEqual(worker.phase_command('teamd', phase, workspace, artifacts), expected)
+        self.assertEqual(worker.phase_command('teamd', 'loaded', workspace, artifacts),
+                         [sys.executable, '-B', '/source/tools/bazel/ci/teamd_loaded.py', '--artifacts', str(artifacts)])
+
     def native_job(self):
         import yaml
         return yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["source_image"]
@@ -60,6 +136,8 @@ class ImageWorkerTest(unittest.TestCase):
                               "with Path(os.environ['TRACE']).open('a') as out: out.write(json.dumps(sys.argv[1:])+'\\n')\n")
             trace = root / "trace.jsonl"; environment["TRACE"] = str(trace)
             for step in job["steps"][1:]:
+                if step.get("if") == "inputs.source_image == 'teamd'":
+                    continue
                 if "run" in step:
                     subprocess.run(["bash", "-e", "-c", step["run"]], env=environment,
                                    cwd=workspace, check=True, capture_output=True)
