@@ -21,7 +21,7 @@ concurrency:
 
 env:
   BAZEL: tools/bazel/ci/review_bazel.sh
-  SONIC_BAZEL_REGISTRY_REVISION: 07fbb2e9bec4f6f9600092726567efb3718a55f8
+  SONIC_BAZEL_REGISTRY_REVISION: 371ec7b6f7902d33454b5dfa9a3b680c65538e1b
 
 jobs:
   archive:
@@ -83,7 +83,7 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Registry #186 changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594cf5e26715f5dbe34645daef6e395cb4d/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
           expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
@@ -383,7 +383,7 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Registry #186 changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594cf5e26715f5dbe34645daef6e395cb4d/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
           expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
@@ -1054,7 +1054,7 @@ jobs:
         shell: bash
     env:
       BAZEL: tools/bazel/ci/review_bazel.sh
-      SONIC_BAZEL_REGISTRY_REVISION: 07fbb2e9bec4f6f9600092726567efb3718a55f8
+      SONIC_BAZEL_REGISTRY_REVISION: 371ec7b6f7902d33454b5dfa9a3b680c65538e1b
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
@@ -1079,7 +1079,7 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Registry #186 changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594cf5e26715f5dbe34645daef6e395cb4d/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
           expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
