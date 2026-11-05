@@ -48,6 +48,8 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'

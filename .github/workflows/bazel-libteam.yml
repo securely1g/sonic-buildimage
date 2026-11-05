@@ -11,6 +11,7 @@ on:
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/oci/runtime_smoke.py
       - .github/workflows/bazel-libteam.yml
   workflow_dispatch:
@@ -54,6 +55,8 @@ jobs:
           repository-cache: true
           disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Fetch the verified shared downloader configuration
         env:
           SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/b7b92bcfa5857685ee7cd7953fdbf55264989932/ci/source_mirrors.cfg

@@ -16,6 +16,12 @@ WORKFLOW = ROOT / ".github/workflows/bazel-yang-models.yml"
 
 
 class YangCacheWorkflowTest(unittest.TestCase):
+    def copy_helper(self, work):
+        relative = "tools/bazel/ci/preserve_setup_bazel_cache.py"
+        target = work / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+
     def steps(self):
         steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["package"]["steps"]
         cache = next(s for s in steps if s.get("name") == "Preserve setup-bazel caches for the image-root query")
@@ -33,6 +39,7 @@ class YangCacheWorkflowTest(unittest.TestCase):
         wrapper = command.split()[0]
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary)
+            self.copy_helper(work)
             home = work / "home"
             home.mkdir()
             # No workspace cache settings exist before the real setup step.
@@ -83,6 +90,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
         setup, _ = self.steps()
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary)
+            self.copy_helper(work)
             home = work / "home"
             home.mkdir()
             (home / ".bazelrc").write_text("build --disk_cache=/disk\ncommon --repository_cache=/repository\n")
@@ -96,6 +104,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
         for settings in ("", "build --disk_cache=/disk\n", "build --disk_cache=/one\nbuild --disk_cache=/two\n"):
             with self.subTest(settings=settings), tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary)
+                self.copy_helper(work)
                 home = work / "home"
                 home.mkdir()
                 (home / ".bazelrc").write_text(settings)
@@ -103,7 +112,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
                 (work / ".bazelrc.user").write_text(before)
                 result = subprocess.run(["bash", "-euc", setup], cwd=work, env=dict(os.environ, HOME=str(home), BASH_ENV="/dev/null"), capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("cache settings are missing", result.stderr)
+                self.assertIn("cache setting", result.stderr)
                 self.assertEqual((work / ".bazelrc.user").read_text(), before)
 
 

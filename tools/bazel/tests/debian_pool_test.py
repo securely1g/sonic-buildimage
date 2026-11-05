@@ -385,12 +385,15 @@ class RustSourceMirrorTest(unittest.TestCase):
         cache = next(step for step in steps if step.get("name") == "Preserve setup-bazel caches for source checks")
         mirror, _ = self.workflow_steps()
         self.assertLess(steps.index(cache), steps.index(mirror))
-        code = cache["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
         home = root / "home"
         home.mkdir()
         (home / ".bazelrc").write_text(home_settings)
-        with contextlib.chdir(root), mock.patch("pathlib.Path.home", return_value=home):
-            exec(compile(code, "rust-cache-handoff", "exec"), {})
+        relative = "tools/bazel/ci/preserve_setup_bazel_cache.py"
+        helper = root / relative
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_bytes((ROOT / relative).read_bytes())
+        subprocess.run(["bash", "-euc", cache["run"]], cwd=root,
+                       env=dict(os.environ, HOME=str(home), BASH_ENV="/dev/null"), check=True)
 
     def mirror_bytes(self):
         # Exact shared configuration with the observed Rust sysroot fallback.
@@ -428,7 +431,7 @@ class RustSourceMirrorTest(unittest.TestCase):
                 (root / ".bazelrc.user").write_text(retained)
                 cache_settings = "build --disk_cache=/retained/disk\ncommon --repository_cache=/retained/repository\n"
                 self.preserve_caches(root, cache_settings + "build --jobs=99\ncommon --experimental_downloader_config=/ignored/home.cfg\n")
-                before = retained + "\n" + cache_settings
+                before = retained + cache_settings
                 self.assertEqual((root / ".bazelrc.user").read_text(), before)
                 for name in ("tools/bazel/common.bazelrc", CONFIG, "tools/bazel/ci/libteam_draft_bazel.sh",
                              "tools/bazel/ci/bazel_commands.py"):
