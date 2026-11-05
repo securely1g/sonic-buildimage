@@ -83,6 +83,7 @@ jobs:
           umask 077
           if python3 -B tools/bazel/kernel/prepare.py ensure --architecture "${{ matrix.arch }}" \
             --state-dir "$RUNNER_TEMP/kernel-bundle-state" \
+            --repository-cache "$RUNNER_TEMP/kernel-repository-cache" \
             --remote-cache http://127.0.0.1:8080 --upload-local-results; then
             test ! -e target/bazel-kernel-inputs
             test ! -e "$RUNNER_TEMP/kernel-bundle-state/bundle"
@@ -96,7 +97,8 @@ jobs:
         run: |
           umask 077
           python3 -B tools/bazel/kernel/prepare.py build --architecture "${{ matrix.arch }}" \
-            --state-dir "$RUNNER_TEMP/kernel-cache-hit" --remote-cache http://127.0.0.1:8080
+            --state-dir "$RUNNER_TEMP/kernel-cache-hit" \
+            --repository-cache "$RUNNER_TEMP/kernel-repository-cache" --remote-cache http://127.0.0.1:8080
           python3 -B src/sonic-linux-kernel/tools/bazel/verify_cache.py \
             --architecture "${{ matrix.arch }}" \
             --cold "$RUNNER_TEMP/kernel-bundle-state/build" --hit "$RUNNER_TEMP/kernel-cache-hit/build" \
@@ -109,6 +111,7 @@ jobs:
           if python3 -B tools/bazel/kernel/prepare.py ensure --architecture "${{ matrix.arch }}" \
             --kernel-config SECURE_UPGRADE_MODE=unsupported \
             --state-dir "$RUNNER_TEMP/kernel-unsupported" \
+            --repository-cache "$RUNNER_TEMP/kernel-repository-cache" \
             --remote-cache http://127.0.0.1:8080 > "$RUNNER_TEMP/kernel-unsupported.log" 2>&1; then
             echo 'An unsupported kernel setting was silently accepted.'
             exit 1

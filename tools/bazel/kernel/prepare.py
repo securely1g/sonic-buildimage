@@ -579,9 +579,11 @@ def stage_outputs(workdir, destination, workspace, source, selected):
         return result
 
 
-def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, debs_directory=None, downloader_config=None):
+def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, repository_cache=None, debs_directory=None, downloader_config=None):
     workspace = workspace.resolve(strict=True)
     state = state.resolve()
+    require(cache_directory is None or repository_cache is None,
+            "--repository-cache and --cache-directory cannot be combined")
     require(state != workspace and state not in workspace.parents and not state.exists(),
             "kernel state must be a new dedicated directory that does not contain the workspace")
     make_inputs = debs_path(workspace, debs_directory)
@@ -608,8 +610,30 @@ def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_co
     if remote_cache:
         remote_cache = endpoint(remote_cache)
     require(not upload or remote_cache, "remote upload requires an explicit cache endpoint")
-    repository_cache = state / "repository-cache"
+    selected_repository_cache = state / "repository-cache"
     disk_cache = None
+    if repository_cache is not None:
+        # Share repository downloads without enabling a disk action cache.
+        selected_repository_cache = Path(repository_cache).resolve()
+        require(selected_repository_cache not in {workspace, Path("/"), Path("/tmp"), Path("/home"), Path.home()}
+                and selected_repository_cache not in workspace.parents,
+                "kernel repository cache must be a dedicated directory")
+        kernel_checkout = (workspace / KERNEL_PATH).resolve()
+        require(selected_repository_cache != kernel_checkout and selected_repository_cache not in kernel_checkout.parents
+                and kernel_checkout not in selected_repository_cache.parents,
+                "kernel repository cache and pinned kernel checkout must not overlap")
+        require(selected_repository_cache != state and selected_repository_cache not in state.parents
+                and state not in selected_repository_cache.parents,
+                "kernel repository cache and state must not overlap")
+        require(selected_repository_cache != make_inputs and selected_repository_cache not in make_inputs.parents
+                and make_inputs not in selected_repository_cache.parents,
+                "kernel repository cache and Make input directory must not overlap")
+        if source_directory:
+            source_archive_directory = Path(source_directory["path"])
+            require(selected_repository_cache != source_archive_directory
+                    and selected_repository_cache not in source_archive_directory.parents
+                    and source_archive_directory not in selected_repository_cache.parents,
+                    "kernel repository cache and source archive directory must not overlap")
     if cache_directory:
         cache_directory = Path(cache_directory).resolve()
         require(cache_directory not in {workspace, Path("/"), Path.home()}
@@ -617,11 +641,12 @@ def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_co
                 "kernel cache must be a dedicated directory")
         # Use one writable namespace for unprivileged builds. Older worker
         # caches may be root-owned; do not change their ownership or contents.
-        repository_cache = cache_directory / "kernel-linux-sandbox/repository_cache"
+        selected_repository_cache = cache_directory / "kernel-linux-sandbox/repository_cache"
         disk_cache = cache_directory / "kernel-linux-sandbox/disk_cache"
+    selected_repository_cache = selected_repository_cache.resolve()
     command = [sys.executable, "-B", str(workspace / KERNEL_PATH / "tools/bazel/build.py"),
                "--workspace", str(state / "consumer"), "--work-dir", str(state / "build"),
-               "--repository-cache", str(repository_cache),
+               "--repository-cache", str(selected_repository_cache),
                "--target", TARGET, "--architecture", architecture,
                "--kernel-config", json.dumps(source["kernel_config"], sort_keys=True, separators=(",", ":"))]
     if remote_cache:
@@ -649,6 +674,7 @@ def plan(workspace, state, remote_cache, upload, *, architecture=None, kernel_co
     return {"schema": 1, "source": source, "registry": registry, "target": TARGET,
             "source_kind": "registry", "state": str(state), "debs_directory": str(make_inputs),
             "remote_cache": remote_cache, "upload_local_results": upload,
+            "repository_cache": str(selected_repository_cache),
             "disk_cache": str(disk_cache) if disk_cache else None,
             "execution_trust": trust, "distdir": source_directory, "downloader_config": downloader,
             "argv": command}
@@ -672,10 +698,11 @@ def build(workspace, state, remote_cache, upload, **options):
         return _build(workspace, state, remote_cache, upload, **options)
 
 
-def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, debs_directory=None, downloader_config=None, execute=None, fetch=None):
+def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_config=None, ca_bundle=None, java_trust_store=None, distdir=None, cache_directory=None, repository_cache=None, debs_directory=None, downloader_config=None, execute=None, fetch=None):
     prepared = plan(workspace, state, remote_cache, upload,
                     architecture=architecture, kernel_config=kernel_config, ca_bundle=ca_bundle, java_trust_store=java_trust_store,
-                    distdir=distdir, cache_directory=cache_directory, debs_directory=debs_directory,
+                    distdir=distdir, cache_directory=cache_directory, repository_cache=repository_cache,
+                    debs_directory=debs_directory,
                     downloader_config=downloader_config)
     workspace = workspace.resolve(strict=True)
     architecture = prepared["source"]["launcher"]["architecture"]
@@ -701,6 +728,7 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
             and invocation.get("host_machine") == {"amd64": "x86_64", "arm64": "aarch64"}[architecture]
             and invocation.get("remote_cache") == prepared["remote_cache"]
             and invocation.get("remote_cache_read_only") is (not prepared["upload_local_results"])
+            and invocation.get("repository_cache") == prepared["repository_cache"]
             and invocation.get("disk_cache") == prepared["disk_cache"],
             "kernel launcher invocation differs from the prepared source build")
     selected = inspect_resolution(state / "build", consumer, prepared["source"], prepared["registry"], fetch=fetch)
@@ -728,11 +756,13 @@ def remove_build_tree(path):
     shutil.rmtree(path)
 
 
-def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cache_directory=None,
+def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cache_directory=None, repository_cache=None,
            remote_cache=None, upload=False, ca_bundle=None,
            java_trust_store=None, distdir=None, debs_directory=None, downloader_config=None, builder=None):
     """Verify/reuse or build the kernel packages in Make's normal DEB directory."""
     workspace = workspace.resolve(strict=True)
+    require(cache_directory is None or repository_cache is None,
+            "--repository-cache and --cache-directory cannot be combined")
     with package_lock(workspace):
         source = source_state(workspace, architecture, kernel_config)
         architecture = source["launcher"]["architecture"]
@@ -781,6 +811,7 @@ def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cach
         build_function = builder or _build
         receipt = build_function(workspace, state, remote_cache, upload,
                                  architecture=architecture, kernel_config=source["kernel_config"], cache_directory=cache_directory,
+                                 repository_cache=repository_cache,
                                  ca_bundle=ca_bundle, java_trust_store=java_trust_store, distdir=distdir,
                                  debs_directory=destination, downloader_config=downloader_config)
         require(source_state(workspace, architecture, source["kernel_config"]) == source, "kernel source changed during automatic build")
@@ -817,6 +848,8 @@ def main():
                         help="Bazel URL rewrite rules; defaults to SONIC_BAZEL_DOWNLOADER_CONFIG")
     parser.add_argument("--cache-directory", type=Path,
                         help="persistent Bazel download/action cache visible to this process")
+    parser.add_argument("--repository-cache", type=Path,
+                        help="dedicated Bazel repository download cache without a disk action cache")
     args = parser.parse_args()
     # Managed builders own certificate policy. Keep this optional default out
     # of verification-only calls, which do not download or invoke Bazel.
@@ -832,7 +865,8 @@ def main():
     configuration = parse_kernel_config(args.kernel_config)
     if args.command == "ensure":
         result = ensure(workspace, architecture=args.architecture, kernel_config=configuration, state=args.state_dir,
-                        cache_directory=args.cache_directory, remote_cache=args.remote_cache,
+                        cache_directory=args.cache_directory, repository_cache=args.repository_cache,
+                        remote_cache=args.remote_cache,
                         upload=args.upload_local_results,
                         ca_bundle=args.ca_bundle, java_trust_store=args.java_trust_store, distdir=args.distdir,
                         debs_directory=args.debs_directory, downloader_config=args.downloader_config)
@@ -843,10 +877,11 @@ def main():
         result = function(workspace, args.state_dir, args.remote_cache, args.upload_local_results,
                           architecture=args.architecture, kernel_config=configuration, ca_bundle=args.ca_bundle,
                           java_trust_store=args.java_trust_store, distdir=args.distdir,
-                          cache_directory=args.cache_directory, debs_directory=args.debs_directory,
+                          cache_directory=args.cache_directory, repository_cache=args.repository_cache,
+                          debs_directory=args.debs_directory,
                           downloader_config=args.downloader_config)
     else:
-        if args.state_dir or args.remote_cache or args.upload_local_results or args.ca_bundle or args.java_trust_store or args.distdir or args.cache_directory or args.downloader_config:
+        if args.state_dir or args.remote_cache or args.upload_local_results or args.ca_bundle or args.java_trust_store or args.distdir or args.cache_directory or args.repository_cache or args.downloader_config:
             parser.error("verify does not accept build options")
         result = verify(debs_path(workspace, args.debs_directory), workspace, architecture=args.architecture, kernel_config=configuration)
     print(json.dumps(result, indent=2, sort_keys=True))

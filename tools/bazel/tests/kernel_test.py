@@ -398,6 +398,54 @@ class KernelBundleTest(unittest.TestCase):
             kernel.main()
         self.assertEqual(json.loads(output.getvalue())["manifest"], self.manifest)
 
+    def test_repository_only_cache_preserves_fresh_build_state(self):
+        repository_cache = self.root / "shared-downloads"
+        plans = []
+        for name, upload in (("cold", True), ("warm", False)):
+            state = self.root / (name + "-state")
+            argv = ["prepare.py", "plan", "--workspace", str(self.root), "--state-dir", str(state),
+                    "--repository-cache", str(repository_cache), "--remote-cache", "http://127.0.0.1:8080"]
+            if upload:
+                argv.append("--upload-local-results")
+            with patch.object(sys, "argv", argv), redirect_stdout(io.StringIO()) as output:
+                kernel.main()
+            planned = json.loads(output.getvalue())
+            plans.append(planned)
+            command = planned["argv"]
+            self.assertEqual(planned["repository_cache"], str(repository_cache))
+            self.assertEqual(command[command.index("--repository-cache") + 1], str(repository_cache))
+            self.assertIsNone(planned["disk_cache"])
+            self.assertNotIn("--disk-cache", command)
+            self.assertEqual(command[command.index("--workspace") + 1], str(state / "consumer"))
+            self.assertEqual(command[command.index("--work-dir") + 1], str(state / "build"))
+            self.assertEqual("--remote-cache-read-only" in command, not upload)
+        self.assertNotEqual(plans[0]["state"], plans[1]["state"])
+        self.assertNotEqual(plans[0]["argv"][plans[0]["argv"].index("--work-dir") + 1],
+                            plans[1]["argv"][plans[1]["argv"].index("--work-dir") + 1])
+
+        cache_directory = self.root / "combined-cache"
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            kernel.plan(self.root, self.root / "conflict-state", None, False,
+                        cache_directory=cache_directory, repository_cache=repository_cache)
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            kernel.ensure(self.root, cache_directory=cache_directory, repository_cache=repository_cache)
+        for overlapping_cache in (self.source, self.source.parent, self.source / "cache"):
+            with self.subTest(repository_cache=overlapping_cache), \
+                    self.assertRaisesRegex(ValueError, "repository cache and pinned kernel checkout must not overlap"):
+                kernel.plan(self.root, self.root / "source-overlap-state", None, False,
+                            repository_cache=overlapping_cache)
+
+        self.bundle.rename(self.root / "saved-repository-cache-bundle")
+        observed = {}
+        def inspect_builder(workspace, state, remote, upload, **options):
+            observed.update(options)
+            raise RuntimeError("inspected repository cache forwarding")
+        with self.assertRaisesRegex(RuntimeError, "inspected repository cache forwarding"):
+            kernel.ensure(self.root, state=self.root / "ensure-state", repository_cache=repository_cache,
+                          builder=inspect_builder)
+        self.assertEqual(observed["repository_cache"], repository_cache)
+        self.assertIsNone(observed["cache_directory"])
+
     def test_producer_uses_registered_source_and_retains_evidence(self):
         prebuilt = self.bundle
         with self.assertRaisesRegex(ValueError, "must not overlap"):
@@ -423,7 +471,8 @@ class KernelBundleTest(unittest.TestCase):
             (workdir / "invocation.json").write_text(json.dumps({
                 "schema": 2, "target": kernel.TARGET, "uid": 1000, "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
                 "kernel_config": self.state["kernel_config"], **self.state["launcher"],
-                "remote_cache": "http://127.0.0.1:8080", "remote_cache_read_only": True, "disk_cache": None}))
+                "remote_cache": "http://127.0.0.1:8080", "remote_cache_read_only": True,
+                "repository_cache": command[command.index("--repository-cache") + 1], "disk_cache": None}))
 
         receipt = kernel.build(self.root, self.root / "state", "http://127.0.0.1:8080", False,
                                execute=execute, fetch=lambda url: metadata[url])
@@ -436,6 +485,7 @@ class KernelBundleTest(unittest.TestCase):
         self.assertEqual(json.loads(command[command.index("--kernel-config") + 1]), self.state["kernel_config"])
         self.assertEqual(receipt["result"]["manifest"], self.manifest)
         self.assertEqual(receipt["plan"]["debs_directory"], str(self.bundle))
+        self.assertEqual(receipt["plan"]["repository_cache"], str(self.root / "state/repository-cache"))
         self.assertEqual(kernel.verify(self.bundle, self.root)["manifest"], self.manifest)
         self.assertTrue((self.bundle / "kernel-provenance.json").is_file())
         self.assertFalse((self.root / "state/bundle").exists())
@@ -450,6 +500,7 @@ class KernelBundleTest(unittest.TestCase):
             {"schema": 1}, {"bazel_sha256": "0" * 64},
             {"host_machine": "aarch64" if self.architecture == "amd64" else "x86_64"},
             {"kernel_config": {}},
+            {"repository_cache": str(self.root / "unexpected-repository-cache")},
         )):
             with self.subTest(override=override):
                 def execute(command, workspace):
@@ -459,7 +510,8 @@ class KernelBundleTest(unittest.TestCase):
                         "schema": 2, "target": kernel.TARGET, "uid": 1000, "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
                 "kernel_config": self.state["kernel_config"],
                         **self.state["launcher"], "remote_cache": None,
-                        "remote_cache_read_only": True, "disk_cache": None,
+                        "remote_cache_read_only": True,
+                        "repository_cache": command[command.index("--repository-cache") + 1], "disk_cache": None,
                         **override,
                     }
                     (workdir / "invocation.json").write_text(json.dumps(invocation))
@@ -901,8 +953,8 @@ class KernelConfigurationTest(unittest.TestCase):
     def test_distdir_requires_exact_pinned_source_archives(self):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
-            directory = workspace / "archives"
-            directory.mkdir()
+            directory = workspace / "archive-store/archives"
+            directory.mkdir(parents=True)
             files = []
             for name in ("linux_6.12.41-1.dsc", "linux_6.12.41.orig.tar.xz", "linux_6.12.41-1.debian.tar.xz"):
                 path = directory / name
@@ -912,6 +964,18 @@ class KernelConfigurationTest(unittest.TestCase):
                 prepared = kernel.plan(workspace, workspace / "state", None, False, distdir=directory)
                 self.assertEqual(prepared["argv"][prepared["argv"].index("--distdir") + 1], str(directory))
                 self.assertEqual({item["name"] for item in prepared["distdir"]["files"]}, {item["name"] for item in files})
+                alias = workspace / "archives-link"
+                alias.symlink_to(directory, target_is_directory=True)
+                separate_cache = workspace / "downloads"
+                prepared = kernel.plan(workspace, workspace / "state", None, False,
+                                       distdir=alias, repository_cache=separate_cache)
+                self.assertEqual(prepared["distdir"]["path"], str(directory))
+                self.assertEqual(prepared["repository_cache"], str(separate_cache))
+                for repository_cache in (directory, directory.parent, directory / "cache"):
+                    with self.subTest(repository_cache=repository_cache), \
+                            self.assertRaisesRegex(ValueError, "repository cache and source archive directory must not overlap"):
+                        kernel.plan(workspace, workspace / "state", None, False,
+                                    distdir=alias, repository_cache=repository_cache)
                 path.write_bytes(b"changed archive")
                 with self.assertRaisesRegex(ValueError, "source archive SHA256 differs"):
                     kernel.plan(workspace, workspace / "state", None, False, distdir=directory)

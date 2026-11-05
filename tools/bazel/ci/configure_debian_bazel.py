@@ -48,6 +48,10 @@ SNAPSHOT_FALLBACKS = {
         '34446b6d753038d30cc9dfb5bf17987ff56071da',
     DEBIAN_SNAPSHOT + 'pool/main/p/python3.13/python3.13-minimal_3.13.5-2+deb13u4_amd64.deb':
         '74e55d896b26f35fffd8863b6c23d5c47491f2a5',
+    # The comerr original and /file body match its retained Bazel package pin:
+    # SHA256 403200f03c6220e63e71d6a82111f7092fea0e9f62acf50822ee895c72cbfd8b, 56728 bytes.
+    DEBIAN_SNAPSHOT + 'pool/main/e/e2fsprogs/comerr-dev_2.1-1.47.2-3+b11_amd64.deb':
+        '9d33b1cb3fed84c29a8623cce03b2ba4d2cb8791',
     # These Packages.xz bytes match SHA256 entries in signed metadata at the
     # same snapshot timestamp, verified by gpgv with Debian archive-keyring 2025.1.
     # Bookworm Release SHA256 abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f:
@@ -60,13 +64,37 @@ SNAPSHOT_FALLBACKS = {
         'efe5b90ec48b9c017922c5aa4996807d0f044064',
     DEBIAN_SNAPSHOT + 'dists/trixie/main/binary-amd64/Packages.xz':
         'da72348e0606a7ab26beca8b5e07e1dd8a3a0a9f',
-    # Trixie security InRelease at this snapshot timestamp has SHA256
-    # c0891a1adb9e4d833fcaed4e0b0ca6107a67f22ff4832cf0e52327c7d127528c.
-    # gpgv verified it with Debian archive-keyring 2025.1.
-    # ARM64 index: 227976 bytes, SHA256 15a9424747de11c0bd6c414d38a32f995544baebda824558e2b2dab80b740c2a.
-    # Original and named /file bodies were byte-identical.
+    # Module resolution reads these indexes even for native AMD64 targets.
+    # gpgv verified their InRelease files with Debian archive-keyring 2025.1:
+    # main: 98b25b5cd185c59d34aa6e4c3e9b5b8f01bbe9d104fe2dcfbcd30dc0a14a59ed
+    # updates: 9604bf96c24a14c7212bb7ebc900d4b6d18cdd866144dfedf02ad5e395b890c0
+    # security: c0891a1adb9e4d833fcaed4e0b0ca6107a67f22ff4832cf0e52327c7d127528c
+    # Each original and named /file body matched the signed SHA256/size entry
+    # listed below, and the two bodies were byte-identical.
+    # main/arm64: 753da751bbc7a679f48bd1b623ffd4479cb6861c426118284c76eb82909e4908, 9607412 bytes.
+    DEBIAN_SNAPSHOT + 'dists/trixie/main/binary-arm64/Packages.xz':
+        '6aa348f0e9772d3c3506d135dde34bd41d6d1f86',
+    # main/armhf: d459442ac471950615fa7e6267761bce16a63d756d29d14956ae315694a7810f, 9239704 bytes.
+    DEBIAN_SNAPSHOT + 'dists/trixie/main/binary-armhf/Packages.xz':
+        '65f7a0712e41b2ccd883ab98df318b31a4dc6d2d',
+    # updates/amd64: 10012cb384dc2613586d7b3d391d92a5637c9faa36017239739f2a6109a0d45f, 4412 bytes.
+    DEBIAN_SNAPSHOT + 'dists/trixie-updates/main/binary-amd64/Packages.xz':
+        '5b6a8b61501276b8cb7e1892bea5b219018f4f00',
+    # updates/arm64: fe771d58d4af39dbb94142d6f3ce578d340c6b1364c172d9e87f2287bdc4994b, 4424 bytes.
+    DEBIAN_SNAPSHOT + 'dists/trixie-updates/main/binary-arm64/Packages.xz':
+        'c9d85a145fcc34817defe65c818ded141ea2c95f',
+    # updates/armhf: c9eb15a380077ab6af13dbc6fb76958e8b96b939cdcb0e999c8e582e619b0fd6, 4408 bytes.
+    DEBIAN_SNAPSHOT + 'dists/trixie-updates/main/binary-armhf/Packages.xz':
+        'ba24766d03291a7cbebe54ae2238ccec3c7861ea',
+    # security/amd64: 278bbe9c144f40ddba2af39c9d151349de237542b90e8bec617f63eccba74cba, 226940 bytes.
+    SECURITY_SNAPSHOT + 'dists/trixie-security/main/binary-amd64/Packages.xz':
+        '8c7898c09763411a9bff9e68bab2c6f08a6b14b4',
+    # security/arm64: 15a9424747de11c0bd6c414d38a32f995544baebda824558e2b2dab80b740c2a, 227976 bytes.
     SECURITY_SNAPSHOT + 'dists/trixie-security/main/binary-arm64/Packages.xz':
         '4e0a5b5589a7554f7fdf92fcf5d9d23a45ce6d4c',
+    # security/armhf: 061362fef710f1810328bddba3b9c49d582838512a7376803708b1e4adcb54b9, 208284 bytes.
+    SECURITY_SNAPSHOT + 'dists/trixie-security/main/binary-armhf/Packages.xz':
+        'fb16158890603c0c5d37211213b40679f9b008d1',
     # These bodies match the unchanged kernel sources.bzl SHA256 pins:
     # dsc: 65bbf4e35635465326c9470605da1886ce3d3cf7e2a6d93392c4c6245d895b34
     # orig: 78afa637ca891174c22b332e4c1f87cf6aaa81861a6cca3b529e861843fa2fd3
