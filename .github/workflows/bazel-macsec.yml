@@ -99,10 +99,10 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/f9003910e389ce3dff5b2b543c907af635025ad3/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/27b16008edf847fa67c357ac5080a315109d2930/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          if hashlib.sha256(data).hexdigest() != "84b777906cc81c5c4491bca69ec2e2bf8dedcda43fbf8c0c32388593ab05ef0b":
+          if hashlib.sha256(data).hexdigest() != "07289f4cb5df60b86cde24c233d1ea55a4f30f54f242f2ae044b4215e2187dda":
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "macsec-source-mirrors.cfg"
           config.write_bytes(data)
