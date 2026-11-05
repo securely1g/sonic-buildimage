@@ -5,6 +5,7 @@ import argparse
 from functools import partial
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -41,7 +42,9 @@ TARGETS = {
 
 def build_images(args, directory):
     check.require(platform.machine() == "x86_64", "SNMP image build is native AMD64 only")
-    receipt = {"status": "building", "architecture": "amd64", "commands": []}
+    receipt = {"status": "building", "architecture": "amd64", "commands": [],
+               "invocation": {"bazel": args.bazel,
+                              "review_registry_revision": os.environ.get("SONIC_BAZEL_REGISTRY_REVISION")}}
     execute = partial(command_log.execute, cwd=ROOT)
     options = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=8000",
                "--//dockers/docker-snmp:image_version=" + args.image_version]

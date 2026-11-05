@@ -19,8 +19,11 @@ concurrency:
   group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
+# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
+# Remove this selection after #164 lands; ordinary invocations keep canonical main.
 env:
-  BAZEL: bazel
+  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
 
 jobs:
   archive:

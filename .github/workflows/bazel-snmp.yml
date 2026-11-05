@@ -13,6 +13,12 @@ concurrency:
   group: bazel-snmp-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
+# Remove this selection after #164 lands; ordinary invocations keep canonical main.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
+
 jobs:
   native:
     name: Build and inspect SNMP images (AMD64)
@@ -50,14 +56,14 @@ jobs:
           test "$(uname -m)" = x86_64
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           test ! -e MODULE.bazel.lock
-          python3 -B tools/bazel/ci/snmp_image.py build --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py build --bazel "$BAZEL" --artifacts artifacts/snmp
       - name: Validate completed image contents and source symbols
-        run: python3 -B tools/bazel/ci/snmp_image.py validate --artifacts artifacts/snmp
+        run: python3 -B tools/bazel/ci/snmp_image.py validate --bazel "$BAZEL" --artifacts artifacts/snmp
       - name: Check incremental rebuild and restored image digests
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/snmp_image.py incremental --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$BAZEL" --artifacts artifacts/snmp
           git diff --exit-code
       - name: Retain images and exact build evidence
         if: always()

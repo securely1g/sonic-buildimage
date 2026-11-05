@@ -6,6 +6,8 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/ci/review_bazel.sh'
+      - 'tools/bazel/ci/review_bazel_rc.py'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
@@ -15,6 +17,8 @@ on:
       - 'MODULE.bazel'
       - '.bazelrc'
       - 'tools/bazel/common.bazelrc'
+      - 'tools/bazel/ci/review_bazel.sh'
+      - 'tools/bazel/ci/review_bazel_rc.py'
       - 'tools/bazel/ci/bazel_commands.py'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
@@ -22,6 +26,12 @@ on:
 
 permissions:
   contents: read
+
+# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
+# Remove this selection after #164 lands; ordinary invocations keep canonical main.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
 
 jobs:
   package:
@@ -61,7 +71,7 @@ jobs:
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
           # The standalone module and image root use the same maintained registry.
-          (cd ../.. && bazel cquery --lockfile_mode=update \
+          (cd ../.. && "$BAZEL" cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt
           uname -m > artifacts/execution-machine.txt

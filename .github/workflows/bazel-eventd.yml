@@ -6,6 +6,8 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/review_bazel.sh
+      - tools/bazel/ci/review_bazel_rc.py
       - .github/workflows/bazel-eventd.yml
   push:
     branches: [master]
@@ -13,11 +15,19 @@ on:
       - src/sonic-eventd/**
       - MODULE.bazel
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/review_bazel.sh
+      - tools/bazel/ci/review_bazel_rc.py
       - .github/workflows/bazel-eventd.yml
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
+# Remove this selection after #164 lands; ordinary invocations keep canonical main.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
 
 jobs:
   native:
@@ -57,7 +67,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
+          python3 -B src/sonic-eventd/bazel/ci.py --bazel "$BAZEL" --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence
         if: always()
