@@ -264,6 +264,32 @@ original target/test lists, without runtime-preparation image requirements:
 | sairedis | #213, dd35a932bfebdcb8f9c31c1127ed7496cf334df2 | 19 | 7 |
 | dash | #215, 28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623 | 4 | 2 |
 | linkmgrd | #183, b6b0b1bfcd784c7b2fa4bc7ada101c276d0258aa | 4 | 3 |
+| libteam | #236, 4ed05183275951b03342d89db98f709779487ec0 | 9 | 4 |
+
+The fixed `libteam` profile also runs the selected owner's exported
+`@libteam//:bazel/verify_rebuild.py` after its ordinary consumer passes. It uses
+that consumer's existing output root, exact captured registry/platform flags,
+and repository/disk caches. The original option record is immutable; changed
+options fail instead of replacing it. A fixed startup adapter sends the owner's
+command-only interface through the same no-DEB audit and measured resource
+limits. Baseline, no-op, configuration edit and restoration build all nine
+original outputs. Restored hashes must equal the ordinary uploaded outputs.
+The owner restores its declared source input even when a probe fails.
+
+This profile uses its selected registry's checksum-bound mirror configuration
+unchanged and reuses `ci/prepare_cosmos_distdir.py` for the three locked APE inputs.
+Both the download cache and distdir remain under the existing per-worker cache;
+older profiles keep their existing transport behavior. Admission remeasures
+current free space on both mounts before execution; an old preflight is not a
+reservation of shared storage. Failed admission preserves caches and outputs.
+
+`libteam-incremental.json` retains verified phase/hash summaries, source
+restoration and the original-option record's hash. Raw commands, local registry
+URLs and raw BEPs remain private. This is same-output-base invalidation and
+restoration evidence, without a zero-action or cold-cache claim. The isolated
+`codex/libteam-registry-worker` Draft branch excludes the inherited DEB fixtures
+and full VS job; these temporary exclusions and unlanded prerequisites remain
+readiness gates. A manual worker receipt supplements normal registry CI.
 
 Each exact presubmit is hash-bound before the original runner validates it.
 Their declared flags, platforms and integration consumer files are unchanged.

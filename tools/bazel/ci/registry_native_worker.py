@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit native registry consumers on the existing disposable dpool workers."""
 import argparse
+from collections import Counter
 import hashlib
 import importlib.util
 import json
@@ -44,7 +45,16 @@ PROFILES = {
          'presubmit_sha256': '6859c3c860387afeaf85752364bdf2992f933d80df31e0e39ea88243b6dd6efa',
          'builds': 4,
          'tests': 3},
+    'libteam': {'revision': '4ed05183275951b03342d89db98f709779487ec0',
+        'module': 'libteam', 'version': '1.31.0.sonic.1',
+        'presubmit_sha256': 'fc28ed4eeac3eb83913a1acd67a1b211725bd7a47c0738f9971b0318d9339b6e',
+        'builds': 9, 'tests': 4,
+        'source_mirrors_sha256': '7c8f6684838354f3f6a9ee09a1bbc746a9c87a09a760c1e7aa9558019117946d',
+        'cosmos_helper_sha256': '597727d8ce33eaa9289f1718f3f1331bf20285a81eb67f67bb0959b8e77ffd42',
+        'probe_sha256': '97be12aaf581f6c38430407cbe5c45e0605876de372f720612a2b7bd319e86f6'},
 }
+LIBTEAM_PHASES = ('baseline', 'no-op', 'config-edit', 'restored')
+LIBTEAM_SCRIPT = '@libteam//:bazel/verify_rebuild.py'
 # Populate only from verified provisioner provenance. A local image ID alone is
 # not a registry image reference. Common remains fail-closed until one is known.
 SLAVE_IMAGE_REFERENCES = {}
@@ -146,18 +156,38 @@ def verified_source_distdirs(cache, artifacts):
     return [str(path) for path in directories]
 
 
-def verified_mirror_config(workspace, private, artifacts):
+def verified_mirror_config(workspace, private, artifacts, profile=None):
     from tools.bazel.ci.source_image_worker import mirror_configuration
     original=workspace/'ci/source_mirrors.cfg'
     content=original.read_bytes()
     # The existing helper checks the complete original config before adding
     # its already verified official mirrors; archive integrity stays enforced.
-    configured=mirror_configuration(content)
+    if profile and profile.get('module') == 'libteam':
+        # Use this selected owner's unchanged ordinary-CI configuration. Older
+        # profiles retain their existing checked configuration and additions.
+        require(digest(original)==profile['source_mirrors_sha256'], 'Selected libteam mirror configuration changed')
+        configured=content
+    else:
+        configured=mirror_configuration(content)
     destination=private/'source-mirrors.cfg'
     destination.write_bytes(configured)
     write(artifacts/'worker-source-mirrors.json',{'original_sha256':digest(original),
           'configured_sha256':digest(destination),'archive_integrity_unchanged':True})
     return str(destination)
+
+
+def libteam_cosmos(workspace, profile, cache, artifacts):
+    """Call the selected registry's maintained three-payload transport helper."""
+    if profile['module'] != 'libteam':
+        return []
+    helper=workspace/'ci/prepare_cosmos_distdir.py'
+    require(digest(helper)==profile['cosmos_helper_sha256'], 'Selected Cosmos helper changed')
+    distdir=cache_directory(cache,'cosmos-distdir')
+    downloads=cache_directory(cache,'cosmos-downloads')
+    subprocess.run([sys.executable,'-B',str(helper),'--distdir',str(distdir),
+                    '--cache-dir',str(downloads),'--repository-cache',str(cache/'repository'),
+                    '--receipt',str(artifacts/'cosmos-distdir.json')],check=True)
+    return [str(distdir)]
 
 
 def command_parts(arguments):
@@ -193,12 +223,124 @@ def audit_before_build(spec, arguments, auditor=None):
     labels=[x for x in options if not x.startswith('--')]
     expected=spec['config'][command+'_targets']
     require(labels==expected, 'Bazel invocation differs from the complete original target list')
+    report=Path(spec['artifacts'])/('no-deb-'+command+'.json')
+    if spec.get('libteam_probe') and command=='build':
+        report=libteam_build_options(spec,arguments)
     flags=[x for x in options if x.startswith('--') and not x.startswith('--build_event_json_file=')]
     # These presentation/test flags do not select configured dependencies.
     flags=[x for x in flags if x!='--nocache_test_results' and not x.startswith('--test_output=')]
     auditor(startup[0],flags,spec['config']['build_targets']+spec['config']['test_targets'],
-            workspace=Path.cwd(),output=Path(spec['artifacts'])/('no-deb-'+command+'.json'),startup_options=startup[1:])
+            workspace=Path.cwd(),output=report,startup_options=startup[1:])
     return startup,command,options
+
+
+def libteam_build_options(spec, arguments):
+    """Freeze the first ordinary build's flags; probe phases cannot replace them."""
+    startup,command,options=command_parts(arguments)
+    flags=[x for x in options if x.startswith('--') and not x.startswith('--build_event_json_file=')]
+    path=Path(spec['libteam_probe'])/'ordinary-options.json'
+    record={'startup':startup,'flags':flags}
+    if not spec.get('libteam_probe_active'):
+        if path.exists():
+            require(json.loads(path.read_text())==record, 'Ordinary libteam options drifted')
+        else:
+            # Private provenance can contain local registry URLs. Never publish
+            # it as public JSON or overwrite it during a later probe phase.
+            with path.open('x') as stream:
+                json.dump(record,stream)
+        return Path(spec['artifacts'])/'no-deb-build.json'
+    require(path.is_file(), 'Missing ordinary libteam option provenance')
+    frozen=json.loads(path.read_text())
+    require(startup==frozen['startup'] and flags==['--jobs=2',*frozen['flags']],
+            'Owner probe changed the ordinary libteam options')
+    events=[x.split('=',1)[1] for x in options if x.startswith('--build_event_json_file=')]
+    expected={str(path.parent/'rebuild'/(phase+'-events.json')):phase for phase in LIBTEAM_PHASES}
+    require(len(events)==1 and events[0] in expected, 'Unexpected owner probe phase')
+    return Path(spec['artifacts'])/('libteam-no-deb-'+expected[events[0]]+'.json')
+
+
+def libteam_incremental(profile, spec, spec_path, wrapper):
+    """Run the selected owner's exported probe through the same fixed worker."""
+    private=Path(spec['libteam_probe'])
+    consumer=Path(spec['work'])/'consumer'
+    record=private/'ordinary-options.json'
+    frozen=json.loads(record.read_text())
+    startup=['--ignore_all_rc_files','--output_user_root='+str(Path(spec['work'])/'bazel')]
+    require(frozen['startup']==startup, 'Ordinary libteam startup changed')
+    flags=frozen['flags']
+    receipt={'status':'failed','module':profile['module'],'version':profile['version'],
+             'registry_revision':profile['revision'],'ordinary_options_sha256':digest(record),
+             'scope':'Same-output-base equality and config invalidation; no cold-cache or zero-action claim',
+             'raw_evidence':'Private owner receipt/BEPs; public evidence contains validated summaries'}
+    config=None
+    original=None
+    try:
+        def query(command):
+            return subprocess.check_output([str(wrapper),*startup,*command],cwd=consumer,text=True).splitlines()
+        roots=query(['info',*flags,'output_base'])
+        require(len(roots)==1 and roots[0], 'Expected one owner output base')
+        output_base=Path(roots[0])
+        require(output_base.is_absolute() and output_base.resolve().is_relative_to(Path(spec['work'])/'bazel'),
+                'Owner output base escaped the existing worker')
+        execution_root=output_base/'execroot/_main'
+        require(execution_root.is_dir(), 'Missing Bazel 8.5.1 Bzlmod execution root')
+        selected=query(['cquery',*flags,LIBTEAM_SCRIPT,'--output=files'])
+        require(len(selected)==1 and selected[0], 'Expected one selected owner probe')
+        script=(execution_root/selected[0]).resolve()
+        require(script.is_relative_to(output_base.resolve()/'external') and script.is_file() and
+                script.name=='verify_rebuild.py' and digest(script)==profile['probe_sha256'],
+                'Selected owner probe differs from the reviewed source')
+        config=script.parent/'config.h.in';original=config.read_bytes()
+        adapter=private/'probe-bazel'
+        # Only bridge the owner's command-only CLI to the already confined
+        # startup. Every command still reaches the existing audit/resource wrapper.
+        adapter.write_text('#!/usr/bin/python3\nimport os,sys\nos.execv('+repr(str(wrapper))+', ['+
+                           repr(str(wrapper))+','+','.join(repr(x) for x in startup)+',*sys.argv[1:]])\n')
+        adapter.chmod(0o755)
+        spec['libteam_probe_active']=True
+        spec_path.write_text(json.dumps(spec))
+        evidence=private/'rebuild'
+        subprocess.run([sys.executable,'-B',str(script),'--bazel',str(adapter),
+                        *['--bazel-arg='+x for x in flags],'--output',str(evidence)],cwd=consumer,check=True)
+        result_path=evidence/'rebuild.json'
+        result=json.loads(result_path.read_text())
+        require(result['status']=='passed' and result['source_restored'] is True and config.read_bytes()==original,
+                'Owner probe did not restore its declared input')
+        require(result['targets']==spec['config']['build_targets'] and result['bazel_arguments']==flags,
+                'Owner probe receipt changed targets or options')
+        require([phase['phase'] for phase in result['builds']]==list(LIBTEAM_PHASES), 'Missing owner probe phases')
+        builds=[]
+        for phase in result['builds']:
+            events=evidence/(phase['phase']+'-events.json')
+            require(phase['events']==events.name and events.is_file() and not events.is_symlink() and
+                    digest(events)==phase['events_sha256'], 'Owner phase evidence changed')
+            summary=bep_summary(events.read_text().splitlines())
+            require(summary['finished']=={'success':True,'exit_code':0}, 'Owner phase did not finish successfully')
+            builds.append({'phase':phase['phase'],'seconds':phase['seconds'],
+                           'config_sha256':phase['config_sha256'],'outputs_sha256':phase['outputs_sha256'],
+                           'events_sha256':phase['events_sha256'],'build_summary':summary})
+        before=builds[0]['outputs_sha256'];after=builds[-1]['outputs_sha256']
+        require(len(before)==9 and before==after, 'Owner restored outputs differ from baseline')
+        for name,expected in after.items():
+            path=Path(name)
+            require(path.resolve().is_relative_to(output_base.resolve()) and path.is_file() and digest(path)==expected,
+                    'Restored owner output differs from its receipt')
+        artifacts=Path(spec['artifacts'])
+        require(verify_outputs(artifacts), 'Missing ordinary indexed owner outputs')
+        index=json.loads((artifacts/'outputs.json').read_text())
+        require(set(index)==set(result['targets']) and all(len(records)==1 for records in index.values()),
+                'Ordinary owner output inventory changed')
+        require(Counter(after.values())==Counter(records[0]['sha256'] for records in index.values()),
+                'Owner probe did not restore the ordinary uploaded outputs')
+        receipt.update(status='passed',source_restored=True,targets=result['targets'],builds=builds,
+                       owner_source_sha256=result['owner_source_sha256'],owner_receipt_sha256=digest(result_path),
+                       original_and_restored_output_hashes_match_uploaded=True)
+    except BaseException as error:
+        receipt.update(error_class=type(error).__name__,
+                       source_restored=config is not None and config.is_file() and config.read_bytes()==original)
+        raise
+    finally:
+        write(Path(spec['artifacts'])/'libteam-incremental.json',receipt)
 
 
 def bazel_main():
@@ -290,6 +432,9 @@ def execute(args, profile, cache):
     work=private/'work'
     spec={'binary':shutil.which('bazel'),'work':str(work),'artifacts':str(args.artifacts),
           'repository_cache':str(cache/'repository'),'disk_cache':str(cache/'disk'),'profile':selected,'config':config}
+    if profile['module']=='libteam':
+        probe=private/'libteam-probe';probe.mkdir()
+        spec['libteam_probe']=str(probe)
     require(spec['binary'], 'Worker must provide Bazel/Bazelisk')
     require(subprocess.check_output([spec['binary'],'--version'],text=True).strip()=='bazel 8.5.1','Expected Bazel8.5.1')
     spec_path=private/'spec.json';spec_path.write_text(json.dumps(spec))
@@ -306,10 +451,11 @@ def execute(args, profile, cache):
     started=time.monotonic()
     try:
         spec['distdirs']=verified_source_distdirs(cache,args.artifacts)
-        spec['downloader_config']=verified_mirror_config(args.workspace,private,args.artifacts)
-        spec_path.write_text(json.dumps(spec))
+        spec['downloader_config']=verified_mirror_config(args.workspace,private,args.artifacts,profile)
         state['source_input_run']=os.environ.get('SOURCE_INPUTS_RUN') or None
         state['tools_installed']=prepare_tools()
+        spec['distdirs']+=libteam_cosmos(args.workspace,profile,cache,args.artifacts)
+        spec_path.write_text(json.dumps(spec))
         command=[sys.executable,'-B',str(args.workspace/'ci/registry_ci.py'),'run','--module',profile['module'],
                  '--version',profile['version'],'--architecture','amd64','--work-dir',str(work),
                  '--artifacts',str(args.artifacts),'--bazel',str(wrapper)]
@@ -322,6 +468,8 @@ def execute(args, profile, cache):
                 break
             except subprocess.TimeoutExpired:
                 print(json.dumps({'kind':'registry-native','elapsed_seconds':round(time.monotonic()-started),'memory':memory()}),flush=True)
+        if profile['module']=='libteam':
+            libteam_incremental(profile,spec,spec_path,wrapper)
         clean_source(args.workspace,profile['revision'])
         after=memory()
         counts=lambda s:dict(line.split() for line in s.splitlines())
