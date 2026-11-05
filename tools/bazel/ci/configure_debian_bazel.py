@@ -52,6 +52,15 @@ SNAPSHOT_FALLBACKS = {
     # SHA256 403200f03c6220e63e71d6a82111f7092fea0e9f62acf50822ee895c72cbfd8b, 56728 bytes.
     DEBIAN_SNAPSHOT + 'pool/main/e/e2fsprogs/comerr-dev_2.1-1.47.2-3+b11_amd64.deb':
         '9d33b1cb3fed84c29a8623cce03b2ba4d2cb8791',
+    # The rsyslog original and named /file bodies match its base lock and signed index:
+    # SHA256 815203243b9eb17c72c0229fe26afb525542b867719ab36413ab8e514159a26b, 758296 bytes.
+    DEBIAN_SNAPSHOT + 'pool/main/r/rsyslog/rsyslog_8.2504.0-1_amd64.deb':
+        '3745d404bae6227eb2142ce4aa8baeb8b0cad14d',
+    # The libc6 ARMHF original HEAD identifies this /file locator. Its named body
+    # matches the retained lock and signed index:
+    # SHA256 8aea0a08cefceb212303a738105ed5befc8fe95a32f465345ab5eec305f21d09, 2249772 bytes.
+    DEBIAN_SNAPSHOT + 'pool/main/g/glibc/libc6_2.41-12+deb13u3_armhf.deb':
+        '2511d1ea4cdf37ca307cc3336cbc16ff23c323ef',
     # These Packages.xz bytes match SHA256 entries in signed metadata at the
     # same snapshot timestamp, verified by gpgv with Debian archive-keyring 2025.1.
     # Bookworm Release SHA256 abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f:
