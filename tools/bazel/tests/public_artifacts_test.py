@@ -570,6 +570,62 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertNotIn("docker-syncd-vs-dbg.gz", summary["receipts"]["outputs"])
         self.assertNotIn(SENTINEL, json.dumps(summary))
 
+    def pad_json(self, path, size):
+        """Grow valid JSON without changing its schema or allocating a huge value."""
+        remaining = size - path.stat().st_size
+        self.assertGreaterEqual(remaining, 0)
+        with path.open("ab") as stream:
+            while remaining:
+                count = min(remaining, 1024 * 1024)
+                stream.write(b" " * count)
+                remaining -= count
+
+    def test_valid_70_mib_dependency_lock_is_published_unchanged(self):
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/MODULE.bazel.lock"
+        self.pad_json(path, 70 * 1024 * 1024)
+        expected = hashlib.sha256(path.read_bytes()).hexdigest()
+        summary, paths, ready = self.prepare("archive")
+        self.assertTrue(ready, summary)
+        self.assertIn(str(path.relative_to(self.root)), paths)
+        self.assertEqual(summary["files"]["module-lock"], {
+            "sha256": expected, "bytes": 70 * 1024 * 1024,
+        })
+
+    def test_dependency_lock_above_128_mib_is_blocked(self):
+        seed(self.root, "archive")
+        self.pad_json(self.root / "artifacts/archive/MODULE.bazel.lock", 128 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-lock", "reason": "oversized-json"}, summary["blocked"])
+
+    def test_non_lock_json_keeps_64_mib_boundary(self):
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/module-graph.json"
+        self.pad_json(path, 64 * 1024 * 1024)
+        summary, _paths, ready = self.prepare("archive")
+        self.assertTrue(ready, summary)
+        self.pad_json(path, 64 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-graph", "reason": "oversized-json"}, summary["blocked"])
+
+    def test_large_lock_still_rejects_recorded_environment(self):
+        seed(self.root, "archive")
+        value = lock()
+        value["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {
+            "PRIVATE_VALUE": SENTINEL,
+        }
+        path = write_json(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+        self.pad_json(path, 70 * 1024 * 1024)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-lock", "reason": "nonempty-recorded-environment"}, summary["blocked"])
+        self.assertNotIn(SENTINEL, json.dumps(summary))
+
     def test_archive_supports_native_arm64_metadata(self):
         seed(self.root, "archive", "arm64")
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
@@ -840,7 +896,7 @@ class PublicArtifactsTest(unittest.TestCase):
         path = self.root / "artifacts/archive/MODULE.bazel.lock"
         # A sparse fixture exercises the actual stat guard without a large read.
         with path.open("wb") as stream:
-            stream.truncate(64 * 1024 * 1024 + 1)
+            stream.truncate(128 * 1024 * 1024 + 1)
         summary, paths, ready = self.prepare("archive")
         self.assertFalse(ready)
         self.assertEqual(paths, [])

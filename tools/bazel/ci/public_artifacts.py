@@ -545,7 +545,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             continue
         try:
             if file_kind in {"lock", "graph", "cache"}:
-                require(path.stat().st_size <= 64 * 1024 * 1024, "oversized-json")
+                maximum = (128 if file_kind == "lock" else 64) * 1024 * 1024
+                require(path.stat().st_size <= maximum, "oversized-json")
                 dependency_json(load_json(path.read_bytes()), file_kind)
             elif file_kind != "binary":
                 require(path.stat().st_size <= 16 * 1024 * 1024, "oversized-text")
