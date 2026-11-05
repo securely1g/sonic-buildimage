@@ -59,8 +59,14 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
              'bb3a1a988c5cfcc2586827687124f0cff230fe2de73b1d2789331b23dec169e1'),
             ('bazel-libteam.yml', 'native', '264002ba05e75df2f7c90dea2d78cf2bf46a4d4a',
              'bb3a1a988c5cfcc2586827687124f0cff230fe2de73b1d2789331b23dec169e1'),
-            ('bazel-eventd.yml', 'native', '1609822832b591fcd31e8266a8a0dee5922e5685',
-             'd71c0e8152d6f717de11615b7d20d9ff47f1b0004fd908902d163654f2a09a00'),
+            ('bazel-supervisor-rust.yml', 'native', '45065949f5163bd5d99793026b076eafec213ef8',
+             'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
+            ('bazel-yang-models.yml', 'package', '45065949f5163bd5d99793026b076eafec213ef8',
+             'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
+            ('bazel-base-images.yml', 'native', '45065949f5163bd5d99793026b076eafec213ef8',
+             'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
+            ('bazel-eventd.yml', 'native', '45065949f5163bd5d99793026b076eafec213ef8',
+             'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
         ):
             fixture = ROOT / 'tools/bazel/tests/fixtures' / ('source-mirrors-' + revision[:10] + '.cfg')
             data = fixture.read_bytes()
