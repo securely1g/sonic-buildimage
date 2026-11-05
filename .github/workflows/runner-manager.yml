@@ -1,263 +1,107 @@
-name: Debian runner read-only probe
+name: Debian private Docker probe
 
 on:
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   probe:
+    name: Private Docker runtime probe (AMD64)
     runs-on: [self-hosted, linux, x64, debian-trixie-container]
-    timeout-minutes: 5
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Report runner capabilities
-        shell: python3 {0}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify diagnostic source marker
+        env:
+          HELPER_SHA256: 97782ee9b6c452da2bfe4d44394bf921653ab5f8545a20659740098241d0d850
+          NESTED_SHA256: 30994e9b75d4906373bbb789da66350417d1bb105828a2d3476b0a59cddf7ac0
         run: |
-          import hashlib
-          import json
-          import os
+          test "$(uname -m)" = x86_64
+          printf '%s  %s\n' "$HELPER_SHA256" tools/bazel/ci/private_docker.sh | sha256sum --check --strict
+          printf '%s  %s\n' "$NESTED_SHA256" tools/bazel/ci/prepare_nested_docker.py | sha256sum --check --strict
+          printf 'PRIVATE_DOCKER_PROBE_SOURCE=%s HELPER=%s\n' "$GITHUB_SHA" "$HELPER_SHA256"
+      - name: Start the primary private Docker helper
+        id: start
+        run: bash tools/bazel/ci/private_docker.sh start
+      - name: Exercise isolated runtime limits
+        run: |
+          test "$DOCKER_HOST" = "unix://$SONIC_PRIVATE_DOCKER_STATE/docker.sock"
+          test "$DOCKER_CONFIG" = "$SONIC_PRIVATE_DOCKER_STATE/client"
+          test ! -e /var/run/docker.sock
+          test "$(docker info --format '{{.DockerRootDir}}')" = "$SONIC_PRIVATE_DOCKER_STATE/data"
+          test "$(docker info --format '{{.Driver}}')" = overlay2
+          test "$(docker info --format '{{.CgroupDriver}}')" = cgroupfs
+          docker run --rm --network=none --read-only --pids-limit=128 --memory=256m --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
+            debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c \
+            /bin/sh -ec '
+              . /etc/os-release
+              test "$ID:$VERSION_CODENAME" = debian:trixie
+              test "$(uname -m)" = x86_64
+              test "$(ls -A /sys/class/net)" = lo
+              if test -f /sys/fs/cgroup/cgroup.controllers; then
+                test "$(cat /sys/fs/cgroup/pids.max)" = 128
+                test "$(cat /sys/fs/cgroup/memory.max)" = 268435456
+                test "$(cat /sys/fs/cgroup/cpu.max)" = "100000 100000"
+              else
+                test "$(cat /sys/fs/cgroup/pids/pids.max)" = 128
+                test "$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)" = 268435456
+                test "$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)" = 100000
+                test "$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)" = 100000
+              fi
+              touch /tmp/probe
+              if touch /probe-rootfs-write 2>/dev/null; then
+                echo "Root filesystem was writable" >&2
+                exit 1
+              fi
+              echo PRIVATE_DOCKER_SMOKE=passed
+            '
+          test -z "$(docker ps -aq)"
+          echo PRIVATE_DOCKER_ISOLATION=passed
+      - name: Show failure diagnostics
+        if: failure()
+        run: |
+          if [[ -n ${SONIC_PRIVATE_DOCKER_STATE:-} && -f $SONIC_PRIVATE_DOCKER_STATE/daemon.log ]]; then
+            tail -n 80 "$SONIC_PRIVATE_DOCKER_STATE/daemon.log"
+          fi
+      - name: Stop the primary private Docker helper
+        if: always()
+        run: bash tools/bazel/ci/private_docker.sh stop
+      - name: Verify cleanup
+        if: always() && steps.start.outcome == 'success'
+        run: |
+          test ! -e "$SONIC_PRIVATE_DOCKER_STATE/data"
+          test ! -e "$SONIC_PRIVATE_DOCKER_STATE/exec"
+          test -f "$SONIC_PRIVATE_DOCKER_STATE/daemon.log"
+          if timeout 3s docker info >/dev/null 2>&1; then
+            echo "Private daemon still accepts requests" >&2
+            exit 1
+          fi
+          python3 - "$SONIC_PRIVATE_DOCKER_STATE" <<'PY'
           from pathlib import Path
-          import platform
-          import re
-          import shutil
-          import socket
-          import stat
-          import subprocess
-
-          TOOL_NAMES = (
-              'sudo', 'docker', 'dockerd', 'podman', 'containerd',
-              'node', 'java', 'keytool',
-          )
-          CAPABILITIES = {
-              'sys_admin': 21,
-              'net_admin': 12,
-              'mknod': 27,
-              'sys_chroot': 18,
-              'setuid': 7,
-              'setgid': 6,
-              'sys_ptrace': 19,
-          }
-
-          def safe_identifier(value):
-              return value if re.fullmatch(r'[A-Za-z0-9._-]{1,64}', value or '') else 'unknown'
-
-          def os_identity():
-              values = {}
+          import os
+          import sys
+          state = Path(sys.argv[1])
+          pidfile = state / 'daemon.pid'
+          if pidfile.exists():
+              process = Path('/proc') / pidfile.read_text().strip()
               try:
-                  for line in Path('/etc/os-release').read_text().splitlines():
-                      key, separator, value = line.partition('=')
-                      if separator and key in ('ID', 'VERSION_CODENAME'):
-                          if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-                              value = value[1:-1]
-                          values[key] = safe_identifier(value)
-              except (OSError, UnicodeError):
-                  pass
-              return {
-                  'id': values.get('ID', 'unknown'),
-                  'codename': values.get('VERSION_CODENAME', 'unknown'),
-              }
-
-          def effective_capabilities():
-              mask = 0
-              readable = False
-              try:
-                  for line in Path('/proc/self/status').read_text().splitlines():
-                      if line.startswith('CapEff:'):
-                          mask = int(line.split(':', 1)[1].strip(), 16)
-                          readable = True
-                          break
-              except (OSError, UnicodeError, ValueError):
-                  pass
-              return {
-                  'readable': readable,
-                  'effective': {name: bool(mask & (1 << bit)) for name, bit in CAPABILITIES.items()},
-              }
-
-          def generic_stderr(value):
-              lowered = (value or '').lower()
-              for phrase in (
-                  'operation not permitted', 'permission denied', 'a password is required',
-                  'not allowed', 'function not implemented', 'invalid argument',
-                  'no space left on device', 'connection refused',
-              ):
-                  if phrase in lowered:
-                      return phrase
-              return 'other diagnostic (details withheld)' if lowered.strip() else ''
-
-          def fixed_command_result(arguments):
-              try:
-                  result = subprocess.run(
-                      arguments, env={}, stdin=subprocess.DEVNULL,
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                      text=True, timeout=5, check=False,
-                  )
-                  return {
-                      'attempted': True,
-                      'passed': result.returncode == 0,
-                      'returncode': result.returncode,
-                      'stderr': generic_stderr(result.stderr),
-                  }
-              except subprocess.TimeoutExpired:
-                  return {'attempted': True, 'passed': False, 'returncode': None, 'stderr': 'timed out'}
-              except (OSError, UnicodeError):
-                  return {'attempted': True, 'passed': False, 'returncode': None, 'stderr': 'execution unavailable'}
-
-          def unshare_probe():
-              result = {
-                  'available': False, 'attempted': False, 'passed': False,
-                  'returncode': None, 'stderr': '', 'status': 'unavailable',
-                  'scope': 'user-and-mount-namespaces',
-              }
-              executable = shutil.which('unshare')
-              true_executable = shutil.which('true')
-              result['available'] = bool(executable and true_executable)
-              if os.getuid() == 0 or os.geteuid() == 0:
-                  result['status'] = 'skipped-root'
-              elif result['available']:
-                  result.update(fixed_command_result([
-                      executable, '--user', '--map-root-user', '--mount',
-                      '--propagation', 'unchanged', '--fork', '--', true_executable,
-                  ]))
-                  result['status'] = 'passed' if result['passed'] else 'failed'
-              return result
-
-          def sudo_probe():
-              executable = shutil.which('sudo')
-              true_executable = shutil.which('true')
-              result = {
-                  'available': bool(executable and true_executable),
-                  'attempted': False, 'passed': False, 'returncode': None, 'stderr': '',
-              }
-              if result['available']:
-                  result.update(fixed_command_result([executable, '-n', true_executable]))
-              return result
-
-          def docker_socket_probe():
-              path = Path('/var/run/docker.sock')
-              result = {
-                  'exists': False, 'type': 'missing',
-                  'ping': {'attempted': False, 'connected': False, 'http_status': None, 'body_ok': False, 'status': 'not-attempted'},
-              }
-              try:
-                  attributes = path.lstat()
+                  status = (process / 'stat').read_text().split()[2]
+                  command = (process / 'cmdline').read_bytes().split(b'\0')
               except FileNotFoundError:
-                  return result
-              except OSError:
-                  result.update(exists=None, type='unreadable')
-                  return result
-              result['exists'] = True
-              if stat.S_ISSOCK(attributes.st_mode):
-                  result['type'] = 'socket'
-              elif stat.S_ISLNK(attributes.st_mode):
-                  result['type'] = 'symlink'
-                  return result
-              elif stat.S_ISREG(attributes.st_mode):
-                  result['type'] = 'regular-file'
-                  return result
-              elif stat.S_ISDIR(attributes.st_mode):
-                  result['type'] = 'directory'
-                  return result
+                  pass
               else:
-                  result['type'] = 'other'
-                  return result
-              ping = result['ping']
-              ping['attempted'] = True
-              try:
-                  with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                      connection.settimeout(2)
-                      connection.connect(str(path))
-                      ping['connected'] = True
-                      connection.sendall(b'GET /_ping HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n')
-                      response = bytearray()
-                      while len(response) < 4096:
-                          chunk = connection.recv(4096 - len(response))
-                          if not chunk:
-                              break
-                          response.extend(chunk)
-                          if b'\r\n\r\n' in response and len(response.split(b'\r\n\r\n', 1)[1]) >= 2:
-                              break
-                  headers, separator, body = bytes(response).partition(b'\r\n\r\n')
-                  first_line = headers.split(b'\r\n', 1)[0]
-                  match = re.fullmatch(rb'HTTP/[0-9.]+ ([0-9]{3})(?: .*)?', first_line)
-                  if match:
-                      ping['http_status'] = int(match.group(1))
-                  ping['body_ok'] = bool(separator and body.strip() == b'OK')
-                  ping['status'] = 'ok' if ping['http_status'] == 200 and ping['body_ok'] else 'unexpected-response'
-              except PermissionError:
-                  ping['status'] = 'permission-denied'
-              except ConnectionRefusedError:
-                  ping['status'] = 'connection-refused'
-              except (TimeoutError, socket.timeout):
-                  ping['status'] = 'timed-out'
-              except OSError:
-                  ping['status'] = 'socket-error'
-              return result
-
-          def free_gib(variable):
-              path = os.environ.get(variable)
-              if not path:
-                  return None
-              try:
-                  return round(shutil.disk_usage(path).free / (2 ** 30), 2)
-              except OSError:
-                  return None
-
-          def file_digest(path):
-              result = {'exists': False, 'regular': False, 'size_bytes': None, 'sha256': None, 'readable': False}
-              try:
-                  attributes = path.stat()
-              except FileNotFoundError:
-                  return result
-              except OSError:
-                  result['exists'] = None
-                  return result
-              result['exists'] = True
-              result['regular'] = stat.S_ISREG(attributes.st_mode)
-              if not result['regular']:
-                  return result
-              result['size_bytes'] = attributes.st_size
-              if attributes.st_size > 16 * 1024 * 1024:
-                  return result
-              try:
-                  digest = hashlib.sha256()
-                  total = 0
-                  with path.open('rb') as source:
-                      while chunk := source.read(1024 * 1024):
-                          total += len(chunk)
-                          if total > 16 * 1024 * 1024:
-                              return result
-                          digest.update(chunk)
-                  result.update(readable=True, sha256=digest.hexdigest())
-              except OSError:
-                  pass
-              return result
-
-          def guarded(function, fallback):
-              try:
-                  return function()
-              except Exception:
-                  return fallback
-
-          report = {
-              'os': guarded(os_identity, {'id': 'unknown', 'codename': 'unknown'}),
-              'architecture': safe_identifier(platform.machine()),
-              'identity': {
-                  'uid': os.getuid(), 'gid': os.getgid(),
-                  'effective_uid': os.geteuid(), 'effective_gid': os.getegid(),
-              },
-              'tools': {name: bool(shutil.which(name)) for name in TOOL_NAMES},
-              'docker_host_set': 'DOCKER_HOST' in os.environ,
-              'docker_socket': guarded(docker_socket_probe, {'exists': None, 'type': 'probe-error'}),
-              'capabilities': guarded(effective_capabilities, {'readable': False, 'effective': {name: False for name in CAPABILITIES}}),
-              'unshare': guarded(unshare_probe, {'available': False, 'attempted': False, 'passed': False, 'status': 'probe-error', 'stderr': 'probe unavailable'}),
-              'sudo_noninteractive_true': guarded(sudo_probe, {'available': False, 'attempted': False, 'passed': False, 'stderr': 'probe unavailable'}),
-              'free_gib': {
-                  'workspace': free_gib('GITHUB_WORKSPACE'),
-                  'temp': free_gib('RUNNER_TEMP'),
-              },
-              'trust_files': {
-                  'system_ca_bundle': guarded(lambda: file_digest(Path('/etc/ssl/certs/ca-certificates.crt')), {'exists': None, 'size_bytes': None, 'sha256': None}),
-                  'java_cacerts': guarded(lambda: file_digest(Path('/etc/ssl/certs/java/cacerts')), {'exists': None, 'size_bytes': None, 'sha256': None}),
-              },
-          }
-          print(json.dumps(report, indent=2, sort_keys=True))
+                  assert status == 'Z' or not (
+                      Path(os.fsdecode(command[0])).name == 'dockerd'
+                      and os.fsencode(str(state / 'data')) in command
+                  ), 'Private daemon process is still live'
+          PY
+          bash tools/bazel/ci/private_docker.sh stop
+          echo PRIVATE_DOCKER_CLEANUP=passed
