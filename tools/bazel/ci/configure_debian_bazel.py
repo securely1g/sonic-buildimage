@@ -60,6 +60,13 @@ SNAPSHOT_FALLBACKS = {
         'efe5b90ec48b9c017922c5aa4996807d0f044064',
     DEBIAN_SNAPSHOT + 'dists/trixie/main/binary-amd64/Packages.xz':
         'da72348e0606a7ab26beca8b5e07e1dd8a3a0a9f',
+    # Trixie security InRelease at this snapshot timestamp has SHA256
+    # c0891a1adb9e4d833fcaed4e0b0ca6107a67f22ff4832cf0e52327c7d127528c.
+    # gpgv verified it with Debian archive-keyring 2025.1.
+    # ARM64 index: 227976 bytes, SHA256 15a9424747de11c0bd6c414d38a32f995544baebda824558e2b2dab80b740c2a.
+    # Original and named /file bodies were byte-identical.
+    SECURITY_SNAPSHOT + 'dists/trixie-security/main/binary-arm64/Packages.xz':
+        '4e0a5b5589a7554f7fdf92fcf5d9d23a45ce6d4c',
     # These bodies match the unchanged kernel sources.bzl SHA256 pins:
     # dsc: 65bbf4e35635465326c9470605da1886ce3d3cf7e2a6d93392c4c6245d895b34
     # orig: 78afa637ca891174c22b332e4c1f87cf6aaa81861a6cca3b529e861843fa2fd3
