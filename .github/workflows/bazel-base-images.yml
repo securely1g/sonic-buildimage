@@ -21,9 +21,9 @@ jobs:
       matrix:
         include:
           - architecture: amd64
-            runner: ubuntu-24.04
+            runner: [self-hosted, linux, bazel-x64]
           - architecture: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, linux, bazel-arm64]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
@@ -84,9 +84,9 @@ jobs:
       matrix:
         include:
           - architecture: amd64
-            runner: ubuntu-24.04
+            runner: [self-hosted, linux, bazel-x64]
           - architecture: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, linux, bazel-arm64]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:

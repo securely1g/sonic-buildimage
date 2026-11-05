@@ -41,6 +41,51 @@ def shell(step):
     return match[1]
 
 
+class ArchiveCachePolicyTest(unittest.TestCase):
+    def test_vs_jobs_share_the_master_push_upload_policy(self):
+        workflow_jobs = jobs()
+        flag = ("--remote_upload_local_results=${{ github.event_name == 'push'"
+                " && github.ref == 'refs/heads/master' }}")
+        for name in ("vs", "vs_container"):
+            with self.subTest(job=name):
+                self.assertIn(flag, workflow_jobs[name])
+        self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
+        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container]",
+                      workflow_jobs["vs_container"])
+
+    def test_upload_override_preserves_checkout_cleanliness(self):
+        step = steps(jobs()["archive"])["Configure remote cache uploads"]
+        self.assertNotRegex(step, r"(?m)^\s+if:")
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/master'", step)
+        self.assertIn("try-import %workspace%/.bazelrc.user",
+                      (ROOT / "tools/bazel/common.bazelrc").read_text())
+        with tempfile.TemporaryDirectory(prefix="archive-cache-policy-") as directory:
+            root = Path(directory)
+            for name in (".bazelrc", ".gitignore"):
+                shutil_source = ROOT / name
+                (root / name).write_bytes(shutil_source.read_bytes())
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            subprocess.run(["git", "-C", directory, "add", ".bazelrc", ".gitignore"], check=True)
+            for upload in ("true", "false"):
+                with self.subTest(upload=upload):
+                    result = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", "-c", shell(step)],
+                        cwd=root, env=dict(os.environ, UPLOAD_CACHE=upload),
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual((root / ".bazelrc.user").read_text().splitlines()[-1],
+                                     "build --remote_upload_local_results=" + upload)
+                    self.assertEqual((root / ".bazelrc").read_bytes(),
+                                     (ROOT / ".bazelrc").read_bytes())
+                    subprocess.run(["git", "-C", directory, "diff", "--exit-code"], check=True)
+                    ignored = subprocess.check_output(
+                        ["git", "-C", directory, "check-ignore", ".bazelrc.user"], text=True)
+                    self.assertEqual(ignored.strip(), ".bazelrc.user")
+                    untracked = subprocess.check_output(
+                        ["git", "-C", directory, "ls-files", "--others", "--exclude-standard"], text=True)
+                    self.assertEqual(untracked, "")
+
+
 class SourceWorkflowTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="source-workflow-")

@@ -233,12 +233,12 @@ jobs:
           - name: AMD64
             architecture: amd64
             machine: x86_64
-            runner: ubuntu-24.04
+            runner: [self-hosted, linux, bazel-x64]
             platform: x86_64_trixie
           - name: ARM64
             architecture: arm64
             machine: aarch64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, linux, bazel-arm64]
             platform: aarch64_trixie
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
@@ -258,6 +258,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Configure remote cache uploads
+        env:
+          UPLOAD_CACHE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        run: |
+          printf '\nbuild --remote_upload_local_results=%s\n' \
+            "$UPLOAD_CACHE" >> .bazelrc.user
 
       - name: Check native architecture and generated dependency state
         run: |
@@ -805,6 +812,7 @@ jobs:
         --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
         --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
         --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+        --remote_upload_local_results=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     defaults:
       run:
         shell: bash
@@ -863,7 +871,7 @@ jobs:
           printf 'Bazel cache: %s\nMake package cache: %s (%s)\n' \
             "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" "$SONIC_DPKG_CACHE_METHOD"
 
-      - name: Download verified sources from the hosted checks
+      - name: Download verified sources from the regression checks
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: bazel-repository-inputs
@@ -1172,6 +1180,7 @@ jobs:
         --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
         --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
         --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+        --remote_upload_local_results=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     steps:
       - name: Checkout repository and pinned submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

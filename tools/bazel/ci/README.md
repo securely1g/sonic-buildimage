@@ -1,5 +1,34 @@
 # Shared Bazel CI helpers
 
+## Remote cache uploads
+
+The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
+ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
+and manual runs remain read-only. The archive job overrides the default in its
+ignored `.bazelrc.user`, which the shared Bazel configuration imports without
+modifying tracked files. The active `vs_container` job and the disabled legacy
+`vs` job forward the same policy through `BAZEL_CONTAINER_ARGS`. The specialized
+upstream source-image and VS slave worker pools retain their existing selectors.
+
+The agents and builder containers must be able to reach the remote cache, and
+the server must authorize writes. Enforce writer permissions on the server:
+the workflow flag is not an authorization boundary for pull-request code.
+Enabling uploads does not guarantee backfilling results already present in
+local caches.
+
+The fresh-checkout disk-cache verifier explicitly disables the remote cache,
+remote executor, and remote downloader for its isolated builds. This keeps remote
+hits from masking disk-cache misses and avoids enabling the remote downloader
+without the gRPC cache it requires. Normal workflow builds retain their configured
+remote services.
+
+If an isolated build fails, the verifier prints its retained Bazel build log
+and exit code to the CI console before raising the failure. The local
+`agent-cache/<phase>/build.log` remains available on the runner; raw logs are
+not added to public failure artifacts.
+
+## Shared helpers
+
 These helpers validate buildimage artifacts and preserve build evidence. The
 shared container runner discovers the selected owner's Bazel CI targets;
 package expectations remain in the owner declarations and tests.
