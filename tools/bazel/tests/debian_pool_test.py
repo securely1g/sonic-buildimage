@@ -775,6 +775,21 @@ rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libc/lib
 # f9b0e4eb4ae81b3934a3211d755de26fa03881af3f159eb582437d3e8f55d9eb
 rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/b/bash/bash_5\.2\.37-2\+b9_arm64\.deb https://github.com/securely1g/sonic-bazel-registry/releases/download/ci-source-mirrors-20261104/bash_5.2.37-2%2Bb9_arm64.deb
 
+# Exact retained Debian packages mirrored byte-for-byte after upstream outages.
+# Original APT-lock SHA256: ec6c7a6770d1ff5295cf27b61436ec61b31d14bace3bff4fff336e3008818124; 408140 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libc/libcap2/libcap\-dev_2\.75\-10\+deb13u1\+b1_armhf\.deb https://github.com/securely1g/sonic-bazel-registry/releases/download/ci-source-mirrors-20261104/libcap-dev_2.75-10%2Bdeb13u1%2Bb1_armhf.deb
+# Original APT-lock SHA256: edeacbdd6a86ee82d314dccc180b740905fd7f6392b72e5c0533079fda449361; 914268 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/s/sqlite3/libsqlite3\-0_3\.46\.1\-7\+deb13u1_amd64\.deb https://github.com/securely1g/sonic-bazel-registry/releases/download/ci-source-mirrors-20261104/libsqlite3-0_3.46.1-7%2Bdeb13u1_amd64.deb
+
+# Exact retained PCRE runtime imported during PR196 AMD64 Orchagent analysis.
+# SHA256: fde8f26dfcc7073516c745381cf9940c964ce22e7458826dae5946b196c6115f; 259492 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/pcre2/libpcre2\-8\-0_10\.46\-1\~deb13u1_armhf\.deb https://github.com/securely1g/sonic-bazel-registry/releases/download/ci-source-mirrors-20261104/libpcre2-8-0_10.46-1.deb13u1_armhf.deb
+
+
+# Exact libcap2 AMD64 runtime selected by the current PR163 image lock.
+# Original APT-lock SHA256: 860db6f80d400239744eee2b454f1d8e66b064e18dd0527535824887691e9cb7; 28988 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libc/libcap2/libcap2_2\.75\-10\+deb13u1\+b1_amd64\.deb https://github.com/securely1g/sonic-bazel-registry/releases/download/ci-source-mirrors-20261104/libcap2_2.75-10%2Bdeb13u1%2Bb1_amd64.deb
+
 # Exact packages selected by native ARM CI, using verified Debian content URLs.
 # The SHA1 locates the file; each original APT-lock SHA256 below is unchanged.
 # libc-bin SHA256: 02f366115bea79b87fe26c7dec4dc444f9fdcc76440905d88cc26dbef075511b
@@ -790,11 +805,10 @@ rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/perl/l
 # uuid-dev ARM64 SHA256: 142f2c809a9c239b94a1a09dccc02a49cc4b20990da687b60f849cda84dd580a
 rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util-linux/uuid-dev_2\.41-5_arm64\.deb https://snapshot.debian.org/file/cb5244c39df10c7ce2573dbf21944fe03d8a436b
 
-# Orchagent AMD64 image analysis selected this exact security payload. The
-# verified redirect includes its filename; preserve that observed content URL.
-# libssl3t64 SHA256: b2dab3fe29c1fcb82ef58c2db0ff4bd830a442cf37b9a8b730b7b6ce87181349
-rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6-1~deb13u2_amd64\.deb https://snapshot.debian.org/file/fa81f709727b16de2a82710bbe0556b58f2b3f50/libssl3t64_3.5.6-1~deb13u2_amd64.deb
-rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6-1~deb13u2_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3.5.6-1~deb13u2_amd64.deb
+# Eventd AMD64 tests use this exact private Redis package. Keep its locked bytes.
+# SHA256: 0edc72458f66c68f2d4ccd0c9959a85a81f4ec7de410a28861cde4a2059f245c
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/r/redis/redis\-server_8\.0\.2\-3\+deb13u2_amd64\.deb https://snapshot.debian.org/file/c502f81818978156937bce72be28acac56cf8da6
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/r/redis/redis\-server_8\.0\.2\-3\+deb13u2_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/r/redis/redis-server_8.0.2-3+deb13u2_amd64.deb
 
 # These three security-package exceptions retain their exact original URLs.
 # libc-ares-dev also has the same bytes available in the official security CDN.
@@ -873,6 +887,110 @@ rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/upda
 # All other source archives stay outside the generic binary-package rewrites.
 rewrite snapshot\.debian\.org/archive/debian/20241222T205329Z/pool/main/s/socat/socat_1\.8\.0\.2\-1\.debian\.tar\.xz https://snapshot.debian.org/file/0475522901bd85478b944520b23e01e3f3c7d339
 rewrite snapshot\.debian\.org/archive/debian/20241222T205329Z/pool/main/s/socat/socat_1\.8\.0\.2\-1\.debian\.tar\.xz https://snapshot.debian.org/archive/debian/20241222T205329Z/pool/main/s/socat/socat_1.8.0.2-1.debian.tar.xz
+
+# Exact sibling architectures from the same failed consumers' unchanged APT locks.
+# SHA256: 04250d9e51fc87ef6d539f36cf0b66668dd34beec101af56dc35198ea99cef00
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl\-dev_3\.5\.6\-1\~deb13u2_amd64\.deb https://snapshot.debian.org/file/ed4549f189f5faa3929d51268c16419c2ee87616
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl\-dev_3\.5\.6\-1\~deb13u2_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl-dev_3.5.6-1~deb13u2_amd64.deb
+# SHA256: afdd9c57261502a3a434ba606ddfd1e8fd0f288c663f2dc4f7570ce927867651
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl\-dev_3\.5\.6\-1\~deb13u2_arm64\.deb https://snapshot.debian.org/file/e00e42b454c6acfd3a11622bc8aca25e8b4a232b
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl\-dev_3\.5\.6\-1\~deb13u2_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl-dev_3.5.6-1~deb13u2_arm64.deb
+# SHA256: b2dab3fe29c1fcb82ef58c2db0ff4bd830a442cf37b9a8b730b7b6ce87181349
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6\-1\~deb13u2_amd64\.deb https://snapshot.debian.org/file/fa81f709727b16de2a82710bbe0556b58f2b3f50
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6\-1\~deb13u2_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3.5.6-1~deb13u2_amd64.deb
+# SHA256: f7e09a12ccb2d6bd28bcc87a6e2462a0558dcb3cc34d56f90ee86fbd3402d8ba
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6\-1\~deb13u2_arm64\.deb https://snapshot.debian.org/file/6e3fe344496850bb946e702685bacc5df1332dab
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6\-1\~deb13u2_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3.5.6-1~deb13u2_arm64.deb
+# SHA256: b574fdbc1ac7a50df51f382a23847a68687892ceb06dcf0b1bc1ed4730109c28
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6\-1\~deb13u2_armhf\.deb https://snapshot.debian.org/file/70634fafccf8dee1bbccd0091a321e81f8983755
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3\.5\.6\-1\~deb13u2_armhf\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/libssl3t64_3.5.6-1~deb13u2_armhf.deb
+# SHA256: f875f56675be5b074da877f9a93b09d47dc2eb4e679951d36e2943b8d4843344
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/e/expat/libexpat1_2\.7\.1\-2_amd64\.deb https://snapshot.debian.org/file/2df60d569f5ba6703427c701e3707c04cd958a03
+# SHA256: 7f6868227f4893a11123e43b9ed291950b550c7dc209905b2fb871c74678d1bf
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/e/expat/libexpat1_2\.7\.1\-2_arm64\.deb https://snapshot.debian.org/file/48585a6c3fab8508da2a2702d18a16f3c605b9ab
+# SHA256: 1c82e8bb5d628ca8f8343975b26578d0894b8a1c33b54bc7741a6bfa8d880654
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/e/expat/libexpat1_2\.7\.1\-2_armhf\.deb https://snapshot.debian.org/file/565675e8541721cdfa011219b0eba6efebf6f2d7
+# SHA256: dabada7ca12f95a17a31d19c3be4a8708a6a37207ac3b46cd1c344503825b0ee
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/python3\.13/libpython3\.13\-dev_3\.13\.5\-2\+deb13u4_amd64\.deb https://snapshot.debian.org/file/3cb20569f34ff9c1f8537215183f7ce639a343f7
+# SHA256: 85b7d04605f9d423d5699b3c07f027e8380649fd164a51e0712cded0cc56eced
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util\-linux/libuuid1_2\.41\-5_arm64\.deb https://snapshot.debian.org/file/0cc7ca3341253904256e5dc4296786ce151e51eb
+# SHA256: 1a4b6e94cbc26e03e791f7a6e5ae714adc03ee5fe5b24c01651d1194d9de3a3c
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util\-linux/libuuid1_2\.41\-5_armhf\.deb https://snapshot.debian.org/file/5563fcda49878ea86b02546db7c47c42af9a0a72
+
+# Observed PR195 source-base/native analysis inputs; exact immutable package identities only.
+# SHA256: 62c3dbd746163878e73e22206d1dcc01f0f5296d3ca4ece5fb8cb7cb80396e4f; 16204 bytes.
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/libkrb5\-dev_1\.21\.3\-5\+deb13u1_amd64\.deb https://snapshot.debian.org/file/4fef5fafa9bcf0df24e4cc6ad971283da129ffa7
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/libkrb5\-dev_1\.21\.3\-5\+deb13u1_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/k/krb5/libkrb5-dev_1.21.3-5+deb13u1_amd64.deb
+# SHA256: 6aa452af6a07e34498bf8e734e8789c9dd602fb34f12572e62dc1bba4889a60e; 298536 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/pcre2/libpcre2\-8\-0_10\.46\-1\~deb13u1_amd64\.deb https://snapshot.debian.org/file/1594986c3db12e53c6d738df0926766b852e8e9d
+# SHA256: b5cb023bfaad356053583af384f7b75caec3ac127a197f889164ef4d96397cef; 852668 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/pcre2/libpcre2\-dev_10\.46\-1\~deb13u1_amd64\.deb https://snapshot.debian.org/file/648dd0b86870e854e02868553a2246b3470b96dd
+# SHA256: cf70657d734060bad45def0c67208e2afb1e165a5640d53b3bfe2264a3ada932; 750500 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/pcre2/libpcre2\-dev_10\.46\-1\~deb13u1_arm64\.deb https://snapshot.debian.org/file/f114a29adbd36f6c0b136ab62613226f066e1fbf
+# SHA256: a9210d107c63761a88847c0fdfcb7b15bcf7cd1fc443b91a25e58805a6f4f83d; 756112 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/pcre2/libpcre2\-dev_10\.46\-1\~deb13u1_armhf\.deb https://snapshot.debian.org/file/e4ad4f9737d3906da5f6cdbb819176ee0ac0ad57
+
+# Exact FreeType runtime dependencies from the unchanged sonic-build-infra .28 APT lock.
+# SHA256: e4947f3291528f03d574f2b01d5c5fc45c58c47480f32888a5cdf0f231ab584e
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2\.13\.3\+dfsg\-1\+deb13u1_amd64\.deb https://snapshot.debian.org/file/2602e72ebeb8d5aa36eb1cc60f1cabfbd7558f43
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2\.13\.3\+dfsg\-1\+deb13u1_amd64\.deb https://deb.debian.org/debian-security/pool/updates/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_amd64.deb
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2\.13\.3\+dfsg\-1\+deb13u1_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_amd64.deb
+# SHA256: 0c426e83f1af816b9a4df9056fd2238463d1cd07969ee640965da9fb6ecaf107
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2\.13\.3\+dfsg\-1\+deb13u1_arm64\.deb https://snapshot.debian.org/file/218fd3daa2391ba367cdd38ff4f8f79f6b3757e1
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2\.13\.3\+dfsg\-1\+deb13u1_arm64\.deb https://deb.debian.org/debian-security/pool/updates/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_arm64.deb
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2\.13\.3\+dfsg\-1\+deb13u1_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_arm64.deb
+
+# Exact rsyslog-relp input from the PR163 source-base AMD64 analysis failure.
+# SHA256: 8b58d38a801e33182b5bf66382f012830e8cd8b234358f76657eb946741a87ae; 316252 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/r/rsyslog/rsyslog\-relp_8\.2504\.0\-1_amd64\.deb https://snapshot.debian.org/file/c16b59f13516c30140c256c1127b3be80899aff7
+
+# Exact JQ and ss-dev inputs observed by AMD64 SWSS/FRR image analysis.
+# SHA256: 140ac37e4b35370c3f34c95407cba75b35570e0be4bb9eebbf40bd72d182257c; 164336 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/j/jq/libjq1_1\.7\.1\-6\+deb13u2_amd64\.deb https://snapshot.debian.org/file/b8b613de6336c793442ca724edcb30be97ee3de0
+# SHA256: 6792fc1b77c4335e780cf93fe5830a7930b392af2be0577cf25cb583bb4c1d48; 34996 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/e/e2fsprogs/ss\-dev_2\.0\-1\.47\.2\-3\+b11_armhf\.deb https://snapshot.debian.org/file/e2267362c7557b71bcdc844929316ebfe8256dc3
+
+# Exact libexpat development input from SWSS AMD64 Python-target analysis.
+# SHA256: ac1e7f8ad81578b61bc7c54c725ec639b06684e560766eac278490a1b2064372; 160568 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/e/expat/libexpat1\-dev_2\.7\.1\-2_amd64\.deb https://snapshot.debian.org/file/d718845c00344d7965787ca08877a6d1bc51ef71
+
+# Exact warning inputs observed alongside the fatal SWSS libexpat download.
+# SHA256: 3a0acd8b37955c0e102c756b52c97df2a31f67b96453c35dab70df218d309117; 33124 bytes.
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/libkrb5support0_1\.21\.3\-5\+deb13u1_amd64\.deb https://snapshot.debian.org/file/fdcbf424c12036172b67ed2d13d14fa441fb3736
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/libkrb5support0_1\.21\.3\-5\+deb13u1_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/k/krb5/libkrb5support0_1.21.3-5+deb13u1_amd64.deb
+# SHA256: 490511f32afe59303e1fa2b4c54fd174de0d98f5f3cf9702e0f2784b834792e4; 56944 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/e/e2fsprogs/comerr\-dev_2\.1\-1\.47\.2\-3\+b11_arm64\.deb https://snapshot.debian.org/file/9ba5541a96f7de01c0d343e78296b07e2672051f
+
+# Exact ARM64 runtimes selected by native PI and P4C dependency analysis.
+# SHA256: 2e791f8faf7bbbc94d354cf7b6c3728dc303b7aa327dfe7a2aa6954320977c8f; 198880 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util-linux/libmount1_2\.41-5_arm64\.deb https://snapshot.debian.org/file/81aee071e0a7fff9504c0ec2cbf6acf665ebf0bb
+# SHA256: 208e9fdc14ed88a30f31fdfb993d1e8ab19f9ab29f3cd8546ffb4ea3f74f5a3f; 325232 bytes.
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/t/tiff/libtiff6_4\.7\.0-3\+deb13u3_arm64\.deb https://snapshot.debian.org/file/5e4fec5c53e730725b92a01b3e6663878562fa79
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/t/tiff/libtiff6_4\.7\.0-3\+deb13u3_arm64\.deb https://deb.debian.org/debian-security/pool/updates/main/t/tiff/libtiff6_4.7.0-3+deb13u3_arm64.deb
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/t/tiff/libtiff6_4\.7\.0-3\+deb13u3_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/t/tiff/libtiff6_4.7.0-3+deb13u3_arm64.deb
+
+# Exact libcap development input selected during Framework AMD64 analysis.
+# Verified official content and accepted lock/cache: 470800 bytes; SHA256
+# f1c0687bb0f6ad192b9cbe64429fc76029ce2a11939b155051139caf1683b447.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libc/libcap2/libcap\-dev_2\.75\-10\+deb13u1\+b1_arm64\.deb https://snapshot.debian.org/file/a5c6a45aae0d443be8f13ebc6eddfb3e83e23b55
+
+# Exact rsyslog runtime package selected by the shared Sysmgr source image.
+# Current checked-in lock and verified official content: 758296 bytes; SHA256
+# 815203243b9eb17c72c0229fe26afb525542b867719ab36413ab8e514159a26b.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/r/rsyslog/rsyslog_8\.2504\.0\-1_amd64\.deb https://snapshot.debian.org/file/3745d404bae6227eb2142ce4aa8baeb8b0cad14d
+
+# Exact dated package index selected by the existing native APT resolver.
+# Retained same-URL fact and official content bytes: 4424 bytes; SHA256
+# fe771d58d4af39dbb94142d6f3ce578d340c6b1364c172d9e87f2287bdc4994b.
+# SHA1 is only the content locator, not a Release-signature assertion.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/dists/trixie\-updates/main/binary\-arm64/Packages\.xz https://snapshot.debian.org/file/c9d85a145fcc34817defe65c818ded141ea2c95f
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/dists/trixie\-updates/main/binary\-arm64/Packages\.xz https://snapshot.debian.org/archive/debian/20260727T143429Z/dists/trixie-updates/main/binary-arm64/Packages.xz
+
+# Exact security package selected by the existing FRR AMD64 build tools.
+# Official CDN bytes match the retained accepted lock: 843104 bytes; SHA256
+# f0eb41f8cb40896e0822e9ab65611e8383c12b721c76c54764f744abb4a8c247.
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libg/libgcrypt20/libgcrypt20_1\.11\.0\-7\+deb13u1_amd64\.deb https://deb.debian.org/debian-security/pool/updates/main/libg/libgcrypt20/libgcrypt20_1.11.0-7+deb13u1_amd64.deb
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libg/libgcrypt20/libgcrypt20_1\.11\.0\-7\+deb13u1_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/libg/libgcrypt20/libgcrypt20_1.11.0-7+deb13u1_amd64.deb
 
 # Timestamped Debian binary packages: same pool path on the official CDN first,
 # then the exact snapshot URL. Bazel still checks the locked package SHA256.
@@ -968,12 +1086,12 @@ class DebianPoolTest(unittest.TestCase):
 
     def mirror_bytes(self, workflow=None, job=None):
         # Keep each workflow on its separately verified immutable transport input.
-        if workflow == "bazel-supervisor-rust.yml" or (workflow == "bazel-oci.yml" and job == "archive"):
+        if workflow == "bazel-supervisor-rust.yml":
             data = RUST_ARCHIVE_CONFIG_FIXTURE.encode()
             expected = "8cc37c150bfdac99dcddb0a3a22602fc500f5813b75bad19b3bf243668552a95"
-        elif workflow == "bazel-frr.yml":
+        elif workflow == "bazel-frr.yml" or (workflow == "bazel-oci.yml" and job == "archive"):
             data = FRR_RUST_CONFIG_FIXTURE.encode()
-            expected = "bb3a1a988c5cfcc2586827687124f0cff230fe2de73b1d2789331b23dec169e1"
+            expected = "cf1b7d525e37bad86457b37e056f9eb1201baa2edc2beb7057e2f5667f203190"
         elif workflow == "bazel-base-images.yml":
             data = BASE_ARCHIVE_CONFIG_FIXTURE.encode()
             expected = "354c7d6ea5931c8ecb1c4a96fafa1269802b1547bde3b3b64dfc55a89a35cb46"
@@ -989,10 +1107,10 @@ class DebianPoolTest(unittest.TestCase):
     def test_workflow_overrides_preserve_pigz_and_pool_transport(self):
         for name, job, script in self.mirror_steps():
             data = self.mirror_bytes(name, job)
-            if name == "bazel-supervisor-rust.yml" or (name == "bazel-oci.yml" and job == "archive"):
+            if name == "bazel-supervisor-rust.yml":
                 revision = "f77605f0e9717395b7cae85e4a719035ec456c84"
-            elif name == "bazel-frr.yml":
-                revision = "264002ba05e75df2f7c90dea2d78cf2bf46a4d4a"
+            elif name == "bazel-frr.yml" or (name == "bazel-oci.yml" and job == "archive"):
+                revision = "81864fd28fa2a843086e881f0ef033d9abfc6f5e"
             elif name == "bazel-base-images.yml":
                 revision = "a32c87f0658e20f5fecd6459ef006caed96d905f"
             elif name == "bazel-eventd.yml":
