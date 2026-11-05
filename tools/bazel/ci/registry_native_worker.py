@@ -45,7 +45,7 @@ PROFILES = {
          'presubmit_sha256': '6859c3c860387afeaf85752364bdf2992f933d80df31e0e39ea88243b6dd6efa',
          'builds': 4,
          'tests': 3},
-    'libteam': {'revision': '4ed05183275951b03342d89db98f709779487ec0',
+    'libteam': {'revision': '096b904fb34cecdacf497301ad00b712d53aefd6',
         'module': 'libteam', 'version': '1.31.0.sonic.1',
         'presubmit_sha256': 'fc28ed4eeac3eb83913a1acd67a1b211725bd7a47c0738f9971b0318d9339b6e',
         'builds': 9, 'tests': 4,

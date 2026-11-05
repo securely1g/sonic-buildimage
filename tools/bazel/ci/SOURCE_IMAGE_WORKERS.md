@@ -264,7 +264,15 @@ original target/test lists, without runtime-preparation image requirements:
 | sairedis | #213, dd35a932bfebdcb8f9c31c1127ed7496cf334df2 | 19 | 7 |
 | dash | #215, 28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623 | 4 | 2 |
 | linkmgrd | #183, b6b0b1bfcd784c7b2fa4bc7ada101c276d0258aa | 4 | 3 |
-| libteam | #236, 4ed05183275951b03342d89db98f709779487ec0 | 9 | 4 |
+| libteam | #236, 096b904fb34cecdacf497301ad00b712d53aefd6 | 9 | 4 |
+
+The refreshed selection requests the landed infrastructure version
+`0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e` in its standalone test
+consumer. Its presubmit, downloader configuration, Cosmos helper and exported
+probe hashes are unchanged. The [earlier worker acceptance at `4ed05183`](https://github.com/securely1g/sonic-buildimage/actions/runs/42036039738/job/127274358819)
+used the consumer's infrastructure 26 request and remains historical. A new
+native build and four-phase probe for this selection are still required;
+static equivalence does not establish the resolved graph or native acceptance.
 
 The fixed `libteam` profile also runs the selected owner's exported
 `@libteam//:bazel/verify_rebuild.py` after its ordinary consumer passes. It uses
