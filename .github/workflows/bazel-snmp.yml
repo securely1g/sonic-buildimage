@@ -50,14 +50,14 @@ jobs:
           test "$(uname -m)" = x86_64
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           test ! -e MODULE.bazel.lock
-          python3 -B tools/bazel/ci/snmp_image.py build --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py build --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --artifacts artifacts/snmp
       - name: Validate completed image contents and source symbols
         run: python3 -B tools/bazel/ci/snmp_image.py validate --artifacts artifacts/snmp
       - name: Check incremental rebuild and restored image digests
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/snmp_image.py incremental --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --artifacts artifacts/snmp
           git diff --exit-code
       - name: Retain images and exact build evidence
         if: always()

@@ -23,7 +23,7 @@ jobs:
       run:
         shell: bash
     env:
-      BAZEL: bazel
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
