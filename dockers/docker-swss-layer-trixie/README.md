@@ -16,17 +16,18 @@ owner targets. The Make source checkout, recipes and patch series are unchanged.
 
 The default `.bazelrc` continues to select maintained registry `main`. Draft CI
 uses the single immutable complete catalog `2a849bbcaa254113a61ca0aeb972aeeccb8494f5`.
-It requires PR240 and its PR236/238 stack. Downloads use the separately verified
-configuration from [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
-at `264002ba05e75df2f7c90dea2d78cf2bf46a4d4a` (SHA256 `bb3a1a98` prefix)
-in OCI archive and regression checks. This includes the exact official content
-route for the locked `libcap-dev_2.75-10+deb13u1+b1_amd64.deb` input that the
-previous OCI configuration could not fetch. Source-base retains
-`ebb539d16742d632b74f391864ac54525f61bf16` (SHA256 `682fd771` prefix);
-Eventd, Rust and YANG retain `6e305126f13965fd01b6b3aa06e98d4595832d39`
-(SHA256 `e9f004bf` prefix). Each verifies the full pinned configuration hash;
-package checksums and declared source versions remain enforced. Existing setup-bazel repository/disk caches are forwarded into
-the isolated wrapper before the first root query.
+It requires PR240 and its PR236/238 stack. Source-base, native-libteam and
+OCI archive CI verify the shared [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
+configuration at `45065949f5163bd5d99793026b076eafec213ef8`
+(SHA256 `cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186`), covering the observed locked libssl3t64,
+libcap-dev and Python development-package download failures. This remains an
+unlanded owner selection; successful downloads do not establish native acceptance.
+OCI regression checks retain `264002ba05e75df2f7c90dea2d78cf2bf46a4d4a`
+(SHA256 `bb3a1a98` prefix). Eventd, Rust and YANG retain
+`6e305126f13965fd01b6b3aa06e98d4595832d39` (SHA256 `e9f004bf` prefix).
+Every context verifies the full pinned configuration hash. Locked package
+checksums, declared source versions, existing bootstrap commands and forwarded
+setup-bazel repository/disk cache options remain unchanged.
 
 Socat uses `1.8.0.2.sonic.6` from [registry PR242](https://github.com/securely1g/sonic-bazel-registry/pull/242),
 with the same upstream 1.8.0.2 and Debian
