@@ -155,10 +155,20 @@ does not run unrelated owner test suites, package Make recipes, or the full VS
 installer. The selected image drivers still audit their configured graph for
 DEB generation before building.
 
+The worker uses the checksum-verified shared download configuration from
+[registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228), pinned
+at `f77605f0e9717395b7cae85e4a719035ec456c84` (SHA256
+`8cc37c150bfdac99dcddb0a3a22602fc500f5813b75bad19b3bf243668552a95`, 32,958 bytes).
+It adds the reviewed exact historical-package routes to the existing pool and
+Snapshot fallbacks without changing package versions or required integrity.
+This is an unlanded helper dependency; current controller and image acceptance
+remain separate. The worker's existing Gawk and four package supplements,
+cache paths, resource limits and no-DEB audits are unchanged.
+
 The worker also uses Bazel's official mirror for the exact BCR `gawk@5.3.2`
 source archive. Its existing SHA256 and upstream build overlay stay unchanged.
 Only the three selected GNU/kernel source URLs are rewritten; the original
-checksum-verified pigz downloader configuration is retained. Phase resource
+checksum-verified shared downloader configuration is retained. Phase resource
 receipts include the observed cgroup memory/swap limits as well as usage and OOM
 counters, so a runtime limit change is not confused with a successful capacity test.
 

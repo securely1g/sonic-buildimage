@@ -54,8 +54,8 @@ BUILD_CHECKS = {
     "mux": ("mux_make_test.py",),
 }
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
-MIRROR_SHA = "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8"
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/f77605f0e9717395b7cae85e4a719035ec456c84/ci/source_mirrors.cfg"
+MIRROR_SHA = "8cc37c150bfdac99dcddb0a3a22602fc500f5813b75bad19b3bf243668552a95"
 SNAPSHOT_FALLBACKS = {
     "pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u4_amd64.deb": "d63097e4bb174c04bfc29e38e6270b43c2db9c0b",
     "pool/main/p/python3.13/libpython3.13_3.13.5-2+deb13u4_amd64.deb": "a817f92905b030fcbca7d433db7dc4dcccf91c3d",
