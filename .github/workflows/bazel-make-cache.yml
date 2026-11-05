@@ -29,6 +29,7 @@ jobs:
       - run: |
           python3 -B -m unittest \
             tools.bazel.tests.remote_cache_test \
+            tools.bazel.tests.managed_cache_test \
             tools.bazel.tests.make_cache_test \
             tools.bazel.tests.make_cache_sandbox_test \
             tools.bazel.tests.build_helpers_test \
@@ -40,6 +41,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: checks
     timeout-minutes: 180
+    env:
+      SONIC_BAZEL_MANAGED_CACHE: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -56,17 +59,19 @@ jobs:
         run: |
           df -h . "$RUNNER_TEMP"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-venv jq dpkg-dev
+          sudo apt-get install -y --no-install-recommends ca-certificates-java python3-venv jq dpkg-dev
           python3 -m venv "$RUNNER_TEMP/make-host-tools"
           "$RUNNER_TEMP/make-host-tools/bin/pip" install jinjanator==26.2.0
           echo "$RUNNER_TEMP/make-host-tools/bin" >> "$GITHUB_PATH"
           df -h . "$RUNNER_TEMP"
-      - name: Verify cache access without exposing credentials
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+      - name: Verify runner-managed cache access
         run: |
-          python3 -B tools/bazel/cache/credentials.py probe \
-            --output artifacts/make-cache/cache-access.json
+          python3 -B tools/bazel/cache/managed.py \
+            --output artifacts/make-cache/cache-selection.json --github-mask
+      - name: Configure verified source mirrors for the Make slave
+        run: |
+          python3 -B tools/bazel/ci/configure_debian_bazel.py
+          printf 'SONIC_BAZEL_DOWNLOADER_CONFIG=%s/sonic-source-mirrors-%s.cfg\n' "$RUNNER_TEMP" "$(id -u)" >> "$GITHUB_ENV"
       - name: Start a private Docker daemon for runtime validation
         run: bash tools/bazel/ci/private_docker.sh start
       - name: Pin and pull the native production builder
@@ -153,8 +158,6 @@ jobs:
           PY
       - name: Build the actual Make image with cache writes disabled
         if: ${{ !inputs.preflight_only }}
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: python3 -B tools/bazel/ci/make_cache.py build --architecture '${{ matrix.architecture }}'
       - name: Run the seeded Common library and Python binding in the image
         if: ${{ !inputs.preflight_only }}

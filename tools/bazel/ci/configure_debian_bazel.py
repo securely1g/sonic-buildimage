@@ -11,7 +11,8 @@ from urllib.request import urlopen
 
 DEBIAN_SNAPSHOT = 'snapshot.debian.org/archive/debian/20260727T143429Z/'
 SECURITY_SNAPSHOT = 'snapshot.debian.org/archive/debian-security/20260726T121236Z/'
-# Try verified official content paths for these exact snapshot inputs.
+KERNEL_SOURCE_BASE = 'packages.trafficmanager.net/public/debian-security/pool/updates/main/l/linux/'
+# Try verified official content paths for these exact inputs.
 SNAPSHOT_FALLBACKS = {
     # Snapshot's binary API binds each file ID to the package/version/architecture;
     # Bazel still enforces the original package SHA256 after selecting this transport.
@@ -43,6 +44,16 @@ SNAPSHOT_FALLBACKS = {
         'efe5b90ec48b9c017922c5aa4996807d0f044064',
     DEBIAN_SNAPSHOT + 'dists/trixie/main/binary-amd64/Packages.xz':
         'da72348e0606a7ab26beca8b5e07e1dd8a3a0a9f',
+    # These bodies match the unchanged kernel sources.bzl SHA256 pins:
+    # dsc: 65bbf4e35635465326c9470605da1886ce3d3cf7e2a6d93392c4c6245d895b34
+    # orig: 78afa637ca891174c22b332e4c1f87cf6aaa81861a6cca3b529e861843fa2fd3
+    # debian: b62680107fc155ad3d2c421ba0af1d5848812674fe767fcd40ba81a414e4ce2a
+    KERNEL_SOURCE_BASE + 'linux_6.12.41-1.dsc':
+        '4c27cc03165101daa02730a246b5db5edfd2578e',
+    KERNEL_SOURCE_BASE + 'linux_6.12.41.orig.tar.xz':
+        'accbbe886f7ee7058c827f6ea981e6c57fca8285',
+    KERNEL_SOURCE_BASE + 'linux_6.12.41-1.debian.tar.xz':
+        '9580fbacfe8e5e345f4770237739808dfcc6af45',
 }
 
 # These archive alternatives match the repository rules' unchanged SHA256 pins:
