@@ -21,6 +21,43 @@ ROOT = Path(__file__).resolve().parents[3]
 CONFIG = "tools/bazel/debian-pool.cfg"
 
 
+SHARED_CONFIG_FIXTURE = r"""# BCR pigz@2.8.bcr.2 keeps its original source integrity and upstream patches.
+# Original SHA256: eb872b4f0e1f0ebe59c9f7bd8c506c4204893ba6a8492de31df416f0d5170fd0
+# Bazel matches the complete URL without its https:// prefix.
+rewrite zlib\.net/pigz/pigz-2\.8\.tar\.gz https://distfiles.macports.org/pigz/pigz-2.8.tar.gz
+
+# Exact Bookworm security header payload; the repository SHA256 remains
+# ea265b1dff21ab2e4b22b38097031f8d63fb940ecb89427659655598860efc0f.
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/l/linux/linux-libc-dev_6\.1\.177-1_amd64\.deb https://snapshot.debian.org/file/aed472fca7f9b98fdb7103b974db264cb60c2248
+
+# Prefer the official pool for pinned Debian binary packages. Bazel keeps the
+# repository rule's checksum; the original snapshot remains a fallback.
+# Indexes and source archives must retain their snapshot URLs.
+rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian/pool/$2
+
+# Exact historical AMD64 payloads selected by declared build tools and source
+# images. Reuse their verified content IDs before the dated Snapshot fallback.
+# SHA256: 25acadc8b394bc86d05df16e70975e523f8f839a7d8d6d5e22c1cafdcef741aa
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/c/cdebconf/libdebconfclient0_0\.280_amd64\.deb https://snapshot.debian.org/file/219dec5cd95ea5be91161ab1d30dc3f19efb6e01
+# SHA256: 2381bdaa2462b186db27671507e53eba9515c5341575fb72189b6228c73e3df8
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/python3\.13/libpython3\.13_3\.13\.5\-2\+deb13u4_amd64\.deb https://snapshot.debian.org/file/a817f92905b030fcbca7d433db7dc4dcccf91c3d
+# SHA256: e3a45504aaf395acb5c57efb5ccfdf85efa6eaffc165653d1f03532bbf5b92c5
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/python3\.13/libpython3\.13\-minimal_3\.13\.5\-2\+deb13u4_amd64\.deb https://snapshot.debian.org/file/d63097e4bb174c04bfc29e38e6270b43c2db9c0b
+# SHA256: 68bb8d32bd8d6d7d2f5952a169db03d1484b46ae1e52abccdec42a19dccea5d5
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libs/libselinux/libselinux1_3\.8\.1\-1_amd64\.deb https://snapshot.debian.org/file/44b247687c034c8a4142204f0827f7286614b354
+
+# SHA256: 06460065e7768d7a4a72cb02a0eddd386936756a33596bb23901faeb72dc8f68
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libh/libheif/libheif1_1\.19\.8\-1_amd64\.deb https://snapshot.debian.org/file/04d63b7e722e47ed3e0cd74aa01066c6d382621d
+# SHA256: 4104cf1149947db1a3450b2a13aab23000a695aa6981f515216129ad8b884423
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/a/audit/libaudit-dev_4\.0\.2\-2\+b2_amd64\.deb https://snapshot.debian.org/file/930f8fe502ed2d1b79243a03d1e1318c1bf30524
+# SHA256: fbc76c5c549192f52e7a03949108cdf28b1dc0751261495b7ef17cb8bf39dd8d
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util-linux/uuid-dev_2\.41\-5_amd64\.deb https://snapshot.debian.org/file/05b9652f442e9b33da16bb41cc69283e2a9b7c33
+
+rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
+rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian-security/pool/$2
+rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
+"""
+
 def rewritten_urls(url):
     # Bazel 8.5.1 UrlRewriter.applyRewriteRules matches the complete URL without
     # its scheme, collecting every matching replacement in configuration order.
@@ -330,6 +367,136 @@ class DebianPoolTest(unittest.TestCase):
                                     else "-B -m unittest discover -s tools/bazel/tests -p *_test.py")
                         self.assertEqual(result.stdout.strip(), expected)
         self.assertEqual(len(callers), 2)
+
+
+class RustSourceMirrorTest(unittest.TestCase):
+    def workflow_steps(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-supervisor-rust.yml").read_text())
+        steps = workflow["jobs"]["native"]["steps"]
+        mirror = next(step for step in steps if step.get("name") == "Configure the verified source mirror")
+        build = next(step for step in steps if step.get("name") == "Audit and test source runtime and debug packages")
+        self.assertLess(steps.index(mirror), steps.index(build))
+        self.assertFalse(any(re.search(r'(?m)^\s*(?:bazel|"\$BAZEL")\s', step.get("run", ""))
+                             for step in steps[:steps.index(mirror)]))
+        return mirror, build
+
+    def preserve_caches(self, root, home_settings):
+        steps = yaml.safe_load((ROOT / ".github/workflows/bazel-supervisor-rust.yml").read_text())["jobs"]["native"]["steps"]
+        cache = next(step for step in steps if step.get("name") == "Preserve setup-bazel caches for source checks")
+        mirror, _ = self.workflow_steps()
+        self.assertLess(steps.index(cache), steps.index(mirror))
+        code = cache["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        home = root / "home"
+        home.mkdir()
+        (home / ".bazelrc").write_text(home_settings)
+        with contextlib.chdir(root), mock.patch("pathlib.Path.home", return_value=home):
+            exec(compile(code, "rust-cache-handoff", "exec"), {})
+
+    def mirror_bytes(self):
+        # Exact shared configuration with the observed Rust sysroot fallback.
+        marker = r"rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1"
+        addition = (
+            "# SHA256: 53a9b789bb02415d758f652ef5ac913d89fed29782610e9fe0fd2488e4f2e465\n"
+            r"rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc6-dev_2\.41\-12\+deb13u3_amd64\.deb https://snapshot.debian.org/file/fbb9e46e11e1a8365a4f067eb9d6ec10251df100"
+            "\n\n"
+        )
+        data = SHARED_CONFIG_FIXTURE.replace("\n\n" + marker, "\n" + addition + marker, 1).encode()
+        self.assertEqual(hashlib.sha256(data).hexdigest(),
+                         "b6b7dbd03e20e482718de3f312a015168056f6c422d94723f55175a728259a7b")
+        return data
+
+    def configure(self, root, data):
+        mirror, _ = self.workflow_steps()
+        code = mirror["run"].split("python3 - <<'PYCFG'\n", 1)[1].rsplit("\nPYCFG", 1)[0]
+        with contextlib.chdir(root), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}):
+            with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(data)) as fetch:
+                exec(compile(code, "rust-source-mirror", "exec"), {})
+            fetch.assert_called_once_with(
+                "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
+                "6e7b45d19c76d479bc055d86ffd6fa2962948576/ci/source_mirrors.cfg", timeout=60)
+
+    def test_verified_config_precedes_actual_audit_test_and_query_calls(self):
+        data = self.mirror_bytes()
+        _, build = self.workflow_steps()
+        # Exercise the actual three invocations up to evidence copying with an
+        # argv recorder in place of Bazel. No compiler or package action runs.
+        script = build["run"].split("cp MODULE.bazel.lock", 1)[0]
+        for machine in ("x86_64", "aarch64"):
+            with self.subTest(machine=machine), tempfile.TemporaryDirectory(prefix="rust mirror ") as directory:
+                root = Path(directory)
+                retained = "common --distdir=/retained/downloads\n"
+                (root / ".bazelrc.user").write_text(retained)
+                cache_settings = "build --disk_cache=/retained/disk\ncommon --repository_cache=/retained/repository\n"
+                self.preserve_caches(root, cache_settings + "build --jobs=99\ncommon --experimental_downloader_config=/ignored/home.cfg\n")
+                before = retained + "\n" + cache_settings
+                self.assertEqual((root / ".bazelrc.user").read_text(), before)
+                for name in ("tools/bazel/common.bazelrc", CONFIG, "tools/bazel/ci/libteam_draft_bazel.sh",
+                             "tools/bazel/ci/bazel_commands.py"):
+                    destination = root / name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes((ROOT / name).read_bytes())
+                wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
+                wrapper.chmod(0o755)
+                self.configure(root, data)
+                config = root / "sonic-source-mirrors.cfg"
+                self.assertEqual(config.read_bytes(), data)
+                self.assertEqual((root / ".bazelrc.user").read_text(), before +
+                                 "common --experimental_downloader_config=" + str(config) + "\n")
+                common = (root / "tools/bazel/common.bazelrc").read_text()
+                self.assertLess(common.index("common --experimental_downloader_config="),
+                                common.index("try-import %workspace%/.bazelrc.user"))
+                recorder = root / "bazel"
+                recorder.write_text("#!/usr/bin/python3\nimport json,os,sys\nfrom pathlib import Path\n"
+                    "args=sys.argv[1:]\n"
+                    "rc=[a.split('=',1)[1] for a in args if a.startswith('--bazelrc=')]\n"
+                    "assert len(rc)==1 and Path(rc[0]).is_file()\n"
+                    "assert 'try-import %workspace%/.bazelrc.user' in Path(rc[0]).read_text()\n"
+                    "user=Path('.bazelrc.user').read_text()\n"
+                    "assert 'build --disk_cache=/retained/disk' in user\n"
+                    "assert 'common --repository_cache=/retained/repository' in user\n"
+                    "assert 'common --distdir=/retained/downloads' in user\n"
+                    "assert '--jobs=99' not in user and '/ignored/home.cfg' not in user\n"
+                    "selected=[x.split('=',1)[1] for x in user.splitlines() if x.startswith('common --experimental_downloader_config=')]\n"
+                    "assert len(selected)==1 and Path(selected[0]).is_file()\n"
+                    "with Path(os.environ['RECORD']).open('a') as out: out.write(json.dumps({'argv':args,'config':selected[0]})+'\\n')\n"
+                    "if 'aquery' in args: print(json.dumps({'actions':[],'artifacts':[]}))\n")
+                recorder.chmod(0o755)
+                record = root / "calls.jsonl"
+                env = dict(os.environ, PATH=str(root) + ":/usr/bin:/bin", RECORD=str(record),
+                           MACHINE=machine, BAZEL=str(wrapper))
+                subprocess.run(["bash", "-eu", "-c", script], cwd=root, env=env,
+                               check=True, capture_output=True, text=True)
+                calls = [json.loads(line) for line in record.read_text().splitlines()]
+                self.assertEqual(len(calls), 3)
+                targets = ["//src/sonic-supervisord-utilities-rs:" + name for name in
+                           ("unit_tests", "integration_tests", "listener_tests", "package_test")]
+                for call, command in zip(calls, ("aquery", "test", "cquery")):
+                    argv = call["argv"]
+                    self.assertIn(command, argv)
+                    self.assertIn("--bazelrc=" + str(root / "tools/bazel/common.bazelrc"), argv)
+                    self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/cfd42fb5eecf0e1a8e45da58598b107754c81ec3", argv)
+                    self.assertIn("--platforms=@sonic_build_infra//platforms:" + machine + "_trixie", argv)
+                    self.assertIn("--host_platform=@sonic_build_infra//platforms:" + machine + "_trixie", argv)
+                    self.assertEqual(call["config"], str(config))
+                    if command == "aquery": self.assertIn("deps(set(" + " ".join(targets) + "))", argv)
+                    if command == "test": self.assertEqual(argv[-4:], targets)
+                self.assertEqual((root / ".bazelrc.user").read_text(), before +
+                                 "common --experimental_downloader_config=" + str(config) + "\n")
+
+    def test_corrupt_rust_mirror_stops_before_query_and_preserves_existing_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = "common --disk_cache=/retained/cache\n"
+            (root / ".bazelrc.user").write_text(before)
+            config = root / "sonic-source-mirrors.cfg"
+            config.write_bytes(b"previous verified config")
+            ready = root / "query-ready"
+            with self.assertRaisesRegex(SystemExit, "checksum mismatch"):
+                self.configure(root, b"corrupt download")
+                ready.write_text("query may start")
+            self.assertFalse(ready.exists())
+            self.assertEqual(config.read_bytes(), b"previous verified config")
+            self.assertEqual((root / ".bazelrc.user").read_text(), before)
 
 
 if __name__ == "__main__":

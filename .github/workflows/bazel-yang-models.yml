@@ -53,6 +53,19 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
           disk-cache: yang-models-${{ matrix.architecture }}
+      - name: Preserve setup-bazel caches for the image-root query
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          settings = [line for line in (Path.home() / ".bazelrc").read_text().splitlines()
+                      if line.startswith(("build --disk_cache=", "common --repository_cache="))]
+          if len(settings) != 2 or len({line.split("=", 1)[0] for line in settings}) != 2:
+              raise SystemExit("setup-bazel disk/repository cache settings are missing")
+          user = Path(".bazelrc.user")
+          current = user.read_text() if user.exists() else ""
+          user.write_text(current + "\n" + "\n".join(settings) + "\n")
+          PY
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash
