@@ -18,10 +18,14 @@ The default `.bazelrc` continues to select maintained registry `main`. Draft CI
 uses the single immutable complete catalog `2a849bbcaa254113a61ca0aeb972aeeccb8494f5`.
 It requires PR240 and its PR236/238 stack. Source-base, native-libteam and
 OCI archive CI verify the shared [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
-configuration at `45065949f5163bd5d99793026b076eafec213ef8`
-(SHA256 `cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186`), covering the observed locked libssl3t64,
-libcap-dev and Python development-package download failures. This remains an
-unlanded owner selection; successful downloads do not establish native acceptance.
+configuration at `a32c87f0658e20f5fecd6459ef006caed96d905f`
+(SHA256 `354c7d6ea5931c8ecb1c4a96fafa1269802b1547bde3b3b64dfc55a89a35cb46`). It retains the earlier libssl3t64,
+libcap-dev and Python development-package routes and adds verified exact routes
+for the observed Krb5/PCRE, rsyslog, JQ and ss-dev inputs while preserving the
+collaborator FreeType routes. The selected package hashes remain enforced. The
+reviewed merge is available on `codex/review-downloader-a32c87`; registry PR228
+remains unlanded. Downloads do not establish native acceptance or fix general
+Snapshot availability.
 OCI regression checks retain `264002ba05e75df2f7c90dea2d78cf2bf46a4d4a`
 (SHA256 `bb3a1a98` prefix). Eventd, Rust and YANG retain
 `6e305126f13965fd01b6b3aa06e98d4595832d39` (SHA256 `e9f004bf` prefix).
