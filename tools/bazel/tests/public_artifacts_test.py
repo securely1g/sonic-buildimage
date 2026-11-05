@@ -157,6 +157,159 @@ def seed(root, kind, architecture="amd64"):
 
 
 class PublicArtifactsTest(unittest.TestCase):
+
+    def test_graph_failure_projection_never_returns_captured_text(self):
+        errors = (
+            "ERROR: https://user:password@github.com/private/repo/releases/download/v1/file?token=" +
+            SYNTHETIC_JOB_TOKEN + " -> /home/runner/private: GET returned response code 504\n" +
+            "Error: https://raw.githubusercontent.com/private/repo/file: connection reset\n" +
+            "ERROR: https://bcr.bazel.build/modules/private: Read timed out\n" +
+            "ERROR: https://snapshot-cloudflare.debian.org/private: no space left on device\n" +
+            "ERROR: https://deb.debian.org/debian/private: java.lang.OutOfMemoryError\n" +
+            "ERROR: https://github.com.evil.invalid/private: HTTP 503\n" +
+            "::error::" + SENTINEL + "\n##[error]" + SYNTHETIC_INSTALLATION_TOKEN)
+        result = artifacts.graph_failure_summary(SENTINEL, errors, 2)
+        self.assertEqual(result, {"schema": 1, "status": "failed", "returncode": 2,
+            "stdout": "nonempty", "stderr_tail_truncated": False,
+            "signals": ["connection_error", "disk_full", "http_error", "memory_exhaustion", "timeout"],
+            "origins": ["bazel_registry", "debian_pool", "debian_snapshot", "github_raw", "github_release", "other"],
+            "http_statuses": [503, 504],
+            "diagnostic_counts": {"error_lines": 6, "unclassified_error_lines": 0, "extension_summaries": 0}})
+        artifacts.safe_json(result)
+        public = json.dumps(result)
+        for private in (SENTINEL, SYNTHETIC_JOB_TOKEN, SYNTHETIC_INSTALLATION_TOKEN,
+                        "https://", "password", "token", "/home/", "::", "##[", "private"):
+            self.assertNotIn(private, public)
+
+    def test_graph_failure_ignores_warnings_and_does_not_infer_oom_from_exit(self):
+        warning = "WARNING: https://snapshot.debian.org/private returned response code 504, retrying\n"
+        for code in (-9, 137, 0):
+            with self.subTest(code=code):
+                result = artifacts.graph_failure_summary("", warning + "ERROR: unclassified failure", code)
+                self.assertEqual(result["signals"], [])
+                self.assertEqual(result["origins"], [])
+                self.assertEqual(result["http_statuses"], [])
+                self.assertEqual(result["returncode"], code)
+                self.assertEqual(result["stdout"], "empty")
+                self.assertEqual(result["diagnostic_counts"], {
+                    "error_lines": 1, "unclassified_error_lines": 1, "extension_summaries": 0})
+
+    def test_graph_failure_receipt_rejects_extra_fields_and_untrusted_values(self):
+        original = artifacts.graph_failure_summary("", "ERROR: HTTP 504", 2)
+        cases = ({**original, "stderr": SENTINEL}, {**original, "argv": [SENTINEL]},
+                 {**original, "status": "passed"}, {**original, "schema": True},
+                 {**original, "returncode": True}, {**original, "returncode": 99999},
+                 {**original, "stdout": SENTINEL}, {**original, "stderr_tail_truncated": "false"},
+                 {**original, "signals": [SENTINEL]}, {**original, "signals": ["http_error"] * 2},
+                 {**original, "origins": ["https://private/" + SYNTHETIC_JOB_TOKEN]},
+                 {**original, "http_statuses": [True]}, {**original, "http_statuses": [200]},
+                 {**original, "http_statuses": [504, 503]}, {**original, "http_statuses": []})
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(artifacts.PublicArtifactError):
+                artifacts.receipt_summary(value, "resolution")
+
+    def test_graph_failure_scan_is_bounded_and_discards_a_partial_line(self):
+        stderr = "ERROR: https://snapshot.debian.org/private Read timed out " + "x" * 70000
+        stderr += "\nERROR: https://github.com/p/r/releases/download/v/a HTTP 502\n"
+        result = artifacts.graph_failure_summary("", stderr, 2)
+        self.assertTrue(result["stderr_tail_truncated"])
+        self.assertEqual(result["signals"], ["http_error"])
+        self.assertEqual(result["origins"], ["github_release"])
+        self.assertEqual(result["http_statuses"], [502])
+        unicode = artifacts.graph_failure_summary("", "é" * 65536 + "\nERROR: no space left on device", 2)
+        self.assertTrue(unicode["stderr_tail_truncated"])
+        self.assertEqual(unicode["signals"], ["disk_full"])
+
+    def test_graph_failure_extension_classes_and_get_status_remain_fixed_values(self):
+        private = SENTINEL + SYNTHETIC_JOB_TOKEN
+        stderr = (
+            "ERROR: Error loading '@@private//:" + private + "' for module extensions, requested by /home/private\n"
+            "Error: 'struct' value has no field or method '" + private + "'\n"
+            "Error: file '/home/private.bzl' does not contain symbol '" + private + "'\n"
+            "Error: name '" + private + "' is not defined\n"
+            "ERROR: @@private does not export a module extension called " + private + "\n"
+            "ERROR: Results may be incomplete as 7 extensions failed.\n"
+            "ERROR: Results may be incomplete as 1 extension failed.\n"
+            "Error: GET returned 504 Gateway Timeout " + private + "\n"
+            "ERROR: unknown " + private + "\n"
+            "WARNING: GET returned 503\nWARNING: Results may be incomplete as 8 extensions failed.\n")
+        result = artifacts.graph_failure_summary(private, stderr, 2)
+        self.assertEqual(result["signals"], ["extension_load_error", "extension_summary", "http_error",
+                                              "missing_extension", "missing_symbol"])
+        self.assertEqual(result["diagnostic_counts"], {
+            "error_lines": 9, "unclassified_error_lines": 1, "extension_summaries": 2})
+        self.assertEqual(result["http_statuses"], [504])
+        self.assertEqual(result["origins"], [])
+        for text in (private, SENTINEL, SYNTHETIC_JOB_TOKEN, "@@", "/home", "private.bzl"):
+            self.assertNotIn(text, json.dumps(result))
+
+    def test_graph_failure_counts_are_optional_typed_bounded_and_consistent(self):
+        current = artifacts.graph_failure_summary("", "ERROR: unknown", 2)
+        legacy = {key: value for key, value in current.items() if key != "diagnostic_counts"}
+        self.assertEqual(artifacts.receipt_summary(legacy, "resolution"), legacy)
+        for counts in (
+            None, {"error_lines": 1},
+            {"error_lines": True, "unclassified_error_lines": 0, "extension_summaries": 0},
+            {"error_lines": 65537, "unclassified_error_lines": 0, "extension_summaries": 0},
+            {"error_lines": 1, "unclassified_error_lines": -1, "extension_summaries": 0},
+            {"error_lines": 1, "unclassified_error_lines": 2, "extension_summaries": 0},
+            {"error_lines": 1, "unclassified_error_lines": 0, "extension_summaries": 1},
+            {"error_lines": 1, "unclassified_error_lines": 0, "extension_summaries": SENTINEL},
+        ):
+            with self.subTest(counts=counts), self.assertRaises(artifacts.PublicArtifactError):
+                artifacts.receipt_summary({**current, "diagnostic_counts": counts}, "resolution")
+        maximum = {**current, "diagnostic_counts": {
+            "error_lines": 65536, "unclassified_error_lines": 65536, "extension_summaries": 0}}
+        self.assertEqual(artifacts.receipt_summary(maximum, "resolution"), maximum)
+        bounded = artifacts.graph_failure_summary("", "ERROR: unknown\n" * 10000, 2)
+        self.assertTrue(bounded["stderr_tail_truncated"])
+        self.assertLess(bounded["diagnostic_counts"]["error_lines"], 10000)
+        self.assertEqual(bounded["diagnostic_counts"]["unclassified_error_lines"],
+                         bounded["diagnostic_counts"]["error_lines"])
+
+    def test_oci_checks_retains_only_validated_graph_failure_projection(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        step = workflow.split("      - name: Prepare repository graph failure receipt\n", 1)[1]
+        step = step.split("          python3 - <<'PYDIAG'\n", 1)[1].split("\n          PYDIAG\n", 1)[0]
+        code = "import sys; sys.path.insert(0, " + repr(str(ROOT)) + ")\n" + "\n".join(line[10:] for line in step.splitlines())
+        projected = artifacts.graph_failure_summary("", "Error: GET returned 504 " + SENTINEL, 2)
+        path = self.root / "artifacts/repository-inputs/module-graph-failure.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        output = self.root / "step-output"
+        write(self.root, "artifacts/repository-inputs/module-graph.stderr", SENTINEL + SYNTHETIC_JOB_TOKEN)
+        for value, valid in ((None, True), (projected, True),
+                             ({**projected, "stderr": SYNTHETIC_JOB_TOKEN}, False),
+                             ({"padding": "x" * 4096}, False)):
+            with self.subTest(value=value):
+                path.unlink(missing_ok=True)
+                output.write_text("")
+                if value is not None:
+                    path.write_text(json.dumps(value))
+                env = dict(__import__("os").environ, GITHUB_OUTPUT=str(output))
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", code], cwd=self.root,
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, valid, result.stderr)
+                self.assertEqual(output.read_text(), "present=true\n" if valid and value is not None else "")
+                for private in (SENTINEL, SYNTHETIC_JOB_TOKEN):
+                    self.assertNotIn(private, result.stdout + result.stderr)
+        for invalid in ("symlink", "directory"):
+            path.unlink(missing_ok=True)
+            if invalid == "symlink":
+                path.symlink_to(self.root / "missing-private")
+            else:
+                path.mkdir()
+            result = subprocess.run([sys.executable, "-I", "-B", "-c", code], cwd=self.root,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            path.rmdir() if path.is_dir() and not path.is_symlink() else path.unlink()
+        self.assertIn("if: always() && steps.repository_inputs.outcome == 'failure'", workflow)
+        upload = workflow.split("      - name: Retain repository graph failure receipt\n", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("steps.repository_graph_failure.outcome == 'success'", upload)
+        self.assertIn("steps.repository_graph_failure.outputs.present == 'true'", upload)
+        self.assertIn("path: artifacts/repository-inputs/module-graph-failure.json", upload)
+        self.assertNotIn("module-graph.stderr", upload)
+        self.assertNotIn("module-graph-inspection.json", upload)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="public-artifact-test-")
         self.root = Path(self.temporary.name)
