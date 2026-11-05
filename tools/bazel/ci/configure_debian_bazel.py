@@ -32,6 +32,16 @@ SNAPSHOT_FALLBACKS = {
         '11449623c6859d9164dff8aedbcf023edaddc513',
     DEBIAN_SNAPSHOT + 'pool/main/p/python3.13/python3.13_3.13.5-2+deb13u4_amd64.deb':
         '8ebce1ad081382ee68e57abdc1834ba5041bc14c',
+    # These bodies match package SHA256/size records retained by successful
+    # archive run 41842800844; each /file copy equals its original URL body.
+    SECURITY_SNAPSHOT + 'pool/updates/main/o/openssl/openssl-provider-legacy_3.5.6-1~deb13u2_amd64.deb':
+        '3b5367f36e8989c6021e165214a9afe7a2110121',
+    DEBIAN_SNAPSHOT + 'pool/main/p/pcre2/libpcre2-8-0_10.46-1~deb13u1_amd64.deb':
+        '1594986c3db12e53c6d738df0926766b852e8e9d',
+    DEBIAN_SNAPSHOT + 'pool/main/p/python3.13/libpython3.13-stdlib_3.13.5-2+deb13u4_amd64.deb':
+        '34446b6d753038d30cc9dfb5bf17987ff56071da',
+    DEBIAN_SNAPSHOT + 'pool/main/p/python3.13/python3.13-minimal_3.13.5-2+deb13u4_amd64.deb':
+        '74e55d896b26f35fffd8863b6c23d5c47491f2a5',
     # These Packages.xz bytes match SHA256 entries in signed metadata at the
     # same snapshot timestamp, verified by gpgv with Debian archive-keyring 2025.1.
     # Bookworm Release SHA256 abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f:
@@ -56,6 +66,16 @@ SNAPSHOT_FALLBACKS = {
         '9580fbacfe8e5e345f4770237739808dfcc6af45',
 }
 
+# These exact official pool bodies match the same retained Bazel package hashes.
+DEBIAN_POOL_FALLBACKS = {
+    SECURITY_SNAPSHOT + 'pool/updates/main/k/krb5/libgssrpc4t64_1.21.3-5+deb13u1_amd64.deb':
+        'https://deb.debian.org/debian-security/pool/updates/main/k/krb5/libgssrpc4t64_1.21.3-5+deb13u1_amd64.deb',
+    SECURITY_SNAPSHOT + 'pool/updates/main/k/krb5/libkadm5clnt-mit12_1.21.3-5+deb13u1_amd64.deb':
+        'https://deb.debian.org/debian-security/pool/updates/main/k/krb5/libkadm5clnt-mit12_1.21.3-5+deb13u1_amd64.deb',
+    SECURITY_SNAPSHOT + 'pool/updates/main/r/redis/redis-server_8.0.2-3+deb13u2_amd64.deb':
+        'https://deb.debian.org/debian/pool/main/r/redis/redis-server_8.0.2-3+deb13u2_amd64.deb',
+}
+
 # These archive alternatives match the repository rules' unchanged SHA256 pins:
 # rules_bison@0.4, bison 3.3.2: 039ee45b61d95e5003e7e8376f9080001b4066ff357bde271b7faace53b9d804
 # rules_m4@0.3.1, m4 1.4.18: f2c1e86ca0a404ff281631bdc8377638992744b175afb806e25871a24a934e07
@@ -70,11 +90,19 @@ GNU_FALLBACKS = {
 }
 
 
+def preserve_snapshot_filenames(data):
+    """Keep archive suffixes in the verified config's bare Snapshot rewrites."""
+    return re.sub(
+        rb'(?m)^(rewrite [^\s()]+/)([^\s/()]+)( https://snapshot\.debian\.org/file/[0-9a-f]{40})$',
+        rb'\1(\2)\3/$1', data)
+
+
 def with_download_fallbacks(data):
-    """Try exact verified transports before the unchanged registry config."""
+    """Add exact fallbacks and retain names in the verified registry config."""
     lines = ['# Exact fallbacks; original Bazel integrity behavior is unchanged.']
-    fallbacks = {source: f'https://snapshot.debian.org/file/{identifier}'
+    fallbacks = {source: f'https://snapshot.debian.org/file/{identifier}/{source.rsplit("/", 1)[-1]}'
                  for source, identifier in SNAPSHOT_FALLBACKS.items()}
+    fallbacks.update(DEBIAN_POOL_FALLBACKS)
     fallbacks.update(GNU_FALLBACKS)
     for source, destination in fallbacks.items():
         expression = re.escape(source)
@@ -82,7 +110,7 @@ def with_download_fallbacks(data):
             f'rewrite {expression} {destination}',
             f'rewrite {expression} https://{source}',
         ])
-    return ('\n'.join(lines) + '\n\n').encode() + data
+    return ('\n'.join(lines) + '\n\n').encode() + preserve_snapshot_filenames(data)
 
 
 def configure():

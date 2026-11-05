@@ -39,6 +39,9 @@ SNAPSHOT_FALLBACKS = {
     "pool/main/p/python3.13/libpython3.13_3.13.5-2+deb13u4_amd64.deb": "a817f92905b030fcbca7d433db7dc4dcccf91c3d",
     "pool/main/c/cdebconf/libdebconfclient0_0.280_amd64.deb": "219dec5cd95ea5be91161ab1d30dc3f19efb6e01",
     "pool/main/libs/libselinux/libselinux1_3.8.1-1_amd64.deb": "44b247687c034c8a4142204f0827f7286614b354",
+    # Sysmgr lock SHA256 98bd27836c7170839ed9c84b00daad9ed7155bd3d42e3f0ec3faf497aafa5f5f,
+    # 52264 bytes, verified from both the official CDN and this content URL.
+    "pool/main/d/dbus/dbus-session-bus-common_1.16.2-2_all.deb": "389afb81871da0972c83f16092732d62719a99a5",
 }
 
 
@@ -51,13 +54,14 @@ def mirror_configuration(original):
                    r"ftp\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
                    r"ftpmirror\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz"]
     lines = ["rewrite " + expression + " " + destination for expression in expressions]
-    # These four observed snapshot503 failures have verified byte-identical official
+    # These observed snapshot transport failures have verified byte-identical official
     # /file endpoints. Their SHA1 URL identifiers do not replace the locked SHA256.
+    # Keep the original basename so Bazel can infer the archive type.
     # Retain the original URL as a second download alternative.
     for path, identifier in SNAPSHOT_FALLBACKS.items():
         original_url = "snapshot.debian.org/archive/debian/20260727T143429Z/" + path
         expression = re.escape(original_url)
-        lines.extend(["rewrite " + expression + " https://snapshot.debian.org/file/" + identifier,
+        lines.extend(["rewrite " + expression + " https://snapshot.debian.org/file/" + identifier + "/" + path.rsplit("/", 1)[1],
                       "rewrite " + expression + " https://" + original_url])
     return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
                        "\n".join(lines) + "\n").encode()
