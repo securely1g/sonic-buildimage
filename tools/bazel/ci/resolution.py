@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 import re
 import shutil
 import subprocess
+import sys
 
 
 def inspect_graph(stdout, stderr, returncode):
@@ -68,6 +69,8 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     """Retain module provenance without changing the tested extension lock."""
     lock = workspace / "MODULE.bazel.lock"
     tested_lock = lock.read_bytes()
+    failure_receipt = directory / "module-graph-failure.json"
+    failure_receipt.unlink(missing_ok=True)
     command = [*bazel, "mod", "graph", "--output=json", "--extension_info=hidden",
                "--lockfile_mode=off", "--color=no", "--curses=no", *options]
     result = subprocess.run(command, cwd=workspace, text=True, capture_output=True)
@@ -75,7 +78,21 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     (directory / "module-graph.stderr").write_text(result.stderr)
     (directory / "module-graph-inspection.json").write_text(
         json.dumps({"argv": command, "returncode": result.returncode}, indent=2) + "\n")
-    inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    try:
+        inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        # Keep the original strict validation error and its traceback. Only a
+        # fixed-value projection is eligible for public evidence or the job log.
+        try:
+            from tools.bazel.ci.public_artifacts import graph_failure_summary
+
+            summary = json.dumps(graph_failure_summary(result.stdout, result.stderr, result.returncode),
+                                 sort_keys=True) + "\n"
+            failure_receipt.write_text(summary)
+            print(summary, end="", file=sys.stderr)
+        except Exception:
+            pass  # Best-effort diagnostics must never replace the graph failure.
+        raise
     inspection["argv"] = command
     (directory / "module-graph-inspection.json").write_text(json.dumps(inspection, indent=2) + "\n")
     if lock.read_bytes() != tested_lock:

@@ -32,6 +32,16 @@ DIAGNOSTIC_KEYS = {
     "commandline", "optionsparsed", "structuredcommandline",
     "unstructuredcommandline", "workingdirectory", "workspacedirectory",
 }
+# Public diagnostics use only these fixed guard codes, never exception text or
+# rejected dependency data. Unknown failures retain the generic rejection.
+PUBLIC_FILE_REJECTION_REASONS = frozenset({
+    "oversized-json", "invalid-dependency-json", "invalid-module-lock",
+    "unknown-module-lock-field", "invalid-module-graph", "unknown-module-graph-field",
+    "duplicate-json-key", "invalid-json-number", "invalid-json-key", "invalid-json-value",
+    "nonempty-recorded-environment", "diagnostic-json-field", "credential-json-field",
+    "control-character", "credential-pattern", "local-path", "url-credentials",
+    "sensitive-url-query", "changed-public-file",
+})
 STATUSES = {
     "PASSED", "FLAKY", "TIMEOUT", "FAILED", "INCOMPLETE", "REMOTE_FAILURE",
     "FAILED_TO_BUILD", "BLAZE_HALTED_BEFORE_TESTING", "NO_STATUS",
@@ -334,6 +344,29 @@ def cache_reuse_summary(value):
 
 def receipt_summary(value, kind):
     require(isinstance(value, dict), "invalid-receipt")
+    if kind == "resolution":
+        require(set(value) == {"schema", "status", "returncode", "stdout", "stderr_tail_truncated",
+                               "signals", "origins", "http_statuses"}, "invalid-resolution-fields")
+        require(type(value["schema"]) is int and value["schema"] == 1 and
+                value["status"] == "failed", "invalid-resolution-status")
+        require(type(value["returncode"]) is int and -128 <= value["returncode"] <= 255,
+                "invalid-resolution-returncode")
+        require(value["stdout"] in ("empty", "nonempty") and
+                type(value["stderr_tail_truncated"]) is bool, "invalid-resolution-output")
+        choices = {
+            "signals": {"http_error", "timeout", "connection_error", "disk_full", "memory_exhaustion"},
+            "origins": {"bazel_registry", "debian_snapshot", "debian_pool", "github_release", "github_raw", "other"},
+        }
+        for name, allowed in choices.items():
+            items = value[name]
+            require(isinstance(items, list) and all(type(item) is str and item in allowed for item in items)
+                    and items == sorted(set(items)), "invalid-resolution-" + name)
+        codes = value["http_statuses"]
+        require(isinstance(codes, list) and all(type(code) is int and 400 <= code <= 599 for code in codes)
+                and codes == sorted(set(codes)), "invalid-resolution-http-statuses")
+        require(bool(codes) == ("http_error" in value["signals"]), "inconsistent-resolution-http-statuses")
+        safe_json(value)
+        return value
     if kind == "python":
         require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
         require(value.get("architecture") in {"amd64", "arm64"}, "invalid-architecture")
@@ -390,6 +423,58 @@ def receipt_summary(value, kind):
     raise PublicArtifactError("unknown-receipt-kind")
 
 
+def graph_failure_summary(stdout, stderr, returncode):
+    """Project failure clues into fixed values; never publish captured text."""
+    # The cache verifier prints filtered text. Graph receipts deliberately expose
+    # only fixed classifications from fatal lines, not warnings or free text.
+    limit = 65536
+    tail = stderr[-limit:].encode("utf-8")
+    truncated = len(stderr) > limit or len(tail) > limit
+    tail = tail[-limit:]
+    if truncated:
+        tail = tail.partition(b"\n")[2]
+    lines = [line for line in tail.decode("utf-8", errors="replace").splitlines()
+             if line.startswith(("ERROR:", "Error:"))]
+    signals, origins, codes = set(), set(), set()
+    for line in lines:
+        lower = line.lower()
+        for name, fragments in {
+            "timeout": ("timed out", "time out", "timeoutexception"),
+            "connection_error": ("connection reset", "connection refused", "unknownhostexception"),
+            "disk_full": ("no space left on device",),
+            "memory_exhaustion": ("outofmemoryerror", "cannot allocate memory"),
+        }.items():
+            if any(fragment in lower for fragment in fragments):
+                signals.add(name)
+        codes.update(int(code) for code in re.findall(
+            r"(?:response code[: ]+|http(?:/[0-9.]+)?[ :]+)([45][0-9]{2})\b", lower))
+        for url in re.findall(r"https?://[^\s\]\[<>'\"]+", line):
+            try:
+                parsed = urlsplit(url)
+                host = parsed.hostname
+            except ValueError:
+                continue
+            origin = "other"
+            if host == "bcr.bazel.build":
+                origin = "bazel_registry"
+            elif host in {"snapshot.debian.org", "snapshot-cloudflare.debian.org"}:
+                origin = "debian_snapshot"
+            elif host in {"deb.debian.org", "security.debian.org"}:
+                origin = "debian_pool"
+            elif host == "raw.githubusercontent.com":
+                origin = "github_raw"
+            elif host == "release-assets.githubusercontent.com" or (
+                    host == "github.com" and "/releases/download/" in parsed.path):
+                origin = "github_release"
+            origins.add(origin)
+    if codes:
+        signals.add("http_error")
+    return receipt_summary({"schema": 1, "status": "failed", "returncode": returncode,
+                            "stdout": "nonempty" if stdout else "empty",
+                            "stderr_tail_truncated": truncated, "signals": sorted(signals),
+                            "origins": sorted(origins), "http_statuses": sorted(codes)}, "resolution")
+
+
 def source_validation_summary(value, kind, identity):
     """Bind completed source checks to this image build without republishing them."""
     require(isinstance(value, dict) and value.get("schema") == 1, "invalid-source-summary")
@@ -442,12 +527,12 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             blocked.append({"input": logical, "reason": "unreadable-or-unsafe-input"})
         return None
 
-    def read_json(logical, relative):
+    def read_json(logical, relative, maximum=64 * 1024 * 1024):
         path = input_path(logical, relative)
         if path is None:
             return None
         try:
-            require(path.stat().st_size <= 64 * 1024 * 1024, "oversized-json")
+            require(path.stat().st_size <= maximum, "oversized-json")
             return load_json(path.read_bytes())
         except (OSError, ValueError, TypeError, RecursionError):
             blocked.append({"input": logical, "reason": "invalid-json"})
@@ -479,6 +564,11 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns), "changed-public-file")
             selected[logical] = {"sha256": file_digest, "bytes": after.st_size}
             paths.append(str(path.resolve().relative_to(upload_root)))
+        except PublicArtifactError as error:
+            reason = error.args[0] if len(error.args) == 1 else None
+            blocked.append({"input": logical, "reason": reason
+                            if type(reason) is str and reason in PUBLIC_FILE_REJECTION_REASONS
+                            else "unsafe-public-file"})
         except (OSError, ValueError, TypeError, RecursionError):
             blocked.append({"input": logical, "reason": "unsafe-public-file"})
 
@@ -506,8 +596,15 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
         "syncd": [("syncd", "artifacts/syncd-vs/bazel/report.json", "syncd")],
         "vs": [("p4rt", "artifacts/vs/p4rt-debug-verification.json", "p4rt")],
     }
+    # Optional: the graph command may not have started. Publish only its checked
+    # projection on failure; raw graph stderr/argv never enter the upload list.
+    graph_failure = "artifacts/archive/module-graph-failure.json"
+    if kind == "archive" and job_status != "success" and (
+            (workspace / graph_failure).exists() or (workspace / graph_failure).is_symlink()):
+        receipt_specs["archive"].append(("resolution", graph_failure, "resolution"))
     for logical, relative, receipt_kind in receipt_specs[kind]:
-        value = read_json(logical + "-receipt", relative)
+        value = read_json(logical + "-receipt", relative,
+                          maximum=4096 if receipt_kind == "resolution" else 64 * 1024 * 1024)
         if value is None:
             continue
         try:
