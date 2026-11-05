@@ -1,106 +1,33 @@
 #!/usr/bin/env python3
-"""Configure the runner's reviewed cache helper, allowing explicit local fallback."""
+"""Apply build resource limits while preserving the runner's Bazel configuration."""
 
 import argparse
-import importlib.util
 import json
 from pathlib import Path
-import ssl
-import subprocess
-import sys
-import urllib.error
-import urllib.request
 
 
-RUNTIME_ROOT = Path("/opt/sonic-runner")
-PROBE_TIMEOUT = 8
-FALLBACK_BEGIN = "# BEGIN SONiC runner cache connectivity fallback"
-FALLBACK_END = "# END SONiC runner cache connectivity fallback"
 RESOURCE_BEGIN = "# BEGIN SONiC native CI Bazel resources"
 RESOURCE_END = "# END SONiC native CI Bazel resources"
 
 
 class ConfigurationFailure(Exception):
-    def __init__(self, error_class, http_status=None):
+    def __init__(self, error_class):
         super().__init__(error_class)
         self.error_class = error_class
-        self.http_status = http_status
 
 
-def load_credentials():
-    # Use the image's reviewed origin and header validation, including when
-    # PYTHONSAFEPATH excludes the script directory from module discovery.
-    spec = importlib.util.spec_from_file_location(
-        "sonic_runner_cache_credentials", RUNTIME_ROOT / "cache_credentials.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def response_mode(status):
-    if status == 200:
-        return {"mode": "local_and_remote", "error_class": None, "http_status": status}
-    if 500 <= status <= 599:
-        return {"mode": "local_only", "error_class": "remote_unavailable", "http_status": status}
-    if status in (401, 403):
-        raise ConfigurationFailure("authentication_rejected", status)
-    if 300 <= status <= 399:
-        raise ConfigurationFailure("redirect_refused", status)
-    raise ConfigurationFailure("unexpected_http_status", status)
-
-
-def check_remote(credentials, authorization):
-    # Do not read the response body or follow redirects with the job's header.
-    request = urllib.request.Request(
-        credentials.ENDPOINT.rstrip("/") + "/status", method="GET",
-        headers={"Authorization": authorization})
-    opener = urllib.request.build_opener(credentials.NoRedirects())
+def read_runner_rc(rc):
     try:
-        with opener.open(request, timeout=PROBE_TIMEOUT) as response:
-            return response_mode(response.status)
-    except urllib.error.HTTPError as error:
-        status = error.code
-        error.close()
-        return response_mode(status)
-    except urllib.error.URLError as error:
-        code = "tls_error" if isinstance(error.reason, ssl.SSLError) else "transport_error"
-    except ssl.SSLError:
-        code = "tls_error"
+        return rc.read_bytes()
+    except FileNotFoundError:
+        raise ConfigurationFailure("runner_rc_missing") from None
     except OSError:
-        code = "transport_error"
-    return {"mode": "local_only", "error_class": code, "http_status": None}
-
-
-def set_local_fallback(rc, enabled):
-    contents = rc.read_text()
-    if FALLBACK_BEGIN in contents or FALLBACK_END in contents:
-        if (contents.count(FALLBACK_BEGIN) != 1 or contents.count(FALLBACK_END) != 1
-                or contents.index(FALLBACK_BEGIN) > contents.index(FALLBACK_END)):
-            raise ConfigurationFailure("configuration_failed")
-        start = contents.index(FALLBACK_BEGIN)
-        end = contents.index(FALLBACK_END) + len(FALLBACK_END)
-        contents = contents[:start] + contents[end:].lstrip("\n")
-    if enabled:
-        # This last value overrides the public remote URL while keeping the
-        # existing disk/repository caches, origin helper, and trust settings.
-        contents = contents.rstrip("\n") + "\n\n" + "\n".join([
-            FALLBACK_BEGIN,
-            "# The remote cache was unavailable during this job's preflight.",
-            "common --remote_cache=",
-            FALLBACK_END,
-        ]) + "\n"
-    rc.write_text(contents)
+        raise ConfigurationFailure("runner_rc_unreadable") from None
 
 
 def set_resource_limits(rc, jobs, local_memory_mb):
-    contents = rc.read_text()
-    if RESOURCE_BEGIN in contents or RESOURCE_END in contents:
-        if (contents.count(RESOURCE_BEGIN) != 1 or contents.count(RESOURCE_END) != 1
-                or contents.index(RESOURCE_BEGIN) > contents.index(RESOURCE_END)):
-            raise ConfigurationFailure("configuration_failed")
-        start = contents.index(RESOURCE_BEGIN)
-        end = contents.index(RESOURCE_END) + len(RESOURCE_END)
-        contents = contents[:start] + contents[end:].lstrip("\n")
+    contents = read_runner_rc(rc)
+    begin, end = RESOURCE_BEGIN.encode(), RESOURCE_END.encode()
     # Build options also apply to tests. The legacy memory flag works with both
     # sonic-pins' Bazel 6.4 and the newer image builds; 6.4 lacks local_resources.
     block = "\n".join([
@@ -108,8 +35,29 @@ def set_resource_limits(rc, jobs, local_memory_mb):
         f"build --jobs={jobs}",
         f"build --local_ram_resources={local_memory_mb}",
         RESOURCE_END,
-    ])
-    rc.write_text(contents.rstrip("\n") + ("\n\n" if contents.strip() else "") + block + "\n")
+    ]).encode()
+    outside = contents
+    if begin in contents or end in contents:
+        if (contents.count(begin) != 1 or contents.count(end) != 1
+                or contents.index(begin) > contents.index(end)):
+            raise ConfigurationFailure("invalid_resource_block")
+        start, finish = contents.index(begin), contents.index(end) + len(end)
+        # The generated trailing newline belongs to this block, not the next
+        # setting. Remove it too so repeated runs do not accumulate blank lines.
+        if contents[finish:finish + 1] == b"\n":
+            finish += 1
+        outside = contents[:start] + contents[finish:]
+    # Later rc options win: keep this job's resource limits after all existing
+    # settings while preserving those settings in their original order.
+    separator = b"" if not outside or outside.endswith(b"\n") else b"\n"
+    updated = outside + separator + block + b"\n"
+    # Do not normalize or inspect the manager-owned cache, authentication, or
+    # trust settings. Everything outside this resource block stays byte-for-byte.
+    if updated != contents:
+        try:
+            rc.write_bytes(updated)
+        except OSError:
+            raise ConfigurationFailure("runner_rc_write_failed") from None
 
 
 def positive_integer(value):
@@ -122,38 +70,16 @@ def positive_integer(value):
     return result
 
 
-def configure(cache_dir, rc, resource_limits=None):
-    try:
-        credentials = load_credentials()
-    except Exception:
-        raise ConfigurationFailure("runtime_helper_unavailable") from None
-    try:
-        authorization = credentials.authorization()
-    except ValueError:
-        raise ConfigurationFailure("credentials_invalid") from None
-    result = check_remote(credentials, authorization)
-    try:
-        # The child inherits the step-scoped secret in its environment. Never
-        # put it in arguments, configuration, captured logs, or the receipt.
-        subprocess.run(
-            [sys.executable, str(RUNTIME_ROOT / "cache_probe.py"), "configure",
-             "--cache-dir", str(cache_dir), "--rc", str(rc)],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=30)
-        set_local_fallback(rc, result["mode"] == "local_only")
-        if resource_limits is not None:
-            set_resource_limits(rc, **resource_limits)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        raise ConfigurationFailure("configuration_failed") from None
-    receipt = {"status": "configured", **result}
-    if resource_limits is not None:
-        receipt["resource_limits"] = resource_limits
-    return receipt
+def configure(rc, resource_limits=None):
+    if resource_limits is None:
+        read_runner_rc(rc)
+    else:
+        set_resource_limits(rc, **resource_limits)
+    return {"status": "configured", "resource_limits": resource_limits or {}}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache-dir", type=Path, default=Path("/bazel_cache"))
     parser.add_argument("--rc", type=Path, default=Path.home() / ".bazelrc")
     parser.add_argument("--output", type=Path, default=Path("artifacts/vs/cache-configuration.json"))
     parser.add_argument("--jobs", type=positive_integer,
@@ -166,20 +92,14 @@ def main(argv=None):
     resource_limits = None if args.jobs is None else {
         "jobs": args.jobs, "local_memory_mb": args.local_memory_mb}
     try:
-        receipt = configure(args.cache_dir, args.rc, resource_limits)
+        receipt = configure(args.rc, resource_limits)
     except ConfigurationFailure as error:
-        receipt = {"status": "failure", "mode": "unconfigured",
-                   "error_class": error.error_class, "http_status": error.http_status}
-    except Exception:
-        # Exception messages can contain request headers or helper output.
-        receipt = {"status": "failure", "mode": "unconfigured",
-                   "error_class": "configuration_failed", "http_status": None}
+        receipt = {"status": "failure", "error_class": error.error_class}
     try:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     except OSError:
-        receipt = {"status": "failure", "mode": "unconfigured",
-                   "error_class": "receipt_write_failed", "http_status": None}
+        receipt = {"status": "failure", "error_class": "receipt_write_failed"}
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "configured" else 1
 

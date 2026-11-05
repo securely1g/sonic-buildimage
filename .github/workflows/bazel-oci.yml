@@ -1153,7 +1153,7 @@ jobs:
       run:
         shell: bash
     env:
-      EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
+      EXPECTED_MANAGER_REVISION: 1d939c7a08afc281de1e493bf6a34806a237c88d
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
       PREFER_DEBIAN_REPO: "y"
@@ -1207,20 +1207,17 @@ jobs:
             --directory artifacts/vs/p4-source-inputs/sources \
             --receipt artifacts/vs/p4-source-inputs-verified.json
 
-      - name: Configure persistent caches
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+      - name: Apply build resource limits, activate root Bazel, and prepare source archives
         run: |
           python3 -B tools/bazel/ci/configure_runner_cache.py \
             --jobs=4 --local-memory-mb=12288
+          /opt/sonic-runner/activate-root-bazel
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
             --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json
 
       - name: Build sonic-vs.bin directly with slave.mk
         id: native_build
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
@@ -1238,8 +1235,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
 
       - name: Validate the installer and retained container pairs
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
