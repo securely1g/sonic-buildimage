@@ -60,6 +60,30 @@ jobs:
           touch "$HOME/.bazelrc"
           grep -Fxq "$bazel_java_trust" "$HOME/.bazelrc" ||
             printf '\n%s\n' "$bazel_java_trust" >> "$HOME/.bazelrc"
+      - name: Configure verified source mirrors
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import shlex
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/3bd138ad4f0485a916ce9c729198f4299cd3bb3b/ci/source_mirrors.cfg"
+          expected = "7c8f6684838354f3f6a9ee09a1bbc746a9c87a09a760c1e7aa9558019117946d"
+          expected_size = 8919
+          with urlopen(url, timeout=60) as response:
+              data = response.read(expected_size + 1)
+          if len(data) != expected_size or hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          setting = "common --experimental_downloader_config=" + shlex.quote(str(config))
+          rc = Path.home() / ".bazelrc"
+          contents = rc.read_text()
+          if setting not in contents.splitlines():
+              with rc.open("a") as output:
+                  output.write(("" if not contents or contents.endswith("\n") else "\n") + setting + "\n")
+          PY
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash
