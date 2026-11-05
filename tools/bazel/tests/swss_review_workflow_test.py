@@ -85,8 +85,8 @@ class ParentWorkflowTest(unittest.TestCase):
         self.assertIn("--bazel \"$BAZEL\"", workflow)
         self.assertIn("submodule update --init -- src/sonic-sysmgr/gnoi", workflow)
         if MODE == "swss":
-            self.assertIn("'swss_rebuild.py' || 'swss_image_rebuild.py'", workflow)
-            for label in ("//src/libteam:consumer_test", "//tools/bazel/tests:swss_common_rust_test",
+            self.assertIn("probe=tools/bazel/ci/swss_image_rebuild.py", workflow)
+            for label in ("@libteam//:consumer_test", "@sonic_swss//crates/countersyncd:common_rust_test",
                           "@sonic_swss//bazel:protobuf_runtime_test", "//tools/bazel/tests:swss_package_contract_test"):
                 self.assertIn(label, workflow)
             self.assertIn('consumer-action-audit.json "${targets[@]}"', workflow)
@@ -106,13 +106,17 @@ class ParentWorkflowTest(unittest.TestCase):
         self.assertEqual(len(guards), 2)
         for guard in guards:
             self.assertTrue(evaluate(guard))
-            for changes in ({"branch": BRANCH + "-suffix"}, {"branch": "unrelated"},
+            self.assertTrue(evaluate(guard, branch="codex/swss-owner-image"))
+            for changes in ({"branch": BRANCH + "-suffix"}, {"branch": "codex/swss-owner-image-suffix"},
+                            {"branch": "codex/swss-owner-image", "head_repo": "other/fork"},
+                            {"branch": "codex/swss-owner-image", "event": "push"}, {"branch": "unrelated"},
                             {"head_repo": "other/fork"}, {"event": "push"}):
                 self.assertFalse(evaluate(guard, **changes))
             self.assertEqual(bool(evaluate(guard, event="workflow_dispatch", image="swss-layer-hosted")), MODE == "swss")
         job = workflow.split("\n  vs_container:\n", 1)[1]
         gate = textwrap.dedent(job.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0])
         self.assertFalse(evaluate(gate))
+        self.assertFalse(evaluate(gate, branch="codex/swss-owner-image"))
         self.assertTrue(evaluate(gate, branch="unrelated"))
         self.assertFalse(evaluate(gate, event="workflow_dispatch", image="swss-layer-hosted"))
 

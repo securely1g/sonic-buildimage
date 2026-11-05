@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shared CI entry point (also selected by source_image_worker.py): load only the
-# reviewed common.bazelrc and resolve from the canonical registry main and BCR.
+# Temporary PR validation while SWSS and libteam owner entries remain unlanded.
+# Keep the normal .bazelrc on canonical main; remove this wrapper after landing.
 set -euo pipefail
 if [[ $# == 1 && "$1" == --version ]]; then
   exec bazel --version
@@ -16,10 +16,11 @@ bazel_command="${1:?expected a Bazel command}"
 shift
 case "$bazel_command" in
   aquery|build|cquery|fetch|info|mod|query|test) ;;
-  *) printf 'Unsupported CI Bazel command: %s\n' "$bazel_command" >&2; exit 2 ;;
+  *) printf 'Unsupported Draft CI Bazel command: %s\n' "$bazel_command" >&2; exit 2 ;;
 esac
+# The cache-reuse verifier runs this wrapper from fresh source snapshots too.
 exec bazel "${startup_options[@]}" --nosystem_rc --nohome_rc --noworkspace_rc \
   --bazelrc="$PWD/tools/bazel/common.bazelrc" \
   "$bazel_command" \
-  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main \
+  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/ccd4d6c2a6e3551f40e0d973ef5756006eba7e9d \
   --registry=https://bcr.bazel.build --lockfile_mode=update "$@"

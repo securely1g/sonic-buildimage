@@ -75,8 +75,8 @@ installed_packages(
     architecture = "amd64",
     base = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
     controls = [label + ":control" for label in APT_INPUTS["swss_layer_debian"]["amd64"].values()],
-    owner_metadata = ["@libteam//:runtime_packages.json"],
-    source_modules = {"sonic-buildimage": "@image_source_modules//:sonic-buildimage.MODULE.bazel"},
+    owner_metadata = ["@libteam//:library_runtime_packages.json"],
+    source_modules = {"libteam": "@image_source_modules//:libteam.MODULE.bazel"},
     source_spec = "//dockers/docker-swss-layer-trixie/bazel:source_paths.json",
     sources = {
         "libteam5": "@libteam//:libteam_runtime",

@@ -269,7 +269,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 python3-yaml tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -297,42 +297,37 @@ jobs:
           disk-cache: ${{ matrix.disk_cache }}
           cache-version: "8.5.1"
 
-      - name: Preserve caches and verified transport for the reviewed source
-        if: inputs.source_image == 'swss-layer-hosted'
+      - name: Preserve setup-bazel caches for source checks
+        env:
+          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
         run: |
-          python3 -B tools/bazel/ci/lldp_draft_cache.py
+          # A reviewed legacy checkout supplies its original cache helper.
+          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f tools/bazel/ci/preserve_setup_bazel_cache.py ]]; then
+            python3 -B tools/bazel/ci/lldp_draft_cache.py
+          else
+            python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+          fi
+
+      - name: Configure the verified source mirror
+        run: |
           python3 - <<'PYCFG'
           import hashlib
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          inputs = [
-              ("https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg",
-               "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"),
-              ("https://raw.githubusercontent.com/securely1g/sonic-buildimage/ba746670df1c30d0e6913d018ef0ff88d5b88679/tools/bazel/debian-pool.cfg",
-               "43dce3f1b98b76ffa9db403e47139497dfb702126282747446463356c58133ee"),
-          ]
-          parts = []
-          for url, expected in inputs:
-              with urlopen(url, timeout=60) as response:
-                  data = response.read()
-              if hashlib.sha256(data).hexdigest() != expected:
-                  raise SystemExit("Reviewed downloader configuration checksum mismatch")
-              parts.append(data.rstrip(b"\n") + b"\n")
-          config = Path(os.environ["RUNNER_TEMP"]) / "reviewed-parent-downloads.cfg"
-          config.write_bytes(b"".join(parts))
+          # Pin the transport fallback; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
-          mkdir -p artifacts/swss-layer
-          cp "$RUNNER_TEMP/reviewed-parent-downloads.cfg" artifacts/swss-layer/downloader.cfg
-      - name: Prepare the checksum-pinned pigz source archive
-        run: |
-          mkdir -p artifacts/source-downloads
-          python3 -B tools/bazel/gzip/prepare_pigz.py \
-            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
-          # common.bazelrc imports this ignored file, including through the shared CI entry point.
-          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+
 
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
@@ -410,7 +405,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/swss-review-source-inputs') || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'codex/swss-review-source-inputs' || github.head_ref == 'codex/swss-owner-image')) || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -524,6 +519,7 @@ jobs:
           python3 -B tools/bazel/ci/verify_agent_cache.py \
             --artifacts artifacts/archive/agent-cache \
             --bazel "$BAZEL" \
+            --bazel-arg=--experimental_downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg" \
             --repository-cache "$("$BAZEL" info repository_cache)" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
@@ -573,16 +569,24 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          mkdir -p artifacts/swss-layer
+          cp "$RUNNER_TEMP/sonic-source-mirrors.cfg" artifacts/swss-layer/downloader.cfg
           python3 -B tools/bazel/tests/swss_layer_payload_test.py
           python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
       - name: Validate reviewed SWSS consumer contracts
-        if: inputs.source_image == 'swss-layer-hosted'
+        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
+          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
         run: |
           set -euo pipefail
-          targets=(//src/libteam:consumer_test //tools/bazel/tests:swss_common_rust_test
-                   @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
+          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f tools/bazel/ci/swss_image_rebuild.py ]]; then
+            targets=(//src/libteam:consumer_test //tools/bazel/tests:swss_common_rust_test
+                     @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
+          else
+            targets=(@libteam//:consumer_test @sonic_swss//crates/countersyncd:common_rust_test
+                     @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
+          fi
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
@@ -596,8 +600,13 @@ jobs:
         if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
+          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
         run: |
-          python3 -B "tools/bazel/ci/${{ inputs.source_image == 'swss-layer-hosted' && 'swss_rebuild.py' || 'swss_image_rebuild.py' }}" --bazel "$BAZEL" \
+          probe=tools/bazel/ci/swss_image_rebuild.py
+          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f "$probe" ]]; then
+            probe=tools/bazel/ci/swss_rebuild.py
+          fi
+          python3 -B "$probe" --bazel "$BAZEL" \
             --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
             --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
             --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
@@ -732,7 +741,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl \
-            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
+            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 python3-yaml redis-server squashfs-tools tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -759,9 +768,33 @@ jobs:
           disk-cache: false
           cache-version: "8.5.1"
 
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
+
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Pin the transport fallback; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+
+
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/swss-review-source-inputs') || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'codex/swss-review-source-inputs' || github.head_ref == 'codex/swss-owner-image')) || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1221,7 +1254,7 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
-      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/swss-review-source-inputs') &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'codex/swss-review-source-inputs' || github.head_ref == 'codex/swss-owner-image')) &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
