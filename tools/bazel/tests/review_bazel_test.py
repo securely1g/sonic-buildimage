@@ -72,7 +72,7 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
                 self.assertFalse(Path(record['rc_path']).exists(), 'temporary rc leaked')
 
     def test_image_root_wrappers_select_the_coherent_engine_catalog(self):
-        expected = '3491db65989fe2dac17e09aae03a00c31d21ca9a'
+        expected = '1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a'
         commands = self.directory / 'commands'
         commands.mkdir()
         (commands / 'bazel').symlink_to(self.fake)
