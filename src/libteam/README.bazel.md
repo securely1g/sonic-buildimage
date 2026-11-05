@@ -8,15 +8,15 @@ integration patches select this source-built libteam and the per-library ZeroMQ
 interface; the Common patch applies to the maintained `a045092` source.
 
 CI uses the immutable review catalog
-`cfd42fb5eecf0e1a8e45da58598b107754c81ec3`. It selects libnl3
+`a58f0005b41521ca12276b9a5ea161d225842011`. It selects libnl3
 `3.7.0.sonic.7`, infrastructure
 `0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e`, and Distroless
 `0.9.4.sonic.16`. Both root FIPS declarations select
-`0.0.5-15fcb926a302059ec379f0c2fd15eb3d88bda4c9`.
+`0.0.3-15fcb926a302059ec379f0c2fd15eb3d88bda4c9`.
 
 The dedicated libteam workflow separately fetches the shared downloader config
-from registry #228 at `b7b92bcfa5857685ee7cd7953fdbf55264989932`, verifies SHA256
-`9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9`, and passes its absolute path
+from registry #228 at `1609822832b591fcd31e8266a8a0dee5922e5685`, verifies SHA256
+`d71c0e8152d6f717de11615b7d20d9ff47f1b0004fd908902d163654f2a09a00`, and passes its absolute path
 explicitly to initial builds/tests, installed-SDK output queries and the existing
 config-edit/rebuild check. This overrides the checked-in generic pool default
 without editing it or changing the review catalog. Config bytes, URL and hash

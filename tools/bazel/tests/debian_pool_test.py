@@ -477,7 +477,7 @@ class RustSourceMirrorTest(unittest.TestCase):
                     argv = call["argv"]
                     self.assertIn(command, argv)
                     self.assertIn("--bazelrc=" + str(root / "tools/bazel/common.bazelrc"), argv)
-                    self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/cfd42fb5eecf0e1a8e45da58598b107754c81ec3", argv)
+                    self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a58f0005b41521ca12276b9a5ea161d225842011", argv)
                     self.assertIn("--platforms=@sonic_build_infra//platforms:" + machine + "_trixie", argv)
                     self.assertIn("--host_platform=@sonic_build_infra//platforms:" + machine + "_trixie", argv)
                     self.assertEqual(call["config"], str(config))
