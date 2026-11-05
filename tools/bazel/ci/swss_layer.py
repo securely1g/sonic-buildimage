@@ -58,8 +58,12 @@ def verify_source_runtime(files, archive):
 def verify_libteam_metadata(metadata, native):
     """Bind the two installed libraries to the selected owner and native bytes."""
     expected = {
-        "libteam5": ("@libteam//:libteam_runtime", "usr/lib/x86_64-linux-gnu/libteam.so.5.6.1"),
-        "libteamdctl0": ("@libteam//:libteamdctl_runtime", "usr/lib/x86_64-linux-gnu/libteamdctl.so.0.1.5"),
+        # The selected Bazel 8.5.1 metadata producer emits canonical labels.
+        # Retain the exact apparent forms without accepting other repositories.
+        "libteam5": (("@libteam//:libteam_runtime", "@@libteam+//:libteam_runtime"),
+                     "usr/lib/x86_64-linux-gnu/libteam.so.5.6.1"),
+        "libteamdctl0": (("@libteam//:libteamdctl_runtime", "@@libteam+//:libteamdctl_runtime"),
+                        "usr/lib/x86_64-linux-gnu/libteamdctl.so.0.1.5"),
     }
     checks.require(metadata.get("schema") == 1 and metadata.get("architecture") == "amd64",
                    "libteam package metadata schema or architecture differs")
@@ -72,8 +76,8 @@ def verify_libteam_metadata(metadata, native):
                    {item.get("package") for item in records} == set(expected),
                    "shared layer must record exactly its two source libteam libraries")
     for item in records:
-        target, path = expected[item["package"]]
-        checks.require(item.get("target") == target and
+        targets, path = expected[item["package"]]
+        checks.require(item.get("target") in targets and
                        item.get("source_revision") == owner["version"] and
                        re.fullmatch(r"[0-9a-f]{64}", item.get("payload_sha256", "")),
                        "libteam package provenance differs: " + item["package"])

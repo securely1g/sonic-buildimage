@@ -84,6 +84,58 @@ class LibteamMetadataTest(unittest.TestCase):
         self.assertEqual(report["owner"], self.metadata["source_modules"]["libteam"])
         self.assertEqual(len(report["packages"]), 2)
 
+    def test_captured_canonical_library_records_match_selected_owner(self):
+        # PR195 job127364237079 packages.json (SHA256 c0c2043e104b471c0df1bf3f427f8221de04b801cafffea6ed8b9bed6147071c).
+        # These are metadata fields only; this pure test does not read an ELF.
+        metadata = {
+            "schema": 1, "architecture": "amd64",
+            "source_modules": {"libteam": {
+                "version": "1.31.0.sonic.1",
+                "module_sha256": "33b616806dea29faf2b69a338e4df53cd96ac0f0ced328c8de4b95e6a2c016e3",
+            }},
+            "source_packages": [],
+        }
+        native = {}
+        for package, target, filename, payload_sha, native_sha in (
+                ("libteam5", "libteam_runtime", "libteam.so.5.6.1",
+                 "029d4fa4cacc7fdddc36c73fec089f06f6155238bdcc484feea16ab8ae8e7884",
+                 "df6213bccca57b4c9ec45acbab2e6c7a648f29e84bf7d8cc1ff5675c99f3e237"),
+                ("libteamdctl0", "libteamdctl_runtime", "libteamdctl.so.0.1.5",
+                 "1fcc1b0d885522897443e4d9f1b101640e34348d8367c98e7963cecfff9aa152",
+                 "e2cc923fc6b03c35af3ab328dd602ea11fda65a46b43fcc04347aea8a5abce31")):
+            path = "usr/lib/x86_64-linux-gnu/" + filename
+            native[path] = {"sha256": native_sha, "mode": 0o644, "uid": 0, "gid": 0}
+            metadata["source_packages"].append({
+                "package": package, "version": "1.31-1", "replaced_version": None,
+                "target": "@@libteam+//:" + target, "source_revision": "1.31.0.sonic.1",
+                "payload_sha256": payload_sha, "native_files": [{"path": path, **native[path]}],
+            })
+        self.assertEqual(verify_libteam_metadata(metadata, native)["packages"],
+                         metadata["source_packages"])
+
+    def test_canonical_target_does_not_relax_package_identity(self):
+        metadata = copy.deepcopy(self.metadata)
+        for item in metadata["source_packages"]:
+            item["target"] = item["target"].replace("@libteam//", "@@libteam+//")
+        for field, value in (
+                ("target", "@@other+//:libteam_runtime"),
+                ("target", "@@libteam++other//:libteam_runtime"),
+                ("target", "@@libteam+1.31.0.sonic.1//:libteam_runtime"),
+                ("target", "@libteam+//:libteam_runtime"),
+                ("target", "@@libteam+//:libteam_runtime_amd64"),
+                ("target", "@@libteam+//:libteamdctl_runtime"),
+                ("target", "@@libteam+//:libteam_runtime-extra"),
+                ("source_revision", "1.31.0.sonic.2"),
+                ("payload_sha256", "not-a-sha256")):
+            with self.subTest(field=field, value=value):
+                changed = copy.deepcopy(metadata)
+                changed["source_packages"][0][field] = value
+                with self.assertRaisesRegex(ValueError, "libteam package provenance differs"):
+                    verify_libteam_metadata(changed, self.native)
+        metadata["source_modules"]["libteam"]["module_sha256"] = "not-a-sha256"
+        with self.assertRaisesRegex(ValueError, "selected owner identity"):
+            verify_libteam_metadata(metadata, self.native)
+
     def test_old_owner_missing_or_extra_utils_records_are_rejected(self):
         for change in ("owner", "missing", "utils", "duplicate"):
             with self.subTest(change=change):
