@@ -13,6 +13,12 @@ concurrency:
   group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
+# Remove this selection after #164 lands; ordinary invocations keep canonical main.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
+
 jobs:
   native:
     name: Build and inspect source base (${{ matrix.architecture }})
@@ -65,7 +71,7 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/base_images.py \
+          python3 -B tools/bazel/ci/base_images.py --bazel "$BAZEL" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
           git diff --exit-code
       - name: Retain images, symbols and build evidence

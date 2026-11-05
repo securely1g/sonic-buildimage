@@ -59,6 +59,8 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_platform_common")
+bazel_dep(name = "sonic-snmpagent", version = "2.1.0-a27e093fac394f7871ec1b19bb12ca6739c29fa9", repo_name = "sonic_snmpagent")
 bazel_dep(name = "sonic-swss-common", version = "0.0.8-a0450924719a9f706125cc44a07dc88934935003", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
@@ -350,4 +352,16 @@ use_repo(apt, "sysmgr_debian", "sysmgr_debug_debian", "sysmgr_test_debian")
 apt_inputs(
     name = "sysmgr_apt_inputs",
     lock = "//dockers/docker-sysmgr/bazel:apt.lock.json",
+)
+
+# Reuse the source owner's locked third-party wheels; YAML and natsort already
+# come from config-engine. No second copy of either SONiC package is generated.
+use_repo(pip, "snmpagent_pip")
+
+apt.import_lock(lock = "//dockers/docker-snmp/bazel:apt.lock.json")
+use_repo(apt, "snmp_debian", "snmp_debug_debian", "snmp_test_debian")
+
+apt_inputs(
+    name = "snmp_apt_inputs",
+    lock = "//dockers/docker-snmp/bazel:apt.lock.json",
 )
