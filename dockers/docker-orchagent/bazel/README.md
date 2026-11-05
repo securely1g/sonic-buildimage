@@ -508,6 +508,18 @@ and offline IPv4/IPv6 captures. It checks requested ping arguments without
 executing them. This does not test ASIC forwarding, live capture, complete
 supervisor startup, FIPS POST or a VS installer.
 
+Socat selects `1.8.0.2.sonic.6` from [registry #242](https://github.com/securely1g/sonic-bazel-registry/pull/242).
+The additive review catalog preserves every existing entry and adds the exact
+reviewed `.6` recipe. Its explicit `tar.xz` type accepts the content-addressed
+Debian patch archive URL while retaining the original source hashes. The `.3`
+to `.6` upgrade also includes the published compiler/debug prefix mapping and
+compiler-path normalization from `.4`, plus the `procan` namespace-string
+termination fix from `.5`. Features, tools, installed paths and runtime/debug
+TAR interfaces remain as declared, but ELF/build-ID/debug bytes and version
+receipts can change. Fresh native, resolved-graph and installed validation is
+required; earlier `.3` artifacts remain historical. Registry #242 and the
+additive catalog remain unlanded prerequisites.
+
 Draft validation uses one immutable combined review catalog through
 `tools/bazel/ci/review_bazel.sh`; normal `.bazelrc` remains on maintained main
 and BCR. Registry #188, #180, #181, #179, #177 and #186 and image PRs #136
