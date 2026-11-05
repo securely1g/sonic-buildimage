@@ -54,12 +54,18 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
                               env=environment, capture_output=True, text=True)
 
     def test_debian_bootstrap_verifies_bytes_and_keeps_existing_cache_settings(self):
-        revision = '1609822832b591fcd31e8266a8a0dee5922e5685'
-        expected = 'd71c0e8152d6f717de11615b7d20d9ff47f1b0004fd908902d163654f2a09a00'
-        data = (ROOT / 'tools/bazel/tests/fixtures/source-mirrors-1609822832.cfg').read_bytes()
-        self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
-        url = 'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + revision + '/ci/source_mirrors.cfg'
-        for workflow, job in (('bazel-oci.yml', 'archive'), ('bazel-eventd.yml', 'native')):
+        for workflow, job, revision, expected in (
+            ('bazel-oci.yml', 'archive', '264002ba05e75df2f7c90dea2d78cf2bf46a4d4a',
+             'bb3a1a988c5cfcc2586827687124f0cff230fe2de73b1d2789331b23dec169e1'),
+            ('bazel-libteam.yml', 'native', '264002ba05e75df2f7c90dea2d78cf2bf46a4d4a',
+             'bb3a1a988c5cfcc2586827687124f0cff230fe2de73b1d2789331b23dec169e1'),
+            ('bazel-eventd.yml', 'native', '1609822832b591fcd31e8266a8a0dee5922e5685',
+             'd71c0e8152d6f717de11615b7d20d9ff47f1b0004fd908902d163654f2a09a00'),
+        ):
+            fixture = ROOT / 'tools/bazel/tests/fixtures' / ('source-mirrors-' + revision[:10] + '.cfg')
+            data = fixture.read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
+            url = 'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + revision + '/ci/source_mirrors.cfg'
             document = (ROOT / '.github/workflows' / workflow).read_text()
             section = re.search(r'^  ' + job + r':\n(.*?)(?=^  \S|\Z)', document, re.M | re.S).group(1)
             steps = re.split(r'^      - ', section, flags=re.M)[1:]
