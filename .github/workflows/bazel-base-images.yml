@@ -54,11 +54,24 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
+      - name: Add verified official Debian pool fallbacks
+        run: |
+          # Prefer the official pools while retaining each original snapshot URL.
+          # Bazel still verifies the SHA256 declared by each source repository.
+          cat > "$RUNNER_TEMP/debian-pool-downloader.cfg" <<'CONFIG'
+          rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://deb.debian.org/debian/pool/$2
+          rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://$1
+          rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://deb.debian.org/debian-security/pool/$2
+          rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://$1
+          CONFIG
+          printf 'common --experimental_downloader_config=%s\n' "$RUNNER_TEMP/debian-pool-downloader.cfg" >> .bazelrc.user
+
       - name: Check clean dependency inputs
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test ! -e MODULE.bazel.lock
       - name: Build and inspect runtime images and matching symbols
+        id: source_base_build
         env:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
@@ -70,6 +83,11 @@ jobs:
             --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/frr_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
           git diff --exit-code
+      - name: Report storage after a failed source-base build
+        if: failure() && steps.source_base_build.outcome == 'failure'
+        run: |
+          df -PT -B1 /github/home/.cache/bazel "$GITHUB_WORKSPACE"
+          df -PTi /github/home/.cache/bazel "$GITHUB_WORKSPACE"
       - name: Retain images, symbols and build evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

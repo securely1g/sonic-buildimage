@@ -85,6 +85,18 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
+      - name: Add verified official Debian pool fallbacks
+        run: |
+          # Prefer the official pools while retaining each original snapshot URL.
+          # Bazel still verifies the SHA256 declared by each source repository.
+          cat > "$RUNNER_TEMP/debian-pool-downloader.cfg" <<'CONFIG'
+          rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://deb.debian.org/debian/pool/$2
+          rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://$1
+          rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://deb.debian.org/debian-security/pool/$2
+          rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+)) https://$1
+          CONFIG
+          printf 'common --experimental_downloader_config=%s\n' "$RUNNER_TEMP/debian-pool-downloader.cfg" >> .bazelrc.user
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -161,7 +173,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/frr-oci-amd64') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/frr-oci-amd64' || (github.head_ref == 'codex/frr-review-source-inputs' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         run: |
           # Temporary source and OCI migration scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
@@ -274,10 +286,12 @@ jobs:
 
       - name: Check local cache reuse across fresh checkouts
         run: |
+          # Fresh checkouts omit the ignored .bazelrc.user file.
           python3 -B tools/bazel/ci/verify_agent_cache.py \
             --artifacts artifacts/archive/agent-cache \
             --bazel "$BAZEL" \
             --repository-cache "$("$BAZEL" info repository_cache)" \
+            --bazel-arg="--experimental_downloader_config=$RUNNER_TEMP/debian-pool-downloader.cfg" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--jobs=4 \
@@ -373,7 +387,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/frr-oci-amd64') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/frr-oci-amd64' || (github.head_ref == 'codex/frr-review-source-inputs' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         run: |
           # Temporary source and OCI migration scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
@@ -393,6 +407,7 @@ jobs:
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
+        id: repository_inputs
         run: |
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
@@ -409,6 +424,44 @@ jobs:
             --module-graph artifacts/repository-inputs/module-graph.json \
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
+
+      - name: Retain failed dependency-resolution diagnostics
+        id: repository_input_diagnostics
+        if: failure() && steps.repository_inputs.outcome == 'failure'
+        run: |
+          python3 -B - <<'PY'
+          import json
+          from pathlib import Path
+
+          directory = Path("artifacts/repository-inputs")
+          directory.mkdir(parents=True, exist_ok=True)
+          limit = 1024 * 1024
+          diagnostics = {}
+          for name in ("module-graph.json", "module-graph.stderr", "module-graph-inspection.json"):
+              path = directory / name
+              if not path.is_file():
+                  diagnostics[name] = {"present": False}
+                  continue
+              with path.open("rb") as source:
+                  prefix = source.read(limit)
+              size = path.stat().st_size
+              diagnostics[name] = {
+                  "present": True,
+                  "bytes": size,
+                  "truncated": size > len(prefix),
+                  "content_prefix": prefix.decode("utf-8", errors="replace"),
+              }
+          (directory / "resolution-failure.json").write_text(json.dumps(diagnostics, indent=2) + "\n")
+          PY
+
+      - name: Upload failed dependency-resolution diagnostics
+        if: always() && steps.repository_input_diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bazel-resolution-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/repository-inputs/resolution-failure.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |
@@ -840,7 +893,8 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
-       github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/frr-oci-amd64') ||
+       github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/frr-oci-amd64' &&
+       github.head_ref != 'codex/frr-review-source-inputs') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
