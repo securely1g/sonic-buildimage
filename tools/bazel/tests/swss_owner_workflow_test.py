@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[3]
 CATALOG = "2a849bbcaa254113a61ca0aeb972aeeccb8494f5"
 CONFIG_SHA = "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8"
 CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+OCI_CONFIG_SHA = "bb3a1a988c5cfcc2586827687124f0cff230fe2de73b1d2789331b23dec169e1"
+OCI_CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/264002ba05e75df2f7c90dea2d78cf2bf46a4d4a/ci/source_mirrors.cfg"
 JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
         ("bazel-supervisor-rust.yml", "native"), ("bazel-yang-models.yml", "package"),
         ("bazel-oci.yml", "archive"), ("bazel-oci.yml", "checks")]
@@ -54,6 +56,8 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
                  "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/ebb539d16742d632b74f391864ac54525f61bf16/ci/source_mirrors.cfg",
                  "682fd77121ccac9de7bdb6a68f66ceda952ad3a66a611d98c9ed8e0c73aef636")
                 if (filename, job) == ("bazel-base-images.yml", "native") else
+                ("source-mirrors-264002ba.cfg", OCI_CONFIG_URL, OCI_CONFIG_SHA)
+                if filename == "bazel-oci.yml" else
                 ("source-mirrors-6e305126.cfg", CONFIG_URL, CONFIG_SHA))
             data = (ROOT / "tools/bazel/tests/fixtures" / fixture).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), config_sha)

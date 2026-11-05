@@ -18,9 +18,13 @@ The default `.bazelrc` continues to select maintained registry `main`. Draft CI
 uses the single immutable complete catalog `2a849bbcaa254113a61ca0aeb972aeeccb8494f5`.
 It requires PR240 and its PR236/238 stack. Downloads use the separately verified
 configuration from [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
-at `6e305126f13965fd01b6b3aa06e98d4595832d39` (SHA256 `e9f004bf` prefix)
-in most workflows. Source-base specifically selects `ebb539d16742d632b74f391864ac54525f61bf16`
-(SHA256 `682fd771` prefix). Both verify the full pinned configuration hash;
+at `264002ba05e75df2f7c90dea2d78cf2bf46a4d4a` (SHA256 `bb3a1a98` prefix)
+in OCI archive and regression checks. This includes the exact official content
+route for the locked `libcap-dev_2.75-10+deb13u1+b1_amd64.deb` input that the
+previous OCI configuration could not fetch. Source-base retains
+`ebb539d16742d632b74f391864ac54525f61bf16` (SHA256 `682fd771` prefix);
+Eventd, Rust and YANG retain `6e305126f13965fd01b6b3aa06e98d4595832d39`
+(SHA256 `e9f004bf` prefix). Each verifies the full pinned configuration hash;
 package checksums and declared source versions remain enforced. Existing setup-bazel repository/disk caches are forwarded into
 the isolated wrapper before the first root query.
 
