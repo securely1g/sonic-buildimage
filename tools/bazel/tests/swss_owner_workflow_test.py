@@ -14,7 +14,7 @@ from unittest import mock
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-CATALOG = "ccd4d6c2a6e3551f40e0d973ef5756006eba7e9d"
+CATALOG = "2a849bbcaa254113a61ca0aeb972aeeccb8494f5"
 CONFIG_SHA = "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8"
 CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
 JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),

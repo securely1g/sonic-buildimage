@@ -15,12 +15,24 @@ owner targets. The Make source checkout, recipes and patch series are unchanged.
 | Common Rust test | Image wrapper around the old source binary | The source owner's real runtime test; Rust-listener wrappers use Common's declared `patchelf` argument |
 
 The default `.bazelrc` continues to select maintained registry `main`. Draft CI
-uses the single immutable complete catalog `ccd4d6c2a6e3551f40e0d973ef5756006eba7e9d`.
+uses the single immutable complete catalog `2a849bbcaa254113a61ca0aeb972aeeccb8494f5`.
 It requires PR240 and its PR236/238 stack. Downloads use the separately verified
 configuration from [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
-at `6e305126f13965fd01b6b3aa06e98d4595832d39`; package checksums and source versions
-remain enforced. Existing setup-bazel repository/disk caches are forwarded into
+at `6e305126f13965fd01b6b3aa06e98d4595832d39` (SHA256 `e9f004bf` prefix)
+in most workflows. Source-base specifically selects `ebb539d16742d632b74f391864ac54525f61bf16`
+(SHA256 `682fd771` prefix). Both verify the full pinned configuration hash;
+package checksums and declared source versions remain enforced. Existing setup-bazel repository/disk caches are forwarded into
 the isolated wrapper before the first root query.
+
+Socat uses `1.8.0.2.sonic.6` from [registry PR242](https://github.com/securely1g/sonic-bazel-registry/pull/242),
+with the same upstream 1.8.0.2 and Debian
+1.8.0.2-1 archive hashes. Its explicit `tar.xz` archive type supports the
+verified content URL, whose path has no archive extension. This upgrade
+from `.3` also includes the published compiler-path normalization and
+procan namespace-string termination fixes from `.4` and `.5`; executable
+and debug bytes may change. Configured features, tools, installed paths
+and runtime/debug TAR interfaces remain as declared. Fresh resolution
+and native acceptance for this selected version are still required.
 
 The image keeps direct `@libteam` runtime TAR inputs. SWSS's reexport filegroups
 are not substituted for those inputs because the debug aspect follows the direct
