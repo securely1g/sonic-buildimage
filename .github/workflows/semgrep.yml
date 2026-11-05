@@ -13,10 +13,15 @@ jobs:
     if: github.repository_owner == 'sonic-net'
     name: Semgrep
     runs-on: [self-hosted, linux, x64, debian-trixie-container]
-    container:
-      image: returntocorp/semgrep
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Semgrep CLI
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends python3-venv
+          python3 -m venv "$RUNNER_TEMP/semgrep-venv"
+          "$RUNNER_TEMP/semgrep-venv/bin/python" -m pip install "semgrep==1.183.0"
+          echo "$RUNNER_TEMP/semgrep-venv/bin" >> "$GITHUB_PATH"
       - run: semgrep ci
         env:
            SEMGREP_RULES: |

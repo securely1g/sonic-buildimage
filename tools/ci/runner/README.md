@@ -24,8 +24,19 @@ do not receive the bundle.
 The `debian-trixie-container` pool runs lightweight OCI regressions, checks clean
 Bazel dependency resolution, and retains verified source downloads plus the
 Redis test helper. It does not compile SWSS or Syncd packages.
-Native AMD64/ARM64 jobs also select the matching architecture label; both
-runner architectures are required to complete the workflow.
+Formerly GitHub-hosted jobs now execute directly in the ephemeral Debian Trixie
+runner as UID 1000, with passwordless sudo for package installation and the
+existing root-only validations. The runner must permit the unchanged Linux
+sandbox and nested namespace tests. OCI regression commands use Tini as a
+subreaper. Runtime image, kernel-installation, and Make cache checks start a
+private Docker daemon inside the runner; they require privileged containers
+with private, writable cgroup namespaces and storage supporting overlay2.
+No host Docker socket is used. Each job stops its daemon before teardown.
+
+Native jobs select the matching architecture label. ARM64 matrix entries are
+temporarily paused because the target pool currently provides only x64 runners.
+Restore the ARM64 rows from the migration's parent once native ARM64 capacity is
+available; do not label an emulated x64 worker as ARM64.
 
 The full VS job builds the installer and container archives on its selected
 ONIE runner, then runs both owners' source-package validation in the same
@@ -37,7 +48,7 @@ inputs and uncached tests may execute. SWSS TARs and Syncd package evidence
 retain their existing artifact names and validation requirements.
 
 Fork PRs and manual runs with `skip_vs=true` run only OCI checks, including
-the separate native AMD64/ARM64 archive jobs. They do not publish successful
+the separate native AMD64 archive job (ARM64 is temporarily paused). They do not publish successful
 SWSS/Syncd source-package or full-image validation evidence.
 
 ## Legacy one-job runner helpers

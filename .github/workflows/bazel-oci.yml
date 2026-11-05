@@ -51,6 +51,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install Bazel trust tools
+        run: |
+          sudo -n apt-get update
+          sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates-java
       - name: Set up Bazel for repository downloads only
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -59,6 +63,8 @@ jobs:
           repository-cache: true
           disk-cache: false
           cache-version: "8.5.1"
+      - name: Configure Debian Bazel trust and source mirrors
+        run: python3 -B tools/bazel/ci/configure_debian_bazel.py
       - name: Retain the same verified GitLab sources used by the VS workflow
         run: |
           mkdir -p artifacts/source-image-inputs
@@ -235,21 +241,16 @@ jobs:
             machine: x86_64
             runner_arch: x64
             platform: x86_64_trixie
-          - name: ARM64
-            architecture: arm64
-            machine: aarch64
-            runner_arch: arm64
-            platform: aarch64_trixie
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+          # Native ARM64 coverage is paused until the runner pool is available.
     defaults:
       run:
         shell: bash
     steps:
       - name: Install execution tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+          sudo -n apt-get update
+          sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates ca-certificates-java gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
           for tool in bsdtar gdb readelf objcopy; do
             command -v "$tool"
           done
@@ -277,6 +278,9 @@ jobs:
           repository-cache: true
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
+
+      - name: Configure Debian Bazel trust and source mirrors
+        run: python3 -B tools/bazel/ci/configure_debian_bazel.py
 
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
@@ -367,6 +371,8 @@ jobs:
           else
             python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           fi
+          # Retain the cache ownership checks that require both root and non-root users.
+          sudo -n python3 -B -m unittest tools.bazel.tests.cache_mount_test
           python3 -B tools/bazel/ci/verify_make_archive.py \
             --artifacts artifacts/archive/make-export \
             --bazel "$BAZEL" \
@@ -629,20 +635,16 @@ jobs:
       p4_sources_artifact_id: ${{ steps.p4_sources_upload.outputs.artifact-id }}
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
     timeout-minutes: 60
-    container:
-      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-      # Reap any Bazel processes used for dependency resolution.
-      options: --init
     defaults:
       run:
         shell: bash
     steps:
       - name: Install execution tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl \
-            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
+          sudo -n apt-get update
+          sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates ca-certificates-java curl \
+            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar tini unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -671,6 +673,9 @@ jobs:
           disk-cache: false
           cache-version: "8.5.1"
 
+      - name: Configure Debian Bazel trust and source mirrors
+        run: python3 -B tools/bazel/ci/configure_debian_bazel.py
+
       - name: Check Make handoff and archive validation
         env:
           SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
@@ -686,12 +691,29 @@ jobs:
           else
             python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           fi
+          # Retain the cache ownership checks that require both root and non-root users.
+          sudo -n python3 -B -m unittest tools.bazel.tests.cache_mount_test
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
         run: |
+          # Keep a subreaper alive until the dependency-resolution Bazel server stops.
+          tini -s -g -- bash --noprofile --norc -e -o pipefail <<'BASH'
+          finish_bazel_resolution() {
+            bazel_step_status=$?
+            trap - EXIT
+            if ! timeout --signal=TERM --kill-after=5s 30s "$BAZEL" shutdown; then
+              echo 'Bazel shutdown failed before leaving the dependency subreaper' >&2
+              if test "$bazel_step_status" -eq 0; then bazel_step_status=1; fi
+            fi
+            exit "$bazel_step_status"
+          }
+          trap finish_bazel_resolution EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          trap 'exit 129' HUP
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
           "$BAZEL" fetch --repo=@@ape+ --repo=@@download_utils+ \
@@ -707,6 +729,7 @@ jobs:
             --module-graph artifacts/repository-inputs/module-graph.json \
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
+          BASH
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |

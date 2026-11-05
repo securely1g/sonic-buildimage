@@ -72,6 +72,14 @@ class SourceWorkflowTest(unittest.TestCase):
             if os.environ.get('HOSTED_CHECKS') == '1':
                 if source_runner or (name == 'bazel' and any(arg in ('build', 'test') for arg in args)):
                     raise SystemExit('Hosted regression checks must not compile source packages')
+            if name == 'sudo':
+                if args[:1] != ['-n']:
+                    raise SystemExit('Workflow sudo must be noninteractive')
+                raise SystemExit(subprocess.run(args[1:]).returncode)
+            if name == 'tini':
+                if args[:3] != ['-s', '-g', '--']:
+                    raise SystemExit('Dependency resolution must use the scoped subreaper')
+                raise SystemExit(subprocess.run(args[3:]).returncode)
             if name == 'make' and 'sonic-slave-run' in args:
                 if int(os.environ.get('MAKE_EXIT', '0')):
                     raise SystemExit(int(os.environ['MAKE_EXIT']))
@@ -101,7 +109,7 @@ class SourceWorkflowTest(unittest.TestCase):
                 elif args[:1] == ['check-ignore']:
                     print('MODULE.bazel.lock')
             ''')
-        for name in ("make", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp"):
+        for name in ("make", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp", "sudo", "tini"):
             executable = self.commands / name
             executable.write_text(recorder)
             executable.chmod(0o755)

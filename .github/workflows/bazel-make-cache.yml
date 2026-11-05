@@ -43,11 +43,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Native ARM64 is paused until the Debian runner pool provides it.
         include:
           - architecture: amd64
             runner_arch: x64
-          - architecture: arm64
-            runner_arch: arm64
     runs-on: [self-hosted, linux, debian-trixie-container, '${{ matrix.runner_arch }}']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,6 +67,8 @@ jobs:
         run: |
           python3 -B tools/bazel/cache/credentials.py probe \
             --output artifacts/make-cache/cache-access.json
+      - name: Start a private Docker daemon for runtime validation
+        run: bash tools/bazel/ci/private_docker.sh start
       - name: Pin and pull the native production builder
         run: python3 -B tools/bazel/ci/make_cache.py preflight --architecture '${{ matrix.architecture }}'
       - name: Verify the Common seed run
@@ -206,3 +207,7 @@ jobs:
             artifacts/make-cache/seed/*-MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
+
+      - name: Stop this job's private Docker daemon
+        if: always()
+        run: bash tools/bazel/ci/private_docker.sh stop

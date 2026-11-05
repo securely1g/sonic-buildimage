@@ -47,13 +47,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Native ARM64 is paused until the Debian runner pool provides it.
         include:
           - arch: amd64
             runner_arch: x64
             machine: x86_64
-          - arch: arm64
-            runner_arch: arm64
-            machine: aarch64
     runs-on: [self-hosted, linux, debian-trixie-container, '${{ matrix.runner_arch }}']
     timeout-minutes: 15
     steps:
