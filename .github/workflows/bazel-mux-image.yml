@@ -80,7 +80,7 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary, load_json, receipt_summary
           root = Path('artifacts/mux')
           root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
@@ -99,6 +99,13 @@ jobs:
           if (root / 'build-events.jsonl').exists():
               value = bep_summary((root / 'build-events.jsonl').read_text().splitlines(), partial=True)
               (root / 'build-summary.json').write_text(json.dumps(value, indent=2) + '\n')
+          failure = root / 'module-graph-failure.json'
+          if failure.is_symlink() or (failure.exists() and not failure.is_file()):
+              raise ValueError('Unsafe graph failure receipt')
+          if failure.exists():
+              if failure.stat().st_size > 4096:
+                  raise ValueError('Oversized graph failure receipt')
+              receipt_summary(load_json(failure.read_bytes()), 'resolution')
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always() && steps.public_evidence.outcome == 'success'
@@ -115,6 +122,7 @@ jobs:
             artifacts/mux/build-summary.json
             artifacts/mux/MODULE.bazel.lock
             artifacts/mux/module-graph.json
+            artifacts/mux/module-graph-failure.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
