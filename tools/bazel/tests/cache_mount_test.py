@@ -131,6 +131,9 @@ print(json.dumps({'output': str(args.output)}))
             ("BUILD_WITH_BAZEL_WHEN_AVAILABLE ?=", "SONIC_BAZEL_CACHE_SOURCE ?=",
              "SONIC_DPKG_CACHE_SOURCE ?=")))
         environment = dict(os.environ)
+        # This extracted Make fragment normally receives the workspace PWD from
+        # Makefile.work; sudo does not necessarily preserve the shell variable.
+        environment["PWD"] = str(ROOT)
         for name in ("BUILD_WITH_BAZEL_WHEN_AVAILABLE", "SONIC_BAZEL_CACHE_SOURCE",
                      "SONIC_DPKG_CACHE_SOURCE", "MAKEFLAGS", "MFLAGS"):
             environment.pop(name, None)

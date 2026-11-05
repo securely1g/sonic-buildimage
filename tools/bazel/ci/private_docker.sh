@@ -76,19 +76,29 @@ pid = int((state / 'daemon.pid').read_text())
 if pid <= 1:
     raise SystemExit('Invalid daemon PID')
 process = Path('/proc') / str(pid)
-if not process.exists():
-    raise SystemExit(0)
-command = (process / 'cmdline').read_bytes().split(b'\0')
-if (Path(os.fsdecode(command[0])).name != 'dockerd'
-        or os.fsencode(str(state / 'data')) not in command):
-    raise SystemExit('Refusing to stop an unrelated process')
-os.kill(pid, signal.SIGTERM)
-for _ in range(60):
+def stopped():
     try:
-        stopped = (process / 'stat').read_text().split()[2] == 'Z'
+        return (process / 'stat').read_text().split()[2] == 'Z'
     except FileNotFoundError:
-        stopped = True
-    if stopped:
+        return True
+
+if stopped():
+    raise SystemExit(0)
+try:
+    command = (process / 'cmdline').read_bytes().split(b'\0')
+except FileNotFoundError:
+    raise SystemExit(0)
+if command[0]:
+    if (Path(os.fsdecode(command[0])).name != 'dockerd'
+            or os.fsencode(str(state / 'data')) not in command):
+        raise SystemExit('Refusing to stop an unrelated process')
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        raise SystemExit(0)
+# An exiting daemon can have an empty cmdline; wait without signaling it.
+for _ in range(60):
+    if stopped():
         break
     time.sleep(1)
 else:
