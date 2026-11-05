@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-05T12:59:45.187944Z",
+  "generated_at": "2026-11-05T13:02:26.022135Z",
   "pull_requests": [
     {
       "base_sha": "7ebff36d33fbc218c9c101e024749a36082f7c2b",
@@ -2633,29 +2633,29 @@
     {
       "attempt": 1,
       "branch": "codex/orchagent-source-worker-current",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-11-05T13:00:59Z",
+      "conclusion": "failure",
       "event": "workflow_dispatch",
       "jobs": [
         {
           "architecture": null,
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-05T13:00:59Z",
+          "conclusion": "failure",
+          "duration_seconds": 5628.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 127216928710,
           "kind": "other",
           "name": "Source image (dash-engine)",
           "phases": {
-            "build": null,
-            "other": 1.0,
-            "setup": 25.0,
-            "upload": null,
+            "build": 5593.0,
+            "other": 3.0,
+            "setup": 26.0,
+            "upload": 1.0,
             "validation": 2.0
           },
           "started_at": "2026-11-05T11:27:11Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-05T11:27:14Z",
@@ -2758,94 +2758,104 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T13:00:53Z",
+              "conclusion": "failure",
+              "duration_seconds": 5593.0,
               "name": "Build source runtime and debug images",
               "number": 11,
               "phase": "build",
               "started_at": "2026-11-05T11:27:40Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T13:00:53Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Validate image contents and symbols",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:53Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T13:00:53Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify incremental rebuild and restoration",
               "number": 13,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:53Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T13:00:53Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Validate the installed services in private containers",
               "number": 14,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:53Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T13:00:54Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Prepare declared artifacts and public evidence",
               "number": 15,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:53Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T13:00:55Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Upload source images and acceptance receipts",
               "number": 16,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T13:00:57Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Stop only this job's private Docker daemon",
               "number": 17,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:55Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T13:00:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout the exact reviewed source",
               "number": 33,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:57Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T13:00:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout reviewed dispatcher",
               "number": 34,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T13:00:57Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-05T13:00:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 35,
+              "phase": "other",
+              "started_at": "2026-11-05T13:00:57Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42019063915/job/127216928710"
@@ -3035,8 +3045,8 @@
       "run_id": 42019063915,
       "source_sha": "b25f81fa185a577f8ad20f9d3b82041c00049b25",
       "started_at": "2026-11-05T11:27:08Z",
-      "status": "in_progress",
-      "updated_at": "2026-11-05T11:27:12Z",
+      "status": "completed",
+      "updated_at": "2026-11-05T13:01:00Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42019063915/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
