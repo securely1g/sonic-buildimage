@@ -545,7 +545,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/registry-native-export-permissions') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/registry-native-export-permissions' || github.head_ref == 'codex/common-native-runtime-worker') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -753,7 +753,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/registry-native-export-permissions') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/registry-native-export-permissions' || github.head_ref == 'codex/common-native-runtime-worker') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1215,6 +1215,7 @@ jobs:
     if: >-
       github.head_ref != 'codex/registry-native-workers' &&
       github.head_ref != 'codex/registry-native-export-permissions' &&
+      github.head_ref != 'codex/common-native-runtime-worker' &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
