@@ -1,0 +1,80 @@
+module(name = "snmp_image_lock")
+
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+
+apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+    ],
+    uris = ["https://snapshot.debian.org/archive/debian/20260727T143429Z"],
+)
+apt.sources_list(
+    architectures = ["amd64"],
+    components = ["main"],
+    suites = ["trixie-security"],
+    uris = ["https://snapshot.debian.org/archive/debian-security/20260726T121236Z"],
+)
+apt.install(
+    dependency_set = "snmp_debian",
+    packages = [
+        "ipmitool:amd64",
+        "python3-hiredis:amd64",
+        "python3-smbus:amd64",
+        "snmp:amd64",
+        "snmpd:amd64",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "snmp_debian")
+
+# Match the legacy debug tools and the public FIPS OpenSSH client's external
+# library closure. The OpenSSH program itself is built by its source owner.
+apt.install(
+    dependency_set = "snmp_debug_debian",
+    packages = [
+        "gdb:amd64",
+        "gdbserver:amd64",
+        "libaudit1:amd64",
+        "libcap-ng0:amd64",
+        "libcbor0.10:amd64",
+        "libcrypt1:amd64",
+        "libedit2:amd64",
+        "libfido2-1:amd64",
+        "libpam0g:amd64",
+        "libselinux1:amd64",
+        "libtinfo6:amd64",
+        "libudev1:amd64",
+        "libwrap0:amd64",
+        "libwtmpdb0:amd64",
+        "sshpass:amd64",
+        "strace:amd64",
+        "vim:amd64",
+        "zlib1g:amd64",
+    ],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "snmp_debug_debian")
+
+# The image test needs a private database process; this set is test-only.
+apt.install(
+    dependency_set = "snmp_test_debian",
+    packages = ["redis-server:amd64"],
+    suites = [
+        "trixie",
+        "trixie-updates",
+        "trixie-security",
+    ],
+)
+use_repo(apt, "snmp_test_debian")
