@@ -20,6 +20,8 @@ SNAPSHOT_FALLBACKS = {
         '66b33fe93d5d572e06cdabdd49d01c7b4947cfc7',
     SECURITY_SNAPSHOT + 'pool/updates/main/libs/libsodium/libsodium-dev_1.0.18-1+deb13u1_amd64.deb':
         '8637813e2c1b3ddb13dbb27c5fbd0bbf437610ed',
+    SECURITY_SNAPSHOT + 'pool/updates/main/g/gnutls28/libgnutls30t64_3.8.9-3+deb13u4_amd64.deb':
+        '72f4c6cf757e4af0acf000271eec501c06f7a97d',
     SECURITY_SNAPSHOT + 'pool/updates/main/o/openssl/libssl-dev_3.5.6-1~deb13u2_armhf.deb':
         'a6e3b3b45aaf7799d6ab6ad71e09218a813866c8',
     SECURITY_SNAPSHOT + 'pool/updates/main/o/openssl/libssl3t64_3.5.6-1~deb13u2_arm64.deb':
