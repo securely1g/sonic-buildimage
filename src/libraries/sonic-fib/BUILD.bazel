@@ -116,7 +116,8 @@ cc_library(
 cc_binary(
     name = "tests_binary",
     srcs = ["tests/c_api_ut.cpp", "tests/nexthopgroupfull_ut.cpp", "tests/nexthopgroupfull_json_ut.cpp", "tests/nexthopgroup_debug_ut.cpp", "tests/main.cpp"],
-    copts = _COPTS + ["-fno-access-control"],
+    # GoogleTest 1.17 requires C++17 for test translation units.
+    copts = _COPTS + ["-std=c++17", "-fno-access-control"],
     deps = [":objects", "@googletest//:gtest"],
     linkopts = ["-pthread"],
 )
