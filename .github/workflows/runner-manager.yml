@@ -1,107 +1,55 @@
-name: Debian private Docker probe
+name: Debian cache connectivity probe
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   probe:
-    name: Private Docker runtime probe (AMD64)
+    name: Cache connectivity probe (AMD64)
     runs-on: [self-hosted, linux, x64, debian-trixie-container]
-    timeout-minutes: 10
-    defaults:
-      run:
-        shell: bash
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Verify diagnostic source marker
-        env:
-          HELPER_SHA256: 97782ee9b6c452da2bfe4d44394bf921653ab5f8545a20659740098241d0d850
-          NESTED_SHA256: 30994e9b75d4906373bbb789da66350417d1bb105828a2d3476b0a59cddf7ac0
+      - name: Report sanitized cache connectivity
+        shell: python3 {0}
         run: |
-          test "$(uname -m)" = x86_64
-          printf '%s  %s\n' "$HELPER_SHA256" tools/bazel/ci/private_docker.sh | sha256sum --check --strict
-          printf '%s  %s\n' "$NESTED_SHA256" tools/bazel/ci/prepare_nested_docker.py | sha256sum --check --strict
-          printf 'PRIVATE_DOCKER_PROBE_SOURCE=%s HELPER=%s\n' "$GITHUB_SHA" "$HELPER_SHA256"
-      - name: Start the primary private Docker helper
-        id: start
-        run: bash tools/bazel/ci/private_docker.sh start
-      - name: Exercise isolated runtime limits
-        run: |
-          test "$DOCKER_HOST" = "unix://$SONIC_PRIVATE_DOCKER_STATE/docker.sock"
-          test "$DOCKER_CONFIG" = "$SONIC_PRIVATE_DOCKER_STATE/client"
-          test ! -e /var/run/docker.sock
-          test "$(docker info --format '{{.DockerRootDir}}')" = "$SONIC_PRIVATE_DOCKER_STATE/data"
-          test "$(docker info --format '{{.Driver}}')" = overlay2
-          test "$(docker info --format '{{.CgroupDriver}}')" = cgroupfs
-          docker run --rm --network=none --read-only --pids-limit=128 --memory=256m --cpus=1 \
-            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
-            debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c \
-            /bin/sh -ec '
-              . /etc/os-release
-              test "$ID:$VERSION_CODENAME" = debian:trixie
-              test "$(uname -m)" = x86_64
-              test "$(ls -A /sys/class/net)" = lo
-              if test -f /sys/fs/cgroup/cgroup.controllers; then
-                test "$(cat /sys/fs/cgroup/pids.max)" = 128
-                test "$(cat /sys/fs/cgroup/memory.max)" = 268435456
-                test "$(cat /sys/fs/cgroup/cpu.max)" = "100000 100000"
-              else
-                test "$(cat /sys/fs/cgroup/pids/pids.max)" = 128
-                test "$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)" = 268435456
-                test "$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)" = 100000
-                test "$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)" = 100000
-              fi
-              touch /tmp/probe
-              if touch /probe-rootfs-write 2>/dev/null; then
-                echo "Root filesystem was writable" >&2
-                exit 1
-              fi
-              echo PRIVATE_DOCKER_SMOKE=passed
-            '
-          test -z "$(docker ps -aq)"
-          echo PRIVATE_DOCKER_ISOLATION=passed
-      - name: Show failure diagnostics
-        if: failure()
-        run: |
-          if [[ -n ${SONIC_PRIVATE_DOCKER_STATE:-} && -f $SONIC_PRIVATE_DOCKER_STATE/daemon.log ]]; then
-            tail -n 80 "$SONIC_PRIVATE_DOCKER_STATE/daemon.log"
-          fi
-      - name: Stop the primary private Docker helper
-        if: always()
-        run: bash tools/bazel/ci/private_docker.sh stop
-      - name: Verify cleanup
-        if: always() && steps.start.outcome == 'success'
-        run: |
-          test ! -e "$SONIC_PRIVATE_DOCKER_STATE/data"
-          test ! -e "$SONIC_PRIVATE_DOCKER_STATE/exec"
-          test -f "$SONIC_PRIVATE_DOCKER_STATE/daemon.log"
-          if timeout 3s docker info >/dev/null 2>&1; then
-            echo "Private daemon still accepts requests" >&2
-            exit 1
-          fi
-          python3 - "$SONIC_PRIVATE_DOCKER_STATE" <<'PY'
-          from pathlib import Path
-          import os
-          import sys
-          state = Path(sys.argv[1])
-          pidfile = state / 'daemon.pid'
-          if pidfile.exists():
-              process = Path('/proc') / pidfile.read_text().strip()
-              try:
-                  status = (process / 'stat').read_text().split()[2]
-                  command = (process / 'cmdline').read_bytes().split(b'\0')
-              except FileNotFoundError:
-                  pass
-              else:
-                  assert status == 'Z' or not (
-                      Path(os.fsdecode(command[0])).name == 'dockerd'
-                      and os.fsencode(str(state / 'data')) in command
-                  ), 'Private daemon process is still live'
-          PY
-          bash tools/bazel/ci/private_docker.sh stop
-          echo PRIVATE_DOCKER_CLEANUP=passed
+          import json
+          import socket
+          import ssl
+          import urllib.error
+          import urllib.request
+
+          host = 'lgh-bazel-87263989.eastus.cloudapp.azure.com'
+          endpoint = 'https://' + host
+          url = endpoint + '/cas/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+          print('CACHE_CONNECTIVITY_SOURCE=42083755988-71da225b98bb8b6b57bfdf128c8ca06ecb0277db')
+          report = {}
+          try:
+              socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+              report['dns'] = {'reason_type': None, 'errno': None}
+          except socket.gaierror as error:
+              report['dns'] = {'reason_type': type(error).__name__, 'errno': error.errno}
+
+          class NoRedirects(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          try:
+              request = urllib.request.Request(url, method='HEAD')
+              with urllib.request.build_opener(NoRedirects()).open(request, timeout=10) as response:
+                  report['https'] = {'http_status': response.status}
+          except urllib.error.HTTPError as error:
+              report['https'] = {'reason_type': type(error).__name__, 'http_status': error.code}
+          except urllib.error.URLError as error:
+              reason = error.reason
+              details = {'reason_type': type(reason).__name__}
+              if isinstance(getattr(reason, 'errno', None), int):
+                  details['errno'] = reason.errno
+              if isinstance(reason, ssl.SSLCertVerificationError):
+                  details['verify_code'] = reason.verify_code
+                  details['verify_message'] = reason.verify_message
+              report['https'] = details
+          except OSError as error:
+              report['https'] = {'reason_type': type(error).__name__, 'errno': error.errno}
+          print(json.dumps(report, indent=2, sort_keys=True))
