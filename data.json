@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-05T09:07:28.590798Z",
+  "generated_at": "2026-11-05T09:13:24.355150Z",
   "pull_requests": [
     {
       "base_sha": "7ebff36d33fbc218c9c101e024749a36082f7c2b",
@@ -647,7 +647,7 @@
       "number": 136,
       "state": "open",
       "title": "Build the shared SWSS OCI layer from source TARs",
-      "updated_at": "2026-11-05T03:10:34Z",
+      "updated_at": "2026-11-05T09:07:39Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/136"
     },
     {
@@ -2228,9 +2228,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-05T09:12:52Z",
+          "conclusion": "failure",
+          "duration_seconds": 567.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 127149238068,
@@ -2238,13 +2238,13 @@
           "name": "OCI regression checks (AMD64)",
           "phases": {
             "build": null,
-            "other": 6.0,
+            "other": 452.0,
             "setup": 43.0,
             "upload": null,
             "validation": 69.0
           },
           "started_at": "2026-11-05T09:03:25Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-05T09:03:27Z",
@@ -2337,94 +2337,104 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T09:12:46Z",
+              "conclusion": "failure",
+              "duration_seconds": 442.0,
               "name": "Retain the verified GitLab source downloads",
               "number": 10,
               "phase": "other",
               "started_at": "2026-11-05T09:05:24Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T09:12:46Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Retain the native Redis test helper for installed-image checks",
               "number": 11,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T09:12:46Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Upload the source downloads for the VS job",
               "number": 12,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T09:12:46Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Fetch pinned P4 source inputs for the native worker",
               "number": 13,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T09:12:46Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Preserve P4 source inputs and verification receipt",
               "number": 14,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-05T09:12:46Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Report validation scope",
               "number": 15,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T09:12:48Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Post Set up Bazel",
               "number": 28,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:46Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T09:12:48Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository",
               "number": 29,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:48Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-05T09:12:50Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Stop containers",
               "number": 30,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-05T09:12:48Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-05T09:12:50Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 31,
+              "phase": "other",
+              "started_at": "2026-11-05T09:12:50Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41999009189/job/127149238068"
@@ -2516,6 +2526,50 @@
           "status": "completed",
           "steps": [],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41999009189/job/127150792261"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-05T09:12:52Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 127154294474,
+          "kind": "make-vs",
+          "name": "Make VS with Bazel SWSS (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-05T09:12:52Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41999009189/job/127154294474"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-05T09:12:52Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 127154295182,
+          "kind": "make-vs",
+          "name": "VS installer in SONiC slave (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-05T09:12:52Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/41999009189/job/127154295182"
         }
       ],
       "pr_association": "github",
