@@ -8,6 +8,7 @@ on:
       - tools/bazel/common.bazelrc
       - tools/bazel/tests/runtime.bzl
       - tools/bazel/ci/frr_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -17,6 +18,7 @@ on:
       - tools/bazel/common.bazelrc
       - tools/bazel/tests/runtime.bzl
       - tools/bazel/ci/frr_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -67,6 +69,8 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for isolated CI
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
 
       - name: Verify native architecture and clean dependency inputs
         env:

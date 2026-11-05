@@ -281,6 +281,9 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Preserve setup-bazel caches for isolated CI
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'
@@ -697,6 +700,9 @@ jobs:
           # This job resolves/downloads dependencies but executes no Bazel builds.
           disk-cache: false
           cache-version: "8.5.1"
+
+      - name: Preserve setup-bazel caches for isolated CI
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
 
       - name: Configure the verified source mirror
         run: |

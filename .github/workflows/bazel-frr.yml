@@ -9,6 +9,7 @@ on:
       - .bazelrc
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/frr_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/oci/runtime_smoke.py
       - .github/workflows/bazel-frr.yml
@@ -50,6 +51,8 @@ jobs:
           repository-cache: true
           disk-cache: frr-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for isolated CI
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Build source outputs and execute native tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
