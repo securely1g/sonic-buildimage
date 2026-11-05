@@ -283,5 +283,95 @@ class DebianPoolTest(unittest.TestCase):
         self.assertEqual(len(callers), 2)
 
 
+class YangSourceMirrorTest(unittest.TestCase):
+    def workflow_steps(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-yang-models.yml").read_text())
+        steps = workflow["jobs"]["package"]["steps"]
+        mirror = next(step for step in steps if step.get("name") == "Configure the verified source mirror")
+        build = next(step for step in steps if step.get("name") == "Build and verify the installed source distribution")
+        self.assertLess(steps.index(mirror), steps.index(build))
+        return mirror, build
+
+    def mirror_bytes(self):
+        # Exact shared configuration with the observed YANG sysroot fallback.
+        marker = r"rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1"
+        addition = (
+            "# SHA256: 53a9b789bb02415d758f652ef5ac913d89fed29782610e9fe0fd2488e4f2e465\n"
+            r"rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc6-dev_2\.41\-12\+deb13u3_amd64\.deb https://snapshot.debian.org/file/fbb9e46e11e1a8365a4f067eb9d6ec10251df100"
+            "\n\n"
+        )
+        data = SHARED_CONFIG_FIXTURE.replace("\n\n" + marker, "\n" + addition + marker, 1).encode()
+        self.assertEqual(hashlib.sha256(data).hexdigest(),
+                         "b6b7dbd03e20e482718de3f312a015168056f6c422d94723f55175a728259a7b")
+        return data
+
+    def configure(self, root, data):
+        mirror, _ = self.workflow_steps()
+        code = mirror["run"].split("python3 - <<'PYCFG'\n", 1)[1].rsplit("\nPYCFG", 1)[0]
+        with contextlib.chdir(root), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}):
+            with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(data)) as fetch:
+                exec(compile(code, "yang-source-mirror", "exec"), {})
+            fetch.assert_called_once_with(
+                "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
+                "6e7b45d19c76d479bc055d86ffd6fa2962948576/ci/source_mirrors.cfg", timeout=60)
+
+    def test_actual_initial_query_loads_verified_mirror_without_changing_cache_options(self):
+        data = self.mirror_bytes()
+        _, build = self.workflow_steps()
+        # Stop at the first query. Every Bazel call is an argv recorder.
+        query = build["run"].split("git rev-parse HEAD", 1)[0]
+        for machine in ("x86_64", "aarch64"):
+            with self.subTest(machine=machine), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                before = "common --repository_cache=/retained/repository\ncommon --disk_cache=/retained/disk\ncommon --distdir=/retained/downloads\n"
+                (root / ".bazelrc.user").write_text(before)
+                for name in ("tools/bazel/common.bazelrc", CONFIG, "tools/bazel/ci/frr_draft_bazel.sh"):
+                    destination = root / name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes((ROOT / name).read_bytes())
+                (root / "tools/bazel/ci/frr_draft_bazel.sh").chmod(0o755)
+                self.configure(root, data)
+                config = root / "sonic-source-mirrors.cfg"
+                self.assertEqual(config.read_bytes(), data)
+                self.assertEqual((root / ".bazelrc.user").read_text(), before +
+                                 "common --experimental_downloader_config=" + str(config) + "\n")
+                self.assertIn("try-import %workspace%/.bazelrc.user",
+                              (root / "tools/bazel/common.bazelrc").read_text())
+                executables = {
+                    "bazel": "#!/usr/bin/python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n",
+                    "git": "#!/bin/sh\nexit 0\n",
+                    "uname": "#!/bin/sh\nprintf '%s\\n' " + machine + "\n",
+                }
+                for name, content in executables.items():
+                    executable = root / name
+                    executable.write_text(content)
+                    executable.chmod(0o755)
+                working = root / build["working-directory"]
+                working.mkdir(parents=True)
+                subprocess.run(["bash", "-eu", "-c", query.replace("${{ matrix.machine }}", machine)],
+                               cwd=working, env={"PATH": str(root) + ":/usr/bin:/bin"},
+                               check=True, capture_output=True, text=True)
+                argv = json.loads((working / "artifacts/image-root-targets.txt").read_text())
+                self.assertEqual(argv, [
+                    "--nosystem_rc", "--nohome_rc", "--noworkspace_rc",
+                    "--bazelrc=" + str(root / "tools/bazel/common.bazelrc"), "cquery",
+                    "--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/cfd42fb5eecf0e1a8e45da58598b107754c81ec3",
+                    "--registry=https://bcr.bazel.build", "--lockfile_mode=update", "--lockfile_mode=update",
+                    "//src/sonic-yang-models:yang_models_package_test",
+                ])
+
+    def test_corrupt_yang_mirror_cannot_replace_config_or_cache_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = "common --disk_cache=/retained/cache\n"
+            (root / ".bazelrc.user").write_text(before)
+            config = root / "sonic-source-mirrors.cfg"
+            config.write_bytes(b"previous verified config")
+            with self.assertRaisesRegex(SystemExit, "checksum mismatch"):
+                self.configure(root, b"corrupt download")
+            self.assertEqual(config.read_bytes(), b"previous verified config")
+            self.assertEqual((root / ".bazelrc.user").read_text(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
