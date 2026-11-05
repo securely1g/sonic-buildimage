@@ -1,31 +1,263 @@
-name: Self-hosted runner manager
+name: Debian runner read-only probe
 
 on:
-  pull_request:
-    paths:
-      - tools/ci/runner/**
-      - .github/workflows/runner-manager.yml
-  push:
-    branches: [master]
-    paths:
-      - tools/ci/runner/**
-      - .github/workflows/runner-manager.yml
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
-  tests:
+  probe:
     runs-on: [self-hosted, linux, x64, debian-trixie-container]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Test runner lifecycle and installation without registering runners
-        run: python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py' -v
-      - name: Check installer preview and bootstrap syntax
+      - name: Report runner capabilities
+        shell: python3 {0}
         run: |
-          bash -n tools/ci/runner/bootstrap.sh
-          python3 -B tools/ci/runner/install_manager.py --operator example --master --dry-run
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import shutil
+          import socket
+          import stat
+          import subprocess
+
+          TOOL_NAMES = (
+              'sudo', 'docker', 'dockerd', 'podman', 'containerd',
+              'node', 'java', 'keytool',
+          )
+          CAPABILITIES = {
+              'sys_admin': 21,
+              'net_admin': 12,
+              'mknod': 27,
+              'sys_chroot': 18,
+              'setuid': 7,
+              'setgid': 6,
+              'sys_ptrace': 19,
+          }
+
+          def safe_identifier(value):
+              return value if re.fullmatch(r'[A-Za-z0-9._-]{1,64}', value or '') else 'unknown'
+
+          def os_identity():
+              values = {}
+              try:
+                  for line in Path('/etc/os-release').read_text().splitlines():
+                      key, separator, value = line.partition('=')
+                      if separator and key in ('ID', 'VERSION_CODENAME'):
+                          if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                              value = value[1:-1]
+                          values[key] = safe_identifier(value)
+              except (OSError, UnicodeError):
+                  pass
+              return {
+                  'id': values.get('ID', 'unknown'),
+                  'codename': values.get('VERSION_CODENAME', 'unknown'),
+              }
+
+          def effective_capabilities():
+              mask = 0
+              readable = False
+              try:
+                  for line in Path('/proc/self/status').read_text().splitlines():
+                      if line.startswith('CapEff:'):
+                          mask = int(line.split(':', 1)[1].strip(), 16)
+                          readable = True
+                          break
+              except (OSError, UnicodeError, ValueError):
+                  pass
+              return {
+                  'readable': readable,
+                  'effective': {name: bool(mask & (1 << bit)) for name, bit in CAPABILITIES.items()},
+              }
+
+          def generic_stderr(value):
+              lowered = (value or '').lower()
+              for phrase in (
+                  'operation not permitted', 'permission denied', 'a password is required',
+                  'not allowed', 'function not implemented', 'invalid argument',
+                  'no space left on device', 'connection refused',
+              ):
+                  if phrase in lowered:
+                      return phrase
+              return 'other diagnostic (details withheld)' if lowered.strip() else ''
+
+          def fixed_command_result(arguments):
+              try:
+                  result = subprocess.run(
+                      arguments, env={}, stdin=subprocess.DEVNULL,
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                      text=True, timeout=5, check=False,
+                  )
+                  return {
+                      'attempted': True,
+                      'passed': result.returncode == 0,
+                      'returncode': result.returncode,
+                      'stderr': generic_stderr(result.stderr),
+                  }
+              except subprocess.TimeoutExpired:
+                  return {'attempted': True, 'passed': False, 'returncode': None, 'stderr': 'timed out'}
+              except (OSError, UnicodeError):
+                  return {'attempted': True, 'passed': False, 'returncode': None, 'stderr': 'execution unavailable'}
+
+          def unshare_probe():
+              result = {
+                  'available': False, 'attempted': False, 'passed': False,
+                  'returncode': None, 'stderr': '', 'status': 'unavailable',
+                  'scope': 'user-and-mount-namespaces',
+              }
+              executable = shutil.which('unshare')
+              true_executable = shutil.which('true')
+              result['available'] = bool(executable and true_executable)
+              if os.getuid() == 0 or os.geteuid() == 0:
+                  result['status'] = 'skipped-root'
+              elif result['available']:
+                  result.update(fixed_command_result([
+                      executable, '--user', '--map-root-user', '--mount',
+                      '--propagation', 'unchanged', '--fork', '--', true_executable,
+                  ]))
+                  result['status'] = 'passed' if result['passed'] else 'failed'
+              return result
+
+          def sudo_probe():
+              executable = shutil.which('sudo')
+              true_executable = shutil.which('true')
+              result = {
+                  'available': bool(executable and true_executable),
+                  'attempted': False, 'passed': False, 'returncode': None, 'stderr': '',
+              }
+              if result['available']:
+                  result.update(fixed_command_result([executable, '-n', true_executable]))
+              return result
+
+          def docker_socket_probe():
+              path = Path('/var/run/docker.sock')
+              result = {
+                  'exists': False, 'type': 'missing',
+                  'ping': {'attempted': False, 'connected': False, 'http_status': None, 'body_ok': False, 'status': 'not-attempted'},
+              }
+              try:
+                  attributes = path.lstat()
+              except FileNotFoundError:
+                  return result
+              except OSError:
+                  result.update(exists=None, type='unreadable')
+                  return result
+              result['exists'] = True
+              if stat.S_ISSOCK(attributes.st_mode):
+                  result['type'] = 'socket'
+              elif stat.S_ISLNK(attributes.st_mode):
+                  result['type'] = 'symlink'
+                  return result
+              elif stat.S_ISREG(attributes.st_mode):
+                  result['type'] = 'regular-file'
+                  return result
+              elif stat.S_ISDIR(attributes.st_mode):
+                  result['type'] = 'directory'
+                  return result
+              else:
+                  result['type'] = 'other'
+                  return result
+              ping = result['ping']
+              ping['attempted'] = True
+              try:
+                  with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                      connection.settimeout(2)
+                      connection.connect(str(path))
+                      ping['connected'] = True
+                      connection.sendall(b'GET /_ping HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n')
+                      response = bytearray()
+                      while len(response) < 4096:
+                          chunk = connection.recv(4096 - len(response))
+                          if not chunk:
+                              break
+                          response.extend(chunk)
+                          if b'\r\n\r\n' in response and len(response.split(b'\r\n\r\n', 1)[1]) >= 2:
+                              break
+                  headers, separator, body = bytes(response).partition(b'\r\n\r\n')
+                  first_line = headers.split(b'\r\n', 1)[0]
+                  match = re.fullmatch(rb'HTTP/[0-9.]+ ([0-9]{3})(?: .*)?', first_line)
+                  if match:
+                      ping['http_status'] = int(match.group(1))
+                  ping['body_ok'] = bool(separator and body.strip() == b'OK')
+                  ping['status'] = 'ok' if ping['http_status'] == 200 and ping['body_ok'] else 'unexpected-response'
+              except PermissionError:
+                  ping['status'] = 'permission-denied'
+              except ConnectionRefusedError:
+                  ping['status'] = 'connection-refused'
+              except (TimeoutError, socket.timeout):
+                  ping['status'] = 'timed-out'
+              except OSError:
+                  ping['status'] = 'socket-error'
+              return result
+
+          def free_gib(variable):
+              path = os.environ.get(variable)
+              if not path:
+                  return None
+              try:
+                  return round(shutil.disk_usage(path).free / (2 ** 30), 2)
+              except OSError:
+                  return None
+
+          def file_digest(path):
+              result = {'exists': False, 'regular': False, 'size_bytes': None, 'sha256': None, 'readable': False}
+              try:
+                  attributes = path.stat()
+              except FileNotFoundError:
+                  return result
+              except OSError:
+                  result['exists'] = None
+                  return result
+              result['exists'] = True
+              result['regular'] = stat.S_ISREG(attributes.st_mode)
+              if not result['regular']:
+                  return result
+              result['size_bytes'] = attributes.st_size
+              if attributes.st_size > 16 * 1024 * 1024:
+                  return result
+              try:
+                  digest = hashlib.sha256()
+                  total = 0
+                  with path.open('rb') as source:
+                      while chunk := source.read(1024 * 1024):
+                          total += len(chunk)
+                          if total > 16 * 1024 * 1024:
+                              return result
+                          digest.update(chunk)
+                  result.update(readable=True, sha256=digest.hexdigest())
+              except OSError:
+                  pass
+              return result
+
+          def guarded(function, fallback):
+              try:
+                  return function()
+              except Exception:
+                  return fallback
+
+          report = {
+              'os': guarded(os_identity, {'id': 'unknown', 'codename': 'unknown'}),
+              'architecture': safe_identifier(platform.machine()),
+              'identity': {
+                  'uid': os.getuid(), 'gid': os.getgid(),
+                  'effective_uid': os.geteuid(), 'effective_gid': os.getegid(),
+              },
+              'tools': {name: bool(shutil.which(name)) for name in TOOL_NAMES},
+              'docker_host_set': 'DOCKER_HOST' in os.environ,
+              'docker_socket': guarded(docker_socket_probe, {'exists': None, 'type': 'probe-error'}),
+              'capabilities': guarded(effective_capabilities, {'readable': False, 'effective': {name: False for name in CAPABILITIES}}),
+              'unshare': guarded(unshare_probe, {'available': False, 'attempted': False, 'passed': False, 'status': 'probe-error', 'stderr': 'probe unavailable'}),
+              'sudo_noninteractive_true': guarded(sudo_probe, {'available': False, 'attempted': False, 'passed': False, 'stderr': 'probe unavailable'}),
+              'free_gib': {
+                  'workspace': free_gib('GITHUB_WORKSPACE'),
+                  'temp': free_gib('RUNNER_TEMP'),
+              },
+              'trust_files': {
+                  'system_ca_bundle': guarded(lambda: file_digest(Path('/etc/ssl/certs/ca-certificates.crt')), {'exists': None, 'size_bytes': None, 'sha256': None}),
+                  'java_cacerts': guarded(lambda: file_digest(Path('/etc/ssl/certs/java/cacerts')), {'exists': None, 'size_bytes': None, 'sha256': None}),
+              },
+          }
+          print(json.dumps(report, indent=2, sort_keys=True))
