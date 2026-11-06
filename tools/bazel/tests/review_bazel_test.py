@@ -206,7 +206,26 @@ try-import /not-imported
         self.assertFalse(Path(json.loads(self.record.read_text())['rc_path']).exists())
         result = self.invoke(['--version'], SONIC_BAZEL_REGISTRY_REVISION='')
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(json.loads(self.record.read_text())['arguments'], ['--version'])
+        self.assertEqual(json.loads(self.record.read_text())['arguments'], ['version', '--gnu_format'])
+
+        from tools.bazel.ci import source_image_worker as worker
+        launcher = self.directory / 'resource launcher'
+        profile = {'jobs': 2, 'cpu': 2, 'scheduler_memory_mb': 8000, 'jvm_heap_gib': 3}
+        base = self.directory / 'private output base'
+        launcher.write_text(worker.launcher_text(str(self.fake), base, profile))
+        launcher.chmod(0o755)
+        self.fake.write_text(self.fake.read_text().replace(
+            "sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))",
+            "if args[-2:] == ['version', '--gnu_format']: print('bazel 8.5.1')\n"
+            "sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))"))
+        result = self.invoke(['--version'], BAZEL_REAL=str(launcher),
+                             SONIC_BAZEL_REGISTRY_REVISION='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ['bazel 8.5.1'])
+        self.assertEqual(json.loads(self.record.read_text())['arguments'], [
+            '--output_base=' + str(base), '--host_jvm_args=-Xmx3g',
+            '--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts',
+            'version', '--gnu_format'])
 
     def test_configuration_drift_fails_closed(self):
         common = self.workspace / 'tools/bazel/common.bazelrc'
