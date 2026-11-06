@@ -16,12 +16,16 @@ owner targets. The Make source checkout, recipes and patch series are unchanged.
 
 The default `.bazelrc` continues to select maintained registry `main`. Draft CI
 uses the single immutable complete catalog `2a849bbcaa254113a61ca0aeb972aeeccb8494f5`.
-It requires PR240 and its PR236/238 stack. Source-base, native-libteam and
-OCI archive select the shared [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
-configuration at `087d351564c713ca88d241ace0b4f895a42f0c61`
-(SHA256 `a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90`),
-verifying all 45,526 bytes before use. It supplies exact same-byte alternatives
-for the observed libaom3 source-base failure, libgd3 native AMD64 failure,
+It requires PR240 and its PR236/238 stack. Source-base selects the shared
+[registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
+configuration at `d53bed3dfbc53895f5ba348354210704f3872692`
+(SHA256 `8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68`),
+verifying all 48,072 bytes before use. Its exact libc6 ARMHF route covers the
+observed AMD64 source-base analysis download failure. Native-libteam and OCI
+archive retain `087d351564c713ca88d241ace0b4f895a42f0c61`
+(SHA256 `a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90`;
+45,526 bytes). These selections retain the same-byte alternatives for the
+observed libaom3 source-base failure, libgd3 native AMD64 failure,
 util-linux automatic ARM64 failure and libkrb5-3 archive AMD64 failure, retaining
 the verified sibling-warning routes. Original package versions, SHA256 checks,
 fallbacks and caches remain unchanged. Registry PR228 remains unlanded;
