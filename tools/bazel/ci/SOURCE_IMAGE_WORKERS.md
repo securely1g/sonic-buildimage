@@ -157,8 +157,8 @@ DEB generation before building.
 
 The worker uses the checksum-verified shared download configuration from
 [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228), pinned
-at `f77605f0e9717395b7cae85e4a719035ec456c84` (SHA256
-`8cc37c150bfdac99dcddb0a3a22602fc500f5813b75bad19b3bf243668552a95`, 32,958 bytes).
+at `087d351564c713ca88d241ace0b4f895a42f0c61` (SHA256
+`a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90`, 45,526 bytes).
 It adds the reviewed exact historical-package routes to the existing pool and
 Snapshot fallbacks without changing package versions or required integrity.
 This is an unlanded helper dependency; current controller and image acceptance
