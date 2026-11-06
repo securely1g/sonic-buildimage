@@ -813,6 +813,7 @@ jobs:
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
+        id: repository_inputs
         run: |
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
@@ -829,6 +830,35 @@ jobs:
             --module-graph artifacts/repository-inputs/module-graph.json \
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
+
+      - name: Prepare repository graph failure receipt
+        id: repository_graph_failure
+        if: always() && steps.repository_inputs.outcome == 'failure'
+        run: |
+          python3 - <<'PYDIAG'
+          import os
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, receipt_summary
+          failure = Path('artifacts/repository-inputs/module-graph-failure.json')
+          if failure.is_symlink() or (failure.exists() and not failure.is_file()):
+              raise ValueError('Unsafe graph failure receipt')
+          if failure.exists():
+              if failure.stat().st_size > 4096:
+                  raise ValueError('Oversized graph failure receipt')
+              receipt_summary(load_json(failure.read_bytes()), 'resolution')
+              with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+                  output.write('present=true\n')
+          PYDIAG
+
+      - name: Retain repository graph failure receipt
+        if: always() && steps.repository_graph_failure.outcome == 'success' && steps.repository_graph_failure.outputs.present == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repository-graph-failure-amd64
+          path: artifacts/repository-inputs/module-graph-failure.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |
