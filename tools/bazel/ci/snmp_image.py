@@ -54,7 +54,10 @@ def build_images(args, directory):
                  "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "BLDENV=trixie", "CONFIGURED_PLATFORM=vs",
                  "CONFIGURED_ARCH=amd64", "INCLUDE_FIPS=y", "ENABLE_ASAN=n", "DBG_IMAGE_MARK=dbg", "DOCKERS_PATH=dockers"],
                 directory, receipt, "make-manifests")
-        layouts = [OWNER + name for name in IMAGES]
+        # Cached archives need not materialize the parent OCI directory that
+        # validation reads. Audit and request every inspected layout explicitly.
+        layouts = ["//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
+                   *[OWNER + name for name in IMAGES]]
         receipt["action_audit"] = bazel_commands.audit_targets(args.bazel, options, [*TARGETS.values(), *layouts],
             workspace=ROOT, output=directory / "action-audit.json")
         build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=options)
