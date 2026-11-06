@@ -63,8 +63,8 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
              '734b0e505fac9f2fd8b0386bf367f7f1de7cc6d72e5fcc40c98f653afa1f1346'),
             ('bazel-yang-models.yml', 'package', '45065949f5163bd5d99793026b076eafec213ef8',
              'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
-            ('bazel-base-images.yml', 'native', '88056e0b3c1c05c79db474fa7c324f6ced4a4f00',
-             '734b0e505fac9f2fd8b0386bf367f7f1de7cc6d72e5fcc40c98f653afa1f1346'),
+            ('bazel-base-images.yml', 'native', '087d351564c713ca88d241ace0b4f895a42f0c61',
+             'a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90'),
             ('bazel-eventd.yml', 'native', '45065949f5163bd5d99793026b076eafec213ef8',
              'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
         ):
