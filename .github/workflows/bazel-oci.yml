@@ -316,10 +316,10 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Pin the transport fallback; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/88056e0b3c1c05c79db474fa7c324f6ced4a4f00/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/087d351564c713ca88d241ace0b4f895a42f0c61/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "734b0e505fac9f2fd8b0386bf367f7f1de7cc6d72e5fcc40c98f653afa1f1346"
+          expected = "a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"

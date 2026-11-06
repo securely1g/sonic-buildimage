@@ -52,14 +52,10 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
     def test_bootstrap_verifies_config_before_appending_to_existing_caches(self):
         for filename, job in JOBS:
             fixture, config_url, config_sha = (
-                ("source-mirrors-88056e0b.cfg",
-                 "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/88056e0b3c1c05c79db474fa7c324f6ced4a4f00/ci/source_mirrors.cfg",
-                 "734b0e505fac9f2fd8b0386bf367f7f1de7cc6d72e5fcc40c98f653afa1f1346")
-                if (filename, job) == ("bazel-oci.yml", "archive") else
-                ("source-mirrors-a32c87f0.cfg",
-                 "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a32c87f0658e20f5fecd6459ef006caed96d905f/ci/source_mirrors.cfg",
-                 "354c7d6ea5931c8ecb1c4a96fafa1269802b1547bde3b3b64dfc55a89a35cb46")
-                if (filename, job) == ("bazel-base-images.yml", "native") else
+                ("source-mirrors-087d3515.cfg",
+                 "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/087d351564c713ca88d241ace0b4f895a42f0c61/ci/source_mirrors.cfg",
+                 "a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90")
+                if (filename, job) in (("bazel-oci.yml", "archive"), ("bazel-base-images.yml", "native")) else
                 ("source-mirrors-264002ba.cfg", OCI_CONFIG_URL, OCI_CONFIG_SHA)
                 if filename == "bazel-oci.yml" else
                 ("source-mirrors-6e305126.cfg", CONFIG_URL, CONFIG_SHA))

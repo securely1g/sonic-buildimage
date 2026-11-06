@@ -16,18 +16,17 @@ owner targets. The Make source checkout, recipes and patch series are unchanged.
 
 The default `.bazelrc` continues to select maintained registry `main`. Draft CI
 uses the single immutable complete catalog `2a849bbcaa254113a61ca0aeb972aeeccb8494f5`.
-It requires PR240 and its PR236/238 stack. Source-base and native-libteam
-retain the shared [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
-configuration at `a32c87f0658e20f5fecd6459ef006caed96d905f`
-(SHA256 `354c7d6ea5931c8ecb1c4a96fafa1269802b1547bde3b3b64dfc55a89a35cb46`).
-OCI archive CI selects `bc9a3a0f684d3f0d42d20b47ea5387d448acf9c4`
-(SHA256 `bf85cf7e4f277197732321a8f72086c296698fc495002a68e16fc7e7ef239014`).
-This adds exact verified content routes for the observed libexpat development,
-Krb5 support and comerr development downloads. Original package versions and
-SHA256 checks remain enforced, as do the previous transport routes and caches.
-The configuration verifies all 30,934 bytes before use. Registry PR228 remains
-unlanded; verified download bytes do not establish native image acceptance or
-repair general Snapshot availability.
+It requires PR240 and its PR236/238 stack. Source-base, native-libteam and
+OCI archive select the shared [registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228)
+configuration at `087d351564c713ca88d241ace0b4f895a42f0c61`
+(SHA256 `a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90`),
+verifying all 45,526 bytes before use. It supplies exact same-byte alternatives
+for the observed libaom3 source-base failure, libgd3 native AMD64 failure,
+util-linux automatic ARM64 failure and libkrb5-3 archive AMD64 failure, retaining
+the verified sibling-warning routes. Original package versions, SHA256 checks,
+fallbacks and caches remain unchanged. Registry PR228 remains unlanded;
+verified download bytes do not establish configured-fetch or image acceptance,
+and do not explain the separate OCI regression graph exit 37.
 OCI regression checks retain `264002ba05e75df2f7c90dea2d78cf2bf46a4d4a`
 (SHA256 `bb3a1a98` prefix). Eventd, Rust and YANG retain
 `6e305126f13965fd01b6b3aa06e98d4595832d39` (SHA256 `e9f004bf` prefix).
