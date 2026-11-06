@@ -75,10 +75,10 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Reviewed PR228 candidate; Bazel retains every locked payload checksum.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/f77605f0e9717395b7cae85e4a719035ec456c84/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/89192f9e1b7ca245c58e90d133a027a6925e0d9b/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8cc37c150bfdac99dcddb0a3a22602fc500f5813b75bad19b3bf243668552a95"
+          expected = "25af8a4c7afe7620589e67f9c4e001d64592127465caf82583aa2709521a3fe1"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
