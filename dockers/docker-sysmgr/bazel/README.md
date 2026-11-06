@@ -23,6 +23,32 @@ retain the existing path.
 
 ## Build and validate
 
+For hosted validation of a reviewed source, dispatch `bazel-oci.yml` with
+`source_image=sysmgr-hosted`, paired 40-character `source_revision` and
+`registry_revision` values, and `skip_vs=true`. Only the existing AMD64 archive
+and installed-Sysmgr jobs run. They keep the original build, content,
+incremental and private Redis-to-D-Bus checks. Ordinary CI and other manual
+selectors retain their existing behavior.
+
+The native job records the source, registry and workflow commits plus the
+loaded-checker hash. Before running the installed probe, the runtime job checks
+that record against its checkout and the downloaded build/validation evidence.
+The optional path retains Bazel caches and requires 45 GiB free after removing
+unused SDKs from the disposable hosted runner.
+
+The implementation baseline is merged [#157](https://github.com/securely1g/sonic-buildimage/pull/157).
+The composition tracked by [#88](https://github.com/securely1g/sonic-buildimage/issues/88)
+uses source `7d33e8732b6bea282799b5517248ee390813e354` and registry
+`6a69c2d89070d4d2ffc80b1e13626da387f7ea65`. Its Sysmgr production sources,
+checks and runtime probe match the prior `a5a1f8d` composition; its image driver
+retains that composition's source fence and explicit review-wrapper interface,
+instead of changing its selected dependencies to the merged owner's defaults.
+The source adds only [#187's lock-evidence fix](https://github.com/securely1g/sonic-buildimage/pull/187).
+The hosted preparation reuses [#181's checksum-preserving payload transport](https://github.com/securely1g/sonic-buildimage/pull/181)
+and [#180's disposable-runner space preparation](https://github.com/securely1g/sonic-buildimage/pull/180).
+These inputs still require validation together; merged #157 alone does not
+establish acceptance of this selected composition.
+
 Use a clean checkout and native AMD64/Trixie execution environment. Initialize
 the pinned gNOI source, then run the build driver with the complete review
 catalog. It prepares the original Make manifest labels, audits the configured
