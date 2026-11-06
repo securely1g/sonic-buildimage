@@ -33,6 +33,13 @@ class SdkTest(unittest.TestCase):
             self.members[name + '.so.200.26.0'] = self.elf + stem.encode()
             self.members[name + '.so.200'] = stem + '.so.200.26.0'
         self.parent = self.archive('parent.tar', self.members)
+        self.yang_members = {
+            'usr/lib/x86_64-linux-gnu/libyang.so.3.9.1': self.elf + b'libyang',
+            'usr/lib/x86_64-linux-gnu/libyang.so.3': 'libyang.so.3.9.1',
+            'usr/lib/x86_64-linux-gnu/libyang.so': 'libyang.so.3',
+        }
+        self.yang = self.archive('libyang.tar', self.yang_members)
+        self.archive('parent.tar', {**self.members, **self.yang_members})
         self.inputs = {'@libnl3//:libnl-nf-3-dev_pkg': self.archive('nf.tar', self.members),
                        '@libnl3//:libnl-genl-3-dev_pkg': self.archive('genl.tar', self.members)}
         self.output = self.root / 'sdk'
@@ -53,7 +60,8 @@ class SdkTest(unittest.TestCase):
 
     def prepare(self):
         sdk.prepare_repository(self.common, self.output, 'amd64', {},
-                               libnl_archives=self.inputs, parent_archive=self.parent)
+                               libnl_archives=self.inputs, libyang_archive=self.yang,
+                               parent_archive=self.parent)
 
     def test_declared_libraries_headers_links_and_parent_identity(self):
         self.prepare()
@@ -72,6 +80,76 @@ class SdkTest(unittest.TestCase):
         sdk.prepare_repository(self.common, self.output, 'amd64', {})
         self.assertIn('_DECLARED_LIBNL = False', (self.output / 'BUILD.bazel').read_text())
         self.assertNotIn('libnl', json.loads((self.output / 'sdk-build.json').read_text()))
+        self.assertIn('_DECLARED_LIBYANG = False', (self.output / 'BUILD.bazel').read_text())
+        self.assertNotIn('libyang', json.loads((self.output / 'sdk-build.json').read_text()))
+        self.assertFalse((self.output / 'lib/libyang.so.3').exists())
+        targets = self.template_targets()
+        self.assertIn('-lyang', targets['common']['linkopts'])
+        self.assertNotIn('libyang', targets)
+
+    def template_targets(self):
+        targets = {}
+        def target(**arguments):
+            targets[arguments['name']] = arguments
+        namespace = {'package': lambda **unused: None, 'cc_import': target,
+                     'cc_library': target, 'alias': target, 'glob': lambda unused: []}
+        exec(compile((self.output / 'BUILD.bazel').read_text(), 'SDK BUILD.bazel', 'exec'), namespace)
+        return targets
+
+    def test_libyang_soname_and_exact_parent_bytes_are_declared(self):
+        self.prepare()
+        library = self.output / 'lib/libyang.so.3'
+        self.assertEqual(library.readlink().as_posix(), 'libyang.so.3.9.1')
+        self.assertEqual(library.read_bytes(), self.elf + b'libyang')
+        self.assertFalse((self.output / 'lib/libyang.so').exists())
+        receipt = json.loads((self.output / 'sdk-build.json').read_text())['libyang']
+        self.assertEqual(receipt['parent_source_tar_sha256'], image.check.sha(self.parent))
+        self.assertEqual(receipt['producer_targets'], {'@libyang//:libyang_pkg': image.check.sha(self.yang)})
+        self.assertEqual(set(receipt['files']), set(self.yang_members) - {'usr/lib/x86_64-linux-gnu/libyang.so'})
+        targets = self.template_targets()
+        self.assertEqual(targets['libyang']['shared_library'], 'lib/libyang.so.3')
+        self.assertIn(':libyang', targets['swsscommon_library']['deps'])
+        self.assertNotIn('-lyang', targets['common']['linkopts'])
+
+    def test_libyang_rejects_missing_wrong_architecture_and_soname_inputs(self):
+        library = 'usr/lib/x86_64-linux-gnu/libyang.so.3.9.1'
+        soname = 'usr/lib/x86_64-linux-gnu/libyang.so.3'
+        wrong_arch = self.elf[:18] + struct.pack('<H', 183) + b'libyang'
+        for changed in ({}, {**self.yang_members, library: wrong_arch},
+                        {**self.yang_members, library: 'other.so'},
+                        {**self.yang_members, soname: '/tmp/ambient.so'},
+                        {**self.yang_members, soname: '../libyang.so.3.9.1'},
+                        {**self.yang_members, soname: self.elf}):
+            with self.subTest(changed=changed):
+                self.archive('libyang.tar', changed)
+                with self.assertRaisesRegex(ValueError, 'libyang SDK'):
+                    self.prepare()
+                self.assertFalse(self.output.exists())
+
+    def test_libyang_parent_drift_preserves_previous_sdk(self):
+        self.prepare()
+        before = (self.output / 'sdk-build.json').read_bytes()
+        library = 'usr/lib/x86_64-linux-gnu/libyang.so.3.9.1'
+        soname = 'usr/lib/x86_64-linux-gnu/libyang.so.3'
+        for changed in ({**self.yang_members, library: self.elf + b'other'},
+                        {**self.yang_members, soname: 'other.so'}, {}):
+            with self.subTest(changed=changed):
+                self.archive('parent.tar', {**self.members, **changed})
+                with self.assertRaisesRegex(ValueError, 'libyang SDK'):
+                    self.prepare()
+                self.assertEqual((self.output / 'sdk-build.json').read_bytes(), before)
+
+    def test_libyang_flattened_paths_and_links_are_normalized(self):
+        self.archive('libyang.tar', {'./' + name: './' + value if isinstance(value, str) else value
+                                    for name, value in self.yang_members.items()})
+        self.prepare()
+        self.assertEqual((self.output / 'lib/libyang.so.3').readlink().as_posix(), 'libyang.so.3.9.1')
+
+    def test_libyang_requires_native_image_parent(self):
+        for arch, parent in (('arm64', self.parent), ('amd64', None)):
+            with self.subTest(arch=arch, parent=parent):
+                with self.assertRaisesRegex(ValueError, 'AMD64 image parent'):
+                    sdk.prepare_libyang(self.root / 'staging', self.yang, parent, arch)
 
     def test_flattened_relative_soname_prefix_is_normalized(self):
         flattened = {'./' + name: './' + value if isinstance(value, str) else value
@@ -192,6 +270,28 @@ class RuntimeTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'stop before any compilation'):
                 image.prepare_owner(args)
         self.assertEqual(events, ['manifests', 'audit'])
+
+    def test_owner_preparation_passes_the_audited_libyang_runtime_tar_to_sdk(self):
+        args = SimpleNamespace(directory=self.root / 'artifacts', owner_source=self.root / 'owner',
+                               owner_revision='a' * 40, bazel='root-bazel')
+        def collect(root, directory, receipt, targets, **unused):
+            self.assertEqual(targets['libyang-runtime.tar'], '@libyang//:libyang_pkg')
+            self.assertEqual(len(targets), 10)
+            (directory / 'common.MODULE.bazel').write_text('module(version="0.0.8-' + image.COMMON_REVISION + '")')
+        with patch.object(image, 'native'), patch.object(image, 'source_identity', return_value='b' * 40), \
+                patch.object(image.p4rt_handoff, 'source_identity'), \
+                patch.object(image.command_log, 'execute', return_value='bazel 8.5.1\n'), \
+                patch.object(image.bazel_commands, 'audit_targets', return_value={}) as audit, \
+                patch.object(image.build, 'collect_archives', side_effect=collect), \
+                patch.object(image, 'prepare_repository', side_effect=RuntimeError('stop before owner')) as prepare, \
+                patch.object(image, 'run_owner') as owner:
+            with self.assertRaisesRegex(RuntimeError, 'stop before owner'):
+                image.prepare_owner(args)
+        preparation = args.directory / 'owner-preparation'
+        self.assertIn('@libyang//:libyang_pkg', audit.call_args.args[2])
+        self.assertEqual(prepare.call_args.kwargs['libyang_archive'], preparation / 'libyang-runtime.tar')
+        self.assertEqual(prepare.call_args.kwargs['parent_archive'], preparation / 'config-engine.source.tar')
+        owner.assert_not_called()
 
     def test_runtime_link_cannot_escape_private_root(self):
         outside = self.root.parent / (self.root.name + '-outside.so')
