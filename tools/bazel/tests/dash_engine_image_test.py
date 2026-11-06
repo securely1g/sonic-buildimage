@@ -232,6 +232,26 @@ class DashEngineImageTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         validate.require_item({'member': {**expected, key: value}}, 'member', expected)
 
+    def test_installed_mismatch_identifies_image_and_exact_changed_fields(self):
+        path = 'usr/bin/pi_CLI_dummy'
+        expected = {'kind': 'file', 'mode': 0o755, 'uid': 0, 'gid': 0,
+                    'sha256': 'a' * 64, 'size': 14448, 'elf_machine': 62}
+        actual = {**expected, 'sha256': 'b' * 64, 'uid': 1}
+        with self.assertRaises(ValueError) as error:
+            validate.require_item({path: actual}, path, expected, image='docker-dash-engine')
+        prefix = 'installed payload differs: ' + path + ' '
+        self.assertTrue(str(error.exception).startswith(prefix))
+        detail = json.loads(str(error.exception)[len(prefix):])
+        self.assertEqual(detail, {
+            'image': 'docker-dash-engine',
+            'differences': {
+                'sha256': {'expected': 'a' * 64, 'actual': 'b' * 64},
+                'uid': {'expected': 0, 'actual': 1},
+            },
+        })
+        self.assertEqual(expected['uid'], 0)
+        validate.require_item({path: expected}, path, expected, image='docker-dash-engine')
+
     def test_actual_metadata_only_make_has_no_image_env_or_owner_build(self):
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / 'target'
