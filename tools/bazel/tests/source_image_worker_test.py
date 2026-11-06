@@ -422,7 +422,9 @@ class ImageWorkerTest(unittest.TestCase):
             artifacts = Path(directory)
             with patch.object(worker, 'output', side_effect=[json.dumps(self.network_result(1000)),
                                                             json.dumps(self.network_result(0))]) as output:
-                worker.prepare_execution_network(artifacts)
+                with patch.object(worker, 'prepare_apt_transport') as apt:
+                    worker.prepare_execution_network(artifacts)
+                apt.assert_called_once_with(artifacts)
             self.assertEqual([call.args[0] for call in output.call_args_list], [
                 [sys.executable, '-I', '-c', worker.EXECUTION_NETWORK_PROBE],
                 ['sudo', '-n', sys.executable, '-I', '-c', worker.EXECUTION_NETWORK_PROBE]])
@@ -432,6 +434,166 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {'worker': self.network_result(1000), 'sudo': self.network_result(0)})
             worker.publish(SimpleNamespace(artifacts=artifacts))
             self.assertEqual(path.read_bytes(), (artifacts / 'public' / path.name).read_bytes())
+
+    def apt_probe(self):
+        namespace = {'__name__': 'fixed_apt_diagnostic_test'}
+        exec(compile(worker.APT_TRANSPORT_PROBE, '<fixed-apt-probe>', 'exec'), namespace)
+        return namespace
+
+    def test_apt_configuration_redacts_fixed_values_and_rejects_malformed_output(self):
+        import shlex
+        probe = self.apt_probe()
+        secret = 'https://private-user:private-password@private-host/\nprivate-token'
+        raw = 'K0=' + shlex.quote(secret) + "\nK8='true'\nK9='_apt'\nK10='false'\n"
+        with patch.object(subprocess, 'run', return_value=SimpleNamespace(stdout=raw)) as query:
+            value = probe['configuration']()
+        self.assertNotIn('private-', json.dumps(value))
+        self.assertEqual(value['proxy_entries_present'], [True] + [False] * 7)
+        self.assertFalse(value['srv_default'])
+        args = query.call_args.args[0]
+        self.assertEqual(args[:2], ['apt-get', 'shell'])
+        self.assertEqual(query.call_args.kwargs, dict(executable='/usr/bin/apt-config', check=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5))
+        self.assertEqual(len(args[2:]), 66)
+        for raw in ("K0='x' K0='y'", "UNKNOWN='private-secret'", "K8='private-secret'", "K0='unclosed", 'x' * 65537):
+            with self.subTest(raw=raw[:30]), patch.object(subprocess, 'run', return_value=SimpleNamespace(stdout=raw)):
+                with self.assertRaises(ValueError):
+                    probe['configuration']()
+        with patch.object(subprocess, 'run', return_value=SimpleNamespace(stdout="K11='private-secret'")):
+            value = probe['configuration']()
+        self.assertTrue(value['method_overrides_present'])
+        self.assertTrue(value['srv_default'])
+        self.assertTrue(value['srv_enabled'])
+
+    def test_apt_helper_order_private_destination_and_inherited_file_limit(self):
+        probe = self.apt_probe()
+        config = dict(proxy_entries_present=[False] * 8, srv_enabled=True, srv_default=True,
+                      sandbox_kind='_apt', no_drop_privs=False, method_overrides_present=False, apt_config_present=False)
+        events = []
+        def download(directory, disabled):
+            self.assertEqual(stat.S_IMODE(os.stat(directory).st_mode), 0o700)
+            events.append(('download', disabled))
+            if not disabled:
+                raise RuntimeError('private-secret')
+            return {'status': 'exit_failure', 'exit_code': 100}
+        with patch.dict(probe, {'configuration': lambda: config, 'download': download}), \
+                patch.object(os, 'getuid', return_value=0), \
+                patch.object(probe['pwd'], 'getpwnam', return_value=SimpleNamespace(pw_uid=42, pw_gid=42)) as account, \
+                patch.object(probe['resource'], 'setrlimit', side_effect=lambda *args: events.append(('limit', args))), \
+                patch.object(os, 'umask') as mask, patch.object(os, 'chown') as owner:
+            result = probe['main']()
+        account.assert_called_once_with('_apt')
+        owner.assert_called_once()
+        self.assertEqual(owner.call_args.args[1:], (42, 42))
+        mask.assert_called_once_with(0o077)
+        self.assertEqual(events, [('limit', (probe['resource'].RLIMIT_FSIZE, (1048576, 1048576))),
+                                  ('download', False), ('download', True)])
+        self.assertEqual(result['attempts'], [{'status': 'error', 'error_class': 'RuntimeError'},
+                                             {'status': 'exit_failure', 'exit_code': 100}])
+        self.assertNotIn('private-', json.dumps(result))
+        for changed in ({'method_overrides_present': True}, {'sandbox_kind': 'other'}):
+            with patch.dict(probe, {'configuration': lambda: {**config, **changed}}), \
+                    patch.object(os, 'getuid', return_value=0), patch.dict(probe, {'download': unittest.mock.Mock()}):
+                result = probe['main']()
+                probe['download'].assert_not_called()
+            self.assertEqual(result['status'], 'unsupported_configuration')
+
+    def test_apt_helper_commands_size_checks_and_no_raw_output(self):
+        from unittest.mock import Mock
+        probe = self.apt_probe()
+        for disabled in (False, True):
+            for payload, expected in ((b'fixed InRelease bytes', 'downloaded'), (b'', 'size_or_type_rejected'),
+                                      (b'x' * (1048576 + 1), 'size_or_type_rejected')):
+                with tempfile.TemporaryDirectory() as directory:
+                    process = Mock(pid=123456)
+                    process.wait.return_value = 0
+                    path = Path(directory) / ('srv-disabled' if disabled else 'baseline')
+                    def start(args, **kwargs):
+                        path.write_bytes(payload)
+                        return process
+                    with patch.object(subprocess, 'Popen', side_effect=start) as popen, patch.object(os, 'killpg'), \
+                            patch.object(os, 'waitid', return_value=SimpleNamespace(si_code=os.CLD_EXITED, si_status=0)), \
+                            patch.object(probe['time'], 'sleep'):
+                        result = probe['download'](directory, disabled)
+                    args = ['apt-get', '-o', 'Acquire::Retries=0', '-o', 'Acquire::http::Timeout=10',
+                            '-o', 'Acquire::https::Timeout=10']
+                    if disabled:
+                        args += ['-o', 'Acquire::EnableSrvRecords=false']
+                    args += ['download-file', 'https://deb.debian.org/debian/dists/trixie/InRelease', str(path)]
+                    popen.assert_called_once_with(args, executable='/usr/lib/apt/apt-helper', start_new_session=True,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self.assertEqual(result['status'], expected)
+                    if expected == 'downloaded':
+                        self.assertEqual(result['bytes'], len(payload))
+                        self.assertEqual(result['sha256'], hashlib.sha256(payload).hexdigest())
+                    else:
+                        self.assertNotIn('sha256', result)
+
+    def test_apt_helper_timeout_terminates_only_its_own_process_group(self):
+        from unittest.mock import Mock, call
+        probe = self.apt_probe()
+        process = Mock(pid=123456)
+        process.wait.return_value = -9
+        with tempfile.TemporaryDirectory() as directory, patch.object(subprocess, 'Popen', return_value=process), \
+                patch.object(os, 'killpg') as kill, patch.object(os, 'waitid', return_value=None) as observe, \
+                patch.object(probe['time'], 'monotonic', side_effect=[0, 0, 16]), patch.object(probe['time'], 'sleep'):
+            result = probe['download'](directory, False)
+        self.assertEqual(result, {'status': 'timeout'})
+        self.assertEqual(kill.call_args_list, [call(123456, probe['signal'].SIGTERM), call(123456, probe['signal'].SIGKILL)])
+        observe.assert_called_once_with(os.P_PID, 123456, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        process.wait.assert_called_once_with(timeout=2)
+
+    def test_apt_helper_exited_leader_is_not_reaped_until_descendants_are_killed(self):
+        from unittest.mock import Mock
+        probe = self.apt_probe()
+        events = []
+        process = Mock(pid=123456)
+        process.wait.side_effect = lambda **kwargs: events.append(('reap', kwargs)) or 100
+        def observe(*args):
+            events.append(('observe_unreaped', args))
+            return SimpleNamespace(si_code=os.CLD_EXITED, si_status=100)
+        with tempfile.TemporaryDirectory() as directory, patch.object(subprocess, 'Popen', return_value=process), \
+                patch.object(os, 'waitid', side_effect=observe), \
+                patch.object(os, 'killpg', side_effect=lambda *args: events.append(('signal', args))), \
+                patch.object(probe['time'], 'sleep', side_effect=lambda delay: events.append(('grace', delay))):
+            result = probe['download'](directory, False)
+        self.assertEqual(result, {'status': 'exit_failure', 'exit_code': 100})
+        self.assertEqual(events, [('observe_unreaped', (os.P_PID, 123456, os.WEXITED | os.WNOHANG | os.WNOWAIT)),
+                                 ('signal', (123456, probe['signal'].SIGTERM)), ('grace', 2),
+                                 ('signal', (123456, probe['signal'].SIGKILL)), ('reap', {'timeout': 2})])
+        with tempfile.TemporaryDirectory() as directory, patch.object(subprocess, 'Popen', return_value=process), \
+                patch.object(os, 'waitid', side_effect=ChildProcessError('private-secret')), patch.object(os, 'killpg') as kill:
+            with self.assertRaises(ChildProcessError):
+                probe['download'](directory, False)
+        kill.assert_not_called()
+
+    def test_apt_transport_receipt_rejects_secrets_and_remains_publishable(self):
+        result = {'scope': 'transport_only_no_signature_verification', 'status': 'completed',
+                  'config': dict(proxy_entries_present=[False] * 8, srv_enabled=True, srv_default=True,
+                                 sandbox_kind='_apt', no_drop_privs=False, method_overrides_present=False,
+                                 apt_config_present=False),
+                  'attempts': [{'status': 'exit_failure', 'exit_code': 100},
+                               {'status': 'downloaded', 'exit_code': 0, 'bytes': 14, 'sha256': 'a' * 64}]}
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            with patch.object(worker, 'output', return_value=json.dumps(result)) as output:
+                worker.prepare_apt_transport(artifacts)
+            output.assert_called_once_with(['sudo', '-n', sys.executable, '-I', '-c', worker.APT_TRANSPORT_PROBE],
+                                           timeout=50, stderr=subprocess.DEVNULL)
+            path = artifacts / 'worker-apt-transport.json'
+            self.assertEqual(json.loads(path.read_text()), result)
+            worker.publish(SimpleNamespace(artifacts=artifacts))
+            self.assertEqual(path.read_bytes(), (artifacts / 'public' / path.name).read_bytes())
+            invalid = [dict(result, extra='private-password'), dict(result, error_class='private-password://host'),
+                       {'scope': result['scope'], 'status': 'completed'},
+                       {**result, 'config': {**result['config'], 'sandbox_kind': 'private-account'}},
+                       {**result, 'attempts': [{'status': 'error', 'stderr': 'private-token'}] * 2},
+                       {**result, 'attempts': [{'status': 'downloaded', 'exit_code': 0, 'bytes': 1048577, 'sha256': 'a' * 64}] * 2}]
+            for value in invalid:
+                with patch.object(worker, 'output', return_value=json.dumps(value)):
+                    worker.prepare_apt_transport(artifacts)
+                self.assertEqual(json.loads(path.read_text()), {'status': 'error', 'error_class': 'ValueError'})
+                self.assertNotIn('private-', path.read_text())
 
     def test_execution_network_failure_and_unexpected_identity_are_nonfatal_and_redacted(self):
         with tempfile.TemporaryDirectory() as directory:
