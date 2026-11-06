@@ -61,7 +61,7 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi` or `gnmi-no-dialout`, a `source_worker` affinity label and a full `source_revision` SHA.
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `teamd`, a `source_worker` affinity label and a full `source_revision` SHA.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
@@ -78,7 +78,7 @@ The disposable slave installs only missing archive/debug execution packages
 (`libarchive-tools`, GDB and binutils), checks their tools before building and
 retains the installed package versions. These do not enter the image layers.
 Sysmgr, OTEL, Syncd, Gearbox, DASH engine and both gNMI profiles use `review_bazel.sh` with each workflow's immutable catalog;
-the other three use their compatibility entrypoint and verify any workflow catalog
+the other four use their compatibility entrypoint and verify any workflow catalog
 agrees. No module or source-owner override is added. Selected Rust modules use
 `rules_rs` with tracked Cargo inputs; their normal module extension prepares
 crate repositories. Sysmgr initializes its existing gNOI submodule. The image
@@ -156,3 +156,15 @@ selected fixed profile. Both profiles are required for changed-input gNMI
 acceptance; a pass for one does not establish the other. They can use separate
 idle workers with the same immutable source/catalog. Neither selector adds a
 capability, command input, source override or new executor path.
+
+Teamd uses its existing `teamd_image.py` four-phase interface and
+`libteam_draft_bazel.sh` catalog wrapper. Before checking out the selected source
+or downloading its input artifact, the worker reads `/sys/module/team` and
+`/sys/module/team_mode_loadbalance`. Both must already be directories. The same
+check runs again at direct preparation entry, before tools, cache preparation
+or Bazel. `worker-teamd-kernel.json` retains success or the exact missing module
+list; the worker never runs `modprobe` or changes the host. The separate hosted
+source-download producer retains its existing ordering and only fetches pinned
+source archives. The installed Teamd probe keeps its original private Redis,
+network capabilities, control, SWSS and GDB checks. This selector does not replace
+owner tests or establish image acceptance.
