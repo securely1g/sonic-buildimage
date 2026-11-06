@@ -1265,7 +1265,8 @@ class ImageWorkerTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
         self.assertEqual(set(choices), set(worker.DRIVERS) | {"worker-provenance", "registry-native"})
-        gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
+        job_conditions = "\n".join(line for line in workflow.splitlines() if line.startswith("    if:"))
+        gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", job_conditions)
         self.assertEqual(len(gates), 2)
         for gate in gates:
             self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
@@ -1292,7 +1293,7 @@ class ImageWorkerTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "base-config", "swss-layer"):
             with self.subTest(image=image):
                 selected = [name for name, job in jobs.items() if condition(
                     str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
@@ -1301,7 +1302,7 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertFalse(condition(jobs["source_image"]["if"], mode=image))
         self.assertEqual(jobs["source_image"]["runs-on"],
                          ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
-        for image in ("snmp", "base", "config-engine", "swss-layer"):
+        for image in ("snmp", "base", "config-engine", "swss-layer-other"):
             with self.subTest(unsupported=image), self.assertRaises(ValueError):
                 worker.selection(image, "a" * 40)
 
@@ -1314,7 +1315,7 @@ class ImageWorkerTest(unittest.TestCase):
         guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
                   for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
         self.assertEqual(len(guards), 2)
-        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families"):
+        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families", "codex/source-image-worker-shared-profiles"):
             for guard in guards:
                 self.assertTrue(condition(guard, event="pull_request", branch=branch))
                 for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
@@ -1489,37 +1490,55 @@ class ImageWorkerTest(unittest.TestCase):
             with patch.dict(os.environ, {"SOURCE_INPUTS_RUN": "../41689621493"}), self.assertRaises(ValueError):
                 worker.input_run_id()
 
-    def test_publication_preserves_exact_checked_syncd_and_gearbox_policy_bytes(self):
+    def test_publication_preserves_exact_checked_image_policy_bytes(self):
         cases = ({"DEBIAN_FRONTEND": "noninteractive"}, {"DEBIAN_FRONTEND": "interactive"},
                  {"DEBIAN_FRONTEND": "noninteractive", "UNRELATED": "value"})
-        for image in ('syncd', 'gearbox'):
+        profiles = (("syncd", "policy.json", "build-receipt.json"),
+                    ("gearbox", "policy.json", "build-receipt.json"),
+                    ("swss-layer", "swss-policy.json", "receipt.json"))
+        for image, filename, receipt_name in profiles:
             for environment in cases:
                 with self.subTest(image=image, environment=environment), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
-                    policy = root / 'policy.json'
+                    policy = root / filename
                     policy.write_text(json.dumps({'image_validation': {'environment': environment}}))
                     original = policy.read_bytes()
-                    (root / 'build-receipt.json').write_text(json.dumps({'status': 'built', 'artifacts': {
+                    (root / receipt_name).write_text(json.dumps({'status': 'built', 'artifacts': {
                         policy.name: {'bytes': len(original), 'sha256': hashlib.sha256(original).hexdigest()}}}))
                     args = SimpleNamespace(artifacts=root, image=image)
                     if environment == {"DEBIAN_FRONTEND": "noninteractive"}:
+                        with self.assertRaisesRegex(ValueError, 'diagnostic-json-field'):
+                            worker.safe_json(json.loads(original))
                         worker.publish(args)
-                        self.assertEqual((root / 'public/policy.json').read_bytes(), original)
+                        self.assertEqual((root / 'public' / filename).read_bytes(), original)
                         self.assertEqual(policy.read_bytes(), original)
                     else:
                         with self.assertRaisesRegex(ValueError, 'Unexpected image policy environment'):
                             worker.publish(args)
-                        self.assertFalse((root / 'public/policy.json').exists())
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            policy = root / 'policy.json'
-            policy.write_text(json.dumps({'image_validation': {'environment': cases[0]},
-                                          'diagnostic': {'environment': {'UNRELATED': 'value'}}}))
-            (root / 'build-receipt.json').write_text(json.dumps({'artifacts': {policy.name: {
-                'bytes': policy.stat().st_size, 'sha256': worker.digest(policy)}}}))
-            with self.assertRaises(ValueError):
-                worker.publish(SimpleNamespace(artifacts=root, image='syncd'))
-            self.assertFalse((root / 'public/policy.json').exists())
+                        self.assertFalse((root / 'public' / filename).exists())
+            for extra in ({'diagnostic': {'environment': {'UNRELATED': 'value'}}},
+                          {'password': 'private'}, {'note': 'ghp_' + 'x' * 36}):
+                with self.subTest(image=image, extra=extra), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    policy = root / filename
+                    policy.write_text(json.dumps({'image_validation': {'environment': cases[0]}, **extra}))
+                    (root / receipt_name).write_text(json.dumps({'artifacts': {policy.name: {
+                        'bytes': policy.stat().st_size, 'sha256': worker.digest(policy)}}}))
+                    with self.assertRaises(ValueError):
+                        worker.publish(SimpleNamespace(artifacts=root, image=image))
+                    self.assertFalse((root / 'public' / filename).exists())
+        for image, filename in (("swss-layer", "policy.json"), ("syncd", "swss-policy.json"),
+                                ("gearbox", "swss-policy.json"), ("orchagent", "swss-policy.json")):
+            with self.subTest(image=image, filename=filename), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                policy = root / filename
+                policy.write_text(json.dumps({'image_validation': {'environment': cases[0]}}))
+                receipt_name = 'receipt.json' if image == 'swss-layer' else 'build-receipt.json'
+                (root / receipt_name).write_text(json.dumps({'artifacts': {filename: {
+                    'bytes': policy.stat().st_size, 'sha256': worker.digest(policy)}}}))
+                with self.assertRaisesRegex(ValueError, 'diagnostic-json-field'):
+                    worker.publish(SimpleNamespace(artifacts=root, image=image))
+                self.assertFalse((root / 'public' / filename).exists())
 
     def test_publication_keeps_declared_bytes_and_excludes_private_state(self):
         with tempfile.TemporaryDirectory() as directory:
