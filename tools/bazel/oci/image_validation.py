@@ -21,7 +21,7 @@ from tools.bazel.oci.package_contract import identity, read_contract, read_polic
 
 
 def image(directory, *, expected_platform="linux/amd64"):
-    return validate_layout(directory, expected_platform)
+    return validate_layout(directory, expected_platform, digest_file=sha)
 
 
 def apply_layer(path, files, *, merged_usr=False, checked_overlay=False):
