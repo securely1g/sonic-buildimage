@@ -3,8 +3,9 @@
 package(default_visibility = ["//visibility:public"])
 
 # The standalone legacy SDK keeps its original slave dependency contract.
-# The image preparation explicitly selects declared libnl SDKs matching its parent.
+# Image preparation selects declared libnl and libyang inputs matching its parent.
 _DECLARED_LIBNL = False
+_DECLARED_LIBYANG = False
 
 _LIBNL_STEMS = [
     "libnl-genl-3",
@@ -30,10 +31,18 @@ cc_library(
     deps = [":" + stem for stem in _LIBNL_STEMS] if _DECLARED_LIBNL else [],
 )
 
+[
+    cc_import(
+        name = "libyang",
+        shared_library = "lib/libyang.so.3",
+    )
+    for _ in [True] if _DECLARED_LIBYANG
+]
+
 cc_library(
     name = "swsscommon_library",
     srcs = ["lib/libswsscommon.so.0"],
-    deps = [":libnl"],
+    deps = [":libnl"] + ([":libyang"] if _DECLARED_LIBYANG else []),
 )
 
 cc_library(
@@ -52,8 +61,7 @@ cc_library(
         "-lzmq",
         "-lboost_serialization",
         "-luuid",
-        "-lyang",
-    ],
+    ] + ([] if _DECLARED_LIBYANG else ["-lyang"]),
     deps = [":swsscommon_library"],
 )
 
