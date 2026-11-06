@@ -1669,6 +1669,25 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 	$(FOOTER)
 
+# The final23 archive contract is opt-in. Export the three existing shared
+# parents so validation can bind their exact bytes and child layer ancestry.
+# This adds export work only; their existing Bazel producer graphs are reused.
+SONIC_BAZEL_VS_CONTRACT_DEPENDS :=
+ifeq ($(SONIC_BAZEL_VS_ARCHIVE_PROFILE),final23)
+SONIC_BAZEL_VS_CONTRACT_DEPENDS := $(addprefix $(TARGET_PATH)/,docker-base-trixie.gz docker-config-engine-trixie.gz docker-swss-layer-trixie.gz)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export SONIC_IMAGE_VERSION := $(SONIC_IMAGE_VERSION)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_ARCHITECTURE := $(CONFIGURED_ARCH)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_PLATFORM := $(CONFIGURED_PLATFORM)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_DISTRIBUTION := $(BLDENV)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_BUILDER := $(BUILD_WITH_BAZEL_WHEN_AVAILABLE)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_FIPS := $(INCLUDE_FIPS)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_DASH := $(INCLUDE_VS_DASH_SAI)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_ASAN := $(ENABLE_ASAN)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_SYNCD_RPC := $(ENABLE_SYNCD_RPC)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_CROSS_BUILD := $(CROSS_BUILD_ENVIRON)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_MULTIARCH_QEMU := $(MULTIARCH_QEMU_ENVIRON)
+endif
+
 # targets for building installers with base image
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
@@ -1726,6 +1745,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
                 $(SYSLOG_COUNTER) \
                 $(SEDUTIL)) \
         $$(addprefix $(TARGET_PATH)/,$$($$*_DOCKERS)) \
+        $$(if $$(filter sonic-vs.bin sonic-vs.img.gz,$$*),$$(SONIC_BAZEL_VS_CONTRACT_DEPENDS)) \
         $$(addprefix $(TARGET_PATH)/,$$(SONIC_PACKAGES_LOCAL)) \
         $$(addprefix $(FILES_PATH)/,$$($$*_FILES)) \
         $(if $(findstring y,$(ENABLE_ZTP)),$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(SONIC_ZTP))) \
@@ -1999,6 +2019,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 			awk -F'|' -v machine="$(dep_machine)" \
 				'$$3 == "" || $$3 == machine { image = $$4; sub(/:[^:]*$$/, "", image); print image }' \
 				> "$(TARGET_PATH)/$(subst $($*_MACHINE),$(dep_machine),$*).dockers"
+		$(if $(and $(filter final23,$(SONIC_BAZEL_VS_ARCHIVE_PROFILE)),$(filter sonic-vs.bin sonic-vs.img.gz,$*)),python3 -B tools/bazel/ci/vs_final23.py --workspace "$(CURDIR)" --installer "$(subst $($*_MACHINE),$(dep_machine),$*)" --machine "$(dep_machine)",:)
 
 		# SBOM emit runs AFTER build_image.sh so the artifact (.bin /
 		# .swi / .img.gz) already exists on disk: sbom_emit_provenance.py
