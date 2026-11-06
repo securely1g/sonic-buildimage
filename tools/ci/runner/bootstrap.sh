@@ -18,6 +18,8 @@ Creates a self-bind mount at /data/sonic-runner and a startup service that
 enables dev,suid,exec there for chroot/image construction; /data is unchanged.
 If the host has an enabled gs AppArmor profile, preserves its local rules,
 adds owner access only to /sonic/**/*.ps and *.pdf, and reloads that profile.
+If AppArmor restricts unprivileged user namespaces, installs a profile for the
+Bazel kernel sandbox under /sonic/target/bazel-kernel-state; global policy stays enabled.
 Loads iptable_nat and persists it for nested Docker's legacy IPv4 NAT support.
 --dry-run and --help only print this plan; they change nothing.
 EOF
@@ -53,6 +55,7 @@ EOF
 chmod 0644 /etc/modules-load.d/sonic-vs-runner.conf
 chown root:root /etc/modules-load.d/sonic-vs-runner.conf
 python3 "$(dirname "$0")/apparmor_gs.py" --install
+python3 "$(dirname "$0")/apparmor_kernel.py" --install
 install -d -m 0700 -o sonic-runner -g sonic-runner "$runner_home"
 install -d -m 0700 -o sonic-runner -g sonic-runner "$runner_home/attempts"
 # A child bind mount confines SONiC's device/setuid requirements to its home.
@@ -104,7 +107,7 @@ else
     ln -s "$tool_root/bin/j2" /usr/local/bin/j2
 fi
 install -d -m 0755 -o root -g root "$tool_root/runner"
-install -m 0755 -o root -g root "$(dirname "$0")/preflight.py" "$(dirname "$0")/rearm.py" "$(dirname "$0")/apparmor_gs.py" "$tool_root/runner/"
+install -m 0755 -o root -g root "$(dirname "$0")/preflight.py" "$(dirname "$0")/rearm.py" "$(dirname "$0")/apparmor_gs.py" "$(dirname "$0")/apparmor_kernel.py" "$tool_root/runner/"
 cat > /etc/systemd/system/sonic-vs-runner.service <<'EOF'
 [Unit]
 Description=One-job SONiC VS GitHub Actions runner

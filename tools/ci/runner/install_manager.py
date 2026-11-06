@@ -16,7 +16,7 @@ CONFIG = Path("/etc/sonic-vs-runner-manager.json")
 SERVICE = "sonic-vs-runner-manager.service"
 TIMER = "sonic-vs-runner-manager.timer"
 HEADER = "# AUTO-GENERATED. DO NOT EDIT MANUALLY.\n# Generator: tools/ci/runner/install_manager.py\n"
-HELPERS = ("manager.py", "rearm.py", "preflight.py", "apparmor_gs.py")
+HELPERS = ("manager.py", "rearm.py", "preflight.py", "apparmor_gs.py", "apparmor_kernel.py")
 
 
 def service_text():
