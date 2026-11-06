@@ -1124,11 +1124,17 @@ class DebianPoolTest(unittest.TestCase):
                 code = script.split("python3 - <<'PYCFG'\n", 1)[1].rsplit("\nPYCFG", 1)[0]
                 with contextlib.chdir(root), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}):
                     Path(".bazelrc.user").write_text(before)
+                    prefix = b""
+                    if name in ("bazel-base-images.yml", "bazel-eventd.yml", "bazel-oci.yml"):
+                        mirrors = Path("tools/bazel/debian_mirrors.cfg")
+                        mirrors.parent.mkdir(parents=True)
+                        mirrors.write_bytes((ROOT / mirrors).read_bytes())
+                        prefix = mirrors.read_bytes() + b"\n"
                     with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(data)) as fetch:
                         exec(compile(code, name, "exec"), {})
                     fetch.assert_called_once_with(url, timeout=60)
                     destination = root / "sonic-source-mirrors.cfg"
-                    self.assertEqual(destination.read_bytes(), data)
+                    self.assertEqual(destination.read_bytes(), prefix + data)
                     self.assertEqual(Path(".bazelrc.user").read_text(), before +
                                      "common --experimental_downloader_config=" + str(destination) + "\n")
 
@@ -1146,6 +1152,14 @@ class DebianPoolTest(unittest.TestCase):
                             exec(compile(code, name, "exec"), {})
                     self.assertEqual(destination.read_bytes(), b"original verified configuration")
                     self.assertEqual(Path(".bazelrc.user").read_text(), "common --disk_cache=/retained/cache\n")
+                    if name in ("bazel-base-images.yml", "bazel-eventd.yml", "bazel-oci.yml"):
+                        data = self.mirror_bytes(name, job)
+                        with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(data)):
+                            with self.assertRaises(FileNotFoundError):
+                                exec(compile(code, name, "exec"), {})
+                        self.assertEqual(destination.read_bytes(), b"original verified configuration")
+                        self.assertEqual(Path(".bazelrc.user").read_text(),
+                                         "common --disk_cache=/retained/cache\n")
 
     def test_native_and_draft_callers_load_the_shared_rc_explicitly(self):
         # Execute the existing shell interfaces against an argv recorder, never Bazel.
