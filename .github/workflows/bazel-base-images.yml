@@ -13,6 +13,11 @@ concurrency:
   group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Draft PR #146 selects the existing Socat extraction repair from registry #242.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && '55e056426af5fca161c7c52dcdcf187e565e700c' || '' }}
+
 jobs:
   native:
     name: Build and inspect source base (${{ matrix.architecture }})
@@ -77,7 +82,7 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/base_images.py \
+          python3 -B tools/bazel/ci/base_images.py --bazel "$BAZEL" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
           git diff --exit-code
       - name: Retain images, symbols and build evidence

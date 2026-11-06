@@ -25,6 +25,11 @@ concurrency:
   group: bazel-supervisor-rust-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Draft PR #146 selects the existing Socat extraction repair from registry #242.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && '55e056426af5fca161c7c52dcdcf187e565e700c' || '' }}
+
 jobs:
   native:
     name: Rust listener (${{ matrix.arch }})
@@ -94,10 +99,10 @@ jobs:
             //src/sonic-supervisord-utilities-rs:package_test)
           audit_flags=()
           for flag in "${flags[@]}"; do audit_flags+=("--bazel-arg=$flag"); done
-          python3 tools/bazel/ci/bazel_commands.py "${audit_flags[@]}" \
+          python3 tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit_flags[@]}" \
             --output artifacts/supervisor-rust/action-audit.json "${targets[@]}"
-          bazel test "${flags[@]}" --test_output=errors "${targets[@]}"
-          bazel cquery "${flags[@]}" --noimplicit_deps \
+          "$BAZEL" test "${flags[@]}" --test_output=errors "${targets[@]}"
+          "$BAZEL" cquery "${flags[@]}" --noimplicit_deps \
             'kind("rust_library rule", deps(//src/sonic-supervisord-utilities-rs:supervisor_library))' \
             > artifacts/supervisor-rust/rust-libraries.txt
           cp MODULE.bazel.lock artifacts/supervisor-rust/MODULE.bazel.lock
