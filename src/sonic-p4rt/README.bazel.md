@@ -35,3 +35,12 @@ Synthetic cases in `tools/bazel/ci/p4rt_image_test.py` cover declared linkage,
 parent-byte drift, wrong architecture, missing inputs, unsafe aliases, and
 preservation of the previous SDK on rejection. These pure checks do not prove
 the native owner link or image runtime; those remain part of the image CI run.
+
+The image SDK preserves the four libnl development aliases from the declared
+owner SDK TARs (`libnl*.so -> libnl*.so.200`) and uses those linker names in its
+existing `cc_import` targets. The pinned P4RT owner's `receive_genetlink` rule
+also supplies `-lnl-*` options, so importing only the versioned SONAME leaves
+its `-lnl-nf-3` input unresolved. Each alias must point to the exact validated
+SONAME; the real library bytes remain bound to the selected parent image.
+Standalone legacy SDK behavior and the owner checkout are unchanged. Guarded
+synthetic tests cover these paths; native link acceptance belongs to CI.
