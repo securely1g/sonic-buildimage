@@ -25,9 +25,9 @@ on:
         type: string
         default: ''
       skip_vs:
-        description: Skip the full VS image build
+        description: Run only source and archive checks, without the full VS image build
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -1153,7 +1153,7 @@ jobs:
       run:
         shell: bash
     env:
-      EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
+      EXPECTED_MANAGER_REVISION: c650551885f8ad22cbc104082d1f1b6171e67eef
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
       PREFER_DEBIAN_REPO: "y"
