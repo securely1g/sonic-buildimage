@@ -40,6 +40,9 @@ class SdkTest(unittest.TestCase):
         }
         self.yang = self.archive('libyang.tar', self.yang_members)
         self.archive('parent.tar', {**self.members, **self.yang_members})
+        # Runtime parents need not install the development linker aliases.
+        for stem in sdk.LIBNL_STEMS:
+            self.members['usr/lib/x86_64-linux-gnu/' + stem + '.so'] = stem + '.so.200'
         self.inputs = {'@libnl3//:libnl-nf-3-dev_pkg': self.archive('nf.tar', self.members),
                        '@libnl3//:libnl-genl-3-dev_pkg': self.archive('genl.tar', self.members)}
         self.output = self.root / 'sdk'
@@ -70,11 +73,49 @@ class SdkTest(unittest.TestCase):
             library = self.output / ('lib/' + stem + '.so.200')
             self.assertTrue(library.is_symlink())
             self.assertEqual(library.read_bytes(), self.elf + stem.encode())
+            development = self.output / ('lib/' + stem + '.so')
+            self.assertEqual(development.readlink().as_posix(), stem + '.so.200')
+            self.assertEqual(development.read_bytes(), library.read_bytes())
+            self.assertNotIn('usr/lib/x86_64-linux-gnu/' + stem + '.so', image.check.payload(self.parent))
+            self.assertEqual(self.template_targets()[stem]['shared_library'], 'lib/' + stem + '.so')
         self.assertEqual((self.output / 'include/libnl3/netlink/netlink.h').read_bytes(),
                          self.members['usr/include/libnl3/netlink/netlink.h'])
         receipt = json.loads((self.output / 'sdk-build.json').read_text())['libnl']
         self.assertEqual(receipt['parent_source_tar_sha256'], image.check.sha(self.parent))
         self.assertEqual(receipt['producer_targets'], {key: image.check.sha(path) for key, path in self.inputs.items()})
+        for stem in sdk.LIBNL_STEMS:
+            self.assertEqual(receipt['files']['usr/lib/x86_64-linux-gnu/' + stem + '.so']['linkname'],
+                             stem + '.so.200')
+
+    def test_development_alias_absence_and_wrong_kind_are_rejected(self):
+        self.prepare()
+        before = (self.output / 'sdk-build.json').read_bytes()
+        name = 'usr/lib/x86_64-linux-gnu/libnl-nf-3.so'
+        for value in (None, self.elf + b'not an alias'):
+            with self.subTest(value=value):
+                changed = dict(self.members)
+                if value is None:
+                    del changed[name]
+                else:
+                    changed[name] = value
+                for path in self.inputs.values():
+                    self.archive(path.name, changed)
+                with self.assertRaisesRegex(ValueError, 'Incomplete libnl SDK|Unexpected libnl SDK library kind'):
+                    self.prepare()
+                self.assertEqual((self.output / 'sdk-build.json').read_bytes(), before)
+
+    def test_development_alias_rejects_escaping_wrong_and_bypassed_soname(self):
+        self.prepare()
+        before = (self.output / 'sdk-build.json').read_bytes()
+        for target in ('/tmp/ambient.so', '../libnl-nf-3.so.200', 'libnl-3.so.200',
+                       'libnl-nf-3.so.200.26.0', 'libnl-nf-3.so'):
+            with self.subTest(target=target):
+                changed = dict(self.members, **{'usr/lib/x86_64-linux-gnu/libnl-nf-3.so': target})
+                for path in self.inputs.values():
+                    self.archive(path.name, changed)
+                with self.assertRaisesRegex(ValueError, 'Unexpected libnl development link'):
+                    self.prepare()
+                self.assertEqual((self.output / 'sdk-build.json').read_bytes(), before)
 
     def test_legacy_sdk_keeps_original_dependency_contract(self):
         sdk.prepare_repository(self.common, self.output, 'amd64', {})
@@ -159,6 +200,8 @@ class SdkTest(unittest.TestCase):
         for stem in sdk.LIBNL_STEMS:
             self.assertEqual((self.output / ('lib/' + stem + '.so.200')).readlink().as_posix(),
                              stem + '.so.200.26.0')
+            self.assertEqual((self.output / ('lib/' + stem + '.so')).readlink().as_posix(),
+                             stem + '.so.200')
 
     def test_conflicting_header_does_not_replace_existing_sdk(self):
         self.prepare()

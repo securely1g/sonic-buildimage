@@ -54,8 +54,10 @@ def prepare_libnl(staging, archives, parent_archive, arch):
                   "Declared libnl SDK handoff requires an AMD64 image parent")
     selected, sources = {}, {}
     prefix = "usr/lib/x86_64-linux-gnu/"
-    paths = {prefix + stem + suffix for stem in LIBNL_STEMS
-             for suffix in (".so.200", ".so.200.26.0")}
+    runtime_paths = {prefix + stem + suffix for stem in LIBNL_STEMS
+                     for suffix in (".so.200", ".so.200.26.0")}
+    development_paths = {prefix + stem + ".so" for stem in LIBNL_STEMS}
+    paths = runtime_paths | development_paths
     for target, archive in archives.items():
         # Aggregate SDK archives may have producer UID metadata. Installed image
         # ownership is checked on the parent; SDK files are private build inputs.
@@ -81,8 +83,11 @@ def prepare_libnl(staging, archives, parent_archive, arch):
                 if member.issym():
                     # Flattened owner archives may add a harmless './' prefix.
                     # metadata() normalizes that prefix without resolving '..'.
-                    check.require(name in paths and item["linkname"] == destination.name + ".26.0",
-                                  "Unexpected libnl SONAME link: " + name)
+                    development = name in development_paths
+                    suffix = ".200" if development else ".26.0"
+                    check.require(name in paths and item["linkname"] == destination.name + suffix,
+                                  "Unexpected libnl " + ("development" if development else "SONAME") +
+                                  " link: " + name)
                     destination.symlink_to(item["linkname"])
                 else:
                     with package.extractfile(member) as source, destination.open("wb") as output:
@@ -95,8 +100,12 @@ def prepare_libnl(staging, archives, parent_archive, arch):
     parent = check.payload(parent_archive)
     for name in paths:
         item = selected[name]
-        check.require(item["kind"] == ("symlink" if name.endswith(".so.200") else "file"),
+        check.require(item["kind"] == ("file" if name.endswith(".so.200.26.0") else "symlink"),
                       "Unexpected libnl SDK library kind: " + name)
+        # Development aliases are declared SDK inputs, not installed runtime files.
+        # Their exact relative targets lead to the parent-bound SONAME and bytes.
+        if name in development_paths:
+            continue
         if item["kind"] == "file":
             check.require(item.get("elf_machine") == 62 and
                           parent.get(name, {}).get("sha256") == item["sha256"],
