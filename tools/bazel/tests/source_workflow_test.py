@@ -41,6 +41,96 @@ def shell(step):
     return match[1]
 
 
+class NativeFamilyJobsTest(unittest.TestCase):
+    families = ("swss_layer", "orchagent", "sflow", "otel", "dash_ha", "sysmgr",
+                "gearbox", "dash_engine", "p4rt", "syncd", "teamd")
+
+    def test_native_families_keep_separate_hosted_caches_and_manual_selection(self):
+        workflow = jobs()
+        archive = workflow["archive"].split("    steps:\n", 1)[0]
+        self.assertIn("architecture: amd64", archive)
+        self.assertIn("architecture: arm64", archive)
+        self.assertIn("runner: ubuntu-24.04-arm", archive)
+        caches = set()
+        for family in self.families:
+            with self.subTest(family=family):
+                job = workflow[family + "_native"]
+                header = job.split("    steps:\n", 1)[0]
+                self.assertIn("runs-on: ubuntu-24.04\n", header)
+                self.assertNotIn("    needs:", header)
+                self.assertNotIn("matrix.", job)
+                if family == "swss_layer":
+                    self.assertIn('test "$(uname -m)" = "x86_64"', job)
+                    self.assertIn("tools/bazel/ci/lldp_draft_cache.py", job)
+                else:
+                    self.assertIn("      - *native_architecture\n", job)
+                    self.assertIn("      - *native_caches\n", job)
+                cache = re.search(r"^          disk-cache: (\S+)$", job, re.MULTILINE)[1]
+                self.assertNotIn(cache, caches)
+                self.assertNotEqual(cache, "swss-layer-amd64")
+                caches.add(cache)
+                condition = re.search(r"^    if: (.+)$", header, re.MULTILINE)[1]
+                self.assertEqual("${{ !cancelled() && (" + condition + ") }}",
+                                 re.search(r"^    if: (.+)$", archive, re.MULTILINE)[1])
+                for event, selected, expected in (("pull_request", "", True),
+                                                  ("push", "", True),
+                                                  ("workflow_dispatch", "none", True),
+                                                  ("workflow_dispatch", "sflow", False)):
+                    expression = condition.replace("github.event_name", repr(event)).replace(
+                        "inputs.source_image", repr(selected)).replace("||", " or ")
+                    self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
+
+    def test_required_archive_check_rejects_any_non_success_native_result(self):
+        workflow = jobs()
+        archive = workflow["archive"]
+        required = re.search(r"^    needs: \[(.+)\]$", archive, re.MULTILINE)[1]
+        self.assertEqual(set(required.split(", ")), {family + "_native" for family in self.families})
+        gate = steps(archive)["Require every native image family to pass"]
+        self.assertIn("if: always() && matrix.architecture == 'amd64'", gate)
+        self.assertIn("NATIVE_RESULTS: ${{ join(needs.*.result, ',') }}", gate)
+        script = shell(gate)
+        cases = [("all successful", ["success"] * 11, True),
+                 ("missing result", ["success"] * 10, False),
+                 ("extra result", ["success"] * 12, False),
+                 ("no results", [], False)]
+        for status in ("failure", "cancelled", "skipped", ""):
+            cases.append((status or "empty result", ["success"] * 5 + [status] + ["success"] * 5, False))
+        for name, results, passed in cases:
+            with self.subTest(case=name):
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                                        env=dict(os.environ, NATIVE_RESULTS=",".join(results)),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, passed, result.stdout + result.stderr)
+
+    def test_runtime_jobs_wait_for_every_downloaded_native_artifact(self):
+        workflow = jobs()
+
+        def artifacts(job, action):
+            blocks = re.findall(r"^      - .*?(?=^      - |\Z)", job, re.MULTILINE | re.DOTALL)
+            return [re.search(r"^          name: (.+)$", block, re.MULTILINE)[1]
+                    for block in blocks if "uses: actions/" + action + "-artifact@" in block]
+
+        producers = {}
+        for family in self.families:
+            job = family + "_native"
+            names = artifacts(workflow[job], "upload")
+            self.assertEqual(len(names), 1)
+            self.assertNotIn(names[0], producers)
+            producers[names[0]] = job
+        evidence_names = set()
+        for family in self.families:
+            with self.subTest(family=family):
+                job = workflow[family + "_runtime"]
+                needed = re.search(r"^    needs: (.+)$", job, re.MULTILINE)[1]
+                needed = set(needed.strip("[]").replace(" ", "").split(","))
+                downloads = artifacts(job, "download")
+                self.assertTrue(downloads)
+                self.assertEqual(needed, {producers[name] for name in downloads})
+                for name in artifacts(job, "upload"):
+                    self.assertNotIn(name, evidence_names, "Runtime jobs must not overwrite each other's evidence")
+                    evidence_names.add(name)
+
+
 class SourceWorkflowTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="source-workflow-")

@@ -215,7 +215,8 @@ jobs:
           retention-days: 14
 
   archive:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') }}
+    needs: [swss_layer_native, orchagent_native, sflow_native, otel_native, dash_ha_native, sysmgr_native, gearbox_native, dash_engine_native, p4rt_native, syncd_native, teamd_native]
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -238,16 +239,16 @@ jobs:
             platform: aarch64_trixie
             disk_cache: buildimage-gzip-arm64
             timeout: 60
-    container:
+    container: &native_container
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       volumes:
         - /usr/local/lib/android:/runner-unused/android
         - /usr/share/dotnet:/runner-unused/dotnet
         - /opt/ghc:/runner-unused/ghc
-    env:
+    env: &native_bazel
       # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
-    defaults:
+    defaults: &native_shell
       run:
         shell: bash
     steps:
@@ -581,15 +582,139 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Require every native image family to pass
+        if: always() && matrix.architecture == 'amd64'
+        env:
+          NATIVE_RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          printf 'Native image job conclusions: %s\n' "$NATIVE_RESULTS"
+          IFS=',' read -r -a results <<< "$NATIVE_RESULTS"
+          test "${#results[@]}" -eq 11
+          for result in "${results[@]}"; do
+            test "$result" = success
+          done
+
+  # Keep each native family's output base, disk cache and staged archives on a
+  # separate disposable runner. Runtime jobs wait for the artifacts they consume.
+  # The existing archive checks run afterward and retain the required AMD64 gate.
+  swss_layer_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect shared SWSS images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - &native_space
+        name: Allocate source-build space on this disposable runner
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
+
+      - &native_tools
+        name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+          for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
+
+      - &native_checkout
+        name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - &native_architecture
+        name: Check native architecture and generated dependency state
+        run: |
+          test "$(uname -m)" = "x86_64"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+
+      - &native_gnoi
+        name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      - &native_p4rt_owner
+        name: Initialize P4RT's pinned source owner
+        run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+
+      - &native_p4rt_tools
+        name: Install P4RT source execution dependencies
+        run: |
+          apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \
+            libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+            libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-swss-layer-amd64
+          cache-version: "8.5.1"
+
+      - &native_mirror
+        name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Reviewed PR228 candidate; Bazel retains every locked payload checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/353f3a98adaa4ecfe6aaa7229cdf2d825ff36dfe/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "e5fbd7add242accf33663c830d7647e02184bbc408e15033183de787f483d9e5"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+      - &native_caches
+        name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+
+      - &native_pigz
+        name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+          # Draft wrappers disable the home rc; share setup-bazel caches with them.
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          home = Path.home() / '.bazelrc'
+          cache_lines = [line for line in home.read_text().splitlines()
+                         if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+          assert len(cache_lines) == 2, 'setup-bazel cache settings are missing'
+          user = Path('.bazelrc.user')
+          user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
+          PYCODE
+
       - name: Build and inspect the shared runtime and symbols
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/tests/swss_layer_payload_test.py
           python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
       - name: Check cached no-op and source edit through the image
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -602,7 +727,7 @@ jobs:
           git diff --exit-code
       - name: Prepare shared SWSS image evidence
         id: swss_layer_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PY'
           import json
@@ -628,7 +753,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PY
       - name: Retain reviewed artifacts and receipts
-        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_public.outcome == 'success'
+        if: always() && steps.swss_layer_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: swss-layer-amd64
@@ -650,9 +775,36 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  orchagent_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect Orchagent images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-orchagent-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build Orchagent variants from source owners
         id: orchagent_build
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
@@ -660,10 +812,8 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
         run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
       - name: Validate installed Orchagent sources and Scapy wheel
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/orchagent_image.py validate --artifacts artifacts/orchagent
       - name: Validate Orchagent owner packages and original Scapy tests
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -673,7 +823,6 @@ jobs:
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--jobs=2 --bazel-arg=--local_resources=memory=8000
       - name: Verify source edit and restored Orchagent archives
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -687,7 +836,7 @@ jobs:
           git diff --exit-code
       - name: Review public Orchagent evidence
         id: orchagent_public
-        if: always() && matrix.architecture == 'amd64' && steps.orchagent_build.outcome != 'skipped'
+        if: always() && steps.orchagent_build.outcome != 'skipped'
         run: |
           python3 - <<'PYORCH'
           import json
@@ -713,7 +862,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYORCH
       - name: Retain Orchagent archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.orchagent_public.outcome == 'success'
+        if: always() && steps.orchagent_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: orchagent-source-amd64
@@ -741,8 +890,35 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  sflow_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect sFlow images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-sflow-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build sFlow runtime and debug images from source owners
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -750,10 +926,8 @@ jobs:
           SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/sflow_image.py validate --artifacts artifacts/sflow
       - name: Validate sFlow producer contracts
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -783,11 +957,10 @@ jobs:
                       shutil.copyfile(xml.with_name(name), directory / name)
           PY
       - name: Verify sFlow no-op, Python source edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/sflow_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Review public sFlow evidence
         id: sflow_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PY'
           import json
@@ -810,7 +983,7 @@ jobs:
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
           PY
       - name: Retain sFlow archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.sflow_public.outcome == 'success'
+        if: always() && steps.sflow_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sflow-source-amd64
@@ -839,9 +1012,36 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  otel_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect OTEL images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-otel-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build OTEL runtime and debug images from source owners
         id: otel_build
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -849,10 +1049,8 @@ jobs:
           SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
         run: python3 -B tools/bazel/ci/otel_image.py build --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Validate OTEL installed payloads and matching symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/otel_image.py validate --artifacts artifacts/otel
       - name: Validate OTEL producer contracts
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -879,11 +1077,10 @@ jobs:
               shutil.copyfile(xml, directory / 'test.xml')
           PY
       - name: Verify OTEL no-op, launcher source edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/otel_image.py incremental --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Review public OTEL evidence
         id: otel_public
-        if: always() && matrix.architecture == 'amd64' && steps.otel_build.outcome != 'skipped'
+        if: always() && steps.otel_build.outcome != 'skipped'
         run: |
           python3 - <<'PY'
           import json
@@ -906,7 +1103,7 @@ jobs:
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
           PY
       - name: Retain OTEL archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.otel_public.outcome == 'success'
+        if: always() && steps.otel_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: otel-source-amd64
@@ -934,15 +1131,41 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  dash_ha_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect DASH HA images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-dash-ha-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build DASH HA runtime and debug images
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/dash_ha_image.py build --bazel "$BAZEL" --artifacts artifacts/dash-ha
       - name: Validate DASH HA image contents and cache reuse
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -951,7 +1174,7 @@ jobs:
           python3 -B tools/bazel/ci/dash_ha_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dash-ha
       - name: Prepare reviewed public evidence
         id: dash_ha_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PYCODE'
           import json
@@ -980,7 +1203,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYCODE
       - name: Retain DASH HA image artifacts and evidence
-        if: always() && matrix.architecture == 'amd64' && steps.dash_ha_public.outcome == 'success'
+        if: always() && steps.dash_ha_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dash-ha-images-amd64-${{ github.sha }}
@@ -1003,15 +1226,41 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+  sysmgr_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect Sysmgr images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-sysmgr-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build Sysmgr runtime and debug images
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/sysmgr_image.py build --bazel "$BAZEL" --artifacts artifacts/sysmgr
       - name: Validate Sysmgr image contents and cache reuse
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -1020,7 +1269,7 @@ jobs:
           python3 -B tools/bazel/ci/sysmgr_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sysmgr
       - name: Prepare reviewed Sysmgr public evidence
         id: sysmgr_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PYCODE'
           import json
@@ -1049,7 +1298,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYCODE
       - name: Retain Sysmgr image artifacts and evidence
-        if: always() && matrix.architecture == 'amd64' && steps.sysmgr_public.outcome == 'success'
+        if: always() && steps.sysmgr_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sysmgr-images-amd64-${{ github.sha }}
@@ -1073,23 +1322,48 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+  gearbox_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect gearbox images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-gearbox-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build gearbox runtime and debug images from source packages
         id: gearbox_build
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/gbsyncd_image.py build --bazel "$BAZEL" --artifacts artifacts/gbsyncd
       - name: Validate gearbox installed contents and complete source symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/gbsyncd_image.py validate --artifacts artifacts/gbsyncd
       - name: Verify gearbox no-op, configuration edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/gbsyncd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/gbsyncd
       - name: Review public gearbox evidence
         id: gearbox_public
-        if: always() && matrix.architecture == 'amd64' && steps.gearbox_build.outcome != 'skipped'
+        if: always() && steps.gearbox_build.outcome != 'skipped'
         run: |
           python3 - <<'PYCODE'
           import json
@@ -1116,7 +1390,7 @@ jobs:
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
           PYCODE
       - name: Retain gearbox archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.gearbox_public.outcome == 'success'
+        if: always() && steps.gearbox_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gbsyncd-source-amd64
@@ -1143,19 +1417,44 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  dash_engine_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect DASH engine images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-dash-engine-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build DASH engine runtime and debug images from source owners
         id: dash_engine_build
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/dash_engine_image.py build --bazel "$BAZEL" --artifacts artifacts/dash-engine
       - name: Validate DASH engine payloads and matching symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/dash_engine_image.py validate --artifacts artifacts/dash-engine
       - name: Validate nnpy in the selected image dependency graph
-        if: matrix.architecture == 'amd64'
         run: |
           options=(--jobs=2 --local_resources=cpu=2 --local_resources=memory=8000
             --platforms=@sonic_build_infra//platforms:x86_64_trixie
@@ -1169,14 +1468,13 @@ jobs:
           test -s bazel-testlogs/external/nnpy+/package_test/test.xml
           cp bazel-testlogs/external/nnpy+/package_test/test.xml artifacts/dash-engine/tests/test.xml
       - name: Verify DASH engine no-op, startup edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/dash_engine_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dash-engine
       - name: Review public DASH engine evidence
         id: dash_engine_public
-        if: always() && matrix.architecture == 'amd64' && steps.dash_engine_build.outcome != 'skipped'
+        if: always() && steps.dash_engine_build.outcome != 'skipped'
         run: python3 -B tools/bazel/ci/dash_engine_public.py --artifacts artifacts/dash-engine
       - name: Retain DASH engine archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.dash_engine_public.outcome == 'success'
+        if: always() && steps.dash_engine_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dash-engine-source-amd64
@@ -1199,8 +1497,35 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  p4rt_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect P4RT images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-p4rt-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Bound P4RT build phases and verify execution tools
-        if: matrix.architecture == 'amd64'
         run: |
           for tool in bsdtar gdb readelf objcopy make git python3 zip bison flex g++ pkg-config; do
             command -v "$tool" >/dev/null
@@ -1226,7 +1551,6 @@ jobs:
           PYLAUNCH
 
       - name: Prepare matching Common SDK and source-owned P4RT TARs
-        if: matrix.architecture == 'amd64'
         run: |
           python3 -B tools/bazel/ci/p4rt_image.py prepare-owner --bazel "$BAZEL" \
             --directory artifacts/p4rt --owner-source src/sonic-p4rt/sonic-pins \
@@ -1234,7 +1558,6 @@ jobs:
             --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6" --owner-bazel "$P4RT_OWNER_BAZEL" --jobs 2
 
       - name: Build P4RT runtime and debug images
-        if: matrix.architecture == 'amd64'
         run: |
           python3 -B tools/bazel/ci/p4rt_image.py build --bazel "$BAZEL" \
             --directory artifacts/p4rt --owner-source src/sonic-p4rt/sonic-pins \
@@ -1242,7 +1565,6 @@ jobs:
             --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6"
 
       - name: Validate P4RT image contents and cache reuse
-        if: matrix.architecture == 'amd64'
         run: |
           python3 -B tools/bazel/ci/p4rt_validate.py validate --directory artifacts/p4rt \
             --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
@@ -1250,7 +1572,6 @@ jobs:
             --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
 
       - name: Run all original P4RT tests against the selected image SDK
-        if: matrix.architecture == 'amd64'
         run: |
           for phase in prepare-owner-runtime owner-tests; do
             python3 -B tools/bazel/ci/p4rt_image.py "$phase" --bazel "$BAZEL" \
@@ -1261,11 +1582,11 @@ jobs:
 
       - name: Prepare reviewed P4RT public evidence
         id: p4rt_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: python3 -B tools/bazel/ci/p4rt_public.py --directory artifacts/p4rt
 
       - name: Retain P4RT images and acceptance evidence
-        if: always() && matrix.architecture == 'amd64' && steps.p4rt_public.outcome == 'success'
+        if: always() && steps.p4rt_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: p4rt-images-amd64-${{ github.sha }}
@@ -1274,23 +1595,48 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+  syncd_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect syncd images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-syncd-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build syncd runtime and debug images from source packages
         id: syncd_build
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/syncd_image.py build --bazel "$BAZEL" --artifacts artifacts/syncd
       - name: Validate syncd installed contents and complete source symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/syncd_image.py validate --artifacts artifacts/syncd
       - name: Verify syncd no-op, configuration edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/syncd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/syncd
       - name: Review public syncd evidence
         id: syncd_public
-        if: always() && matrix.architecture == 'amd64' && steps.syncd_build.outcome != 'skipped'
+        if: always() && steps.syncd_build.outcome != 'skipped'
         run: |
           python3 - <<'PYCODE'
           import json
@@ -1317,7 +1663,7 @@ jobs:
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
           PYCODE
       - name: Retain syncd archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.syncd_public.outcome == 'success'
+        if: always() && steps.syncd_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: syncd-source-amd64
@@ -1344,18 +1690,43 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  teamd_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect Teamd images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-teamd-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build Teamd runtime and debug images from source owners
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           python3 -B tools/bazel/ci/teamd_image.py build --artifacts artifacts/teamd
       - name: Validate Teamd image contents and source symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/teamd_image.py validate --artifacts artifacts/teamd
       - name: Check Teamd incremental rebuild and restored image digests
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -1363,7 +1734,7 @@ jobs:
           git diff --exit-code
       - name: Prepare reviewed Teamd evidence
         id: teamd_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PYCODE'
           import json
@@ -1392,7 +1763,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYCODE
       - name: Retain Teamd images and reviewed build evidence
-        if: always() && matrix.architecture == 'amd64' && steps.teamd_public.outcome == 'success'
+        if: always() && steps.teamd_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: teamd-image-amd64
@@ -1417,7 +1788,7 @@ jobs:
 
   swss_layer_runtime:
     name: Load and run the shared SWSS image (AMD64)
-    needs: archive
+    needs: swss_layer_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1468,7 +1839,7 @@ jobs:
 
   teamd_runtime:
     name: Run installed Teamd images (AMD64)
-    needs: archive
+    needs: teamd_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1537,7 +1908,7 @@ jobs:
 
   orchagent_runtime:
     name: Load and run SWSS and Orchagent images (AMD64)
-    needs: archive
+    needs: [swss_layer_native, orchagent_native]
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -1581,7 +1952,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: swss-layer-runtime-amd64
+          name: swss-layer-runtime-orchagent-amd64
           path: artifacts/swss-layer/runtime-smoke.json
           if-no-files-found: warn
           retention-days: 14
@@ -1606,7 +1977,7 @@ jobs:
 
   sflow_runtime:
     name: Load and run SWSS and sFlow images (AMD64)
-    needs: archive
+    needs: [swss_layer_native, sflow_native]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1650,7 +2021,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: swss-layer-runtime-amd64
+          name: swss-layer-runtime-sflow-amd64
           path: artifacts/swss-layer/runtime-smoke.json
           if-no-files-found: warn
           retention-days: 14
@@ -1675,7 +2046,7 @@ jobs:
 
   otel_runtime:
     name: Load and run OTEL images (AMD64)
-    needs: archive
+    needs: otel_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1702,7 +2073,7 @@ jobs:
 
   dash_ha_runtime:
     name: Load and run DASH HA images (AMD64)
-    needs: archive
+    needs: dash_ha_native
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1729,7 +2100,7 @@ jobs:
 
   sysmgr_runtime:
     name: Load and run Sysmgr images (AMD64)
-    needs: archive
+    needs: sysmgr_native
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1757,7 +2128,7 @@ jobs:
 
   gearbox_runtime:
     name: Load and run gearbox images (AMD64)
-    needs: archive
+    needs: gearbox_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1781,7 +2152,7 @@ jobs:
 
   dash_engine_runtime:
     name: Load and run DASH engine images (AMD64)
-    needs: archive
+    needs: dash_engine_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1810,7 +2181,7 @@ jobs:
 
   p4rt_runtime:
     name: Load and run P4RT images (AMD64)
-    needs: archive
+    needs: p4rt_native
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1838,7 +2209,7 @@ jobs:
 
   syncd_runtime:
     name: Load and run syncd images (AMD64)
-    needs: archive
+    needs: syncd_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
