@@ -4,7 +4,8 @@
 set -euo pipefail
 bazel_real=${BAZEL_REAL:-bazel}
 if [[ $# == 1 && "$1" == --version ]]; then
-    exec "$bazel_real" --version
+    # Resource launchers prepend startup options, which require a real command.
+    exec "$bazel_real" version --gnu_format
 fi
 startup=()
 while [[ $# -gt 0 && "$1" == --* ]]; do
