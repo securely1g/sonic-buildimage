@@ -21,8 +21,12 @@ It requires PR240 and its PR236/238 stack. Source-base selects the shared
 configuration at `d53bed3dfbc53895f5ba348354210704f3872692`
 (SHA256 `8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68`),
 verifying all 48,072 bytes before use. Its exact libc6 ARMHF route covers the
-observed AMD64 source-base analysis download failure. Native-libteam and OCI
-archive retain `087d351564c713ca88d241ace0b4f895a42f0c61`
+observed AMD64 source-base analysis download failure. OCI archive selects
+`b372632eecfef85da22d9f7cc41a599b8ecfc13a`
+(SHA256 `81d0d323396f93aa76fd7ff429123b1242a15419a650125d11685312a3ec3a7a`;
+51,339 bytes). Its exact libexpat development ARM64 route covers the observed
+Python/startup analysis failure without changing the locked package bytes.
+Native-libteam retains `087d351564c713ca88d241ace0b4f895a42f0c61`
 (SHA256 `a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90`;
 45,526 bytes). These selections retain the same-byte alternatives for the
 observed libaom3 source-base failure, libgd3 native AMD64 failure,
