@@ -1408,7 +1408,8 @@ class ImageWorkerTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
         self.assertEqual(set(choices), set(worker.DRIVERS) | {"worker-provenance", "registry-native"})
-        gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
+        job_conditions = "\n".join(line for line in workflow.splitlines() if line.startswith("    if:"))
+        gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", job_conditions)
         self.assertEqual(len(gates), 2)
         for gate in gates:
             self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
@@ -1435,7 +1436,7 @@ class ImageWorkerTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp", "p4rt"):
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp", "p4rt", "base-config", "swss-layer"):
             with self.subTest(image=image):
                 selected = [name for name, job in jobs.items() if condition(
                     str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
@@ -1444,7 +1445,7 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertFalse(condition(jobs["source_image"]["if"], mode=image))
         self.assertEqual(jobs["source_image"]["runs-on"],
                          ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
-        for image in ("snmp-other", "base", "config-engine", "swss-layer"):
+        for image in ("snmp-other", "base", "config-engine", "swss-layer-other"):
             with self.subTest(unsupported=image), self.assertRaises(ValueError):
                 worker.selection(image, "a" * 40)
 
