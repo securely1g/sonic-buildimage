@@ -37,8 +37,11 @@ concurrency:
   group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
   cancel-in-progress: true
 
+# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
+# Remove this selection after #164 lands; ordinary invocations keep canonical main.
 env:
-  BAZEL: bazel
+  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
 
 jobs:
   source_image_inputs:
@@ -362,7 +365,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp') }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -681,7 +684,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp') }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1141,6 +1144,7 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
+      github.head_ref != 'codex/bazel-snmp' &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       github.head_ref != 'codex/sysmgr-source-image' &&
