@@ -843,7 +843,8 @@ class ImageWorkerTest(unittest.TestCase):
                                    cwd=workspace, check=True, capture_output=True)
             commands = [json.loads(line) for line in trace.read_text().splitlines()]
             self.assertEqual([cmd[0] for cmd in commands],
-                             ["selection", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"])
+                             ["selection", "verify-input-run", "prepare", "build-inspect", "build",
+                              "validate", "incremental", "loaded", "publish", "stop"])
             for cmd in commands:
                 self.assertEqual(cmd[1:], ["--image", "dash-engine", "--revision", "a" * 40,
                     "--workspace", str(workspace / environment["SOURCE_WORKER_SOURCE"]),
@@ -1181,14 +1182,25 @@ class ImageWorkerTest(unittest.TestCase):
     def test_fixed_interfaces_do_not_expand_into_owner_suites(self):
         root, artifacts = Path("/source"), Path("/evidence")
         for image in worker.DRIVERS:
-            for phase in ("build", "validate", "incremental", "loaded"):
+            phases = (("build-inspect", "incremental", "loaded")
+                      if image in ("base-config", "swss-layer")
+                      else ("build", "validate", "incremental", "loaded"))
+            for phase in phases:
                 command = worker.phase_command(image, phase, root, artifacts)
                 self.assertEqual(command[1], "-B")
-                self.assertTrue(command[2].startswith("/source/tools/bazel/ci/"))
+                if image in ("base-config", "swss-layer"):
+                    self.assertEqual(command[2], str(ROOT / "tools/bazel/ci/shared_image_worker.py"))
+                    self.assertEqual(command[command.index("--workspace") + 1], str(root))
+                else:
+                    self.assertTrue(command[2].startswith("/source/tools/bazel/ci/"))
                 self.assertFalse(any(value.endswith("/...") or ".deb" in value for value in command))
                 self.assertIn(str(artifacts) if image != "orchagent" or phase != "incremental" else str(artifacts / "rebuild"), command)
         with self.assertRaises(ValueError):
             worker.phase_command("sflow", "shell", root, artifacts)
+        for image in ("base-config", "swss-layer"):
+            for phase in ("build", "validate"):
+                with self.assertRaisesRegex(ValueError, "Unknown shared-image phase"):
+                    worker.phase_command(image, phase, root, artifacts)
         command = worker.phase_command("orchagent", "incremental", root, artifacts)
         self.assertIn("@scapy//:wheel", command)
         self.assertIn("//dockers/docker-orchagent:docker-orchagent-dbg.gz", command)
