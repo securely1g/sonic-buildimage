@@ -92,7 +92,7 @@ def set_local_fallback(rc, enabled):
     rc.write_text(contents)
 
 
-def set_resource_limits(rc, jobs, local_memory_mb):
+def set_resource_limits(rc, jobs, local_memory_mb, max_idle_secs=None):
     contents = rc.read_text()
     if RESOURCE_BEGIN in contents or RESOURCE_END in contents:
         if (contents.count(RESOURCE_BEGIN) != 1 or contents.count(RESOURCE_END) != 1
@@ -105,6 +105,9 @@ def set_resource_limits(rc, jobs, local_memory_mb):
     # sonic-pins' Bazel 6.4 and the newer image builds; 6.4 lacks local_resources.
     block = "\n".join([
         RESOURCE_BEGIN,
+        # Release idle JVM memory during long Make-only package builds. This
+        # startup option leaves active commands and on-disk caches intact.
+        *([f"startup --max_idle_secs={max_idle_secs}"] if max_idle_secs is not None else []),
         f"build --jobs={jobs}",
         f"build --local_ram_resources={local_memory_mb}",
         RESOURCE_END,
@@ -160,11 +163,17 @@ def main(argv=None):
                         help="Job-scoped Bazel build/test concurrency (requires --local-memory-mb)")
     parser.add_argument("--local-memory-mb", type=positive_integer,
                         help="Job-scoped Bazel local action memory budget (requires --jobs)")
+    parser.add_argument("--max-idle-secs", type=positive_integer,
+                        help="Exit newly launched Bazel servers after this many idle seconds (requires --jobs)")
     args = parser.parse_args(argv)
     if (args.jobs is None) != (args.local_memory_mb is None):
         parser.error("--jobs and --local-memory-mb must be supplied together")
+    if args.max_idle_secs is not None and args.jobs is None:
+        parser.error("--max-idle-secs requires --jobs and --local-memory-mb")
     resource_limits = None if args.jobs is None else {
         "jobs": args.jobs, "local_memory_mb": args.local_memory_mb}
+    if args.max_idle_secs is not None:
+        resource_limits["max_idle_secs"] = args.max_idle_secs
     try:
         receipt = configure(args.cache_dir, args.rc, resource_limits)
     except ConfigurationFailure as error:
