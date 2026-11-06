@@ -807,7 +807,17 @@ def publish(args):
     for name in sorted(set(names)):
         path = source / name
         if path.is_file():
-            safe_json(json.loads(path.read_text()))
+            value = json.loads(path.read_text())
+            if getattr(args, "image", None) == "snmp" and name in (
+                    "docker-snmp.validation.json", "docker-snmp-dbg.validation.json"):
+                # This is the fixed public OCI configuration, not a captured
+                # process environment. Check its exact constants only in the
+                # safety-validation view; preserve the original loaded receipt.
+                require(isinstance(value.get("config"), dict) and value["config"].pop("Env", None) == [
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "DEBIAN_FRONTEND=noninteractive", "PYTHONOPTIMIZE=1", "IMAGE_VERSION=bazel-snmp-ci",
+                ], "Unexpected SNMP image environment")
+            safe_json(value)
             target = destination / name
             target.parent.mkdir(exist_ok=True)
             shutil.copyfile(path, target)

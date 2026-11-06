@@ -1506,6 +1506,61 @@ class ImageWorkerTest(unittest.TestCase):
                 worker.publish(SimpleNamespace(artifacts=root, image='syncd'))
             self.assertFalse((root / 'public/policy.json').exists())
 
+    @staticmethod
+    def snmp_validation_receipt():
+        return {"status": "passed", "manifest_digest": "sha256:" + "a" * 64,
+                "rootfs": {"type": "layers", "diff_ids": ["sha256:" + "b" * 64]},
+                "wheel_payloads": {},
+                "config": {"Entrypoint": ["/usr/bin/docker-snmp-init.sh"], "WorkingDir": "/",
+                           "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                                   "DEBIAN_FRONTEND=noninteractive", "PYTHONOPTIMIZE=1",
+                                   "IMAGE_VERSION=bazel-snmp-ci"]}}
+
+    def test_publication_preserves_exact_checked_snmp_validation_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = (json.dumps(self.snmp_validation_receipt(), indent=3) + "\n").encode()
+            for name in ("docker-snmp.validation.json", "docker-snmp-dbg.validation.json"):
+                (root / name).write_bytes(original)
+            with self.assertRaisesRegex(ValueError, "diagnostic-json-field"):
+                worker.safe_json(json.loads(original))
+            for _ in range(2):
+                worker.publish(SimpleNamespace(artifacts=root, image="snmp"))
+                for name in ("docker-snmp.validation.json", "docker-snmp-dbg.validation.json"):
+                    self.assertEqual((root / name).read_bytes(), original)
+                    self.assertEqual((root / "public" / name).read_bytes(), original)
+                    self.assertEqual(worker.digest(root / name), worker.digest(root / "public" / name))
+
+    def test_snmp_publication_rejects_unexpected_environment_and_private_fields(self):
+        cases = []
+        for bad in (None, [], ["PATH=/private"],
+                    self.snmp_validation_receipt()["config"]["Env"] + ["UNRELATED=value"],
+                    self.snmp_validation_receipt()["config"]["Env"] + ["TOKEN=private"],
+                    {"DEBIAN_FRONTEND": "noninteractive"}):
+            value = self.snmp_validation_receipt()
+            value["config"]["Env"] = bad
+            cases.append(("snmp", "docker-snmp.validation.json", value))
+        for field, child in (("environment", {"PRIVATE": "value"}),
+                             ("authorization", "private"), ("note", "ghp_" + "a" * 32)):
+            value = self.snmp_validation_receipt()
+            value["config"][field] = child
+            cases.append(("snmp", "docker-snmp-dbg.validation.json", value))
+        value = self.snmp_validation_receipt()
+        value["diagnostic"] = {"Env": ["PRIVATE=value"]}
+        cases.append(("snmp", "docker-snmp.validation.json", value))
+        cases.extend((image, name, self.snmp_validation_receipt()) for image, name in (
+            ("frr", "docker-snmp.validation.json"), (None, "docker-snmp.validation.json"),
+            ("snmp", "other.validation.json"), ("snmp", "docker-snmp.runtime.json")))
+        for image, name, value in cases:
+            with self.subTest(image=image, name=name, value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                original = json.dumps(value).encode()
+                (root / name).write_bytes(original)
+                with self.assertRaises(ValueError):
+                    worker.publish(SimpleNamespace(artifacts=root, image=image))
+                self.assertEqual((root / name).read_bytes(), original)
+                self.assertFalse((root / "public" / name).exists())
+
     def test_publication_keeps_declared_bytes_and_excludes_private_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
