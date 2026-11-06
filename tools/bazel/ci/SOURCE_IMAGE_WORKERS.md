@@ -78,7 +78,7 @@ existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
 `otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
-`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux` or `frr`,
+`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux`, `frr` or `snmp`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -234,10 +234,21 @@ private BGPD/VTY, installed Python and debug probes as UID/GID 300 with group 10
 It uses no network peers, Zebra, kernel routing or full SONiC startup. Adding the
 selector does not establish FRR acceptance for a new source revision.
 
-SNMP and the shared base/config-engine/SWSS layers are not selectable here.
-Their existing workflows need an explicit adapter preserving all checks and
-receipts; a missing phase must not be treated as a pass. Use their dedicated
-workflows until that interface is reviewed.
+The `snmp` selector uses the selected source's existing `snmp_image.py` build,
+validation and template edit/restore phases through `libteam_draft_bazel.sh` and
+its immutable catalog. Its source-owned `snmp_loaded.py` is extracted from the
+dedicated SNMP workflow; the same helper and pure tests are reviewed with this
+controller. It preserves 16 outputs and 18 no-DEB audit roots, both archive
+hashes, source revision, loaded configuration/layers and Redis fixture hash.
+The unchanged runtime probe runs in both images as UID 101/GID 102 with private
+Redis and performs installed Python, AgentX, SNMP GET and GETNEXT checks. It
+retains the original isolation/resource flags and static debug checks; there is
+no extra debug-probe mode. The direct image parent is config-engine. Select a
+reviewed source containing the helper; older checkouts fail preparation. Adding
+the selector does not establish current-image, hardware or full SONiC acceptance.
+
+The shared base/config-engine/SWSS layers are not selectable here. Their dedicated
+workflows retain their existing checks and receipts.
 
 ## Explicit ordinary registry consumers
 

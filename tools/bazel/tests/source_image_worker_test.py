@@ -1170,6 +1170,32 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
                                  prefix + [f"/source/tools/bazel/ci/{stem}_loaded.py", "--artifacts", str(artifacts)])
 
+    def test_snmp_reuses_existing_phases_and_libteam_catalog_entrypoint(self):
+        root, artifacts = Path("/source"), Path("/evidence")
+        for phase in ("build", "validate", "incremental"):
+            command = [sys.executable, "-B", "/source/tools/bazel/ci/snmp_image.py", phase,
+                       "--artifacts", str(artifacts)]
+            if phase != "validate":
+                command += ["--bazel", "/source/tools/bazel/ci/libteam_draft_bazel.sh"]
+            self.assertEqual(worker.phase_command("snmp", phase, root, artifacts), command)
+        self.assertEqual(worker.phase_command("snmp", "loaded", root, artifacts),
+                         [sys.executable, "-B", "/source/tools/bazel/ci/snmp_loaded.py", "--artifacts", str(artifacts)])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / "tools/bazel/ci").mkdir(parents=True)
+            (root / ".github/workflows/bazel-oci.yml").write_text(
+                "env:\n  BAZEL: tools/bazel/ci/libteam_draft_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
+            wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
+            wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
+            self.assertEqual(worker.catalog_for("snmp", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("snmp", root, "a" * 40), "a" * 40)
+            with self.assertRaises(ValueError):
+                worker.catalog_for("snmp", root, "b" * 40)
+            wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "b" * 40 + "\n")
+            with self.assertRaises(ValueError):
+                worker.catalog_for("snmp", root)
+
     def test_orchagent_incremental_uses_current_source_parent_and_all_six_targets(self):
         command = worker.phase_command("orchagent", "incremental", Path("/source"), Path("/evidence"))
         self.assertEqual(command[:5], [
@@ -1251,7 +1277,7 @@ class ImageWorkerTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp"):
             with self.subTest(image=image):
                 selected = [name for name, job in jobs.items() if condition(
                     str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
@@ -1260,7 +1286,7 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertFalse(condition(jobs["source_image"]["if"], mode=image))
         self.assertEqual(jobs["source_image"]["runs-on"],
                          ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
-        for image in ("snmp", "base", "config-engine", "swss-layer"):
+        for image in ("snmp-other", "base", "config-engine", "swss-layer"):
             with self.subTest(unsupported=image), self.assertRaises(ValueError):
                 worker.selection(image, "a" * 40)
 
@@ -1273,7 +1299,7 @@ class ImageWorkerTest(unittest.TestCase):
         guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
                   for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
         self.assertEqual(len(guards), 2)
-        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families"):
+        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families", "codex/source-image-worker-snmp"):
             for guard in guards:
                 self.assertTrue(condition(guard, event="pull_request", branch=branch))
                 for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
