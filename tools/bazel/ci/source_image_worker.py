@@ -54,7 +54,7 @@ BUILD_CHECKS = {
     "radv": ("radv_make_test.py",),
     "mux": ("mux_make_test.py",),
 }
-P4RT_OWNER = "5490af5bebd49603c926bf5f824d096fd7a9008f"
+P4RT_OWNER = "5018f075a390f10bb74469edd6d39af448db3a1b"
 P4RT_OWNER_PATH = "src/sonic-p4rt/sonic-pins"
 P4RT_OWNER_PROFILE = {"revision": P4RT_OWNER, "bazel": "6.4.0", "jobs": 1, "jvm_heap_gib": 2,
                       "scheduler_memory_mb": 4096, "cache_mode": "separate_persistent_worker_local"}
