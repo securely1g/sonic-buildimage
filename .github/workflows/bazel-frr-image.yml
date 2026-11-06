@@ -169,44 +169,8 @@ jobs:
         with:
           name: frr-image-amd64
           path: artifacts/frr
-      - name: Verify and load only this run's images
-        run: |
-          python3 - <<'PY'
-          import hashlib,json,subprocess
-          from pathlib import Path
-          from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
-          directory=Path('artifacts/frr')
-          receipt=json.loads((directory/'validation.json').read_text())
-          assert receipt['status']=='passed' and receipt['architecture']=='amd64'
-          assert receipt['revision']==subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-          for name in ['docker-fpm-frr','docker-fpm-frr-dbg']:
-              path=directory/(name+'.gz')
-              assert hashlib.sha256(path.read_bytes()).hexdigest()==receipt['artifacts'][path.name]['sha256']
-              expected=json.loads((directory/(name+'.validation.json')).read_text())
-              tag='sonic-frr-validation-'+name+':latest'
-              actual,config,_=load_archive(path,tag,expected['config_digest'])
-              verify_loaded_image(actual,config,expected['config_digest'])
-              assert actual['Os']=='linux' and actual['Architecture']=='amd64'
-              assert actual['RootFS']['Layers']==expected['rootfs']['diff_ids']
-          assert hashlib.sha256((directory/'test-redis.tar').read_bytes()).hexdigest()==receipt['artifacts']['test-redis.tar']['sha256']
-          PY
-          mkdir -p artifacts/frr/redis-fixture
-          tar --no-same-owner -xf artifacts/frr/test-redis.tar -C artifacts/frr/redis-fixture
-      - name: Query private BGPD and installed Python services
-        run: |
-          set -euo pipefail
-          for image in docker-fpm-frr docker-fpm-frr-dbg; do
-            probe_args=()
-            if [[ "$image" == *-dbg ]]; then probe_args+=(--debug); fi
-            docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
-              --read-only --user=300:300 --group-add=102 --pids-limit=128 --memory=4g --cpus=2 \
-              --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
-              --mount "type=bind,src=$PWD/dockers/docker-fpm-frr/bazel/runtime_probe.py,dst=/probe/runtime_probe.py,readonly" \
-              --mount "type=bind,src=$PWD/artifacts/frr/redis-fixture,dst=/probe/redis,readonly" \
-              --mount "type=bind,src=$PWD/artifacts/frr/validation.json,dst=/probe/validation.json,readonly" \
-              --entrypoint /usr/bin/python3 "sonic-frr-validation-$image:latest" -B /probe/runtime_probe.py --validation /probe/validation.json "${probe_args[@]}" \
-              | tee "artifacts/frr/$image.runtime.json"
-          done
+      - name: Verify and probe this run's installed FRR images
+        run: python3 -B tools/bazel/ci/frr_loaded.py --artifacts artifacts/frr
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
