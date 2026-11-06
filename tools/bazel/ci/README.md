@@ -2,6 +2,16 @@
 
 ## Remote cache uploads
 
+The [native event services](../../../.github/workflows/bazel-eventd.yml),
+[Rust listener](../../../.github/workflows/bazel-supervisor-rust.yml), and
+[YANG model distribution](../../../.github/workflows/bazel-yang-models.yml) jobs
+use `[self-hosted, linux, bazel-x64]` for AMD64 and
+`[self-hosted, linux, bazel-arm64]` for ARM64, matching the cache-reachable agent
+pools used by the archive, base-image, and kernel jobs. The agents, including
+their job containers where applicable, need network access to
+`grpc://172.16.0.4:9092`; public GitHub-hosted runners cannot reach that private
+endpoint.
+
 The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
 ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
 and manual runs remain read-only. The archive job overrides the default in its
