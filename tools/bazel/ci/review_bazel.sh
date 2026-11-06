@@ -5,7 +5,10 @@ set -euo pipefail
 bazel_real=${BAZEL_REAL:-bazel}
 if [[ $# == 1 && "$1" == --version ]]; then
     # Resource launchers prepend startup options, which require a real command.
-    exec "$bazel_real" version --gnu_format
+    # Bazelisk prints its own banner before Bazel's GNU-format version line.
+    # Keep the backend's remaining output and failure status (via pipefail).
+    "$bazel_real" version --gnu_format | sed '1{/^Bazelisk /d;}'
+    exit
 fi
 revision=${SONIC_BAZEL_REGISTRY_REVISION:-}
 if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then

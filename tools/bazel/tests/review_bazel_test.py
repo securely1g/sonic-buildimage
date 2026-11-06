@@ -36,6 +36,8 @@ args=sys.argv[1:]
 rc=next((x.split('=',1)[1] for x in args if x.startswith('--bazelrc=')),None)
 pathlib.Path(os.environ['REVIEW_TEST_RECORD']).write_text(json.dumps({
     'arguments':args,'configuration':pathlib.Path(rc).read_text() if rc else '', 'rc_path':rc}))
+sys.stdout.write(os.environ.get('REVIEW_TEST_STDOUT',''))
+sys.stderr.write(os.environ.get('REVIEW_TEST_STDERR',''))
 sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
 ''')
         self.fake.chmod(0o755)
@@ -190,6 +192,29 @@ try-import /not-imported
         common.write_text(self.common.replace('try-import %workspace%/.bazelrc.user', ''))
         with self.assertRaises(ValueError):
             rc.configuration(self.workspace, self.home)
+
+    def test_version_removes_only_the_leading_bazelisk_banner(self):
+        cases = (
+            ('plain', 'bazel 8.5.1\n', 'bazel 8.5.1\n', 0),
+            ('bazelisk', 'Bazelisk v1.29.0\nbazel 8.5.1\n', 'bazel 8.5.1\n', 0),
+            ('later-banner', 'bazel 8.5.1\nBazelisk later output\n',
+             'bazel 8.5.1\nBazelisk later output\n', 0),
+            ('other-output', 'warning\nBazelisk v1.29.0\nbazel 8.5.1\n',
+             'warning\nBazelisk v1.29.0\nbazel 8.5.1\n', 0),
+            ('backend-failure', 'Bazelisk v1.29.0\nbackend output\n',
+             'backend output\n', 37),
+        )
+        for name, output, expected, exit_code in cases:
+            with self.subTest(name=name):
+                result = self.invoke(
+                    ['--version'], SONIC_BAZEL_REGISTRY_REVISION='',
+                    REVIEW_TEST_STDOUT=output, REVIEW_TEST_STDERR='backend diagnostic\n',
+                    REVIEW_TEST_EXIT=str(exit_code))
+                self.assertEqual(result.returncode, exit_code)
+                self.assertEqual(result.stdout, expected)
+                self.assertEqual(result.stderr, 'backend diagnostic\n')
+                self.assertEqual(json.loads(self.record.read_text())['arguments'],
+                                 ['version', '--gnu_format'])
 
 
 if __name__ == '__main__':
