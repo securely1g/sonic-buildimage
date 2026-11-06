@@ -98,9 +98,13 @@ rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util-l
 rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/r/redis/redis\-server_8\.0\.2\-3\+deb13u2_amd64\.deb https://snapshot.debian.org/file/c502f81818978156937bce72be28acac56cf8da6
 rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/r/redis/redis\-server_8\.0\.2\-3\+deb13u2_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/r/redis/redis-server_8.0.2-3+deb13u2_amd64.deb
 
-# These three security-package exceptions retain their exact original URLs.
+# These security-package exceptions retain their exact original URLs.
 # libc-ares-dev also has the same bytes available in the official security CDN.
-# libc-ares-dev SHA256: 40d2336fb01e4b707ad8a6bfbad522fc7ddff3b057d16ee981237fb7cef5d95c
+# libc-ares-dev AMD64 SHA256: 0270c69a1229fdb60e198e8ba84c8c38cdfd020009cfefee59ad253bcec26d44
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1\.34\.5-1\+deb13u1_amd64\.deb https://snapshot.debian.org/file/df85291570dde99d0e36b489aa0faeda720ec09b
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1\.34\.5-1\+deb13u1_amd64\.deb https://deb.debian.org/debian-security/pool/updates/main/c/c-ares/libc-ares-dev_1.34.5-1+deb13u1_amd64.deb
+rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1\.34\.5-1\+deb13u1_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1.34.5-1+deb13u1_amd64.deb
+# libc-ares-dev ARM64 SHA256: 40d2336fb01e4b707ad8a6bfbad522fc7ddff3b057d16ee981237fb7cef5d95c
 rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1\.34\.5-1\+deb13u1_arm64\.deb https://snapshot.debian.org/file/109d7800bf370139268bea60e2ea7e2699cc3d48
 rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1\.34\.5-1\+deb13u1_arm64\.deb https://deb.debian.org/debian-security/pool/updates/main/c/c-ares/libc-ares-dev_1.34.5-1+deb13u1_arm64.deb
 rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1\.34\.5-1\+deb13u1_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/c/c-ares/libc-ares-dev_1.34.5-1+deb13u1_arm64.deb
@@ -110,6 +114,10 @@ rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/upda
 # openssl SHA256: 1ee735e2480519bd1fd5f6576a879243bc81b9773059e1fa1ec8b8943c84e77c
 rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/openssl_3\.5\.6-1~deb13u2_arm64\.deb https://snapshot.debian.org/file/4b411e66ee3d3106570389d5d1e022b15c1975a8
 rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/openssl_3\.5\.6-1~deb13u2_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/o/openssl/openssl_3.5.6-1~deb13u2_arm64.deb
+
+# PR151 AMD64 owner-source query imports this exact ARMHF sysroot package.
+# Original APT-lock SHA256: f9797e3c0b091a540c1d33b630ba965aab9b128cb73c3c28ed4271c9e83b9354; 58444 bytes.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc\-dev\-bin_2\.41\-12\+deb13u3_armhf\.deb https://snapshot.debian.org/file/7ea08392e98a52327fbe68d853f0444e1f8f676d/libc-dev-bin_2.41-12%2Bdeb13u3_armhf.deb
 
 # Retained exact historical inputs for declared tools and SONiC source images.
 # Content IDs locate bytes; the original locked SHA256 remains authoritative.
@@ -390,6 +398,33 @@ rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/upd
 # 8aea0a08cefceb212303a738105ed5befc8fe95a32f465345ab5eec305f21d09.
 rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc6_2\.41\-12\+deb13u3_armhf\.deb https://snapshot.debian.org/file/2511d1ea4cdf37ca307cc3336cbc16ff23c323ef/libc6_2.41-12%2Bdeb13u3_armhf.deb
 
+# Exact PCRE16 ARMHF input from PR196 Orchagent owner-source analysis.
+# Verified named content preserves 243332 bytes and locked SHA256
+# 6f3ed32007e36e2cf1644a0959cfb55a8960dd8837488571900c426a7db4caff.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/pcre2/libpcre2\-16\-0_10\.46\-1\~deb13u1_armhf\.deb https://snapshot.debian.org/file/1f7cf11c8d38946c74712ee3b3ed0e69e222f396/libpcre2-16-0_10.46-1~deb13u1_armhf.deb
+
+# Exact PCRE32 ARMHF input from the AMD64 Orchagent owner source query.
+# Official metadata and named content preserve 235052 bytes and locked SHA256
+# ab7a0ed7616e15eb569d4df827b6aceb3f6d810959a8970a426614400d92c7e6.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/pcre2/libpcre2\-32\-0_10\.46\-1\~deb13u1_armhf\.deb https://snapshot.debian.org/file/9eb28eee9a02941c85af546838293851576cdfa7/libpcre2-32-0_10.46-1~deb13u1_armhf.deb
+
+# Exact libexpat development ARM64 input from PR195 Python/startup analysis.
+# Verified named content preserves 144948 bytes and locked SHA256
+# b219482f10e9a0e52474db2a6f239057ea27fea0db0071e3ddb41e8a8a06064c.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/e/expat/libexpat1\-dev_2\.7\.1\-2_arm64\.deb https://snapshot.debian.org/file/b0fd006c705d3b52a70b6378819d3478dec226f1/libexpat1-dev_2.7.1-2_arm64.deb
+
+# Exact libkadm5srv-mit12 ARM64 input observed in PR151 owner-source analysis.
+# Verified named content preserves 53308 bytes and locked SHA256
+# 9e25c202e883de84c2c37d8cc10cadc8fd5538cd4227a1b9f4f160ece94756d6.
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/libkadm5srv\-mit12_1\.21\.3\-5\+deb13u1_arm64\.deb https://snapshot.debian.org/file/5545c41ec7e7c983b9b966ba46680f4b6954f5ad/libkadm5srv-mit12_1.21.3-5%2Bdeb13u1_arm64.deb
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/libkadm5srv\-mit12_1\.21\.3\-5\+deb13u1_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/k/krb5/libkadm5srv-mit12_1.21.3-5+deb13u1_arm64.deb
+
+# Exact libsodium23 ARM64 input observed in PR151 owner-source analysis.
+# Verified named content preserves 120444 bytes and locked SHA256
+# d94fc46204b65a965e356ebc19f9f88aeb20a9c777cb9a6569e75f75d0ae5523.
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libs/libsodium/libsodium23_1\.0\.18\-1\+deb13u1_arm64\.deb https://snapshot.debian.org/file/283449abed3611000399635e3d5dc333b29c4c08/libsodium23_1.0.18-1%2Bdeb13u1_arm64.deb
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libs/libsodium/libsodium23_1\.0\.18\-1\+deb13u1_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/libs/libsodium/libsodium23_1.0.18-1+deb13u1_arm64.deb
+
 # Timestamped Debian binary packages: same pool path on the official CDN first,
 # then the exact snapshot URL. Bazel still checks the locked package SHA256.
 # These generic rules exclude indexes, source archives, and debian-security.
@@ -400,6 +435,12 @@ rewrite snapshot\.debian\.org/archive/debian/([0-9]{8}T[0-9]{6}Z)/(pool/(?:[A-Za
 rewrite snapshot-cloudflare\.debian\.org/archive/debian/([0-9]{8}T[0-9]{6}Z)/(pool/(?:[A-Za-z0-9][A-Za-z0-9_+.-]*/)+[A-Za-z0-9][A-Za-z0-9_+.%:~-]*\.deb) https://deb.debian.org/debian/$2
 rewrite snapshot-cloudflare\.debian\.org/archive/debian/([0-9]{8}T[0-9]{6}Z)/(pool/(?:[A-Za-z0-9][A-Za-z0-9_+.-]*/)+[A-Za-z0-9][A-Za-z0-9_+.%:~-]*\.deb) https://snapshot.debian.org/archive/debian/$1/$2
 rewrite snapshot-cloudflare\.debian\.org/archive/debian/([0-9]{8}T[0-9]{6}Z)/(pool/(?:[A-Za-z0-9][A-Za-z0-9_+.-]*/)+[A-Za-z0-9][A-Za-z0-9_+.%:~-]*\.deb) https://snapshot-cloudflare.debian.org/archive/debian/$1/$2
+
+# P4RT owner4a5 pins this XZ source through rules_boost 5160325d.
+# The retained official release matches 2889306 bytes and SHA256
+# aeba3e03bf8140ddedf62a0a367158340520f6b384f75ca6045ccc6c0d43fd5c.
+rewrite src\.fedoraproject\.org/lookaside/extras/xz/xz\-5\.4\.6\.tar\.gz/sha512/b08a61d8d478d3b4675cb1ddacdbbd98dc6941a55bcdd81a28679e54e9367d3a595fa123ac97874a17da571c1b712e2a3e901c2737099a9d268616a1ba3de497/xz\-5\.4\.6\.tar\.gz https://github.com/tukaani-project/xz/releases/download/v5.4.6/xz-5.4.6.tar.gz
+rewrite src\.fedoraproject\.org/lookaside/extras/xz/xz\-5\.4\.6\.tar\.gz/sha512/b08a61d8d478d3b4675cb1ddacdbbd98dc6941a55bcdd81a28679e54e9367d3a595fa123ac97874a17da571c1b712e2a3e901c2737099a9d268616a1ba3de497/xz\-5\.4\.6\.tar\.gz https://src.fedoraproject.org/lookaside/extras/xz/xz-5.4.6.tar.gz/sha512/b08a61d8d478d3b4675cb1ddacdbbd98dc6941a55bcdd81a28679e54e9367d3a595fa123ac97874a17da571c1b712e2a3e901c2737099a9d268616a1ba3de497/xz-5.4.6.tar.gz
 """
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -996,7 +1037,7 @@ class ImageWorkerTest(unittest.TestCase):
         # Bind the actual immutable base while preserving the existing suffix rules.
         actual = SHARED_CONFIG_FIXTURE.encode()
         self.assertEqual(worker.MIRROR_URL,
-                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d53bed3dfbc53895f5ba348354210704f3872692/ci/source_mirrors.cfg")
+                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/8ba36072602dc98220d20834fdb8eb189c880afd/ci/source_mirrors.cfg")
         self.assertEqual(hashlib.sha256(actual).hexdigest(), worker.MIRROR_SHA)
         self.assertTrue(worker.mirror_configuration(actual).startswith(actual))
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
