@@ -16,7 +16,8 @@ class P4rtCacheTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        for name in ('Makefile.cache', 'rules/functions', 'rules/p4rt.mk', 'rules/p4rt.dep'):
+        for name in ('Makefile.cache', 'rules/functions', 'rules/p4rt.mk',
+                     'rules/p4rt.dep', 'tools/bazel/p4rt_common_sdk.py'):
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -67,6 +68,7 @@ include Makefile.cache
         files = sidecar.read_text().split()
         self.assertIn('src/sonic-p4rt/README.bazel.md', files)
         self.assertIn('src/sonic-p4rt/Makefile', files)
+        self.assertIn('tools/bazel/p4rt_common_sdk.py', files)
         self.assertNotIn('README.bazel.md', files)
         self.assertNotIn('Makefile', files)
         self.assertNotIn('src/sonic-p4rt/sonic-pins', files)
@@ -81,6 +83,14 @@ include Makefile.cache
 
     def test_tar_cache_tracks_the_source_directory(self):
         self.cache_inputs('tar.bz2', 'files')
+
+    def test_sdk_helper_changes_invalidate_both_cache_formats(self):
+        helper = self.root / 'tools/bazel/p4rt_common_sdk.py'
+        for extension, category in (('deb', 'debs'), ('tar.bz2', 'files')):
+            with self.subTest(extension=extension):
+                before = self.cache_inputs(extension, category)
+                helper.write_text(helper.read_text() + '\n# Changed SDK helper\n')
+                self.assertNotEqual(before, self.cache_inputs(extension, category))
 
 
 if __name__ == '__main__':
