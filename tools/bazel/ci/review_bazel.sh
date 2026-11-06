@@ -4,7 +4,8 @@
 set -euo pipefail
 bazel_real=${BAZEL_REAL:-bazel}
 if [[ $# == 1 && "$1" == --version ]]; then
-    exec "$bazel_real" --version
+    # Resource launchers prepend startup options, which require a real command.
+    exec "$bazel_real" version --gnu_format
 fi
 revision=${SONIC_BAZEL_REGISTRY_REVISION:-}
 if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
