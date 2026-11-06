@@ -17,7 +17,8 @@ _LIBNL_STEMS = [
 [
     cc_import(
         name = stem,
-        shared_library = "lib/" + stem + ".so.200",
+        # The pinned owner also links these names with -l<name>.
+        shared_library = "lib/" + stem + ".so",
     )
     for stem in _LIBNL_STEMS
     if _DECLARED_LIBNL
