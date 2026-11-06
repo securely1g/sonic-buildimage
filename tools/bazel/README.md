@@ -424,10 +424,11 @@ The shared APT baseline was published by
 Declarative policy inputs originated in
 [build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29).
 This Draft integration retains `sonic-build-infra`
-`0.0.26-f6da55505437cb139fdf610db8c61cb9420b0fec` from the reviewed catalog. It
-combines the legacy APT interface with the linker-response handling required by
-the native builds. The source fix has a merged replacement, but this exact
-snapshot is unlanded; keep it as an explicit Draft dependency. Published .27
+`0.0.26-8e6664401169f8a40e43b443f0bc7f295a98ff83` from the reviewed catalog. It
+combines the legacy APT interface and required linker-response handling with the
+public owner-metadata alias fix from [build-infra #89](https://github.com/securely1g/sonic-build-infra/pull/89).
+This exact compatibility backport remains unlanded; keep it as an explicit Draft
+dependency. Published .27
 introduces the shared-lock contract and cannot replace it independently of the
 consumer migration. The root override keeps transitive consumers on the selected
 interface without rewriting any published registry entry. Commit suffixes do not

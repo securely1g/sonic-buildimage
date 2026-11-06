@@ -15,7 +15,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 # The reviewed combined catalog is fixed independently of workflow contents.
-CATALOG = "27d4f97bec8aa2c59527ec39eade76eca061a967"
+CATALOG = "927a08c2f0985719d1ba1b1cbeab5eb44cdbb69d"
 CONFIGS = {
     "d53bed3d": ("d53bed3dfbc53895f5ba348354210704f3872692", "8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68"),
     "087d3515": ("087d351564c713ca88d241ace0b4f895a42f0c61", "a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90"),
