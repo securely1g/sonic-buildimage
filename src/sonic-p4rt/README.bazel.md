@@ -22,3 +22,16 @@ legacy DEB selection. `p4rt_debug_test.py` compiles native ELF/DWP fixtures and
 checks isolated GDB lookup, including invalid and unrelated symbols. These
 fixture checks do not establish production P4RT compilation, image assembly or
 forwarding for a given source revision and architecture.
+
+The source-image SDK handoff gives the separate Bazel 6 P4RT owner the same
+libyang library used by its config-engine parent. It collects the existing
+`@libyang//:libyang_pkg` runtime TAR, checks the AMD64
+`libyang.so.3.9.1` bytes and relative `libyang.so.3` alias against the parent
+TAR, then declares the SONAME through `cc_import`. This replaces the ambient
+`-lyang` search only for that image handoff. The standalone Common SDK keeps
+its existing slave dependency contract.
+
+Synthetic cases in `tools/bazel/ci/p4rt_image_test.py` cover declared linkage,
+parent-byte drift, wrong architecture, missing inputs, unsafe aliases, and
+preservation of the previous SDK on rejection. These pure checks do not prove
+the native owner link or image runtime; those remain part of the image CI run.
