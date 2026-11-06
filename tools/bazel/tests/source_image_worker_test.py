@@ -178,6 +178,12 @@ rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/upda
 rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/l/linux/linux-libc-dev_6\.12\.96-1_all\.deb https://deb.debian.org/debian-security/pool/updates/main/l/linux/linux-libc-dev_6.12.96-1_all.deb
 rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/l/linux/linux-libc-dev_6\.12\.96-1_all\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/l/linux/linux-libc-dev_6.12.96-1_all.deb
 
+# Exact original Socat source archive selected by the MUX source-image recipe.
+# Named content preserves extraction type, 579370 bytes, and original SHA256
+# adc07a9c2723527cf6568d2fb96559794cf9c254a4bc2edd36f7f3789e9f7625.
+rewrite snapshot\.debian\.org/archive/debian/20241222T205329Z/pool/main/s/socat/socat_1\.8\.0\.2\.orig\.tar\.bz2 https://snapshot.debian.org/file/5a4a6a0e9819a6279e733c6cffd64ac150df93df/socat_1.8.0.2.orig.tar.bz2
+rewrite snapshot\.debian\.org/archive/debian/20241222T205329Z/pool/main/s/socat/socat_1\.8\.0\.2\.orig\.tar\.bz2 https://snapshot.debian.org/archive/debian/20241222T205329Z/pool/main/s/socat/socat_1.8.0.2.orig.tar.bz2
+
 # Exact Debian patch archive used by source-base-image socat@1.8.0.2.sonic.3.
 # SHA256 04b361cd91884eda6ca9fe2890ca83a6abe73dd8ce75fe9927b2d8443af36123; the SHA1 URL is only a locator.
 # All other source archives stay outside the generic binary-package rewrites.
@@ -366,6 +372,23 @@ rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util\-
 # libssh2-1t64 amd64; 245088 bytes; SHA256 915c4ec450a369d430e0151f9e10e25044ea2f0d6e41901e00a9317e232e5683.
 rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libs/libssh2/libssh2\-1t64_1\.11\.1\-1\+deb13u1_amd64\.deb https://snapshot.debian.org/file/06d870a39f89af810dc74cc6c54947ee57c91374
 rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libs/libssh2/libssh2\-1t64_1\.11\.1\-1\+deb13u1_amd64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/libs/libssh2/libssh2-1t64_1.11.1-1+deb13u1_amd64.deb
+
+# Exact krb5-multidev ARM64 input observed in Eventd dependency analysis.
+# Verified official content matches accepted lock/cache: 126404 bytes;
+# SHA256 9f5d65a069269b0960418f9d5a3110158234a1efbe9a9feb3650c57422fe41ef.
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/krb5\-multidev_1\.21\.3\-5\+deb13u1_arm64\.deb https://snapshot.debian.org/file/a7f775b5c78d9d5e769349d980b05b9f13e891d2
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/k/krb5/krb5\-multidev_1\.21\.3\-5\+deb13u1_arm64\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/k/krb5/krb5-multidev_1.21.3-5+deb13u1_arm64.deb
+
+# Exact libsodium ARMHF input from the Orchagent AMD64 source-closure query.
+# Verified official content matches accepted lock/cache: 138788 bytes;
+# SHA256 239ef2d400974ae787c098aadef7c3bc2c81339c36159705010cad6d5e1ed3e3.
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libs/libsodium/libsodium23_1\.0\.18\-1\+deb13u1_armhf\.deb https://snapshot.debian.org/file/60d6945b3aefe2f3abc15790ccddff1ade45376d
+rewrite snapshot\.debian\.org/archive/debian\-security/20260726T121236Z/pool/updates/main/libs/libsodium/libsodium23_1\.0\.18\-1\+deb13u1_armhf\.deb https://snapshot.debian.org/archive/debian-security/20260726T121236Z/pool/updates/main/libs/libsodium/libsodium23_1.0.18-1+deb13u1_armhf.deb
+
+# Exact libc6 ARMHF input from the SWSS AMD64 multiarch analysis failure.
+# Verified named content preserves 2249772 bytes and locked SHA256
+# 8aea0a08cefceb212303a738105ed5befc8fe95a32f465345ab5eec305f21d09.
+rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc6_2\.41\-12\+deb13u3_armhf\.deb https://snapshot.debian.org/file/2511d1ea4cdf37ca307cc3336cbc16ff23c323ef/libc6_2.41-12%2Bdeb13u3_armhf.deb
 
 # Timestamped Debian binary packages: same pool path on the official CDN first,
 # then the exact snapshot URL. Bazel still checks the locked package SHA256.
@@ -973,7 +996,7 @@ class ImageWorkerTest(unittest.TestCase):
         # Bind the actual immutable base while preserving the existing suffix rules.
         actual = SHARED_CONFIG_FIXTURE.encode()
         self.assertEqual(worker.MIRROR_URL,
-                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/087d351564c713ca88d241ace0b4f895a42f0c61/ci/source_mirrors.cfg")
+                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d53bed3dfbc53895f5ba348354210704f3872692/ci/source_mirrors.cfg")
         self.assertEqual(hashlib.sha256(actual).hexdigest(), worker.MIRROR_SHA)
         self.assertTrue(worker.mirror_configuration(actual).startswith(actual))
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
