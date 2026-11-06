@@ -299,7 +299,8 @@ jobs:
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
+          debian_mirrors = Path("tools/bazel/debian_mirrors.cfg").read_bytes()
+          config.write_bytes(debian_mirrors + b"\n" + data)
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
@@ -719,7 +720,8 @@ jobs:
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
+          debian_mirrors = Path("tools/bazel/debian_mirrors.cfg").read_bytes()
+          config.write_bytes(debian_mirrors + b"\n" + data)
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
