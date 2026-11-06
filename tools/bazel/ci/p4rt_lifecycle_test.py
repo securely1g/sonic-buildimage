@@ -95,7 +95,7 @@ class ReviewShutdownTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 actual = result.stdout.splitlines()
                 if args == ['--version']:
-                    self.assertEqual(actual, args)
+                    self.assertEqual(actual, ['version', '--gnu_format'])
                 else:
                     self.assertEqual(actual[:2], args[:2])
                     self.assertEqual(actual[2:5], ['--nosystem_rc', '--nohome_rc', '--noworkspace_rc'])

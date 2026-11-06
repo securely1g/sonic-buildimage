@@ -1503,28 +1503,181 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     container: *native_container
-    env: *native_bazel
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      P4RT_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     defaults: *native_shell
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - *native_space
-      - *native_tools
-      - *native_checkout
-      - *native_architecture
-      - *native_gnoi
-      - *native_p4rt_owner
-      - *native_p4rt_tools
+      - name: Install only receipt verification tools
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 git ca-certificates
+      - name: Checkout the normal CI merge for receipt verification
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: 'false'
+      - name: Preserve the original normal CI request
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt origin \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request"
+      - name: Upload the original P4RT worker request
+        if: env.P4RT_WORKER_RECEIPT == 'true' && steps.p4rt_request.outputs.new_request == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.p4rt_request.outputs.request_name }}
+          path: ${{ runner.temp }}/p4rt-ci-request/request.json
+          if-no-files-found: error
+          retention-days: '14'
+      - name: Download the immutable original P4RT request
+        if: env.P4RT_WORKER_RECEIPT == 'true' && steps.p4rt_request.outputs.new_request == 'false'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_request.outputs.request_artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_request.outputs.request_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-request
+      - name: Require exact successful worker evidence for this CI merge
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt discover \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request"
+      - name: Download only the small public P4RT JSON receipts
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_acceptance.outputs.artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_acceptance.outputs.worker_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-evidence
+      - name: Verify all original P4RT acceptance checks
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        run: |
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt verify \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request" \
+            --public "$RUNNER_TEMP/p4rt-ci-evidence" \
+            --output "$RUNNER_TEMP/p4rt-ci-verified.json"
+      - name: Retain the verified CI handoff summary
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p4rt-ci-p4rt_native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p4rt-ci-verified.json
+          if-no-files-found: error
+          retention-days: '14'
+      - name: Allocate source-build space on this disposable runner
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+          for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: 'false'
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Check native architecture and generated dependency state
+        run: |
+          test "$(uname -m)" = "x86_64"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Initialize P4RT's pinned source owner
+        run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Install P4RT source execution dependencies
+        run: |
+          apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \
+            libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+            libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Set up Bazel
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
         with:
           bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
+          bazelisk-cache: 'true'
+          repository-cache: 'true'
           disk-cache: oci-p4rt-amd64
-          cache-version: "8.5.1"
-
-      - *native_mirror
-      - *native_caches
-      - *native_pigz
+          cache-version: 8.5.1
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Reviewed PR228 candidate; Bazel retains every locked payload checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/353f3a98adaa4ecfe6aaa7229cdf2d825ff36dfe/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "e5fbd7add242accf33663c830d7647e02184bbc408e15033183de787f483d9e5"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+          # Draft wrappers disable the home rc; share setup-bazel caches with them.
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          home = Path.home() / '.bazelrc'
+          cache_lines = [line for line in home.read_text().splitlines()
+                         if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+          assert len(cache_lines) == 2, 'setup-bazel cache settings are missing'
+          user = Path('.bazelrc.user')
+          user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
+          PYCODE
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Bound P4RT build phases and verify execution tools
         run: |
           for tool in bsdtar gdb readelf objcopy make git python3 zip bison flex g++ pkg-config; do
@@ -1549,28 +1702,28 @@ jobs:
               output.write("BAZEL_REAL=" + str(directory / "root") + "\n")
               output.write("P4RT_OWNER_BAZEL=" + str(directory / "owner") + "\n")
           PYLAUNCH
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Prepare matching Common SDK and source-owned P4RT TARs
         run: |
           python3 -B tools/bazel/ci/p4rt_image.py prepare-owner --bazel "$BAZEL" \
             --directory artifacts/p4rt --owner-source src/sonic-p4rt/sonic-pins \
             --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
             --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6" --owner-bazel "$P4RT_OWNER_BAZEL" --jobs 2
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Build P4RT runtime and debug images
         run: |
           python3 -B tools/bazel/ci/p4rt_image.py build --bazel "$BAZEL" \
             --directory artifacts/p4rt --owner-source src/sonic-p4rt/sonic-pins \
             --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
             --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6"
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Validate P4RT image contents and cache reuse
         run: |
           python3 -B tools/bazel/ci/p4rt_validate.py validate --directory artifacts/p4rt \
             --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
           python3 -B tools/bazel/ci/p4rt_validate.py incremental --directory artifacts/p4rt \
             --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Run all original P4RT tests against the selected image SDK
         run: |
           for phase in prepare-owner-runtime owner-tests; do
@@ -1579,21 +1732,20 @@ jobs:
               --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
               --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6" --owner-bazel "$P4RT_OWNER_BAZEL" --jobs 2
           done
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Prepare reviewed P4RT public evidence
         id: p4rt_public
-        if: always()
+        if: (always()) && env.P4RT_WORKER_RECEIPT != 'true'
         run: python3 -B tools/bazel/ci/p4rt_public.py --directory artifacts/p4rt
-
       - name: Retain P4RT images and acceptance evidence
-        if: always() && steps.p4rt_public.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: (always() && steps.p4rt_public.outcome == 'success') && env.P4RT_WORKER_RECEIPT != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: p4rt-images-amd64-${{ github.sha }}
           path: artifacts/p4rt/public
           if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
+          retention-days: '14'
+          compression-level: '0'
 
   syncd_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
@@ -2184,28 +2336,97 @@ jobs:
     needs: p4rt_native
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      P4RT_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout the normal CI merge for receipt verification
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          persist-credentials: false
+          persist-credentials: 'false'
+      - name: Preserve the original normal CI request
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt origin \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request" --existing-only
+      - name: Download the immutable original P4RT request
+        if: env.P4RT_WORKER_RECEIPT == 'true' && steps.p4rt_request.outputs.new_request == 'false'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_request.outputs.request_artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_request.outputs.request_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-request
+      - name: Require exact successful worker evidence for this CI merge
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt discover \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request"
+      - name: Download only the small public P4RT JSON receipts
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_acceptance.outputs.artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_acceptance.outputs.worker_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-evidence
+      - name: Verify all original P4RT acceptance checks
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        run: |
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt verify \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request" \
+            --public "$RUNNER_TEMP/p4rt-ci-evidence" \
+            --output "$RUNNER_TEMP/p4rt-ci-verified.json"
+      - name: Retain the verified CI handoff summary
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p4rt-ci-p4rt_runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p4rt-ci-verified.json
+          if-no-files-found: error
+          retention-days: '14'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: 'false'
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Initialize P4RT's pinned probe owner
         run: git submodule update --init -- src/sonic-p4rt/sonic-pins
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: p4rt-images-amd64-${{ github.sha }}
           path: artifacts/p4rt
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Check installed P4RT startup, ConfigDB and software RPCs
         run: |
           python3 -B tools/bazel/ci/p4rt_loaded.py --directory artifacts/p4rt \
             --owner-source src/sonic-p4rt/sonic-pins
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Retain installed P4RT evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: (always()) && env.P4RT_WORKER_RECEIPT != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: p4rt-installed-amd64-${{ github.sha }}
           path: artifacts/p4rt/*.runtime.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: '14'
 
   syncd_runtime:
     name: Load and run syncd images (AMD64)
