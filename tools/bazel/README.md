@@ -408,10 +408,9 @@ Local commands default to the maintained SONiC registry `main` endpoint from
 `.bazelrc`, alongside Bazel Central Registry. Module versions, source commits,
 checksums and package snapshots remain pinned.
 
-`rules_distroless` 0.9.4.sonic.1 is available on the maintained registry after
-[registry #49](https://github.com/securely1g/sonic-bazel-registry/pull/49) landed.
-CI and local validation use the same `main` endpoint. The dotted version sorts
-above plain 0.9.4, so Distroless needs no root version override.
+The root selects published `rules_distroless` 0.9.4.sonic.17. The dotted version
+sorts above plain 0.9.4, so Distroless needs no root version override. Draft CI
+uses the immutable catalog described below while its source owners are unlanded.
 
 ```sh
 bazel test //tools/bazel/tests:select_apt_payloads_test
@@ -423,7 +422,7 @@ The shared APT baseline was published by
 Declarative policy inputs originated in
 [build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29).
 The image root now selects published `sonic-build-infra`
-`0.0.23-5b224d7190d04f1b7b68429eedfc03b7b1565ed0` from the maintained registry.
+`0.0.27-08e0956f80574b27a9b68e72fe855cc0089058e5` from the maintained registry.
 Its `single_version_override` keeps transitive consumers on that same registered
 version; no temporary infrastructure source override is needed. Commit suffixes
 do not sort by source history, so verify resolution when updating this pin.

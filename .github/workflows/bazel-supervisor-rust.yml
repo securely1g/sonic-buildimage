@@ -11,6 +11,9 @@ on:
       - tools/bazel/ci/lldp_draft_bazel.sh
       - tools/bazel/ci/lldp_draft_cache.py
       - tools/bazel/ci/frr_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/review_bazel.sh
+      - tools/bazel/ci/review_bazel_rc.py
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -23,6 +26,9 @@ on:
       - tools/bazel/ci/lldp_draft_bazel.sh
       - tools/bazel/ci/lldp_draft_cache.py
       - tools/bazel/ci/frr_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/review_bazel.sh
+      - tools/bazel/ci/review_bazel_rc.py
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -34,7 +40,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
+  SONIC_BAZEL_REGISTRY_REVISION: 08480c85afb70cdcbfc790ce970903d5d60e91d9
 
 jobs:
   native:
@@ -77,8 +83,8 @@ jobs:
           disk-cache: ${{ github.workflow }}-${{ matrix.arch }}
           cache-version: "8.5.1"
 
-      - name: Preserve configured caches for Draft validation
-        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
 
       - name: Verify native architecture and clean dependency inputs
         env:

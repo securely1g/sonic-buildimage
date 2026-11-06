@@ -19,6 +19,17 @@ from tools.bazel.ci import artifact_validation as artifacts
 from tools.bazel.oci.runtime_smoke import gdb_lookup
 
 
+def verify_development_timestamps(development):
+    """Reject build-time metadata in the exported development archive."""
+    with tarfile.open(development) as archive:
+        members = archive.getmembers()
+        artifacts.require(members, "empty development archive")
+        for member in members:
+            artifacts.require(member.mtime == 0,
+                              "non-reproducible development timestamp: " + member.name)
+    return len(members)
+
+
 def verify(archives, development, dependency_development):
     machine, triplet = {"x86_64": (62, "x86_64-linux-gnu"),
                         "aarch64": (183, "aarch64-linux-gnu")}[platform.machine()]
@@ -31,6 +42,7 @@ def verify(archives, development, dependency_development):
                           ("usr/bin/teamdctl", "main", "teamdctl.c")],
     }
     results = {}
+    development_members = verify_development_timestamps(development)
     with tempfile.TemporaryDirectory(prefix="libteam-installed-") as directory:
         root = Path(directory)
         # libteam.pc has Requires: libnl-3.0. Use that source owner's exported
@@ -112,6 +124,7 @@ def verify(archives, development, dependency_development):
             results[name]["gdb"] = checks
     return {"scope": "Installed native SDK and five symbol pairs; daemon networking and OCI are separate acceptance",
             "machine": machine, "development_sha256": artifacts.sha(development),
+            "development_timestamps": {"mtime": 0, "members": development_members},
             "dependency_development_sha256": artifacts.sha(dependency_development), "packages": results}
 
 

@@ -161,6 +161,15 @@ class SourceWorkflowTest(unittest.TestCase):
             (999, "codex/dash-engine-review-catalog", "securely1g/sonic-buildimage", True, False),
             (999, "codex/dash-engine-review-catalog", "example/sonic-buildimage", False, False),
             (999, "codex/dash-engine-review-catalog-extra", "securely1g/sonic-buildimage", False, True),
+            (999, "codex/swss-review-source-inputs", "securely1g/sonic-buildimage", True, False),
+            (999, "codex/swss-review-source-inputs", "example/sonic-buildimage", False, False),
+            (999, "codex/swss-review-source-inputs-extra", "securely1g/sonic-buildimage", False, True),
+            (999, "codex/swss-owner-image", "securely1g/sonic-buildimage", True, False),
+            (999, "codex/swss-owner-image", "example/sonic-buildimage", False, False),
+            (999, "codex/swss-owner-image-extra", "securely1g/sonic-buildimage", False, True),
+            (999, "codex/final23-owner-staging", "securely1g/sonic-buildimage", True, False),
+            (999, "codex/final23-owner-staging", "example/sonic-buildimage", False, False),
+            (999, "codex/final23-owner-staging-extra", "securely1g/sonic-buildimage", False, True),
             (999, "unrelated", "securely1g/sonic-buildimage", False, True),
         ):
             with self.subTest(number=number, branch=branch, owner=owner):

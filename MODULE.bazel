@@ -11,7 +11,7 @@ include("//src/sonic-frr:deps.MODULE.bazel")
 
 bazel_dep(name = "aspect_bazel_lib", version = "2.19.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
-bazel_dep(name = "gawk", version = "5.3.2.bcr.3")
+bazel_dep(name = "gawk", version = "5.3.2.sonic.1")
 bazel_dep(name = "googletest", version = "1.16.0")
 bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 
@@ -34,17 +34,17 @@ bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.16")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.17")
 
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
 bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
-bazel_dep(name = "rules_python", version = "1.9.0")
+bazel_dep(name = "rules_python", version = "1.9.0.sonic.1")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
-bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.1")
+bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.2")
 bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
@@ -54,7 +54,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.26-f6da55505437cb139fdf610db8c61cb9420b0fec",
+    version = "0.0.27-08e0956f80574b27a9b68e72fe855cc0089058e5",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -64,13 +64,13 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.4-706cc3d1f6182dea18deed36a2ddb0fbcf1a59fc",
+    version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
     repo_name = "sonic_sairedis",
 )
-bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-swss", version = "0.0.2-f85dc016197a9a2c91e36cc6eb4445fabf65fa9d", repo_name = "sonic_swss")
 bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_platform_common")
 bazel_dep(name = "sonic-snmpagent", version = "2.1.0", repo_name = "sonic_snmpagent")
-bazel_dep(name = "sonic-swss-common", version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(name = "sonic-wpa-supplicant", version = "2.9.0.sonic.1", repo_name = "sonic_wpa_supplicant")
 bazel_dep(name = "scapy", version = "2.6.1.sonic.1")
 bazel_dep(name = "hsflowd", version = "2.1.26.sonic.1")
@@ -85,15 +85,6 @@ bazel_dep(
     name = "sonic-yang-models",
     version = "1.0.1-b0a9362a7a1b4b5e1b7188c019d256f7c8aaff9f",
     repo_name = "sonic_yang_models",
-)
-
-# SWSS is not registered yet. Select its maintained-branch merge explicitly.
-git_override(
-    module_name = "sonic-swss",
-    commit = "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
-    patch_strip = 1,
-    patches = ["//tools/bazel:0001-sonic-swss-libteam.patch"],
-    remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
 # Dependency overrides do not propagate from Common. Keep its cgo header
@@ -331,7 +322,7 @@ single_version_override(
     version = "0.0.5-c53741eb56e55e4f1c9b48c577ed5de986e62192",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.5-15fcb926a302059ec379f0c2fd15eb3d88bda4c9", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.3-15fcb926a302059ec379f0c2fd15eb3d88bda4c9", repo_name = "sonic_fips")
 
 # Fixed target C/C++ runtime and JSON headers for sonic-fib.
 apt.install(
@@ -375,6 +366,7 @@ source_modules(
     name = "image_source_modules",
     modules = {
         "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
+        "@libteam//:MODULE.bazel": "libteam",
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
@@ -400,22 +392,22 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-sairedis",
-    version = "0.0.4-706cc3d1f6182dea18deed36a2ddb0fbcf1a59fc",
+    version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
 )
 
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.26-f6da55505437cb139fdf610db8c61cb9420b0fec",
+    version = "0.0.27-08e0956f80574b27a9b68e72fe855cc0089058e5",
 )
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed",
+    version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61",
 )
 
 single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.5-15fcb926a302059ec379f0c2fd15eb3d88bda4c9",
+    version = "0.0.3-15fcb926a302059ec379f0c2fd15eb3d88bda4c9",
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.
@@ -456,7 +448,8 @@ source_files(
     },
 )
 
-include("//src/libteam:deps.MODULE.bazel")
+# The shared module owns libteam sources, native providers and runtime/debug TARs.
+bazel_dep(name = "libteam", version = "1.31.0.sonic.1")
 
 # Reuse the source owner's locked third-party wheels; YAML and natsort already
 # come from config-engine. No second copy of either SONiC package is generated.

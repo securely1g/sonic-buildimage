@@ -32,8 +32,8 @@ WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
-MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d53bed3dfbc53895f5ba348354210704f3872692/ci/source_mirrors.cfg"
+MIRROR_SHA = "8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68"
 SNAPSHOT_FALLBACKS = {
     "pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u4_amd64.deb": "d63097e4bb174c04bfc29e38e6270b43c2db9c0b",
     "pool/main/p/python3.13/libpython3.13_3.13.5-2+deb13u4_amd64.deb": "a817f92905b030fcbca7d433db7dc4dcccf91c3d",

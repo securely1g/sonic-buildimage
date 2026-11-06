@@ -29,8 +29,8 @@ sonic_layer(
         "@sonic_sairedis//meta:libsaimetadata_pkg",
         "@sonic_dash_api//:libdashapi_pkg",
         "@sonic_dash_api//:protobuf_runtime_pkg",
-        "//src/libteam:libteam_runtime",
-        "//src/libteam:libteamdctl_runtime",
+        "@libteam//:libteam_runtime",
+        "@libteam//:libteamdctl_runtime",
     ],
 )
 
@@ -68,15 +68,21 @@ sonic_layer(
 )
 
 # Preserve the parent's checked package records and add the selected external
-# APT packages. Source TARs remain source artifacts; do not invent dpkg records
-# for owners that do not export a package-identity contract.
+# APT packages. libteam exports the library-only package identities used here;
+# other source TARs retain their existing metadata contracts.
 installed_packages(
     name = "installed_packages",
     apt_receipt = ":runtime_apt_selection",
     architecture = "amd64",
     base = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
     controls = [label + ":control" for label in APT_INPUTS["swss_layer_debian"]["amd64"].values()],
+    owner_metadata = ["@libteam//:library_runtime_packages.json"],
+    source_modules = {"libteam": "@image_source_modules//:libteam.MODULE.bazel"},
     source_spec = "//dockers/docker-swss-layer-trixie/bazel:source_paths.json",
+    sources = {
+        "libteam5": "@libteam//:libteam_runtime",
+        "libteamdctl0": "@libteam//:libteamdctl_runtime",
+    },
 )
 
 filegroup(

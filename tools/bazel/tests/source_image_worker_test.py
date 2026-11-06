@@ -19,6 +19,7 @@ from unittest.mock import patch
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
+SHARED_CONFIG_FIXTURE = (ROOT / "tools/bazel/tests/fixtures/source-mirrors-d53bed3d.cfg").read_text()
 SPEC = importlib.util.spec_from_file_location("source_image_worker", ROOT / "tools/bazel/ci/source_image_worker.py")
 worker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(worker)
@@ -112,6 +113,16 @@ class ImageWorkerTest(unittest.TestCase):
                 worker.prepare_validation_tools(artifacts)
 
     def test_gawk_mirror_changes_only_three_exact_source_urls(self):
+        # Bind the actual immutable base while preserving the existing suffix rules.
+        actual = SHARED_CONFIG_FIXTURE.encode()
+        self.assertEqual(worker.MIRROR_URL,
+                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d53bed3dfbc53895f5ba348354210704f3872692/ci/source_mirrors.cfg")
+        self.assertEqual(hashlib.sha256(actual).hexdigest(),
+                         "8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68")
+        self.assertEqual(hashlib.sha256(actual).hexdigest(), worker.MIRROR_SHA)
+        self.assertTrue(worker.mirror_configuration(actual).startswith(actual))
+        with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+            worker.mirror_configuration(actual + b'changed')
         original = b"verified existing mirror fixture\n"
         with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
             config = worker.mirror_configuration(original).decode()

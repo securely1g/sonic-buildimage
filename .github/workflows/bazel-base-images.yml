@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
+  SONIC_BAZEL_REGISTRY_REVISION: 08480c85afb70cdcbfc790ce970903d5d60e91d9
 
 jobs:
   native:
@@ -67,6 +67,8 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'
@@ -75,10 +77,10 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Reviewed PR228 candidate; Bazel retains every locked payload checksum.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/f77605f0e9717395b7cae85e4a719035ec456c84/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d53bed3dfbc53895f5ba348354210704f3872692/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8cc37c150bfdac99dcddb0a3a22602fc500f5813b75bad19b3bf243668552a95"
+          expected = "8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -86,8 +88,6 @@ jobs:
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
-      - name: Preserve configured caches for Draft validation
-        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
 
       - name: Prepare the checksum-pinned pigz source archive
         run: |

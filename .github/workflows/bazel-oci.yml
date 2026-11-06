@@ -267,7 +267,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 python3-yaml tar unzip zstd
           for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
 
       - name: Checkout repository
@@ -306,6 +306,17 @@ jobs:
           disk-cache: ${{ matrix.disk_cache }}
           cache-version: "8.5.1"
 
+      - name: Preserve setup-bazel caches for source checks
+        env:
+          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
+        run: |
+          # A reviewed legacy checkout supplies its original cache helper.
+          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f tools/bazel/ci/preserve_setup_bazel_cache.py ]]; then
+            python3 -B tools/bazel/ci/lldp_draft_cache.py
+          else
+            python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+          fi
+
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'
@@ -325,9 +336,6 @@ jobs:
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
-      - name: Preserve configured caches for Draft validation
-        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
-
       - name: Prepare the checksum-pinned pigz source archive
         run: |
           mkdir -p artifacts/source-downloads
@@ -422,7 +430,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(fromJSON('["codex/final23-owner-staging","codex/swss-review-source-inputs","codex/swss-owner-image"]'), github.head_ref)) || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -537,6 +545,7 @@ jobs:
           python3 -B tools/bazel/ci/verify_agent_cache.py \
             --artifacts artifacts/archive/agent-cache \
             --bazel "$BAZEL" \
+            --bazel-arg=--experimental_downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg" \
             --repository-cache "$("$BAZEL" info repository_cache)" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
@@ -582,18 +591,49 @@ jobs:
           compression-level: 1
 
       - name: Build and inspect the shared runtime and symbols
+        id: swss_layer_build
         if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          mkdir -p artifacts/swss-layer
+          cp "$RUNNER_TEMP/sonic-source-mirrors.cfg" artifacts/swss-layer/downloader.cfg
           python3 -B tools/bazel/tests/swss_layer_payload_test.py
           python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
+      - name: Validate reviewed SWSS consumer contracts
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
+        run: |
+          set -euo pipefail
+          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f tools/bazel/ci/swss_image_rebuild.py ]]; then
+            targets=(//src/libteam:consumer_test //tools/bazel/tests:swss_common_rust_test
+                     @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
+          else
+            targets=(@libteam//:consumer_test @sonic_swss//crates/countersyncd:common_rust_test
+                     @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
+          fi
+          python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
+            --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
+            --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
+            --output artifacts/swss-layer/consumer-action-audit.json "${targets[@]}"
+          "$BAZEL" test --platforms=@sonic_build_infra//platforms:x86_64_trixie \
+            --host_platform=@sonic_build_infra//platforms:x86_64_trixie \
+            --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
+            --nocache_test_results --test_output=all \
+            --build_event_json_file="$PWD/artifacts/swss-layer/consumer-events.jsonl" "${targets[@]}"
       - name: Check cached no-op and source edit through the image
         if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
+          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
         run: |
-          python3 -B tools/bazel/ci/swss_rebuild.py --bazel "$BAZEL" \
+          probe=tools/bazel/ci/swss_image_rebuild.py
+          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f "$probe" ]]; then
+            probe=tools/bazel/ci/swss_rebuild.py
+          fi
+          python3 -B "$probe" --bazel "$BAZEL" \
             --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
             --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
             --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
@@ -602,7 +642,7 @@ jobs:
           git diff --exit-code
       - name: Prepare shared SWSS image evidence
         id: swss_layer_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_build.outcome != 'skipped'
         run: |
           python3 - <<'PY'
           import json
@@ -656,7 +696,7 @@ jobs:
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
+          SONIC_BAZEL_REGISTRY_REVISION: 08480c85afb70cdcbfc790ce970903d5d60e91d9
           BAZELISK_GITHUB_TOKEN: ""
         run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
       - name: Validate installed Orchagent sources and Scapy wheel
@@ -747,7 +787,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
+          SONIC_BAZEL_REGISTRY_REVISION: 08480c85afb70cdcbfc790ce970903d5d60e91d9
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
         if: matrix.architecture == 'amd64'
@@ -846,7 +886,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
+          SONIC_BAZEL_REGISTRY_REVISION: 08480c85afb70cdcbfc790ce970903d5d60e91d9
         run: python3 -B tools/bazel/ci/otel_image.py build --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Validate OTEL installed payloads and matching symbols
         if: matrix.architecture == 'amd64'
@@ -1886,7 +1926,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl \
-            gdb git j2cli jq libarchive-tools libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
+            gdb git j2cli jq libarchive-tools libtool libxml2 make pigz pkg-config python3 python3-jinja2 python3-yaml redis-server squashfs-tools tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1913,6 +1953,9 @@ jobs:
           disk-cache: false
           cache-version: "8.5.1"
 
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
+
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'
@@ -1935,7 +1978,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(fromJSON('["codex/final23-owner-staging","codex/swss-review-source-inputs","codex/swss-owner-image"]'), github.head_ref)) || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -1954,6 +1997,7 @@ jobs:
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
+        id: repository_inputs
         run: |
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
@@ -1970,6 +2014,35 @@ jobs:
             --module-graph artifacts/repository-inputs/module-graph.json \
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
+
+      - name: Prepare repository graph failure receipt
+        id: repository_graph_failure
+        if: always() && steps.repository_inputs.outcome == 'failure'
+        run: |
+          python3 - <<'PYDIAG'
+          import os
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, receipt_summary
+          failure = Path('artifacts/repository-inputs/module-graph-failure.json')
+          if failure.is_symlink() or (failure.exists() and not failure.is_file()):
+              raise ValueError('Unsafe graph failure receipt')
+          if failure.exists():
+              if failure.stat().st_size > 4096:
+                  raise ValueError('Oversized graph failure receipt')
+              receipt_summary(load_json(failure.read_bytes()), 'resolution')
+              with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+                  output.write('present=true\n')
+          PYDIAG
+
+      - name: Retain repository graph failure receipt
+        if: always() && steps.repository_graph_failure.outcome == 'success' && steps.repository_graph_failure.outputs.present == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repository-graph-failure-amd64
+          path: artifacts/repository-inputs/module-graph-failure.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |
@@ -2397,11 +2470,14 @@ jobs:
     needs: [checks]
     # Source PRs #5/#51/#61 and the SWSS closure follow-up do not build DEBs.
     if: >-
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'codex/swss-review-source-inputs' || github.head_ref == 'codex/swss-owner-image')) &&
+      github.head_ref != 'codex/image-environment' &&
+      github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && github.head_ref != 'frr-native-bazel' && github.event.pull_request.head.ref != 'codex/libteam-current-native-inputs' && !(github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref))) ||
+       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && github.head_ref != 'frr-native-bazel' && github.event.pull_request.head.ref != 'codex/libteam-current-native-inputs' && !(github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/final23-owner-staging","codex/swss-review-source-inputs","codex/swss-owner-image","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref))) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
@@ -2597,7 +2673,7 @@ jobs:
         shell: bash
     env:
       BAZEL: tools/bazel/ci/review_bazel.sh
-      SONIC_BAZEL_REGISTRY_REVISION: 1d1e57334ad7b2ddd896f61f1bcb773c5c412c7a
+      SONIC_BAZEL_REGISTRY_REVISION: 08480c85afb70cdcbfc790ce970903d5d60e91d9
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools

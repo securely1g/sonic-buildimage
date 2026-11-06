@@ -6,6 +6,7 @@ from functools import partial
 import json
 from pathlib import Path
 import platform
+import re
 import sys
 import tarfile
 import tempfile
@@ -54,6 +55,41 @@ def verify_source_runtime(files, archive):
     return runtime, native
 
 
+def verify_libteam_metadata(metadata, native):
+    """Bind the two installed libraries to the selected owner and native bytes."""
+    expected = {
+        # The selected Bazel 8.5.1 metadata producer emits canonical labels.
+        # Retain the exact apparent forms without accepting other repositories.
+        "libteam5": (("@libteam//:libteam_runtime", "@@libteam+//:libteam_runtime"),
+                     "usr/lib/x86_64-linux-gnu/libteam.so.5.6.1"),
+        "libteamdctl0": (("@libteam//:libteamdctl_runtime", "@@libteam+//:libteamdctl_runtime"),
+                        "usr/lib/x86_64-linux-gnu/libteamdctl.so.0.1.5"),
+    }
+    checks.require(metadata.get("schema") == 1 and metadata.get("architecture") == "amd64",
+                   "libteam package metadata schema or architecture differs")
+    owner = metadata.get("source_modules", {}).get("libteam", {})
+    checks.require(owner.get("version") == "1.31.0.sonic.1" and
+                   re.fullmatch(r"[0-9a-f]{64}", owner.get("module_sha256", "")),
+                   "libteam package metadata lacks the selected owner identity")
+    records = metadata.get("source_packages", [])
+    checks.require(len(records) == len(expected) and
+                   {item.get("package") for item in records} == set(expected),
+                   "shared layer must record exactly its two source libteam libraries")
+    for item in records:
+        targets, path = expected[item["package"]]
+        checks.require(item.get("target") in targets and
+                       item.get("source_revision") == owner["version"] and
+                       re.fullmatch(r"[0-9a-f]{64}", item.get("payload_sha256", "")),
+                       "libteam package provenance differs: " + item["package"])
+        files = item.get("native_files", [])
+        checks.require(len(files) == 1 and files[0].get("path") == path and path in native,
+                       "libteam package native inventory differs: " + item["package"])
+        checks.require(all(files[0].get(key) == native[path].get(key)
+                           for key in ("sha256", "mode", "uid", "gid")),
+                       "libteam package metadata changed native bytes or ownership: " + path)
+    return {"owner": owner, "packages": records}
+
+
 def verify(layout, parent, paths, source):
     base_images.verify_unique_layer_paths(layout)
     files = base_images.installed_inventory(layout)
@@ -73,6 +109,7 @@ def verify(layout, parent, paths, source):
                                  ("usr/share/sonic/bazel/swss-layer-packages.json", "packages.json")):
         checks.require(files.get(installed, {}).get("sha256") == checks.sha(paths[generated]),
                        "OCI package metadata differs from its generated input: " + installed)
+    libteam = verify_libteam_metadata(json.loads(paths["packages.json"].read_bytes()), native)
     policy = package_contract.read_policy(paths["swss-policy.json"])
     swss = checks.payload(paths["swss-runtime.tar"])
     programs = package_contract.validate_install_inventory(source, swss, policy["install_inventory"])
@@ -113,7 +150,7 @@ def verify(layout, parent, paths, source):
         "archive": archive_receipt,
         "config_digest": layout.manifest["config"]["digest"], "native": native, "swss_programs": programs,
         "source_debug_pairs": debug["debug_pairs"], "source_runtime_sha256": checks.sha(paths["source-runtime.tar"]),
-        "parent_payload_unchanged": True, "elfs": elfs,
+        "parent_payload_unchanged": True, "elfs": elfs, "libteam": libteam,
     }
 
 
