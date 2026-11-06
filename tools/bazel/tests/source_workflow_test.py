@@ -41,6 +41,62 @@ def shell(step):
     return match[1]
 
 
+class P4rtNativeJobTest(unittest.TestCase):
+    def test_native_p4rt_uses_an_independent_runner_and_cache(self):
+        workflow = jobs()
+        archive = workflow["archive"]
+        native = workflow["p4rt_native"]
+        header = native.split("    steps:\n", 1)[0]
+        self.assertIn("runs-on: ubuntu-24.04\n", header)
+        self.assertIn("timeout-minutes: 360\n", header)
+        self.assertNotIn("    needs:", header)
+        self.assertNotIn("matrix.", native)
+        self.assertIn("architecture: amd64", archive)
+        self.assertIn("architecture: arm64", archive)
+        self.assertIn("runner: ubuntu-24.04-arm", archive)
+        self.assertIn("disk-cache: buildimage-gzip-${{ matrix.architecture }}", archive)
+        self.assertIn("disk-cache: p4rt-native-amd64", native)
+        self.assertIn("container: *p4rt_native_container", native)
+        self.assertIn("defaults: *p4rt_native_shell", native)
+        for phase in ("Prepare matching Common SDK and source-owned P4RT TARs",
+                      "Build P4RT runtime and debug images",
+                      "Validate P4RT image contents and cache reuse",
+                      "Run all original P4RT tests against the selected image SDK"):
+            self.assertIn(phase, steps(native))
+            self.assertNotIn(phase, steps(archive))
+        self.assertIn("*p4rt_native_mirror", native)
+        self.assertIn("*p4rt_native_bounds", native)
+        self.assertIn("*p4rt_native_owner", native)
+
+    def test_required_archive_check_rejects_non_success_p4rt(self):
+        archive = jobs()["archive"]
+        self.assertIn("    if: ${{ !cancelled() }}", archive)
+        self.assertIn("    needs: [p4rt_native]", archive)
+        gate = steps(archive)["Require native P4RT image checks to pass"]
+        self.assertIn("if: always() && matrix.architecture == 'amd64'", gate)
+        self.assertIn("P4RT_RESULT: ${{ needs.p4rt_native.result }}", gate)
+        for conclusion in ("success", "failure", "cancelled", "skipped", "", "unknown"):
+            with self.subTest(conclusion=conclusion):
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell(gate)],
+                                        env=dict(os.environ, P4RT_RESULT=conclusion),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, conclusion == "success",
+                                 result.stdout + result.stderr)
+
+    def test_runtime_waits_for_the_unchanged_p4rt_artifact(self):
+        workflow = jobs()
+        producer = workflow["p4rt_native"]
+        runtime = workflow["p4rt_runtime"]
+        self.assertIn("    needs: p4rt_native\n", runtime)
+        self.assertEqual(producer.count("uses: actions/upload-artifact@"), 1)
+        self.assertEqual(runtime.count("uses: actions/download-artifact@"), 1)
+        artifact = "name: p4rt-images-amd64-${{ github.sha }}"
+        self.assertIn(artifact, producer)
+        self.assertIn(artifact, runtime)
+        self.assertIn("path: artifacts/p4rt/public", producer)
+        self.assertIn("name: p4rt-installed-amd64-${{ github.sha }}", runtime)
+
+
 class SourceWorkflowTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="source-workflow-")
