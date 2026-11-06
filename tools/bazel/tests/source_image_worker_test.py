@@ -1159,7 +1159,7 @@ class ImageWorkerTest(unittest.TestCase):
         wrapper = "/source/tools/bazel/ci/review_bazel.sh"
         for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine"), ("framework", "mgmt_framework"),
                             ("database", "database"), ("eventd", "eventd"), ("lldp", "lldp"),
-                            ("radv", "radv"), ("macsec", "macsec"), ("mux", "mux")):
+                            ("radv", "radv"), ("macsec", "macsec"), ("mux", "mux"), ("frr", "frr")):
             with self.subTest(image=image):
                 driver = f"/source/tools/bazel/ci/{stem}_image.py"
                 for phase in ("build", "validate", "incremental"):
@@ -1245,13 +1245,13 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch))
         self.assertFalse(condition(workflow["jobs"]["registry_native"]["if"], event="pull_request", branch=branch))
 
-    def test_six_service_dispatches_select_only_the_existing_native_image_job(self):
+    def test_service_dispatches_select_only_the_existing_native_image_job(self):
         import yaml
         from tools.bazel.tests.registry_native_worker_test import condition
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux"):
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
             with self.subTest(image=image):
                 selected = [name for name, job in jobs.items() if condition(
                     str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
@@ -1260,7 +1260,7 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertFalse(condition(jobs["source_image"]["if"], mode=image))
         self.assertEqual(jobs["source_image"]["runs-on"],
                          ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
-        for image in ("snmp", "frr", "base", "config-engine", "swss-layer"):
+        for image in ("snmp", "base", "config-engine", "swss-layer"):
             with self.subTest(unsupported=image), self.assertRaises(ValueError):
                 worker.selection(image, "a" * 40)
 
@@ -1303,6 +1303,7 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(worker.catalog_for("gearbox", root), "a" * 40)
             self.assertEqual(worker.catalog_for("dash-engine", root), "a" * 40)
             self.assertEqual(worker.catalog_for("framework", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("frr", root), "a" * 40)
             workflow.write_text("env:\n  BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
             wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")

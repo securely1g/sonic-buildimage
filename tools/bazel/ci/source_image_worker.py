@@ -25,7 +25,7 @@ from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
-           "radv": "radv", "macsec": "macsec", "mux": "mux"}
+           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -35,7 +35,7 @@ WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 WRAPPERS["framework"] = "review_bazel.sh"
-for name in ("database", "eventd", "lldp", "radv", "macsec", "mux"):
+for name in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
     WRAPPERS[name] = "review_bazel.sh"
 # Older service branches select their catalog in a dedicated image workflow.
 # Keep the common workflow first for reviewed combined-source checkouts.

@@ -78,7 +78,7 @@ existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
 `otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
-`database`, `eventd`, `lldp`, `radv`, `macsec` or `mux`,
+`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux` or `frr`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -220,11 +220,24 @@ It uses the source checkout's immutable review catalog, private Docker daemon
 and per-worker `database/output-base` cache. The same four phases, AMD64/Trixie
 preflight, source checks, no-DEB action audit and artifact hash checks apply.
 
-SNMP, FRR and the shared base/config-engine/SWSS layers are not selectable here.
-Their existing workflows use inline loaded-container commands or combine build
-and validation under different CLIs. They need an explicit adapter preserving
-all of those checks and receipts; a missing phase must not be treated as a pass.
-Use their dedicated workflows until that interface is reviewed.
+The `frr` selector uses the selected source's existing `frr_image.py` build,
+validation and incremental phases through `review_bazel.sh`, followed by the
+source-owned `frr_loaded.py` extracted from the dedicated FRR workflow. The helper
+and its pure checks are reviewed with this controller; execution uses the selected
+source checkout's identical helper. Select a
+reviewed source revision containing that helper and a compatible common OCI
+workflow catalog; older checkouts without the helper fail preparation. The
+existing driver retains its 18 outputs, 21 no-DEB audit roots, SNMP/tcmalloc
+settings and template edit/restore checks. The loaded phase verifies both image
+archives/configurations/layers and the Redis fixture, then runs the unchanged
+private BGPD/VTY, installed Python and debug probes as UID/GID 300 with group 102.
+It uses no network peers, Zebra, kernel routing or full SONiC startup. Adding the
+selector does not establish FRR acceptance for a new source revision.
+
+SNMP and the shared base/config-engine/SWSS layers are not selectable here.
+Their existing workflows need an explicit adapter preserving all checks and
+receipts; a missing phase must not be treated as a pass. Use their dedicated
+workflows until that interface is reviewed.
 
 ## Explicit ordinary registry consumers
 
