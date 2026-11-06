@@ -249,6 +249,17 @@ class RuntimeTest(unittest.TestCase):
         with patch.dict(os.environ, {'BAZEL_SWSS_ARGS': '--jobs=3', 'BAZEL_CONTAINER_ARGS': ''}, clear=True):
             self.assertNotIn('--jobs=3', image.root_options())
 
+    def test_owner_profile_cannot_disable_the_recorded_yang_feature(self):
+        flag = '--@sonic_swss_common//tools/bazel:yang_modules='
+        for variable in ('BAZEL_CONTAINER_ARGS', 'BAZEL_SWSS_ARGS'):
+            with self.subTest(variable=variable), patch.dict(os.environ, {
+                    variable: flag + 'False --jobs=1'}, clear=True):
+                options = image.root_options()
+                self.assertEqual([value for value in options if value.startswith(flag)][-1],
+                                 flag + 'True')
+                self.assertEqual([value for value in options if value.startswith('--jobs=')][-1],
+                                 '--jobs=1')
+
     def test_clean_checkout_renders_manifests_before_the_first_owner_graph_audit(self):
         events = []
         args = SimpleNamespace(directory=self.root / 'artifacts', owner_source=self.root / 'owner',
