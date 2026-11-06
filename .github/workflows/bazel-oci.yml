@@ -11,6 +11,11 @@ on:
         type: choice
         options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, snmp, p4rt, base-config, swss-layer]
         default: none
+      source_ci_request:
+        description: Optional immutable normal-CI request artifact ID for reviewed P4RT validation
+        required: false
+        default: ''
+        type: string
       source_revision:
         description: Reviewed 40-character image source or fixed registry commit
         type: string
@@ -237,6 +242,36 @@ jobs:
           path: ${{ env.SOURCE_WORKER_SOURCE }}
           clean: false
           persist-credentials: false
+      - name: Verify the normal CI request artifact provenance
+        if: inputs.source_image == 'p4rt' && inputs.source_ci_request != ''
+        id: p4rt_ci_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_ARTIFACT: ${{ inputs.source_ci_request }}
+        run: |
+          cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt worker-origin \
+            --artifact "$REQUEST_ARTIFACT" \
+            --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request"
+      - name: Download the immutable normal CI request
+        if: inputs.source_image == 'p4rt' && inputs.source_ci_request != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_ci_request.outputs.request_artifact }}
+          run-id: ${{ steps.p4rt_ci_request.outputs.request_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          merge-multiple: true
+          path: ${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/ci-request/payload
+      - name: Bind the exact normal CI merge before native work
+        if: inputs.source_image == 'p4rt' && inputs.source_ci_request != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt bind-worker \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" \
+            --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request"
       - name: Verify the existing successful source-download producer
         if: inputs.source_inputs_run != ''
         env:
@@ -334,6 +369,25 @@ jobs:
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" stop \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+
+      - name: Package the normal CI acceptance receipts
+        if: inputs.source_image == 'p4rt' && inputs.source_ci_request != ''
+        id: p4rt_ci_acceptance
+        run: |
+          cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
+          python3 -B -m tools.bazel.ci.p4rt_worker_receipt bundle \
+            --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request" \
+            --public "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts/public" \
+            --output "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-acceptance"
+      - name: Upload the normal CI acceptance receipts
+        if: inputs.source_image == 'p4rt' && inputs.source_ci_request != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.p4rt_ci_acceptance.outputs.acceptance_name }}
+          path: ${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/ci-acceptance
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
   worker_provenance:
     name: Worker provisioner identity
