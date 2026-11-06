@@ -29,6 +29,7 @@ BASE = '//dockers/docker-config-engine-trixie:docker-config-engine-trixie'
 RUNTIME_INPUTS = ('owner-test-runtime.tar',)
 COMMON_REVISION = '43598143ef4a46431eae0859915cd7d951dad1ed'
 OPTIONS = ['--jobs=2', '--local_resources=cpu=2', '--local_resources=memory=8000',
+           '--@sonic_swss_common//tools/bazel:yang_modules=True',
            '--platforms=@sonic_build_infra//platforms:x86_64_trixie',
            '--host_platform=@sonic_build_infra//platforms:x86_64_trixie']
 PREPARATION_TARGETS = {
@@ -73,7 +74,7 @@ def root_options():
     extra = cache_options(cache) + shlex.split(arguments)
     check.require(all(value and not any(char in value for char in '\r\n\0') for value in extra),
                   'Bazel options must be nonempty single-line arguments')
-    # Preserve normal Make cache/custom options, then enforce this native profile.
+    # Preserve cache/custom options, then enforce the recorded YANG/native profile.
     return [*OPTIONS[:3], *extra, *OPTIONS[3:]]
 
 
