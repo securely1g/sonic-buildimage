@@ -99,41 +99,8 @@ jobs:
         with:
           name: snmp-image-amd64
           path: artifacts/snmp
-      - name: Verify and load only this run's images
-        run: |
-          python3 - <<'PY'
-          import hashlib,json,subprocess
-          from pathlib import Path
-          directory=Path('artifacts/snmp')
-          receipt=json.loads((directory/'validation.json').read_text())
-          assert receipt['status']=='passed' and receipt['architecture']=='amd64'
-          assert receipt['revision']==subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-          for name in ['docker-snmp','docker-snmp-dbg']:
-              path=directory/(name+'.gz')
-              assert hashlib.sha256(path.read_bytes()).hexdigest()==receipt['artifacts'][path.name]['sha256']
-              subprocess.run(['docker','load','--input',str(path)],check=True)
-              actual=json.loads(subprocess.check_output(['docker','image','inspect',name+':latest']))[0]
-              expected=json.loads((directory/(name+'.validation.json')).read_text())
-              assert actual['Os']=='linux' and actual['Architecture']=='amd64'
-              assert actual['RootFS']['Layers']==expected['rootfs']['diff_ids']
-              meaningful=lambda values:{k:v for k,v in values.items() if v not in (None,'',[],{},False)}
-              assert meaningful(actual['Config'])==meaningful(expected['config'])
-          assert hashlib.sha256((directory/'test-redis.tar').read_bytes()).hexdigest()==receipt['artifacts']['test-redis.tar']['sha256']
-          PY
-          mkdir -p artifacts/snmp/redis-fixture
-          tar --no-same-owner -xf artifacts/snmp/test-redis.tar -C artifacts/snmp/redis-fixture
-      - name: Query installed runtime and debug subagents
-        run: |
-          set -euo pipefail
-          for image in docker-snmp docker-snmp-dbg; do
-            docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
-              --read-only --user=101:102 --pids-limit=128 --memory=4g --cpus=2 \
-              --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
-              --mount "type=bind,src=$PWD/dockers/docker-snmp/bazel/runtime_probe.py,dst=/probe/runtime_probe.py,readonly" \
-              --mount "type=bind,src=$PWD/artifacts/snmp/redis-fixture,dst=/probe/redis,readonly" \
-              --entrypoint /usr/bin/python3 "$image:latest" -B /probe/runtime_probe.py \
-              | tee "artifacts/snmp/$image.runtime.json"
-          done
+      - name: Verify and query installed runtime and debug subagents
+        run: python3 -B tools/bazel/ci/snmp_loaded.py --artifacts artifacts/snmp
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
