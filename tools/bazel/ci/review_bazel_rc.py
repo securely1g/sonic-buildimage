@@ -20,7 +20,8 @@ def configuration(workspace, home):
             raise ValueError('unexpected registry/import in common.bazelrc')
     cache_options = {'--disk_cache', '--repository_cache', '--distdir',
                      '--experimental_repository_cache_hardlinks',
-                     '--experimental_downloader_config'}
+                     '--noexperimental_repository_cache_hardlinks',
+                     '--downloader_config', '--experimental_downloader_config'}
     for path in (home / '.bazelrc', workspace / '.bazelrc.user'):
         if not path.is_file():
             continue
@@ -32,7 +33,8 @@ def configuration(workspace, home):
                 option = token.split('=', 1)[0]
                 if option not in cache_options:
                     continue
-                if '=' in token or option == '--experimental_repository_cache_hardlinks':
+                if '=' in token or option in ('--experimental_repository_cache_hardlinks',
+                                             '--noexperimental_repository_cache_hardlinks'):
                     value = token
                 else:
                     if index + 1 >= len(tokens):

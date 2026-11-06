@@ -93,22 +93,51 @@ try-import /not-imported
         self.assertEqual((self.workspace / 'tools/bazel/common.bazelrc').read_text(), self.common)
 
     def test_verified_downloader_configuration_survives(self):
-        (self.home / '.bazelrc').write_text(
-            'common --experimental_downloader_config=/home/source-mirrors.cfg\n')
-        (self.workspace / '.bazelrc.user').write_text(
-            "common --experimental_downloader_config '/verified mirrors/source.cfg'\n"
-            'common --registry=https://example.invalid/not-a-mirror\n')
-        result = self.invoke(['build', '//owner:runtime'], HOME=str(self.home))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        record = json.loads(self.record.read_text())
-        parsed = [shlex.split(line, comments=True) for line in record['configuration'].splitlines()]
-        values = [line for line in parsed if len(line) == 2 and
-                  line[1].startswith('--experimental_downloader_config=')]
-        self.assertEqual(values, [
-            ['common', '--experimental_downloader_config=/home/source-mirrors.cfg'],
-            ['common', '--experimental_downloader_config=/verified mirrors/source.cfg']])
-        self.assertNotIn('example.invalid', record['configuration'])
-        self.assertEqual(len([arg for arg in record['arguments'] if arg.startswith('--registry=')]), 2)
+        spellings = ('--downloader_config', '--experimental_downloader_config')
+        for home_option in spellings:
+            for local_option in spellings:
+                for separator in ('=', ' '):
+                    with self.subTest(home=home_option, local=local_option, separator=separator):
+                        (self.home / '.bazelrc').write_text(
+                            'common ' + home_option + '=/home/source-mirrors.cfg\n')
+                        (self.workspace / '.bazelrc.user').write_text(
+                            'common ' + local_option + separator + "'/verified mirrors/source.cfg'\n"
+                            'common --registry=https://example.invalid/not-a-mirror\n')
+                        result = self.invoke(['build', '//owner:runtime'], HOME=str(self.home))
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        record = json.loads(self.record.read_text())
+                        parsed = [shlex.split(line, comments=True)
+                                  for line in record['configuration'].splitlines()]
+                        values = [line for line in parsed if len(line) == 2 and
+                                  line[1].split('=', 1)[0] in spellings]
+                        self.assertEqual(values, [
+                            ['common', home_option + '=/home/source-mirrors.cfg'],
+                            ['common', local_option + '=/verified mirrors/source.cfg']])
+                        self.assertNotIn('example.invalid', record['configuration'])
+                        self.assertEqual(len([arg for arg in record['arguments']
+                                              if arg.startswith('--registry=')]), 2)
+        for option in spellings:
+            with self.subTest(missing_value=option):
+                (self.workspace / '.bazelrc.user').write_text('common ' + option + '\n')
+                with self.assertRaisesRegex(ValueError, 'missing cache option value'):
+                    rc.configuration(self.workspace, self.home)
+
+    def test_hardlink_choices_keep_home_then_local_precedence(self):
+        positive = '--experimental_repository_cache_hardlinks'
+        negative = '--noexperimental_repository_cache_hardlinks'
+        for home_option, local_option in ((positive, negative), (negative, positive)):
+            with self.subTest(home=home_option, local=local_option):
+                (self.home / '.bazelrc').write_text('common ' + home_option + '\n')
+                (self.workspace / '.bazelrc.user').write_text(
+                    'common ' + local_option + ' --repository_cache=/verified/downloads\n'
+                    'build --override_module=owner=/not-accepted\n')
+                result = rc.configuration(self.workspace, self.home)
+                parsed = [shlex.split(line, comments=True) for line in result.splitlines()]
+                values = [line for line in parsed if len(line) == 2 and
+                          line[1] in (positive, negative)]
+                self.assertEqual(values, [['common', home_option], ['common', local_option]])
+                self.assertIn(['common', '--repository_cache=/verified/downloads'], parsed)
+                self.assertNotIn('--override_module', result)
 
     def test_missing_or_nonimmutable_catalog_fails_before_bazel(self):
         for revision in ('', 'main', '../main', 'a'*39, 'a'*41, 'A'*40):
