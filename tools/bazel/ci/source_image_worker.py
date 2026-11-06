@@ -921,7 +921,9 @@ def publish(args):
                     "Declared artifact differs: " + name)
             if path.suffix == ".json":
                 value = json.loads(path.read_text())
-                if name == "policy.json" and getattr(args, "image", None) in ("syncd", "gearbox"):
+                if (getattr(args, "image", None), name) in (
+                        ("syncd", "policy.json"), ("gearbox", "policy.json"),
+                        ("swss-layer", "swss-policy.json")):
                     # Reviewed image policy, not a captured process environment.
                     # Validate only this known public constant; retain original bytes.
                     require(value["image_validation"].pop("environment") == {"DEBIAN_FRONTEND": "noninteractive"},
