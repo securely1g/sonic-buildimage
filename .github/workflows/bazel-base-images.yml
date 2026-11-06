@@ -48,6 +48,14 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through the shared CI entry point.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+
       - name: Check clean dependency inputs
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -57,7 +65,11 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          set -euo pipefail
+          mkdir -p artifacts/base-images
+          cp tools/bazel/ci/libteam_draft_bazel.sh artifacts/base-images/registry-input.txt
           python3 -B tools/bazel/ci/base_images.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
           git diff --exit-code
       - name: Retain images, symbols and build evidence
@@ -71,6 +83,7 @@ jobs:
             artifacts/base-images/*.json
             artifacts/base-images/*.jsonl
             artifacts/base-images/*.log
+            artifacts/base-images/registry-input.txt
             artifacts/base-images/MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
