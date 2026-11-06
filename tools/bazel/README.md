@@ -408,8 +408,10 @@ Local commands default to the maintained SONiC registry `main` endpoint from
 `.bazelrc`, alongside Bazel Central Registry. Module versions, source commits,
 checksums and package snapshots remain pinned.
 
-The root selects published `rules_distroless` 0.9.4.sonic.17. The dotted version
-sorts above plain 0.9.4, so Distroless needs no root version override. Draft CI
+The root selects published `rules_distroless` 0.9.4.sonic.16 with an explicit
+override. This preserves the existing independent image and component APT locks.
+Version .17 requires one shared production lock; adopting it also requires
+coordinating the package selections and importers across those owners. Draft CI
 uses the immutable catalog described below while its source owners are unlanded.
 
 ```sh
@@ -421,11 +423,15 @@ The shared APT baseline was published by
 [build-infra #27](https://github.com/securely1g/sonic-build-infra/pull/27).
 Declarative policy inputs originated in
 [build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29).
-The image root now selects published `sonic-build-infra`
-`0.0.27-08e0956f80574b27a9b68e72fe855cc0089058e5` from the maintained registry.
-Its `single_version_override` keeps transitive consumers on that same registered
-version; no temporary infrastructure source override is needed. Commit suffixes
-do not sort by source history, so verify resolution when updating this pin.
+This Draft integration retains `sonic-build-infra`
+`0.0.26-f6da55505437cb139fdf610db8c61cb9420b0fec` from the reviewed catalog. It
+combines the legacy APT interface with the linker-response handling required by
+the native builds. The source fix has a merged replacement, but this exact
+snapshot is unlanded; keep it as an explicit Draft dependency. Published .27
+introduces the shared-lock contract and cannot replace it independently of the
+consumer migration. The root override keeps transitive consumers on the selected
+interface without rewriting any published registry entry. Commit suffixes do not
+sort by source history, so verify resolution when updating this pin.
 
 Use `bazel help --announce_rc` to inspect the effective rc selection. Keep one
 SONiC registry endpoint; do not add another endpoint in a home or user rc.
