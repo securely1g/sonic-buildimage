@@ -234,14 +234,75 @@ print(json.dumps({"private_network_namespace": True, "tap_created_and_closed": T
         "device_major": 10, "device_minor": 200, "scope": "disposable network namespace; no VM or KVM"}, indent=2) + "\n")
 
 
+EXECUTION_NETWORK_PROBE = '''import json, os, urllib.error, urllib.request
+names = ("http_proxy", "https_proxy", "all_proxy", "no_proxy",
+         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+result = {"uid": os.getuid(), "proxy_names_present": {name: name in os.environ for name in names},
+          "urllib_proxy_schemes": sorted(set(urllib.request.getproxies()) & {"http", "https", "ftp", "all", "no"})}
+try:
+    with urllib.request.urlopen("https://deb.debian.org/debian/dists/trixie/InRelease", timeout=10) as response:
+        result["http_status"] = response.status
+except urllib.error.HTTPError as error:
+    result.update(http_status=error.code, error_class="HTTPError")
+except Exception as error:
+    result["error_class"] = type(error).__name__
+print(json.dumps(result))
+'''
+
+
+def prepare_execution_network(artifacts):
+    """Compare the two existing APT execution identities without recording values."""
+    result = {}
+    names = {"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+    for context, prefix, expected_uid in (("worker", [], 1000), ("sudo", ["sudo", "-n"], 0)):
+        try:
+            value = json.loads(output([*prefix, sys.executable, "-I", "-c", EXECUTION_NETWORK_PROBE],
+                                      timeout=20, stderr=subprocess.DEVNULL))
+            require(set(value) <= {"uid", "proxy_names_present", "urllib_proxy_schemes", "http_status", "error_class"},
+                    "Unexpected network diagnostic field")
+            require(type(value["uid"]) is int and value["uid"] == expected_uid, "Unexpected diagnostic UID")
+            require(set(value["proxy_names_present"]) == names and
+                    all(type(present) is bool for present in value["proxy_names_present"].values()),
+                    "Unexpected proxy presence diagnostic")
+            require(isinstance(value["urllib_proxy_schemes"], list) and
+                    all(scheme in {"http", "https", "ftp", "all", "no"} for scheme in value["urllib_proxy_schemes"]),
+                    "Unexpected proxy scheme diagnostic")
+            require("http_status" in value or "error_class" in value, "Missing network diagnostic outcome")
+            if "http_status" in value:
+                require(type(value["http_status"]) is int and 100 <= value["http_status"] <= 599,
+                        "Unexpected HTTP status diagnostic")
+            if "error_class" in value:
+                require(isinstance(value["error_class"], str) and
+                        re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value["error_class"]),
+                        "Unexpected network error class")
+            safe_json(value)
+            result[context] = value
+        except Exception as error:
+            result[context] = {"error_class": type(error).__name__}
+    try:
+        (artifacts / "worker-execution-network.json").write_text(json.dumps(result, indent=2) + "\n")
+    except OSError:
+        # The existing APT command remains authoritative even if diagnostics cannot be retained.
+        print("Worker execution network diagnostic could not be retained", file=sys.stderr)
+
+
 def prepare_validation_tools(artifacts):
     """Install only missing execution tools in the disposable slave container."""
     packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils", "objcopy": "binutils"}
     missing = sorted({package for tool, package in packages.items() if shutil.which(tool) is None})
     if missing:
-        run(["sudo", "-n", "apt-get", "update"])
-        run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
-             "--no-install-recommends", *missing])
+        try:
+            run(["sudo", "-n", "apt-get", "update"])
+            run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
+                 "--no-install-recommends", *missing])
+        except subprocess.CalledProcessError:
+            try:
+                prepare_execution_network(artifacts)
+            except Exception:
+                # Diagnostics must not replace the original APT failure.
+                print("Worker execution network diagnostic failed", file=sys.stderr)
+            raise
     for tool in packages:
         require(shutil.which(tool), "Missing image validation tool: " + tool)
     versions = output(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\n", *sorted(set(packages.values()))])

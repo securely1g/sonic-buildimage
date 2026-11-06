@@ -386,6 +386,119 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def network_result(self, uid):
+        return {"uid": uid, "proxy_names_present": {name: False for name in
+                ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")},
+                "urllib_proxy_schemes": [], "http_status": 200}
+
+    def test_execution_network_child_redacts_values_and_preserves_normal_tls(self):
+        from unittest.mock import MagicMock
+        import urllib.error
+        secret = "https://private-user:private-password@private-proxy.example/?token=private-token"
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        for failure, expected in ((None, {"http_status": 200}),
+                                  (urllib.error.URLError(secret), {"error_class": "URLError"}),
+                                  (urllib.error.HTTPError(secret, 503, secret, {}, None),
+                                   {"error_class": "HTTPError", "http_status": 503})):
+            with self.subTest(failure=expected), patch.dict(os.environ, {"https_proxy": secret}, clear=True), \
+                    patch.object(os, 'getuid', return_value=1000), \
+                    patch.object(worker.urllib.request, 'getproxies', return_value={'https': secret, 'private-scheme': secret}), \
+                    patch.object(worker.urllib.request, 'urlopen', return_value=response, side_effect=failure) as opened, \
+                    patch('sys.stdout', new_callable=io.StringIO) as stream:
+                exec(compile(worker.EXECUTION_NETWORK_PROBE, '<fixed-network-probe>', 'exec'), {})
+            value = json.loads(stream.getvalue())
+            self.assertEqual(value['uid'], 1000)
+            self.assertTrue(value['proxy_names_present']['https_proxy'])
+            self.assertFalse(value['proxy_names_present']['HTTPS_PROXY'])
+            self.assertEqual(value['urllib_proxy_schemes'], ['https'])
+            self.assertEqual({k: value[k] for k in ('http_status', 'error_class') if k in value}, expected)
+            self.assertNotIn('private-', stream.getvalue())
+            opened.assert_called_once_with('https://deb.debian.org/debian/dists/trixie/InRelease', timeout=10)
+            worker.safe_json(value)
+
+    def test_execution_network_uses_actual_worker_and_sudo_contexts_and_publishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            with patch.object(worker, 'output', side_effect=[json.dumps(self.network_result(1000)),
+                                                            json.dumps(self.network_result(0))]) as output:
+                worker.prepare_execution_network(artifacts)
+            self.assertEqual([call.args[0] for call in output.call_args_list], [
+                [sys.executable, '-I', '-c', worker.EXECUTION_NETWORK_PROBE],
+                ['sudo', '-n', sys.executable, '-I', '-c', worker.EXECUTION_NETWORK_PROBE]])
+            for call in output.call_args_list:
+                self.assertEqual(call.kwargs, {'timeout': 20, 'stderr': subprocess.DEVNULL})
+            path = artifacts / 'worker-execution-network.json'
+            self.assertEqual(json.loads(path.read_text()), {'worker': self.network_result(1000), 'sudo': self.network_result(0)})
+            worker.publish(SimpleNamespace(artifacts=artifacts))
+            self.assertEqual(path.read_bytes(), (artifacts / 'public' / path.name).read_bytes())
+
+    def test_execution_network_failure_and_unexpected_identity_are_nonfatal_and_redacted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            failures = [subprocess.CalledProcessError(1, ['private-command'], output='private-auth', stderr='private-password'),
+                        subprocess.TimeoutExpired(['private-command'], 20, output='private-token')]
+            with patch.object(worker, 'output', side_effect=failures):
+                worker.prepare_execution_network(artifacts)
+            path = artifacts / 'worker-execution-network.json'
+            self.assertEqual(json.loads(path.read_text()), {'worker': {'error_class': 'CalledProcessError'},
+                                                          'sudo': {'error_class': 'TimeoutExpired'}})
+            self.assertNotIn('private-', path.read_text())
+            for value in (self.network_result(0), {**self.network_result(1000), 'proxy_names_present': {'https_proxy': 'private-password'}},
+                          {**self.network_result(1000), 'error_class': 'private-auth://url'},
+                          {**self.network_result(1000), 'extra': 'private-token'}):
+                with patch.object(worker, 'output', side_effect=[json.dumps(value), json.dumps(self.network_result(0))]):
+                    worker.prepare_execution_network(artifacts)
+                self.assertEqual(json.loads(path.read_text())['worker'], {'error_class': 'ValueError'})
+                self.assertNotIn('private-', path.read_text())
+
+    def test_execution_network_only_after_apt_failure_and_preserves_original(self):
+        update = ['sudo', '-n', 'apt-get', 'update']
+        install = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get',
+                   'install', '-y', '--no-install-recommends', 'libarchive-tools']
+        for failure_at in (0, 1):
+            for diagnostic_failure in (False, True):
+                with self.subTest(failure_at=failure_at, diagnostic_failure=diagnostic_failure), \
+                        tempfile.TemporaryDirectory() as directory:
+                    artifacts = Path(directory)
+                    commands = []
+                    original = subprocess.CalledProcessError(100, [update, install][failure_at])
+                    def apt(command):
+                        commands.append(command)
+                        if len(commands) == failure_at + 1:
+                            raise original
+                    def diagnose(path):
+                        self.assertEqual(path, artifacts)
+                        commands.append('diagnostic')
+                        if diagnostic_failure:
+                            raise RuntimeError('private-secret-value')
+                    with patch.object(worker.shutil, 'which', side_effect=lambda tool: None if tool == 'bsdtar' else '/usr/bin/' + tool), \
+                            patch.object(worker, 'run', side_effect=apt), \
+                            patch.object(worker, 'prepare_execution_network', side_effect=diagnose), \
+                            patch('sys.stderr', new_callable=io.StringIO) as stderr, \
+                            self.assertRaises(subprocess.CalledProcessError) as raised:
+                        worker.prepare_validation_tools(artifacts)
+                    self.assertIs(raised.exception, original)
+                    self.assertEqual(commands, [update, install][:failure_at + 1] + ['diagnostic'])
+                    self.assertNotIn('private-', stderr.getvalue())
+                    self.assertFalse((artifacts / 'worker-execution-tools.json').exists())
+
+    def test_execution_network_is_skipped_when_apt_succeeds_or_tools_exist(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                commands = []
+                def available(tool):
+                    return None if missing and tool == 'bsdtar' and not commands else '/usr/bin/' + tool
+                with patch.object(worker.shutil, 'which', side_effect=available), \
+                        patch.object(worker, 'run', side_effect=lambda command: commands.append(command)), \
+                        patch.object(worker, 'output', return_value='versions'), \
+                        patch.object(worker, 'prepare_execution_network') as diagnostic, \
+                        patch.object(worker.urllib.request, 'urlopen') as opened:
+                    worker.prepare_validation_tools(Path(directory))
+                diagnostic.assert_not_called()
+                opened.assert_not_called()
+                self.assertEqual(len(commands), 2 if missing else 0)
+
     def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
