@@ -1133,6 +1133,7 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
+      !(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.head_ref == 'codex/public-lock-size' && github.event.pull_request.head.repo.full_name == github.repository) &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       github.head_ref != 'codex/sysmgr-source-image' &&

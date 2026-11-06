@@ -34,6 +34,11 @@ class ImageWorkerTest(unittest.TestCase):
             ('pull_request', 'codex/teamd-source-worker', True, 'none', True, True, False),
             ('pull_request', 'codex/teamd-source-worker', False, 'none', True, False, False),
             ('pull_request', 'codex/source-image-worker-dispatch', True, 'none', True, True, False),
+            ('pull_request', 'codex/public-lock-size', True, 'none', True, False, False),
+            ('pull_request', 'codex/public-lock-size', False, 'none', True, False, False),
+            ('pull_request', 'codex/public-lock-size-suffix', True, 'none', True, False, True),
+            ('push', 'codex/public-lock-size', True, 'none', True, False, True),
+            ('workflow_dispatch', 'codex/public-lock-size', True, 'none', False, False, True),
             ('pull_request', 'ordinary', True, 'none', True, False, True),
             ('pull_request', 'ordinary', False, 'none', True, False, False),
             ('push', '', True, 'none', True, False, True),
@@ -41,8 +46,8 @@ class ImageWorkerTest(unittest.TestCase):
             ('workflow_dispatch', '', True, 'teamd', False, False, False),
         ):
             github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
-                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
-                    head=SimpleNamespace(repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
+                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(number=999,
+                    head=SimpleNamespace(ref=branch, repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
             inputs = SimpleNamespace(source_image=image, skip_vs=skip)
             def evaluate(expression):
                 expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
@@ -51,6 +56,11 @@ class ImageWorkerTest(unittest.TestCase):
             with self.subTest(event=event, branch=branch, same_repo=same_repo, image=image):
                 for guard in guards: self.assertEqual(evaluate(guard), source_only)
                 self.assertEqual(evaluate(vs), full_vs)
+                if event == 'pull_request' and branch == 'codex/public-lock-size' and same_repo:
+                    github.repository = 'other/sonic-buildimage'
+                    github.event.pull_request.head.repo.full_name = github.repository
+                    for guard in guards: self.assertFalse(evaluate(guard))
+                    self.assertTrue(evaluate(vs))
 
     def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
