@@ -1,4 +1,4 @@
-"""Check Syncd public JSON evidence without executing or reading image payloads.
+"""Check Syncd and Gearbox public JSON evidence without executing or reading image payloads.
 
 The caller binds exact source/parents/catalog, module selection, fixture hashes,
 worker provenance and transfer integrity. These checks preserve the existing
@@ -33,6 +33,21 @@ DEBUG_PATHS = frozenset({'usr/bin/sonic-db-cli', 'usr/bin/pi_CLI_dummy',
 FIXTURE_NAMES = frozenset({'sai.profile', 'lanemap.ini', 'fabriclanemap.ini'})
 
 
+def image_profile(image='syncd'):
+    assert image in ('syncd', 'gearbox'), 'Unsupported image receipt profile'
+    if image == 'syncd':
+        return IMAGES, OWNER, 'source_runtime_payloads', 'debug_packages'
+    return ('docker-gbsyncd-vs', 'docker-gbsyncd-vs-dbg'), '//platform/vs/docker-gbsyncd-vs:', 'source_runtime', 'all_debug_symbols'
+
+
+def public_json_names(image='syncd'):
+    images, _, _, _ = image_profile(image)
+    if image == 'syncd':
+        return PUBLIC_JSON_NAMES
+    return (PUBLIC_JSON_NAMES - {'worker-tap.json', *(name + '.runtime.json' for name in IMAGES)}
+            | {name + '.runtime.json' for name in images})
+
+
 def digest(value, prefix=''):
     assert isinstance(value, str) and re.fullmatch(re.escape(prefix) + r'[0-9a-f]{64}', value)
     return value
@@ -54,8 +69,10 @@ def module_versions(value):
     return result
 
 
-def verify(read, raw, *, source, outputs):
-    """Return observations only after all fixed Syncd receipt checks pass."""
+def verify(read, raw, *, source, outputs, image='syncd'):
+    """Return observations after the selected fixed image receipt checks pass."""
+    image_names, owner, runtime_target, debug_target = image_profile(image)
+    json_names = public_json_names(image)
     public, validation = read('public-receipt.json'), read('validation.json')
     assert public['status'] == 'built' and validation['status'] == 'passed'
     for document in (public, validation):
@@ -69,7 +86,7 @@ def verify(read, raw, *, source, outputs):
         digest(item['sha256'])
         assert isinstance(item['bytes'], int) and item['bytes'] > 0
         if name.endswith('.json'):
-            assert name in PUBLIC_JSON_NAMES
+            assert name in json_names
             content = raw(name)
             assert len(content) == item['bytes'] and hashlib.sha256(content).hexdigest() == item['sha256']
     summary = read('build-summary.json')['build-events.jsonl']
@@ -77,12 +94,12 @@ def verify(read, raw, *, source, outputs):
     assert summary['bazel_version'] == '8.5.1' and summary['truncated'] is False
     assert set(summary['targets']) == set(outputs.values()) and all(summary['targets'].values())
     audit = read('action-audit.json')
-    expected_audit = set(outputs.values()) | {OWNER + n for n in IMAGES} | {PARENT}
+    expected_audit = set(outputs.values()) | {owner + n for n in image_names} | {PARENT}
     assert len(expected_audit) == len(audit['targets']) == 25 and set(audit['targets']) == expected_audit
     assert audit['deb_outputs'] == audit['packaging_wrappers'] == [] and audit['action_count'] > 0
 
     worker, preflight = read('worker.json'), read('worker-preflight.json')
-    assert worker['image'] == 'syncd' and worker['source_revision'] == source
+    assert worker['image'] == image and worker['source_revision'] == source
     assert worker['status'] == 'prepared' and worker['architecture'] == 'amd64'
     assert worker['distribution'] == 'trixie' and worker['docker_network'] == 'none'
     assert worker['cache_mode'] == 'persistent_worker_local'
@@ -94,7 +111,7 @@ def verify(read, raw, *, source, outputs):
     for phase in PHASES:
         record = read('worker-' + phase + '.json')
         assert record['phase'] == phase and record['status'] == 'passed' and record['exit_code'] == 0
-        assert record['source_revision'] == source and record['image'] == 'syncd'
+        assert record['source_revision'] == source and record['image'] == image
         assert record['no_oom_events'] is True and record['build_profile'] == profile
         for moment in ('memory_before', 'memory_after'):
             assert record[moment]['limit'] == str(20 * 1024**3)
@@ -112,7 +129,7 @@ def verify(read, raw, *, source, outputs):
     seen = set()
     for document in (contract, receipt):
         assert document['architecture'] == 'amd64' and document['distribution'] == 'trixie'
-        assert document['image'] == IMAGES[0]
+        assert document['image'] == image_names[0]
         for package in document['packages']:
             origin = package['source']; name = origin['module']
             assert name in SOURCE_MODULES and versions[name] == {origin['version']}
@@ -128,7 +145,7 @@ def verify(read, raw, *, source, outputs):
     for value in receipt['module_file_sha256'].values():
         digest(value)
     policy = read('policy.json')
-    assert policy['image'] == IMAGES[0] and policy['architecture'] == 'amd64' and policy['distribution'] == 'trixie'
+    assert policy['image'] == image_names[0] and policy['architecture'] == 'amd64' and policy['distribution'] == 'trixie'
     assert policy['native']['require_source'] is True and policy['native']['gap_packages'] == []
     assert policy['image_validation']['environment'] == {'DEBIAN_FRONTEND': 'noninteractive'}
     assert set(policy['native']['required_packages']) <= set(packages)
@@ -150,57 +167,83 @@ def verify(read, raw, *, source, outputs):
             assert pair['package'] in packages and pair['source'] == packages[pair['package']]['source']
             assert pair['source_debug_tar_sha256'] == artifacts['source-debug.tar']['sha256']
         assert pair['debug_path'] == 'usr/lib/debug/.build-id/' + pair['build_id'][:2] + '/' + pair['build_id'][2:] + '.debug'
-    assert validation['accounts']['ordered_rows_and_metadata_preserved'] is True
+    if image == 'syncd':
+        assert validation['accounts']['ordered_rows_and_metadata_preserved'] is True
+    else:
+        accounts = validation['accounts']
+        assert isinstance(accounts['base_groups'], int) and accounts['base_groups'] > 0
+        assert accounts['runtime_groups'] in (accounts['base_groups'], accounts['base_groups'] + 1)
+        assert accounts['debug_groups'] == accounts['runtime_groups']
+        assert isinstance(validation['image_version'], str) and validation['image_version'] and '\n' not in validation['image_version']
     assert validation['accounts']['declared_addition'] == '_ssh:x:104:'
-    images = validation['images']; assert set(images) == set(IMAGES)
-    runtime_layers, debug_layers = (images[n]['rootfs']['diff_ids'] for n in IMAGES)
+    images = validation['images']; assert set(images) == set(image_names)
+    runtime_layers, debug_layers = (images[n]['rootfs']['diff_ids'] for n in image_names)
     assert runtime_layers and debug_layers[:len(runtime_layers)] == runtime_layers and len(debug_layers) > len(runtime_layers)
-    for image in images.values():
-        digest(image['manifest_digest'], 'sha256:'); digest(image['config_digest'], 'sha256:')
-        assert image['rootfs']['type'] == 'layers'
-        for layer in image['rootfs']['diff_ids']: digest(layer, 'sha256:')
-        assert len(image['native_paths']) == len(native) and set(image['native_paths']) == set(native)
+    for image_record in images.values():
+        digest(image_record['manifest_digest'], 'sha256:'); digest(image_record['config_digest'], 'sha256:')
+        assert image_record['rootfs']['type'] == 'layers'
+        for layer in image_record['rootfs']['diff_ids']: digest(layer, 'sha256:')
+        assert len(image_record['native_paths']) == len(native) and set(image_record['native_paths']) == set(native)
 
     inc = read('incremental.json'); assert set(inc) == {'baseline', 'noop', 'edit', 'restore'}
-    labels = {OWNER + n + suffix for n in IMAGES for suffix in ('', '.gz')}
-    expected = labels | {PARENT, OWNER + 'source_runtime_payloads', OWNER + 'debug_packages'}
+    labels = {owner + n + suffix for n in image_names for suffix in ('', '.gz')}
+    expected = labels | {PARENT, owner + runtime_target, owner + debug_target}
     baseline = inc['baseline']['sha256']
     for state in inc.values():
         assert state['seconds'] >= 0 and set(state['sha256']) == expected
-        for label, value in state['sha256'].items(): digest(value, 'sha256:' if label in {PARENT, *(OWNER+n for n in IMAGES)} else '')
+        for label, value in state['sha256'].items(): digest(value, 'sha256:' if label in {PARENT, *(owner+n for n in image_names)} else '')
     assert baseline == inc['noop']['sha256'] == inc['restore']['sha256']
     assert {k for k, v in inc['edit']['sha256'].items() if v != baseline[k]} == labels
-    assert baseline[OWNER + 'source_runtime_payloads'] == artifacts['source-runtime.tar']['sha256']
+    assert baseline[owner + runtime_target] == artifacts['source-runtime.tar']['sha256']
     # debug_packages is the intermediate payload, not debug_package_metadata JSON.
     assert baseline[PARENT] == receipt['base_manifest_digest']
 
     loaded = read('loaded-validation.json')
-    assert loaded['status'] == 'passed' and loaded['revision'] == source and set(loaded['images']) == set(IMAGES)
-    fixtures = None
+    assert loaded['status'] == 'passed' and loaded['revision'] == source and set(loaded['images']) == set(image_names)
+    fixtures = None if image == 'syncd' else {}
     private_redis = None
-    for name in IMAGES:
+    for name in image_names:
         record = read(name + '.runtime.json'); assert record == loaded['images'][name]
         assert record['status'] == 'passed' and record['variant'] == name and record['native_files'] == len(native)
-        assert record['archive_sha256'] == artifacts[name + '.gz']['sha256'] == baseline[OWNER + name + '.gz']
-        assert images[name]['manifest_digest'] == baseline[OWNER + name]
-        for key in ('config_and_layers_verified', 'actual_entrypoint', 'actual_syncd', 'original_core_port_map_absent', 'profile_copy_and_render', 'stable_process'):
+        assert record['archive_sha256'] == artifacts[name + '.gz']['sha256'] == baseline[owner + name + '.gz']
+        assert images[name]['manifest_digest'] == baseline[owner + name]
+        common_checks = ('config_and_layers_verified', 'actual_entrypoint', 'actual_syncd', 'profile_copy_and_render')
+        specific_checks = (('original_core_port_map_absent', 'stable_process') if image == 'syncd'
+                           else ('actual_manager', 'main_database_unchanged', 'child_exit_observed'))
+        for key in common_checks + specific_checks:
             assert record[key] is True
-        assert record['private_redis']['loopback_tcp_and_unix_same_process'] is True
+        redis = record['private_redis']
         # This is the extracted Redis executable hash, not the helper TAR hash.
-        digest(record['private_redis']['sha256'])
-        if private_redis is None: private_redis = record['private_redis']
-        assert record['private_redis'] == private_redis
-        digest(record['private_redis']['database_config_sha256'])
-        assert set(record['service_states']) == {'start', 'dependent-startup', 'supervisor-proc-exit-listener', 'rsyslogd', 'syncd'}
+        digest(redis['sha256']); digest(redis['database_config_sha256'])
+        if image == 'syncd':
+            assert redis['loopback_tcp_and_unix_same_process'] is True
+            redis_identity = redis
+            services = {'start', 'dependent-startup', 'supervisor-proc-exit-listener', 'rsyslogd', 'syncd'}
+        else:
+            assert redis['unix_socket'] == '/var/run/redis/redis.sock'
+            assert redis['tcp_disabled'] is False and redis['tcp_port'] == 6379 and redis['tcp_bind'] == '127.0.0.1'
+            assert isinstance(redis['process_id'], int) and redis['process_id'] > 0
+            redis_identity = {k: v for k, v in redis.items() if k != 'process_id'}
+            services = {'dependent-startup', 'supervisor-proc-exit-listener', 'rsyslogd', 'gbsyncdmgrd'}
+        if private_redis is None: private_redis = redis_identity
+        assert redis_identity == private_redis
+        assert set(record['service_states']) == services
         for service, state in record['service_states'].items():
             assert state['exitstatus'] == 0
             assert state['state'] in (('EXITED',) if service == 'start' else ('EXITED', 'RUNNING') if service == 'dependent-startup' else ('RUNNING',))
-        assert record['fixture_absent'] == ['coreportindexmap.ini']
-        assert record['startup_arguments'] == ['/usr/bin/syncd', '-u', '-s', '-B', 'null', '-l', '-p', '/usr/share/sonic/hwsku/sai.profile', '-w', '30000000']
-        assert set(record['fixture_sources']) == FIXTURE_NAMES
-        for value in record['fixture_sources'].values(): digest(value)
-        if fixtures is None: fixtures = record['fixture_sources']
-        assert record['fixture_sources'] == fixtures
+        if image == 'syncd':
+            assert record['fixture_absent'] == ['coreportindexmap.ini']
+            assert record['startup_arguments'] == ['/usr/bin/syncd', '-u', '-s', '-B', 'null', '-l', '-p', '/usr/share/sonic/hwsku/sai.profile', '-w', '30000000']
+            assert set(record['fixture_sources']) == FIXTURE_NAMES
+            for value in record['fixture_sources'].values(): digest(value)
+            if fixtures is None: fixtures = record['fixture_sources']
+            assert record['fixture_sources'] == fixtures
+        else:
+            assert record['context'] == 1 and record['gb_databases'] == [13, 15]
+            if name.endswith('-dbg'):
+                assert record['full_vim']['returncode'] == 0 and record['full_vim']['huge_version'] is True
+            else:
+                assert record['full_vim'] is None
         checks = record['debug_checks']
         assert len(checks) == (4 if name.endswith('-dbg') else 0)
         if checks:
@@ -209,11 +252,12 @@ def verify(read, raw, *, source, outputs):
             assert check['debug_path'].lstrip('/') == by_path[check['path'].lstrip('/')]['debug_path']
             assert check['without_symbols']['found'] is False and check['with_symbols']['found'] is True
             assert check['with_symbols']['line'] > 0 and check['with_symbols']['source'] and check['with_symbols']['type']
-    tap = read('worker-tap.json')
-    assert tap['status'] == 'passed' and tap['private_network_namespace'] is True and tap['tap_created_and_closed'] is True
-    assert (tap['device_major'], tap['device_minor']) == (10, 200)
+    if image == 'syncd':
+        tap = read('worker-tap.json')
+        assert tap['status'] == 'passed' and tap['private_network_namespace'] is True and tap['tap_created_and_closed'] is True
+        assert (tap['device_major'], tap['device_minor']) == (10, 200)
     return {'exports': 22, 'audit_roots': 25, 'native_files': len(native),
             'source_debug_pairs': len(pairs), 'debug_checks': 4,
             'source_modules': {k: next(iter(v)) for k, v in versions.items()},
             'fixture_sources': fixtures, 'tested_revision_parents': public['tested_revision_parents'],
-            'scope': 'CI-reported regular VS Syncd startup, private Redis/TAP, native/debug and exact incremental restoration; no hardware/forwarding/full-VS or action-level cache acceptance'}
+            'scope': ('CI-reported regular VS Syncd startup, private Redis/TAP' if image == 'syncd' else 'CI-reported Gearbox manager startup, context 1 databases and private loopback Redis') + ', native/debug and exact incremental restoration; no hardware/forwarding/full-VS or action-level cache acceptance'}

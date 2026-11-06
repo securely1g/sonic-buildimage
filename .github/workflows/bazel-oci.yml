@@ -12,7 +12,7 @@ on:
         options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, snmp, p4rt, base-config, swss-layer]
         default: none
       source_ci_request:
-        description: Optional immutable normal-CI request artifact ID for reviewed P4RT or Syncd validation
+        description: Optional immutable normal-CI request artifact ID for reviewed P4RT, Syncd or Gearbox validation
         required: false
         default: ''
         type: string
@@ -243,7 +243,7 @@ jobs:
           clean: false
           persist-credentials: false
       - name: Verify the normal CI request artifact provenance
-        if: contains(fromJSON('["p4rt", "syncd"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["p4rt", "syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
         id: source_ci_request
         env:
           GH_TOKEN: ${{ github.token }}
@@ -255,7 +255,7 @@ jobs:
             --artifact "$REQUEST_ARTIFACT" \
             --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request"
       - name: Download the immutable normal CI request
-        if: contains(fromJSON('["p4rt", "syncd"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["p4rt", "syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           artifact-ids: ${{ steps.source_ci_request.outputs.request_artifact }}
@@ -265,7 +265,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/ci-request/payload
       - name: Bind the exact normal CI merge before native work
-        if: contains(fromJSON('["p4rt", "syncd"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["p4rt", "syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -373,7 +373,7 @@ jobs:
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
 
       - name: Package the normal CI acceptance receipts
-        if: contains(fromJSON('["p4rt", "syncd"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["p4rt", "syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
         id: source_ci_acceptance
         run: |
           cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
@@ -383,7 +383,7 @@ jobs:
             --public "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts/public" \
             --output "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-acceptance"
       - name: Upload the normal CI acceptance receipts
-        if: contains(fromJSON('["p4rt", "syncd"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["p4rt", "syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ steps.source_ci_acceptance.outputs.acceptance_name }}

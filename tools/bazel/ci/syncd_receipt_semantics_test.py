@@ -100,6 +100,61 @@ def fixture():
     return docs
 
 
+def gearbox_fixture():
+    # Same shared source payloads, but the Gearbox producer has distinct labels
+    # and its installed probe reports a manager/context contract without TAP.
+    def convert(value):
+        if isinstance(value, str):
+            return value.replace('docker-syncd-vs', 'docker-gbsyncd-vs')
+        if isinstance(value, list): return [convert(v) for v in value]
+        if isinstance(value, dict): return {convert(k): convert(v) for k, v in value.items()}
+        return value
+    docs = convert(fixture())
+    owner = '//platform/vs/docker-gbsyncd-vs:'
+    outputs = convert(OUTPUTS)
+    outputs.update({'source-runtime.tar': owner+'source_runtime',
+                    'source-debug.tar': '//platform/vs/docker-syncd-vs:source_debug_payloads',
+                    'installation-links.tar': '//platform/vs/docker-syncd-vs:installation_links',
+                    'runtime-apt.tar': owner+'runtime_layer'})
+    images = ('docker-gbsyncd-vs', 'docker-gbsyncd-vs-dbg')
+    docs.pop('worker-tap.json')
+    docs['worker.json']['image'] = 'gearbox'
+    for phase in semantics.PHASES: docs['worker-'+phase+'.json']['image'] = 'gearbox'
+    docs['build-summary.json']['build-events.jsonl']['targets'] = dict.fromkeys(outputs.values(), True)
+    docs['action-audit.json']['targets'] = list(outputs.values()) + [semantics.PARENT, *(owner+n for n in images)]
+    artifacts = docs['public-receipt.json']['artifacts']
+    for name, label in outputs.items(): artifacts[name]['target'] = label
+    docs['source-receipt.json']['contract_sha256'] = hashlib.sha256(encoded(docs['source-contract.json'])).hexdigest()
+    for name, item in artifacts.items():
+        if name.endswith('.json'):
+            content = encoded(docs[name]); item.update(bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
+    validation = docs['validation.json']
+    validation['artifacts'] = artifacts
+    validation['source_native']['source_packages'] = docs['source-receipt.json']
+    validation['source_native']['source_receipt_sha256'] = artifacts['source-receipt.json']['sha256']
+    validation['p4'] = {'contract_sha256': artifacts['source-contract.json']['sha256'],
+                        'receipt_sha256': artifacts['source-receipt.json']['sha256']}
+    validation['accounts'] = {'base_groups': 39, 'runtime_groups': 40, 'debug_groups': 40, 'declared_addition': '_ssh:x:104:'}
+    validation['image_version'] = 'fixture-version'
+    for state in docs['incremental.json'].values():
+        hashes = state['sha256']
+        hashes[owner+'source_runtime'] = hashes.pop(owner+'source_runtime_payloads')
+        hashes[owner+'all_debug_symbols'] = hashes.pop(owner+'debug_packages')
+    for index, name in enumerate(images):
+        record = docs[name+'.runtime.json']
+        for key in ('original_core_port_map_absent', 'stable_process', 'fixture_absent', 'fixture_sources', 'startup_arguments'):
+            record.pop(key)
+        record.update(actual_manager=True, main_database_unchanged=True, child_exit_observed=True,
+                      context=1, gb_databases=[13, 15], full_vim={'returncode': 0, 'huge_version': True} if index else None)
+        record['private_redis'].pop('loopback_tcp_and_unix_same_process')
+        record['private_redis'].update(unix_socket='/var/run/redis/redis.sock', tcp_disabled=False,
+                                      tcp_port=6379, tcp_bind='127.0.0.1', process_id=100+index)
+        record['service_states'].pop('start')
+        record['service_states']['gbsyncdmgrd'] = record['service_states'].pop('syncd')
+        docs['loaded-validation.json']['images'][name] = record
+    return docs, outputs
+
+
 class SyncdReceiptTest(unittest.TestCase):
     def setUp(self):
         self.docs = fixture()
@@ -177,6 +232,63 @@ class SyncdReceiptTest(unittest.TestCase):
             elif kind == 'private': record['private_redis']['loopback_tcp_and_unix_same_process'] = False
             else: self.docs['worker-tap.json']['private_network_namespace'] = False
             with self.subTest(kind=kind), self.assertRaises(AssertionError): self.verify()
+
+
+class GearboxReceiptTest(unittest.TestCase):
+    def setUp(self):
+        self.docs, self.outputs = gearbox_fixture()
+        network = patch.object(socket, 'socket', side_effect=AssertionError('No network'))
+        process = patch.object(subprocess, 'Popen', side_effect=AssertionError('No native process'))
+        network.start(); process.start()
+        self.addCleanup(network.stop); self.addCleanup(process.stop)
+
+    def verify(self, image='gearbox'):
+        return semantics.verify(lambda n: self.docs[n], lambda n: encoded(self.docs[n]),
+                                source=SOURCE, outputs=self.outputs, image=image)
+
+    def test_gearbox_has_distinct_runtime_and_allowlist(self):
+        result = self.verify()
+        self.assertEqual((result['exports'], result['audit_roots'], result['native_files']), (22, 25, 4))
+        self.assertEqual(result['fixture_sources'], {})
+        self.assertEqual(len(semantics.public_json_names('gearbox')), 27)
+        self.assertNotIn('worker-tap.json', semantics.public_json_names('gearbox'))
+        self.assertEqual(semantics.public_json_names(), semantics.PUBLIC_JSON_NAMES)
+        with self.assertRaises(AssertionError): self.verify(image='syncd')
+        with self.assertRaises(AssertionError): semantics.public_json_names('other')
+        with self.assertRaises(AssertionError): self.verify(image='other')
+
+    def test_manager_context_database_redis_and_vim_contracts_required(self):
+        mutations = [lambda r: r.update(actual_manager=False),
+                     lambda r: r.update(child_exit_observed=False),
+                     lambda r: r.update(main_database_unchanged=False),
+                     lambda r: r.update(context=0), lambda r: r.update(gb_databases=[0, 4]),
+                     lambda r: r['service_states']['gbsyncdmgrd'].update(state='EXITED'),
+                     lambda r: r['private_redis'].update(tcp_bind='0.0.0.0'),
+                     lambda r: r['private_redis'].update(tcp_disabled=True),
+                     lambda r: r['private_redis'].update(tcp_port=6380),
+                     lambda r: r['private_redis'].update(unix_socket='/tmp/redis.sock'),
+                     lambda r: r['private_redis'].update(process_id=0),
+                     lambda r: r['private_redis'].update(sha256='7'*64),
+                     lambda r: r['full_vim'].update(huge_version=False),
+                     lambda r: r['full_vim'].update(returncode=1),
+                     lambda r: r['debug_checks'][0]['without_symbols'].update(found=True)]
+        for index, mutate in enumerate(mutations):
+            self.docs, self.outputs = gearbox_fixture()
+            mutate(self.docs['docker-gbsyncd-vs-dbg.runtime.json'])
+            with self.subTest(case=index), self.assertRaises(AssertionError): self.verify()
+
+    def test_gearbox_retains_source_audit_phase_and_incremental_checks(self):
+        mutations = [lambda d: d['worker-loaded.json'].update(status='skipped'),
+                     lambda d: d['worker-build.json'].update(image='syncd'),
+                     lambda d: d['action-audit.json']['targets'].pop(),
+                     lambda d: d['validation.json']['accounts'].update(debug_groups=41),
+                     lambda d: d['validation.json']['accounts'].update(runtime_groups=38),
+                     lambda d: d['validation.json'].update(image_version='bad\nversion'),
+                     lambda d: d['module-graph.json']['dependencies'][0].update(version='2.0'),
+                     lambda d: d['incremental.json']['restore']['sha256'].update({'//platform/vs/docker-gbsyncd-vs:all_debug_symbols': '8'*64})]
+        for index, mutate in enumerate(mutations):
+            self.docs, self.outputs = gearbox_fixture(); mutate(self.docs)
+            with self.subTest(case=index), self.assertRaises(AssertionError): self.verify()
 
 
 if __name__ == '__main__':

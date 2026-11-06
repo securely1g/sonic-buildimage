@@ -58,7 +58,7 @@ STEPS = (
 
 def image(value):
     selected = value.get('image', 'p4rt')
-    require(selected in ('p4rt', 'syncd'), 'Unsupported image receipt profile')
+    require(selected in ('p4rt', 'syncd', 'gearbox'), 'Unsupported image receipt profile')
     return selected
 
 
@@ -69,8 +69,8 @@ def phases(value):
 def public_json_names(value):
     if image(value) == 'p4rt':
         return PUBLIC_JSON_NAMES
-    from tools.bazel.ci.syncd_receipt_semantics import PUBLIC_JSON_NAMES as names
-    return names
+    from tools.bazel.ci.syncd_receipt_semantics import public_json_names
+    return public_json_names(image(value))
 
 
 def required_steps(value):
@@ -124,7 +124,7 @@ def write(path, value, *, public=True):
 def read_evidence(path, request):
     value = read(path, public=False)
     checked = value
-    if image(request) == 'syncd' and Path(path).name == 'policy.json':
+    if image(request) in ('syncd', 'gearbox') and Path(path).name == 'policy.json':
         # The producer preserves these original bytes. Permit its one checked-in
         # image constant only in the safety view, retaining the original digest.
         checked = copy.deepcopy(value)
@@ -171,7 +171,7 @@ def inventory(response, key):
 
 
 def origin_name(run, selected='p4rt'):
-    require(selected in ('p4rt', 'syncd'), 'Unsupported request profile')
+    require(selected in ('p4rt', 'syncd', 'gearbox'), 'Unsupported request profile')
     return selected + '-worker-request-' + str(number(run))
 
 
@@ -478,10 +478,11 @@ def verify_evidence(directory, request, provenance, contract):
             preparation_targets=contract['preparation_outputs'], common_revision=contract['common_revision'])
     else:
         from tools.bazel.ci import syncd_receipt_semantics
-        observed = syncd_receipt_semantics.verify(load, raw, source=request['merge'], outputs=contract['outputs'])
-        require(observed['fixture_sources'] == contract['fixture_sources'], 'Syncd fixture sources changed')
+        observed = syncd_receipt_semantics.verify(load, raw, source=request['merge'],
+            outputs=contract['outputs'], image=image(request))
+        require(observed['fixture_sources'] == contract['fixture_sources'], 'Installed-service fixture sources changed')
         require(observed['tested_revision_parents'] == [request['base'], request['head']],
-                'Syncd validation tested another merge')
+                'Installed-service validation tested another merge')
         sdk = None
     audit = load('action-audit.json')
     require(audit['deb_outputs'] == audit['packaging_wrappers'] == [] and
@@ -531,7 +532,7 @@ def verify(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('origin', 'discover', 'worker-origin', 'bind-worker', 'bundle', 'verify'))
-    parser.add_argument('--image', choices=('p4rt', 'syncd'), default='p4rt')
+    parser.add_argument('--image', choices=('p4rt', 'syncd', 'gearbox'), default='p4rt')
     parser.add_argument('--workspace', type=Path, default=Path.cwd())
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--contract', type=Path)
