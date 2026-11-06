@@ -62,8 +62,8 @@ jobs:
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Fetch the verified shared downloader configuration
         env:
-          SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg
-          SOURCE_MIRRORS_SHA256: e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8
+          SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/8c8ecfbd2399eaa643e34adf7b6e05ab3e5f75c5/ci/source_mirrors.cfg
+          SOURCE_MIRRORS_SHA256: 9cfe3b77962df6b251a96c24f29c409f5130ac47b0ef814eaaceaf9766a8945c
         run: |
           set -euo pipefail
           config="$RUNNER_TEMP/libteam-source-mirrors.cfg"
@@ -82,7 +82,7 @@ jobs:
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
           # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4ed05183275951b03342d89db98f709779487ec0
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a2c1f22ba32e1da92d3ef3071a430add72f905d6
         run: |
           set -euo pipefail
           mkdir -p artifacts

@@ -267,7 +267,7 @@ class DebianPoolTest(unittest.TestCase):
                          r"^https://raw\.githubusercontent\.com/securely1g/sonic-bazel-registry/[0-9a-f]{40}/ci/source_mirrors\.cfg$")
         self.assertRegex(selected["env"]["SOURCE_MIRRORS_SHA256"], r"^[0-9a-f]{64}$")
         self.assertEqual(selected["env"]["SOURCE_MIRRORS_SHA256"],
-                         hashlib.sha256(SHARED_CONFIG_FIXTURE.encode()).hexdigest())
+                         "9cfe3b77962df6b251a96c24f29c409f5130ac47b0ef814eaaceaf9766a8945c")
         payload = b"verified downloader test input\n"
         for corrupt in (False, True):
             with self.subTest(corrupt=corrupt), tempfile.TemporaryDirectory(prefix="libteam transport ") as directory:
@@ -498,7 +498,7 @@ class RustSourceMirrorTest(unittest.TestCase):
                     argv = call["argv"]
                     self.assertIn(command, argv)
                     self.assertIn("--bazelrc=" + str(root / "tools/bazel/common.bazelrc"), argv)
-                    self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4ed05183275951b03342d89db98f709779487ec0", argv)
+                    self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a2c1f22ba32e1da92d3ef3071a430add72f905d6", argv)
                     self.assertIn("--platforms=@sonic_build_infra//platforms:" + machine + "_trixie", argv)
                     self.assertIn("--host_platform=@sonic_build_infra//platforms:" + machine + "_trixie", argv)
                     self.assertEqual(call["config"], str(config))
