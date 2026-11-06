@@ -795,7 +795,7 @@ class ImageWorkerTest(unittest.TestCase):
                               "with Path(os.environ['TRACE']).open('a') as out: out.write(json.dumps(sys.argv[1:])+'\\n')\n")
             trace = root / "trace.jsonl"; environment["TRACE"] = str(trace)
             for step in job["steps"][1:]:
-                if step.get("if") == "inputs.source_image == 'teamd'":
+                if step.get("if") in ("inputs.source_image == 'teamd'", "inputs.source_image == 'p4rt'"):
                     continue
                 if "run" in step:
                     subprocess.run(["bash", "-e", "-c", step["run"]], env=environment,
@@ -1139,7 +1139,7 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_fixed_interfaces_do_not_expand_into_owner_suites(self):
         root, artifacts = Path("/source"), Path("/evidence")
-        for image in worker.DRIVERS:
+        for image in worker.DRIVERS.keys() - {"p4rt"}:
             for phase in ("build", "validate", "incremental", "loaded"):
                 command = worker.phase_command(image, phase, root, artifacts)
                 self.assertEqual(command[1], "-B")
@@ -1195,6 +1195,164 @@ class ImageWorkerTest(unittest.TestCase):
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "b" * 40 + "\n")
             with self.assertRaises(ValueError):
                 worker.catalog_for("snmp", root)
+
+    def p4rt_owner(self, workspace, temporary):
+        launch, rc = temporary / "p4rt-owner-bazel", temporary / "p4rt-owner.bazelrc"
+        launch.write_text("reviewed launcher"); rc.write_text("reviewed rc")
+        return {"source": str(workspace / worker.P4RT_OWNER_PATH), "revision": worker.P4RT_OWNER,
+                "bazel": str(launch), "bazel_sha256": worker.digest(launch), "rc": str(rc),
+                "rc_sha256": worker.digest(rc), "output_base": "/bazel_cache/source-images/sonic-slave-lgh114-1/p4rt-owner/output-base",
+                "jobs": 1}
+
+    def test_p4rt_uses_exact_seven_existing_driver_interfaces(self):
+        workspace, artifacts = Path("/source"), Path("/evidence")
+        owner = {"source": "/source/" + worker.P4RT_OWNER_PATH, "revision": worker.P4RT_OWNER,
+                 "bazel": "/private/owner-bazel", "output_base": "/cache/p4rt-owner/output-base", "jobs": 1}
+        common = ["--directory", str(artifacts), "--owner-source", owner["source"]]
+        prefix = [sys.executable, "-B"]
+        wrapper = "/source/tools/bazel/ci/review_bazel.sh"
+        phases = ("prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded")
+        self.assertEqual(worker.P4RT_PHASES, phases)
+        for phase in phases:
+            if phase == "loaded":
+                expected = prefix + ["/source/tools/bazel/ci/p4rt_loaded.py", *common]
+            elif phase in ("validate", "incremental"):
+                expected = prefix + ["/source/tools/bazel/ci/p4rt_validate.py", phase, *common, "--bazel", wrapper]
+            else:
+                expected = prefix + ["/source/tools/bazel/ci/p4rt_image.py", phase, *common, "--bazel", wrapper,
+                    "--owner-revision", worker.P4RT_OWNER, "--owner-bazel", owner["bazel"],
+                    "--owner-output-base", owner["output_base"], "--jobs", "1"]
+            self.assertEqual(worker.phase_command("p4rt", phase, workspace, artifacts, owner), expected)
+        for change in ({"revision": "a" * 40}, {"source": "/other"}, {"jobs": 2}):
+            with self.assertRaises(ValueError):
+                worker.phase_command("p4rt", "build", workspace, artifacts, {**owner, **change})
+        with self.assertRaises(ValueError):
+            worker.phase_command("p4rt", "build", workspace, artifacts)
+        with self.assertRaises(ValueError):
+            worker.phase_command("snmp", "owner-tests", workspace, artifacts, owner)
+
+    def test_p4rt_workflow_preparation_precedes_four_phases_and_stops_on_failure(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["source_image"]["steps"]
+        selected = []
+        for step in steps:
+            match = re.search(r'source_image_worker.py" ([a-z-]+) ', step.get("run", ""))
+            if match and match.group(1) in worker.P4RT_PHASES:
+                selected.append((match.group(1), step))
+        self.assertEqual(tuple(phase for phase, _ in selected), worker.P4RT_PHASES)
+        for index, (phase, step) in enumerate(selected):
+            self.assertNotIn("continue-on-error", step)
+            if index < 3:
+                self.assertEqual(step["if"], "inputs.source_image == 'p4rt'")
+            else:
+                self.assertNotIn("if", step)  # GitHub's implicit success() gate.
+        self.assertEqual(workflow["jobs"]["source_image"]["timeout-minutes"], 360)
+        self.assertEqual(workflow["jobs"]["source_image"]["runs-on"],
+                         ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
+
+    def test_p4rt_owner_setup_verifies_gitlink_and_separate_cache_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);workspace = root / "source";workspace.mkdir()
+            (workspace / ".bazelversion").write_text("8.5.1\n")
+            owner = workspace / worker.P4RT_OWNER_PATH;owner.mkdir(parents=True)
+            (owner / ".bazelversion").write_text("6.4.0\n")
+            (owner / "WORKSPACE.bazel").write_text("workspace(name='owner')\n")
+            (owner / "ci").mkdir();(owner / "ci/production_runtime.py").write_text("# reviewed driver\n")
+            temporary = root / "scratch";temporary.mkdir();cache = root / "cache"
+            def output(argv):
+                if "ls-tree" in argv: return "160000 commit " + worker.P4RT_OWNER + "\t" + worker.P4RT_OWNER_PATH
+                if "config" in argv: return "https://github.com/securely1g/sonic-pins.git"
+                if "rev-parse" in argv: return worker.P4RT_OWNER
+                if "status" in argv: return ""
+                raise AssertionError(argv)
+            with patch.object(worker, "output", side_effect=output), patch.object(worker, "run") as run, \
+                    patch.object(worker.shutil, "which", return_value="/tools/bazelisk"):
+                context = worker.prepare_p4rt(workspace, cache, temporary, [cache / "distdir"], temporary / "mirrors.cfg")
+            self.assertEqual(run.call_args_list[0].args[0], ["git", "-C", str(workspace), "submodule", "update", "--init", "--checkout", "--", worker.P4RT_OWNER_PATH])
+            self.assertEqual(context["output_base"], str(cache / "p4rt-owner/output-base"))
+            self.assertNotEqual(context["output_base"], str(cache / "p4rt/output-base"))
+            rc = Path(context["rc"]).read_text()
+            for option in ("common --repository_cache=", "build --disk_cache=", "build --local_ram_resources=4096", "common --distdir=", "common --experimental_downloader_config="):
+                self.assertIn(option, rc)
+            with patch.dict(os.environ, {}, clear=True), patch.object(sys, "argv", [context["bazel"], "build", "//p4rt_app:p4rt_runtime"]), \
+                    patch.object(os, "execv") as execute:
+                exec(compile(Path(context["bazel"]).read_text(), context["bazel"], "exec"), {})
+                self.assertEqual(os.environ["USE_BAZEL_VERSION"], "6.4.0")
+                self.assertEqual(os.environ["BAZELISK_HOME"], str(cache / "p4rt-owner/bazelisk"))
+            argv = execute.call_args.args[1]
+            self.assertIn("--output_base=" + context["output_base"], argv)
+            self.assertIn("--host_jvm_args=-Xmx2g", argv)
+            self.assertIn("--bazelrc=" + context["rc"], argv)
+            self.assertIn("--nohome_rc", argv)
+            self.assertNotIn("--noworkspace_rc", argv)  # Preserve the owner's p4rt-runtime config.
+            self.assertFalse(any("remote_download_regex" in x or "local_resources=" in x for x in argv))
+            self.assertEqual(argv[-2:], ["build", "//p4rt_app:p4rt_runtime"])
+            (workspace / ".bazelversion").write_text("6.4.0\n")
+            with patch.object(worker, "run") as run, self.assertRaises(ValueError):
+                worker.prepare_p4rt(workspace, cache, temporary, [], temporary / "mirror")
+            run.assert_not_called()
+            (workspace / ".bazelversion").write_text("8.5.1\n")
+            with patch.object(worker, "output", return_value="160000 commit " + "a" * 40), \
+                    patch.object(worker, "run") as run, self.assertRaises(ValueError):
+                worker.prepare_p4rt(workspace, cache, temporary, [], temporary / "mirror")
+            run.assert_not_called()
+            (owner / ".bazelversion").write_text("8.5.1\n")
+            with patch.object(worker, "output", side_effect=output), patch.object(worker, "run"), self.assertRaises(ValueError):
+                worker.p4rt_owner_identity(workspace)
+
+    def test_p4rt_publication_delegates_before_generic_directory_creation(self):
+        from tools.bazel.ci import p4rt_public
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def prepare(path):
+                self.assertEqual(path, root)
+                self.assertFalse((root / "public").exists())
+                (root / "public").mkdir()
+                return root / "public"
+            with patch.object(p4rt_public, "prepare", side_effect=prepare) as call:
+                self.assertEqual(worker.publish(SimpleNamespace(image="p4rt", artifacts=root)), root / "public")
+            call.assert_called_once_with(root)
+
+    def test_p4rt_phase_receipts_enforce_order_and_preserve_failure(self):
+        memory = {"limit": str(20 * 1024**3), "cpu_max": "400000 100000", "events": {"oom": 0, "oom_kill": 0}}
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory);artifacts = root / "artifacts";artifacts.mkdir()
+                workspace = root / "source";workspace.mkdir();temporary = root / "scratch";temporary.mkdir()
+                args = SimpleNamespace(image="p4rt", revision="a" * 40, workspace=workspace, artifacts=artifacts, phase="prepare-owner")
+                owner = self.p4rt_owner(workspace, temporary)
+                state = {"image": "p4rt", "revision": args.revision, "workspace": str(workspace), "environment": {"BAZEL_REAL": "/root-bazel"},
+                         "p4rt_owner": owner, "build_profile": worker.select_build_profile(20 * 1024**3, 4)}
+                (artifacts / "worker-private.json").write_text(json.dumps(state))
+                def result(argv, **kwargs):
+                    return SimpleNamespace(returncode=1 if fail and "owner-tests" in argv else 0)
+                with patch.dict(os.environ, {"RUNNER_NAME": "sonic-slave-lgh114-1", "SOURCE_REGISTRY_REVISION": ""}), \
+                        patch.object(worker, "temporary_directory", return_value=temporary), \
+                        patch.object(worker, "p4rt_owner_identity", return_value=Path(owner["source"])), \
+                        patch.object(worker, "source_check"), patch.object(worker, "memory_snapshot", return_value=memory), \
+                        patch.object(worker.subprocess, "run", side_effect=result) as run:
+                    args.phase = "build"
+                    with self.assertRaises(FileNotFoundError): worker.execute_phase(args)
+                    run.assert_not_called()
+                    for phase in worker.P4RT_PHASES:
+                        args.phase = phase
+                        if fail and phase == "owner-tests":
+                            with self.assertRaisesRegex(ValueError, "Image phase failed"): worker.execute_phase(args)
+                            self.assertEqual(json.loads((artifacts / "worker-owner-tests.json").read_text())["status"], "failed")
+                            calls = run.call_count;args.phase = "build"
+                            with self.assertRaisesRegex(ValueError, "predecessor"): worker.execute_phase(args)
+                            self.assertEqual(run.call_count, calls)
+                            break
+                        worker.execute_phase(args)
+                        receipt = json.loads((artifacts / ("worker-" + phase + ".json")).read_text())
+                        self.assertEqual(receipt["owner_profile"], worker.P4RT_OWNER_PROFILE)
+                    if not fail:
+                        self.assertEqual(run.call_count, 8)  # Seven phases and the existing root JVM shutdown.
+                        self.assertEqual(run.call_args_list[-2].args[0], ["/root-bazel", "shutdown"])
+                    Path(owner["rc"]).write_text("tampered")
+                    args.phase = "prepare-owner"
+                    with self.assertRaisesRegex(ValueError, "configuration changed"): worker.execute_phase(args)
 
     def test_orchagent_incremental_uses_current_source_parent_and_all_six_targets(self):
         command = worker.phase_command("orchagent", "incremental", Path("/source"), Path("/evidence"))
@@ -1277,7 +1435,7 @@ class ImageWorkerTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp"):
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp", "p4rt"):
             with self.subTest(image=image):
                 selected = [name for name, job in jobs.items() if condition(
                     str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]

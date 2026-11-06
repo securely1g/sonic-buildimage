@@ -25,7 +25,7 @@ from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
-           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr", "snmp": "snmp"}
+           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr", "snmp": "snmp", "p4rt": "p4rt"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -35,6 +35,7 @@ WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 WRAPPERS["framework"] = "review_bazel.sh"
+WRAPPERS["p4rt"] = "review_bazel.sh"
 for name in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
     WRAPPERS[name] = "review_bazel.sh"
 # Older service branches select their catalog in a dedicated image workflow.
@@ -53,6 +54,11 @@ BUILD_CHECKS = {
     "radv": ("radv_make_test.py",),
     "mux": ("mux_make_test.py",),
 }
+P4RT_OWNER = "4a5f8875e47c7dd4bf853672de1d7700bfaae56e"
+P4RT_OWNER_PATH = "src/sonic-p4rt/sonic-pins"
+P4RT_OWNER_PROFILE = {"revision": P4RT_OWNER, "bazel": "6.4.0", "jobs": 1, "jvm_heap_gib": 2,
+                      "scheduler_memory_mb": 4096, "cache_mode": "separate_persistent_worker_local"}
+P4RT_PHASES = ("prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded")
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
 MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d53bed3dfbc53895f5ba348354210704f3872692/ci/source_mirrors.cfg"
 MIRROR_SHA = "8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68"
@@ -558,11 +564,103 @@ def launcher_text(binary, base, profile):
             "'--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts', *args])\n")
 
 
-def phase_command(image, phase, workspace, artifacts):
+def p4rt_owner_identity(workspace):
+    """Bind the existing source gitlink, clean owner and its distinct tool version."""
+    require((workspace / ".bazelversion").read_text().strip() == "8.5.1", "P4RT root must use Bazel 8.5.1")
+    require(output(["git", "-C", str(workspace), "ls-tree", "HEAD", "--", P4RT_OWNER_PATH]) ==
+            "160000 commit " + P4RT_OWNER + "\t" + P4RT_OWNER_PATH, "P4RT owner gitlink changed")
+    owner = workspace / P4RT_OWNER_PATH
+    require(owner.resolve() == owner and owner.is_dir(), "P4RT owner path must not traverse symlinks")
+    source_check(owner, P4RT_OWNER)
+    require(not output(["git", "-C", str(owner), "status", "--porcelain"]), "P4RT owner checkout must be clean")
+    require((owner / ".bazelversion").read_text().strip() == "6.4.0", "P4RT owner must use Bazel 6.4.0")
+    for name in ("WORKSPACE.bazel", "ci/production_runtime.py"):
+        require((owner / name).is_file(), "Missing P4RT owner interface: " + name)
+    return owner
+
+
+def owner_launcher_text(binary, base, rc, cache):
+    # Keep the WORKSPACE owner's Bazel6 options separate from the Bazel8 launcher.
+    return ("#!/usr/bin/env python3\nimport os, sys\n" +
+            "os.environ['USE_BAZEL_VERSION'] = '6.4.0'\n" +
+            "os.environ['BAZELISK_HOME'] = " + repr(str(cache / "bazelisk")) + "\n" +
+            "binary = " + repr(binary) + "\n" +
+            "os.execv(binary, [binary, " + repr("--output_base=" + str(base)) + ", " +
+            "'--host_jvm_args=-Xmx2g', " +
+            "'--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts', " +
+            "'--nosystem_rc', '--nohome_rc', " + repr("--bazelrc=" + str(rc)) + ", *sys.argv[1:]])\n")
+
+
+def prepare_p4rt(workspace, cache, temporary, distdirs, mirror):
+    require((workspace / ".bazelversion").read_text().strip() == "8.5.1", "P4RT root must use Bazel 8.5.1")
+    require(output(["git", "-C", str(workspace), "ls-tree", "HEAD", "--", P4RT_OWNER_PATH]) ==
+            "160000 commit " + P4RT_OWNER + "\t" + P4RT_OWNER_PATH, "P4RT owner gitlink changed")
+    require(output(["git", "-C", str(workspace), "config", "-f", ".gitmodules", "--get",
+                    "submodule." + P4RT_OWNER_PATH + ".url"]) == "https://github.com/securely1g/sonic-pins.git",
+            "P4RT owner repository changed")
+    run(["git", "-C", str(workspace), "submodule", "update", "--init", "--checkout", "--", P4RT_OWNER_PATH])
+    owner = p4rt_owner_identity(workspace)
+    owner_cache = cache / "p4rt-owner"
+    require(owner_cache.resolve() == owner_cache, "P4RT owner cache must not traverse symlinks")
+    for name in ("repository", "disk", "bazelisk", "output-base"):
+        path = owner_cache / name
+        require(path.resolve() == path, "P4RT owner cache child must not traverse symlinks")
+        path.mkdir(parents=True, exist_ok=True)
+    rc = temporary / "p4rt-owner.bazelrc"
+    launch = temporary / "p4rt-owner-bazel"
+    require(not rc.exists() and not launch.exists(), "P4RT owner launcher must be fresh")
+    rc.write_text("\n".join([
+        "common --repository_cache=" + str(owner_cache / "repository"),
+        "build --disk_cache=" + str(owner_cache / "disk"),
+        "build --local_ram_resources=4096",
+        "common --experimental_downloader_config=" + str(mirror),
+        *["common --distdir=" + str(directory) for directory in distdirs],
+    ]) + "\n")
+    base = owner_cache / "output-base"
+    launch.write_text(owner_launcher_text(shutil.which("bazel"), base, rc, owner_cache))
+    launch.chmod(0o755)
+    return {"source": str(owner), "revision": P4RT_OWNER, "bazel": str(launch), "bazel_sha256": digest(launch),
+            "rc": str(rc), "rc_sha256": digest(rc), "output_base": str(base), "jobs": 1}
+
+
+def p4rt_context(args, state):
+    context = state.get("p4rt_owner", {})
+    owner = p4rt_owner_identity(args.workspace)
+    cache = Path("/bazel_cache/source-images") / os.environ.get("RUNNER_NAME", "") / "p4rt-owner"
+    temporary = temporary_directory()
+    require(context.get("source") == str(owner) and context.get("revision") == P4RT_OWNER and
+            context.get("output_base") == str(cache / "output-base") and context.get("jobs") == 1 and
+            context.get("bazel") == str(temporary / "p4rt-owner-bazel") and
+            context.get("rc") == str(temporary / "p4rt-owner.bazelrc"), "P4RT prepared context changed")
+    for name in ("bazel", "rc"):
+        path = Path(context[name])
+        require(not path.is_symlink() and digest(path) == context[name + "_sha256"], "P4RT launcher/configuration changed")
+    index = P4RT_PHASES.index(args.phase)
+    if index:
+        prior = json.loads((args.artifacts / ("worker-" + P4RT_PHASES[index - 1] + ".json")).read_text())
+        require(prior.get("phase") == P4RT_PHASES[index - 1] and prior.get("status") == "passed" and
+                prior.get("source_revision") == args.revision and prior.get("image") == "p4rt" and
+                prior.get("no_oom_events") is True, "P4RT predecessor phase has not passed")
+    return context
+
+
+def phase_command(image, phase, workspace, artifacts, owner=None):
     """Only the selected existing, fixed driver interfaces are executable."""
-    require(image in DRIVERS and phase in ("build", "validate", "incremental", "loaded"), "Unknown driver phase")
+    require(image in DRIVERS and phase in (P4RT_PHASES if image == "p4rt" else
+            ("build", "validate", "incremental", "loaded")), "Unknown driver phase")
     prefix = [sys.executable, "-B"]
     wrapper = str(workspace / "tools/bazel/ci" / WRAPPERS[image])
+    if image == "p4rt":
+        require(owner and owner.get("revision") == P4RT_OWNER and owner.get("jobs") == 1 and
+                owner.get("source") == str(workspace / P4RT_OWNER_PATH), "Missing fixed P4RT owner context")
+        common = ["--directory", str(artifacts), "--owner-source", owner["source"]]
+        if phase == "loaded":
+            return prefix + [str(workspace / "tools/bazel/ci/p4rt_loaded.py"), *common]
+        if phase in ("validate", "incremental"):
+            return prefix + [str(workspace / "tools/bazel/ci/p4rt_validate.py"), phase, *common, "--bazel", wrapper]
+        return prefix + [str(workspace / "tools/bazel/ci/p4rt_image.py"), phase, *common,
+                         "--bazel", wrapper, "--owner-revision", owner["revision"],
+                         "--owner-bazel", owner["bazel"], "--owner-output-base", owner["output_base"], "--jobs", "1"]
     if phase == "loaded":
         return prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_loaded.py"), "--artifacts", str(artifacts)]
     if phase == "incremental" and image == "orchagent":
@@ -635,6 +733,9 @@ def prepare(args):
     for name in BUILD_CHECKS.get(args.image, ()):
         path = workspace / "tools/bazel/tests" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed image check: " + name)
+    if args.image == "p4rt":
+        for name in ("p4rt_validate.py", "p4rt_handoff.py", "p4rt_common_sdk.py"):
+            require((workspace / "tools/bazel/ci" / name).is_file(), "Missing reviewed P4RT interface: " + name)
     catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
@@ -677,6 +778,9 @@ def prepare(args):
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
              "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
+    if args.image == "p4rt":
+        state["p4rt_owner"] = prepare_p4rt(workspace, cache, temporary, distdirs, mirror)
+        env["USE_BAZEL_VERSION"] = "8.5.1"
     (artifacts / "worker-private.json").write_text(json.dumps(state, indent=2) + "\n")
     run(["sudo", "-n", sys.executable, str(ROOT / "tools/bazel/ci/prepare_nested_docker.py")])
     with (artifacts / "dockerd.log").open("w") as log:
@@ -705,6 +809,8 @@ def prepare(args):
                "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "persistent_worker_local",
                "build_profile": profile, "memory": memory_snapshot(),
                "docker_network": "none", "image": args.image}
+    if args.image == "p4rt":
+        receipt["owner_profile"] = P4RT_OWNER_PROFILE
     safe_json(receipt)
     (artifacts / "worker.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
@@ -728,6 +834,7 @@ def prepared_profile(state, memory):
 def execute_phase(args):
     state = state_for(args)
     source_check(args.workspace, args.revision)
+    owner = p4rt_context(args, state) if args.image == "p4rt" else None
     before = memory_snapshot()
     profile = prepared_profile(state, before)
     if args.phase == "loaded":
@@ -748,7 +855,8 @@ def execute_phase(args):
     try:
         checks = BUILD_CHECKS.get(args.image, ()) if args.phase == "build" else ()
         commands = [[sys.executable, "-B", str(args.workspace / "tools/bazel/tests" / name)] for name in checks]
-        commands.append(phase_command(args.image, args.phase, args.workspace, args.artifacts))
+        commands.append(phase_command(args.image, args.phase, args.workspace, args.artifacts, owner) if owner else
+                        phase_command(args.image, args.phase, args.workspace, args.artifacts))
         for command in commands:
             completed = subprocess.run(command, cwd=args.workspace,
                                        env={**os.environ, **state["environment"]})
@@ -758,12 +866,16 @@ def execute_phase(args):
         finished.set()
         monitor.join()
     source_check(args.workspace, args.revision)
+    if owner:
+        p4rt_owner_identity(args.workspace)
     after = memory_snapshot()
     memory_ok = all(after["events"].get(key, 0) == before["events"].get(key, 0) for key in ("oom", "oom_kill"))
     receipt = {"phase": args.phase, "status": "passed" if completed.returncode == 0 and memory_ok else "failed",
                "source_revision": args.revision, "image": args.image, "elapsed_seconds": round(time.monotonic() - started, 3),
                "exit_code": completed.returncode, "memory_before": before, "memory_after": after,
                "build_profile": profile, "no_oom_events": memory_ok}
+    if owner:
+        receipt["owner_profile"] = P4RT_OWNER_PROFILE
     (args.artifacts / ("worker-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")
     require(completed.returncode == 0, "Image phase failed: " + args.phase)
     require(memory_ok, "Worker exhausted its memory during " + args.phase)
@@ -771,6 +883,9 @@ def execute_phase(args):
 
 def publish(args):
     """Stage only declared payloads and checked public evidence, never private logs/env."""
+    if getattr(args, "image", None) == "p4rt":
+        from tools.bazel.ci.p4rt_public import prepare as prepare_public
+        return prepare_public(args.artifacts)
     source, destination = args.artifacts, args.artifacts / "public"
     destination.mkdir(exist_ok=True)
     receipt_path = source / "build-receipt.json"
@@ -873,7 +988,7 @@ if root.exists():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"))
+    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded", "publish", "stop"))
     parser.add_argument("--image", required=True, choices=DRIVERS)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
