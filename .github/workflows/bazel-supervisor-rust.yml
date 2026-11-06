@@ -33,11 +33,11 @@ jobs:
       matrix:
         include:
           - arch: AMD64
-            runner: ubuntu-24.04
+            runner: [self-hosted, linux, bazel-x64]
             machine: x86_64
             debian_arch: amd64
           - arch: ARM64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, linux, bazel-arm64]
             machine: aarch64
             debian_arch: arm64
     runs-on: ${{ matrix.runner }}

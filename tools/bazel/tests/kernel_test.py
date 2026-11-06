@@ -10,11 +10,13 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -935,6 +937,167 @@ class KernelConfigurationTest(unittest.TestCase):
                       "https://cache.example.test/#secret", "file:///cache", "https://cache.example.test\n"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 kernel.endpoint(value)
+
+
+class KernelWorkflowTest(unittest.TestCase):
+    def setUp(self):
+        self.workflow = (ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text()
+        self.steps = dict(re.findall(
+            r"^      - name: ([^\n]+)\n(.*?)(?=^      - |\Z)",
+            self.workflow, re.MULTILINE | re.DOTALL))
+
+    def test_shared_cache_defaults_and_optional_cold_proof(self):
+        self.assertIn("runner: [self-hosted, linux, bazel-x64]", self.workflow)
+        self.assertIn("runner: [self-hosted, linux, bazel-arm64]", self.workflow)
+        cold = "github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache"
+        self.assertIn("KERNEL_REMOTE_CACHE: ${{ " + cold
+                      + " && 'http://127.0.0.1:8080' || 'grpc://172.16.0.4:9092' }}",
+                      self.workflow)
+        self.assertIn("UPLOAD_KERNEL_CACHE: ${{ (" + cold
+                      + ") || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}",
+                      self.workflow)
+        for name in ("Start a disposable cache for optional cold-build verification",
+                     "Verify a fresh output directory reuses the kernel action"):
+            self.assertIn("if: " + cold, self.steps[name])
+        self.assertIn("if: always() && " + cold,
+                      self.steps["Stop the disposable verification cache"])
+        self.assertIn("'kernel-cache-hit' || 'kernel-bundle-state'",
+                      self.steps["Select verified DEBs and a public validation summary"])
+        self.assertNotIn("sudo rm", self.workflow)
+
+    def test_workspace_repair_is_scoped_and_preserves_cache_links(self):
+        name = "Restore workspace access before checkout"
+        step = self.steps[name]
+        self.assertLess(self.workflow.index("- name: " + name),
+                        self.workflow.index("- uses: actions/checkout@"))
+        self.assertIn("working-directory: ${{ runner.temp }}", step)
+        self.assertIn("RUNNER_PIPELINE_WORKSPACE: ${{ runner.workspace }}", step)
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        for scenario in ("repair", "separate-temp", "aliased-work-root",
+                         "absent", "outside", "symlink", "sudo-failure"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                work_root = root / "work"
+                scratch = (root / "separate-disk/_temp" if scenario == "separate-temp"
+                           else work_root / "_temp")
+                scratch.mkdir(parents=True)
+                workspace = work_root / "sonic-buildimage/sonic-buildimage"
+                workspace.mkdir(parents=True)
+                outside = root / "cache"
+                outside.mkdir()
+                payload = outside / "object"
+                payload.write_text("shared cache object")
+                payload.chmod(0o444)
+                linked = workspace / "hardlink"
+                os.link(payload, linked)
+                (workspace / "symlink").symlink_to(outside, target_is_directory=True)
+                regular = workspace / "tracked-file"
+                regular.write_text("tracked")
+                regular.chmod(0o444)
+                nested = workspace / ".git"
+                nested.mkdir()
+                nested.chmod(0o555)
+                outside.chmod(0o555)
+                commands = root / "commands"
+                commands.mkdir()
+                calls = root / "sudo-calls.jsonl"
+                changed = root / "chown-calls.jsonl"
+                sudo = commands / "sudo"
+                sudo.write_text(
+                    "#!" + sys.executable + "\n"
+                    "import json, os, sys\n"
+                    "with open(os.environ['SUDO_CALLS'], 'a') as f:\n"
+                    "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                    "if int(os.environ['SUDO_EXIT']):\n"
+                    "    sys.exit(int(os.environ['SUDO_EXIT']))\n"
+                    "assert sys.argv[1] == '-n'\n"
+                    "os.execvp(sys.argv[2], sys.argv[2:])\n")
+                sudo.chmod(0o755)
+                chown = commands / "chown"
+                chown.write_text(
+                    "#!" + sys.executable + "\n"
+                    "import json, os, sys\n"
+                    "with open(os.environ['CHOWN_CALLS'], 'a') as f:\n"
+                    "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n")
+                chown.chmod(0o755)
+                selected = workspace
+                pipeline = workspace.parent
+                if scenario == "absent":
+                    selected = work_root / "missing/missing"
+                    pipeline = selected.parent
+                elif scenario == "outside":
+                    selected = outside
+                elif scenario == "symlink":
+                    shutil.rmtree(workspace)
+                    workspace.symlink_to(outside, target_is_directory=True)
+                elif scenario == "aliased-work-root":
+                    alias = root / "work-link"
+                    alias.symlink_to(work_root, target_is_directory=True)
+                    selected = alias / "sonic-buildimage/sonic-buildimage"
+                    pipeline = selected.parent
+                repository = "missing" if scenario == "absent" else "sonic-buildimage"
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script],
+                    cwd=scratch, capture_output=True, text=True,
+                    env=dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                             RUNNER_TEMP=str(scratch), GITHUB_WORKSPACE=str(selected),
+                             RUNNER_PIPELINE_WORKSPACE=str(pipeline),
+                             GITHUB_REPOSITORY="owner/" + repository,
+                             SUDO_CALLS=str(calls), CHOWN_CALLS=str(changed),
+                             SUDO_EXIT="23" if scenario == "sudo-failure" else "0"))
+                expected_exit = {"outside": 1, "symlink": 1, "sudo-failure": 23}.get(scenario, 0)
+                self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
+                if scenario in ("repair", "separate-temp", "aliased-work-root"):
+                    self.assertEqual(nested.stat().st_mode & 0o777, 0o755)
+                    self.assertEqual(regular.stat().st_mode & 0o777, 0o444)
+                    ownership_calls = [json.loads(line) for line in changed.read_text().splitlines()]
+                    paths = [path for call in ownership_calls for path in call[3:]]
+                    self.assertIn(str(regular), paths)
+                    self.assertNotIn(str(linked), paths)
+                    self.assertNotIn(str(workspace / "symlink"), paths)
+                    self.assertTrue(all(path.startswith(str(workspace)) for path in paths))
+                    self.assertEqual(len(calls.read_text().splitlines()), 3)
+                elif scenario != "sudo-failure":
+                    self.assertFalse(calls.exists())
+                self.assertEqual(payload.read_text(), "shared cache object")
+                self.assertEqual(payload.stat().st_mode & 0o777, 0o444)
+                self.assertEqual(outside.stat().st_mode & 0o777, 0o555)
+                outside.chmod(0o755)
+                if nested.exists():
+                    nested.chmod(0o755)
+
+    def test_build_cache_flags_and_failure_propagation(self):
+        step = self.steps["Build and verify kernel DEBs in the normal package directory"]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        script = script.replace("${{ matrix.arch }}", "arm64")
+        for endpoint, upload in (("grpc://172.16.0.4:9092", "true"),
+                                 ("grpc://172.16.0.4:9092", "false"),
+                                 ("http://127.0.0.1:8080", "true")):
+            for exit_code in (0, 9):
+                with self.subTest(endpoint=endpoint, upload=upload, exit_code=exit_code):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        root = Path(temporary)
+                        executable = root / "python3"
+                        executable.write_text(
+                            "#!" + sys.executable + "\n"
+                            "import json, os, sys\n"
+                            "from pathlib import Path\n"
+                            "Path(os.environ['CALLS']).write_text(json.dumps(sys.argv[1:]))\n"
+                            "sys.exit(int(os.environ['BUILD_EXIT']))\n")
+                        executable.chmod(0o755)
+                        calls = root / "calls.json"
+                        result = subprocess.run(
+                            ["bash", "-e", "-o", "pipefail", "-c", script],
+                            cwd=root, capture_output=True, text=True,
+                            env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                                     RUNNER_TEMP=temporary, KERNEL_REMOTE_CACHE=endpoint,
+                                     UPLOAD_KERNEL_CACHE=upload, CALLS=str(calls),
+                                     BUILD_EXIT=str(exit_code)))
+                        self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                        argv = json.loads(calls.read_text())
+                        self.assertEqual(argv[argv.index("--remote-cache") + 1], endpoint)
+                        self.assertEqual("--upload-local-results" in argv, upload == "true")
+                        self.assertEqual(argv[argv.index("--architecture") + 1], "arm64")
 
 
 if __name__ == "__main__":

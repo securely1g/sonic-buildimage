@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -15,6 +16,23 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_native_package_workflows_use_cache_reachable_runners(self):
+        expected = {
+            "amd64": "self-hosted, linux, bazel-x64",
+            "arm64": "self-hosted, linux, bazel-arm64",
+        }
+        for name in ("bazel-eventd.yml", "bazel-supervisor-rust.yml", "bazel-yang-models.yml"):
+            with self.subTest(workflow=name):
+                workflow = (ROOT / ".github/workflows" / name).read_text()
+                runners = re.findall(
+                    r"^          - (?:architecture|arch): (\S+)\n"
+                    r"            runner: \[([^\n]+)\]$",
+                    workflow, re.MULTILINE,
+                )
+                self.assertEqual(len(runners), 2)
+                self.assertEqual({arch.lower(): labels for arch, labels in runners}, expected)
+                self.assertIn("runs-on: ${{ matrix.runner }}", workflow)
+
     def test_static_checks_match_make_configs_and_stop_publication_on_failure(self):
         verifier = (ROOT / "tools/bazel/ci/verify_vs_oci.sh").read_text()
         script = "set -euo pipefail\n" + verifier[verifier.index("# Match the archive recipes"):].split(
