@@ -206,9 +206,17 @@ an obsolete compiler or execution-tool runtime. FIPS owns the GNU tool runtime
 files required by SymCrypt and the OpenSSL, OpenSSH, Kerberos and SymCrypt
 runtime/debug TAR contracts.
 
-The source-base roots select published
-`sonic-build-infra@0.0.22-a12bc826d6f811a157db5c7c02a2fe033896cc14`
-and `sonic-fips@0.0.3-0565bc0426dde6a1e7c495de17707c9557f843a9` from
-registry `main`. The root retains the targeted
+The default registry remains `main`. During Draft validation, `MODULE.bazel`
+uses the exact reviewed archive recipes from
+[registry #287](https://github.com/securely1g/sonic-bazel-registry/pull/287) for
+`sonic-build-infra@0.0.28-23b398c24d3b53e756785d1ed4c0ba5f62e9cdb1` and
+[registry #284](https://github.com/securely1g/sonic-bazel-registry/pull/284) for
+`sonic-fips@0.0.6-b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0`. The FIPS recipe
+includes the declared libedit metadata fix reviewed in
+[source #21](https://github.com/securely1g/sonic-fips/pull/21). Remove each
+archive override after its registration is merged to `main`, then retest normal
+registry resolution before marking the consumer ready.
+
+The root retains the targeted
 `kernel_runtime_(amd64|arm64)` remote-download policy in
 `tools/bazel/common.bazelrc` because dependency `.bazelrc` files are not inherited.

@@ -246,7 +246,7 @@ single_version_override(
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.3-15fcb926a302059ec379f0c2fd15eb3d88bda4c9", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.6-b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0", repo_name = "sonic_fips")
 
 # Draft validation of registry #287: reuse its exact source, patches and overlays.
 # Remove after #287 publishes .28, then verify normal main-registry resolution.
@@ -313,9 +313,18 @@ single_version_override(
     version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
 )
 
-single_version_override(
+# Draft validation of registry #284: use its exact FIPS source and version patch.
+# Source #21 fixes declared libedit discovery in the OpenSSH configure step.
+# Remove after #284 publishes .6, then retest normal main-registry resolution.
+archive_override(
     module_name = "sonic-fips",
-    version = "0.0.3-15fcb926a302059ec379f0c2fd15eb3d88bda4c9",
+    urls = ["https://github.com/securely1g/sonic-fips/archive/b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0.tar.gz"],
+    integrity = "sha256-65hivURPi+ngPAEq+w0n2C1p925bC6Vt3yn282PFBvA=",
+    strip_prefix = "sonic-fips-b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0",
+    remote_patches = {
+        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/c485f287a7de364bc79e047427a0b3e985d9c941/modules/sonic-fips/0.0.6-b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0/patches/0001-module-version.patch": "sha256-Od7/2bE0HRgKD9bZRvYCO31XNFEe8kuvJZiNVmM72E8=",
+    },
+    remote_patch_strip = 1,
 )
 
 # Preserve Syncd's Vim debug roots independently of the shared Vim-nox set.
