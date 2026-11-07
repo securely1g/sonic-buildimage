@@ -1,0 +1,166 @@
+# Local candidate only: creating the exact branch starts the hosted native job.
+name: DASH archive member diagnostic for current PR196
+'on':
+  create: null
+permissions:
+  contents: read
+concurrency:
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image
+    || 'none' }}-${{ inputs.source_revision }}
+  cancel-in-progress: true
+env:
+  BAZEL: ${{ github.workspace }}/tools/bazel/ci/lldp_draft_bazel.sh
+jobs:
+  dash_engine_native:
+    if: github.event_name == 'create' && github.repository == 'securely1g/sonic-buildimage' && github.event.ref_type
+      == 'branch' && github.event.ref == 'codex/dash-archive-member-diagnostics-25a'
+    name: Build and inspect DASH engine images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+      - /usr/local/lib/android:/runner-unused/android
+      - /usr/share/dotnet:/runner-unused/dotnet
+      - /opt/ghc:/runner-unused/ghc
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Allocate source-build space on this disposable runner
+      run: |
+        test "$RUNNER_ENVIRONMENT" = github-hosted
+        df -h / "$GITHUB_WORKSPACE"
+        du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+        # These host SDKs are not inputs to the pinned Trixie build. Preserve
+        # all Bazel caches, the workspace, retained outputs and execution tools.
+        find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+          -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        df -h / "$GITHUB_WORKSPACE"
+    - name: Install execution tools
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+        for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Check native architecture and generated dependency state
+      run: |
+        test "$(uname -m)" = "x86_64"
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        test ! -e MODULE.bazel.lock
+        test -z "$(git ls-files -- MODULE.bazel.lock)"
+        git check-ignore MODULE.bazel.lock
+    - name: Initialize Sysmgr's pinned gNOI source
+      run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+    - name: Initialize P4RT's pinned source owner
+      run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+    - name: Install P4RT source execution dependencies
+      run: |
+        apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \
+          libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+          libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
+        git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
+    - name: Set up Bazel
+      uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+      with:
+        bazelisk-version: 1.29.0
+        bazelisk-cache: true
+        repository-cache: true
+        disk-cache: oci-dash-engine-amd64
+        cache-version: 8.5.1
+    - name: Configure the verified source mirror
+      run: |
+        python3 - <<'PYCFG'
+        import hashlib
+        import os
+        from pathlib import Path
+        from urllib.request import urlopen
+        # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
+        url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+        with urlopen(url, timeout=60) as response:
+            data = response.read()
+        expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise SystemExit("Source mirror configuration checksum mismatch")
+        config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+        config.write_bytes(data)
+        with Path(".bazelrc.user").open("a") as rc:
+            rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+        PYCFG
+    - name: Preserve configured caches for Draft validation
+      run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+    - name: Prepare the checksum-pinned pigz source archive
+      run: |
+        mkdir -p artifacts/source-downloads
+        python3 -B tools/bazel/gzip/prepare_pigz.py \
+          --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+        # common.bazelrc imports this ignored file, including through Draft wrappers.
+        printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+        # Draft wrappers disable the home rc; share setup-bazel caches with them.
+        python3 - <<'PYCODE'
+        from pathlib import Path
+        home = Path.home() / '.bazelrc'
+        cache_lines = [line for line in home.read_text().splitlines()
+                       if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+        assert len(cache_lines) == 2, 'setup-bazel cache settings are missing'
+        user = Path('.bazelrc.user')
+        user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
+        PYCODE
+    - name: Build DASH engine runtime and debug images from source owners
+      id: dash_engine_build
+      env:
+        BAZELISK_GITHUB_TOKEN: ''
+        CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: python3 -B tools/bazel/ci/dash_engine_image.py build --bazel "$BAZEL" --artifacts artifacts/dash-engine
+    - name: Validate DASH engine payloads and matching symbols
+      run: python3 -B tools/bazel/ci/dash_engine_image.py validate --artifacts artifacts/dash-engine
+    - name: Validate nnpy in the selected image dependency graph
+      run: |
+        options=(--jobs=2 --local_resources=cpu=2 --local_resources=memory=8000
+          --platforms=@sonic_build_infra//platforms:x86_64_trixie
+          --host_platform=@sonic_build_infra//platforms:x86_64_trixie)
+        audit=()
+        for option in "${options[@]}"; do audit+=("--bazel-arg=$option"); done
+        python3 tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit[@]}" \
+          --output artifacts/dash-engine/owner-action-audit.json @nnpy//:package_test
+        "$BAZEL" test "${options[@]}" --test_output=errors @nnpy//:package_test
+        mkdir -p artifacts/dash-engine/tests
+        test -s bazel-testlogs/external/nnpy+/package_test/test.xml
+        cp bazel-testlogs/external/nnpy+/package_test/test.xml artifacts/dash-engine/tests/test.xml
+    - name: Verify DASH engine no-op, startup edit and restored archives
+      run: python3 -B tools/bazel/ci/dash_engine_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dash-engine
+    - name: Review public DASH engine evidence
+      id: dash_engine_public
+      if: always() && steps.dash_engine_build.outcome != 'skipped'
+      run: python3 -B tools/bazel/ci/dash_engine_public.py --artifacts artifacts/dash-engine
+    - name: Retain DASH engine archives and source evidence
+      if: always() && steps.dash_engine_public.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: dash-engine-source-amd64
+        path: |
+          artifacts/dash-engine/*.gz
+          artifacts/dash-engine/*.tar
+          artifacts/dash-engine/*.status
+          artifacts/dash-engine/*-apt.json
+          artifacts/dash-engine/*.packages.json
+          artifacts/dash-engine/*.validation.json
+          artifacts/dash-engine/validation.json
+          artifacts/dash-engine/public-receipt.json
+          artifacts/dash-engine/layout-identities.json
+          artifacts/dash-engine/action-audit.json
+          artifacts/dash-engine/owner-action-audit.json
+          artifacts/dash-engine/incremental.json
+          artifacts/dash-engine/MODULE.bazel.lock
+          artifacts/dash-engine/module-graph.json
+          artifacts/dash-engine/tests/test.xml
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 1
