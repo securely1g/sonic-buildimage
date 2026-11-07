@@ -305,6 +305,41 @@ def cache_reuse_summary(value):
 
 def receipt_summary(value, kind):
     require(isinstance(value, dict), "invalid-receipt")
+    if kind == "resolution":
+        fields = {"schema", "status", "returncode", "stdout", "stderr_tail_truncated",
+                  "signals", "origins", "http_statuses"}
+        # Older schema-1 receipts have no counts; preserve them without defaults.
+        require(set(value) in (fields, fields | {"diagnostic_counts"}), "invalid-resolution-fields")
+        require(type(value["schema"]) is int and value["schema"] == 1 and
+                value["status"] == "failed", "invalid-resolution-status")
+        require(type(value["returncode"]) is int and -128 <= value["returncode"] <= 255,
+                "invalid-resolution-returncode")
+        require(value["stdout"] in ("empty", "nonempty") and
+                type(value["stderr_tail_truncated"]) is bool, "invalid-resolution-output")
+        choices = {
+            "signals": {"http_error", "timeout", "connection_error", "disk_full", "memory_exhaustion",
+                        "extension_load_error", "missing_symbol", "missing_extension", "extension_summary"},
+            "origins": {"bazel_registry", "debian_snapshot", "debian_pool", "github_release", "github_raw", "other"},
+        }
+        for name, allowed in choices.items():
+            items = value[name]
+            require(isinstance(items, list) and all(type(item) is str and item in allowed for item in items)
+                    and items == sorted(set(items)), "invalid-resolution-" + name)
+        codes = value["http_statuses"]
+        require(isinstance(codes, list) and all(type(code) is int and 400 <= code <= 599 for code in codes)
+                and codes == sorted(set(codes)), "invalid-resolution-http-statuses")
+        require(bool(codes) == ("http_error" in value["signals"]), "inconsistent-resolution-http-statuses")
+        if "diagnostic_counts" in value:
+            counts = value["diagnostic_counts"]
+            require(isinstance(counts, dict) and set(counts) == {
+                "error_lines", "unclassified_error_lines", "extension_summaries"}, "invalid-resolution-counts")
+            require(all(type(count) is int and 0 <= count <= 65536 for count in counts.values()),
+                    "invalid-resolution-counts")
+            require(counts["unclassified_error_lines"] + counts["extension_summaries"] <= counts["error_lines"]
+                    and bool(counts["extension_summaries"]) == ("extension_summary" in value["signals"]),
+                    "inconsistent-resolution-counts")
+        safe_json(value)
+        return value
     if kind == "python":
         require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
         require(value.get("architecture") in {"amd64", "arm64"}, "invalid-architecture")
@@ -359,6 +394,76 @@ def receipt_summary(value, kind):
                 "source_found": found, "source_line_number": integer(value.get("with_dwp", {}).get("line")),
                 "packages": {name: digest(value.get("packages", {}).get(name)) for name in ("runtime_sha256", "debug_sha256")}}
     raise PublicArtifactError("unknown-receipt-kind")
+
+
+def graph_failure_summary(stdout, stderr, returncode):
+    """Project failure clues into fixed values; never publish captured text."""
+    # The cache verifier prints filtered text. Graph receipts deliberately expose
+    # only fixed classifications from fatal lines, not warnings or free text.
+    limit = 65536
+    tail = stderr[-limit:].encode("utf-8")
+    truncated = len(stderr) > limit or len(tail) > limit
+    tail = tail[-limit:]
+    if truncated:
+        tail = tail.partition(b"\n")[2]
+    lines = [line for line in tail.decode("utf-8", errors="replace").splitlines()
+             if line.startswith(("ERROR:", "Error:"))]
+    signals, origins, codes = set(), set(), set()
+    # Counts describe retained fatal lines only; summaries count lines, not extensions.
+    counts = {"error_lines": len(lines), "unclassified_error_lines": 0, "extension_summaries": 0}
+    for line in lines:
+        lower = line.lower()
+        line_signals = set()
+        for name, fragments in {
+            "timeout": ("timed out", "time out", "timeoutexception"),
+            "connection_error": ("connection reset", "connection refused", "unknownhostexception"),
+            "disk_full": ("no space left on device",),
+            "memory_exhaustion": ("outofmemoryerror", "cannot allocate memory"),
+        }.items():
+            if any(fragment in lower for fragment in fragments):
+                line_signals.add(name)
+        line_codes = {int(code) for code in re.findall(
+            r"(?:response code[: ]+|http(?:/[0-9.]+)?[ :]+|get returned[: ]+)([45][0-9]{2})\b", lower)}
+        if line_codes:
+            line_signals.add("http_error")
+        codes.update(line_codes)
+        if line.startswith("ERROR: Error loading ") and " for module extensions" in line:
+            line_signals.add("extension_load_error")
+        if (re.match(r"Error: '[^']+' value has no field or method '[^']+'", line) or
+                re.match(r"Error: (?:file .+ does not contain symbol|name '[^']+' is not defined)", line)):
+            line_signals.add("missing_symbol")
+        if " does not export a module extension called " in line:
+            line_signals.add("missing_extension")
+        if re.fullmatch(r"ERROR: Results may be incomplete as [0-9]+ extensions? failed\.", line):
+            line_signals.add("extension_summary")
+            counts["extension_summaries"] += 1
+        if not line_signals:
+            counts["unclassified_error_lines"] += 1
+        signals.update(line_signals)
+        for url in re.findall(r"https?://[^\s\]\[<>'\"]+", line):
+            try:
+                parsed = urlsplit(url)
+                host = parsed.hostname
+            except ValueError:
+                continue
+            origin = "other"
+            if host == "bcr.bazel.build":
+                origin = "bazel_registry"
+            elif host in {"snapshot.debian.org", "snapshot-cloudflare.debian.org"}:
+                origin = "debian_snapshot"
+            elif host in {"deb.debian.org", "security.debian.org"}:
+                origin = "debian_pool"
+            elif host == "raw.githubusercontent.com":
+                origin = "github_raw"
+            elif host == "release-assets.githubusercontent.com" or (
+                    host == "github.com" and "/releases/download/" in parsed.path):
+                origin = "github_release"
+            origins.add(origin)
+    return receipt_summary({"schema": 1, "status": "failed", "returncode": returncode,
+                            "stdout": "nonempty" if stdout else "empty",
+                            "stderr_tail_truncated": truncated, "signals": sorted(signals),
+                            "origins": sorted(origins), "http_statuses": sorted(codes),
+                            "diagnostic_counts": counts}, "resolution")
 
 
 def source_validation_summary(value, kind, identity):
