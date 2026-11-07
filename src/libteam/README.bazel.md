@@ -13,9 +13,9 @@ The registry owner also exposes library-only metadata for SWSS's separate TARs.
 
 The image retains master's FIPS `0.0.4-ef423363e8fd50358f0aa2a8a20d3e08d4450a56`,
 infrastructure `0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568`, SWSS
-`252a506ae5a94e36a4e330b736a3781a9f7bcf9b` and Common
-`0.0.8-a0450924719a9f706125cc44a07dc88934935003`. The existing SWSS libteam and
-Common ZeroMQ patches retain their behavior. Libnl3 `3.7.0.sonic.7` and
+`252a506ae5a94e36a4e330b736a3781a9f7bcf9b` (with `tools/bazel/0001-sonic-swss-libteam.patch`
+until registered `sonic-swss` is selected) and Common
+`0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61`. Libnl3 `3.7.0.sonic.7` and
 Distroless `0.9.4.sonic.16` satisfy the shared libteam contract. Bazel's resolved
 graph must still be verified in CI; matching declarations are not runtime proof.
 
@@ -34,23 +34,9 @@ validates its `execroot/_main` directory before resolving the owner script. This
 avoids platform configuration during the path lookup while keeping the same
 wrapper and all build/query options; empty, malformed or missing roots fail.
 
-The historical source producer and incremental evidence on PR #162 at `233bde2`
-remain evidence for that revision. They do not establish this new alias-based
-consumer's acceptance. The inherited source-base, Eventd, OCI, Rust and YANG
-checks retain their accepted cache forwarding. The native and OCI workflows use the [merged registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg) at `97cc5025` and verify the same SHA256 before running Bazel.
-Temporary exact-branch exclusions keep DEB fixtures and the full VS build out of
-this Draft validation; remove those exclusions before normal readiness.
-
-## Temporary registry selection
-
-The committed `.bazelrc` keeps the maintained registry `main`. Draft CI uses the
-explicit immutable catalog selected by `tools/bazel/ci/libteam_draft_bazel.sh`
-and the native workflow, with configuration and generated locks retained in
-artifacts. [Registry PR #236](https://github.com/securely1g/sonic-bazel-registry/pull/236)
-provides the libteam module used by this consumer.
-Remove the temporary selection after the owner lands.
-
+The native and OCI workflows use the [merged registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg)
+at `97cc5025` and verify the same SHA256 before running Bazel, while root `.bazelrc`
+keeps `tools/bazel/debian_mirrors.cfg` and canonical `sonic-bazel-registry/main`.
 Pure caller tests verify script resolution and flag forwarding. The native
 workflow retains generated module-resolution evidence for both architectures,
 plus installed-output and four-phase probe receipts for AMD64, in its artifacts.
-Assess those receipts against the head, base and selected catalog under review.
