@@ -50,15 +50,15 @@ bazel_dep(
 )
 bazel_dep(
     name = "sonic-dash-api",
-    version = "0.0.4-2a6e390b96a4fc17c191fa0da4b7ed1f40aed069",
+    version = "0.0.5-9b2893e890734a2db0c53a5e5c64b031ec0dcfbd",
     repo_name = "sonic_dash_api",
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
     repo_name = "sonic_sairedis",
 )
-bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-swss", version = "0.0.1-88d9cc2bcda39b0ebac16c95de9601e62021e3eb", repo_name = "sonic_swss")
 bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
@@ -69,13 +69,6 @@ bazel_dep(
     name = "sonic-yang-models",
     version = "1.0.1-b0a9362a7a1b4b5e1b7188c019d256f7c8aaff9f",
     repo_name = "sonic_yang_models",
-)
-
-# SWSS is not registered yet. Select its maintained-branch merge explicitly.
-git_override(
-    module_name = "sonic-swss",
-    commit = "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
-    remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
 # Dependency overrides do not propagate from Common. Keep its cgo header
@@ -288,7 +281,7 @@ single_version_override(
 
 single_version_override(
     module_name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
 )
 
 single_version_override(
