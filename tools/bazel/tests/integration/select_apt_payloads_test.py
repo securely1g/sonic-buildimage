@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that orchagent APT assembly preserves locked content and base ELF files."""
+"""Check OCI APT inputs, legacy package roots, locked content and base ELF files."""
 
 import ast
 import hashlib
@@ -16,6 +16,7 @@ from unittest import mock
 GENERATED_INPUTS = Path(sys.argv.pop(1))
 POLICY = Path(sys.argv.pop(1))
 LOCK = Path(sys.argv.pop(1))
+SYNCD_DOCKERFILE = Path(sys.argv.pop(1))
 IMPORTED_PACKAGES = {
     ("orchagent_debian", "arping"): (Path(sys.argv.pop(1)), Path(sys.argv.pop(1))),
     ("orchagent_debug_debian", "gdbserver"): (Path(sys.argv.pop(1)), Path(sys.argv.pop(1))),
@@ -152,6 +153,30 @@ class SelectAptPayloadsTest(unittest.TestCase):
             item["package"] = packages[item["key"]]
         self.mapping.write_text(json.dumps(value))
         return subject.select(self.base, self.lock, self.policy, self.mapping, variant="runtime")
+
+    def test_dockerfile_direct_apt_packages_remain_declared(self):
+        """The shared OCI lock must preserve Syncd runtime roots requested by its legacy Dockerfile."""
+        dockerfile = SYNCD_DOCKERFILE.read_text()
+        packages = set()
+        for line in dockerfile.splitlines():
+            if line.startswith("RUN apt-get install -f -y "):
+                packages.update(line.split()[5:])
+        concrete = {"libgrpc++1.51": "libgrpc++1.51t64", "libgrpc29": "libgrpc29t64",
+                    "libprotobuf32": "libprotobuf32t64", "libpcap0.8": "libpcap0.8t64"}
+        packages = {concrete.get(name, name) for name in packages}
+        lock = json.loads(LOCK.read_bytes())
+        declared = {item["name"] for item in lock["packages"].values()
+                    if item["architecture"] in ("amd64", "all")}
+        providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
+        packages = {providers.get(name, name) for name in packages}
+        self.assertTrue(packages.issubset(declared), "Dockerfile APT packages missing from OCI inputs: " +
+                        repr(sorted(packages - declared)))
+        roots = lock["dependency_sets"]["syncd_vs_debian"]["sets"]["amd64"]
+        locked = {key.rsplit("/", 1)[1].split(":", 1)[0] for key in roots}
+        providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
+        concrete_packages = {providers.get(name, name) for name in packages}
+        self.assertTrue(concrete_packages.issubset(locked), "Dockerfile APT packages missing from canonical lock: " +
+                        repr(sorted(concrete_packages - locked)))
 
     def test_public_input_mapping_covers_the_reviewed_lock_closures(self):
         self.assertEqual(json.loads(POLICY.read_bytes()), {

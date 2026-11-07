@@ -984,8 +984,6 @@ jobs:
         run: |
           mkdir -p artifacts/syncd-vs
           git rev-parse HEAD > artifacts/syncd-vs/revision.txt
-          sha256sum platform/vs/docker-syncd-vs/bazel/apt.lock.json \
-            platform/vs/docker-syncd-vs/BUILD.bazel > artifacts/syncd-vs/input-locks.sha256
           cat > artifacts/vs/check-syncd-source.sh <<'SH'
           set -euo pipefail
           option_lines=$(python3 tools/bazel/build_helpers.py options \
@@ -1011,6 +1009,8 @@ jobs:
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
             SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-source.sh" \
             2>&1 | tee artifacts/vs/syncd-source-validation.log
+          sha256sum artifacts/syncd-vs/bazel/apt.lock.json \
+            platform/vs/docker-syncd-vs/BUILD.bazel > artifacts/syncd-vs/input-locks.sha256
 
       - name: Prepare Syncd source artifact list
         id: syncd_artifacts

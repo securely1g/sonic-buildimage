@@ -182,12 +182,14 @@ The owner's original suites remain in their separate producer workflows.
 
 ## Refreshing APT and Python inputs
 
-Keep one reviewed `apt.lock.json` for the base, config-engine and base-debug
-package sets. `apt-resolve.MODULE.bazel` contains the small handwritten package
-requests used only to refresh that lock. Resolve those requests with Distroless,
-then review versions, architecture, dependencies and archive hashes.
+The base, config-engine and base-debug sets use the shared reviewed
+`@sonic_build_infra//apt:apt.lock.json`. Refresh their roots through
+`sonic-build-infra/apt/requests.json` and the infrastructure owner's APT workflow.
+Review versions, architectures, dependency edges and archive hashes before
+selecting the published infrastructure update in `MODULE.bazel`.
 
-Normal builds call `apt.import_lock(lock = "//dockers/docker-base-trixie/bazel:apt.lock.json")`.
+Normal builds import that shared lock and select `base_debian`,
+`config_engine_debian` and `base_debug_debian`.
 Distroless imports the exact locked archives and exposes every package's public
 payload and control targets without resolving current repository indexes. The
 shared `apt_inputs` repository derives BUILD labels from the same lock. Neither
