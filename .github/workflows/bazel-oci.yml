@@ -222,7 +222,13 @@ jobs:
           retention-days: 14
 
   archive:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    # Temporary PR203 validation: a manual native VS run needs only the
+    # verified source inputs below, followed by the actual installer build.
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
+      !(github.repository == 'securely1g/sonic-buildimage' &&
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs)
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.architecture == 'amd64' && 180 || 60 }}
@@ -649,8 +655,10 @@ jobs:
 
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
-    name: OCI regression checks (AMD64)
+    name: ${{ github.repository == 'securely1g/sonic-buildimage' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs && 'Verified inputs for native VS' || 'OCI regression checks (AMD64)' }}
     runs-on: ubuntu-24.04
+    env:
+      NATIVE_VS_ONLY: ${{ github.repository == 'securely1g/sonic-buildimage' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs }}
     outputs:
       p4_sources_artifact_id: ${{ steps.p4_sources_upload.outputs.artifact-id }}
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
@@ -724,6 +732,7 @@ jobs:
 
 
       - name: Check Make handoff and archive validation
+        if: env.NATIVE_VS_ONLY != 'true'
         env:
           SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
@@ -826,7 +835,11 @@ jobs:
 
       - name: Report validation scope
         run: |
-          echo 'Hosted checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$NATIVE_VS_ONLY" == true ]]; then
+            echo 'Temporary PR203 validation: verified source inputs only; the downstream job builds and validates the complete native VS installer.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Hosted checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   vs:
     name: Make VS with Bazel SWSS (AMD64)
