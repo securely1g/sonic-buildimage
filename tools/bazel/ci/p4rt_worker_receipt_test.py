@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from tools.bazel.ci import p4rt_worker_receipt as receipt
+from tools.bazel.ci import image_worker_receipt as receipt
 
 
 def request():
