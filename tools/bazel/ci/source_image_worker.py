@@ -22,7 +22,7 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -33,14 +33,8 @@ WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 WRAPPERS["framework"] = "review_bazel.sh"
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
-MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
-SNAPSHOT_FALLBACKS = {
-    "pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u4_amd64.deb": "d63097e4bb174c04bfc29e38e6270b43c2db9c0b",
-    "pool/main/p/python3.13/libpython3.13_3.13.5-2+deb13u4_amd64.deb": "a817f92905b030fcbca7d433db7dc4dcccf91c3d",
-    "pool/main/c/cdebconf/libdebconfclient0_0.280_amd64.deb": "219dec5cd95ea5be91161ab1d30dc3f19efb6e01",
-    "pool/main/libs/libselinux/libselinux1_3.8.1-1_amd64.deb": "44b247687c034c8a4142204f0827f7286614b354",
-}
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+MIRROR_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
 
 
 def mirror_configuration(original):
@@ -52,14 +46,6 @@ def mirror_configuration(original):
                    r"ftp\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
                    r"ftpmirror\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz"]
     lines = ["rewrite " + expression + " " + destination for expression in expressions]
-    # These four observed snapshot503 failures have verified byte-identical official
-    # /file endpoints. Their SHA1 URL identifiers do not replace the locked SHA256.
-    # Retain the original URL as a second download alternative.
-    for path, identifier in SNAPSHOT_FALLBACKS.items():
-        original_url = "snapshot.debian.org/archive/debian/20260727T143429Z/" + path
-        expression = re.escape(original_url)
-        lines.extend(["rewrite " + expression + " https://snapshot.debian.org/file/" + identifier,
-                      "rewrite " + expression + " https://" + original_url])
     return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
                        "\n".join(lines) + "\n").encode()
 
@@ -72,6 +58,9 @@ def require(value, message):
 def selection(image, revision):
     require(image in DRIVERS, "Unknown source image")
     require(re.fullmatch(r"[0-9a-f]{40}", revision), "Source revision must be a full lowercase Git SHA")
+    catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
+    require(not catalog or re.fullmatch(r"[0-9a-f]{40}", catalog),
+            "Registry revision must be a full lowercase Git SHA paired with the source")
 
 
 def run(argv, **kwargs):
@@ -173,6 +162,17 @@ def source_check(workspace, revision):
     run(["git", "-C", str(workspace), "diff", "--exit-code", "--ignore-submodules=none", "HEAD"])
 
 
+def prepare_teamd_kernel(artifacts, modules=Path("/sys/module")):
+    """Require the original Teamd fixture's preloaded modules without host changes."""
+    required = ("team", "team_mode_loadbalance")
+    missing = [name for name in required if not (modules / name).is_dir()]
+    receipt = {"status": "failed" if missing else "passed", "read_only": True,
+               "required_modules": list(required), "missing_modules": missing,
+               "preloaded_modules": [name for name in required if name not in missing]}
+    (artifacts / "worker-teamd-kernel.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    require(not missing, "Teamd worker requires preloaded kernel modules: " + ", ".join(missing))
+
+
 def prepare_tap_fixture(artifacts):
     """Prove the original VS profile's TAP support before building its image."""
     device = Path("/dev/net/tun").lstat()
@@ -215,7 +215,9 @@ def prepare_validation_tools(artifacts):
          "scope": "disposable_worker_execution_tools"}, indent=2) + "\n")
 
 
-def catalog_for(image, workspace):
+def catalog_for(image, workspace, registry_revision=""):
+    require(not registry_revision or re.fullmatch(r"[0-9a-f]{40}", registry_revision),
+            "Registry revision must be a full lowercase Git SHA")
     workflow = (workspace / ".github/workflows/bazel-oci.yml").read_text()
     catalogs = sorted(set(re.findall(r"^ +SONIC_BAZEL_REGISTRY_REVISION: ([0-9a-f]{40})$", workflow, re.M)))
     wrapper = WRAPPERS[image]
@@ -226,9 +228,11 @@ def catalog_for(image, workspace):
         selected = re.findall(r"^export SONIC_BAZEL_REGISTRY_REVISION=([0-9a-f]{40})$", text, re.M)
         require(len(selected) == 1 and (not catalogs or selected == catalogs),
                 "Workflow and compatibility entrypoint catalogs differ")
+        require(not registry_revision or registry_revision == selected[0],
+                "Compatibility entrypoint cannot override its pinned catalog")
         return selected[0]
     require(len(catalogs) == 1, "Expected one immutable global workflow catalog")
-    return catalogs[0]
+    return registry_revision or catalogs[0]
 
 
 def memory_snapshot():
@@ -267,7 +271,6 @@ def phase_command(image, phase, workspace, artifacts):
         return prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_loaded.py"), "--artifacts", str(artifacts)]
     if phase == "incremental" and image == "orchagent":
         return prefix + [str(workspace / "tools/bazel/ci/swss_rebuild.py"), "--bazel", wrapper,
-                         "--bazel-arg=--//dockers/docker-orchagent:source_config_engine=true",
                          "--runtime-target", "//dockers/docker-orchagent:docker-orchagent.gz",
                          "--additional-runtime-target", "//dockers/docker-orchagent:docker-orchagent-dbg.gz",
                          "--additional-runtime-target", "//dockers/docker-orchagent:rdeps",
@@ -281,8 +284,56 @@ def phase_command(image, phase, workspace, artifacts):
     return command + (["--bazel", wrapper] if phase != "validate" else [])
 
 
+def temporary_directory():
+    root = Path(os.environ["RUNNER_TEMP"]).resolve()
+    name = os.environ.get("SOURCE_WORKER_SCRATCH", "")
+    if not name:
+        return root
+    run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    runner = os.environ.get("RUNNER_NAME", "")
+    require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) and
+            re.fullmatch(r"sonic-slave-lgh114-[1-4]", runner), "Invalid worker scratch identity")
+    require(name == f"source-image-scratch-{run_id}-{attempt}-{runner}", "Worker scratch path differs from this run")
+    path = root / name
+    require(not path.is_symlink() and path.resolve() == path, "Worker scratch path must not traverse symlinks")
+    return path
+
+
+
+def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
+    config = config or temporary_directory() / "source-image-mirrors.cfg"
+    if phase == "cleanup-mirrors":
+        config.unlink(missing_ok=True)
+        return
+    registry_ci = ROOT / ".source-mirror-registry" / "ci"
+    sys.path.insert(0, str(registry_ci))
+    import private_mirrors
+    roots = {key: os.environ.pop(key, "") for key, _ in private_mirrors.MIRROR_ROOTS}
+    redactor = private_mirrors.Redactor([root for root in roots.values() if root])
+    redactor.mask_github()
+    if phase == "scan-mirrors":
+        public = public or artifacts / "public"
+        redactor.scrub_and_scan(public)
+        # Published image receipts bind their evidence and payloads by hash.
+        require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        return
+    mirrors = private_mirrors.selected_mirrors(roots)
+    if mirrors:
+        require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
+                os.environ.get("GITHUB_REPOSITORY") == "securely1g/sonic-buildimage" and
+                os.environ.get("GITHUB_ACTOR") == "securely1g" and
+                platform.machine() == "x86_64" and
+                platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie" and
+                re.fullmatch(r"sonic-slave-lgh114-[1-4]", os.environ.get("RUNNER_NAME", "")),
+                "Private Debian mirrors require a trusted native Trixie worker")
+    public = mirror_configuration((registry_ci / "source_mirrors.cfg").read_bytes()).decode()
+    private_mirrors.write_config(config, private_mirrors.configuration(public, mirrors) if mirrors else public)
+
+
 def prepare(args):
     workspace, artifacts = args.workspace, args.artifacts
+    if args.image == "teamd":
+        prepare_teamd_kernel(artifacts)
     preflight = measure(os.environ.get("RUNNER_NAME", ""))
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
@@ -316,24 +367,28 @@ def prepare(args):
     for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
-    catalog = catalog_for(args.image, workspace)
+    catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
     cache = Path("/bazel_cache/source-images") / runner
     require(cache.resolve() == cache, "Cache path must not traverse symlinks")
     for name in ("repository", "disk", "bazelisk", args.image + "/output-base"):
         (cache / name).mkdir(parents=True, exist_ok=True)
-    temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+    temporary = temporary_directory()
     require(temporary.is_relative_to("/actions/_work"), "Expected a worker-private temporary directory")
+    temporary.mkdir(parents=True, exist_ok=True)
     distdirs, download_receipt = prepare_source_downloads(temporary / "source-image-inputs", cache)
     (artifacts / "worker-source-downloads.json").write_text(json.dumps(download_receipt, indent=2) + "\n")
     launch = temporary / "source-image-bazel"
     launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile))
     launch.chmod(0o755)
     mirror = temporary / "source-image-mirrors.cfg"
-    with urllib.request.urlopen(MIRROR_URL, timeout=60) as response:
-        mirror_bytes = response.read()
-    mirror.write_bytes(mirror_configuration(mirror_bytes))
+    if os.environ.get("SOURCE_WORKER_CONFIGURED_MIRRORS") == "1":
+        require(mirror.is_file() and not mirror.is_symlink() and stat.S_IMODE(mirror.stat().st_mode) == 0o600,
+                "Expected this job's prepared Debian mirror configuration")
+    else:
+        with urllib.request.urlopen(MIRROR_URL, timeout=60) as response:
+            mirror.write_bytes(mirror_configuration(response.read()))
     rc = workspace / ".bazelrc.user"
     require(not rc.exists(), "Expected a fresh source checkout without a local Bazel override")
     rc.write_text("\n".join([
@@ -393,6 +448,9 @@ def state_for(args):
     state = json.loads((args.artifacts / "worker-private.json").read_text())
     require(state["image"] == args.image and state["revision"] == args.revision and state["workspace"] == str(args.workspace),
             "Worker preparation does not match this selection")
+    catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
+    require(not catalog or state["environment"]["SONIC_BAZEL_REGISTRY_REVISION"] == catalog,
+            "Prepared catalog differs from the requested source/catalog pair")
     return state
 
 
@@ -472,7 +530,7 @@ def publish(args):
                         "Existing public artifact differs: " + name)
             else:
                 os.link(path, target)
-    names = ["worker.json", "action-audit.json", "validation.json", "incremental.json", "rebuild/rebuild.json"]
+    names = ["worker.json", "action-audit.json", "validation.json", "loaded-validation.json", "incremental.json", "rebuild/rebuild.json"]
     names += [p.name for pattern in ("worker-*.json", "*.validation.json", "*.runtime.json") for p in source.glob(pattern)
               if p.name != "worker-private.json"]
     for name in sorted(set(names)):
@@ -515,7 +573,7 @@ def stop(args):
             time.sleep(0.5)
         require(not process.exists(), "Private Docker has not stopped; retain its data")
     root = Path(state["docker_root"])
-    temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+    temporary = temporary_directory()
     require(root.parent == temporary and temporary.is_relative_to("/actions/_work")
             and re.fullmatch(r"source-image-docker-[0-9]+-[0-9]+", root.name), "Unexpected private Docker data path")
     # Delete only this stopped job's Docker data, never its persistent Bazel caches.
@@ -534,7 +592,7 @@ if root.exists():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("selection", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"))
+    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop", "prepare-mirrors", "scan-mirrors", "cleanup-mirrors"))
     parser.add_argument("--image", required=True, choices=DRIVERS)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
@@ -549,8 +607,13 @@ def main():
     if args.phase == "selection":
         return
     args.artifacts.mkdir(parents=True, exist_ok=True)
-    if args.phase == "verify-input-run":
+    if args.phase == "kernel-preflight":
+        require(args.image == "teamd", "Kernel module preflight is only defined for Teamd")
+        prepare_teamd_kernel(args.artifacts)
+    elif args.phase == "verify-input-run":
         verify_input_run(args)
+    elif args.phase in ("prepare-mirrors", "scan-mirrors", "cleanup-mirrors"):
+        configure_worker_mirrors(args.phase, args.artifacts)
     elif args.phase == "prepare":
         prepare(args)
     elif args.phase == "publish":

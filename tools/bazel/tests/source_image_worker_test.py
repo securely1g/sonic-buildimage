@@ -25,6 +25,228 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            modules, artifacts = root / 'modules', root / 'artifacts'
+            modules.mkdir(); artifacts.mkdir()
+            with patch.object(worker, 'run') as run, patch.object(worker, 'output') as output:
+                for name in ('team', 'team_mode_loadbalance'):
+                    with self.assertRaisesRegex(ValueError, 'preloaded kernel modules'):
+                        worker.prepare_teamd_kernel(artifacts, modules)
+                    receipt = json.loads((artifacts / 'worker-teamd-kernel.json').read_text())
+                    self.assertEqual(receipt['status'], 'failed')
+                    self.assertIn(name, receipt['missing_modules'])
+                    (modules / name).write_text('regular file is not a loaded module')
+                    with self.assertRaises(ValueError):
+                        worker.prepare_teamd_kernel(artifacts, modules)
+                    (modules / name).unlink(); (modules / name).mkdir()
+                worker.prepare_teamd_kernel(artifacts, modules)
+                receipt = json.loads((artifacts / 'worker-teamd-kernel.json').read_text())
+                self.assertEqual(receipt, {'status': 'passed', 'read_only': True,
+                    'required_modules': ['team', 'team_mode_loadbalance'], 'missing_modules': [],
+                    'preloaded_modules': ['team', 'team_mode_loadbalance']})
+                run.assert_not_called(); output.assert_not_called()
+
+    def test_teamd_missing_modules_precede_all_direct_preparation_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary)
+            gate = worker.prepare_teamd_kernel
+            with patch.object(worker, 'prepare_teamd_kernel',
+                              side_effect=lambda out: gate(out, artifacts / 'missing')) as checked, \
+                    patch.object(worker, 'measure') as measure, \
+                    patch.object(worker, 'prepare_validation_tools') as tools, \
+                    patch.object(worker, 'prepare_source_downloads') as downloads, \
+                    patch.object(worker, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'preloaded kernel modules'):
+                    worker.prepare(SimpleNamespace(image='teamd', workspace=Path('/source'), artifacts=artifacts))
+                checked.assert_called_once_with(artifacts)
+                for command in (measure, tools, downloads, run): command.assert_not_called()
+            worker.publish(SimpleNamespace(artifacts=artifacts, image='teamd'))
+            retained = json.loads((artifacts / 'public/worker-teamd-kernel.json').read_text())
+            self.assertEqual(retained['status'], 'failed')
+            self.assertEqual(retained['missing_modules'], ['team', 'team_mode_loadbalance'])
+
+    def test_teamd_workflow_checks_modules_before_checkout_download_or_setup(self):
+        workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
+        gate = workflow.index('- name: Verify Teamd kernel prerequisites without host changes')
+        end = workflow.index('- name: Checkout the exact reviewed source', gate)
+        step = workflow[gate:end]
+        self.assertIn("if: inputs.source_image == 'teamd'", step)
+        self.assertIn('source_image_worker.py" kernel-preflight', step)
+        for name in ('Checkout the exact reviewed source', 'Reuse the existing source-download artifact',
+                     'Download the verified source archives', 'Prepare private Docker and persistent worker caches'):
+            self.assertLess(gate, workflow.index('- name: ' + name))
+        self.assertIn("inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'", workflow)
+
+    def test_publication_retains_the_actual_aggregate_loaded_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary)
+            receipt = {'status': 'passed', 'revision': 'a' * 40, 'architecture': 'amd64',
+                       'images': {'docker-teamd': {'status': 'passed'},
+                                  'docker-teamd-dbg': {'status': 'passed'}}}
+            source = artifacts / 'loaded-validation.json'
+            source.write_text(json.dumps(receipt, indent=2) + '\n')
+            worker.publish(SimpleNamespace(artifacts=artifacts, image='teamd'))
+            self.assertEqual((artifacts / 'public/loaded-validation.json').read_bytes(), source.read_bytes())
+
+    def test_teamd_fixed_driver_reuses_compatibility_wrapper_and_four_phases(self):
+        workspace, artifacts = Path('/source'), Path('/evidence')
+        self.assertEqual(worker.WRAPPERS['teamd'], 'libteam_draft_bazel.sh')
+        for phase in ('build', 'validate', 'incremental'):
+            expected = [sys.executable, '-B', '/source/tools/bazel/ci/teamd_image.py', phase,
+                        '--artifacts', str(artifacts)]
+            if phase != 'validate': expected += ['--bazel', '/source/tools/bazel/ci/libteam_draft_bazel.sh']
+            self.assertEqual(worker.phase_command('teamd', phase, workspace, artifacts), expected)
+        self.assertEqual(worker.phase_command('teamd', 'loaded', workspace, artifacts),
+                         [sys.executable, '-B', '/source/tools/bazel/ci/teamd_loaded.py', '--artifacts', str(artifacts)])
+
+    def native_job(self):
+        import yaml
+        return yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["source_image"]
+
+    def native_paths(self, root):
+        workspace, temporary = root / "workspace", root / "temporary"
+        workspace.mkdir(); temporary.mkdir()
+        environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temporary),
+                       "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_NAME": "sonic-slave-lgh114-1",
+                       "EXPECTED_WORKER": "sonic-slave-lgh114-1", "SELECTED_IMAGE": "dash-engine",
+                       "SOURCE_REVISION": "a" * 40}
+        for kind in ("CONTROL", "SOURCE", "SCRATCH"):
+            environment["SOURCE_WORKER_" + kind] = "source-image-" + kind.lower() + "-123-2-sonic-slave-lgh114-1"
+        return workspace, temporary, environment
+
+    def test_native_workflow_preserves_old_work_and_binds_every_driver_invocation(self):
+        job = self.native_job()
+        steps = {step["name"]: step for step in job["steps"]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, temporary, environment = self.native_paths(root)
+            old = [workspace / "control/keep", workspace / "source/target/output",
+                   workspace / "source/.bazelrc.user", temporary / "source-image-artifacts/receipt.json",
+                   temporary / "source-image-inputs/input.tar.gz"]
+            for path in old:
+                path.parent.mkdir(parents=True, exist_ok=True); path.write_text("retained")
+            subprocess.run(["bash", "-e", "-c", steps["Require fresh native worker paths"]["run"]],
+                           env=environment, cwd=workspace, check=True, capture_output=True)
+            control = workspace / environment["SOURCE_WORKER_CONTROL"]
+            helper = control / "tools/bazel/ci/source_image_worker.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_text("import json,os,sys\nfrom pathlib import Path\n"
+                              "with Path(os.environ['TRACE']).open('a') as out: out.write(json.dumps(sys.argv[1:])+'\\n')\n")
+            trace = root / "trace.jsonl"; environment["TRACE"] = str(trace)
+            for step in job["steps"][1:]:
+                if step.get("if") == "inputs.source_image == 'teamd'":
+                    continue
+                if "run" in step:
+                    subprocess.run(["bash", "-e", "-c", step["run"]], env=environment,
+                                   cwd=workspace, check=True, capture_output=True)
+            commands = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual([cmd[0] for cmd in commands],
+                             ["selection", "verify-input-run", "prepare-mirrors", "prepare", "build", "validate", "incremental", "loaded", "publish", "scan-mirrors", "stop", "cleanup-mirrors"])
+            for cmd in commands:
+                self.assertEqual(cmd[1:], ["--image", "dash-engine", "--revision", "a" * 40,
+                    "--workspace", str(workspace / environment["SOURCE_WORKER_SOURCE"]),
+                    "--artifacts", str(temporary / environment["SOURCE_WORKER_SCRATCH"] / "artifacts")])
+            for path in old:
+                self.assertEqual(path.read_text(), "retained")
+        for name, variable in (("Checkout reviewed dispatcher", "SOURCE_WORKER_CONTROL"),
+                               ("Checkout the exact reviewed source", "SOURCE_WORKER_SOURCE")):
+            self.assertEqual(steps[name]["with"]["path"], "${{ env." + variable + " }}")
+            self.assertIs(steps[name]["with"]["clean"], False)
+            self.assertIs(steps[name]["with"]["persist-credentials"], False)
+        for name in ("Reuse the existing source-download artifact", "Download the verified source archives"):
+            self.assertEqual(steps[name]["with"]["path"], "${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/source-image-inputs")
+        self.assertEqual(steps["Upload source images and acceptance receipts"]["with"]["path"],
+                         "${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/artifacts/public/")
+
+    def test_native_path_gate_refuses_collisions_and_wrong_identities_without_deleting(self):
+        guard = self.native_job()["steps"][0]["run"]
+        cases = [(kind, linked) for kind in ("CONTROL", "SOURCE", "SCRATCH") for linked in (False, True)]
+        cases += [("worker", False), ("attempt", False), ("traversal", False)]
+        for kind, linked in cases:
+            with self.subTest(kind=kind, linked=linked), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace, temporary, environment = self.native_paths(root)
+                keep = root / "keep"; keep.write_text("retained")
+                collision = None
+                if kind in ("CONTROL", "SOURCE", "SCRATCH"):
+                    collision = (temporary if kind == "SCRATCH" else workspace) / environment["SOURCE_WORKER_" + kind]
+                    if linked:
+                        collision.symlink_to(root / "missing")
+                    else:
+                        collision.mkdir(); (collision / "keep").write_text("retained")
+                elif kind == "worker": environment["RUNNER_NAME"] = "sonic-slave-lgh114-2"
+                elif kind == "attempt": environment["GITHUB_RUN_ATTEMPT"] = "../2"
+                else: environment["SOURCE_WORKER_SOURCE"] = "../" + environment["SOURCE_WORKER_SOURCE"]
+                result = subprocess.run(["bash", "-e", "-c", guard], env=environment, cwd=workspace, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(keep.read_text(), "retained")
+                if collision is not None:
+                    if linked: self.assertTrue(collision.is_symlink())
+                    else: self.assertEqual((collision / "keep").read_text(), "retained")
+
+    def test_worker_temporary_directory_is_bound_to_run_attempt_and_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, temporary, environment = self.native_paths(root)
+            with patch.dict(os.environ, environment):
+                expected = temporary / environment["SOURCE_WORKER_SCRATCH"]
+                self.assertEqual(worker.temporary_directory(), expected)
+                self.assertFalse(expected.exists())
+                for changed in ("../scratch", "source-image-scratch-123-1-sonic-slave-lgh114-1",
+                                "source-image-scratch-123-2-sonic-slave-lgh114-2"):
+                    with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": changed}), self.assertRaises(ValueError):
+                        worker.temporary_directory()
+                expected.symlink_to(root / "missing")
+                with self.assertRaisesRegex(ValueError, "symlinks"):
+                    worker.temporary_directory()
+                with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": ""}):
+                    self.assertEqual(worker.temporary_directory(), temporary)
+
+    def test_optional_catalog_requires_an_immutable_source_pair(self):
+        for catalog in ("", "b" * 40):
+            with patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": catalog}):
+                worker.selection("dash-engine", "a" * 40)
+                with self.assertRaises(ValueError): worker.selection("dash-engine", "main")
+        for catalog in ("main", "B" * 40, "b" * 39, "b" * 40 + ";id"):
+            with self.subTest(catalog=catalog), patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": catalog}), \
+                    self.assertRaises(ValueError):
+                worker.selection("dash-engine", "a" * 40)
+
+    def test_explicit_catalog_uses_review_entrypoint_without_changing_blank_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / "tools/bazel/ci").mkdir(parents=True)
+            path = root / ".github/workflows/bazel-oci.yml"
+            path.write_text("env:\n  BAZEL: tools/bazel/ci/review_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
+            self.assertEqual(worker.catalog_for("dash-engine", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("dash-engine", root, "b" * 40), "b" * 40)
+            for catalog in ("main", "B" * 40, "b" * 39):
+                with self.subTest(catalog=catalog), self.assertRaises(ValueError):
+                    worker.catalog_for("dash-engine", root, catalog)
+            path.write_text(path.read_text().replace("review_bazel.sh", "libteam_draft_bazel.sh"))
+            (root / "tools/bazel/ci/libteam_draft_bazel.sh").write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
+            self.assertEqual(worker.catalog_for("dash-ha", root), "a" * 40)
+            self.assertEqual(worker.catalog_for("dash-ha", root, "a" * 40), "a" * 40)
+            with self.assertRaisesRegex(ValueError, "cannot override"):
+                worker.catalog_for("dash-ha", root, "b" * 40)
+
+    def test_changed_explicit_catalog_is_rejected_before_a_phase_executes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(image="dash-engine", revision="a" * 40, workspace=Path("/source"),
+                                   artifacts=Path(directory), phase="build")
+            state = {"image": args.image, "revision": args.revision, "workspace": str(args.workspace),
+                     "environment": {"SONIC_BAZEL_REGISTRY_REVISION": "b" * 40}}
+            (args.artifacts / "worker-private.json").write_text(json.dumps(state))
+            with patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": "b" * 40}):
+                self.assertEqual(worker.state_for(args), state)
+            with patch.dict(os.environ, {"SOURCE_REGISTRY_REVISION": "c" * 40}), \
+                    patch.object(worker.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "Prepared catalog"):
+                worker.execute_phase(args)
+            run.assert_not_called()
+
     def test_syncd_tap_requires_exact_device_and_private_namespace_proof(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
@@ -126,23 +348,6 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertFalse(re.fullmatch(expression, host + '/gnu/gawk/gawk-5.3.3.tar.xz'))
             self.assertEqual(destination, 'https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz')
 
-    def test_snapshot_fallbacks_keep_original_and_only_exact_observed_urls(self):
-        original = b'prior verified mirror rules\n'
-        with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
-            config = worker.mirror_configuration(original).decode()
-        rules = [line.split()[1:] for line in config.splitlines()
-                 if line.startswith('rewrite ') and 'snapshot' in line]
-        self.assertEqual(len(rules), 8)
-        self.assertEqual(len(worker.SNAPSHOT_FALLBACKS), 4)
-        for path, identifier in worker.SNAPSHOT_FALLBACKS.items():
-            url = 'snapshot.debian.org/archive/debian/20260727T143429Z/' + path
-            alternatives = [destination for expression, destination in rules if re.fullmatch(expression, url)]
-            self.assertEqual(alternatives, ['https://snapshot.debian.org/file/' + identifier, 'https://' + url])
-            for altered in (url.replace('20260727T143429Z', '20260728T143429Z'),
-                            url.replace('_amd64.deb', '_arm64.deb'), url + '?query=1',
-                            url.replace('snapshot.debian.org', 'elsewhere.example')):
-                self.assertFalse(any(re.fullmatch(expression, altered) for expression, _ in rules))
-
     def test_selected_profile_overrides_driver_defaults_in_actual_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -225,6 +430,24 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
                                  prefix + [f"/source/tools/bazel/ci/{stem}_loaded.py", "--artifacts", str(artifacts)])
 
+    def test_orchagent_incremental_uses_current_source_parent_and_all_six_targets(self):
+        command = worker.phase_command("orchagent", "incremental", Path("/source"), Path("/evidence"))
+        self.assertEqual(command[:5], [
+            sys.executable, "-B", "/source/tools/bazel/ci/swss_rebuild.py", "--bazel",
+            "/source/tools/bazel/ci/libteam_draft_bazel.sh",
+        ])
+        self.assertEqual(list(zip(command[5::2], command[6::2])), [
+            ("--runtime-target", "//dockers/docker-orchagent:docker-orchagent.gz"),
+            ("--additional-runtime-target", "//dockers/docker-orchagent:docker-orchagent-dbg.gz"),
+            ("--additional-runtime-target", "//dockers/docker-orchagent:rdeps"),
+            ("--symbols-target", "//dockers/docker-orchagent:rdeps_debug_symbols"),
+            ("--unchanged-target", "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz"),
+            ("--unchanged-target", "@scapy//:wheel"),
+            ("--output", "/evidence/rebuild"),
+        ])
+        self.assertEqual(len(command), 19)
+        self.assertFalse(any("source_config_engine" in value for value in command))
+
     def test_gnmi_profiles_have_fixed_flags_for_existing_four_phases(self):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
@@ -281,6 +504,32 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertFalse(condition(guard, event="pull_request", branch=branch, head_repo="other/fork"))
         self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch))
         self.assertFalse(condition(workflow["jobs"]["registry_native"]["if"], event="pull_request", branch=branch))
+
+    def test_orchagent_worker_followup_skips_only_its_owned_deb_fixtures_and_vs(self):
+        import yaml
+        from tools.bazel.tests.registry_native_worker_test import condition
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        branch = "codex/orchagent-source-worker-current"
+        guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
+                  for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
+        self.assertEqual(len(guards), 2)
+        for guard in guards:
+            self.assertTrue(condition(guard, event="pull_request", branch=branch))
+            for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
+                            {"head_repo": "other/fork"}, {"event": "push"},
+                            {"event": "workflow_dispatch"}):
+                with self.subTest(changes=changes):
+                    context = {"event": "pull_request", "branch": branch, **changes}
+                    self.assertFalse(condition(guard, **context))
+        for name in ("vs", "vs_container", "source_image", "source_image_inputs", "registry_native",
+                     "source_worker_preflight", "worker_provenance"):
+            self.assertFalse(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
+        self.assertTrue(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch + "-suffix"))
+        for name in ("archive", "checks"):
+            self.assertTrue(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
+        kernel = yaml.safe_load((ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text())
+        self.assertFalse(condition(kernel["jobs"]["kernel-bundle"]["if"], event="pull_request", branch=branch))
 
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
