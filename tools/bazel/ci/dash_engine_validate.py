@@ -1,8 +1,10 @@
 """Bind DASH engine archives to source owners, package state and base layers."""
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
+import re
 import tempfile
 
 from tools.bazel.ci import artifact_validation as check, base_images, build
@@ -123,6 +125,26 @@ def debug_alternatives(payload):
     return expected
 
 
+def layout_identity(layout):
+    """Retain comparable image metadata without publishing configuration values."""
+    diff_ids = layout.config["rootfs"]["diff_ids"]
+    check.require(isinstance(diff_ids, list) and
+                  all(isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+                      for value in diff_ids), "invalid OCI rootfs digest in layout evidence")
+    return {
+        "manifest_digest": layout.descriptor["digest"],
+        "config_digest": layout.manifest["config"]["digest"],
+        "layers": [{key: layer[key] for key in ("digest", "size")}
+                   for layer in layout.manifest["layers"]],
+        "rootfs": {"type": "layers", "diff_ids": diff_ids},
+        "config_fields": [
+            {"name": name, "sha256": hashlib.sha256(json.dumps(value, sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest()}
+            for name, value in sorted(layout.config.get("config", {}).items())
+        ],
+    }
+
+
 def validate(directory):
     clean_source(directory)
     identity = source_identity()
@@ -135,6 +157,15 @@ def validate(directory):
     root = build.execution_root(directory / "build-events.jsonl")
     parent = oci_layout.validate_layout(root / receipt["base_layout"], "linux/amd64")
     layouts = {name: oci_layout.validate_layout(root / receipt["layouts"][name], "linux/amd64") for name in IMAGES}
+    # Keep the live identities even when the archive or payload comparison fails.
+    # Full layouts are large and may no longer exist after hosted-runner cleanup.
+    (directory / "layout-identities.json").write_text(json.dumps({
+        "schema": 1,
+        "source_revision": identity["revision"],
+        "scope": "OCI identities only; not image acceptance",
+        "images": {name: layout_identity(layout) for name, layout in
+                   {"docker-base-trixie": parent, **layouts}.items()},
+    }, indent=2) + "\n")
     inherited = base_images.installed_inventory(parent)
     parent_groups = read_groups(parent)
     configuration = check.payload(directory / "engine.files.tar")

@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 from copy import deepcopy
 import ast
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -308,6 +309,70 @@ class DashEngineImageTest(unittest.TestCase):
             root = Path(temporary)
             (root / 'validation.json').write_text('{"oops":"/home/person/.cache/secret"}')
             with self.assertRaises(ValueError): public.review(root)
+
+    def test_layout_evidence_survives_later_validation_failure_without_config_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity = {"revision": "a" * 40}
+            layout = SimpleNamespace(
+                descriptor={"digest": "sha256:" + "b" * 64},
+                manifest={"config": {"digest": "sha256:" + "c" * 64},
+                          "layers": [{"digest": "sha256:" + "d" * 64, "size": 1}]},
+                config={"rootfs": {"type": "layers", "diff_ids": ["sha256:" + "d" * 64]},
+                        "config": {"Env": ["PRIVATE_PATH=/home/person/.cache/private"],
+                                   "Entrypoint": ["/usr/bin/start.sh"]}})
+            artifacts = {}
+            for name in driver.TARGETS:
+                (root / name).write_bytes(b"x")
+                artifacts[name] = {"bytes": 1, "sha256": hashlib.sha256(b"x").hexdigest()}
+            (root / "build-receipt.json").write_text(json.dumps({**identity, "status": "built",
+                "artifacts": artifacts, "base_layout": "base",
+                "layouts": {name: name for name in driver.IMAGES}}))
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(validate, "clean_source"))
+                stack.enter_context(mock.patch.object(validate, "source_identity", return_value=identity))
+                stack.enter_context(mock.patch.object(validate.build, "execution_root", return_value=root))
+                stack.enter_context(mock.patch.object(validate.oci_layout, "validate_layout", return_value=layout))
+                stack.enter_context(mock.patch.object(validate.base_images, "installed_inventory",
+                                                     side_effect=ValueError("later image check failed")))
+                with self.assertRaisesRegex(ValueError, "later image check failed"):
+                    validate.validate(root)
+            evidence = root / "layout-identities.json"
+            data = json.loads(evidence.read_text())
+            self.assertEqual(data["source_revision"], identity["revision"])
+            self.assertEqual(data["scope"], "OCI identities only; not image acceptance")
+            self.assertEqual(set(data["images"]), {"docker-base-trixie", *driver.IMAGES})
+            self.assertEqual(data["images"][driver.IMAGES[0]]["rootfs"], layout.config["rootfs"])
+            self.assertNotIn("/home/person", evidence.read_text())
+            expected = hashlib.sha256(json.dumps(layout.config["config"]["Env"],
+                separators=(",", ":")).encode()).hexdigest()
+            self.assertIn({"name": "Env", "sha256": expected},
+                          data["images"][driver.IMAGES[0]]["config_fields"])
+            public.safe_json(data)
+            # The normal public-artifact review must include the new evidence.
+            evidence.write_text('{"unexpected":"/home/person/.cache/private"}')
+            for name in driver.TARGETS:
+                (root / name).unlink()
+            with self.assertRaises(ValueError):
+                public.review(root)
+
+    def test_layout_evidence_projects_only_valid_rootfs_digests(self):
+        layout = SimpleNamespace(
+            descriptor={"digest": "sha256:" + "a" * 64},
+            manifest={"config": {"digest": "sha256:" + "b" * 64}, "layers": []},
+            config={"rootfs": {"type": "layers", "diff_ids": ["sha256:" + "c" * 64],
+                               "private_location": "/home/person/.cache/private"}})
+        result = validate.layout_identity(layout)
+        self.assertEqual(result["rootfs"], {"type": "layers", "diff_ids": ["sha256:" + "c" * 64]})
+        self.assertNotIn("private", json.dumps(result))
+        public.safe_json(result)
+        for value in ("/home/person/.cache/private", "sha256:short", None, 1):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "invalid OCI rootfs digest"):
+                layout.config["rootfs"]["diff_ids"] = [value]
+                validate.layout_identity(layout)
+        layout.config["rootfs"]["diff_ids"] = {"sha256:" + "c" * 64: "/home/person/.cache/private"}
+        with self.assertRaisesRegex(ValueError, "invalid OCI rootfs digest"):
+            validate.layout_identity(layout)
 
     def test_archive_names_are_explicit_and_unique(self):
         self.assertEqual(len(driver.TARGETS), 19)

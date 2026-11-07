@@ -14,7 +14,8 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json
 
 def review(directory):
     names = {name for name in TARGETS if name.endswith('.json')}
-    names.update(('validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json'))
+    names.update(('validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json',
+                  'layout-identities.json'))
     names.update(name + '.validation.json' for name in IMAGES)
     for name in sorted(names):
         path = directory / name

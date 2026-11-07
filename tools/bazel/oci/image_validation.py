@@ -218,7 +218,12 @@ def docker_archive(path, expected_tag, config_digest, layer_descriptors):
     require(isinstance(manifest, list) and len(manifest) == 1, "Docker archive does not contain one image")
     entry = manifest[0]
     require(entry.get("RepoTags") == [expected_tag], "Docker archive tag differs from Make")
-    require(member_name(entry.get("Config", "")) in config_paths, "Docker archive config differs from its OCI image")
+    config_path = member_name(entry.get("Config", ""))
+    require(config_path in config_paths, "Docker archive config differs from its OCI image: " + json.dumps({
+        "tag": expected_tag,
+        "expected": config_digest,
+        "actual": "sha256:" + files[config_path]["sha256"] if config_path in files else None,
+    }, sort_keys=True))
     layers = entry.get("Layers")
     require(isinstance(layers, list) and len(layers) == len(layer_descriptors), "Docker archive layer set is incomplete")
     for name, descriptor in zip(layers, layer_descriptors):
