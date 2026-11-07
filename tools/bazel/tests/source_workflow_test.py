@@ -145,6 +145,27 @@ class SourceWorkflowTest(unittest.TestCase):
                               any(arg in ("build", "test") for arg in call["args"]))
                              for call in calls))
 
+    def test_checker_branch_excludes_package_generation_but_keeps_archive_checks(self):
+        workflow_jobs = jobs()
+        branch = "codex/oci-existing-artifact-equivalence"
+        self.assertIn(f"github.head_ref != '{branch}' &&", workflow_jobs["vs_container"])
+        for job, name in (("archive", "Check shared Make rules with unrelated container targets"),
+                          ("checks", "Check Make handoff and archive validation")):
+            with self.subTest(job=job):
+                step = steps(workflow_jobs[job])[name]
+                self.assertIn(f"github.head_ref == '{branch}' ||", step)
+                script = shell(step)
+                self.assertIn('if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]', script)
+                self.assertIn("*/kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;", script)
+                self.assertIn('*) PYTHONPATH="$PWD" python3 -B "$test" ;;', script)
+                self.assertIn("python3 -B -m unittest discover -s tools/bazel/tests", script)
+        self.assertIn("tools/bazel/ci/verify_make_archive.py", workflow_jobs["archive"])
+        self.assertIn("//tools/bazel/tests:archive-fixture.gz", workflow_jobs["archive"])
+        self.assertIn("PYTHONPATH=tools/bazel/registry python3 -B -m unittest discover -s tools/bazel/equivalence_checker -p '*_test.py'", workflow_jobs["checks"])
+        self.assertNotIn("equivalence_checker", workflow_jobs["archive"])
+        self.assertNotIn(branch, workflow_jobs["archive"].split("    steps:\n", 1)[0])
+        self.assertNotIn(branch, workflow_jobs["checks"].split("    steps:\n", 1)[0])
+
     def test_make_source_validation_reuses_outputs_and_propagates_failures(self):
         workflow_steps = steps(jobs()["vs"])
         names = list(workflow_steps)

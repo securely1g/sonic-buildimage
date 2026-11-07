@@ -351,3 +351,6 @@ apt_inputs(
     name = "sysmgr_apt_inputs",
     lock = "//dockers/docker-sysmgr/bazel:apt.lock.json",
 )
+
+# Pinned comparison tool; no image or package build is scheduled by this include.
+include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
