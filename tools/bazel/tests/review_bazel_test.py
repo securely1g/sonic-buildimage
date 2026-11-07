@@ -55,6 +55,8 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
 
     def test_debian_bootstrap_verifies_bytes_and_keeps_existing_cache_settings(self):
         for workflow, job, revision, expected in (
+            ('bazel-oci.yml', 'checks', '4f1b2b169066b4d12d94a5edee5b6e36e36b1370',
+             '8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18'),
             ('bazel-oci.yml', 'archive', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
              'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
             ('bazel-libteam.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
