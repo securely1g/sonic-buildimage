@@ -20,7 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BAZEL: bazel
+  BAZEL: ${{ github.workspace }}/tools/bazel/ci/review_bazel.sh
+  SONIC_BAZEL_REGISTRY_REVISION: 44e1a7f39843a68f9ddc199e8e55cfd4fcba56ae
 
 jobs:
   archive:
@@ -74,6 +75,25 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # The maintained registry configuration changes transport; Bazel still verifies package/source integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -150,7 +170,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/image-environment') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/mgmt-framework-image') }}
         run: |
           # This review-helper PR is scoped to source/TAR builds only.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -358,7 +378,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/image-environment') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/mgmt-framework-image') }}
         run: |
           # This review-helper PR is scoped to source/TAR builds only.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -823,7 +843,8 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.head.ref != 'codex/review-registry-catalog' &&
-       github.head_ref != 'codex/image-environment') ||
+       github.head_ref != 'codex/image-environment' &&
+       github.head_ref != 'codex/mgmt-framework-image') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
