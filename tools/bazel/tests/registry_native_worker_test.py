@@ -103,20 +103,20 @@ class RegistryWorkerTest(unittest.TestCase):
         with patch.dict(os.environ,{'SOURCE_INPUTS_RUN':''}):
             self.assertEqual(worker.verified_source_distdirs(self.root/'missing',self.root/'missing'),[])
         self.assertFalse((self.root/'missing').exists())
-    def test_mirror_config_checks_original_and_preserves_bytes(self):
-        from tools.bazel.ci import source_image_worker as source
-        registry=self.root/'registry';(registry/'ci').mkdir(parents=True)
-        original=registry/'ci/source_mirrors.cfg';original.write_bytes(b'original config')
-        private=self.root/'private';private.mkdir();artifacts=self.root/'artifacts';artifacts.mkdir()
-        with patch.object(source,'mirror_configuration',side_effect=ValueError('checksum mismatch')):
-            with self.assertRaisesRegex(ValueError,'checksum'):worker.verified_mirror_config(registry,private,artifacts)
-        self.assertFalse((private/'source-mirrors.cfg').exists())
-        with patch.object(source,'mirror_configuration',return_value=b'checked config') as configure:
-            path=worker.verified_mirror_config(registry,private,artifacts)
-            configure.assert_called_once_with(b'original config')
-        self.assertEqual(original.read_bytes(),b'original config')
-        self.assertEqual(Path(path).read_bytes(),b'checked config')
-        self.assertTrue(json.loads((artifacts/'worker-source-mirrors.json').read_text())['archive_integrity_unchanged'])
+    def test_worker_uses_the_prepared_registry_downloader(self):
+        artifacts = self.root / 'artifacts'
+        artifacts.mkdir()
+        with patch.dict(os.environ, {'RUNNER_TEMP': str(self.root), 'GITHUB_RUN_ID': '11', 'GITHUB_RUN_ATTEMPT': '1'}):
+            with self.assertRaisesRegex(ValueError, 'prepared registry downloader'):
+                worker.verified_mirror_config(artifacts)
+            path = worker.registry_mirror_path()
+            path.write_text('prepared registry downloader')
+            path.chmod(0o600)
+            self.assertEqual(worker.verified_mirror_config(artifacts), str(path))
+            path.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, 'prepared registry downloader'):
+                worker.verified_mirror_config(artifacts)
+
     def test_mirror_flag_applies_to_audit_and_build_after_original(self):
         self.spec['downloader_config']=str(self.root/'private/source-mirrors.cfg')
         original='--experimental_downloader_config=/registry/ci/source_mirrors.cfg'
@@ -323,9 +323,11 @@ class WorkflowTest(unittest.TestCase):
     def test_fixed_checkout_permissions_and_no_hosted_cache_dependency(self):
         job=self.flow['jobs']['registry_native'];self.assertEqual(job['permissions'],{'contents':'read','actions':'read'})
         checkouts=[s for s in job['steps'] if s.get('uses','').startswith('actions/checkout@')]
-        self.assertEqual(len(checkouts),2);self.assertTrue(all(s['with']['persist-credentials'] is False for s in checkouts))
+        self.assertEqual(len(checkouts),3);self.assertTrue(all(s['with']['persist-credentials'] is False for s in checkouts))
         self.assertEqual(checkouts[1]['with']['repository'],'securely1g/sonic-bazel-registry')
-        self.assertEqual(checkouts[1]['with']['ref'],'$'+'{{ inputs.source_revision }}')
+        self.assertEqual(checkouts[1]['with']['ref'],'97cc502556b7ec3435d2d67b105315bcc18bb47e')
+        self.assertEqual(checkouts[2]['with']['repository'],'securely1g/sonic-bazel-registry')
+        self.assertEqual(checkouts[2]['with']['ref'],'$'+'{{ inputs.source_revision }}')
         self.assertFalse(any('setup-bazel' in s.get('uses','') or 'actions/cache' in s.get('uses','') for s in job['steps']))
         download=[s for s in job['steps'] if 'download-artifact' in s.get('uses','')]
         self.assertEqual(len(download),1)
