@@ -93,13 +93,13 @@ installed_packages(
     architecture = "amd64",
     base = _BASE,
     controls = [label + ":control" for label in APT_INPUTS["teamd_debian"]["amd64"].values()],
-    owner_metadata = ["//src/libteam:runtime_packages.json"],
-    source_modules = {"sonic-buildimage": "@image_source_modules//:sonic-buildimage.MODULE.bazel"},
+    owner_metadata = ["@libteam//:runtime_packages.json"],
+    source_modules = {"libteam": "@image_source_modules//:libteam.MODULE.bazel"},
     source_spec = "//dockers/docker-teamd/bazel:source_paths.json",
     sources = {
-        "libteam5": "//src/libteam:libteam_runtime",
-        "libteamdctl0": "//src/libteam:libteamdctl_runtime",
-        "libteam-utils": "//src/libteam:libteam_utils_runtime",
+        "libteam5": "@libteam//:libteam_runtime",
+        "libteamdctl0": "@libteam//:libteamdctl_runtime",
+        "libteam-utils": "@libteam//:libteam_utils_runtime",
     },
 )
 

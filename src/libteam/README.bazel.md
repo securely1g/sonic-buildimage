@@ -1,51 +1,28 @@
-# Native libteam source validation
+# Shared libteam interfaces
 
-The `Bazel libteam and SWSS consumers` workflow builds libteam's runtime,
-development and matching debug TARs, producer metadata, `teamsyncd` and
-`tlm_teamd` on native AMD64 and ARM64 Trixie runners. It executes
-`//src/libteam:consumer_test` with the declared runtime libraries. The SWSS
-integration patches select this source-built libteam and the per-library ZeroMQ
-interface; the Common patch applies to the current landed `f7fda40` source.
+The image consumes landed `libteam@1.31.0.sonic.1` through the compatibility
+labels in `BUILD.bazel`. The shared owner builds upstream 1.31 with SONiC's
+ordered 16 patches and Debian 1.31-1 metadata. The Make inputs and patch files
+remain in this directory.
 
-CI uses one complete review catalog based on maintained registry
-`5f43269552ff4cff2020f898d2545ff353744083`, with the exact pending libnl3
-entry from registry #181 and cumulative infrastructure entry from #218 (including #209). The catalog is
-`51a3b267cfe4ca177c0ecfd6b47ed9bcd1b05c2d`.
+`libteam`, `libteamdctl`, their shared-library providers, the five utility
+programs, runtime/debug TARs, development TAR and package metadata are aliases
+to the shared module. SWSS keeps its existing image-root labels; Teamd binds
+its package records to the shared module's actual MODULE file.
 
-The native interfaces are declared explicitly: libnl3 is `3.7.0.sonic.7`,
-infrastructure is `0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e`, and
-Distroless is the published `0.9.4.sonic.16`. Every maintained registry version
-is preserved. The old catalog's native overlays on published libnl3 `.6`,
-Distroless `.13`, and infrastructure `17a1e555` are no longer selected.
-The libteam sources, 16 SONiC patches, native tests, SWSS consumer patch,
-Common `f7fda40` ZeroMQ patch, and FIPS `d1a2c8f` selection are unchanged.
-The normal `.bazelrc` still uses maintained `main`. Keep this PR Draft while
-#181, #209, and #218 remain unlanded, and retain the earlier `681be7c5` acceptance
-as evidence for its original catalog rather than claiming new-graph acceptance.
+The coherent review catalog `04a71b7883384e995a5ae089e2b6f6a0601164de` adds only the exact landed libteam entry
+from registry main `a1334b9a9604733a2faf6cc96536d289da09e8d8` to the previous
+image catalog. Other selected module versions and locked package inputs stay
+unchanged. The composition is a review input, not a claim that every other
+image prerequisite has landed.
 
-For local candidate validation, run
-`tools/bazel/ci/libteam_draft_bazel.sh build //src/libteam:libteam_runtime`.
-This wrapper loads `common.bazelrc` without the default registry endpoint.
-The inherited base-image, OCI, eventd, Rust-listener and image-root YANG checks
-use this same reviewed catalog; standalone YANG validation stays on `main`.
-The dedicated libteam matrix retains its existing explicit registry flags.
-Do not append both endpoints.
-Replace the temporary CI endpoint with maintained `main` and verify landed
-source revisions before review readiness.
+The native libteam workflow selects the owner's `@libteam//:consumer_test`
+directly and resolves its exported `bazel/verify_rebuild.py` through the same
+Bazel output base. Installed SDK checks require zero archive timestamps and
+matching symbols. The shared owner retains the accepted deterministic gzip
+and development-TAR packaging fixes, so old image payload hashes are not
+claimed to be identical after adoption.
 
-CI retains checkout inputs, the generated resolution lock, build/test events,
-named outputs and SHA-256 checksums. New acceptance is AMD64-only; the existing
-ARM64 source job remains unchanged. On AMD64 CI also compiles the public C consumer
-against the installed SDK/pkg-config interface and verifies all five detached
-symbol pairs, including isolated positive/negative GDB source lookup. A config
-edit probe verifies that the declared input changes the utils TAR and restoring
-the exact source reproduces the original TAR. Its unchanged-input rebuild is a
-same-output-base determinism check, not a fresh-cache or remote-hit claim.
-These tests cover the component and its
-build consumers. They do not establish daemon business flows, a full image or
-successful inherited image workflows.
-
-For PRs #51 and #61, inherited full-VS CI is explicitly skipped because these
-source-only tasks exclude DEB generation. Three existing hosted kernel-fixture
-suites that generate DEBs are also omitted for these PRs; other hosted checks
-still run. These omissions are not image validation evidence.
+Current combined image validation remains pending. Earlier owner and PR #205
+results retain their source attribution; they are not new Teamd networking,
+OCI, LACP or Make/VS equivalence results.

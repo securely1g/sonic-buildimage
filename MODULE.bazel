@@ -31,6 +31,7 @@ bazel_dep(name = "rules_cc", version = "0.2.22")
 bazel_dep(name = "rules_pkg", version = "1.1.0")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.6")
 bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
+bazel_dep(name = "libteam", version = "1.31.0.sonic.1")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
@@ -394,6 +395,7 @@ source_modules(
         "@libyang//:MODULE.bazel": "libyang",
         "@libyang_python//:MODULE.bazel": "libyang-python",
         "@libnl3//:MODULE.bazel": "libnl3",
+        "@libteam//:MODULE.bazel": "libteam",
         "//:MODULE.bazel": "sonic-buildimage",
     },
 )
@@ -456,7 +458,6 @@ source_files(
     },
 )
 
-include("//src/libteam:deps.MODULE.bazel")
 
 # Reuse the source owner's locked third-party wheels; YAML and natsort already
 # come from config-engine. No second copy of either SONiC package is generated.

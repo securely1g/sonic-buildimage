@@ -65,8 +65,8 @@ def verify(source, runtime, symbols, policy_path, graph_path):
         artifacts.require(not any("libteam-dev" in arg for arg in arguments),
                           "stock Debian libteam returned to the SWSS link: " + label)
         if name in {"teamsyncd", "tlm_teamd"}:
-            artifacts.require(any(arg.startswith("-L") and "libteam_Usource" in arg for arg in arguments),
-                              "SWSS link does not select the patched libteam source repository: " + label)
+            artifacts.require(any(arg.startswith("-L") and "/external/libteam+/" in arg for arg in arguments),
+                              "SWSS link does not select the shared libteam owner: " + label)
             expected_libraries = {"-l:libteamdctl.so.0.1.5"}
             if name == "teamsyncd":
                 expected_libraries.add("-l:libteam.so.5.6.1")

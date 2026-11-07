@@ -22,5 +22,5 @@ esac
 exec bazel "${startup_options[@]}" --nosystem_rc --nohome_rc --noworkspace_rc \
   --bazelrc="$PWD/tools/bazel/common.bazelrc" \
   "$bazel_command" \
-  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/04164b00ec3f28c4b2806714d3825ac8f57a9af9 \
+  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/04a71b7883384e995a5ae089e2b6f6a0601164de \
   --registry=https://bcr.bazel.build --lockfile_mode=update "$@"
