@@ -1,9 +1,0 @@
-# Standalone libteam builds from src/libteam. The sonic-buildimage root selects
-# this same module through local_path_override, so Make and Bazel share sources.
-common --check_direct_dependencies=off
-common --lockfile_mode=update
-common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
-common --registry=https://bcr.bazel.build
-common --platforms=@sonic_build_infra//platforms:x86_64_trixie
-common --host_platform=@sonic_build_infra//platforms:x86_64_trixie
-try-import %workspace%/.bazelrc.user
