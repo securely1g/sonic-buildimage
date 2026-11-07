@@ -341,7 +341,7 @@ class YangSourceMirrorTest(unittest.TestCase):
                 self.assertEqual(argv, [
                     "--nosystem_rc", "--nohome_rc", "--noworkspace_rc",
                     "--bazelrc=" + str(root / "tools/bazel/common.bazelrc"), "cquery",
-                    "--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/640979c957d1ebf404a4ead6a233a390225e98ff",
+                    "--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/770eb23e3db13b34c2cea69b1370c87cdd226955",
                     "--registry=https://bcr.bazel.build", "--lockfile_mode=update", "--lockfile_mode=update",
                     "//src/sonic-yang-models:yang_models_package_test",
                 ])
