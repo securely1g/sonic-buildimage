@@ -56,7 +56,6 @@ jobs:
         run: |
           mkdir -p artifacts/sysmgr
           python3 -B src/sonic-sysmgr/bazel/ci.py \
-            --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/b88af269424359f5d34017e4d95de09265b7a803 \
             --artifacts artifacts/sysmgr 2>&1 | tee artifacts/sysmgr/ci.log
       - name: Upload packages, original XML and installed-package evidence
         if: always()
