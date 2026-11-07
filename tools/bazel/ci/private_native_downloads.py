@@ -282,25 +282,29 @@ def run(args):
         launcher.write_text("#!/bin/sh\nexec " + shlex.join([
             sys.executable, "-B", str(Path(__file__).resolve()), "bazel", str(config), real_bazel]) + ' "$@"\n')
         launcher.chmod(0o700)
-        server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), handler(mirrors, manifest, counts))
-        server.daemon_threads = True
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        proxy = f"http://{BRIDGE}:{server.server_port}"
         inherited = private_mirrors.child_environment()
         # APT's HTTPS method otherwise inherits http_proxy and sends CONNECT
         # to this HTTP-only adapter. Preserve an explicit HTTPS proxy; an
         # explicit empty value keeps unrelated HTTPS downloads direct.
         https_proxy = inherited.get("https_proxy", inherited.get("HTTPS_PROXY", ""))
         environment = inherited | {
-            "http_proxy": proxy, "HTTP_PROXY": proxy,
-            "https_proxy": https_proxy, "HTTPS_PROXY": https_proxy,
             "BAZEL": str(launcher), "SONIC_BAZEL_DOWNLOADER_CONFIG": str(config),
             "SONIC_BAZEL_REMOTE_ONLY_RC": str(remote_rc),
             "SONIC_APT_MIRROR_CONFIG": str(apt_map),
             "SONIC_NATIVE_PRIVATE_APT": "1",
             "BAZEL_CONTAINER_CACHE_DIR": "", "BAZEL_SWSS_CACHE_DIR": "",
         }
+        server = thread = None
+        if args.phase != "inputs":
+            # The input producer only resolves Bazel repositories. It has no
+            # Docker bridge yet and needs the private downloader, not an APT proxy.
+            server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), handler(mirrors, manifest, counts))
+            server.daemon_threads = True
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            proxy = f"http://{BRIDGE}:{server.server_port}"
+            environment.update(http_proxy=proxy, HTTP_PROXY=proxy,
+                               https_proxy=https_proxy, HTTPS_PROXY=https_proxy)
         try:
             with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, errors="replace") as child:
@@ -311,11 +315,12 @@ def run(args):
                     raise ValueError("Native build did not prove both private APT archives")
                 return result
         finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
             receipt = {"schema": 1, "helper_revision": REGISTRY_REVISION,
-                       "private_mirrors_enabled": True, "native_apt_upstream_https": True,
+                       "private_mirrors_enabled": True, "native_apt_upstream_https": server is not None,
                        "native_apt_upstream_responses": counts, "package_integrity_unchanged": True,
                        "public_apt_sources_preserved": True, "local_bazel_caches": False}
             (artifacts / ("private-downloads-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")
@@ -335,7 +340,7 @@ def main():
     parser.add_argument("--helpers", type=Path, default=Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "private-downloads/ci")
     parser.add_argument("--private-dir", type=Path, default=Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "native-downloads")
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts/vs"))
-    parser.add_argument("--phase", required=True, choices=("preparation", "build", "verification"))
+    parser.add_argument("--phase", required=True, choices=("inputs", "preparation", "build", "verification"))
     parser.add_argument("--check-artifacts", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()

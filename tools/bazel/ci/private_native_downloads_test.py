@@ -223,26 +223,39 @@ class WrapperLifecycleTests(unittest.TestCase):
                     "assert 'DEBIAN_SECURITY_MIRROR_ROOT' not in os.environ; "
                     "assert os.environ['SONIC_BAZEL_REMOTE_ONLY_RC'] == " + repr(str(managed)) + "; "
                     "assert pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text() == 'private fixture policy'; "
-                    "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''; "
-                    "assert os.environ['HTTP_PROXY'].startswith('http://192.168.240.1:')"])
+                    "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''"])
             child_check = args.command[-1]
             clean_environment = {key: value for key, value in os.environ.items()
-                                 if key not in {"https_proxy", "HTTPS_PROXY"}}
+                                 if key not in {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"}}
+            clean_environment.update(http_proxy="http://existing-http.example.invalid:3128",
+                                     HTTP_PROXY="http://existing-http.example.invalid:3128")
             proxy_url = "http://configured-proxy.example.invalid:3128"
-            for inherited, expected in (({}, ""), ({"HTTPS_PROXY": proxy_url}, proxy_url),
-                                        ({"https_proxy": proxy_url}, proxy_url),
-                                        ({"https_proxy": "", "HTTPS_PROXY": proxy_url}, "")):
-                args.command[-1] = (child_check + "; assert os.environ['https_proxy'] == " + repr(expected)
-                                    + "; assert os.environ['HTTPS_PROXY'] == " + repr(expected))
-                with self.subTest(inherited=inherited), \
-                     mock.patch.dict(native.sys.modules, {"private_mirrors": private_mirrors,
-                         "mirror_privacy": types.SimpleNamespace(Redactor=Redactor)}), \
-                     mock.patch.dict(os.environ, {**clean_environment, **MIRRORS, **inherited,
-                         "SONIC_BAZEL_REMOTE_ONLY_RC": str(managed)}, clear=True), \
-                     mock.patch.object(native.subprocess, "check_output", return_value=native.REGISTRY_REVISION + "\n"), \
-                     mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
-                     contextlib.redirect_stdout(io.StringIO()):
-                    self.assertEqual(native.run(args), 0)
+            for phase in ("verification", "inputs"):
+                args.phase = phase
+                for inherited, expected in (({}, ""), ({"HTTPS_PROXY": proxy_url}, proxy_url),
+                                            ({"https_proxy": proxy_url}, proxy_url),
+                                            ({"https_proxy": "", "HTTPS_PROXY": proxy_url}, "")):
+                    args.command[-1] = child_check
+                    if phase == "inputs":
+                        args.command[-1] += "; assert os.environ['HTTP_PROXY'] == 'http://existing-http.example.invalid:3128'"
+                        for key in ("https_proxy", "HTTPS_PROXY"):
+                            args.command[-1] += "; assert os.environ.get(" + repr(key) + ") == " + repr(inherited.get(key))
+                        bridge_guard = mock.patch.object(native.http.server, "ThreadingHTTPServer",
+                            side_effect=AssertionError("Input resolution must not start a Docker bridge proxy"))
+                    else:
+                        args.command[-1] += "; assert os.environ['HTTP_PROXY'].startswith('http://192.168.240.1:')"
+                        args.command[-1] += "; assert os.environ['https_proxy'] == " + repr(expected)
+                        args.command[-1] += "; assert os.environ['HTTPS_PROXY'] == " + repr(expected)
+                        bridge_guard = contextlib.nullcontext()
+                    with self.subTest(phase=phase, inherited=inherited), bridge_guard, \
+                         mock.patch.dict(native.sys.modules, {"private_mirrors": private_mirrors,
+                             "mirror_privacy": types.SimpleNamespace(Redactor=Redactor)}), \
+                         mock.patch.dict(os.environ, {**clean_environment, **MIRRORS, **inherited,
+                             "SONIC_BAZEL_REMOTE_ONLY_RC": str(managed)}, clear=True), \
+                         mock.patch.object(native.subprocess, "check_output", return_value=native.REGISTRY_REVISION + "\n"), \
+                         mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
+                         contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(native.run(args), 0)
             self.assertEqual(list(args.private_dir.iterdir()), [])
             self.assertIn("https://remote.example.invalid/", seen)
             receipt = json.loads((artifacts / "private-downloads-verification.json").read_text())

@@ -690,6 +690,23 @@ jobs:
         if: env.NATIVE_VS_ONLY == 'true'
         run: python3 -B tools/bazel/ci/configure_runner_cache.py --remote-only
 
+      - name: Checkout pinned private input helpers
+        if: env.NATIVE_VS_ONLY == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 1060b4084e0598312c446eb5bb66be938aeac22c
+          path: .ci/private-downloads
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Keep native input helpers outside build inputs
+        if: env.NATIVE_VS_ONLY == 'true'
+        run: |
+          if [[ "$NATIVE_VS_ONLY" == true ]]; then
+            mv .ci/private-downloads "$RUNNER_TEMP/private-downloads"
+          fi
+
       - name: Check Make handoff and archive validation
         if: env.NATIVE_VS_ONLY != 'true'
         env:
@@ -735,7 +752,17 @@ jobs:
           path: ${{ runner.temp }}/native-p4-acquisition
 
       - name: Retain the verified GitLab source downloads
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ env.NATIVE_VS_ONLY == 'true' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ env.NATIVE_VS_ONLY == 'true' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
         run: |
+          if [[ "$NATIVE_VS_ONLY" == true && "${SONIC_NATIVE_INPUT_DOWNLOADS:-}" != 1 ]]; then
+            # Re-enter this step once with private downloader settings and
+            # sanitized output; repository resolution fetches Debian indexes.
+            export SONIC_NATIVE_INPUT_DOWNLOADS=1
+            exec python3 -B tools/bazel/ci/private_native_downloads.py \
+              --phase inputs --artifacts artifacts/repository-inputs -- bash -euo pipefail "$0"
+          fi
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
           download_options=()
@@ -800,6 +827,7 @@ jobs:
             artifacts/repository-inputs/rules_gzip-1.0.0/src.tar.gz
             artifacts/repository-inputs/toolchain_utils-1.0.2/src.tar.gz
             artifacts/repository-inputs/receipt.json
+            artifacts/repository-inputs/private-downloads-inputs.json
             artifacts/repository-inputs/test-helpers/
           if-no-files-found: error
           retention-days: 14
