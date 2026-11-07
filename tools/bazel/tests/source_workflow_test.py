@@ -151,7 +151,7 @@ class SourceWorkflowTest(unittest.TestCase):
         for number, branch, owner, source_only, run_vs in (
             (51, "frr-native-bazel", "songqing-sq/sonic-buildimage", False, False),
             (61, "pr/bazel-libteam", "songqing-sq/sonic-buildimage", False, False),
-            (999, "codex/libteam-owner-consumer", "securely1g/sonic-buildimage", True, False),
+            (999, "codex/libteam-owner-consumer", "securely1g/sonic-buildimage", False, False),
             (999, "codex/libteam-owner-consumer", "example/sonic-buildimage", False, False),
             (999, "codex/libteam-owner-consumer-extra", "securely1g/sonic-buildimage", False, True),
             (999, "unrelated", "securely1g/sonic-buildimage", False, True),
