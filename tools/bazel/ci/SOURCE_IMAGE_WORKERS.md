@@ -155,15 +155,7 @@ does not run unrelated owner test suites, package Make recipes, or the full VS
 installer. The selected image drivers still audit their configured graph for
 DEB generation before building.
 
-The worker uses the checksum-verified shared download configuration from
-[registry PR228](https://github.com/securely1g/sonic-bazel-registry/pull/228), pinned
-at `087d351564c713ca88d241ace0b4f895a42f0c61` (SHA256
-`a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90`, 45,526 bytes).
-It adds the reviewed exact historical-package routes to the existing pool and
-Snapshot fallbacks without changing package versions or required integrity.
-This is an unlanded helper dependency; current controller and image acceptance
-remain separate. The worker's existing Gawk and four package supplements,
-cache paths, resource limits and no-DEB audits are unchanged.
+Trusted native source-image jobs use the Debian mirror roots configured for this repository. The pinned registry helper selects the snapshots and retains public fallback. [Registry mirror configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/README.md#private-debian-snapshot-mirrors)
 
 The worker also uses Bazel's official mirror for the exact BCR `gawk@5.3.2`
 source archive. Its existing SHA256 and upstream build overlay stay unchanged.
@@ -172,12 +164,7 @@ checksum-verified shared downloader configuration is retained. Phase resource
 receipts include the observed cgroup memory/swap limits as well as usage and OOM
 counters, so a runtime limit change is not confused with a successful capacity test.
 
-For four observed Debian snapshot HTTP 503 failures, the downloader retains the
-original timestamped URL and adds its verified official content-addressed
-`snapshot.debian.org/file/` endpoint. Both endpoints returned identical bytes
-matching the checked-in SHA256 and size. The URL's SHA1 identifier only locates
-the file; Bazel continues enforcing the original SHA256. Other snapshots,
-package versions and architectures are unchanged. Public Syncd/Gearbox policy
+Public Syncd/Gearbox policy
 validation recognizes only the exact checked-in `DEBIAN_FRONTEND=noninteractive`
 constant and retains the policy's original bytes and hash.
 
