@@ -77,6 +77,14 @@ jobs:
         with:
           path: control
           persist-credentials: false
+      - name: Checkout the registry mirror configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
+          path: control/.source-mirror-registry
+          sparse-checkout: ci
+          persist-credentials: false
       - name: Validate the fixed registry dispatch
         run: |
           python3 -B control/tools/bazel/ci/registry_native_worker.py selection \
@@ -107,6 +115,15 @@ jobs:
           github-token: ${{ github.token }}
           repository: securely1g/sonic-buildimage
           path: ${{ runner.temp }}/source-image-inputs
+      - name: Configure the native registry downloader
+        id: prepare_mirrors
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+        run: |
+          python3 -B control/tools/bazel/ci/registry_native_worker.py prepare-mirrors \
+            --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
+            --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
       - name: Run the original native registry build and tests
         id: native
         run: |
@@ -120,24 +137,31 @@ jobs:
           python3 -B control/tools/bazel/ci/registry_native_worker.py publish \
             --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
             --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
-      - name: Upload ordinary registry consumer evidence
+      - name: Scan the native registry archive and receipts
+        id: scan_mirrors
         if: always() && (steps.native.outcome != 'skipped' || steps.inputs.outcome != 'skipped')
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+        run: |
+          python3 -B control/tools/bazel/ci/registry_native_worker.py scan-mirrors \
+            --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
+            --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
+      - name: Upload ordinary registry consumer evidence
+        if: always() && steps.scan_mirrors.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: registry-native-${{ inputs.registry_consumer }}-amd64-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/registry-native-evidence.tar
-            ${{ runner.temp }}/registry-native-artifacts/worker-run.json
-            ${{ runner.temp }}/registry-native-artifacts/worker-execute.json
-            ${{ runner.temp }}/registry-native-artifacts/worker-publish.json
-            ${{ runner.temp }}/registry-native-artifacts/worker-preflight.json
-            ${{ runner.temp }}/registry-native-artifacts/worker-registry.json
-            ${{ runner.temp }}/registry-native-artifacts/worker-input-run.json
-            ${{ runner.temp }}/registry-native-artifacts/worker-verify-input-run.json
-            ${{ runner.temp }}/registry-native-artifacts/worker-source-downloads.json
+          path: ${{ runner.temp }}/registry-native-upload/
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+      - name: Remove the native registry mirror configuration
+        if: always() && steps.prepare_mirrors.outcome != 'skipped'
+        run: |
+          python3 -B control/tools/bazel/ci/registry_native_worker.py cleanup-mirrors \
+            --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
+            --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
 
   source_image_inputs:
     name: Fetch pinned source-image downloads
@@ -191,6 +215,7 @@ jobs:
       run:
         shell: bash
     env:
+      SOURCE_WORKER_CONFIGURED_MIRRORS: "1"
       SELECTED_IMAGE: ${{ inputs.source_image }}
       SOURCE_REVISION: ${{ inputs.source_revision }}
       SOURCE_REGISTRY_REVISION: ${{ inputs.registry_revision }}
@@ -222,6 +247,14 @@ jobs:
         with:
           path: ${{ env.SOURCE_WORKER_CONTROL }}
           clean: false
+          persist-credentials: false
+      - name: Checkout the registry mirror configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
+          path: ${{ env.SOURCE_WORKER_CONTROL }}/.source-mirror-registry
+          sparse-checkout: ci
           persist-credentials: false
       - name: Validate the fixed image selection
         run: |
@@ -297,6 +330,15 @@ jobs:
         with:
           name: source-image-inputs
           path: ${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/source-image-inputs
+      - name: Configure Debian downloads for the native worker
+        id: prepare_mirrors
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare-mirrors \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Prepare private Docker and persistent worker caches
         id: prepare
         run: |
@@ -356,8 +398,18 @@ jobs:
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" publish \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
-      - name: Upload source images and acceptance receipts
+      - name: Scan staged source-image artifacts for private mirror locations
+        id: scan_mirrors
         if: always() && steps.public_artifacts.outcome == 'success'
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" scan-mirrors \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      - name: Upload source images and acceptance receipts
+        if: always() && steps.scan_mirrors.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: source-image-${{ inputs.source_image }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -391,6 +443,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+      - name: Remove this worker's mirror configuration
+        if: always() && steps.prepare_mirrors.outcome != 'skipped'
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" cleanup-mirrors \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
 
   worker_provenance:
     name: Worker provisioner identity
@@ -532,10 +590,10 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          if hashlib.sha256(data).hexdigest() != "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8":
+          if hashlib.sha256(data).hexdigest() != "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720":
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "base-source-mirrors.cfg"
           config.write_bytes(data)
