@@ -31,18 +31,22 @@ requires VS, AMD64, Trixie, FIPS, ordinary execution without ASAN, and the stand
 `dbg` suffix. Other profiles use their original Make prerequisites.
 
 The reviewed catalog selects `rules_distroless` `0.9.4.sonic.18` from
-[registry #237](https://github.com/securely1g/sonic-bazel-registry/pull/237).
-Its compatibility fix preserves the independent Framework/image payload locks
-alongside `apt.install`; existing package versions and checksums are unchanged.
-This shared prerequisite must land, and the updated consumer must pass its
-normal checks, before the image is ready.
+[registry #285](https://github.com/securely1g/sonic-bazel-registry/pull/285),
+which preserves [#237](https://github.com/securely1g/sonic-bazel-registry/pull/237)'s
+independent Framework/image payload locks and adds link-time searches for
+declared runtime libraries. Package versions and checksums are unchanged.
+It also selects FIPS source `97e639` through
+[registry #284](https://github.com/securely1g/sonic-bazel-registry/pull/284),
+so OpenSSH reads declared libedit metadata instead of guessing `-lcurses`.
+These shared prerequisites must land, and this exact consumer must pass its
+normal and native checks, before the image is ready.
 
 On a native AMD64 Trixie worker:
 
 ```sh
 # This wrapper selects one immutable reviewed registry catalog plus BCR.
 # Canonical .bazelrc remains on registry main.
-export SONIC_BAZEL_REGISTRY_REVISION=a28de9e1bec4caa887db370c7acd0c6e2a53ed2d
+export SONIC_BAZEL_REGISTRY_REVISION=44e1a7f39843a68f9ddc199e8e55cfd4fcba56ae
 BAZEL="$PWD/tools/bazel/ci/review_bazel.sh"
 python3 -B tools/bazel/ci/mgmt_framework_image.py build --bazel "$BAZEL" --artifacts artifacts/mgmt-framework
 python3 -B tools/bazel/ci/mgmt_framework_image.py validate --artifacts artifacts/mgmt-framework

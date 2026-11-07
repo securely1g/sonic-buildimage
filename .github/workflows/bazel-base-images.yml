@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SONIC_BAZEL_REGISTRY_REVISION: a28de9e1bec4caa887db370c7acd0c6e2a53ed2d
+  SONIC_BAZEL_REGISTRY_REVISION: 44e1a7f39843a68f9ddc199e8e55cfd4fcba56ae
 
 jobs:
   native:
@@ -38,7 +38,8 @@ jobs:
         run: |
           apt-get update
           # SymCrypt's scoped LLVM linker needs libxml2 on the execution host.
-          apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git j2cli jq libarchive-tools libxml2 python3
+          # Distroless uses file to distinguish ELF libraries from linker scripts.
+          apt-get install -y --no-install-recommends binutils build-essential ca-certificates file gdb git j2cli jq libarchive-tools libxml2 python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

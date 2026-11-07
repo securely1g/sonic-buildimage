@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -663,7 +664,7 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, paths, ready = self.prepare("source")
         self.assertFalse(ready)
         self.assertEqual(paths, [])
-        self.assertIn({"input": "module-lock", "reason": "unsafe-public-file"}, summary["blocked"])
+        self.assertIn({"input": "module-lock", "reason": "credential-json-field"}, summary["blocked"])
         self.assertNotIn(SENTINEL, json.dumps(summary))
 
     def test_recorded_environment_must_be_empty(self):
@@ -687,7 +688,7 @@ class PublicArtifactsTest(unittest.TestCase):
                 summary, paths, ready = self.prepare("source")
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])
-                self.assertIn({"input": logical, "reason": "unsafe-public-file"}, summary["blocked"])
+                self.assertIn({"input": logical, "reason": "credential-pattern"}, summary["blocked"])
                 self.assertNotIn(SYNTHETIC_INSTALLATION_TOKEN, json.dumps(summary))
 
     def test_duplicate_json_keys_and_sensitive_urls_are_rejected(self):
@@ -766,6 +767,135 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertIn(artifacts.SUMMARY["syncd"], lines)
         self.assertFalse(any(line.endswith((".log", ".jsonl", ".xml")) for line in lines))
         self.assertNotIn(SENTINEL, output.read_text())
+
+    def pad_json(self, path, size):
+        """Grow valid JSON without changing its schema or allocating a huge value."""
+        remaining = size - path.stat().st_size
+        self.assertGreaterEqual(remaining, 0)
+        with path.open("ab") as stream:
+            while remaining:
+                count = min(remaining, 1024 * 1024)
+                stream.write(b" " * count)
+                remaining -= count
+
+    def test_valid_70_mib_dependency_lock_is_published_unchanged(self):
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/MODULE.bazel.lock"
+        self.pad_json(path, 70 * 1024 * 1024)
+        expected = hashlib.sha256(path.read_bytes()).hexdigest()
+        summary, paths, ready = self.prepare("archive")
+        self.assertTrue(ready, summary)
+        self.assertIn(str(path.relative_to(self.root)), paths)
+        self.assertEqual(summary["files"]["module-lock"], {
+            "sha256": expected, "bytes": 70 * 1024 * 1024,
+        })
+
+    def test_dependency_lock_above_128_mib_is_blocked(self):
+        seed(self.root, "archive")
+        self.pad_json(self.root / "artifacts/archive/MODULE.bazel.lock", 128 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-lock", "reason": "oversized-json"}, summary["blocked"])
+
+    def test_non_lock_json_keeps_64_mib_boundary(self):
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/module-graph.json"
+        self.pad_json(path, 64 * 1024 * 1024)
+        summary, _paths, ready = self.prepare("archive")
+        self.assertTrue(ready, summary)
+        self.pad_json(path, 64 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-graph", "reason": "oversized-json"}, summary["blocked"])
+
+    def test_large_lock_still_rejects_recorded_environment(self):
+        seed(self.root, "archive")
+        value = lock()
+        value["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {
+            "PRIVATE_VALUE": SENTINEL,
+        }
+        path = write_json(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+        self.pad_json(path, 70 * 1024 * 1024)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-lock", "reason": "nonempty-recorded-environment"}, summary["blocked"])
+        self.assertNotIn(SENTINEL, json.dumps(summary))
+
+    def test_public_file_guard_reasons_do_not_publish_rejected_dependency_data(self):
+        cases = [
+            ({}, "invalid-module-lock"),
+            ({**lock(), SENTINEL: SYNTHETIC_JOB_TOKEN}, "unknown-module-lock-field"),
+            ({**lock(), "facts": {"authorization": SENTINEL}}, "credential-json-field"),
+            ({**lock(), "facts": {"value": SYNTHETIC_JOB_TOKEN}}, "credential-pattern"),
+            ({**lock(), "facts": {"value": "/home/fixture/work/" + SENTINEL}}, "local-path"),
+            ({**lock(), "facts": {"value": "https://fixture:" + SENTINEL + "@example.invalid/file"}}, "url-credentials"),
+            ({**lock(), "facts": {"value": "https://example.invalid/file?token=" + SENTINEL}}, "sensitive-url-query"),
+            ({**lock(), "facts": {"command_line": [SENTINEL]}}, "diagnostic-json-field"),
+            ({**lock(), "facts": {"value": SENTINEL + "\x00"}}, "control-character"),
+        ]
+        environment = lock()
+        environment["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {"VALUE": SENTINEL}
+        cases.append((environment, "nonempty-recorded-environment"))
+        for value, reason in cases:
+            with self.subTest(reason=reason):
+                seed(self.root, "archive")
+                path = write_json(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+                original = path.read_bytes()
+                summary, paths, ready = self.prepare("archive")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": reason}])
+                self.assertEqual(path.read_bytes(), original)
+                public = json.dumps(summary)
+                for private in (SENTINEL, SYNTHETIC_JOB_TOKEN, "example.invalid", "/home/fixture", "command_line"):
+                    self.assertNotIn(private, public)
+
+    def test_public_file_json_guards_keep_the_original_size_and_parser_limits(self):
+        for value, reason in ((b'{"facts": {}, "facts": {}}', "duplicate-json-key"),
+                              (b'{"facts": NaN}', "invalid-json-number"),
+                              (b'{"facts": ' + SENTINEL.encode(), "unsafe-public-file")):
+            with self.subTest(reason=reason):
+                seed(self.root, "archive")
+                write(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+                summary, paths, ready = self.prepare("archive")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": reason}])
+                self.assertNotIn(SENTINEL, json.dumps(summary))
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/MODULE.bazel.lock"
+        # A sparse fixture exercises the actual stat guard without a large read.
+        with path.open("wb") as stream:
+            stream.truncate(128 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": "oversized-json"}])
+
+    def test_unknown_public_file_exceptions_remain_generic_and_fail_closed(self):
+        original = artifacts.dependency_json
+        errors = [artifacts.PublicArtifactError(SENTINEL),
+                  artifacts.PublicArtifactError("local-path\n" + SYNTHETIC_JOB_TOKEN),
+                  artifacts.PublicArtifactError("local-path", SENTINEL),
+                  artifacts.PublicArtifactError([SENTINEL]),
+                  OSError(SENTINEL), ValueError(SENTINEL), TypeError(SENTINEL), RecursionError(SENTINEL)]
+        for error in errors:
+            with self.subTest(error_type=type(error).__name__):
+                seed(self.root, "archive")
+                def reject_lock(value, kind):
+                    if kind == "lock":
+                        raise error
+                    return original(value, kind)
+                with mock.patch.object(artifacts, "dependency_json", side_effect=reject_lock):
+                    summary, paths, ready = self.prepare("archive")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": "unsafe-public-file"}])
+                self.assertNotIn(SENTINEL, json.dumps(summary))
+                self.assertNotIn(SYNTHETIC_JOB_TOKEN, json.dumps(summary))
 
 
 if __name__ == "__main__":
