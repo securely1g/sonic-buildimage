@@ -119,7 +119,11 @@ class DebianPoolTest(unittest.TestCase):
             if name == "bazel-supervisor-rust.yml":
                 native_steps = workflow["jobs"]["native"]["steps"]
                 names = [step.get("name") for step in native_steps]
-                self.assertLess(names.index("Preserve setup-bazel caches for isolated CI"),
+                cache_steps = [index for index, step in enumerate(native_steps)
+                               if "python3 tools/bazel/ci/preserve_setup_bazel_cache.py"
+                               in step.get("run", "")]
+                self.assertEqual(len(cache_steps), 1)
+                self.assertLess(cache_steps[0],
                                 names.index("Configure the verified source mirror"))
                 self.assertLess(names.index("Configure the verified source mirror"),
                                 names.index("Audit and test source runtime and debug packages"))
@@ -182,14 +186,9 @@ class DebianPoolTest(unittest.TestCase):
 
     def test_native_and_draft_callers_load_the_shared_rc_explicitly(self):
         # Execute the existing shell interfaces against an argv recorder, never Bazel.
-        wrappers = list((ROOT / "tools/bazel/ci").glob("*_draft_bazel.sh"))
-        self.assertEqual(len(wrappers), 1)
-        owner = wrappers[0].name.removesuffix("_draft_bazel.sh")
-        workflow = yaml.safe_load((ROOT / ".github/workflows" / ("bazel-" + owner + ".yml")).read_text())
-        scripts = [step["run"] for job in workflow["jobs"].values() for step in job.get("steps", [])
-                   if "run_bazel() {" in step.get("run", "")]
-        self.assertEqual(len(scripts), 1)
-        function = re.search(r"(?ms)^run_bazel\(\) \{\n.*?^\}", scripts[0]).group(0)
+        wrappers = sorted((ROOT / "tools/bazel/ci").glob("*_draft_bazel.sh"))
+        self.assertTrue({"frr_draft_bazel.sh", "libteam_draft_bazel.sh"}
+                        <= {wrapper.name for wrapper in wrappers})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             recorder = root / "bazel"
@@ -200,20 +199,28 @@ class DebianPoolTest(unittest.TestCase):
             rc.write_text((ROOT / "tools/bazel/common.bazelrc").read_text())
             (root / CONFIG).write_bytes((ROOT / CONFIG).read_bytes())
             env = {"PATH": str(root) + ":/usr/bin:/bin"}
-            commands = [["/bin/bash", str(wrappers[0]), "cquery", "//:transport_probe"],
-                        ["/bin/bash", "-eu", "-c", "options=(--jobs=2)\n" + function +
-                         "\nrun_bazel cquery //:transport_probe\n"]]
-            for command in commands:
-                result = subprocess.run(command, cwd=root, env=env, check=True, capture_output=True, text=True)
-                argv = json.loads(result.stdout)
-                self.assertIn("--nohome_rc", argv)
-                self.assertIn("--noworkspace_rc", argv)
-                self.assertIn("--bazelrc=" + str(rc), argv)
-                self.assertIn("cquery", argv)
-                self.assertFalse(any(arg.startswith("--experimental_downloader_config=") for arg in argv))
-                self.assertLess(rc.read_text().index("--experimental_downloader_config="),
-                                rc.read_text().index("try-import %workspace%/.bazelrc.user"))
-                self.assertTrue((root / CONFIG).is_file())
+            for wrapper in wrappers:
+                with self.subTest(wrapper=wrapper.name):
+                    owner = wrapper.name.removesuffix("_draft_bazel.sh")
+                    workflow = yaml.safe_load((ROOT / ".github/workflows" / ("bazel-" + owner + ".yml")).read_text())
+                    scripts = [step["run"] for job in workflow["jobs"].values() for step in job.get("steps", [])
+                               if "run_bazel() {" in step.get("run", "")]
+                    self.assertEqual(len(scripts), 1)
+                    function = re.search(r"(?ms)^run_bazel\(\) \{\n.*?^\}", scripts[0]).group(0)
+                    commands = [["/bin/bash", str(wrapper), "cquery", "//:transport_probe"],
+                                ["/bin/bash", "-eu", "-c", "options=(--jobs=2)\n" + function +
+                                 "\nrun_bazel cquery //:transport_probe\n"]]
+                    for command in commands:
+                        result = subprocess.run(command, cwd=root, env=env, check=True, capture_output=True, text=True)
+                        argv = json.loads(result.stdout)
+                        self.assertIn("--nohome_rc", argv)
+                        self.assertIn("--noworkspace_rc", argv)
+                        self.assertIn("--bazelrc=" + str(rc), argv)
+                        self.assertIn("cquery", argv)
+                        self.assertFalse(any(arg.startswith("--experimental_downloader_config=") for arg in argv))
+                        self.assertLess(rc.read_text().index("--experimental_downloader_config="),
+                                        rc.read_text().index("try-import %workspace%/.bazelrc.user"))
+                        self.assertTrue((root / CONFIG).is_file())
 
     def test_fresh_snapshot_keeps_the_shared_config_and_kernel_stays_independent(self):
         with mock.patch.object(sys, "path", [str(ROOT), *sys.path]):
