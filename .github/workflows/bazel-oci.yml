@@ -335,6 +335,12 @@ jobs:
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" publish \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      - name: Stop only this job's private Docker daemon
+        if: always() && steps.prepare.outcome != 'skipped'
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" stop \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Scan staged source-image artifacts for private mirror locations
         id: scan_mirrors
         if: always() && steps.public_artifacts.outcome == 'success'
@@ -354,12 +360,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
-      - name: Stop only this job's private Docker daemon
-        if: always() && steps.prepare.outcome != 'skipped'
-        run: |
-          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" stop \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
-            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Remove this worker's mirror configuration
         if: always() && steps.prepare_mirrors.outcome != 'skipped'
         run: |
