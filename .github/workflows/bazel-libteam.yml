@@ -81,8 +81,8 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
-          # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a2c5e9bf2f9cbe5d79defbb06f3a15d1ca04f76c
+          # Pin the merged registry inputs for reproducible native validation.
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a1334b9a9604733a2faf6cc96536d289da09e8d8
         run: |
           set -euo pipefail
           mkdir -p artifacts

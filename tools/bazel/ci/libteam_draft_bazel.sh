@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Temporary PR validation while libteam's dependency entries remain unlanded.
-# Keep the normal .bazelrc on canonical main; remove this wrapper after landing.
+# Pin the landed registry snapshot for reproducible libteam validation.
+# Keep the normal .bazelrc on canonical main; this wrapper only selects CI inputs.
 set -euo pipefail
 if [[ $# == 1 && "$1" == --version ]]; then
   exec bazel --version
@@ -22,5 +22,5 @@ esac
 exec bazel "${startup_options[@]}" --nosystem_rc --nohome_rc --noworkspace_rc \
   --bazelrc="$PWD/tools/bazel/common.bazelrc" \
   "$bazel_command" \
-  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a2c5e9bf2f9cbe5d79defbb06f3a15d1ca04f76c \
+  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a1334b9a9604733a2faf6cc96536d289da09e8d8 \
   --registry=https://bcr.bazel.build --lockfile_mode=update "$@"
