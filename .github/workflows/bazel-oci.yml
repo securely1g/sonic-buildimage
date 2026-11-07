@@ -856,6 +856,8 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
+          PYTHONPATH=tools/bazel/registry python3 -B -m unittest discover -s tools/bazel/equivalence_checker -p '*_test.py'
+          PYTHONPATH=tools/bazel/registry python3 -B tools/bazel/registry/registry_lib_test.py
 
       - name: Retain the verified GitLab source downloads
         id: repository_inputs
