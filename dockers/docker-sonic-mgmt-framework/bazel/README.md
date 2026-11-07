@@ -30,12 +30,19 @@ manifest labels still come from Make's existing generator. The native selector
 requires VS, AMD64, Trixie, FIPS, ordinary execution without ASAN, and the standard
 `dbg` suffix. Other profiles use their original Make prerequisites.
 
+The reviewed catalog selects `rules_distroless` `0.9.4.sonic.18` from
+[registry #237](https://github.com/securely1g/sonic-bazel-registry/pull/237).
+Its compatibility fix preserves the independent Framework/image payload locks
+alongside `apt.install`; existing package versions and checksums are unchanged.
+This shared prerequisite must land, and the updated consumer must pass its
+normal checks, before the image is ready.
+
 On a native AMD64 Trixie worker:
 
 ```sh
 # This wrapper selects one immutable reviewed registry catalog plus BCR.
 # Canonical .bazelrc remains on registry main.
-export SONIC_BAZEL_REGISTRY_REVISION=2d7ac4ec8e38c6e2b7b78b351a90ab763d997c68
+export SONIC_BAZEL_REGISTRY_REVISION=a671057872af23ab8cabc70e686e4351d4f080c5
 BAZEL="$PWD/tools/bazel/ci/review_bazel.sh"
 python3 -B tools/bazel/ci/mgmt_framework_image.py build --bazel "$BAZEL" --artifacts artifacts/mgmt-framework
 python3 -B tools/bazel/ci/mgmt_framework_image.py validate --artifacts artifacts/mgmt-framework
