@@ -26,7 +26,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.16")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -59,7 +59,7 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.8-a0450924719a9f706125cc44a07dc88934935003", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -75,6 +75,8 @@ bazel_dep(
 git_override(
     module_name = "sonic-swss",
     commit = "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
+    patches = ["//tools/bazel:0001-sonic-swss-libteam.patch"],
+    patch_strip = 1,
     remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
@@ -97,7 +99,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.6",
+    version = "3.7.0.sonic.7",
 )
 
 single_version_override(
@@ -245,7 +247,8 @@ apt_inputs(
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
+bazel_dep(name = "libteam", version = "1.31.0.sonic.1")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
 
 single_version_override(
@@ -283,7 +286,7 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.8-a0450924719a9f706125cc44a07dc88934935003",
+    version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61",
 )
 
 single_version_override(
