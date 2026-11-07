@@ -25,9 +25,14 @@ from tools.bazel.kernel import prepare as kernel
 
 class KernelBundleTest(unittest.TestCase):
     def setUp(self):
-        registry = patch.dict(os.environ, {"SONIC_REVIEW_REGISTRY": kernel.DEFAULT_REGISTRY})
-        registry.start()
-        self.addCleanup(registry.stop)
+        fixture_env = patch.dict(os.environ, {
+            "SONIC_REVIEW_REGISTRY": kernel.DEFAULT_REGISTRY,
+            "SONIC_BAZEL_REMOTE_ONLY_RC": "",
+            "SONIC_BAZEL_DOWNLOADER_CONFIG": "",
+            "SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG": "",
+        })
+        fixture_env.start()
+        self.addCleanup(fixture_env.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -385,6 +390,7 @@ class KernelBundleTest(unittest.TestCase):
                           (consumer / ".bazelrc").read_text().splitlines())
             self.assertEqual((consumer / kernel.DOWNLOADER_CONFIG.name).read_bytes(),
                              (self.root / kernel.DOWNLOADER_CONFIG).read_bytes())
+            self.assertNotIn("mod --downloader_config=", (consumer / ".bazelrc").read_text())
             self.assertIn(kernel.DEFAULT_REGISTRY, (self.root / "tools/bazel/kernel/.bazelrc").read_text())
             outputs = workdir / "outputs"
             outputs.mkdir(parents=True)
@@ -422,8 +428,13 @@ class KernelBundleTest(unittest.TestCase):
         cache_rc.write_text("common --remote_cache=https://cache.example.test\n")
         downloader = self.root / "runner-downloader.cfg"
         downloader.write_text("rewrite example.test/(.*) https://mirror.example.test/$1\n")
+        metadata = self.root / "runner-metadata.cfg"
+        metadata.write_bytes(downloader.read_bytes())
+        with downloader.open("a") as stream:
+            stream.write("rewrite example.test/(.*) https://example.test/$1\n")
         environment = {"SONIC_BAZEL_REMOTE_ONLY_RC": str(cache_rc),
-                       "SONIC_BAZEL_DOWNLOADER_CONFIG": str(downloader)}
+                       "SONIC_BAZEL_DOWNLOADER_CONFIG": str(downloader),
+                       "SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG": str(metadata)}
         state = self.root / "managed-state"
         with patch.dict(os.environ, environment):
             with self.assertRaisesRegex(ValueError, "explicit kernel cache"):
@@ -437,6 +448,9 @@ class KernelBundleTest(unittest.TestCase):
         self.assertIn("import " + str(cache_rc), rc)
         self.assertIn('flag_name: "repository_cache" set_value { flag_value: ""', rc)
         self.assertEqual((consumer / kernel.DOWNLOADER_CONFIG.name).read_bytes(), downloader.read_bytes())
+        self.assertIn("common --downloader_config=debian_mirrors.cfg", rc.splitlines())
+        self.assertIn("mod --downloader_config=debian_metadata_mirrors.cfg", rc.splitlines())
+        self.assertEqual((consumer / "debian_metadata_mirrors.cfg").read_bytes(), metadata.read_bytes())
         self.assertTrue(json.loads((state / "plan.json").read_text())["runner_managed_cache"])
         self.assertNotIn("runner-cache.bazelrc", (self.root / "tools/bazel/kernel/.bazelrc").read_text())
 

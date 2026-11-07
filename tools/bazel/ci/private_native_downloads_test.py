@@ -261,6 +261,9 @@ class WrapperLifecycleTests(unittest.TestCase):
                     "assert os.environ['SONIC_BAZEL_REMOTE_ONLY_RC'] == " + repr(str(managed)) + "; "
                     "assert pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text() == "
                     + repr(native.native_source_mirrors("private fixture policy")) + "; "
+                    "assert pathlib.Path(os.environ['SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG']).read_text() == "
+                    + repr(native.native_source_mirrors("private fixture policy")) + "; "
+                    "assert os.environ['SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG'] != os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']; "
                     "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''"])
             child_check = args.command[-1]
             clean_environment = {key: value for key, value in os.environ.items()
@@ -294,8 +297,9 @@ class WrapperLifecycleTests(unittest.TestCase):
                          mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
                          contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(native.run(args), 0)
-                        self.assertEqual(private_mirrors.configuration.call_args.kwargs["fallback"],
-                                         phase != "inputs")
+                        self.assertEqual([call.kwargs["fallback"] for call in
+                                          private_mirrors.configuration.call_args_list[-2:]],
+                                         [phase != "inputs", False])
                         receipt = json.loads((artifacts / ("private-downloads-" + phase + ".json")).read_text())
                         self.assertEqual(receipt["debian_public_bazel_fallback"], phase != "inputs")
             self.assertEqual(list(args.private_dir.iterdir()), [])

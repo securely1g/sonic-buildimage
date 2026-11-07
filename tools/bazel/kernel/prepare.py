@@ -444,6 +444,14 @@ def configure_runner_inputs(workspace, consumer):
     downloader = os.environ.get("SONIC_BAZEL_DOWNLOADER_CONFIG")
     source = Path(downloader) if downloader else workspace / DOWNLOADER_CONFIG
     shutil.copyfile(regular(source), consumer / DOWNLOADER_CONFIG.name)
+    metadata = os.environ.get("SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG")
+    if metadata:
+        # mod graph probes Debian index formats that may not exist. Keep
+        # its mirror policy separate from the one used to fetch build inputs.
+        name = "debian_metadata_mirrors.cfg"
+        shutil.copyfile(regular(Path(metadata)), consumer / name)
+        with (consumer / ".bazelrc").open("a") as rc:
+            rc.write(f"\nmod --downloader_config={name}\n")
     managed = os.environ.get("SONIC_BAZEL_REMOTE_ONLY_RC")
     if managed:
         cache_rc = regular(Path(managed))

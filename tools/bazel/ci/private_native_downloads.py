@@ -285,9 +285,15 @@ def run(args):
         # promptly when the mirror does not publish a compression format.
         # Public mirror connection retries delay those expected misses here.
         public_fallback = args.phase != "inputs"
+        public_config = Path("tools/bazel/debian_mirrors.cfg").read_text()
         private_mirrors.write_config(config, native_source_mirrors(private_mirrors.configuration(
-            Path("tools/bazel/debian_mirrors.cfg").read_text(), mirrors,
-            fallback=public_fallback, manifest=manifest)))
+            public_config, mirrors, fallback=public_fallback, manifest=manifest)))
+        # The isolated kernel launcher inspects its complete module graph after
+        # building. Expected missing index variants must advance promptly; keep
+        # this policy separate from ordinary build/cquery download fallbacks.
+        metadata_config = private / "metadata-downloader.cfg"
+        private_mirrors.write_config(metadata_config, native_source_mirrors(private_mirrors.configuration(
+            public_config, mirrors, fallback=False, manifest=manifest)))
         apt_map = private / "apt-mirrors.json"
         private_mirrors.write_config(apt_map, json.dumps({"schema_version": 1,
             "mirrors": private_mirrors.apt_mirror_map(mirrors, manifest)}))
@@ -305,6 +311,7 @@ def run(args):
         https_proxy = inherited.get("https_proxy", inherited.get("HTTPS_PROXY", ""))
         environment = inherited | {
             "BAZEL": str(launcher), "SONIC_BAZEL_DOWNLOADER_CONFIG": str(config),
+            "SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG": str(metadata_config),
             "SONIC_BAZEL_REMOTE_ONLY_RC": str(remote_rc),
             "SONIC_APT_MIRROR_CONFIG": str(apt_map),
             "SONIC_NATIVE_PRIVATE_APT": "1",
