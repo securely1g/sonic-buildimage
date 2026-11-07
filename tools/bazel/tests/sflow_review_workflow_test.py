@@ -208,11 +208,11 @@ class SflowReviewWorkflowTest(unittest.TestCase):
         body = script.split("python3 - <<'PYCFG'\n", 1)[1].rsplit("\nPYCFG", 1)[0]
         # Plain configuration bytes exercise the real checksum and publication code.
         # The immutable production URL and digest are separately fixed below.
-        self.assertIn("b7b92bcfa5857685ee7cd7953fdbf55264989932/ci/source_mirrors.cfg", body)
-        self.assertIn("9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9", body)
+        self.assertIn("97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg", body)
+        self.assertIn("ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720", body)
         import hashlib
         payload = b"rewrite example.invalid/(.*) https://example.invalid/$1\n"
-        fixture = body.replace("9fbb19c33cc9564d439a86dc36e0833244ccb57cfc1511ac35a2923f908dfbc9", hashlib.sha256(payload).hexdigest())
+        fixture = body.replace("ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720", hashlib.sha256(payload).hexdigest())
         spec = importlib.util.spec_from_file_location("review_rc", ROOT / "tools/bazel/ci/review_bazel_rc.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
