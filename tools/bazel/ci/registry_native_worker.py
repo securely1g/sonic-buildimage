@@ -146,18 +146,50 @@ def verified_source_distdirs(cache, artifacts):
     return [str(path) for path in directories]
 
 
-def verified_mirror_config(workspace, private, artifacts):
-    from tools.bazel.ci.source_image_worker import mirror_configuration
-    original=workspace/'ci/source_mirrors.cfg'
-    content=original.read_bytes()
-    # The existing helper checks the complete original config before adding
-    # its already verified official mirrors; archive integrity stays enforced.
-    configured=mirror_configuration(content)
-    destination=private/'source-mirrors.cfg'
-    destination.write_bytes(configured)
-    write(artifacts/'worker-source-mirrors.json',{'original_sha256':digest(original),
-          'configured_sha256':digest(destination),'archive_integrity_unchanged':True})
+UPLOAD_RECEIPTS = (
+    "worker-run.json",
+    "worker-execute.json",
+    "worker-publish.json",
+    "worker-preflight.json",
+    "worker-registry.json",
+    "worker-input-run.json",
+    "worker-verify-input-run.json",
+    "worker-source-downloads.json",
+)
+
+
+def registry_mirror_path():
+    name = f"registry-native-mirrors-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.cfg"
+    return Path(os.environ['RUNNER_TEMP']) / name
+
+
+def verified_mirror_config(artifacts):
+    from tools.bazel.ci.source_image_worker import MIRROR_SHA
+    destination = registry_mirror_path()
+    require(destination.is_file() and not destination.is_symlink() and
+            destination.stat().st_mode & 0o777 == 0o600, 'Expected the prepared registry downloader')
+    write(artifacts / 'worker-source-mirrors.json', {
+        'original_sha256': MIRROR_SHA, 'archive_integrity_unchanged': True,
+    })
     return str(destination)
+
+
+def stage_registry_upload(artifacts):
+    # Keep the published archive layout and scan exactly the files to be uploaded.
+    destination = artifacts.parent / 'registry-native-upload'
+    destination.mkdir(mode=0o700)
+    receipts = destination / artifacts.name
+    receipts.mkdir()
+    archive = artifacts.parent / 'registry-native-evidence.tar'
+    if archive.exists():
+        require(archive.is_file() and not archive.is_symlink(), 'Invalid registry archive')
+        archive.rename(destination / archive.name)
+    for name in UPLOAD_RECEIPTS:
+        path = artifacts / name
+        if path.exists():
+            require(path.is_file() and not path.is_symlink(), 'Invalid registry receipt')
+            path.rename(receipts / name)
+    return destination
 
 
 def command_parts(arguments):
@@ -306,7 +338,7 @@ def execute(args, profile, cache):
     started=time.monotonic()
     try:
         spec['distdirs']=verified_source_distdirs(cache,args.artifacts)
-        spec['downloader_config']=verified_mirror_config(args.workspace,private,args.artifacts)
+        spec['downloader_config']=verified_mirror_config(args.artifacts)
         spec_path.write_text(json.dumps(spec))
         state['source_input_run']=os.environ.get('SOURCE_INPUTS_RUN') or None
         state['tools_installed']=prepare_tools()
@@ -419,7 +451,7 @@ def main():
     if len(sys.argv)>1 and sys.argv[1]=='bazel':
         return bazel_main()
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase',choices=('selection','verify-input-run','run','execute','publish'))
+    parser.add_argument('phase',choices=('selection','verify-input-run','run','execute','publish','prepare-mirrors','scan-mirrors','cleanup-mirrors'))
     parser.add_argument('--consumer',required=True,choices=PROFILES)
     parser.add_argument('--revision',required=True)
     parser.add_argument('--worker',required=True,choices=WORKERS)
@@ -431,6 +463,11 @@ def main():
     require(args.artifacts.is_absolute() and args.artifacts.resolve().is_relative_to('/actions/_work') and
             not args.artifacts.resolve().is_relative_to(args.workspace.resolve()), 'Invalid artifact path')
     if args.phase=='selection': return
+    if args.phase in ('prepare-mirrors', 'scan-mirrors', 'cleanup-mirrors'):
+        from tools.bazel.ci.source_image_worker import configure_worker_mirrors
+        public = stage_registry_upload(args.artifacts) if args.phase == 'scan-mirrors' else None
+        configure_worker_mirrors(args.phase, args.artifacts, config=registry_mirror_path(), public=public)
+        return
     args.artifacts.mkdir(parents=True,exist_ok=True)
     phase_receipt={'status':'running','kind':'registry-native','phase':args.phase,
                    'consumer':args.consumer,'registry_revision':profile['revision'],'worker':args.worker}

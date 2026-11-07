@@ -54,14 +54,8 @@ BUILD_CHECKS = {
     "mux": ("mux_make_test.py",),
 }
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d53bed3dfbc53895f5ba348354210704f3872692/ci/source_mirrors.cfg"
-MIRROR_SHA = "8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68"
-SNAPSHOT_FALLBACKS = {
-    "pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u4_amd64.deb": "d63097e4bb174c04bfc29e38e6270b43c2db9c0b",
-    "pool/main/p/python3.13/libpython3.13_3.13.5-2+deb13u4_amd64.deb": "a817f92905b030fcbca7d433db7dc4dcccf91c3d",
-    "pool/main/c/cdebconf/libdebconfclient0_0.280_amd64.deb": "219dec5cd95ea5be91161ab1d30dc3f19efb6e01",
-    "pool/main/libs/libselinux/libselinux1_3.8.1-1_amd64.deb": "44b247687c034c8a4142204f0827f7286614b354",
-}
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+MIRROR_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
 
 
 def mirror_configuration(original):
@@ -73,14 +67,6 @@ def mirror_configuration(original):
                    r"ftp\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
                    r"ftpmirror\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz"]
     lines = ["rewrite " + expression + " " + destination for expression in expressions]
-    # These four observed snapshot503 failures have verified byte-identical official
-    # /file endpoints. Their SHA1 URL identifiers do not replace the locked SHA256.
-    # Retain the original URL as a second download alternative.
-    for path, identifier in SNAPSHOT_FALLBACKS.items():
-        original_url = "snapshot.debian.org/archive/debian/20260727T143429Z/" + path
-        expression = re.escape(original_url)
-        lines.extend(["rewrite " + expression + " https://snapshot.debian.org/file/" + identifier,
-                      "rewrite " + expression + " https://" + original_url])
     return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
                        "\n".join(lines) + "\n").encode()
 
@@ -595,6 +581,37 @@ def temporary_directory():
     return path
 
 
+
+def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
+    config = config or temporary_directory() / "source-image-mirrors.cfg"
+    if phase == "cleanup-mirrors":
+        config.unlink(missing_ok=True)
+        return
+    registry_ci = ROOT / ".source-mirror-registry" / "ci"
+    sys.path.insert(0, str(registry_ci))
+    import private_mirrors
+    roots = {key: os.environ.pop(key, "") for key, _ in private_mirrors.MIRROR_ROOTS}
+    redactor = private_mirrors.Redactor([root for root in roots.values() if root])
+    redactor.mask_github()
+    if phase == "scan-mirrors":
+        public = public or artifacts / "public"
+        redactor.scrub_and_scan(public)
+        # Published image receipts bind their evidence and payloads by hash.
+        require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        return
+    mirrors = private_mirrors.selected_mirrors(roots)
+    if mirrors:
+        require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
+                os.environ.get("GITHUB_REPOSITORY") == "securely1g/sonic-buildimage" and
+                os.environ.get("GITHUB_ACTOR") == "securely1g" and
+                platform.machine() == "x86_64" and
+                platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie" and
+                re.fullmatch(r"sonic-slave-lgh114-[1-4]", os.environ.get("RUNNER_NAME", "")),
+                "Private Debian mirrors require a trusted native Trixie worker")
+    public = mirror_configuration((registry_ci / "source_mirrors.cfg").read_bytes()).decode()
+    private_mirrors.write_config(config, private_mirrors.configuration(public, mirrors) if mirrors else public)
+
+
 def prepare(args):
     workspace, artifacts = args.workspace, args.artifacts
     if args.image == "teamd":
@@ -651,9 +668,12 @@ def prepare(args):
     launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile))
     launch.chmod(0o755)
     mirror = temporary / "source-image-mirrors.cfg"
-    with urllib.request.urlopen(MIRROR_URL, timeout=60) as response:
-        mirror_bytes = response.read()
-    mirror.write_bytes(mirror_configuration(mirror_bytes))
+    if os.environ.get("SOURCE_WORKER_CONFIGURED_MIRRORS") == "1":
+        require(mirror.is_file() and not mirror.is_symlink() and stat.S_IMODE(mirror.stat().st_mode) == 0o600,
+                "Expected this job's prepared Debian mirror configuration")
+    else:
+        with urllib.request.urlopen(MIRROR_URL, timeout=60) as response:
+            mirror.write_bytes(mirror_configuration(response.read()))
     rc = workspace / ".bazelrc.user"
     require(not rc.exists(), "Expected a fresh source checkout without a local Bazel override")
     rc.write_text("\n".join([
@@ -873,7 +893,7 @@ if root.exists():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"))
+    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop", "prepare-mirrors", "scan-mirrors", "cleanup-mirrors"))
     parser.add_argument("--image", required=True, choices=DRIVERS)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
@@ -893,6 +913,8 @@ def main():
         prepare_teamd_kernel(args.artifacts)
     elif args.phase == "verify-input-run":
         verify_input_run(args)
+    elif args.phase in ("prepare-mirrors", "scan-mirrors", "cleanup-mirrors"):
+        configure_worker_mirrors(args.phase, args.artifacts)
     elif args.phase == "prepare":
         prepare(args)
     elif args.phase == "publish":
