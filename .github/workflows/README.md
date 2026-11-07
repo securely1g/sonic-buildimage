@@ -36,3 +36,20 @@ B -- NO --> STOP
 B1 -- NO --> STOP
 B2 -- NO --> STOP
 ```
+
+## Reviewed DASH HA source validation
+
+The optional `dash-ha-hosted` manual mode in `bazel-oci.yml` requires paired full
+source and registry commit SHAs. It selects AMD64 for the existing archive and
+HA and shared SWSS installed jobs. All three check out the selected source;
+the installed jobs verify the native artifacts before loading them. Blank/default mode retains the
+existing owner graph and architecture matrix.
+
+The reviewed mode preserves setup-bazel caches, adds a checksum-verified shared
+downloader configuration, and reclaims only the three unused SDK mounts on a
+disposable GitHub runner. It retains all original DASH HA exports, static and
+incremental checks, installed startup, HA peer routing, PMON reset, and shared
+SWSS loader checks. It skips unrelated general checks and VS jobs. The exact owned review branch excludes the existing
+DEB-generating kernel fixtures; remove that temporary exception before Ready.
+This workflow does not establish independent clean-root reproducibility or final
+VS installer acceptance.
