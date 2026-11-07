@@ -21,42 +21,6 @@ ROOT = Path(__file__).resolve().parents[3]
 CONFIG = "tools/bazel/debian-pool.cfg"
 
 
-SHARED_CONFIG_FIXTURE = r"""# BCR pigz@2.8.bcr.2 keeps its original source integrity and upstream patches.
-# Original SHA256: eb872b4f0e1f0ebe59c9f7bd8c506c4204893ba6a8492de31df416f0d5170fd0
-# Bazel matches the complete URL without its https:// prefix.
-rewrite zlib\.net/pigz/pigz-2\.8\.tar\.gz https://distfiles.macports.org/pigz/pigz-2.8.tar.gz
-
-# Exact Bookworm security header payload; the repository SHA256 remains
-# ea265b1dff21ab2e4b22b38097031f8d63fb940ecb89427659655598860efc0f.
-rewrite snapshot\.debian\.org/archive/debian-security/20260726T121236Z/pool/updates/main/l/linux/linux-libc-dev_6\.1\.177-1_amd64\.deb https://snapshot.debian.org/file/aed472fca7f9b98fdb7103b974db264cb60c2248
-
-# Prefer the official pool for pinned Debian binary packages. Bazel keeps the
-# repository rule's checksum; the original snapshot remains a fallback.
-# Indexes and source archives must retain their snapshot URLs.
-rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian/pool/$2
-
-# Exact historical AMD64 payloads selected by declared build tools and source
-# images. Reuse their verified content IDs before the dated Snapshot fallback.
-# SHA256: 25acadc8b394bc86d05df16e70975e523f8f839a7d8d6d5e22c1cafdcef741aa
-rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/c/cdebconf/libdebconfclient0_0\.280_amd64\.deb https://snapshot.debian.org/file/219dec5cd95ea5be91161ab1d30dc3f19efb6e01
-# SHA256: 2381bdaa2462b186db27671507e53eba9515c5341575fb72189b6228c73e3df8
-rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/python3\.13/libpython3\.13_3\.13\.5\-2\+deb13u4_amd64\.deb https://snapshot.debian.org/file/a817f92905b030fcbca7d433db7dc4dcccf91c3d
-# SHA256: e3a45504aaf395acb5c57efb5ccfdf85efa6eaffc165653d1f03532bbf5b92c5
-rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/p/python3\.13/libpython3\.13\-minimal_3\.13\.5\-2\+deb13u4_amd64\.deb https://snapshot.debian.org/file/d63097e4bb174c04bfc29e38e6270b43c2db9c0b
-# SHA256: 68bb8d32bd8d6d7d2f5952a169db03d1484b46ae1e52abccdec42a19dccea5d5
-rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libs/libselinux/libselinux1_3\.8\.1\-1_amd64\.deb https://snapshot.debian.org/file/44b247687c034c8a4142204f0827f7286614b354
-
-# SHA256: 06460065e7768d7a4a72cb02a0eddd386936756a33596bb23901faeb72dc8f68
-rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/libh/libheif/libheif1_1\.19\.8\-1_amd64\.deb https://snapshot.debian.org/file/04d63b7e722e47ed3e0cd74aa01066c6d382621d
-# SHA256: 4104cf1149947db1a3450b2a13aab23000a695aa6981f515216129ad8b884423
-rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/a/audit/libaudit-dev_4\.0\.2\-2\+b2_amd64\.deb https://snapshot.debian.org/file/930f8fe502ed2d1b79243a03d1e1318c1bf30524
-# SHA256: fbc76c5c549192f52e7a03949108cdf28b1dc0751261495b7ef17cb8bf39dd8d
-rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/u/util-linux/uuid-dev_2\.41\-5_amd64\.deb https://snapshot.debian.org/file/05b9652f442e9b33da16bb41cc69283e2a9b7c33
-
-rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
-rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian-security/pool/$2
-rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
-"""
 
 def rewritten_urls(url):
     # Bazel 8.5.1 UrlRewriter.applyRewriteRules matches the complete URL without
@@ -147,24 +111,16 @@ class DebianPoolTest(unittest.TestCase):
         return found
 
     def mirror_bytes(self):
-        # Exact existing pigz configuration followed by the checked-in pool rules.
-        # The production scripts must accept only the immutable combined checksum.
-        prefix = (
-            "# BCR pigz@2.8.bcr.2 keeps its original source integrity and upstream patches.\n"
-            "# Original SHA256: eb872b4f0e1f0ebe59c9f7bd8c506c4204893ba6a8492de31df416f0d5170fd0\n"
-            "# Bazel matches the complete URL without its https:// prefix.\n"
-            "rewrite zlib\\.net/pigz/pigz-2\\.8\\.tar\\.gz https://distfiles.macports.org/pigz/pigz-2.8.tar.gz\n"
-        ).encode()
-        data = prefix + b"\n" + (ROOT / CONFIG).read_bytes()
+        data = (ROOT / "tools/bazel/tests/fixtures/source-mirrors-97cc5025.cfg").read_bytes()
         self.assertEqual(hashlib.sha256(data).hexdigest(),
-                         "fa60a63fd62f11e3c097905a3ff2a5dc4b25bd7ba42ebc9877fe7ea4dd1d3ee2")
+                         "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720")
         return data
 
     def test_all_four_workflow_overrides_preserve_pigz_and_pool_transport(self):
         data = self.mirror_bytes()
         debian_mirrors = (ROOT / "tools/bazel/debian_mirrors.cfg").read_bytes()
         url = ("https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
-               "18e7c652222449b906a17c2fd948e37bcad3324e/ci/source_mirrors.cfg")
+               "97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg")
         for name, script in self.mirror_steps():
             with self.subTest(workflow=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -396,16 +352,9 @@ class RustSourceMirrorTest(unittest.TestCase):
                        env=dict(os.environ, HOME=str(home), BASH_ENV="/dev/null"), check=True)
 
     def mirror_bytes(self):
-        # Exact shared configuration with the observed Rust sysroot fallback.
-        marker = r"rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1"
-        addition = (
-            "# SHA256: 53a9b789bb02415d758f652ef5ac913d89fed29782610e9fe0fd2488e4f2e465\n"
-            r"rewrite snapshot\.debian\.org/archive/debian/20260727T143429Z/pool/main/g/glibc/libc6-dev_2\.41\-12\+deb13u3_amd64\.deb https://snapshot.debian.org/file/fbb9e46e11e1a8365a4f067eb9d6ec10251df100"
-            "\n\n"
-        )
-        data = SHARED_CONFIG_FIXTURE.replace("\n\n" + marker, "\n" + addition + marker, 1).encode()
+        data = (ROOT / "tools/bazel/tests/fixtures/source-mirrors-97cc5025.cfg").read_bytes()
         self.assertEqual(hashlib.sha256(data).hexdigest(),
-                         "b6b7dbd03e20e482718de3f312a015168056f6c422d94723f55175a728259a7b")
+                         "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720")
         return data
 
     def configure(self, root, data):
@@ -416,7 +365,7 @@ class RustSourceMirrorTest(unittest.TestCase):
                 exec(compile(code, "rust-source-mirror", "exec"), {})
             fetch.assert_called_once_with(
                 "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
-                "6e7b45d19c76d479bc055d86ffd6fa2962948576/ci/source_mirrors.cfg", timeout=60)
+                "97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg", timeout=60)
 
     def test_verified_config_precedes_actual_audit_test_and_query_calls(self):
         data = self.mirror_bytes()
