@@ -264,11 +264,11 @@ original target/test lists, without runtime-preparation image requirements:
 | sairedis | #213, dd35a932bfebdcb8f9c31c1127ed7496cf334df2 | 19 | 7 |
 | dash | #215, 28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623 | 4 | 2 |
 | linkmgrd | #183, b6b0b1bfcd784c7b2fa4bc7ada101c276d0258aa | 4 | 3 |
-| libteam | #236, 096b904fb34cecdacf497301ad00b712d53aefd6 | 9 | 4 |
+| libteam | #236, a2c5e9bf2f9cbe5d79defbb06f3a15d1ca04f76c | 9 | 4 |
 
 The refreshed selection requests the landed infrastructure version
 `0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e` in its standalone test
-consumer. Its presubmit, downloader configuration, Cosmos helper and exported
+consumer. Its presubmit and exported
 probe hashes are unchanged. The [earlier worker acceptance at `4ed05183`](https://github.com/securely1g/sonic-buildimage/actions/runs/42036039738/job/127274358819)
 used the consumer's infrastructure 26 request and remains historical. A new
 native build and four-phase probe for this selection are still required;
@@ -284,12 +284,7 @@ limits. Baseline, no-op, configuration edit and restoration build all nine
 original outputs. Restored hashes must equal the ordinary uploaded outputs.
 The owner restores its declared source input even when a probe fails.
 
-This profile uses its selected registry's checksum-bound mirror configuration
-unchanged and reuses `ci/prepare_cosmos_distdir.py` for the three locked APE inputs.
-Both the download cache and distdir remain under the existing per-worker cache;
-older profiles keep their existing transport behavior. Admission remeasures
-current free space on both mounts before execution; an old preflight is not a
-reservation of shared storage. Failed admission preserves caches and outputs.
+Bazel uses the worker’s pinned registry downloader and the same verified source distdirs for its audit and build.
 
 `libteam-incremental.json` retains verified phase/hash summaries, source
 restoration and the original-option record's hash. Raw commands, local registry

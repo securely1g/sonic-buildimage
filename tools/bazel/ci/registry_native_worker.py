@@ -45,13 +45,11 @@ PROFILES = {
          'presubmit_sha256': '6859c3c860387afeaf85752364bdf2992f933d80df31e0e39ea88243b6dd6efa',
          'builds': 4,
          'tests': 3},
-    'libteam': {'revision': '096b904fb34cecdacf497301ad00b712d53aefd6',
+    'libteam': {'revision': 'a2c5e9bf2f9cbe5d79defbb06f3a15d1ca04f76c',
         'module': 'libteam', 'version': '1.31.0.sonic.1',
         'presubmit_sha256': 'fc28ed4eeac3eb83913a1acd67a1b211725bd7a47c0738f9971b0318d9339b6e',
         'builds': 9, 'tests': 4,
-        'source_mirrors_sha256': '7c8f6684838354f3f6a9ee09a1bbc746a9c87a09a760c1e7aa9558019117946d',
-        'cosmos_helper_sha256': '597727d8ce33eaa9289f1718f3f1331bf20285a81eb67f67bb0959b8e77ffd42',
-        'probe_sha256': '97be12aaf581f6c38430407cbe5c45e0605876de372f720612a2b7bd319e86f6'},
+        'probe_sha256': 'f010bf98fdf44cade60a181376eaca99857fe1e6830ac8ec4bb7b97bfe28fe97'},
 }
 LIBTEAM_PHASES = ('baseline', 'no-op', 'config-edit', 'restored')
 LIBTEAM_SCRIPT = '@libteam//:bazel/verify_rebuild.py'
@@ -156,38 +154,50 @@ def verified_source_distdirs(cache, artifacts):
     return [str(path) for path in directories]
 
 
-def verified_mirror_config(workspace, private, artifacts, profile=None):
-    from tools.bazel.ci.source_image_worker import mirror_configuration
-    original=workspace/'ci/source_mirrors.cfg'
-    content=original.read_bytes()
-    # The existing helper checks the complete original config before adding
-    # its already verified official mirrors; archive integrity stays enforced.
-    if profile and profile.get('module') == 'libteam':
-        # Use this selected owner's unchanged ordinary-CI configuration. Older
-        # profiles retain their existing checked configuration and additions.
-        require(digest(original)==profile['source_mirrors_sha256'], 'Selected libteam mirror configuration changed')
-        configured=content
-    else:
-        configured=mirror_configuration(content)
-    destination=private/'source-mirrors.cfg'
-    destination.write_bytes(configured)
-    write(artifacts/'worker-source-mirrors.json',{'original_sha256':digest(original),
-          'configured_sha256':digest(destination),'archive_integrity_unchanged':True})
+UPLOAD_RECEIPTS = (
+    "worker-run.json",
+    "worker-execute.json",
+    "worker-publish.json",
+    "worker-preflight.json",
+    "worker-registry.json",
+    "worker-input-run.json",
+    "worker-verify-input-run.json",
+    "worker-source-downloads.json",
+)
+
+
+def registry_mirror_path():
+    name = f"registry-native-mirrors-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.cfg"
+    return Path(os.environ['RUNNER_TEMP']) / name
+
+
+def verified_mirror_config(artifacts):
+    from tools.bazel.ci.source_image_worker import MIRROR_SHA
+    destination = registry_mirror_path()
+    require(destination.is_file() and not destination.is_symlink() and
+            destination.stat().st_mode & 0o777 == 0o600, 'Expected the prepared registry downloader')
+    write(artifacts / 'worker-source-mirrors.json', {
+        'original_sha256': MIRROR_SHA, 'archive_integrity_unchanged': True,
+    })
     return str(destination)
 
 
-def libteam_cosmos(workspace, profile, cache, artifacts):
-    """Call the selected registry's maintained three-payload transport helper."""
-    if profile['module'] != 'libteam':
-        return []
-    helper=workspace/'ci/prepare_cosmos_distdir.py'
-    require(digest(helper)==profile['cosmos_helper_sha256'], 'Selected Cosmos helper changed')
-    distdir=cache_directory(cache,'cosmos-distdir')
-    downloads=cache_directory(cache,'cosmos-downloads')
-    subprocess.run([sys.executable,'-B',str(helper),'--distdir',str(distdir),
-                    '--cache-dir',str(downloads),'--repository-cache',str(cache/'repository'),
-                    '--receipt',str(artifacts/'cosmos-distdir.json')],check=True)
-    return [str(distdir)]
+def stage_registry_upload(artifacts):
+    # Keep the published archive layout and scan exactly the files to be uploaded.
+    destination = artifacts.parent / 'registry-native-upload'
+    destination.mkdir(mode=0o700)
+    receipts = destination / artifacts.name
+    receipts.mkdir()
+    archive = artifacts.parent / 'registry-native-evidence.tar'
+    if archive.exists():
+        require(archive.is_file() and not archive.is_symlink(), 'Invalid registry archive')
+        archive.rename(destination / archive.name)
+    for name in UPLOAD_RECEIPTS:
+        path = artifacts / name
+        if path.exists():
+            require(path.is_file() and not path.is_symlink(), 'Invalid registry receipt')
+            path.rename(receipts / name)
+    return destination
 
 
 def command_parts(arguments):
@@ -451,10 +461,9 @@ def execute(args, profile, cache):
     started=time.monotonic()
     try:
         spec['distdirs']=verified_source_distdirs(cache,args.artifacts)
-        spec['downloader_config']=verified_mirror_config(args.workspace,private,args.artifacts,profile)
+        spec['downloader_config']=verified_mirror_config(args.artifacts)
         state['source_input_run']=os.environ.get('SOURCE_INPUTS_RUN') or None
         state['tools_installed']=prepare_tools()
-        spec['distdirs']+=libteam_cosmos(args.workspace,profile,cache,args.artifacts)
         spec_path.write_text(json.dumps(spec))
         command=[sys.executable,'-B',str(args.workspace/'ci/registry_ci.py'),'run','--module',profile['module'],
                  '--version',profile['version'],'--architecture','amd64','--work-dir',str(work),
@@ -567,7 +576,7 @@ def main():
     if len(sys.argv)>1 and sys.argv[1]=='bazel':
         return bazel_main()
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase',choices=('selection','verify-input-run','run','execute','publish'))
+    parser.add_argument('phase',choices=('selection','verify-input-run','run','execute','publish','prepare-mirrors','scan-mirrors','cleanup-mirrors'))
     parser.add_argument('--consumer',required=True,choices=PROFILES)
     parser.add_argument('--revision',required=True)
     parser.add_argument('--worker',required=True,choices=WORKERS)
@@ -579,6 +588,11 @@ def main():
     require(args.artifacts.is_absolute() and args.artifacts.resolve().is_relative_to('/actions/_work') and
             not args.artifacts.resolve().is_relative_to(args.workspace.resolve()), 'Invalid artifact path')
     if args.phase=='selection': return
+    if args.phase in ('prepare-mirrors', 'scan-mirrors', 'cleanup-mirrors'):
+        from tools.bazel.ci.source_image_worker import configure_worker_mirrors
+        public = stage_registry_upload(args.artifacts) if args.phase == 'scan-mirrors' else None
+        configure_worker_mirrors(args.phase, args.artifacts, config=registry_mirror_path(), public=public)
+        return
     args.artifacts.mkdir(parents=True,exist_ok=True)
     phase_receipt={'status':'running','kind':'registry-native','phase':args.phase,
                    'consumer':args.consumer,'registry_revision':profile['revision'],'worker':args.worker}

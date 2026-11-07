@@ -143,7 +143,7 @@ class ImageWorkerTest(unittest.TestCase):
                                    cwd=workspace, check=True, capture_output=True)
             commands = [json.loads(line) for line in trace.read_text().splitlines()]
             self.assertEqual([cmd[0] for cmd in commands],
-                             ["selection", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"])
+                             ["selection", "verify-input-run", "prepare-mirrors", "prepare", "build", "validate", "incremental", "loaded", "publish", "scan-mirrors", "stop", "cleanup-mirrors"])
             for cmd in commands:
                 self.assertEqual(cmd[1:], ["--image", "dash-engine", "--revision", "a" * 40,
                     "--workspace", str(workspace / environment["SOURCE_WORKER_SOURCE"]),
@@ -347,23 +347,6 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertTrue(re.fullmatch(expression, host + '/gnu/gawk/gawk-5.3.2.tar.xz'))
             self.assertFalse(re.fullmatch(expression, host + '/gnu/gawk/gawk-5.3.3.tar.xz'))
             self.assertEqual(destination, 'https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz')
-
-    def test_snapshot_fallbacks_keep_original_and_only_exact_observed_urls(self):
-        original = b'prior verified mirror rules\n'
-        with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
-            config = worker.mirror_configuration(original).decode()
-        rules = [line.split()[1:] for line in config.splitlines()
-                 if line.startswith('rewrite ') and 'snapshot' in line]
-        self.assertEqual(len(rules), 8)
-        self.assertEqual(len(worker.SNAPSHOT_FALLBACKS), 4)
-        for path, identifier in worker.SNAPSHOT_FALLBACKS.items():
-            url = 'snapshot.debian.org/archive/debian/20260727T143429Z/' + path
-            alternatives = [destination for expression, destination in rules if re.fullmatch(expression, url)]
-            self.assertEqual(alternatives, ['https://snapshot.debian.org/file/' + identifier, 'https://' + url])
-            for altered in (url.replace('20260727T143429Z', '20260728T143429Z'),
-                            url.replace('_amd64.deb', '_arm64.deb'), url + '?query=1',
-                            url.replace('snapshot.debian.org', 'elsewhere.example')):
-                self.assertFalse(any(re.fullmatch(expression, altered) for expression, _ in rules))
 
     def test_selected_profile_overrides_driver_defaults_in_actual_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
