@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.source_worker_preflight import WORKERS, measure, marker_identity, select_build_profile, cpu_limit
 from tools.bazel.ci.bazel_commands import audit_targets
-from tools.bazel.ci.public_artifacts import safe_json, bep_summary, dependency_json
+from tools.bazel.ci.public_artifacts import safe_json, load_json, bep_summary, dependency_json
 
 PROFILES = {
     'common': {'revision': '03f870c62fa2bab567133c6a9303f71392e4986e',
@@ -45,7 +45,7 @@ PROFILES = {
          'presubmit_sha256': '6859c3c860387afeaf85752364bdf2992f933d80df31e0e39ea88243b6dd6efa',
          'builds': 4,
          'tests': 3},
-    'libteam': {'revision': 'a2c5e9bf2f9cbe5d79defbb06f3a15d1ca04f76c',
+    'libteam': {'revision': '856b34a53734da57b9276bf8c2a7e95a299f93af',
         'module': 'libteam', 'version': '1.31.0.sonic.1',
         'presubmit_sha256': 'fc28ed4eeac3eb83913a1acd67a1b211725bd7a47c0738f9971b0318d9339b6e',
         'builds': 9, 'tests': 4,
@@ -543,6 +543,39 @@ def validate_registry_lock(value, workspace, revision):
     dependency_json(checked(value),'lock')
 
 
+def verify_github_source_receipts(directory, workspace, profile):
+    """Publish only receipts for the selected registry's locked input manifests."""
+    runner, _ = registry_config(workspace, profile)
+    manifests = runner.github_source_manifests(workspace, profile['module'], profile['version'], 'amd64')
+    expected = {digest(path) + '.json': path for path in manifests}
+    require(bool(expected) and len(expected) == len(manifests) and
+            {path.name for path in directory.iterdir()} == set(expected),
+            'Unexpected GitHub source receipt inventory')
+    for name, manifest_path in expected.items():
+        path = directory / name
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536,
+                'Invalid GitHub source receipt file')
+        manifest, manifest_sha = runner.github_sources.load_manifest(manifest_path)
+        value = load_json(path.read_text())
+        safe_json(value)
+        require(isinstance(value, dict) and set(value) == {'schema_version', 'manifest_sha256', 'sources', 'files'} and
+                type(value['schema_version']) is int and value['schema_version'] == 1 and
+                value['manifest_sha256'] == manifest_sha == name[:-5], 'GitHub source receipt identity differs')
+        sources = [{'url': item['url'], 'format': item['format'], 'size': item['size'],
+                    'whole_source_digest_declared': 'sha256' in item} for item in manifest['sources']]
+        require(value['sources'] == sources and all(type(item['size']) is int and
+                type(item['whole_source_digest_declared']) is bool for item in value['sources']),
+                'GitHub source receipt transport differs')
+        files = [item for source in manifest['sources'] for item in source['files']]
+        require(isinstance(value['files'], list) and len(value['files']) == len(files),
+                'GitHub source receipt file count differs')
+        for actual, locked in zip(value['files'], files):
+            require(isinstance(actual, dict) and set(actual) == set(locked) | {'source'} and
+                    {key: actual[key] for key in locked} == locked and type(actual['size']) is int and
+                    actual['source'] in ('distdir', 'repository-cache', 'asset-cache', 'github'),
+                    'GitHub source receipt locked file differs')
+
+
 def publish(args):
     """Use the ordinary registry transport, with private control/env outside it."""
     indexed_outputs=verify_outputs(args.artifacts)
@@ -553,7 +586,10 @@ def publish(args):
         require(not source.is_symlink(), 'Evidence root must not contain symlinks')
         if source.is_dir():
             # Registry output collector already confines/materializes these paths.
-            require(source.name in ('outputs','test-results','testlogs'), 'Unexpected evidence directory')
+            if source.name == 'github-sources':
+                verify_github_source_receipts(source, args.workspace, PROFILES[args.consumer])
+            else:
+                require(source.name in ('outputs','test-results','testlogs'), 'Unexpected evidence directory')
             require(not any(item.is_symlink() for item in source.rglob('*')), 'Evidence subtree contains a symlink')
             shutil.copytree(source,destination/source.name,copy_function=shutil.copy2,symlinks=False)
         else:

@@ -41,7 +41,7 @@ class RegistryWorkerTest(unittest.TestCase):
             with self.subTest(change=change),self.assertRaises(ValueError): self.selection(**change)
 
     def test_each_fixed_consumer_accepts_only_its_reviewed_sha(self):
-        self.assertEqual(worker.PROFILES['libteam']['revision'], 'a2c5e9bf2f9cbe5d79defbb06f3a15d1ca04f76c')
+        self.assertEqual(worker.PROFILES['libteam']['revision'], '856b34a53734da57b9276bf8c2a7e95a299f93af')
         with self.assertRaisesRegex(ValueError, 'Unreviewed registry selection'):
             self.selection(consumer='libteam', revision='4ed05183275951b03342d89db98f709779487ec0')
         for name,profile in worker.PROFILES.items():
@@ -275,6 +275,80 @@ class RegistryWorkerTest(unittest.TestCase):
             artifacts=self.root/filename.replace('.','-');artifacts.mkdir();(artifacts/filename).write_text(content)
             with self.subTest(filename=filename),self.assertRaises(ValueError),patch.object(subprocess,'run'):
                 worker.publish(NS(artifacts=artifacts,workspace=self.root))
+
+    def github_receipt_fixture(self):
+        artifacts, _, _ = self.fixture()
+        workspace = self.root / 'registry'
+        workspace.mkdir()
+        locked = {'name': 'tool', 'path': 'bin/tool', 'size': 7, 'sha256': 'a' * 64}
+        source = {'url': 'https://github.com/example/tool/releases/download/v1/tool.zip',
+                  'format': 'zip', 'size': 100, 'files': [locked]}
+        manifest = {'schema_version': 1, 'sources': [source]}
+        path = workspace / 'selected.json'
+        path.write_text(json.dumps(manifest))
+        digest = worker.digest(path)
+        directory = artifacts / 'github-sources'
+        directory.mkdir()
+        receipt = directory / (digest + '.json')
+        value = {'schema_version': 1, 'manifest_sha256': digest,
+                 'sources': [{'url': source['url'], 'format': 'zip', 'size': 100,
+                              'whole_source_digest_declared': False}],
+                 'files': [{**locked, 'source': 'github'}]}
+        receipt.write_text(json.dumps(value))
+        runner = NS(github_source_manifests=Mock(return_value=[path]),
+                    github_sources=NS(load_manifest=Mock(return_value=(manifest, digest))))
+        return NS(artifacts=artifacts, workspace=workspace, consumer='libteam'), runner, receipt, value
+
+    def test_publish_only_selected_github_receipt_bytes(self):
+        args, runner, receipt, _ = self.github_receipt_fixture()
+        original = receipt.read_bytes()
+        with patch.object(worker, 'registry_config', return_value=(runner, {})) as selected, \
+             patch.object(subprocess, 'run') as archive:
+            worker.publish(args)
+        selected.assert_called_once_with(args.workspace, worker.PROFILES['libteam'])
+        runner.github_source_manifests.assert_called_once_with(args.workspace, 'libteam', '1.31.0.sonic.1', 'amd64')
+        self.assertEqual((args.artifacts / 'public/github-sources' / receipt.name).read_bytes(), original)
+        self.assertEqual(receipt.read_bytes(), original)
+        archive.assert_called_once()
+
+    def test_github_receipt_rejects_changed_identity_transport_and_locks(self):
+        args, runner, receipt, original = self.github_receipt_fixture()
+        bad = []
+        for key, value in [('schema_version', True), ('manifest_sha256', 'b' * 64), ('extra', 'field')]:
+            changed = copy.deepcopy(original); changed[key] = value; bad.append(changed)
+        for key, value in [('url', 'https://github.com/other/tool/archive/v1.zip'), ('size', 101),
+                           ('whole_source_digest_declared', 0)]:
+            changed = copy.deepcopy(original); changed['sources'][0][key] = value; bad.append(changed)
+        for key, value in [('sha256', 'b' * 64), ('size', 8), ('path', '../tool'),
+                           ('source', 'unverified'), ('env', {'TOKEN': 'private'})]:
+            changed = copy.deepcopy(original); changed['files'][0][key] = value; bad.append(changed)
+        changed = copy.deepcopy(original); changed['files'].append(changed['files'][0]); bad.append(changed)
+        with patch.object(worker, 'registry_config', return_value=(runner, {})):
+            for value in bad:
+                receipt.write_text(json.dumps(value))
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    worker.verify_github_source_receipts(receipt.parent, args.workspace, worker.PROFILES['libteam'])
+            receipt.write_text(json.dumps(original)[:-1] + ',"schema_version":1}')
+            with self.assertRaises(ValueError):
+                worker.verify_github_source_receipts(receipt.parent, args.workspace, worker.PROFILES['libteam'])
+
+    def test_github_receipt_rejects_unselected_extra_linked_or_large_files(self):
+        args, runner, receipt, original = self.github_receipt_fixture()
+        verify = lambda: worker.verify_github_source_receipts(receipt.parent, args.workspace, worker.PROFILES['libteam'])
+        with patch.object(worker, 'registry_config', return_value=(runner, {})):
+            extra = receipt.parent / 'unexpected.json'; extra.write_text('{}')
+            with self.assertRaises(ValueError): verify()
+            extra.unlink()
+            receipt.write_text(' ' * 65537)
+            with self.assertRaises(ValueError): verify()
+            outside = args.workspace / 'outside.json'; outside.write_text(json.dumps(original))
+            receipt.unlink(); receipt.symlink_to(outside)
+            with self.assertRaises(ValueError): verify()
+            receipt.unlink(); receipt.mkdir()
+            with self.assertRaises(ValueError): verify()
+            receipt.rmdir(); receipt.write_text(json.dumps(original))
+            runner.github_source_manifests.return_value = []
+            with self.assertRaises(ValueError): verify()
 
 def namespace(value):
     return NS(**{k:namespace(v) if isinstance(v,dict) else v for k,v in value.items()})
