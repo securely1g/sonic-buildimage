@@ -2,6 +2,7 @@
 """Run a reviewed source-image driver on a private AMD64/Trixie worker."""
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -22,7 +23,9 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
+           "database": "database", "eventd": "eventd", "lldp": "lldp",
+           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -32,6 +35,24 @@ WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 WRAPPERS["framework"] = "review_bazel.sh"
+for name in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
+    WRAPPERS[name] = "review_bazel.sh"
+# Older service branches select their catalog in a dedicated image workflow.
+# Keep the common workflow first for reviewed combined-source checkouts.
+SOURCE_WORKFLOWS = {
+    "eventd": "bazel-eventd-image.yml", "lldp": "bazel-lldp-image.yml",
+    "radv": "bazel-radv-image.yml", "macsec": "bazel-macsec.yml",
+    "mux": "bazel-mux-image.yml",
+}
+# Preserve the existing dedicated image workflows' fast Make/identity gates.
+# These are fixed tests from the selected source, not additional owner suites.
+BUILD_CHECKS = {
+    "database": ("database_make_test.py",),
+    "eventd": ("eventd_make_test.py",),
+    "lldp": ("lldp_make_test.py", "lldp_identity_test.py"),
+    "radv": ("radv_make_test.py",),
+    "mux": ("mux_make_test.py",),
+}
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
 MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
 MIRROR_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
@@ -199,14 +220,253 @@ print(json.dumps({"private_network_namespace": True, "tap_created_and_closed": T
         "device_major": 10, "device_minor": 200, "scope": "disposable network namespace; no VM or KVM"}, indent=2) + "\n")
 
 
+EXECUTION_NETWORK_PROBE = '''import json, os, urllib.error, urllib.request
+names = ("http_proxy", "https_proxy", "all_proxy", "no_proxy",
+         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+result = {"uid": os.getuid(), "proxy_names_present": {name: name in os.environ for name in names},
+          "urllib_proxy_schemes": sorted(set(urllib.request.getproxies()) & {"http", "https", "ftp", "all", "no"})}
+try:
+    with urllib.request.urlopen("https://deb.debian.org/debian/dists/trixie/InRelease", timeout=10) as response:
+        result["http_status"] = response.status
+except urllib.error.HTTPError as error:
+    result.update(http_status=error.code, error_class="HTTPError")
+except Exception as error:
+    result["error_class"] = type(error).__name__
+print(json.dumps(result))
+'''
+
+
+APT_TRANSPORT_PROBE = '''import hashlib, json, os, pwd, resource, shlex, signal, stat, subprocess, tempfile, time
+CAP = 1024 * 1024
+URL = "https://deb.debian.org/debian/dists/trixie/InRelease"
+PROXIES = tuple("Acquire::" + protocol + "::" + key for protocol in ("http", "https")
+                for key in ("Proxy", "Proxy::deb.debian.org", "Proxy-Auto-Detect", "ProxyAutoDetect"))
+FIELDS = PROXIES + ("Acquire::EnableSrvRecords/b", "APT::Sandbox::User", "Debug::NoDropPrivs/b")
+
+def configuration():
+    keys = FIELDS + tuple("Binary::" + method + "::" + key for method in ("http", "https") for key in FIELDS)
+    args = ["apt-get", "shell"]
+    for index, key in enumerate(keys):
+        args.extend(("K" + str(index), key))
+    # The executable is a query, not apt-get. argv[0] selects apt-get's Binary scope.
+    raw = subprocess.run(args, executable="/usr/bin/apt-config", check=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5).stdout
+    if len(raw) > 65536:
+        raise ValueError("configuration size")
+    values = {}
+    for token in shlex.split(raw):
+        key, separator, value = token.partition("=")
+        if not separator or key not in {"K" + str(i) for i in range(len(keys))} or key in values:
+            raise ValueError("configuration format")
+        values[key] = value
+    for index in (8, 10):
+        if "K" + str(index) in values and values["K" + str(index)] not in ("true", "false"):
+            raise ValueError("configuration boolean")
+    sandbox = values.get("K9", "_apt")
+    return {"proxy_entries_present": ["K" + str(i) in values for i in range(8)],
+            "srv_enabled": values.get("K8", "true") == "true", "srv_default": "K8" not in values,
+            "sandbox_kind": sandbox if sandbox in ("_apt", "root", "") else "other",
+            "no_drop_privs": values.get("K10", "false") == "true",
+            "method_overrides_present": any("K" + str(i) in values for i in range(11, len(keys))),
+            "apt_config_present": "APT_CONFIG" in os.environ}
+
+def stop(process):
+    # The leader is still unreaped: its PID/PGID cannot be recycled during cleanup.
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    time.sleep(2)
+    # A leader can exit before a method child. Always finish the owned group,
+    # then reap the leader; waiting for the leader alone cannot prove cleanup.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=2)
+
+def download(directory, disable_srv):
+    path = os.path.join(directory, "srv-disabled" if disable_srv else "baseline")
+    args = ["apt-get", "-o", "Acquire::Retries=0", "-o", "Acquire::http::Timeout=10",
+            "-o", "Acquire::https::Timeout=10"]
+    if disable_srv:
+        args += ["-o", "Acquire::EnableSrvRecords=false"]
+    args += ["download-file", URL, path]
+    # apt-helper uses APT's normal HTTPS acquisition, with apt-get's Binary scope.
+    process = subprocess.Popen(args, executable="/usr/lib/apt/apt-helper", start_new_session=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = {"status": "exit_failure"}
+    leader_owned = True
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            state = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if state is not None:
+                result["exit_code"] = state.si_status if state.si_code == os.CLD_EXITED else -state.si_status
+                break
+            time.sleep(0.05)
+        else:
+            result["status"] = "timeout"
+    except ChildProcessError:
+        # Do not signal a numeric group if an unexpected external reaper took
+        # away the leader identity that protects it against PID reuse.
+        leader_owned = False
+        raise
+    finally:
+        if leader_owned:
+            stop(process)
+    if result.get("exit_code") == 0:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode) or not 0 < size <= CAP:
+                return {"status": "size_or_type_rejected", "exit_code": 0}
+            data = stream.read(CAP + 1)
+        if len(data) != size:
+            return {"status": "size_or_type_rejected", "exit_code": 0}
+        result.update(status="downloaded", bytes=size, sha256=hashlib.sha256(data).hexdigest())
+    return result
+
+def main():
+    result = {"scope": "transport_only_no_signature_verification"}
+    try:
+        if os.getuid() != 0:
+            raise PermissionError("diagnostic identity")
+        config = configuration()
+        result["config"] = config
+        if config["method_overrides_present"] or config["sandbox_kind"] == "other":
+            result["status"] = "unsupported_configuration"
+            return result
+        account = pwd.getpwnam("_apt") if config["sandbox_kind"] == "_apt" else None
+        if account is not None and account.pw_uid == 0:
+            raise ValueError("sandbox identity")
+        # Generic download-file has no MaxReleaseFileSize bound. This limit is
+        # inherited by the helper and its methods, and applies only in this child.
+        resource.setrlimit(resource.RLIMIT_FSIZE, (CAP, CAP))
+        os.umask(0o077)
+        with tempfile.TemporaryDirectory(prefix="sonic-apt-diagnostic-") as directory:
+            if account is not None:
+                os.chown(directory, account.pw_uid, account.pw_gid)
+            # Private mode0700 remains accessible to the configured sandbox user;
+            # an inaccessible root-only target would make APT fall back to root.
+            result["attempts"] = []
+            for disable_srv in (False, True):
+                try:
+                    result["attempts"].append(download(directory, disable_srv))
+                except Exception as error:
+                    result["attempts"].append({"status": "error", "error_class": type(error).__name__})
+        result["status"] = "completed"
+    except Exception as error:
+        result.update(status="error", error_class=type(error).__name__)
+    return result
+
+if __name__ == "__main__":
+    print(json.dumps(main()))
+'''
+
+
+def prepare_apt_transport(artifacts):
+    """Keep only typed, bounded transport evidence; never publish APT output."""
+    try:
+        value = json.loads(output(["sudo", "-n", sys.executable, "-I", "-c", APT_TRANSPORT_PROBE],
+                                  timeout=50, stderr=subprocess.DEVNULL))
+        require(set(value) <= {"scope", "status", "config", "attempts", "error_class"} and
+                value["scope"] == "transport_only_no_signature_verification" and
+                value["status"] in {"completed", "error", "unsupported_configuration"}, "Unexpected APT diagnostic")
+        if value["status"] == "completed":
+            require("config" in value and "attempts" in value, "Incomplete APT diagnostic")
+        if value["status"] == "unsupported_configuration":
+            require("config" in value and "attempts" not in value, "Unexpected skipped APT attempts")
+        if "config" in value:
+            config = value["config"]
+            booleans = {"srv_enabled", "srv_default", "no_drop_privs", "method_overrides_present", "apt_config_present"}
+            require(set(config) == booleans | {"proxy_entries_present", "sandbox_kind"} and
+                    all(type(config[key]) is bool for key in booleans) and
+                    type(config["proxy_entries_present"]) is list and len(config["proxy_entries_present"]) == 8 and
+                    all(type(item) is bool for item in config["proxy_entries_present"]) and
+                    config["sandbox_kind"] in {"_apt", "root", "", "other"}, "Unexpected APT configuration diagnostic")
+        if "attempts" in value:
+            require(type(value["attempts"]) is list and len(value["attempts"]) == 2, "Unexpected APT attempts")
+        for row in [value, *value.get("attempts", [])]:
+            if row is not value:
+                require(set(row) <= {"status", "exit_code", "bytes", "sha256", "error_class"} and
+                        row["status"] in {"downloaded", "exit_failure", "timeout", "size_or_type_rejected", "error"},
+                        "Unexpected APT transport result")
+                if "exit_code" in row:
+                    require(type(row["exit_code"]) is int and -128 <= row["exit_code"] <= 255, "Unexpected APT exit")
+                if row["status"] == "downloaded":
+                    require(row.get("exit_code") == 0 and type(row.get("bytes")) is int and
+                            0 < row["bytes"] <= 1024 * 1024 and type(row.get("sha256")) is str and
+                            re.fullmatch("[0-9a-f]{64}", row["sha256"]), "Unexpected APT downloaded bytes")
+                else:
+                    require("bytes" not in row and "sha256" not in row, "Unexpected partial APT digest")
+            if "error_class" in row:
+                require(type(row["error_class"]) is str and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", row["error_class"]),
+                        "Unexpected APT error class")
+        safe_json(value)
+    except Exception as error:
+        value = {"status": "error", "error_class": type(error).__name__}
+    try:
+        (artifacts / "worker-apt-transport.json").write_text(json.dumps(value, indent=2) + "\n")
+    except OSError:
+        print("Worker APT transport diagnostic could not be retained", file=sys.stderr)
+
+
+def prepare_execution_network(artifacts):
+    """Compare the two existing APT execution identities without recording values."""
+    result = {}
+    names = {"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+    for context, prefix, expected_uid in (("worker", [], 1000), ("sudo", ["sudo", "-n"], 0)):
+        try:
+            value = json.loads(output([*prefix, sys.executable, "-I", "-c", EXECUTION_NETWORK_PROBE],
+                                      timeout=20, stderr=subprocess.DEVNULL))
+            require(set(value) <= {"uid", "proxy_names_present", "urllib_proxy_schemes", "http_status", "error_class"},
+                    "Unexpected network diagnostic field")
+            require(type(value["uid"]) is int and value["uid"] == expected_uid, "Unexpected diagnostic UID")
+            require(set(value["proxy_names_present"]) == names and
+                    all(type(present) is bool for present in value["proxy_names_present"].values()),
+                    "Unexpected proxy presence diagnostic")
+            require(isinstance(value["urllib_proxy_schemes"], list) and
+                    all(scheme in {"http", "https", "ftp", "all", "no"} for scheme in value["urllib_proxy_schemes"]),
+                    "Unexpected proxy scheme diagnostic")
+            require("http_status" in value or "error_class" in value, "Missing network diagnostic outcome")
+            if "http_status" in value:
+                require(type(value["http_status"]) is int and 100 <= value["http_status"] <= 599,
+                        "Unexpected HTTP status diagnostic")
+            if "error_class" in value:
+                require(isinstance(value["error_class"], str) and
+                        re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value["error_class"]),
+                        "Unexpected network error class")
+            safe_json(value)
+            result[context] = value
+        except Exception as error:
+            result[context] = {"error_class": type(error).__name__}
+    try:
+        (artifacts / "worker-execution-network.json").write_text(json.dumps(result, indent=2) + "\n")
+    except OSError:
+        # The existing APT command remains authoritative even if diagnostics cannot be retained.
+        print("Worker execution network diagnostic could not be retained", file=sys.stderr)
+    prepare_apt_transport(artifacts)
+
+
 def prepare_validation_tools(artifacts):
     """Install only missing execution tools in the disposable slave container."""
     packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils", "objcopy": "binutils"}
     missing = sorted({package for tool, package in packages.items() if shutil.which(tool) is None})
     if missing:
-        run(["sudo", "-n", "apt-get", "update"])
-        run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
-             "--no-install-recommends", *missing])
+        try:
+            run(["sudo", "-n", "apt-get", "-o", "Acquire::EnableSrvRecords=false", "update"])
+            run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get",
+                 "-o", "Acquire::EnableSrvRecords=false", "install", "-y",
+                 "--no-install-recommends", *missing])
+        except subprocess.CalledProcessError:
+            try:
+                prepare_execution_network(artifacts)
+            except Exception:
+                # Diagnostics must not replace the original APT failure.
+                print("Worker execution network diagnostic failed", file=sys.stderr)
+            raise
     for tool in packages:
         require(shutil.which(tool), "Missing image validation tool: " + tool)
     versions = output(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\n", *sorted(set(packages.values()))])
@@ -221,8 +481,31 @@ def catalog_for(image, workspace, registry_revision=""):
     workflow = (workspace / ".github/workflows/bazel-oci.yml").read_text()
     catalogs = sorted(set(re.findall(r"^ +SONIC_BAZEL_REGISTRY_REVISION: ([0-9a-f]{40})$", workflow, re.M)))
     wrapper = WRAPPERS[image]
-    require(re.search(r"^ +BAZEL: (?:\$\{\{ github.workspace \}\}/)?tools/bazel/ci/" + re.escape(wrapper) + r"$", workflow, re.M),
-            "Selected workflow uses another Bazel entrypoint")
+    wrapper_pattern = r"^ +BAZEL: (?:\$\{\{ github.workspace \}\}/|\./)?tools/bazel/ci/" + re.escape(wrapper) + r"$"
+    selected_wrapper = re.search(wrapper_pattern, workflow, re.M)
+    if wrapper == "review_bazel.sh" and image in SOURCE_WORKFLOWS and not (selected_wrapper and len(catalogs) == 1):
+        workflow = (workspace / ".github/workflows" / SOURCE_WORKFLOWS[image]).read_text()
+        selected_wrapper = re.search(wrapper_pattern, workflow, re.M)
+        if image == "macsec" and not selected_wrapper:
+            # This workflow calls its fixed driver without --bazel; bind that
+            # driver's declared default rather than an unrelated OCI job.
+            driver = (workspace / "tools/bazel/ci/macsec_image.py").read_text()
+            defaults = [keyword.value.value for call in ast.walk(ast.parse(driver))
+                        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "add_argument" and call.args
+                        and isinstance(call.args[0], ast.Constant) and call.args[0].value == "--bazel"
+                        for keyword in call.keywords if keyword.arg == "default"
+                        and isinstance(keyword.value, ast.Constant)]
+            selected_wrapper = (re.search(r"^ +python3 -B tools/bazel/ci/macsec_image\.py build --artifacts artifacts/macsec$", workflow, re.M)
+                                and defaults == ["tools/bazel/ci/review_bazel.sh"])
+        values = re.findall(r"^ +SONIC_BAZEL_REGISTRY_REVISION: (.+)$", workflow, re.M)
+        catalogs = []
+        for value in values:
+            match = re.fullmatch(r"([0-9a-f]{40})|\$\{\{ inputs\.registry_revision \|\| '([0-9a-f]{40})' \}\}", value)
+            require(match, "Selected image workflow has an unsupported registry selection")
+            catalogs.append(match.group(1) or match.group(2))
+        catalogs = sorted(set(catalogs))
+    require(selected_wrapper, "Selected workflow uses another Bazel entrypoint")
     if wrapper != "review_bazel.sh":
         text = (workspace / "tools/bazel/ci" / wrapper).read_text()
         selected = re.findall(r"^export SONIC_BAZEL_REGISTRY_REVISION=([0-9a-f]{40})$", text, re.M)
@@ -300,7 +583,7 @@ def temporary_directory():
 
 
 
-def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
+def configure_worker_mirrors(phase, artifacts, *, config=None, public=None, image=None):
     config = config or temporary_directory() / "source-image-mirrors.cfg"
     if phase == "cleanup-mirrors":
         config.unlink(missing_ok=True)
@@ -309,13 +592,46 @@ def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
     sys.path.insert(0, str(registry_ci))
     import private_mirrors
     roots = {key: os.environ.pop(key, "") for key, _ in private_mirrors.MIRROR_ROOTS}
-    redactor = private_mirrors.Redactor([root for root in roots.values() if root])
+    budget = None
+    if phase == "scan-mirrors" and image == "p4rt":
+        from mirror_privacy import TemporaryBudget
+        directory = artifacts / "mirror-scan-temporaries"
+        directory.mkdir(mode=0o700)
+        budget = TemporaryBudget(directory, maximum_bytes=32 * 1024 ** 3, minimum_free_bytes=16 * 1024 ** 3)
+    redactor = private_mirrors.Redactor([root for root in roots.values() if root],
+                                      **({"temporary_budget": budget} if budget else {}))
     redactor.mask_github()
     if phase == "scan-mirrors":
         public = public or artifacts / "public"
-        redactor.scrub_and_scan(public)
-        # Published image receipts bind their evidence and payloads by hash.
-        require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        try:
+            redactor.scrub_and_scan(public)
+            # Published image receipts bind their evidence and payloads by hash.
+            require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        finally:
+            if budget:
+                # Scalar diagnostics survive a failed scan; errors still fail the step.
+                print("Mirror scan temporary budget: " + json.dumps(budget.usage()), file=sys.stderr)
+        if budget:
+            usage = budget.usage()
+            require(all(type(value) is int and value >= 0 for value in usage.values()) and
+                    usage["live_bytes"] == usage["open_files"] == 0,
+                    "Scanner temporary files did not close cleanly")
+            measured = bool(redactor.patterns)
+            metrics = {"status": "passed" if measured else "not_run_no_private_patterns",
+                       "traversal_measured": measured,
+                       "maximum_bytes": usage["maximum_bytes"], "minimum_free_bytes": usage["minimum_free_bytes"]}
+            if measured:
+                metrics.update(peak_charged_temporary_bytes=usage["peak_bytes"],
+                               peak_open_files=usage["peak_open_files"], live_bytes=0, open_files=0)
+            path = public / "worker.json"
+            require(path.is_file() and not path.is_symlink(), "Missing regular worker receipt")
+            receipt = json.loads(path.read_text())
+            require(receipt.get("image") == "p4rt" and "mirror_scan" not in receipt,
+                    "Unexpected worker scan receipt")
+            receipt["mirror_scan"] = metrics
+            safe_json(receipt)
+            # Export copied this small JSON; the later CI bundle binds its final hash.
+            path.write_text(json.dumps(receipt, indent=2) + "\n")
         return
     mirrors = private_mirrors.selected_mirrors(roots)
     if mirrors:
@@ -367,6 +683,9 @@ def prepare(args):
     for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
+    for name in BUILD_CHECKS.get(args.image, ()):
+        path = workspace / "tools/bazel/tests" / name
+        require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed image check: " + name)
     catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
@@ -481,8 +800,14 @@ def execute_phase(args):
     monitor = threading.Thread(target=sample, daemon=True)
     monitor.start()
     try:
-        completed = subprocess.run(phase_command(args.image, args.phase, args.workspace, args.artifacts),
-                                   cwd=args.workspace, env={**os.environ, **state["environment"]})
+        checks = BUILD_CHECKS.get(args.image, ()) if args.phase == "build" else ()
+        commands = [[sys.executable, "-B", str(args.workspace / "tools/bazel/tests" / name)] for name in checks]
+        commands.append(phase_command(args.image, args.phase, args.workspace, args.artifacts))
+        for command in commands:
+            completed = subprocess.run(command, cwd=args.workspace,
+                                       env={**os.environ, **state["environment"]})
+            if completed.returncode:
+                break
     finally:
         finished.set()
         monitor.join()
@@ -613,7 +938,7 @@ def main():
     elif args.phase == "verify-input-run":
         verify_input_run(args)
     elif args.phase in ("prepare-mirrors", "scan-mirrors", "cleanup-mirrors"):
-        configure_worker_mirrors(args.phase, args.artifacts)
+        configure_worker_mirrors(args.phase, args.artifacts, image=args.image)
     elif args.phase == "prepare":
         prepare(args)
     elif args.phase == "publish":

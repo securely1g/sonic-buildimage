@@ -77,7 +77,8 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `framework`,
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
+`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux` or `frr`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -154,19 +155,16 @@ does not run unrelated owner test suites, package Make recipes, or the full VS
 installer. The selected image drivers still audit their configured graph for
 DEB generation before building.
 
+Trusted native source-image jobs use the Debian mirror roots configured for this repository. The pinned registry helper selects the snapshots and retains public fallback. [Registry mirror configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/README.md#private-debian-snapshot-mirrors)
+
 The worker also uses Bazel's official mirror for the exact BCR `gawk@5.3.2`
 source archive. Its existing SHA256 and upstream build overlay stay unchanged.
 Only the three selected GNU/kernel source URLs are rewritten; the original
-checksum-verified pigz downloader configuration is retained. Phase resource
+checksum-verified shared downloader configuration is retained. Phase resource
 receipts include the observed cgroup memory/swap limits as well as usage and OOM
 counters, so a runtime limit change is not confused with a successful capacity test.
 
-For four observed Debian snapshot HTTP 503 failures, the downloader retains the
-original timestamped URL and adds its verified official content-addressed
-`snapshot.debian.org/file/` endpoint. Both endpoints returned identical bytes
-matching the checked-in SHA256 and size. The URL's SHA1 identifier only locates
-the file; Bazel continues enforcing the original SHA256. Other snapshots,
-package versions and architectures are unchanged. Public Syncd/Gearbox policy
+Public Syncd/Gearbox policy
 validation recognizes only the exact checked-in `DEBIAN_FRONTEND=noninteractive`
 constant and retains the policy's original bytes and hash.
 
@@ -192,6 +190,41 @@ supplies the reviewed registry revision, just as for gNMI. This enables
 to run the same image checks on an idle native AMD64 worker. Select an immutable
 source commit and retain the source/catalog and all four phase receipts; adding
 the selector alone does not establish image acceptance.
+
+The `database`, `eventd`, `lldp`, `radv`, `macsec` and `mux` selectors reuse
+those images' existing `*_image.py` build, content validation and incremental
+commands, then their `*_loaded.py` runtime probes. Their dedicated workflow's
+Make/identity checks run before the build and a failure stops the image driver.
+The worker retains each image's runtime receipt and `loaded-validation.json`
+when the existing driver produces that aggregate. Native owner tests remain
+with their existing owner workflows.
+
+For example, `source_image=database` validates the selected source's runtime
+and debug archives, original Redis entrypoint and DASH conversion fixture using
+`database_image.py` and `database_loaded.py`, as in
+[database image PR #142](https://github.com/securely1g/sonic-buildimage/pull/142).
+It uses the source checkout's immutable review catalog, private Docker daemon
+and per-worker `database/output-base` cache. The same four phases, AMD64/Trixie
+preflight, source checks, no-DEB action audit and artifact hash checks apply.
+
+The `frr` selector uses the selected source's existing `frr_image.py` build,
+validation and incremental phases through `review_bazel.sh`, followed by the
+source-owned `frr_loaded.py` extracted from the dedicated FRR workflow. The helper
+and its pure checks are reviewed with this controller; execution uses the selected
+source checkout's identical helper. Select a
+reviewed source revision containing that helper and a compatible common OCI
+workflow catalog; older checkouts without the helper fail preparation. The
+existing driver retains its 18 outputs, 21 no-DEB audit roots, SNMP/tcmalloc
+settings and template edit/restore checks. The loaded phase verifies both image
+archives/configurations/layers and the Redis fixture, then runs the unchanged
+private BGPD/VTY, installed Python and debug probes as UID/GID 300 with group 102.
+It uses no network peers, Zebra, kernel routing or full SONiC startup. Adding the
+selector does not establish FRR acceptance for a new source revision.
+
+SNMP and the shared base/config-engine/SWSS layers are not selectable here.
+Their existing workflows need an explicit adapter preserving all checks and
+receipts; a missing phase must not be treated as a pass. Use their dedicated
+workflows until that interface is reviewed.
 
 ## Explicit ordinary registry consumers
 
