@@ -215,9 +215,11 @@ define GET_MOD_SHA
 	$(eval  $(1)_MOD_DEP_FILES := $($(1)_DEP_FLAGS_FILE) $($(1)_MOD_HASH_FILE) $($(1)_SMOD_HASH_FILE) )
 	$(if $(MDEBUG), $(info $(1)_MOD_DEP_FILES: $($(1)_MOD_DEP_FILES)))
 	$(eval $(1)_MOD_HASH    := $(if $(filter GIT_COMMIT_SHA,$($(1)_CACHE_MODE)),\
-                            $(shell cd $($(1)_MOD_SRC_PATH) && git log -1 --format="%H"| awk '{print substr($$1,0,23);}' ),\
-                            $(shell git hash-object $($(1)_MOD_DEP_FILES)| \
-                                   sha1sum | awk '{print substr($$1,0,23);}')))
+                            $(shell hash=$$(cd $($(1)_MOD_SRC_PATH) && git log -1 --format="%H") && \
+                                   printf '%.23s\n' "$$hash" ),\
+                            $(shell hashes=$$(git hash-object $($(1)_MOD_DEP_FILES)) && \
+                                   digest=$$({ if [ -n "$$hashes" ]; then printf '%s\n' "$$hashes"; fi; } | sha1sum) && \
+                                   printf '%.23s\n' "$$digest")))
 endef
 
 
@@ -246,9 +248,19 @@ define GET_MOD_DEP_SHA
 
 	# Include package dependencies hash values into package hash calculation
 	$(eval $(1)_DEP_PKGS_SHA := $(foreach dfile,$($(1)_MOD_DEP_PKGS),$($(dfile)_DEP_MOD_SHA) $($(dfile)_MOD_HASH)))
+	# An observed failure is different from metadata that was never calculated
+	# for a non-cache-enabled input. Bazel archives carry their identity in bytes.
+	$(eval $(1)_DEP_FINGERPRINT_FAILURES := $(foreach dfile,\
+	    $(filter-out $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$($(1)_MOD_DEP_PKGS)),\
+	    $(if $($(dfile)_CACHE_FINGERPRINT_FAILED),$(dfile))))
 
-	$(eval $(1)_DEP_MOD_SHA := $(shell bash -c "git hash-object  $($(1)_DEP_MOD_SHA_FILES) && echo $($(1)_DEP_PKGS_SHA)" \
-                            | sha1sum | awk '{print substr($$1,0,23);}'))
+	# Buffer the complete Git output before hashing it. Git may print hashes for
+	# earlier files and then fail on a missing sidecar before reaching a base
+	# archive; hashing that partial output would make unrelated images collide.
+	$(eval $(1)_DEP_MOD_SHA := $(if $(or $($(1)_DEP_FILES_MISSING),$($(1)_DEP_FINGERPRINT_FAILURES)),,\
+	                            $(shell hashes=$$(git hash-object $($(1)_DEP_MOD_SHA_FILES)) && \
+	                                   digest=$$({ if [ -n "$$hashes" ]; then printf '%s\n' "$$hashes"; fi; \
+	                                               echo $($(1)_DEP_PKGS_SHA); } | sha1sum) && printf '%.23s\n' "$$digest")))
 endef
 
 
@@ -286,9 +298,11 @@ endef
 # $(2) => target output file name
 define LOAD_FROM_CACHE
 
+	$(eval $(1)_CACHE_LOADED :=)
 	# Calculate the modules SHA and its dependency SHA value
 	$(call GET_MOD_DEP_SHA,$(1))
 	$(call GET_MOD_SHA,$(1))
+	$(eval $(1)_CACHE_FINGERPRINT_FAILED := $(if $(and $($(1)_DEP_MOD_SHA),$($(1)_MOD_HASH)),,y))
 
 	# Form the cache file name
 	$(eval $(1)_MOD_CACHE_FILE := $(1)-$($(1)_DEP_MOD_SHA)-$($(1)_MOD_HASH).tgz)
@@ -312,7 +326,9 @@ define LOAD_FROM_CACHE
 
 	# Load the cache if cache is enabled and cache file is present in the cache
 	# Update the cache_loaded variable
-	$(if $(and $(CACHE_FILE_SELECT),$(call CHECK_RCACHE_ENABLED,$(1))),
+	$(if $(and $($(1)_DEP_MOD_SHA),$($(1)_MOD_HASH)),,\
+		echo "[ CACHE::SKIPPED ] Incomplete fingerprint for $(1); shared and local cache reads disabled" >> $($(1)_DST_PATH)/$(1).log)
+	$(if $(and $($(1)_DEP_MOD_SHA),$($(1)_MOD_HASH),$(CACHE_FILE_SELECT),$(call CHECK_RCACHE_ENABLED,$(1))),
 		$(if $($(1)_CACHE_FORCE_RESTORE),
 			# Switchable container archives must replace the other builder's output.
 			# Stage this single-output restore so an invalid cache preserves the old
@@ -349,6 +365,14 @@ define SAVE_INTO_CACHE
 	# Calculate the modules SHA and its dependency SHA value
 	$(call GET_MOD_DEP_SHA,$(1))
 	$(call GET_MOD_SHA,$(1))
+	$(eval $(1)_CACHE_FINGERPRINT_FAILED := $(if $(and $($(1)_DEP_MOD_SHA),$($(1)_MOD_HASH)),,y))
+	$(if $(and $($(1)_DEP_MOD_SHA),$($(1)_MOD_HASH)),\
+		$(call SAVE_COMPLETE_CACHE,$(1),$(2)),\
+		echo "[ CACHE::SKIPPED ] Incomplete fingerprint for $(1); shared and local cache writes disabled" >> $($(1)_DST_PATH)/$(1).log)
+endef
+
+# Only a complete fingerprint can name an entry in either cache directory.
+define SAVE_COMPLETE_CACHE
 
 	# Form the cache file name
 	$(eval $(1)_MOD_CACHE_FILE  := $(1)-$($(1)_DEP_MOD_SHA)-$($(1)_MOD_HASH).tgz)
