@@ -278,5 +278,67 @@ class ConfigureTests(unittest.TestCase):
                 self.assertEqual(self.rc.read_text(), original)
 
 
+class RemoteOnlyTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.helper_path = self.root / "helper.py"
+        self.helper_path.write_text("# reviewed fixture")
+        self.rc = self.root / ".bazelrc"
+        self.managed = self.root / "remote-only.bazelrc"
+        self.managed.write_text("common --remote_cache=https://host-selected.example.invalid/\n" +
+            "common --credential_helper=host-selected.example.invalid=" + str(self.helper_path) + "\n" +
+            "common --remote_executor=\ncommon --disk_cache=\ncommon --repository_cache=\n")
+        self.managed.chmod(0o600)
+        self.rc.write_text("startup --output_user_root=/actions/bazel/output\nimport " + str(self.managed) + "\n")
+        self.helper = types.SimpleNamespace(
+            host_configuration=mock.Mock(return_value={"origin": "https://host-selected.example.invalid/"}),
+            settings=mock.Mock(return_value={"endpoint": "https://host-selected.example.invalid/", "host": "host-selected.example.invalid"}),
+            probe_access=mock.Mock())
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.dict(os.environ, {"SONIC_BAZEL_REMOTE_ONLY_RC": str(self.managed)}).start()
+        mock.patch.object(cache, "NATIVE_HELPER", self.helper_path).start()
+        mock.patch.object(cache, "NATIVE_HELPER_SHA256", cache.hashlib.sha256(self.helper_path.read_bytes()).hexdigest()).start()
+        mock.patch.object(cache.Path, "lstat", return_value=types.SimpleNamespace(st_mode=0o100444, st_uid=0)).start()
+        spec = types.SimpleNamespace(loader=mock.Mock())
+        mock.patch.object(cache.importlib.util, "spec_from_file_location", return_value=spec).start()
+        mock.patch.object(cache.importlib.util, "module_from_spec", return_value=self.helper).start()
+
+    def test_host_selection_is_probed_and_existing_rc_preserved_without_legacy_child(self):
+        with mock.patch.object(cache.subprocess, "run") as legacy:
+            receipt = cache.configure_remote_only(self.rc, {"jobs": 4, "local_memory_mb": 12288})
+        legacy.assert_not_called()
+        self.helper.probe_access.assert_called_once_with()
+        self.assertEqual(receipt["mode"], "remote_only")
+        self.assertFalse(receipt["disk_cache"])
+        self.assertFalse(receipt["repository_cache"])
+        self.assertNotIn("example.invalid", json.dumps(receipt))
+        self.assertIn("startup --output_user_root=/actions/bazel/output", self.rc.read_text())
+        self.assertIn("build --jobs=4", self.rc.read_text())
+
+    def test_missing_host_config_does_not_select_legacy_endpoint(self):
+        self.helper.host_configuration.return_value = None
+        with self.assertRaises(cache.ConfigurationFailure):
+            cache.configure_remote_only(self.rc)
+        self.helper.settings.assert_not_called()
+        self.helper.probe_access.assert_not_called()
+
+    def test_local_cache_or_wrong_remote_fails_closed(self):
+        original = self.rc.read_text()
+        for suffix in ("common --disk_cache=/shared\n", "common --repository_cache=/shared\n",
+                       "common --remote_cache=https://other.example.invalid/\n"):
+            self.rc.write_text(original + suffix)
+            with self.subTest(suffix=suffix), self.assertRaises(cache.ConfigurationFailure):
+                cache.configure_remote_only(self.rc)
+        self.helper.probe_access.assert_not_called()
+
+    def test_probe_failure_has_no_origin_or_credential_in_exception(self):
+        self.helper.probe_access.side_effect = ValueError("https://private.example.invalid/ secret")
+        with self.assertRaises(cache.ConfigurationFailure) as error:
+            cache.configure_remote_only(self.rc)
+        self.assertEqual(str(error.exception), "host_remote_configuration_failed")
+
+
 if __name__ == "__main__":
     unittest.main()
