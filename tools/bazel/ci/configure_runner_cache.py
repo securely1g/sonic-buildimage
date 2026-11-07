@@ -141,6 +141,13 @@ def configure_remote_only(rc, resource_limits=None):
         if helper.host_configuration() is None:
             raise ValueError
         selected = helper.settings()
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # Register masking before any Bazel command or transport error can
+            # include the host-selected private endpoint. Credentials stay in
+            # the scoped helper and are never read or emitted here.
+            for value in (selected["endpoint"], selected["host"]):
+                value = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print("::add-mask::" + value, flush=True)
         required = {
             "remote_cache": selected["endpoint"],
             "credential_helper": selected["host"] + "=" + str(NATIVE_HELPER),

@@ -2,6 +2,7 @@
 """Native private transport preserves APT bytes and suppresses private origins."""
 
 import contextlib
+import gzip
 import http.client
 import json
 import os
@@ -149,6 +150,45 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(actual[actual.index("--") - 1], "--repository_cache=")
 
 
+class AlternativesPrivacyTests(unittest.TestCase):
+    member = "var/lib/dpkg/alternatives/builtins.7.gz"
+    metadata = b"auto\n/usr/share/man/man7/builtins.7.gz\n\n/usr/share/man/man7/bash-builtins.7.gz\n10\n\n"
+
+    class Scanner:
+        def _scan_stream(self, stream, name="", depth=0):
+            payload = stream.read()
+            if name.endswith(".gz"):
+                payload = gzip.decompress(payload)
+            if b"private.example.invalid" in payload:
+                raise ValueError("Private location remains")
+            return payload
+
+    def scan(self, payload, member=None):
+        scanner = native.native_redactor(self.Scanner)()
+        return scanner._scan_stream(io.BytesIO(payload), member or self.member, 4)
+
+    def test_real_alternatives_layout_is_scanned_unchanged_as_text(self):
+        self.assertTrue(native.alternatives_metadata(self.metadata))
+        self.assertEqual(self.scan(self.metadata), self.metadata)
+        # Slave links may be absent for one of the selected alternatives.
+        linked = b"manual\n/usr/bin/editor\neditor.1.gz\n/usr/share/man/man1/editor.1.gz\n\n/bin/nano\n40\n\n\n/bin/vi\n30\n/usr/share/man/man1/vi.1.gz\n\n"
+        self.assertTrue(native.alternatives_metadata(linked))
+        self.assertEqual(self.scan(linked), linked)
+
+    def test_private_location_in_valid_metadata_is_still_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Private location"):
+            self.scan(self.metadata.replace(b"/usr/share/man/man7/bash", b"/private.example.invalid/bash"))
+
+    def test_malformed_metadata_and_real_archives_keep_normal_scanning(self):
+        for payload in (self.metadata.replace(b"\n10\n", b"\ninvalid\n"),
+                        self.metadata + b"\x00", b"\x1f\x8btruncated"):
+            with self.subTest(payload=payload), self.assertRaises((OSError, EOFError)):
+                self.scan(payload)
+        self.assertEqual(self.scan(gzip.compress(b"real archive payload")), b"real archive payload")
+        with self.assertRaises(OSError):
+            self.scan(self.metadata, "usr/share/man/man7/builtins.7.gz")
+
+
 class WrapperLifecycleTests(unittest.TestCase):
     def test_managed_kernel_options_are_forwarded_and_private_files_removed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -185,13 +225,24 @@ class WrapperLifecycleTests(unittest.TestCase):
                     "assert pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text() == 'private fixture policy'; "
                     "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''; "
                     "assert os.environ['HTTP_PROXY'].startswith('http://192.168.240.1:')"])
-            with mock.patch.dict(native.sys.modules, {"private_mirrors": private_mirrors,
-                     "mirror_privacy": types.SimpleNamespace(Redactor=Redactor)}), \
-                 mock.patch.dict(os.environ, {**MIRRORS, "SONIC_BAZEL_REMOTE_ONLY_RC": str(managed)}), \
-                 mock.patch.object(native.subprocess, "check_output", return_value=native.REGISTRY_REVISION + "\n"), \
-                 mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
-                 contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(native.run(args), 0)
+            child_check = args.command[-1]
+            clean_environment = {key: value for key, value in os.environ.items()
+                                 if key not in {"https_proxy", "HTTPS_PROXY"}}
+            proxy_url = "http://configured-proxy.example.invalid:3128"
+            for inherited, expected in (({}, ""), ({"HTTPS_PROXY": proxy_url}, proxy_url),
+                                        ({"https_proxy": proxy_url}, proxy_url),
+                                        ({"https_proxy": "", "HTTPS_PROXY": proxy_url}, "")):
+                args.command[-1] = (child_check + "; assert os.environ['https_proxy'] == " + repr(expected)
+                                    + "; assert os.environ['HTTPS_PROXY'] == " + repr(expected))
+                with self.subTest(inherited=inherited), \
+                     mock.patch.dict(native.sys.modules, {"private_mirrors": private_mirrors,
+                         "mirror_privacy": types.SimpleNamespace(Redactor=Redactor)}), \
+                     mock.patch.dict(os.environ, {**clean_environment, **MIRRORS, **inherited,
+                         "SONIC_BAZEL_REMOTE_ONLY_RC": str(managed)}, clear=True), \
+                     mock.patch.object(native.subprocess, "check_output", return_value=native.REGISTRY_REVISION + "\n"), \
+                     mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(native.run(args), 0)
             self.assertEqual(list(args.private_dir.iterdir()), [])
             self.assertIn("https://remote.example.invalid/", seen)
             receipt = json.loads((artifacts / "private-downloads-verification.json").read_text())

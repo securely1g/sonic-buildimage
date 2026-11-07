@@ -8,10 +8,11 @@ No private origin is copied into a Docker layer or the installer filesystem.
 
 import argparse
 import http.server
+import io
 import ipaddress
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
@@ -165,6 +166,62 @@ def bazel_command(arguments, config, real_bazel):
     return [real_bazel, *arguments]
 
 
+def alternatives_metadata(payload):
+    """Recognize the text state written by dpkg's update-alternatives."""
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not text.endswith("\n") or any(ord(char) < 32 and char != "\n" for char in text):
+        return False
+    lines = text.split("\n")[:-1]
+    if len(lines) < 5 or lines[0] not in {"auto", "manual"} or not lines[1].startswith("/"):
+        return False
+    try:
+        end = lines.index("", 2)
+    except ValueError:
+        return False
+    if (end - 2) % 2:
+        return False
+    for index in range(2, end, 2):
+        if not lines[index] or "/" in lines[index] or not lines[index + 1].startswith("/"):
+            return False
+    slaves = (end - 2) // 2
+    index, choices = end + 1, 0
+    while index < len(lines):
+        stop = index + 2 + slaves
+        if (stop > len(lines) or not lines[index].startswith("/")
+                or not re.fullmatch(r"[+-]?[0-9]+", lines[index + 1])
+                or any(value and not value.startswith("/") for value in lines[index + 2:stop])):
+            return False
+        choices += 1
+        index = stop
+        if index < len(lines):
+            if lines[index] != "":
+                return False
+            index += 1
+    return choices > 0
+
+
+def native_redactor(base):
+    """Scan alternatives state as text even when its link name ends in .gz."""
+    class NativeRedactor(base):
+        def _scan_stream(self, stream, name="", depth=0):
+            parts = PurePosixPath(name).parts
+            if len(parts) == 5 and parts[:4] == ("var", "lib", "dpkg", "alternatives"):
+                payload = stream.read(1024 * 1024 + 1)
+                if len(payload) > 1024 * 1024:
+                    raise ValueError("Oversized dpkg alternatives metadata")
+                stream = io.BytesIO(payload)
+                if alternatives_metadata(payload):
+                    # Keep the payload unchanged and scan every byte. The empty
+                    # name disables only the misleading archive suffix check;
+                    # genuine archives still use the pinned scanner below.
+                    name = ""
+            return super()._scan_stream(stream, name, depth)
+    return NativeRedactor
+
+
 def run(args):
     # The workflow checks out this exact first-parent main revision. Import its
     # reviewed validation, rewrite, and privacy code instead of inventing roots.
@@ -185,7 +242,7 @@ def run(args):
                       if line.startswith("common --remote_cache=https://")]
     if len(remote_origins) != 1:
         raise ValueError("Host-selected remote cache configuration is required")
-    redactor = Redactor([*mirrors.values(), *remote_origins])
+    redactor = native_redactor(Redactor)([*mirrors.values(), *remote_origins])
     redactor.mask_github()
     manifest = private_mirrors.load_manifest()
     artifacts = args.artifacts.resolve()
@@ -230,8 +287,14 @@ def run(args):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         proxy = f"http://{BRIDGE}:{server.server_port}"
-        environment = private_mirrors.child_environment() | {
+        inherited = private_mirrors.child_environment()
+        # APT's HTTPS method otherwise inherits http_proxy and sends CONNECT
+        # to this HTTP-only adapter. Preserve an explicit HTTPS proxy; an
+        # explicit empty value keeps unrelated HTTPS downloads direct.
+        https_proxy = inherited.get("https_proxy", inherited.get("HTTPS_PROXY", ""))
+        environment = inherited | {
             "http_proxy": proxy, "HTTP_PROXY": proxy,
+            "https_proxy": https_proxy, "HTTPS_PROXY": https_proxy,
             "BAZEL": str(launcher), "SONIC_BAZEL_DOWNLOADER_CONFIG": str(config),
             "SONIC_BAZEL_REMOTE_ONLY_RC": str(remote_rc),
             "SONIC_APT_MIRROR_CONFIG": str(apt_map),
