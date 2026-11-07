@@ -270,8 +270,13 @@ def run(args):
     with tempfile.TemporaryDirectory(prefix="native-", dir=args.private_dir) as temporary:
         private = Path(temporary)
         config = private / "downloader.cfg"
+        # Native input resolution must try the next signed-index variant
+        # promptly when the mirror does not publish a compression format.
+        # Public mirror connection retries delay those expected misses here.
+        public_fallback = args.phase != "inputs"
         private_mirrors.write_config(config, private_mirrors.configuration(
-            Path("tools/bazel/debian_mirrors.cfg").read_text(), mirrors, manifest=manifest))
+            Path("tools/bazel/debian_mirrors.cfg").read_text(), mirrors,
+            fallback=public_fallback, manifest=manifest))
         apt_map = private / "apt-mirrors.json"
         private_mirrors.write_config(apt_map, json.dumps({"schema_version": 1,
             "mirrors": private_mirrors.apt_mirror_map(mirrors, manifest)}))
@@ -321,6 +326,7 @@ def run(args):
                 thread.join(timeout=5)
             receipt = {"schema": 1, "helper_revision": REGISTRY_REVISION,
                        "private_mirrors_enabled": True, "native_apt_upstream_https": server is not None,
+                       "public_bazel_fallback": public_fallback,
                        "native_apt_upstream_responses": counts, "package_integrity_unchanged": True,
                        "public_apt_sources_preserved": True, "local_bazel_caches": False}
             (artifacts / ("private-downloads-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")

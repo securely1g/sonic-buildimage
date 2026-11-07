@@ -211,7 +211,7 @@ class WrapperLifecycleTests(unittest.TestCase):
             private_mirrors = types.SimpleNamespace(
                 selected_mirrors=lambda _: MIRRORS,
                 load_manifest=lambda: MANIFEST,
-                configuration=lambda *args, **kwargs: "private fixture policy",
+                configuration=mock.Mock(return_value="private fixture policy"),
                 apt_mirror_map=lambda *args, **kwargs: {"public": "private"},
                 write_config=lambda path, value: path.write_text(value),
                 child_environment=lambda: {key: value for key, value in os.environ.items() if key not in MIRRORS})
@@ -256,6 +256,10 @@ class WrapperLifecycleTests(unittest.TestCase):
                          mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
                          contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(native.run(args), 0)
+                        self.assertEqual(private_mirrors.configuration.call_args.kwargs["fallback"],
+                                         phase != "inputs")
+                        receipt = json.loads((artifacts / ("private-downloads-" + phase + ".json")).read_text())
+                        self.assertEqual(receipt["public_bazel_fallback"], phase != "inputs")
             self.assertEqual(list(args.private_dir.iterdir()), [])
             self.assertIn("https://remote.example.invalid/", seen)
             receipt = json.loads((artifacts / "private-downloads-verification.json").read_text())
