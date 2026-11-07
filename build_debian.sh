@@ -56,6 +56,26 @@ DEFAULT_USERINFO="Default admin user,,,"
 BUILD_TOOL_PATH=src/sonic-build-hooks/buildinfo
 TRUSTED_GPG_DIR=$BUILD_TOOL_PATH/trusted.gpg.d
 
+native_rootfs_apt_setup()
+{
+    if [[ "${SONIC_NATIVE_PRIVATE_APT:-}" == 1 ]]; then
+        # Render on the worker: minbase has neither Python nor CA certificates.
+        # Keep the installed sources and live sourceparts unchanged.
+        sudo --preserve-env=http_proxy,https_proxy,HTTPS_PROXY \
+            python3 scripts/native_rootfs_apt.py setup "$FILESYSTEM_ROOT" \
+            --debian-snapshot "$SONIC_NATIVE_DEBIAN_SNAPSHOT" \
+            --security-snapshot "$SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT"
+        trap_push 'native_rootfs_apt_cleanup'
+    fi
+}
+
+native_rootfs_apt_cleanup()
+{
+    if [[ "${SONIC_NATIVE_PRIVATE_APT:-}" == 1 ]]; then
+        sudo python3 scripts/native_rootfs_apt.py cleanup "$FILESYSTEM_ROOT"
+    fi
+}
+
 ## Read ONIE image related config file
 . ./onie-image.conf
 [ -n "$ONIE_IMAGE_PART_SIZE" ] || {
@@ -117,18 +137,8 @@ sudo LANG=C chroot $FILESYSTEM_ROOT /bin/bash -c 'echo "proc /proc proc defaults
 sudo LANG=C chroot $FILESYSTEM_ROOT /bin/bash -c 'echo "sysfs /sys sysfs defaults 0 0" >> /etc/fstab'
 
 ## Setup proxy
-if [[ -n "$http_proxy" && "${SONIC_NATIVE_PRIVATE_APT:-}" == 1 ]]; then
-    # APT HTTPS inherits HTTP settings, and sudo/chroot drops proxy variables.
-    # Keep unrelated HTTPS off the native worker's HTTP-only Debian adapter.
-    # The existing cleanup removes this temporary file before image export.
-    python3 - <<'PY' | sudo tee "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/01proxy" > /dev/null
-import json
-import os
-for transport, value in (("http", os.environ["http_proxy"]),
-                         ("https", os.environ.get("https_proxy", "") or "DIRECT")):
-    print("Acquire::" + transport + "::Proxy " + json.dumps(value) + ";")
-PY
-else
+if [[ "${SONIC_NATIVE_PRIVATE_APT:-}" != 1 ]]; then
+    # Native proxy configuration belongs to the disposable source view below.
     [ -n "$http_proxy" ] && sudo /bin/bash -c "echo 'Acquire::http::Proxy \"$http_proxy\";' > $FILESYSTEM_ROOT/etc/apt/apt.conf.d/01proxy"
 fi
 
@@ -146,6 +156,7 @@ sudo LANG=C chroot $FILESYSTEM_ROOT mount
 scripts/build_mirror_config.sh files/apt $CONFIGURED_ARCH $IMAGE_DISTRO
 sudo cp files/apt/sources.list.$CONFIGURED_ARCH $FILESYSTEM_ROOT/etc/apt/sources.list
 sudo cp files/apt/apt.conf.d/{81norecommends,apt-{clean,gzip-indexes,no-languages,timeout-n-retries},no-check-valid-until} $FILESYSTEM_ROOT/etc/apt/apt.conf.d/
+native_rootfs_apt_setup
 
 ## Note: set lang to prevent locale warnings in your chroot
 sudo LANG=C chroot $FILESYSTEM_ROOT apt-get -y update
@@ -669,6 +680,7 @@ fi
 
 if [[ $RFS_SPLIT_FIRST_STAGE == y ]]; then
     echo '[INFO] Finished with RFS first stage'
+    native_rootfs_apt_cleanup
     echo '[INFO] Umount all'
 
     ## Display all process details access /proc
@@ -693,6 +705,7 @@ if [[ $RFS_SPLIT_LAST_STAGE == y ]]; then
     sudo fuser -vm $FILESYSTEM_ROOT || true
     sudo rm -rf $FILESYSTEM_ROOT
     sudo unsquashfs -d $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME
+    native_rootfs_apt_setup
 
     ## make / as a mountpoint in chroot env, needed by dockerd
     pushd $FILESYSTEM_ROOT
@@ -919,6 +932,7 @@ sudo LANG=C chroot $FILESYSTEM_ROOT apt-get -y autoremove
 sudo LANG=C chroot $FILESYSTEM_ROOT apt-get autoclean
 sudo LANG=C chroot $FILESYSTEM_ROOT apt-get clean
 sudo LANG=C chroot $FILESYSTEM_ROOT bash -c 'rm -rf /usr/share/doc/* /usr/share/locale/* /var/lib/apt/lists/* /tmp/*'
+native_rootfs_apt_cleanup
 
 ## Clean up proxy
 [ -n "$http_proxy" ] && sudo rm -f $FILESYSTEM_ROOT/etc/apt/apt.conf.d/01proxy

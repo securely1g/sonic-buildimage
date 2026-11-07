@@ -601,6 +601,14 @@ $(shell DBGOPT='$(DBGOPT)' scripts/prepare_slave_container_buildinfo.sh $(SLAVE_
 endif
 include Makefile.cache
 
+# Track the native rootfs transport without invalidating unrelated packages.
+ifeq ($(SONIC_NATIVE_PRIVATE_APT),1)
+SONIC_NATIVE_APT_INPUTS := scripts/native_rootfs_apt.py src/sonic-build-hooks/scripts/native_apt_transport.py
+$(foreach pkg,$(SONIC_RFS_TARGETS), \
+        $(eval $(pkg)_DEP_FILES += $(SONIC_NATIVE_APT_INPUTS)) \
+        $(eval $(pkg)_DEP_FLAGS += native-private-apt $(SONIC_NATIVE_DEBIAN_SNAPSHOT) $(SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT)))
+endif
+
 # Track Bazel kernel inputs for downstream Make consumers.
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(foreach pkg,$(SONIC_RFS_TARGETS) $(IXGBE_DRIVER) $(GENL_PACKET_MODULE), \
@@ -1615,6 +1623,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACC
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
         .platform \
         build_debian.sh \
+        $(SONIC_NATIVE_APT_INPUTS) \
         $(SONIC_DEBIAN_EXTENSION_DEPENDS) \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) $(LINUX_KERNEL) $(if $(filter y,$(INSTALL_DEBUG_TOOLS)),$(LINUX_KERNEL_DBG))) \
         $(SONIC_BAZEL_KERNEL_INPUTS) \
@@ -1676,6 +1685,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         .platform \
         onie-image.conf \
         build_debian.sh \
+        $(SONIC_NATIVE_APT_INPUTS) \
         scripts/validate_sonic_version.py \
         files/build_templates/sonic_version.yml.j2 \
         files/build_templates/sonic_debian_extension.j2 \
