@@ -15,6 +15,57 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def run_sysmgr_public_evidence(self, directory):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        step = workflow.split("      - name: Prepare reviewed public evidence\n", 1)[1].split(
+            "\n      - ", 1)[0]
+        self.assertIn("if: always() && matrix.architecture == 'amd64'", step)
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        script = script.split("python3 - <<'PYCODE'\n", 1)[1].split("\nPYCODE", 1)[0]
+        previous = Path.cwd()
+        sys.path.insert(0, str(ROOT))
+        try:
+            os.chdir(directory)
+            exec(compile(script, "<sysmgr-public-evidence>", "exec"), {})
+        finally:
+            os.chdir(previous)
+            sys.path.pop(0)
+
+    def test_sysmgr_public_evidence_handles_failure_before_build_directory_exists(self):
+        with tempfile.TemporaryDirectory(prefix="sysmgr early failure ") as temporary:
+            directory = Path(temporary)
+            self.run_sysmgr_public_evidence(directory)
+            root = directory / "artifacts/sysmgr"
+            self.assertEqual(json.loads((root / "build-summary.json").read_text()), {})
+            self.assertEqual([path.name for path in root.iterdir()], ["build-summary.json"])
+
+    def test_sysmgr_public_evidence_preserves_failed_receipt_without_private_commands(self):
+        with tempfile.TemporaryDirectory(prefix="sysmgr failed receipt ") as temporary:
+            directory = Path(temporary)
+            root = directory / "artifacts/sysmgr"
+            root.mkdir(parents=True)
+            receipt = {"status": "failed", "architecture": "amd64", "revision": "a" * 40,
+                       "artifacts": {}, "commands": [["private diagnostic"]]}
+            (root / "build-receipt.json").write_text(json.dumps(receipt))
+            self.run_sysmgr_public_evidence(directory)
+            self.assertEqual(json.loads((root / "public-receipt.json").read_text()),
+                             {key: value for key, value in receipt.items() if key != "commands"})
+            self.assertEqual(json.loads((root / "build-summary.json").read_text()), {})
+
+    def test_sysmgr_public_evidence_rejects_malformed_or_private_present_evidence(self):
+        for name, contents in (("validation.json", "{malformed"),
+                               ("validation.json", '{"environment": {"PRIVATE": "value"}}'),
+                               ("build-receipt.json", "{malformed")):
+            with self.subTest(name=name, contents=contents):
+                with tempfile.TemporaryDirectory(prefix="sysmgr rejected evidence ") as temporary:
+                    directory = Path(temporary)
+                    root = directory / "artifacts/sysmgr"
+                    root.mkdir(parents=True)
+                    (root / name).write_text(contents)
+                    with self.assertRaises(ValueError):
+                        self.run_sysmgr_public_evidence(directory)
+                    self.assertFalse((root / "build-summary.json").exists())
+
     def test_static_checks_match_make_configs_and_stop_publication_on_failure(self):
         verifier = (ROOT / "tools/bazel/ci/verify_vs_oci.sh").read_text()
         script = "set -euo pipefail\n" + verifier[verifier.index("# Match the archive recipes"):].split(
