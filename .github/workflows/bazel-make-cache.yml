@@ -21,7 +21,12 @@ permissions:
 jobs:
   checks:
     name: Make cache regression tests
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
+    env:
+      SONIC_CI_ARCH: amd64
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,25 +50,26 @@ jobs:
       matrix:
         include:
           - architecture: amd64
-            runner: ubuntu-24.04
           - architecture: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
+    env:
+      SONIC_CI_ARCH: ${{ matrix.architecture }}
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Prepare space and Make host tools
         run: |
-          # These unused SDKs belong to this disposable GitHub-hosted runner.
-          df -h . /var/lib/docker
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h . "$RUNNER_TEMP"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3-venv jq dpkg-dev apparmor
           python3 -m venv "$RUNNER_TEMP/make-host-tools"
           "$RUNNER_TEMP/make-host-tools/bin/pip" install jinjanator==26.2.0
           echo "$RUNNER_TEMP/make-host-tools/bin" >> "$GITHUB_PATH"
-          df -h . /var/lib/docker
+          df -h . "$RUNNER_TEMP"
       - name: Verify cache access without exposing credentials
         env:
           BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}

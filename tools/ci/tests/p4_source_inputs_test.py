@@ -169,8 +169,9 @@ class SourceInputsTest(unittest.TestCase):
             self.assertEqual(command[command.index("--proto-redir") + 1], "=https")
             self.assertLessEqual(float(command[command.index("--max-time") + 1]), 120)
             self.assertLessEqual(kwargs["timeout"], 122)
-            self.assertTrue(command[-1].startswith(helper.BASE_URL))
-            name = command[-1].removeprefix(helper.BASE_URL)
+            name = command[-1].rsplit("/", 1)[-1]
+            origin = helper.BASE_URL if name.endswith(".dsc") else helper.SOURCE_MIRROR
+            self.assertEqual(command[-1], origin + name)
             data = (self.directory / name).read_bytes()
             Path(command[command.index("--output") + 1]).write_bytes(data)
             return subprocess.CompletedProcess(command, 0, f"200 {len(data)} 0.1 0".encode(), b"")
@@ -178,6 +179,55 @@ class SourceInputsTest(unittest.TestCase):
             self.assertEqual(helper.run(self.manifest_path, destination, self.receipt, True), 0)
             self.assertEqual(network.call_count, 9)
         self.assertEqual({p.name for p in destination.iterdir()}, {p.name for p in self.directory.iterdir()})
+
+    def fixture_download(self, command, **kwargs):
+        name = command[-1].rsplit("/", 1)[-1]
+        data = (self.directory / name).read_bytes()
+        Path(command[command.index("--output") + 1]).write_bytes(data)
+        return subprocess.CompletedProcess(command, 0, f"200 {len(data)} 0.1 0".encode(), b"")
+
+    def retain_descriptors(self):
+        retained = self.root / "source-descriptors"
+        retained.mkdir()
+        for source in self.directory.glob("*.dsc"):
+            (retained / source.name).write_bytes(source.read_bytes())
+        return retained
+
+    def test_retained_descriptors_preserve_pins_and_known_inconsistency(self):
+        self.retain_descriptors()
+        with patch.object(helper.subprocess, "run", side_effect=self.fixture_download) as network:
+            self.assertEqual(helper.run(self.manifest_path, self.root / "fresh", self.receipt, True), 0)
+            self.assertEqual(network.call_count, 6)
+        receipt = json.loads(self.receipt.read_text())
+        self.assertTrue(receipt["all_published_pins_match"])
+        self.assertFalse(receipt["descriptor_modified"])
+        self.assertEqual(len(receipt["known_inconsistencies"]), 1)
+        for name, attempts in receipt["transport"].items():
+            if name.endswith(".dsc"):
+                self.assertEqual(attempts, [{"source": "repository", "path": "source-descriptors/" + name}])
+
+    def test_tampered_retained_descriptor_is_rejected_before_staging(self):
+        retained = self.retain_descriptors()
+        name = "p4lang-pi_0.1.3-2.dsc"
+        data = (retained / name).read_bytes()
+        (retained / name).write_bytes(bytes([data[0] ^ 1]) + data[1:])
+        with patch.object(helper.subprocess, "run", side_effect=self.fixture_download):
+            self.assertEqual(helper.run(self.manifest_path, self.root / "fresh", self.receipt, True), 1)
+        self.assertEqual(json.loads(self.receipt.read_text())["error"], "retained_descriptor_sha256_mismatch:" + name)
+        self.assertFalse((self.root / "fresh" / name).exists())
+
+    def test_missing_mirror_archive_falls_back_to_upstream_with_same_pin(self):
+        def download(command, **kwargs):
+            if command[-1].startswith(helper.SOURCE_MIRROR):
+                return subprocess.CompletedProcess(command, 22, b"404 0 0.1 0", b"")
+            return self.fixture_download(command, **kwargs)
+        with patch.object(helper.subprocess, "run", side_effect=download), patch.object(helper.time, "sleep"):
+            self.assertEqual(helper.run(self.manifest_path, self.root / "fresh", self.receipt, True), 0)
+        receipt = json.loads(self.receipt.read_text())
+        self.assertTrue(receipt["all_published_pins_match"])
+        for name, attempts in receipt["transport"].items():
+            if not name.endswith(".dsc"):
+                self.assertEqual([item["url"] for item in attempts], [helper.SOURCE_MIRROR + name, helper.BASE_URL + name])
 
     def test_failed_fetch_has_bounded_attempts_and_sanitized_receipt(self):
         failure = subprocess.CompletedProcess([], 28, b"000 0 15 0", b"private-proxy-secret")

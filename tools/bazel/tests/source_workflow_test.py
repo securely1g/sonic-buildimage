@@ -68,6 +68,11 @@ class SourceWorkflowTest(unittest.TestCase):
                                     ('BAZEL', 'BAZEL_CONTAINER_ARGS')}}) + '\n')
             if name == 'rm' or 'clean' in args or 'cleanall' in args:
                 raise SystemExit('Source validation must preserve existing build state')
+            if name == 'sudo':
+                if args[:2] != ['-n', 'apt-get']:
+                    raise SystemExit('Unexpected privileged workflow command')
+                raise SystemExit(subprocess.run(
+                    [str(Path(sys.argv[0]).with_name('apt-get')), *args[2:]]).returncode)
             source_runner = name == 'python3' and 'tools/bazel/ci/container.py' in args
             if os.environ.get('HOSTED_CHECKS') == '1':
                 if source_runner or (name == 'bazel' and any(arg in ('build', 'test') for arg in args)):
@@ -101,7 +106,7 @@ class SourceWorkflowTest(unittest.TestCase):
                 elif args[:1] == ['check-ignore']:
                     print('MODULE.bazel.lock')
             ''')
-        for name in ("make", "python3", "bazel", "apt-get", "git", "df", "du", "rm", "cp"):
+        for name in ("make", "python3", "bazel", "apt-get", "sudo", "git", "df", "du", "rm", "cp"):
             executable = self.commands / name
             executable.write_text(recorder)
             executable.chmod(0o755)
@@ -123,13 +128,13 @@ class SourceWorkflowTest(unittest.TestCase):
     def recorded(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
-    def test_hosted_regressions_gate_vs_without_source_compilation(self):
+    def test_regressions_gate_vs_without_source_compilation(self):
         workflow_jobs = jobs()
         self.assertNotIn("source", workflow_jobs)
         self.assertNotIn("syncd-contracts", workflow_jobs)
         checks = workflow_jobs["checks"]
         self.assertIn("name: OCI regression checks (AMD64)", checks)
-        self.assertIn("runs-on: ubuntu-24.04", checks)
+        self.assertIn("runs-on: [self-hosted, Linux, X64, debian-trixie-container]", checks)
         self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: (?:checks|\[checks\])$")
         for name, step in steps(checks).items():
             script = shell(step)

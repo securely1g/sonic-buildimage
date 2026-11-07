@@ -21,7 +21,7 @@ trust helper validates this certificate-only input and includes its digest in
 the generated builder identity. This is execution trust; runtime image contexts
 do not receive the bundle.
 
-GitHub-hosted `ubuntu-24.04` runs lightweight OCI regressions, checks clean
+The `debian-trixie-container` pool runs lightweight OCI regressions, checks clean
 Bazel dependency resolution, and retains verified source downloads plus the
 Redis test helper. It does not compile SWSS or Syncd packages.
 
@@ -34,8 +34,9 @@ outputs are restored rather than recompiling the source packages. Test-only
 inputs and uncached tests may execute. SWSS TARs and Syncd package evidence
 retain their existing artifact names and validation requirements.
 
-Fork PRs and manual runs with `skip_vs=true` run only hosted checks, including
-the separate native AMD64/ARM64 archive jobs. They do not publish successful
+Fork PRs and manual runs with `skip_vs=true` run only the regression checks, including
+the separate AMD64/ARM64 archive jobs. AMD64 runs natively and ARM64 uses the
+[ARM64 tools container under QEMU](../../bazel/ci/DEBIAN_WORKERS.md). These jobs do not publish successful
 SWSS/Syncd source-package or full-image validation evidence.
 
 ## Legacy one-job runner helpers

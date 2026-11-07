@@ -49,13 +49,16 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-24.04
             machine: x86_64
           - arch: arm64
-            runner: ubuntu-24.04-arm
             machine: aarch64
-    runs-on: ${{ matrix.runner }}
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
     timeout-minutes: 15
+    env:
+      SONIC_CI_ARCH: ${{ matrix.arch }}
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

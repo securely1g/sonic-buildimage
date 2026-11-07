@@ -44,8 +44,13 @@ concurrency:
 jobs:
   checks:
     name: Build dashboard checks
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
     timeout-minutes: 10
+    env:
+      SONIC_CI_ARCH: amd64
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,16 +69,20 @@ jobs:
       github.repository == 'securely1g/sonic-buildimage' &&
       github.ref == 'refs/heads/master' &&
       github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
     timeout-minutes: 30
     permissions:
       actions: read
       contents: write
       pull-requests: read
     env:
+      SONIC_CI_ARCH: amd64
       GH_TOKEN: ${{ github.token }}
       REPOSITORY: securely1g/sonic-buildimage
       BACKFILL: ${{ inputs.backfill || false }}
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       # workflow_run data never selects executable code. Only the maintained
       # default-branch revision that passed checks supplies the collector/site.
@@ -82,7 +91,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Restore durable timing history
-        shell: bash
+        shell: sonic-ci-shell {0}
         run: |
           set -euo pipefail
           git init history
@@ -96,7 +105,7 @@ jobs:
             git -C history checkout --orphan build-metrics
           fi
       - name: Collect public job and step timings
-        shell: bash
+        shell: sonic-ci-shell {0}
         run: |
           set -euo pipefail
           mkdir -p site
@@ -110,7 +119,7 @@ jobs:
           cp LICENSE site/
           touch site/.nojekyll
       - name: Preserve history independently of artifact retention
-        shell: bash
+        shell: sonic-ci-shell {0}
         run: |
           set -euo pipefail
           cp site/data.json history/data.json
@@ -131,7 +140,7 @@ jobs:
   deploy:
     name: Publish build dashboard
     needs: publish
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
     timeout-minutes: 10
     permissions:
       pages: write

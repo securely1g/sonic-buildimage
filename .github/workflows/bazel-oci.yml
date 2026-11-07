@@ -44,21 +44,18 @@ jobs:
   source_image_inputs:
     name: Fetch pinned source-image downloads
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
     timeout-minutes: 20
+    env:
+      SONIC_CI_ARCH: amd64
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - name: Checkout reviewed source-download verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Bazel for repository downloads only
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: false
-          cache-version: "8.5.1"
       - name: Retain the same verified GitLab sources used by the VS workflow
         run: |
           mkdir -p artifacts/source-image-inputs
@@ -224,8 +221,8 @@ jobs:
   archive:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Container archive (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.architecture == 'amd64' && 180 || 60 }}
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
+    timeout-minutes: ${{ matrix.architecture == 'amd64' && 180 || 360 }}
     strategy:
       fail-fast: false
       matrix:
@@ -233,22 +230,21 @@ jobs:
           - name: AMD64
             architecture: amd64
             machine: x86_64
-            runner: ubuntu-24.04
             platform: x86_64_trixie
           - name: ARM64
             architecture: arm64
             machine: aarch64
-            runner: ubuntu-24.04-arm
             platform: aarch64_trixie
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:
-        shell: bash
+        shell: sonic-ci-shell {0}
+    env:
+      SONIC_CI_ARCH: ${{ matrix.architecture }}
     steps:
       - name: Install execution tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
           for tool in bsdtar gdb readelf objcopy; do
             command -v "$tool"
@@ -269,15 +265,6 @@ jobs:
 
       - name: Initialize Sysmgr's pinned gNOI source
         run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
-      - name: Set up Bazel
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: buildimage-gzip-${{ matrix.architecture }}
-          cache-version: "8.5.1"
-
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -308,8 +295,8 @@ jobs:
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000 \
+            --bazel-arg=--jobs=2 --bazel-arg=--local_resources=cpu=2 \
+            --bazel-arg=--local_resources=memory=3072 \
             --output artifacts/archive/action-audit.json \
             //tools/bazel/tests:sonic_docker_archive_test \
             //tools/bazel/tests:oci_base_layout_test \
@@ -327,7 +314,7 @@ jobs:
             //tools/bazel/tests:oci-consumer-first.gz
           "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
+            --jobs=2 --local_resources=cpu=2 --local_resources=memory=3072 \
             --lockfile_mode=update --nocache_test_results --test_output=all \
             --build_event_json_file="$PWD/artifacts/archive/test-events.jsonl" \
             //tools/bazel/tests:sonic_docker_archive_test \
@@ -372,9 +359,9 @@ jobs:
             --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 \
-            --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000
+            --bazel-arg=--jobs=2 \
+            --bazel-arg=--local_resources=cpu=2 \
+            --bazel-arg=--local_resources=memory=3072
 
       - name: Test Python packages and check startup generation
         run: |
@@ -389,8 +376,8 @@ jobs:
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000 \
+            --bazel-arg=--jobs=2 --bazel-arg=--local_resources=cpu=2 \
+            --bazel-arg=--local_resources=memory=3072 \
             --output artifacts/config-engine/action-audit.json \
             //tools/bazel/tests:apt_selection_test \
             //tools/bazel/tests:sonic_py_common_test \
@@ -418,7 +405,7 @@ jobs:
             //dockers/docker-orchagent/config:docker_init
           "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
+            --jobs=2 --local_resources=cpu=2 --local_resources=memory=3072 \
             --nocache_test_results --test_output=all \
             --build_event_json_file="$PWD/artifacts/config-engine/test-events.jsonl" \
             //tools/bazel/tests:apt_selection_test \
@@ -458,9 +445,9 @@ jobs:
             --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 \
-            --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000
+            --bazel-arg=--jobs=2 \
+            --bazel-arg=--local_resources=cpu=2 \
+            --bazel-arg=--local_resources=memory=3072
           git diff --exit-code
 
       - name: Check local cache reuse across fresh checkouts
@@ -471,9 +458,9 @@ jobs:
             --repository-cache "$("$BAZEL" info repository_cache)" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--jobs=4 \
-            --bazel-arg=--local_resources=cpu=4 \
-            --bazel-arg=--local_resources=memory=10000
+            --bazel-arg=--jobs=2 \
+            --bazel-arg=--local_resources=cpu=2 \
+            --bazel-arg=--local_resources=memory=3072
 
       - name: Retain generated module lock and graph
         run: |
@@ -595,8 +582,13 @@ jobs:
   sysmgr_runtime:
     name: Load and run Sysmgr images (AMD64)
     needs: archive
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
     timeout-minutes: 30
+    env:
+      SONIC_CI_ARCH: amd64
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -624,23 +616,21 @@ jobs:
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: OCI regression checks (AMD64)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
     outputs:
       p4_sources_artifact_id: ${{ steps.p4_sources_upload.outputs.artifact-id }}
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
     timeout-minutes: 60
-    container:
-      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-      # Reap any Bazel processes used for dependency resolution.
-      options: --init
     defaults:
       run:
-        shell: bash
+        shell: sonic-ci-shell {0}
+    env:
+      SONIC_CI_ARCH: amd64
     steps:
       - name: Install execution tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl \
             gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
 
@@ -661,16 +651,6 @@ jobs:
 
       - name: Initialize Sysmgr's pinned gNOI source
         run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
-      - name: Set up Bazel
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
-          # This job resolves/downloads dependencies but executes no Bazel builds.
-          disk-cache: false
-          cache-version: "8.5.1"
-
       - name: Check Make handoff and archive validation
         env:
           SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
