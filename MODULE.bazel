@@ -25,8 +25,9 @@ bazel_dep(name = "sonic-dash", version = "0.0.2-5c9305403585a7ae54f86918219acb8e
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
-# The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.17")
+# Share APT lock metadata across dependency sets.
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.18")
+include("//tools/bazel:rules_distroless_override.MODULE.bazel")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
