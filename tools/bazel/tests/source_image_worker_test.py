@@ -256,9 +256,9 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertNotIn('private-', path.read_text())
 
     def test_execution_network_only_after_apt_failure_and_preserves_original(self):
-        update = ['sudo', '-n', 'apt-get', 'update']
+        update = ['sudo', '-n', 'apt-get', '-o', 'Acquire::EnableSrvRecords=false', 'update']
         install = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get',
-                   'install', '-y', '--no-install-recommends', 'libarchive-tools']
+                   '-o', 'Acquire::EnableSrvRecords=false', 'install', '-y', '--no-install-recommends', 'libarchive-tools']
         for failure_at in (0, 1):
             for diagnostic_failure in (False, True):
                 with self.subTest(failure_at=failure_at, diagnostic_failure=diagnostic_failure), \
@@ -598,8 +598,9 @@ class ImageWorkerTest(unittest.TestCase):
                     patch.object(worker, 'output', return_value='libarchive-tools\t3.7.4'):
                 worker.prepare_validation_tools(artifacts)
             self.assertEqual(commands, [
-                ['sudo', '-n', 'apt-get', 'update'],
-                ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y',
+                ['sudo', '-n', 'apt-get', '-o', 'Acquire::EnableSrvRecords=false', 'update'],
+                ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get',
+                 '-o', 'Acquire::EnableSrvRecords=false', 'install', '-y',
                  '--no-install-recommends', 'libarchive-tools']])
             receipt = json.loads((artifacts / 'worker-execution-tools.json').read_text())
             self.assertEqual(receipt['packages_installed'], ['libarchive-tools'])
