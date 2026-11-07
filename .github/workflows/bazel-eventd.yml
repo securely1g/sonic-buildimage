@@ -19,6 +19,11 @@ on:
 permissions:
   contents: read
 
+# Draft PR #146 selects the existing Socat extraction repair from registry #242.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && 'd5233d24b0b723b7ec3c4844e27f5a8902eba611' || '' }}
+
 jobs:
   native:
     name: Native event services (${{ matrix.architecture }})
@@ -59,7 +64,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B src/sonic-eventd/bazel/ci.py --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
+          python3 -B src/sonic-eventd/bazel/ci.py --bazel "$BAZEL" --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence
         if: always()

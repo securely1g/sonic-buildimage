@@ -37,8 +37,10 @@ concurrency:
   group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
   cancel-in-progress: true
 
+# Draft PR #146 selects the existing Socat extraction repair from registry #242.
 env:
-  BAZEL: bazel
+  BAZEL: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && 'd5233d24b0b723b7ec3c4844e27f5a8902eba611' || '' }}
 
 jobs:
   source_image_inputs:
@@ -278,6 +280,26 @@ jobs:
           disk-cache: buildimage-gzip-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Use the checksum-verified public configuration from the merged registry.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -354,14 +376,15 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog') }}
         run: |
+          # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
-            # This CI-only change does not authorize Debian package generation.
             for test in tools/bazel/tests/*_test.py; do
               case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
-                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
+                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py)
+                  echo "Skip DEB-generating kernel fixtures: $test" ;;
+                *) PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test")" ;;
               esac
             done
           else
@@ -671,16 +694,37 @@ jobs:
           disk-cache: false
           cache-version: "8.5.1"
 
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Use the checksum-verified public configuration from the merged registry.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog') }}
         run: |
+          # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
-            # This CI-only change does not authorize Debian package generation.
             for test in tools/bazel/tests/*_test.py; do
               case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
-                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
+                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py)
+                  echo "Skip DEB-generating kernel fixtures: $test" ;;
+                *) PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test")" ;;
               esac
             done
           else
@@ -1137,6 +1181,7 @@ jobs:
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       github.head_ref != 'codex/sysmgr-source-image' &&
       github.head_ref != 'codex/teamd-source-worker' &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog') &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&

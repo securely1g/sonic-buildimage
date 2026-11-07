@@ -23,6 +23,11 @@ on:
 permissions:
   contents: read
 
+# Draft PR #146 selects the existing Socat extraction repair from registry #242.
+env:
+  BAZEL: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && 'd5233d24b0b723b7ec3c4844e27f5a8902eba611' || '' }}
+
 jobs:
   package:
     name: YANG model distribution (${{ matrix.architecture }})
@@ -62,8 +67,8 @@ jobs:
           registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
-          # The standalone module and image root use the same maintained registry.
-          (cd ../.. && bazel cquery --lockfile_mode=update \
+          # The standalone module keeps main; the Draft image-root query may select registry #242.
+          (cd ../.. && "$BAZEL" cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt
           uname -m > artifacts/execution-machine.txt
