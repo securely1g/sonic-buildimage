@@ -10,6 +10,8 @@ import subprocess
 
 def inspect_graph(stdout, stderr, returncode):
     """Validate the full graph, allowing complete known unused extension failures."""
+    if returncode not in (0, 2):
+        raise ValueError(f"Bazel module graph failed with exit code {returncode}; see module-graph.stderr")
     graph = json.loads(stdout)
     if graph.get("key") != "<root>" or not graph.get("root") or not graph.get("dependencies"):
         raise ValueError("Missing resolved module graph")
@@ -68,14 +70,25 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     """Retain module provenance without changing the tested extension lock."""
     lock = workspace / "MODULE.bazel.lock"
     tested_lock = lock.read_bytes()
-    command = [*bazel, "mod", "graph", "--output=json", "--extension_info=hidden",
+    # The inspector evaluates unused extensions too, including large APT indexes.
+    # Release the completed build's analysis graph while preserving its disk cache.
+    subprocess.run([*bazel, "shutdown"], cwd=workspace, text=True,
+                   capture_output=True, check=True)
+    # A full extension inspection needs more heap than the source build. Stop
+    # that larger server afterward so installed-image checks recover the memory.
+    command = [*bazel, "--host_jvm_args=-Xmx4096m", "mod", "graph",
+               "--output=json", "--extension_info=hidden",
                "--lockfile_mode=off", "--color=no", "--curses=no", *options]
     result = subprocess.run(command, cwd=workspace, text=True, capture_output=True)
     (directory / "module-graph.json").write_text(result.stdout)
     (directory / "module-graph.stderr").write_text(result.stderr)
     (directory / "module-graph-inspection.json").write_text(
         json.dumps({"argv": command, "returncode": result.returncode}, indent=2) + "\n")
+    stopped = subprocess.run([*bazel, "shutdown"], cwd=workspace, text=True,
+                             capture_output=True)
+    (directory / "module-graph-shutdown.stderr").write_text(stopped.stderr)
     inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    stopped.check_returncode()
     inspection["argv"] = command
     (directory / "module-graph-inspection.json").write_text(json.dumps(inspection, indent=2) + "\n")
     if lock.read_bytes() != tested_lock:

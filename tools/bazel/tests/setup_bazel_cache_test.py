@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the real hosted cache handoff without invoking Bazel."""
+"""Exercise worker RC selection and retained hosted-cache helper compatibility."""
 
 import json
 import os
@@ -42,66 +42,94 @@ import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 assert '--nohome_rc' in args
-rc = Path(next(x.split('=', 1)[1] for x in args if x.startswith('--bazelrc=')))
-assert 'try-import %workspace%/.bazelrc.user' in rc.read_text()
-Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.bazelrc.user').read_text()}))
+rcs = [Path(x.split('=', 1)[1]) for x in args if x.startswith('--bazelrc=')]
+texts = [rc.read_text() for rc in rcs if rc.is_file()]
+user = Path('.bazelrc.user')
+Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': texts, 'user': user.read_text() if user.exists() else ''}))
 """)
         recorder.chmod(0o755)
-        return dict(os.environ, HOME=str(home), PATH=str(binary) + ":/usr/bin:/bin",
+        environment = dict(os.environ, HOME=str(home), PATH=str(binary) + ":/usr/bin:/bin",
                     RECORD=str(root / "record.json"), BASH_ENV="/dev/null",
                     RUNNER_TEMP=str(root), CI_CPU="x86_64", CI_DISTRIBUTION="trixie")
+        environment.pop("SONIC_CI_EXECUTION_MODE", None)
+        return environment
 
-    def test_all_seven_workflow_calls_reach_isolated_wrapper_and_direct_native(self):
+    def test_worker_workflows_preserve_managed_rc_and_explicit_cache_overrides(self):
         for filename, job_name in JOBS:
-            with self.subTest(workflow=filename, job=job_name), tempfile.TemporaryDirectory() as temporary:
+            for mode in ("native", "qemu-aarch64"):
+                with self.subTest(workflow=filename, job=job_name, mode=mode), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    document = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+                    job = document["jobs"][job_name]
+                    steps = job["steps"]
+                    self.assertIn("debian-trixie-container", job["runs-on"])
+                    self.assertEqual(job["defaults"]["run"]["shell"], "sonic-ci-shell {0}")
+                    self.assertIn("SONIC_CI_ARCH", job["env"])
+                    self.assertFalse(any("setup-bazel@" in step.get("uses", "") for step in steps))
+                    self.assertFalse(any(HELPER in step.get("run", "") for step in steps))
+                    # These are the operator-managed worker defaults, independent
+                    # of the checkout and the selected source registry.
+                    home = ("common --disk_cache=/retained/disk\n"
+                            "common --repository_cache=/retained/repository\n")
+                    prior = "common --experimental_downloader_config=/verified/transport.cfg\n"
+                    env = self.prepare(root, home, prior)
+                    env["SONIC_CI_EXECUTION_MODE"] = mode
+                    if filename == "bazel-" + OWNER + ".yml":
+                        build = next(s for s in steps if "run_bazel()" in s.get("run", ""))
+                        script = build["run"]
+                        options = re.search(r"(?ms)^options=\(\n.*?^\)", script).group()
+                        function = re.search(r"(?ms)^run_bazel\(\) \{\n.*?^\}", script).group()
+                        env["SONIC_BAZEL_REGISTRY"] = build["env"]["SONIC_BAZEL_REGISTRY"]
+                        command = options + "\n" + function + "\nrun_bazel info repository_cache"
+                    else:
+                        self.assertIn(WRAPPER, str(job))
+                        command = "bash " + WRAPPER + " info repository_cache"
+                    subprocess.run(["bash", "-eu", "-c", command], cwd=root, env=env, check=True)
+                    observed = json.loads((root / "record.json").read_text())
+                    self.assertIn("--bazelrc=/etc/bazel.bazelrc", observed["argv"])
+                    self.assertIn("--bazelrc=" + str(root / "home/.bazelrc"), observed["argv"])
+                    self.assertIn(home, observed["explicit_rc"])
+                    self.assertEqual(observed["user"], prior)
+                    # Fresh-root verifiers must still override the worker defaults.
+                    override = ["bash", WRAPPER, "build", "--repository_cache=/private/repository",
+                                "--disk_cache=/private/disk", "//tools/bazel/tests:archive-fixture.gz"]
+                    subprocess.run(override, cwd=root, env=env, check=True)
+                    self.assertEqual(json.loads((root / "record.json").read_text())["argv"][-3:], override[-3:])
+
+    def test_nonworker_wrapper_still_isolates_unrelated_home_options(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = ("build --disk_cache=/retained/disk\n"
+                    "common --repository_cache=/retained/repository\n"
+                    "common --registry=https://unrelated.invalid\n"
+                    "startup --output_base=/unrelated/output\n")
+            env = self.prepare(root, home)
+            subprocess.run(["python3", HELPER], cwd=root, env=env, check=True)
+            subprocess.run(["bash", WRAPPER, "info", "repository_cache"], cwd=root, env=env, check=True)
+            observed = json.loads((root / "record.json").read_text())
+            self.assertEqual(sum(arg.startswith("--bazelrc=") for arg in observed["argv"]), 1)
+            self.assertIn("build --disk_cache=/retained/disk", observed["user"])
+            self.assertIn("common --repository_cache=/retained/repository", observed["user"])
+            self.assertNotIn("unrelated", observed["user"])
+            self.assertNotIn(home, observed["explicit_rc"])
+
+    def test_inspector_heap_and_shutdown_use_the_same_worker_startup_settings(self):
+        for mode in ("native", "qemu-aarch64"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                document = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
-                job = document["jobs"][job_name]
-                steps = job["steps"]
-                setup = next(s for s in steps if "setup-bazel@" in s.get("uses", ""))
-                handoff = [s for s in steps if HELPER in s.get("run", "")]
-                self.assertEqual(len(handoff), 1)
-                handoff = handoff[0]
-                self.assertEqual(steps.index(handoff), steps.index(setup) + 1)
-                repository_only = setup["with"].get("disk-cache") is False
-                self.assertEqual(handoff["run"].strip(), "python3 " + HELPER +
-                                 (" --repository-only" if repository_only else ""))
-                self.assertTrue(setup["with"]["repository-cache"])
-                if filename not in ("bazel-base-images.yml", "bazel-oci.yml"):
-                    events = document.get("on", document.get(True))
-                    for event in ("pull_request", "push"):
-                        if event in events:
-                            self.assertIn(HELPER, events[event]["paths"])
-                home = ("build --disk_cache=/retained/disk\n"
-                        "common --repository_cache=/retained/repository\n"
-                        "common --registry=https://unrelated.invalid\n"
-                        "common --experimental_downloader_config=/unrelated/home.cfg\n"
-                        "startup --output_base=/unrelated/output\n")
-                prior = "common --experimental_downloader_config=/verified/transport.cfg"
-                env = self.prepare(root, home, prior)
-                subprocess.run(["bash", "-eu", "-c", handoff["run"]], cwd=root, env=env, check=True)
-                if filename == "bazel-" + OWNER + ".yml":
-                    build = next(s for s in steps if "run_bazel()" in s.get("run", ""))
-                    script = build["run"]
-                    options = re.search(r"(?ms)^options=\(\n.*?^\)", script).group()
-                    function = re.search(r"(?ms)^run_bazel\(\) \{\n.*?^\}", script).group()
-                    env["SONIC_BAZEL_REGISTRY"] = build["env"]["SONIC_BAZEL_REGISTRY"]
-                    command = options + "\n" + function + "\nrun_bazel info repository_cache"
-                else:
-                    self.assertIn(WRAPPER, str(job))
-                    command = "bash " + WRAPPER + " info repository_cache"
-                subprocess.run(["bash", "-eu", "-c", command], cwd=root, env=env, check=True)
-                observed = json.loads((root / "record.json").read_text())
-                user = observed["user"]
-                self.assertTrue(user.startswith(prior + "\n"))
-                self.assertIn("common --repository_cache=/retained/repository\n", user)
-                self.assertEqual("build --disk_cache=/retained/disk\n" in user, not repository_only)
-                self.assertNotIn("unrelated", user)
-                # Existing fresh-root verifiers can still override these defaults.
-                override = ["bash", WRAPPER, "build", "--repository_cache=/private/repository",
-                            "--disk_cache=/private/disk", "//tools/bazel/tests:archive-fixture.gz"]
-                subprocess.run(override, cwd=root, env=env, check=True)
-                self.assertEqual(json.loads((root / "record.json").read_text())["argv"][-3:], override[-3:])
+                env = self.prepare(root, "common --repository_cache=/retained/repository\n")
+                env["SONIC_CI_EXECUTION_MODE"] = mode
+                subprocess.run(["bash", WRAPPER, "--host_jvm_args=-Xmx4096m", "mod", "graph",
+                                "--lockfile_mode=off"], cwd=root, env=env, check=True)
+                command = json.loads((root / "record.json").read_text())["argv"]
+                self.assertLess(command.index("--host_jvm_args=-Xmx4096m"), command.index("mod"))
+                self.assertEqual(command[-1], "--lockfile_mode=off")
+                subprocess.run(["bash", WRAPPER, "shutdown"], cwd=root, env=env, check=True)
+                shutdown = json.loads((root / "record.json").read_text())["argv"]
+                self.assertEqual(shutdown[-1], "shutdown")
+                self.assertIn("--bazelrc=/etc/bazel.bazelrc", shutdown)
+                self.assertFalse(any(arg.startswith(("--registry=", "--lockfile_mode=")) for arg in shutdown))
+                self.assertFalse(any(arg.endswith("/common.bazelrc") for arg in shutdown))
 
     def test_missing_duplicate_and_invalid_settings_leave_user_file_unchanged(self):
         cases = [None, "", "build --disk_cache=/disk\n",
@@ -129,32 +157,17 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 prefix = (prior or "") + ("\n" if prior and not prior.endswith("\n") else "")
                 self.assertEqual((root / ".bazelrc.user").read_text(), prefix + "common --repository_cache=/repo\n")
 
-    def test_existing_source_only_ci_selectors_run_this_regression(self):
+    def test_normal_regression_jobs_discover_the_cache_tests_without_branch_skips(self):
         document = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        count = 0
-        for job in document["jobs"].values():
-            steps = job.get("steps", [])
-            for index, step in enumerate(steps):
-                script = step.get("run", "")
-                if "for test in tools/bazel/tests/*_test.py; do" not in script:
-                    continue
-                count += 1
+        for job_name in ("archive", "checks"):
+            with self.subTest(job=job_name):
+                job = document["jobs"][job_name]
+                self.assertNotIn("SOURCE_ONLY_NO_DEBS", str(job))
+                steps = job["steps"]
+                checks = [s for s in steps if "python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'" in s.get("run", "")]
+                self.assertEqual(len(checks), 1)
+                index = steps.index(checks[0])
                 self.assertTrue(any("python3-yaml" in s.get("run", "") for s in steps[:index]))
-                loop = script[:script.index("\nfi") + 3]
-                with tempfile.TemporaryDirectory() as temporary:
-                    root = Path(temporary)
-                    tests = root / "tools/bazel/tests"
-                    tests.mkdir(parents=True)
-                    (tests / "setup_bazel_cache_test.py").write_text("")
-                    (tests / "kernel_test.py").write_text("")
-                    recorder = root / "python3"
-                    recorder.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
-                    recorder.chmod(0o755)
-                    result = subprocess.run(["bash", "-eu", "-c", loop], cwd=root,
-                                            env={"PATH": str(root) + ":/usr/bin:/bin", "SOURCE_ONLY_NO_DEBS": "true"},
-                                            check=True, capture_output=True, text=True)
-                    self.assertEqual(result.stdout.strip(), "-B tools/bazel/tests/setup_bazel_cache_test.py")
-        self.assertEqual(count, 2)
 
 
 if __name__ == "__main__":

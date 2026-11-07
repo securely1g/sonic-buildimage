@@ -255,6 +255,17 @@ def p4_service_check(config):
                 'scope': 'Installed compiler plus local BMv2/PI gRPC listener; no packets or remote services.'}
 
 
+def qemu_arm64_smaps():
+    """Recognize QEMU's synthetic smaps without changing native ARM Redis checks."""
+    if platform.machine() not in {'aarch64', 'arm64'}:
+        return False
+    try:
+        with open('/proc/self/smaps') as mapping:
+            return os.readlink('/proc/self/fd/' + str(mapping.fileno())) == '/memfd:qemu-open (deleted)'
+    except OSError:
+        return False
+
+
 @contextlib.contextmanager
 def redis_fixture(config):
     """Run only the supplied test helper, inside this isolated container."""
@@ -279,6 +290,13 @@ def redis_fixture(config):
         argv = [str(executable), '--port', '0', '--save', '', '--appendonly', 'no',
                 '--unixsocket', socket_path, '--unixsocketperm', '700',
                 '--dir', str(directory), '--databases', '32']
+        # QEMU reports zero Shared_Dirty in synthetic smaps. Ignore the resulting
+        # false kernel warning only for this positively identified, non-persistent
+        # test fixture; keep the check on native ARM.
+        # https://github.com/qemu/qemu/blob/v8.2.2/linux-user/syscall.c#L7529-L7555
+        ignored_warnings = ['ARM64-COW-BUG'] if qemu_arm64_smaps() else []
+        if ignored_warnings:
+            argv += ['--ignore-warnings', ','.join(ignored_warnings)]
         with (directory / 'redis.log').open('w+') as log:
             process = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT)
             try:
@@ -301,6 +319,7 @@ def redis_fixture(config):
                 yield {'version': version['stdout'].strip(), 'sha256': config['sha256'],
                        'database_config_sha256': hashlib.sha256(database.read_bytes()).hexdigest(),
                        'unix_socket': socket_path, 'tcp_disabled': True,
+                       'ignored_warnings': ignored_warnings,
                        'scope': 'Explicit test helper, not an installed image component.'}
             finally:
                 if process.poll() is None:

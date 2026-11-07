@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from tools.bazel.ci import validate_runtime
 from tools.bazel.oci import runtime_smoke
@@ -91,6 +91,43 @@ class P4CompilerTests(unittest.TestCase):
 
 
 class RedisFixtureTests(unittest.TestCase):
+    def test_kernel_check_exception_requires_arm64_and_qemu_memory_maps(self):
+        for machine, descriptor, expected in [
+            ('aarch64', '/proc/123/smaps', False),
+            ('x86_64', '/memfd:qemu-open (deleted)', False),
+            ('aarch64', '/memfd:unrelated (deleted)', False),
+            ('aarch64', '/memfd:qemu-open (deleted)', True),
+        ]:
+            with self.subTest(machine=machine, descriptor=descriptor):
+                with patch.object(runtime_smoke.platform, 'machine', return_value=machine), \
+                        patch('builtins.open', mock_open()), \
+                        patch.object(runtime_smoke.os, 'readlink', return_value=descriptor):
+                    self.assertEqual(runtime_smoke.qemu_arm64_smaps(), expected)
+
+    def test_emulation_exception_keeps_persistence_off_and_records_the_warning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            helper = root / 'redis'
+            helper.write_bytes(b'fixture')
+            config = root / 'database.json'
+            config.write_text(json.dumps({'INSTANCES': {'redis': {'unix_socket_path': '/run/redis/redis.sock'}}}))
+            params = {'executable': str(helper), 'sha256': hashlib.sha256(b'fixture').hexdigest(),
+                      'database_config': str(config)}
+            for emulated in (False, True):
+                with self.subTest(emulated=emulated):
+                    with patch.object(runtime_smoke, 'qemu_arm64_smaps', return_value=emulated), \
+                            patch.object(runtime_smoke, 'command', return_value={'returncode': 0, 'stdout': 'Redis server v=7'}), \
+                            patch.object(runtime_smoke.subprocess, 'Popen') as launch, \
+                            patch.object(runtime_smoke.socket, 'socket') as sockets:
+                        launch.return_value.poll.return_value = None
+                        sockets.return_value.__enter__.return_value.recv.return_value = b'+PONG\r\n'
+                        with runtime_smoke.redis_fixture(params) as receipt:
+                            self.assertEqual(receipt['ignored_warnings'], ['ARM64-COW-BUG'] if emulated else [])
+                        argv = launch.call_args.args[0]
+                        self.assertEqual(argv[argv.index('--save') + 1], '')
+                        self.assertEqual(argv[argv.index('--appendonly') + 1], 'no')
+                        self.assertEqual('--ignore-warnings' in argv, emulated)
+
     def test_wrong_helper_bytes_fail_before_starting_a_process(self):
         with tempfile.TemporaryDirectory() as temp:
             helper = Path(temp) / 'redis'

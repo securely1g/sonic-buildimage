@@ -30,35 +30,25 @@ jobs:
         include:
           - architecture: amd64
             cpu: x86_64
-            runner: ubuntu-24.04
           - architecture: arm64
             cpu: aarch64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
+    timeout-minutes: ${{ matrix.architecture == 'arm64' && 360 || 180 }}
     defaults:
       run:
-        shell: bash
+        shell: sonic-ci-shell {0}
+    env:
+      SONIC_CI_ARCH: ${{ matrix.architecture }}
     steps:
       - name: Install execution tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl file gdb git libtool patch pkg-config python3 tar unzip zstd
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl file gdb git libtool patch pkg-config python3 tar unzip zstd
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Initialize Sysmgr's pinned gNOI source
         run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
-      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}
-          cache-version: "8.5.1"
-      - name: Preserve setup-bazel caches for source checks
-        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Fetch the verified shared downloader configuration
         env:
           SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg
@@ -98,11 +88,14 @@ jobs:
             "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
             "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
             --jobs=2
+            --local_resources=cpu=2
+            --local_resources=memory=3072
           )
           run_bazel() {
             local command="$1"
             shift
             bazel --nosystem_rc --nohome_rc --noworkspace_rc \
+              --bazelrc=/etc/bazel.bazelrc --bazelrc="$HOME/.bazelrc" \
               --bazelrc="$PWD/tools/bazel/common.bazelrc" \
               "$command" "${options[@]}" "$@"
           }

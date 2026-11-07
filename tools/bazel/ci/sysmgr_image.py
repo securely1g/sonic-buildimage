@@ -21,7 +21,7 @@ from tools.bazel.oci import image_validation, oci_layout, source_base_validation
 OWNER = "//dockers/docker-sysmgr:"
 IMAGES = ("docker-sysmgr", "docker-sysmgr-dbg")
 BASE = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie"
-OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=8000",
+OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=3072",
            "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
            "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
 TARGETS = {

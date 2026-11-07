@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import posixpath
 import shutil
 import socket
@@ -12,13 +13,13 @@ import tarfile
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from python.runfiles import runfiles
 
 
 def locate(value):
     path = Path(value)
     if path.exists():
         return path.absolute()
+    from python.runfiles import runfiles
     result = runfiles.Create().Rlocation(value) or runfiles.Create().Rlocation('_main/' + value)
     if not result or not Path(result).exists():
         raise ValueError('Missing declared test input: ' + value)
@@ -32,6 +33,17 @@ def member_filter(member, destination):
             target = posixpath.relpath(target, str(PurePosixPath(member.name).parent))
         member = member.replace(linkname=target)
     return tarfile.data_filter(member, destination)
+
+
+def qemu_arm64_smaps():
+    """Recognize QEMU's synthetic smaps without changing native ARM Redis checks."""
+    if platform.machine() not in {'aarch64', 'arm64'}:
+        return False
+    try:
+        with open('/proc/self/smaps') as mapping:
+            return os.readlink('/proc/self/fd/' + str(mapping.fileno())) == '/memfd:qemu-open (deleted)'
+    except OSError:
+        return False
 
 
 def main():
@@ -56,6 +68,12 @@ def main():
         redis = runtime/'usr/bin/redis-server'
         if not redis.is_file():
             raise ValueError('Declared test runtime lacks redis-server')
+        # QEMU hardcodes Shared_Dirty to zero in its synthetic smaps, causing
+        # Redis's ARM kernel COW check to fail. Only this private, non-persistent
+        # fixture may ignore that warning, after positively identifying QEMU.
+        # https://github.com/qemu/qemu/blob/v8.2.2/linux-user/syscall.c#L7529-L7555
+        ignored_warnings = ['ARM64-COW-BUG'] if qemu_arm64_smaps() else []
+        redis_options = ['--ignore-warnings', ','.join(ignored_warnings)] if ignored_warnings else []
         endpoints = {}
         for config in (work/'tests').rglob('*.json'):
             data = json.loads(config.read_text())
@@ -76,7 +94,7 @@ def main():
                 log = (root/('redis-' + str(port) + '.log')).open('w+')
                 process = subprocess.Popen([str(redis), '--bind', '127.0.0.1', '--port', str(port),
                     '--unixsocket', unix_socket, '--save', '', '--appendonly', 'no',
-                    '--databases', '32', '--dir', str(root)], env=environment, stdout=log, stderr=subprocess.STDOUT)
+                    '--databases', '32', '--dir', str(root), *redis_options], env=environment, stdout=log, stderr=subprocess.STDOUT)
                 children.append((process, log))
                 ready = False; deadline = time.monotonic() + 10
                 while process.poll() is None and time.monotonic() < deadline:
@@ -124,7 +142,7 @@ def main():
                     fixture_rows[name] = count
             output = Path(os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR', str(root)))
             output.mkdir(parents=True, exist_ok=True); shutil.copyfile(report, output/'gtest.xml')
-            (output/'services.json').write_text(json.dumps({'_generated': {'notice':'AUTO-GENERATED. DO NOT EDIT MANUALLY.', 'generator':'src/sonic-eventd/bazel/run_tests.py'}, 'test_cases':len(cases), 'fixture_rows':fixture_rows, 'redis_instances':len(children), 'host_services_used':False}, indent=2)+'\n')
+            (output/'services.json').write_text(json.dumps({'_generated': {'notice':'AUTO-GENERATED. DO NOT EDIT MANUALLY.', 'generator':'src/sonic-eventd/bazel/run_tests.py'}, 'test_cases':len(cases), 'fixture_rows':fixture_rows, 'redis_instances':len(children), 'host_services_used':False, 'redis_ignored_warnings':ignored_warnings}, indent=2)+'\n')
             return 0
         finally:
             for process, log in children:

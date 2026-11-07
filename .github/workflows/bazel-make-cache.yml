@@ -21,7 +21,12 @@ permissions:
 jobs:
   checks:
     name: Make cache regression tests
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
+    env:
+      SONIC_CI_ARCH: amd64
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

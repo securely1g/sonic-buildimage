@@ -13,6 +13,7 @@ import time
 
 
 BASE_URL = "https://downloadcontent.opensuse.org/repositories/home:/p4lang/Debian_11/"
+SOURCE_MIRROR = "https://github.com/securely1g/sonic-bazel-registry/releases/download/p4-source-inputs-20261021/"
 VERSIONS = {"p4lang-pi": "0.1.3-2", "p4lang-bmv2": "1.15.0-9", "p4lang-p4c": "1.2.4.2-3"}
 ALGORITHMS = {"md5": 32, "sha1": 40, "sha256": 64}
 
@@ -158,37 +159,46 @@ def verify(directory, manifest, receipt):
                    all_dsc_checksums_match=not mismatches, descriptor_modified=False)
 
 
-def fetch(directory, inventory, receipt, save):
+def fetch(directory, inventory, receipt, save, descriptor_directory):
     directory.mkdir(parents=True, exist_ok=False)
     deadline = time.monotonic() + 900
     for name, pin in inventory.items():
         attempts = receipt["transport"][name] = []
+        if name.endswith(".dsc") and descriptor_directory.is_dir():
+            actual, data = fingerprints(descriptor_directory / name, expected_size=pin["bytes"], capture=True)
+            require(actual["sha256"] == pin["sha256"], "retained_descriptor_sha256_mismatch:" + name)
+            (directory / name).write_bytes(data)
+            attempts.append({"source": "repository", "path": "source-descriptors/" + name})
+            save()
+            continue
         file_deadline = min(deadline, time.monotonic() + 300)
         partial = directory / (name + ".partial")
         downloaded = False
         for attempt in range(1, 4):
+            # Share the bounded retry budget between the mirror and upstream.
+            origin = SOURCE_MIRROR if not name.endswith(".dsc") and attempt != 2 else BASE_URL
             seconds = min(120, file_deadline - time.monotonic())
             require(seconds >= 1, "fetch_time_budget_exhausted")
             command = ["/usr/bin/curl", "--disable", "--silent", "--show-error", "--fail", "--location",
                        "--max-redirs", "3", "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "15",
                        "--max-time", str(seconds), "--max-filesize", str(pin["bytes"]), "--output", str(partial),
-                       "--write-out", "%{http_code} %{size_download} %{time_total} %{num_redirects}", BASE_URL + name]
+                       "--write-out", "%{http_code} %{size_download} %{time_total} %{num_redirects}", origin + name]
             try:
                 proc = subprocess.run(command, capture_output=True, timeout=seconds + 2)
                 metrics = proc.stdout.decode("ascii", errors="replace").split()
-                attempts.append({"attempt": attempt, "curl_exit": proc.returncode,
+                attempts.append({"attempt": attempt, "url": origin + name, "curl_exit": proc.returncode,
                                  "metrics": dict(zip(["http_status", "bytes", "seconds", "redirects"], metrics)),
                                  "stderr_bytes": len(proc.stderr)})
                 downloaded = proc.returncode == 0 and len(metrics) == 4 and metrics[0] == "200"
                 retry = proc.returncode in {5, 6, 7, 18, 28, 35, 52, 55, 56} or (metrics and metrics[0] in {"408", "429", "500", "502", "503", "504"})
             except subprocess.TimeoutExpired:
-                attempts.append({"attempt": attempt, "status": "process_timeout"})
+                attempts.append({"attempt": attempt, "url": origin + name, "status": "process_timeout"})
                 retry = True
             save()
             if downloaded:
                 partial.rename(directory / name)
                 break
-            if not retry:
+            if not retry and name.endswith(".dsc"):
                 break
             if attempt < 3 and file_deadline - time.monotonic() > 2:
                 time.sleep(2)
@@ -216,7 +226,7 @@ def run(manifest_path, directory, receipt_path, should_fetch=False):
             manifest = json.loads(raw, object_pairs_hook=unique_pairs)
             inventory = manifest_contract(manifest)
             if should_fetch:
-                fetch(directory, inventory, receipt, save)
+                fetch(directory, inventory, receipt, save, manifest_path.parent / "source-descriptors")
             verify(directory, manifest, receipt)
             receipt["status"] = "verified_published_inputs"
         except (Exception, KeyboardInterrupt) as exc:

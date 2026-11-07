@@ -123,7 +123,10 @@ def main():
                        "build requires the selected native Debian Trixie runner")
     receipt = {"_generated": GENERATED_NOTICE, "status": "running", "architecture": args.architecture, "commands": []}
     execute = partial(command_log.execute, cwd=ROOT)
-    options = ["--jobs=4", "--local_resources=cpu=4", "--local_resources=memory=10000",
+    # Foreign-CC failure logs can exceed Bazel's default 1 MiB display limit.
+    # Keep their compiler diagnostics in the build log retained by CI.
+    options = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=3072",
+               "--experimental_ui_max_stdouterr_bytes=33554432",
                "--platforms=@sonic_build_infra//platforms:" + machine + "_trixie",
                "--host_platform=@sonic_build_infra//platforms:" + machine + "_trixie"]
     try:

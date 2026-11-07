@@ -30,18 +30,21 @@ permissions:
 jobs:
   package:
     name: YANG model distribution (${{ matrix.architecture }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    runs-on: [self-hosted, Linux, X64, debian-trixie-container]
+    timeout-minutes: ${{ matrix.architecture == 'arm64' && 90 || 30 }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - architecture: amd64
-            runner: ubuntu-24.04
             machine: x86_64
           - architecture: arm64
-            runner: ubuntu-24.04-arm
             machine: aarch64
+    env:
+      SONIC_CI_ARCH: ${{ matrix.architecture }}
+    defaults:
+      run:
+        shell: sonic-ci-shell {0}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,17 +52,30 @@ jobs:
           persist-credentials: false
       - name: Initialize Sysmgr's pinned gNOI source
         run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
-      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.29.0
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: yang-models-${{ matrix.architecture }}
-      - name: Preserve setup-bazel caches for the image-root query
-        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+      - name: Configure the verified source mirror
+        env:
+          SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg
+          SOURCE_MIRRORS_SHA256: ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          with urlopen(os.environ["SOURCE_MIRRORS_URL"], timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != os.environ["SOURCE_MIRRORS_SHA256"]:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          # The image-root query and standalone package build have separate RC files.
+          for root in (Path("."), Path("src/sonic-yang-models")):
+              with (root / ".bazelrc.user").open("a") as rc:
+                  rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
-        shell: bash
+        shell: sonic-ci-shell {0}
         run: |
           set -euo pipefail
           test "$(uname -m)" = '${{ matrix.machine }}'
