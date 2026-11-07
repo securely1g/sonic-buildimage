@@ -1,0 +1,24 @@
+Subject: Select the public ZeroMQ C++ provider in pinned SWSS Common
+
+Purpose: Replace the obsolete libzmq3 C++ dependency label with Distroless's
+libzmq_cc provider, preserving the selected Common source and all other inputs.
+This keeps Common compatible with the image's shared source-library graph.
+
+Source: sonic-swss-common a0450924719a9f706125cc44a07dc88934935003
+https://github.com/securely1g/sonic-swss-common/tree/a0450924719a9f706125cc44a07dc88934935003
+Provenance: Existing sonic-buildimage PR #162 adaptation at 233bde227dc62712bb3324ab4249cfbf145de893;
+the diff body is unchanged. This is a temporary image-root adaptation for that
+pinned source; no upstream submission or landing status is asserted.
+
+diff --git a/tools/bazel/deps.bzl b/tools/bazel/deps.bzl
+--- a/tools/bazel/deps.bzl
++++ b/tools/bazel/deps.bzl
+@@ -20,7 +20,7 @@
+     "@libnl3//:libnl_3",
+     "@libnl3//:libnl_route_3",
+     "@libnl3//:libnl_nf_3",
+-    "@trixie//libzmq3-dev:libzmq3",
++    "@trixie//libzmq3-dev:libzmq_cc",
+     "@trixie//uuid-dev:uuid",
+     "@trixie//libboost-dev:libboost",
+     "@trixie//libboost-serialization-dev:libboost-serialization",
