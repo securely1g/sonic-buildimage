@@ -25,7 +25,9 @@ from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
-           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr"}
+           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr",
+           "base-config": "base", "swss-layer": "swss_layer"}
+SHARED_PROFILES = {"base-config", "swss-layer"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -547,6 +549,10 @@ def launcher_text(binary, base, profile):
 
 def phase_command(image, phase, workspace, artifacts):
     """Only the selected existing, fixed driver interfaces are executable."""
+    if image in SHARED_PROFILES:
+        require(phase in ("build-inspect", "incremental", "loaded"), "Unknown shared-image phase")
+        return [sys.executable, "-B", str(ROOT / "tools/bazel/ci/shared_image_worker.py"), phase,
+                "--image", image, "--workspace", str(workspace), "--artifacts", str(artifacts)]
     require(image in DRIVERS and phase in ("build", "validate", "incremental", "loaded"), "Unknown driver phase")
     prefix = [sys.executable, "-B"]
     wrapper = str(workspace / "tools/bazel/ci" / WRAPPERS[image])
@@ -647,7 +653,15 @@ def prepare(args):
         prepare_tap_fixture(artifacts)
     prepare_validation_tools(artifacts)
     source_check(workspace, args.revision)
-    for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
+    if args.image in SHARED_PROFILES:
+        from tools.bazel.ci.shared_image_worker import required_source_files
+        for name in required_source_files(args.image):
+            path = workspace / name
+            require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed shared-image input: " + name)
+        driver_names = ()
+    else:
+        driver_names = (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py")
+    for name in (*driver_names, WRAPPERS[args.image], "review_bazel.sh"):
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
     for name in BUILD_CHECKS.get(args.image, ()):
@@ -794,13 +808,16 @@ def publish(args):
     """Stage only declared payloads and checked public evidence, never private logs/env."""
     source, destination = args.artifacts, args.artifacts / "public"
     destination.mkdir(exist_ok=True)
-    receipt_path = source / "build-receipt.json"
+    shared = getattr(args, "image", None) in SHARED_PROFILES
+    receipt_path = source / ("receipt.json" if shared else "build-receipt.json")
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
         if getattr(args, "image", None) in GNMI_PROFILES:
             require(receipt.get("dialout_enabled") is (GNMI_PROFILES[args.image] == "enabled"),
                     "gNMI receipt differs from the selected fixed dialout profile")
         public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "dialout_enabled", "artifacts") if k in receipt}
+        if shared and "installed_images_policy_sha256" in receipt:
+            public["installed_images_policy_sha256"] = receipt["installed_images_policy_sha256"]
         safe_json(public)
         (destination / "public-receipt.json").write_text(json.dumps(public, indent=2) + "\n")
         for name, item in receipt.get("artifacts", {}).items():
@@ -810,7 +827,9 @@ def publish(args):
                     "Declared artifact differs: " + name)
             if path.suffix == ".json":
                 value = json.loads(path.read_text())
-                if name == "policy.json" and getattr(args, "image", None) in ("syncd", "gearbox"):
+                if (getattr(args, "image", None), name) in (
+                        ("syncd", "policy.json"), ("gearbox", "policy.json"),
+                        ("swss-layer", "swss-policy.json")):
                     # Reviewed image policy, not a captured process environment.
                     # Validate only this known public constant; retain original bytes.
                     require(value["image_validation"].pop("environment") == {"DEBIAN_FRONTEND": "noninteractive"},
@@ -823,15 +842,26 @@ def publish(args):
             else:
                 os.link(path, target)
     names = ["worker.json", "action-audit.json", "validation.json", "loaded-validation.json", "incremental.json", "rebuild/rebuild.json"]
+    if shared:
+        names += ["installed-images-policy.json", "installed-images.json", "runtime-smoke.json",
+                  "config-engine-rebuild.json", "consumer-action-audit.json"]
     names += [p.name for pattern in ("worker-*.json", "*.validation.json", "*.runtime.json") for p in source.glob(pattern)
               if p.name != "worker-private.json"]
     for name in sorted(set(names)):
         path = source / name
         if path.is_file():
-            safe_json(json.loads(path.read_text()))
+            value = json.loads(path.read_text())
+            projected = None
+            if getattr(args, "image", None) == "base-config":
+                from tools.bazel.ci.shared_image_worker import public_view
+                projected = public_view(name, value, digest(path))
+            safe_json(projected if projected is not None else value)
             target = destination / name
             target.parent.mkdir(exist_ok=True)
-            shutil.copyfile(path, target)
+            if projected is None:
+                shutil.copyfile(path, target)
+            else:
+                target.write_text(json.dumps(projected, indent=2) + "\n")
     for name, kind in (("MODULE.bazel.lock", "lock"), ("module-graph.json", "graph")):
         path = source / name
         if path.is_file():
@@ -884,7 +914,7 @@ if root.exists():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop", "prepare-mirrors", "scan-mirrors", "cleanup-mirrors"))
+    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "build-inspect", "validate", "incremental", "loaded", "publish", "stop", "prepare-mirrors", "scan-mirrors", "cleanup-mirrors"))
     parser.add_argument("--image", required=True, choices=DRIVERS)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
