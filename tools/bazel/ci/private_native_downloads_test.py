@@ -232,6 +232,8 @@ class WrapperLifecycleTests(unittest.TestCase):
             root = Path(temporary)
             helpers = root / "helpers/ci"
             helpers.mkdir(parents=True)
+            source_policy = "rewrite source.example.invalid/tool.tar.xz https://mirror.example.invalid/tool.tar.xz\n"
+            (helpers / "source_mirrors.cfg").write_text(source_policy)
             managed = root / "managed.bazelrc"
             managed.write_text("common --remote_cache=https://remote.example.invalid/\n")
             artifacts = root / "artifacts"
@@ -300,6 +302,13 @@ class WrapperLifecycleTests(unittest.TestCase):
                         self.assertEqual([call.kwargs["fallback"] for call in
                                           private_mirrors.configuration.call_args_list[-2:]],
                                          [phase != "inputs", False])
+                        for call in private_mirrors.configuration.call_args_list[-2:]:
+                            policy = call.args[0]
+                            self.assertTrue(policy.startswith(source_policy))
+                            self.assertIn(Path("tools/bazel/debian_mirrors.cfg").read_text().rstrip(), policy)
+                            self.assertTrue(policy.endswith(
+                                r"rewrite zlib\.net/pigz/pigz-2\.8\.tar\.gz "
+                                "https://zlib.net/pigz/pigz-2.8.tar.gz\n"))
                         receipt = json.loads((artifacts / ("private-downloads-" + phase + ".json")).read_text())
                         self.assertEqual(receipt["debian_public_bazel_fallback"], phase != "inputs")
             self.assertEqual(list(args.private_dir.iterdir()), [])

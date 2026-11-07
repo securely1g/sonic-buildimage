@@ -42,6 +42,16 @@ def native_source_mirrors(configuration):
             f"rewrite {GAWK_SOURCE} https://$1\n" + configuration)
 
 
+def public_downloader_policy(helpers, defaults):
+    # The pinned registry owns exact source mirrors, including GNU M4's
+    # byte-identical Debian orig TAR. Apply private routing after composition.
+    policy = ((helpers / "source_mirrors.cfg").read_text().rstrip() + "\n"
+              + defaults.read_text().rstrip() + "\n")
+    # The pinned pigz preference has no explicit upstream candidate.
+    return policy + (r"rewrite zlib\.net/pigz/pigz-2\.8\.tar\.gz "
+                     "https://zlib.net/pigz/pigz-2.8.tar.gz\n")
+
+
 def public_apt_transport(root):
     """Keep public sources while routing this disposable worker through the proxy.
 
@@ -285,7 +295,7 @@ def run(args):
         # promptly when the mirror does not publish a compression format.
         # Public mirror connection retries delay those expected misses here.
         public_fallback = args.phase != "inputs"
-        public_config = Path("tools/bazel/debian_mirrors.cfg").read_text()
+        public_config = public_downloader_policy(helpers, Path("tools/bazel/debian_mirrors.cfg"))
         private_mirrors.write_config(config, native_source_mirrors(private_mirrors.configuration(
             public_config, mirrors, fallback=public_fallback, manifest=manifest)))
         # The isolated kernel launcher inspects its complete module graph after
