@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[3]
-URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6cc6d42278915aacb88618839057296643d30631/ci/source_mirrors.cfg"
+URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9697f3db62fc58a7a70b0d876abe0a849133a00d/ci/source_mirrors.cfg"
 SHA256 = "622830b8adf42d229a53b60ea0956de4a4a3c119d0639479be78817994d67327"
 
 
