@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -416,6 +416,29 @@ class KernelBundleTest(unittest.TestCase):
         self.assertTrue((self.root / "state/kernel-receipt.json").is_file())
         self.assertEqual((self.root / "state").stat().st_mode & 0o077, 0)
         self.assertFalse((self.root / "tools/bazel/kernel/MODULE.bazel.lock").exists())
+
+    def test_managed_kernel_consumer_uses_the_private_mirror_and_worker_cache(self):
+        cache_rc = self.root / "runner-cache.bazelrc"
+        cache_rc.write_text("common --remote_cache=https://cache.example.test\n")
+        downloader = self.root / "runner-downloader.cfg"
+        downloader.write_text("rewrite example.test/(.*) https://mirror.example.test/$1\n")
+        environment = {"SONIC_BAZEL_REMOTE_ONLY_RC": str(cache_rc),
+                       "SONIC_BAZEL_DOWNLOADER_CONFIG": str(downloader)}
+        state = self.root / "managed-state"
+        with patch.dict(os.environ, environment):
+            with self.assertRaisesRegex(ValueError, "explicit kernel cache"):
+                kernel.plan(self.root, state, None, False, cache_directory=self.root / "disk-cache")
+            # Inspect the actual consumer that would be passed to the pinned launcher.
+            with self.assertRaisesRegex(RuntimeError, "stop before compilation"):
+                kernel.build(self.root, state, None, False,
+                             execute=Mock(side_effect=RuntimeError("stop before compilation")))
+        consumer = state / "consumer"
+        rc = (consumer / ".bazelrc").read_text()
+        self.assertIn("import " + str(cache_rc), rc)
+        self.assertIn('flag_name: "repository_cache" set_value { flag_value: ""', rc)
+        self.assertEqual((consumer / kernel.DOWNLOADER_CONFIG.name).read_bytes(), downloader.read_bytes())
+        self.assertTrue(json.loads((state / "plan.json").read_text())["runner_managed_cache"])
+        self.assertNotIn("runner-cache.bazelrc", (self.root / "tools/bazel/kernel/.bazelrc").read_text())
 
     def test_build_rejects_privileged_or_weakened_launcher_invocations(self):
         for index, override in enumerate((

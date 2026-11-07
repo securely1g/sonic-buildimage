@@ -117,7 +117,20 @@ sudo LANG=C chroot $FILESYSTEM_ROOT /bin/bash -c 'echo "proc /proc proc defaults
 sudo LANG=C chroot $FILESYSTEM_ROOT /bin/bash -c 'echo "sysfs /sys sysfs defaults 0 0" >> /etc/fstab'
 
 ## Setup proxy
-[ -n "$http_proxy" ] && sudo /bin/bash -c "echo 'Acquire::http::Proxy \"$http_proxy\";' > $FILESYSTEM_ROOT/etc/apt/apt.conf.d/01proxy"
+if [[ -n "$http_proxy" && "${SONIC_NATIVE_PRIVATE_APT:-}" == 1 ]]; then
+    # APT HTTPS inherits HTTP settings, and sudo/chroot drops proxy variables.
+    # Keep unrelated HTTPS off the native worker's HTTP-only Debian adapter.
+    # The existing cleanup removes this temporary file before image export.
+    python3 - <<'PY' | sudo tee "$FILESYSTEM_ROOT/etc/apt/apt.conf.d/01proxy" > /dev/null
+import json
+import os
+for transport, value in (("http", os.environ["http_proxy"]),
+                         ("https", os.environ.get("https_proxy", "") or "DIRECT")):
+    print("Acquire::" + transport + "::Proxy " + json.dumps(value) + ";")
+PY
+else
+    [ -n "$http_proxy" ] && sudo /bin/bash -c "echo 'Acquire::http::Proxy \"$http_proxy\";' > $FILESYSTEM_ROOT/etc/apt/apt.conf.d/01proxy"
+fi
 
 trap_push 'sudo LANG=C chroot $FILESYSTEM_ROOT umount /proc || true'
 sudo LANG=C chroot $FILESYSTEM_ROOT mount proc /proc -t proc

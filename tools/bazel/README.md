@@ -276,6 +276,36 @@ An explicitly empty `SONIC_BAZEL_CACHE_SOURCE` omits both this cache mount and
 the mounted system configuration. Bazel still runs with its usual local
 configuration; an empty value does not disable Bazel or its own local caches.
 
+### Native VS installer on the K3s runner pool
+
+The `vs_container` job runs the actual `make -f slave.mk target/sonic-vs.bin`
+recipe on `sonic-slave-container-k3s`. It requires the native Trixie image marker
+at manager revision `c650551885f8ad22cbc104082d1f1b6171e67eef`, UID/GID 1000,
+the Docker supplementary group, a private cgroup v2 namespace, and 6 CPU / 20 GiB
+limits. It starts its own Docker daemon on the Pod's `/actions` filesystem.
+
+Only Make's package cache is shared, at `/dpkg_cache`. Bazel's disk and repository
+caches are disabled. Bazelisk binaries, output directories, and checksum-verified
+source inputs under `/actions/bazel` are disposable per-Pod files. The pool
+supplies the runner account's `~/.bazelrc`, the cache-only RC selected by
+`SONIC_BAZEL_REMOTE_ONLY_RC`, and the reviewed credential helper at
+`/opt/sonic-native-runtime/cache_credentials.py`; the host selects the remote
+cache through `/run/sonic-worker-cache/credential.json`. The workflow verifies
+this configuration and authenticated access before building. A missing host
+configuration fails instead of selecting a legacy endpoint. Receipts contain
+neither the remote URL nor credentials.
+
+The same-repository job uses its existing `DEBIAN_MIRROR_ROOT` and
+`DEBIAN_SECURITY_MIRROR_ROOT` secrets with private mirror helpers pinned to
+registry revision `1060b4084e0598312c446eb5bb66be938aeac22c`. Bazel receives the
+established downloader policy. Native Make, debootstrap, and Docker APT use their
+existing HTTP proxy hooks: a disposable adapter fetches the requested Debian
+content over verified HTTPS from the private mirror. The adapter preserves
+signed index and package bytes, and public APT source files remain in the
+installer and container images. Other HTTPS traffic remains direct; the adapter
+does not intercept TLS. Private configuration stays outside the checkout and
+published artifacts, and the helper redacts logs and checks retained evidence.
+
 ### Read the remote cache from Make image builds
 
 When the host environment contains `BAZEL_REMOTE_AUTH`, Make forwards that

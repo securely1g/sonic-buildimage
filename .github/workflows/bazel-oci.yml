@@ -222,7 +222,13 @@ jobs:
           retention-days: 14
 
   archive:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    # Temporary PR203 validation: a manual native VS run needs only the
+    # verified source inputs below, followed by the actual installer build.
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
+      !(github.repository == 'securely1g/sonic-buildimage' &&
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs)
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.architecture == 'amd64' && 180 || 60 }}
@@ -623,14 +629,21 @@ jobs:
 
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
-    name: OCI regression checks (AMD64)
-    runs-on: ubuntu-24.04
+    name: ${{ github.repository == 'securely1g/sonic-buildimage' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs && 'Verified inputs for native VS' || 'OCI regression checks (AMD64)' }}
+    runs-on: ${{ github.repository == 'securely1g/sonic-buildimage' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs && fromJSON('["self-hosted", "linux", "x64", "sonic-slave-container-k3s"]') || fromJSON('["ubuntu-24.04"]') }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      NATIVE_VS_ONLY: ${{ github.repository == 'securely1g/sonic-buildimage' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs }}
     outputs:
       p4_sources_artifact_id: ${{ steps.p4_sources_upload.outputs.artifact-id }}
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
     timeout-minutes: 60
     container:
-      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      # An empty image means no job container: the native worker already
+      # supplies the pinned Trixie tools and has no Docker daemon at startup.
+      image: ${{ !(github.repository == 'securely1g/sonic-buildimage' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/native-vs-k3s' && !inputs.skip_vs) && 'debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c' || '' }}
       # Reap any Bazel processes used for dependency resolution.
       options: --init
     defaults:
@@ -638,6 +651,7 @@ jobs:
         shell: bash
     steps:
       - name: Install execution tools
+        if: env.NATIVE_VS_ONLY != 'true'
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -662,6 +676,7 @@ jobs:
       - name: Initialize Sysmgr's pinned gNOI source
         run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - name: Set up Bazel
+        if: env.NATIVE_VS_ONLY != 'true'
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -671,7 +686,29 @@ jobs:
           disk-cache: false
           cache-version: "8.5.1"
 
+      - name: Verify and mask the native remote cache
+        if: env.NATIVE_VS_ONLY == 'true'
+        run: python3 -B tools/bazel/ci/configure_runner_cache.py --remote-only
+
+      - name: Checkout pinned private input helpers
+        if: env.NATIVE_VS_ONLY == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 1060b4084e0598312c446eb5bb66be938aeac22c
+          path: .ci/private-downloads
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Keep native input helpers outside build inputs
+        if: env.NATIVE_VS_ONLY == 'true'
+        run: |
+          if [[ "$NATIVE_VS_ONLY" == true ]]; then
+            mv .ci/private-downloads "$RUNNER_TEMP/private-downloads"
+          fi
+
       - name: Check Make handoff and archive validation
+        if: env.NATIVE_VS_ONLY != 'true'
         env:
           SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
@@ -689,24 +726,73 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
+          python3 -B tools/bazel/ci/private_native_downloads_test.py
+
+      # Only raw source bytes from this successful authenticated producer are
+      # reused. The current pins, graph, and P4 manifest are checked again below;
+      # Redis is always copied from the currently running trusted image.
+      - name: Acquire pinned GitLab archives for same-run verification
+        if: env.NATIVE_VS_ONLY == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: 42346697611
+          artifact-ids: 13568977295
+          merge-multiple: true
+          path: ${{ runner.temp }}/native-input-acquisition
+
+      - name: Acquire pinned P4 bytes for same-run verification
+        if: env.NATIVE_VS_ONLY == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: 42346697611
+          artifact-ids: 13569455281
+          merge-multiple: true
+          path: ${{ runner.temp }}/native-p4-acquisition
 
       - name: Retain the verified GitLab source downloads
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ env.NATIVE_VS_ONLY == 'true' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ env.NATIVE_VS_ONLY == 'true' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
         run: |
+          if [[ "$NATIVE_VS_ONLY" == true && "${SONIC_NATIVE_INPUT_DOWNLOADS:-}" != 1 ]]; then
+            # Re-enter this step once with private downloader settings and
+            # sanitized output; repository resolution fetches Debian indexes.
+            export SONIC_NATIVE_INPUT_DOWNLOADS=1
+            exec python3 -B tools/bazel/ci/private_native_downloads.py \
+              --phase inputs --artifacts artifacts/repository-inputs -- bash -euo pipefail "$0"
+          fi
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
-          "$BAZEL" fetch --repo=@@ape+ --repo=@@download_utils+ \
+          download_options=()
+          if [[ "$NATIVE_VS_ONLY" == true ]]; then
+            python3 -B tools/bazel/gzip/source_archive.py \
+              --archives-dir "$RUNNER_TEMP/native-input-acquisition" \
+              --output artifacts/repository-inputs > artifacts/repository-inputs/receipt.json
+            download_options+=(--disk_cache= --repository_cache=)
+            for source in artifacts/repository-inputs/*/src.tar.gz; do
+              download_options+=("--distdir=$PWD/$(dirname "$source")")
+            done
+          fi
+          "$BAZEL" fetch "${download_options[@]}" --repo=@@ape+ --repo=@@download_utils+ \
             --repo=@@rules_coreutils+ --repo=@@rules_gzip+ --repo=@@toolchain_utils+
-          python3 - <<'PYCODE'
+          python3 - "${download_options[@]}" <<'PYCODE'
           from pathlib import Path
           from tools.bazel.ci import resolution
-          import os
-          resolution.collect(Path.cwd(), Path("artifacts/repository-inputs"), bazel=[os.environ["BAZEL"]])
+          import os, sys
+          from tools.bazel.gzip.source_archive import check_versions
+          resolution.collect(Path.cwd(), Path("artifacts/repository-inputs"),
+                             bazel=[os.environ["BAZEL"]], options=sys.argv[1:])
+          check_versions(Path("artifacts/repository-inputs/module-graph.json"))
           PYCODE
-          python3 -B tools/bazel/gzip/source_archive.py \
-            --repository-cache "$("$BAZEL" info repository_cache)" \
-            --module-graph artifacts/repository-inputs/module-graph.json \
-            --output artifacts/repository-inputs \
-            > artifacts/repository-inputs/receipt.json
+          if [[ "$NATIVE_VS_ONLY" != true ]]; then
+            python3 -B tools/bazel/gzip/source_archive.py \
+              --repository-cache "$("$BAZEL" info repository_cache)" \
+              --module-graph artifacts/repository-inputs/module-graph.json \
+              --output artifacts/repository-inputs \
+              > artifacts/repository-inputs/receipt.json
+          fi
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |
@@ -741,6 +827,7 @@ jobs:
             artifacts/repository-inputs/rules_gzip-1.0.0/src.tar.gz
             artifacts/repository-inputs/toolchain_utils-1.0.2/src.tar.gz
             artifacts/repository-inputs/receipt.json
+            artifacts/repository-inputs/private-downloads-inputs.json
             artifacts/repository-inputs/test-helpers/
           if-no-files-found: error
           retention-days: 14
@@ -754,7 +841,14 @@ jobs:
            github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
         run: |
-          python3 -B tools/ci/p4_source_inputs.py --fetch \
+          acquisition=(--fetch)
+          if [[ "$NATIVE_VS_ONLY" == true ]]; then
+            # Consume only raw bytes; the verifier creates a fresh receipt.
+            mkdir -p artifacts/p4-source-inputs
+            cp -R -- "$RUNNER_TEMP/native-p4-acquisition/sources" artifacts/p4-source-inputs/sources
+            acquisition=()
+          fi
+          python3 -B tools/ci/p4_source_inputs.py "${acquisition[@]}" \
             --manifest src/p4lang/source-inputs.json \
             --directory artifacts/p4-source-inputs/sources \
             --receipt artifacts/p4-source-inputs/receipt.json
@@ -773,7 +867,11 @@ jobs:
 
       - name: Report validation scope
         run: |
-          echo 'Hosted checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$NATIVE_VS_ONLY" == true ]]; then
+            echo 'Temporary PR203 validation: verified source inputs only; the downstream job builds and validates the complete native VS installer.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Hosted checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   vs:
     name: Make VS with Bazel SWSS (AMD64)
@@ -1142,18 +1240,18 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
-    runs-on: [self-hosted, linux, x64, sonic-slave-container]
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 720
-    # The four registered slots share lgh4. Only one full native build may
-    # consume its memory at a time; each worker still handles one job and exits.
+    # The four K3s slots share one worker node. Serialize every ref on this
+    # pool independently of the legacy lgh4 pool; each worker handles one job.
     concurrency:
-      group: sonic-slave-container-vs
+      group: sonic-slave-container-k3s-vs
       cancel-in-progress: false
     defaults:
       run:
         shell: bash
     env:
-      EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
+      EXPECTED_MANAGER_REVISION: c650551885f8ad22cbc104082d1f1b6171e67eef
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
       PREFER_DEBIAN_REPO: "y"
@@ -1167,17 +1265,30 @@ jobs:
       SONIC_DOCKER_APT_RETRIES: "0"
       BAZEL_CONTAINER_ARGS: >-
         --jobs=4 --local_resources=memory=12288
-        --distdir=/bazel_cache/distdir/ape-1.0.1
-        --distdir=/bazel_cache/distdir/download_utils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
-        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+        --disk_cache= --repository_cache=
+        --distdir=/actions/bazel/distdir/ape-1.0.1
+        --distdir=/actions/bazel/distdir/download_utils-1.0.1
+        --distdir=/actions/bazel/distdir/rules_coreutils-1.0.1
+        --distdir=/actions/bazel/distdir/rules_gzip-1.0.0
+        --distdir=/actions/bazel/distdir/toolchain_utils-1.0.2
     steps:
       - name: Checkout repository and pinned submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           submodules: recursive
+
+      - name: Checkout pinned private download helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 1060b4084e0598312c446eb5bb66be938aeac22c
+          path: .ci/private-downloads
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Keep helper checkout outside the build inputs
+        run: mv .ci/private-downloads "$RUNNER_TEMP/private-downloads"
 
       - name: Download verified source archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1186,7 +1297,10 @@ jobs:
           path: artifacts/vs/repository-inputs
 
       - name: Prepare the privileged SONiC slave
-        run: bash tools/bazel/ci/prepare_vs_slave.sh
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
+        run: python3 -B tools/bazel/ci/private_native_downloads.py --phase preparation -- bash tools/bazel/ci/prepare_vs_slave.sh
 
       - name: Require the P4 source artifact from this producer job
         env:
@@ -1207,21 +1321,21 @@ jobs:
             --directory artifacts/vs/p4-source-inputs/sources \
             --receipt artifacts/vs/p4-source-inputs-verified.json
 
-      - name: Configure persistent caches
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+      - name: Verify host-selected remote cache and stage verified inputs
         run: |
           python3 -B tools/bazel/ci/configure_runner_cache.py \
-            --jobs=4 --local-memory-mb=12288
+            --remote-only --jobs=4 --local-memory-mb=12288
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
-            --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json
+            --output /actions/bazel/distdir > artifacts/vs/source-download-receipt.json
 
       - name: Build sonic-vs.bin directly with slave.mk
         id: native_build
         env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+          DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
         run: |
+          python3 -B tools/bazel/ci/private_native_downloads.py --phase build -- bash -euo pipefail <<'NATIVE'
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
           cd /sonic
@@ -1236,11 +1350,14 @@ jobs:
           test -s target/sonic-vs.bin
           test -s target/sonic-vs.bin.dockers
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
+          NATIVE
 
       - name: Validate the installer and retained container pairs
         env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+          DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
         run: |
+          python3 -B tools/bazel/ci/private_native_downloads.py --phase verification -- bash -euo pipefail <<'NATIVE'
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
           cd /sonic
@@ -1261,6 +1378,7 @@ jobs:
             --orchagent-receipt artifacts/vs/orchagent-reuse.json
           sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
             target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
+          NATIVE
 
       - name: Verify installed base, SWSS and Syncd images
         timeout-minutes: 20
@@ -1274,6 +1392,14 @@ jobs:
             --images-policy artifacts/vs/syncd-installed-images-policy.json --target target \
             --output artifacts/vs/installed-images.json \
             2>&1 | tee artifacts/vs/installed-images.log
+
+      - name: Check private download evidence before publication
+        id: private_download_privacy
+        if: always()
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
+        run: python3 -B tools/bazel/ci/private_native_downloads.py --phase verification --check-artifacts
 
       - name: Publish the installer and matching container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1292,7 +1418,7 @@ jobs:
           compression-level: 0
 
       - name: Preserve build receipts
-        if: always()
+        if: always() && steps.private_download_privacy.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-slave-evidence-amd64
@@ -1306,7 +1432,7 @@ jobs:
           retention-days: 14
 
       - name: Retain shared image validation evidence
-        if: always()
+        if: always() && steps.private_download_privacy.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-image-validation-amd64

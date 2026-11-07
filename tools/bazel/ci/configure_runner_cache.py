@@ -3,8 +3,11 @@
 
 import argparse
 import importlib.util
+import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import ssl
 import subprocess
 import sys
@@ -13,6 +16,8 @@ import urllib.request
 
 
 RUNTIME_ROOT = Path("/opt/sonic-runner")
+NATIVE_HELPER = Path("/opt/sonic-native-runtime/cache_credentials.py")
+NATIVE_HELPER_SHA256 = "32ea5af5245984f9fac59f5507bc1a1b6d3272968d3b2edd52b0a03f82b1dc49"
 PROBE_TIMEOUT = 8
 FALLBACK_BEGIN = "# BEGIN SONiC runner cache connectivity fallback"
 FALLBACK_END = "# END SONiC runner cache connectivity fallback"
@@ -122,6 +127,71 @@ def positive_integer(value):
     return result
 
 
+def configure_remote_only(rc, resource_limits=None):
+    """Verify the host-selected pool configuration without legacy fallback."""
+    try:
+        metadata = NATIVE_HELPER.resolve(strict=True).lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0
+                or metadata.st_mode & 0o022
+                or hashlib.sha256(NATIVE_HELPER.read_bytes()).hexdigest() != NATIVE_HELPER_SHA256):
+            raise ValueError
+        spec = importlib.util.spec_from_file_location("native_cache_credentials", NATIVE_HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        if helper.host_configuration() is None:
+            raise ValueError
+        selected = helper.settings()
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # Register masking before any Bazel command or transport error can
+            # include the host-selected private endpoint. Credentials stay in
+            # the scoped helper and are never read or emitted here.
+            for value in (selected["endpoint"], selected["host"]):
+                value = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print("::add-mask::" + value, flush=True)
+        required = {
+            "remote_cache": selected["endpoint"],
+            "credential_helper": selected["host"] + "=" + str(NATIVE_HELPER),
+            "remote_executor": "", "disk_cache": "", "repository_cache": "",
+        }
+        managed = Path(os.environ["SONIC_BAZEL_REMOTE_ONLY_RC"])
+        metadata = managed.stat()
+        if (not managed.is_absolute() or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077):
+            raise ValueError
+        effective, imported = {}, False
+        lines = []
+        for line in rc.read_text().splitlines():
+            fields = line.split()
+            if fields and fields[0] in {"import", "try-import"}:
+                if fields != ["import", str(managed)] or imported:
+                    raise ValueError
+                lines.extend(managed.read_text().splitlines())
+                imported = True
+            else:
+                lines.append(line)
+        if not imported:
+            raise ValueError
+        for line in lines:
+            fields = line.split()
+            if len(fields) == 2 and fields[0] in {"common", "build"} and fields[1].startswith("--"):
+                name, separator, value = fields[1][2:].partition("=")
+                if separator:
+                    effective[name] = value
+        if any(effective.get(name) != value for name, value in required.items()):
+            raise ValueError
+        # Also proves the optional host credential works, without ever emitting
+        # its value or accidentally selecting the helper's legacy endpoint.
+        helper.probe_access()
+        if resource_limits is not None:
+            set_resource_limits(rc, **resource_limits)
+        os.chmod(rc, 0o600)
+    except Exception:
+        raise ConfigurationFailure("host_remote_configuration_failed") from None
+    return {"status": "configured", "mode": "remote_only", "host_selected": True,
+            "disk_cache": False, "repository_cache": False,
+            "resource_limits": resource_limits}
+
+
 def configure(cache_dir, rc, resource_limits=None):
     try:
         credentials = load_credentials()
@@ -154,6 +224,8 @@ def configure(cache_dir, rc, resource_limits=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, default=Path("/bazel_cache"))
+    parser.add_argument("--remote-only", action="store_true",
+                        help="Require the K3s pool's host-selected remote cache; disable local cache reuse")
     parser.add_argument("--rc", type=Path, default=Path.home() / ".bazelrc")
     parser.add_argument("--output", type=Path, default=Path("artifacts/vs/cache-configuration.json"))
     parser.add_argument("--jobs", type=positive_integer,
@@ -166,7 +238,8 @@ def main(argv=None):
     resource_limits = None if args.jobs is None else {
         "jobs": args.jobs, "local_memory_mb": args.local_memory_mb}
     try:
-        receipt = configure(args.cache_dir, args.rc, resource_limits)
+        receipt = (configure_remote_only(args.rc, resource_limits) if args.remote_only
+                   else configure(args.cache_dir, args.rc, resource_limits))
     except ConfigurationFailure as error:
         receipt = {"status": "failure", "mode": "unconfigured",
                    "error_class": error.error_class, "http_status": error.http_status}
