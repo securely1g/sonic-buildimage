@@ -478,8 +478,9 @@ def prepare_validation_tools(artifacts):
     missing = sorted({package for tool, package in packages.items() if shutil.which(tool) is None})
     if missing:
         try:
-            run(["sudo", "-n", "apt-get", "update"])
-            run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
+            run(["sudo", "-n", "apt-get", "-o", "Acquire::EnableSrvRecords=false", "update"])
+            run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get",
+                 "-o", "Acquire::EnableSrvRecords=false", "install", "-y",
                  "--no-install-recommends", *missing])
         except subprocess.CalledProcessError:
             try:
