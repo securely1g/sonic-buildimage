@@ -35,7 +35,7 @@ dependencies installed by `bazel-oci.yml`. Initialize the committed source owner
 
 ```sh
 git submodule update --init -- src/sonic-p4rt/sonic-pins
-export SONIC_BAZEL_REGISTRY_REVISION=9792cc152f976da9607d38917ee1e9ce45cd7135
+export SONIC_BAZEL_REGISTRY_REVISION=676c3fecc3dd8059bef853ffc8dd7e7f43680ea5
 export BAZEL="$PWD/tools/bazel/ci/review_bazel.sh"
 owner_revision=$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)
 
