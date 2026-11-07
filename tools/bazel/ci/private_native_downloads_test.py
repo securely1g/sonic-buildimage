@@ -266,7 +266,9 @@ class WrapperLifecycleTests(unittest.TestCase):
                     "assert pathlib.Path(os.environ['SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG']).read_text() == "
                     + repr(native.native_source_mirrors("private fixture policy")) + "; "
                     "assert os.environ['SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG'] != os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']; "
-                    "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''"])
+                    "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''; "
+                    "assert os.environ['SONIC_NATIVE_DEBIAN_SNAPSHOT'] == '20260727T143429Z'; "
+                    "assert os.environ['SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT'] == '20260726T121236Z'"])
             child_check = args.command[-1]
             clean_environment = {key: value for key, value in os.environ.items()
                                  if key not in {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"}}

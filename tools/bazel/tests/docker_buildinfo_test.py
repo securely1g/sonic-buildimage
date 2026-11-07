@@ -46,15 +46,22 @@ class DockerBuildinfoTest(unittest.TestCase):
             DOCKER_USERNAME="sonic", DOCKER_USERTAG="latest", DOCKER_BASE_ARCH="amd64",
             CONFIGURED_ARCH="amd64", **packages)
 
-    def prepare(self, image, original=None, apt_retries=None):
+    def prepare(self, image, original=None, apt_retries=None, native_apt=None):
         dockerfile = self.workspace / "dockers" / image / "Dockerfile"
         if original is not None:
             dockerfile.parent.mkdir(parents=True, exist_ok=True)
             dockerfile.write_text(original)
         environment = dict(os.environ, SKIP_BUILD_HOOK="y")
         environment.pop("SONIC_DOCKER_APT_RETRIES", None)
+        environment.pop("SONIC_NATIVE_PRIVATE_APT", None)
+        environment.pop("SONIC_NATIVE_DEBIAN_SNAPSHOT", None)
+        environment.pop("SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT", None)
         if apt_retries is not None:
             environment["SONIC_DOCKER_APT_RETRIES"] = apt_retries
+        if native_apt is not None:
+            environment["SONIC_NATIVE_PRIVATE_APT"] = "1"
+            environment["SONIC_NATIVE_DEBIAN_SNAPSHOT"] = native_apt
+            environment["SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT"] = "20260726T121236Z"
         subprocess.run(
             ["bash", str(ROOT / "scripts/prepare_docker_buildinfo.sh"), image,
              str(dockerfile.relative_to(self.workspace)), "amd64", "", "trixie"],
@@ -164,6 +171,33 @@ class DockerBuildinfoTest(unittest.TestCase):
                 generated = self.prepare(image, self.render(image), apt_retries=value)
                 self.assertNotIn(APT_OVERRIDE, generated)
                 self.assertNotIn("SONIC_DOCKER_APT_RETRIES=", generated)
+                self.assertNotIn("ARG SONIC_NATIVE_PRIVATE_APT", generated)
+
+    def test_native_source_view_is_build_only_and_enabled_before_each_hook(self):
+        image = "docker-bmp-watchdog"
+        stamp = "20260727T143429Z"
+        generated = self.prepare(image, self.render(image), apt_retries="0", native_apt=stamp)
+        for index, stage in enumerate(self.stages(generated)):
+            if index == 2:  # Final flattening copies an already finalized stage.
+                self.assertNotIn("ARG SONIC_NATIVE_PRIVATE_APT=1", stage)
+                continue
+            self.assertEqual(stage.count("ARG SONIC_NATIVE_PRIVATE_APT=1"), 1)
+            self.assertEqual(stage.count("ARG SONIC_NATIVE_DEBIAN_SNAPSHOT=" + stamp), 1)
+            self.assertEqual(stage.count("ARG SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT=20260726T121236Z"), 1)
+            self.assertLess(stage.index("ARG SONIC_NATIVE_PRIVATE_APT=1"),
+                            stage.index("RUN pre_run_buildinfo " + image))
+        self.assertNotIn("ENV SONIC_NATIVE", generated)
+        self.assertEqual(self.prepare(image, apt_retries="0", native_apt=stamp), generated)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.prepare(image, apt_retries="0", native_apt="20260728T143429Z")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.prepare(image, apt_retries="0")
+
+    def test_native_source_view_rejects_missing_or_invalid_manifest_stamp(self):
+        original = "FROM debian:trixie\nRUN true\n"
+        for stamp in ("", "current", "20260727T143429Z; echo injected"):
+            with self.subTest(stamp=stamp), self.assertRaises(subprocess.CalledProcessError):
+                self.prepare("docker-native-invalid", original, native_apt=stamp)
 
     def test_opt_in_covers_builders_runtime_and_flattening_boundaries(self):
         images = {

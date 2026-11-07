@@ -8,8 +8,24 @@ case "${SONIC_DOCKER_APT_RETRIES:-}" in
     ""|0) ;;
     *) echo "SONIC_DOCKER_APT_RETRIES must be unset, empty, or 0" >&2; exit 1 ;;
 esac
+case "${SONIC_NATIVE_PRIVATE_APT:-}" in
+    ""|1) ;;
+    *) echo "SONIC_NATIVE_PRIVATE_APT must be unset, empty, or 1" >&2; exit 1 ;;
+esac
+if [ "${SONIC_NATIVE_PRIVATE_APT:-}" = 1 ]; then
+    for stamp in "${SONIC_NATIVE_DEBIAN_SNAPSHOT:-}" "${SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT:-}"; do
+        if [[ ! "$stamp" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+            echo "Native APT requires the pinned Debian snapshot timestamps" >&2
+            exit 1
+        fi
+    done
+fi
 
 if grep -q "^# SKIP_HOOK" "$2"; then
+    if [ -n "${SONIC_NATIVE_PRIVATE_APT:-}" ]; then
+        echo "SONIC_NATIVE_PRIVATE_APT requires buildinfo hooks" >&2
+        exit 1
+    fi
     if [ -n "${SONIC_DOCKER_APT_RETRIES:-}" ]; then
         echo "SONIC_DOCKER_APT_RETRIES requires buildinfo finalization" >&2
         exit 1
@@ -45,6 +61,20 @@ DOCKER_PATH=$(dirname $DOCKERFILE)
 # Reusing generated output under a different policy would silently ignore the
 # caller's requested behavior. Regenerate from the original Dockerfile instead.
 if [ -f "$DOCKERFILE_TARGET" ] && grep -q "Auto-Generated for buildinfo" "$DOCKERFILE_TARGET"; then
+    if grep -q '^ARG SONIC_NATIVE_PRIVATE_APT=1$' "$DOCKERFILE_TARGET"; then
+        [ "${SONIC_NATIVE_PRIVATE_APT:-}" = 1 ] || {
+            echo "Regenerate the Dockerfile before changing SONIC_NATIVE_PRIVATE_APT" >&2; exit 1;
+        }
+        grep -q "^ARG SONIC_NATIVE_DEBIAN_SNAPSHOT=${SONIC_NATIVE_DEBIAN_SNAPSHOT}$" "$DOCKERFILE_TARGET" || {
+            echo "Regenerate the Dockerfile before changing SONIC_NATIVE_DEBIAN_SNAPSHOT" >&2; exit 1;
+        }
+        grep -q "^ARG SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT=${SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT}$" "$DOCKERFILE_TARGET" || {
+            echo "Regenerate the Dockerfile before changing SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT" >&2; exit 1;
+        }
+    elif [ -n "${SONIC_NATIVE_PRIVATE_APT:-}" ]; then
+        echo "Regenerate the Dockerfile before changing SONIC_NATIVE_PRIVATE_APT" >&2
+        exit 1
+    fi
     if grep -q '^# SONIC_DOCKER_APT_RETRIES=0$' "$DOCKERFILE_TARGET"; then
         [ "${SONIC_DOCKER_APT_RETRIES:-}" = 0 ] || {
             echo "Regenerate the Dockerfile before changing SONIC_DOCKER_APT_RETRIES" >&2; exit 1;
@@ -99,8 +129,17 @@ RUN set -eu; conf=/etc/apt/apt.conf.d/zzzz-sonic-ci-acquire-retries; \
 '
 fi
 
+DOCKERFILE_NATIVE_APT_SCRIPT=
+if [ "${SONIC_NATIVE_PRIVATE_APT:-}" = 1 ]; then
+    # ARG is available while building each stage and is not a runtime ENV.
+    DOCKERFILE_NATIVE_APT_SCRIPT='ARG SONIC_NATIVE_PRIVATE_APT=1
+ARG SONIC_NATIVE_DEBIAN_SNAPSHOT='${SONIC_NATIVE_DEBIAN_SNAPSHOT}'
+ARG SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT='${SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT}'
+'
+fi
+
 DOCKERFILE_PRE_SCRIPT='# Auto-Generated for buildinfo
-'${DOCKERFILE_APT_PRE_SCRIPT}'ARG SONIC_VERSION_CACHE
+'${DOCKERFILE_APT_PRE_SCRIPT}${DOCKERFILE_NATIVE_APT_SCRIPT}'ARG SONIC_VERSION_CACHE
 ARG SONIC_VERSION_CONTROL_COMPONENTS
 ARG ENABLE_SBOM=n
 COPY ["buildinfo", "/usr/local/share/buildinfo"]

@@ -55,10 +55,10 @@ def public_downloader_policy(helpers, defaults):
 def public_apt_transport(root):
     """Keep public sources while routing this disposable worker through the proxy.
 
-    The native rootfs and Docker recipes already render HTTP public sources.
-    The immutable worker image can also contain HTTPS snapshot sources; switch
+    The immutable worker image can contain HTTPS snapshot sources; switch
     only those known public Debian URIs to the local proxy's HTTP transport.
     The proxy itself always verifies TLS to the private upstream.
+    Inner Docker APT uses a per-command source view in sonic-build-hooks.
     """
     pattern = re.compile(r"https://(" + "|".join(re.escape(host) for host in
                          sorted(DEBIAN_HOSTS | SNAPSHOT_HOSTS)) + r")(?=/)")
@@ -325,6 +325,8 @@ def run(args):
             "SONIC_BAZEL_REMOTE_ONLY_RC": str(remote_rc),
             "SONIC_APT_MIRROR_CONFIG": str(apt_map),
             "SONIC_NATIVE_PRIVATE_APT": "1",
+            "SONIC_NATIVE_DEBIAN_SNAPSHOT": manifest["debian"]["current"],
+            "SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT": manifest["debian-security"]["current"],
             "BAZEL_CONTAINER_CACHE_DIR": "", "BAZEL_SWSS_CACHE_DIR": "",
         }
         server = thread = None
@@ -355,6 +357,11 @@ def run(args):
             receipt = {"schema": 1, "helper_revision": REGISTRY_REVISION,
                        "private_mirrors_enabled": True, "native_apt_upstream_https": server is not None,
                        "debian_public_bazel_fallback": public_fallback,
+                       "native_docker_apt_private_component": "main",
+                       "native_docker_apt_public_backports": True,
+                       "native_docker_apt_public_other_components": True,
+                       "native_docker_apt_snapshot_dates": {
+                           archive: manifest[archive]["current"] for archive in ("debian", "debian-security")},
                        "native_apt_upstream_responses": counts, "package_integrity_unchanged": True,
                        "public_apt_sources_preserved": True, "local_bazel_caches": False}
             (artifacts / ("private-downloads-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")

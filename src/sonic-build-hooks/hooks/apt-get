@@ -10,12 +10,21 @@ if [ -z "$REAL_COMMAND" ]; then
     exit 1
 fi
 
+run_apt_command()
+{
+    if [ "${SONIC_NATIVE_PRIVATE_APT:-}" = 1 ]; then
+        python3 /usr/local/share/buildinfo/scripts/native_apt_transport.py "$REAL_COMMAND" "$@"
+    else
+        "$REAL_COMMAND" "$@"
+    fi
+}
+
 INSTALL=$(check_apt_install "$@")
 COMMAND_INFO="Locked by command: $REAL_COMMAND $@"
 if [ "$INSTALL" == y ]; then
     check_apt_version "$@"
     lock_result=$(acquire_apt_installation_lock "$COMMAND_INFO" )
-    $REAL_COMMAND "$@"
+    run_apt_command "$@"
     command_result=$?
     [ "$lock_result" == y ] && release_apt_installation_lock
     exit $command_result
@@ -26,6 +35,6 @@ else
       dpkg-query -W -f '${Package}==${Version}\n' >> $POST_VERSION_PATH/purge-versions-deb
       chmod a+wr $POST_VERSION_PATH/purge-versions-deb
     fi
-    $REAL_COMMAND "$@"
+    run_apt_command "$@"
 fi
 
