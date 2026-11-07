@@ -115,8 +115,8 @@ class NativeFamilyJobsTest(unittest.TestCase):
                     self.assertEqual(len(original), 1)
                     self.assertEqual(step_value(selected[0], "run"), step_value(original[0], "run"))
                     if name == "Configure the verified source mirror":
-                        self.assertIn("353f3a98adaa4ecfe6aaa7229cdf2d825ff36dfe/ci/source_mirrors.cfg", step_value(selected[0], "run"))
-                        self.assertIn("e5fbd7add242accf33663c830d7647e02184bbc408e15033183de787f483d9e5", step_value(selected[0], "run"))
+                        self.assertIn("97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg", step_value(selected[0], "run"))
+                        self.assertIn("ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720", step_value(selected[0], "run"))
                     if family in self.receipt_families:
                         self.assertEqual(step_value(selected[0], "if"),
                                          "env." + family.upper() + "_WORKER_RECEIPT != 'true'")
