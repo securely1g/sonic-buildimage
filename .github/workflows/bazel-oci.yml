@@ -85,6 +85,24 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
 
+      - name: Configure verified Debian payload transport
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -161,7 +179,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/macsec-oci-amd64') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/macsec-oci-amd64' || (github.head_ref == 'codex/macsec-local-package-handoff' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         run: |
           # Temporary source-only PR scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
@@ -275,6 +293,7 @@ jobs:
       - name: Check local cache reuse across fresh checkouts
         run: |
           python3 -B tools/bazel/ci/verify_agent_cache.py \
+            --bazel-arg=--experimental_downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg" \
             --artifacts artifacts/archive/agent-cache \
             --bazel "$BAZEL" \
             --repository-cache "$("$BAZEL" info repository_cache)" \
@@ -373,7 +392,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/macsec-oci-amd64') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/review-registry-catalog' || github.head_ref == 'codex/macsec-oci-amd64' || (github.head_ref == 'codex/macsec-local-package-handoff' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         run: |
           # Temporary source-only PR scope: no DEB generation, including kernel fixtures.
           # Remove this exclusion when source-only validation is complete.
@@ -827,7 +846,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
-       github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/review-registry-catalog' && github.head_ref != 'codex/macsec-oci-amd64') ||
+       github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/review-registry-catalog' && github.head_ref != 'codex/macsec-oci-amd64' && github.head_ref != 'codex/macsec-local-package-handoff') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720

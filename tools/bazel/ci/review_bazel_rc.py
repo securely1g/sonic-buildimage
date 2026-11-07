@@ -1,4 +1,4 @@
-"""Retain build defaults and local caches for the review catalog wrapper."""
+"""Retain build defaults, local caches and downloader configuration."""
 
 from pathlib import Path
 import shlex
@@ -19,7 +19,8 @@ def configuration(workspace, home):
                        any(t == '--registry' or t.startswith('--registry=') for t in tokens)):
             raise ValueError('unexpected registry/import in common.bazelrc')
     cache_options = {'--disk_cache', '--repository_cache', '--distdir',
-                     '--experimental_repository_cache_hardlinks'}
+                     '--experimental_repository_cache_hardlinks',
+                     '--experimental_downloader_config'}
     for path in (home / '.bazelrc', workspace / '.bazelrc.user'):
         if not path.is_file():
             continue
