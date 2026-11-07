@@ -37,10 +37,10 @@ wrapper and all build/query options; empty, malformed or missing roots fail.
 The historical source producer and incremental evidence on PR #162 at `233bde2`
 remain evidence for that revision. They do not establish this new alias-based
 consumer's acceptance. The inherited source-base, Eventd, OCI, Rust and YANG
-checks retain their accepted cache forwarding. All existing source-mirror
-bootstraps select the checksum-verified configuration from
-[registry #228](https://github.com/securely1g/sonic-bazel-registry/pull/228) at
-`6e305126`, preserving package/source integrity and the original fallback URLs.
+checks retain their accepted cache forwarding. Each source-mirror bootstrap
+uses the checksum-verified URL and digest declared in its workflow. Reproduce
+the native and OCI paths with their respective URL and SHA-256 values from
+[registry #228](https://github.com/securely1g/sonic-bazel-registry/pull/228).
 Temporary exact-branch exclusions keep DEB fixtures and the full VS build out of
 this Draft validation; remove those exclusions before normal readiness.
 
@@ -53,8 +53,7 @@ artifacts. [Registry PR #236](https://github.com/securely1g/sonic-bazel-registry
 is a direct prerequisite; #228 is the shared download-configuration prerequisite.
 Remove the temporary selection after the owner lands.
 
-Draft CI selects [catalog `4ed05183`](https://github.com/securely1g/sonic-bazel-registry/tree/4ed05183275951b03342d89db98f709779487ec0),
-which contains the shared owner and its exported incremental probe. The native
-workflow and wrapper select that same revision. Pure caller tests verify script
-resolution and flag forwarding; native module resolution, installed output and
-four-phase incremental acceptance remain pending CI on this image consumer.
+Pure caller tests verify script resolution and flag forwarding. The native
+workflow retains generated module-resolution evidence for both architectures,
+plus installed-output and four-phase probe receipts for AMD64, in its artifacts.
+Assess those receipts against the head, base and selected catalog under review.
