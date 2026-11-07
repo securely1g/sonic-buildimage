@@ -36,3 +36,20 @@ B -- NO --> STOP
 B1 -- NO --> STOP
 B2 -- NO --> STOP
 ```
+
+## Reviewed OTEL source validation
+
+The optional `otel-hosted` manual mode in `bazel-oci.yml` requires paired full
+source and registry commit SHAs. It selects AMD64 for the existing archive and
+installed OTEL jobs, checks out the same source in both, and verifies the native
+artifact selection before loading either image. Blank/default mode retains the
+existing owner graph and architecture matrix.
+
+The reviewed mode preserves setup-bazel caches, adds a checksum-verified shared
+downloader configuration, and reclaims only the three unused SDK mounts on a
+disposable GitHub runner. It retains all original OTEL exports, source-owner
+tests, static, incremental and installed telemetry checks. It skips unrelated
+general checks and VS jobs. The exact owned review branch excludes the existing
+DEB-generating kernel fixtures; remove that temporary exception before Ready.
+This workflow does not establish independent clean-root reproducibility or final
+VS installer acceptance.
