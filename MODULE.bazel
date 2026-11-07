@@ -46,7 +46,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.26-2a6fc39c55be05e849b0e3a2d1808a4a59f123a6",
+    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -60,7 +60,7 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -250,7 +250,7 @@ bazel_dep(name = "sonic-fips", version = "0.0.3-e910ec2217bc42aae8a185a398b23a32
 # their previous infrastructure declarations.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.26-2a6fc39c55be05e849b0e3a2d1808a4a59f123a6",
+    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -275,7 +275,7 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.8-43598143ef4a46431eae0859915cd7d951dad1ed",
+    version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61",
 )
 
 single_version_override(
@@ -333,8 +333,8 @@ go_sdk.download(version = "1.25.9")
 
 # The gNMI and schema owners supply direct runtime TARs; the image adds only
 # its original startup/configuration files and pinned external dependencies.
-bazel_dep(name = "sonic-gnmi", version = "0.1.0-ce49e93eb3a0cff8daf77a3092535d76265ebc3d", repo_name = "sonic_gnmi")
-bazel_dep(name = "sonic-mgmt-common", version = "1.0.0-71eb5f710b5347ca0510ee8e3f5294a7c64bb744", repo_name = "sonic_mgmt_common")
+bazel_dep(name = "sonic-gnmi", version = "0.1.0-3cc2cba22ba980128518aafe4ddae14aeebebb08", repo_name = "sonic_gnmi")
+bazel_dep(name = "sonic-mgmt-common", version = "1.0.1-05f83dcab8fe2e1a0e0fc37ac172b289d6968e2b", repo_name = "sonic_mgmt_common")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "openconfig_goyang", version = "0.0.0.sonic.1-20200309174518-a00bece872fc", repo_name = "com_github_openconfig_goyang")
 bazel_dep(name = "openconfig_ygot", version = "0.7.1.sonic.1", repo_name = "com_github_openconfig_ygot")
@@ -411,13 +411,13 @@ go_patches.module_override(
 
 single_version_override(
     module_name = "sonic-mgmt-common",
-    version = "1.0.0-71eb5f710b5347ca0510ee8e3f5294a7c64bb744",
+    version = "1.0.1-05f83dcab8fe2e1a0e0fc37ac172b289d6968e2b",
 )
 
 # Framework shares the root gNMI Go selection and public generator identities.
 # Its registration follows the standard non-root go.mod dependency mechanism;
 # the reviewed registry entry supplies that wiring.
-bazel_dep(name = "sonic-mgmt-framework", version = "1.0.0-4036a01aa4648913ce44a0b4db52556a55cb2911", repo_name = "sonic_mgmt_framework")
+bazel_dep(name = "sonic-mgmt-framework", version = "1.0.0-2e6bb6b7ef3327094e4f5e02f2273f3c7e2838a5", repo_name = "sonic_mgmt_framework")
 
 # The old pre-flag.Parse glog diagnostic patch does not apply to glog1.2.4.
 # Preserve the shared root's current glog API and all other SONiC Go patches.
