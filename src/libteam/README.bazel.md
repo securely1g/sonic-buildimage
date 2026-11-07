@@ -37,10 +37,7 @@ wrapper and all build/query options; empty, malformed or missing roots fail.
 The historical source producer and incremental evidence on PR #162 at `233bde2`
 remain evidence for that revision. They do not establish this new alias-based
 consumer's acceptance. The inherited source-base, Eventd, OCI, Rust and YANG
-checks retain their accepted cache forwarding. Each source-mirror bootstrap
-uses the checksum-verified URL and digest declared in its workflow. Reproduce
-the native and OCI paths with their respective URL and SHA-256 values from
-[registry #228](https://github.com/securely1g/sonic-bazel-registry/pull/228).
+checks retain their accepted cache forwarding. The native and OCI workflows use the [merged registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg) at `97cc5025` and verify the same SHA256 before running Bazel.
 Temporary exact-branch exclusions keep DEB fixtures and the full VS build out of
 this Draft validation; remove those exclusions before normal readiness.
 
@@ -50,7 +47,7 @@ The committed `.bazelrc` keeps the maintained registry `main`. Draft CI uses the
 explicit immutable catalog selected by `tools/bazel/ci/libteam_draft_bazel.sh`
 and the native workflow, with configuration and generated locks retained in
 artifacts. [Registry PR #236](https://github.com/securely1g/sonic-bazel-registry/pull/236)
-is a direct prerequisite; #228 is the shared download-configuration prerequisite.
+provides the libteam module used by this consumer.
 Remove the temporary selection after the owner lands.
 
 Pure caller tests verify script resolution and flag forwarding. The native
