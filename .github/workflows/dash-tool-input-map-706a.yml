@@ -1,0 +1,230 @@
+name: DASH tool input identity (analysis only)
+'on':
+  create: null
+permissions:
+  contents: read
+concurrency:
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image
+    || 'none' }}-${{ inputs.source_revision }}
+  cancel-in-progress: true
+env:
+  BAZEL: ${{ github.workspace }}/tools/bazel/ci/lldp_draft_bazel.sh
+jobs:
+  dash_tool_identity:
+    if: github.event_name == 'create' && github.repository == 'securely1g/sonic-buildimage' && github.event.ref_type
+      == 'branch' && github.event.ref == 'codex/dash-tool-input-map-706a'
+    name: Map recorded DASH tool input identities (analysis only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+      - /usr/local/lib/android:/runner-unused/android
+      - /usr/share/dotnet:/runner-unused/dotnet
+      - /opt/ghc:/runner-unused/ghc
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Install execution tools
+      run: "apt-get update\napt-get install -y --no-install-recommends \\\n  autoconf automake binutils binutils-gold\
+        \ build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3\
+        \ python3-jinja2 tar unzip zstd\nfor tool in bsdtar gdb readelf objcopy; do command -v \"$tool\"; done\n"
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        ref: 706a257e1d191bab9643a1770499d465144fa798
+    - name: Check native architecture and generated dependency state
+      run: 'test "$(uname -m)" = "x86_64"
+
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+        test ! -e MODULE.bazel.lock
+
+        test -z "$(git ls-files -- MODULE.bazel.lock)"
+
+        git check-ignore MODULE.bazel.lock
+
+        '
+    - name: Initialize Sysmgr's pinned gNOI source
+      run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+    - name: Initialize P4RT's pinned source owner
+      run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+    - name: Install P4RT source execution dependencies
+      run: "apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \\\n  libarchive-tools\
+        \ libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \\\n  libnl-route-3-dev libzmq3-dev libboost-serialization-dev\
+        \ nlohmann-json3-dev uuid-dev\ngit config --global --add safe.directory \"$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins\"\
+        \n"
+    - name: Set up Bazel
+      uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+      with:
+        bazelisk-version: 1.29.0
+        bazelisk-cache: true
+        repository-cache: true
+        disk-cache: oci-dash-engine-amd64
+        cache-version: 8.5.1
+    - name: Configure the verified source mirror
+      run: "python3 - <<'PYCFG'\nimport hashlib\nimport os\nfrom pathlib import Path\nfrom urllib.request import\
+        \ urlopen\n# Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.\n\
+        url = \"https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg\"\
+        \nwith urlopen(url, timeout=60) as response:\n    data = response.read()\nexpected = \"ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720\"\
+        \nif hashlib.sha256(data).hexdigest() != expected:\n    raise SystemExit(\"Source mirror configuration checksum\
+        \ mismatch\")\nconfig = Path(os.environ[\"RUNNER_TEMP\"]) / \"sonic-source-mirrors.cfg\"\nconfig.write_bytes(data)\n\
+        with Path(\".bazelrc.user\").open(\"a\") as rc:\n    rc.write(\"common --experimental_downloader_config=\"\
+        \ + str(config) + \"\\n\")\nPYCFG\n"
+    - name: Preserve configured caches for Draft validation
+      run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+    - name: Prepare the checksum-pinned pigz source archive
+      run: "mkdir -p artifacts/source-downloads\npython3 -B tools/bazel/gzip/prepare_pigz.py \\\n  --output \"$PWD/artifacts/source-downloads\"\
+        \ | tee artifacts/pigz-source.json\n# common.bazelrc imports this ignored file, including through Draft\
+        \ wrappers.\nprintf 'common --distdir=%s\\n' \"$PWD/artifacts/source-downloads\" >> .bazelrc.user\n# Draft\
+        \ wrappers disable the home rc; share setup-bazel caches with them.\npython3 - <<'PYCODE'\nfrom pathlib\
+        \ import Path\nhome = Path.home() / '.bazelrc'\ncache_lines = [line for line in home.read_text().splitlines()\n\
+        \               if line.startswith(('build --disk_cache=', 'common --repository_cache='))]\nassert len(cache_lines)\
+        \ == 2, 'setup-bazel cache settings are missing'\nuser = Path('.bazelrc.user')\nuser.write_text(user.read_text()\
+        \ + '\\n'.join(cache_lines) + '\\n')\nPYCODE\n"
+    - name: Map exact recorded tool paths without native execution
+      id: tool_map
+      env:
+        BAZELISK_GITHUB_TOKEN: ''
+      run: "python3 -B - <<'PYMAP'\n\"\"\"One analysis-only mapping of the two recorded DASH tool input path hashes.\"\
+        \"\"\nimport hashlib\nimport json\nimport os\nfrom pathlib import Path, PurePosixPath\nimport re\nimport\
+        \ selectors\nimport signal\nimport subprocess\nimport sys\nimport tempfile\nimport time\n\nSOURCE = \"706a257e1d191bab9643a1770499d465144fa798\"\
+        \nKNOWN = frozenset((\n    \"4121b92cdc2ffc1c3d9a7d1d2f169af23180ac4d646ba81c8afdc5ce37f0aca1\",\n    \"\
+        eaed3062b1ba22548c41d5633d27e8400547f6d1ba0f1eaa39ef5a49188e60f2\",\n))\nPI = \"@@p4lang-pi++_repo_rules+pi_source//:sdk\"\
+        \nINSTANCES = frozenset((\n    \"83b5d538b128984dacbaad576ebd807ebb25c2115532d9fe634ab23b7fecc6c4\",\n \
+        \   \"fb31bb8666cf2e7f4b4919c933d89695024f7cfdf2010c30832719a8c8c283d9\",\n))\nRAW_LIMIT = 64 * 1024 * 1024\n\
+        PUBLIC_LIMIT = 2 * 1024 * 1024\nNODE_LIMIT = 250000\n\n\nclass MappingError(ValueError):\n    def __init__(self,\
+        \ reason, metrics=None):\n        require_reason = {\"timeout\", \"output-limit\", \"nonzero-exit\", \"\
+        invalid-graph\", \"privacy-failure\", \"io-failure\"}\n        if reason not in require_reason:\n      \
+        \      raise ValueError(\"unknown mapping failure\")\n        super().__init__(reason)\n        self.reason,\
+        \ self.metrics = reason, metrics or {}\n\n\ndef require(value):\n    if not value:\n        raise MappingError(\"\
+        invalid-graph\")\n\n\ndef fingerprint(value):\n    return hashlib.sha256(json.dumps(value, sort_keys=True,\
+        \ separators=(\",\", \":\"),\n                                    allow_nan=False).encode()).hexdigest()\n\
+        \n\ndef public_identity(path, public):\n    \"\"\"Only exact known-hash paths under reviewed public tool-owner\
+        \ prefixes.\"\"\"\n    require(fingerprint(path) in KNOWN)\n    try:\n        public.relative_name(path)\n\
+        \        public.safe_text(path)\n        require(len(path) <= 2048 and str(PurePosixPath(path)) == path)\n\
+        \        owner = r\"(sonic-build-infra\\+|rules_foreign_cc\\+|bazel_tools|p4lang-pi\\+\\+_repo_rules\\+pi_source|p4lang-bmv2\\\
+        +\\+_repo_rules\\+bmv2_source)\"\n        match = re.fullmatch(r\"(?:bazel-out/[A-Za-z0-9_.+-]+/bin/)?external/\"\
+        \ + owner + r\"/(.+)\", path)\n        require(match is not None)\n        # The owner is an exact allowlist\
+        \ entry, not a guessed target label.\n        return {\"repository\": \"@@\" + match[1], \"relative_path\"\
+        : path}\n    except ValueError:\n        return None\n\n\ndef project(graph, public, captures=None):\n \
+        \   require(isinstance(graph, dict))\n    def index(name):\n        rows = graph.get(name, [])\n       \
+        \ require(isinstance(rows, list) and len(rows) <= NODE_LIMIT)\n        out = {}\n        for row in rows:\n\
+        \            require(isinstance(row, dict) and \"id\" in row and str(row[\"id\"]) not in out)\n        \
+        \    out[str(row[\"id\"])] = row\n        return out\n    fragments, artifacts = index(\"pathFragments\"\
+        ), index(\"artifacts\")\n    targets, deps = index(\"targets\"), index(\"depSetOfFiles\")\n    memo = {}\n\
+        \    def path(identifier):\n        identifier = str(identifier)\n        if identifier not in memo:\n \
+        \           chain, seen, current = [], set(), identifier\n            while current not in memo:\n     \
+        \           require(current in fragments and current not in seen and len(chain) < 256)\n               \
+        \ seen.add(current)\n                row = fragments[current]\n                require(isinstance(row.get(\"\
+        label\"), str))\n                chain.append((current, row[\"label\"]))\n                if not row.get(\"\
+        parentId\"):\n                    prefix = \"\"\n                    break\n                current = str(row[\"\
+        parentId\"])\n            else:\n                prefix = memo[current]\n            for current, component\
+        \ in reversed(chain):\n                prefix = prefix + \"/\" + component if prefix else component\n  \
+        \              require(len(prefix) <= 16384)\n                memo[current] = prefix\n        return memo[identifier]\n\
+        \    def artifact(identifier):\n        return path(artifacts[str(identifier)][\"pathFragmentId\"])\n  \
+        \  def inputs(roots):\n        complete, active, found = set(), set(), set()\n        def visit(identifier,\
+        \ depth=0):\n            identifier = str(identifier)\n            require(depth < 256 and identifier in\
+        \ deps and identifier not in active)\n            if identifier in complete:\n                return\n \
+        \           active.add(identifier)\n            row = deps[identifier]\n            for child in row.get(\"\
+        transitiveDepSetIds\", []):\n                visit(child, depth + 1)\n            for value in row.get(\"\
+        directArtifactIds\", []):\n                require(str(value) in artifacts)\n                found.add(str(value))\n\
+        \            active.remove(identifier)\n            complete.add(identifier)\n        for root in roots:\n\
+        \            visit(root)\n        return found\n    actions = graph.get(\"actions\", [])\n    require(isinstance(actions,\
+        \ list) and len(actions) <= NODE_LIMIT)\n    rows = []\n    for action in actions:\n        require(isinstance(action,\
+        \ dict))\n        target = targets[str(action[\"targetId\"])][\"label\"]\n        if target != PI or action.get(\"\
+        mnemonic\") != \"CcConfigureMakeRule\":\n            continue\n        require(len(rows) < 16)\n       \
+        \ outputs = [artifact(value) for value in action.get(\"outputIds\", [])]\n        require(outputs and len(set(outputs))\
+        \ == len(outputs))\n        identity = fingerprint(sorted(outputs))\n        input_ids = inputs(action.get(\"\
+        inputDepSetIds\", []))\n        matched = {value: [] for value in KNOWN}\n        for identifier in sorted(input_ids):\n\
+        \            name = artifact(identifier)\n            digest = fingerprint(name)\n            if digest\
+        \ in KNOWN:\n                matched[digest].append({\"public_identity\": public_identity(name, public),\n\
+        \                                        \"is_tree_artifact\": bool(artifacts[identifier].get(\"isTreeArtifact\"\
+        , False))})\n        rows.append({\"target\": PI, \"listed_outputs_sha256\": identity,\n               \
+        \      \"matches_original_instance\": identity in INSTANCES,\n                     \"declared_input_artifact_count\"\
+        : len(input_ids),\n                     \"known_inputs\": [{\"path_sha256\": value, \"match_count\": len(matches),\n\
+        \                                       \"status\": \"matched\" if len(matches) == 1 else \"unobserved\"\
+        \ if not matches else \"ambiguous\",\n                                       \"matches\": matches} for value,\
+        \ matches in sorted(matched.items())]})\n    for row in rows:\n        row[\"instance_status\"] = \"ambiguous\"\
+        \ if sum(\n            other[\"listed_outputs_sha256\"] == row[\"listed_outputs_sha256\"] for other in rows)\
+        \ != 1 else \"unique\"\n    result = {\"schema\": 1, \"status\": \"analysis-complete\", \"source_revision\"\
+        : SOURCE,\n              \"capture_counts\": captures or {},\n              \"scope\": \"declared PI input\
+        \ paths only; no native execution or content verification\",\n              \"action_count\": len(actions),\
+        \ \"artifact_count\": len(artifacts), \"selected_instance_count\": len(rows),\n              \"instances\"\
+        : rows, \"unobserved_original_instances\": sorted(INSTANCES - {r[\"listed_outputs_sha256\"] for r in rows}),\n\
+        \              \"limits\": [\"Tree leaves and execution-discovered/runfiles paths may be absent.\",\n  \
+        \                       \"Matching a declared path does not verify the original1476-byte tool content.\"\
+        ,\n                         \"Aquery action keys and IDs are not the original SpawnExec action digests.\"\
+        ,\n                         \"Unknown paths remain hashes; absent or ambiguous mapping is inconclusive.\"\
+        ]}\n    try:\n        public.safe_json(result)\n    except public.PublicArtifactError:\n        raise MappingError(\"\
+        privacy-failure\") from None\n    require(len((json.dumps(result, indent=2) + \"\\n\").encode()) <= PUBLIC_LIMIT)\n\
+        \    return result\n\n\ndef bounded(command, output, error, cwd, timeout=900, cap=RAW_LIMIT):\n    \"\"\"\
+        Cap only captured streams; leave repository/output/cache file limits alone.\"\"\"\n    counts = {\"stdout_bytes\"\
+        : 0, \"stderr_bytes\": 0}\n    reason = None\n    with output.open(\"wb\") as out, error.open(\"wb\") as\
+        \ err:\n        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n\
+        \                                   start_new_session=True)\n        deadline = time.monotonic() + timeout\n\
+        \        try:\n            with selectors.DefaultSelector() as selected:\n                for stream, file,\
+        \ key in ((process.stdout, out, \"stdout_bytes\"),\n                                          (process.stderr,\
+        \ err, \"stderr_bytes\")):\n                    selected.register(stream, selectors.EVENT_READ, (file, key))\n\
+        \                while selected.get_map():\n                    remaining = deadline - time.monotonic()\n\
+        \                    if remaining <= 0:\n                        reason = \"timeout\"\n                \
+        \        break\n                    for event, _mask in selected.select(min(remaining, 1)):\n          \
+        \              chunk = os.read(event.fileobj.fileno(), 65536)\n                        if not chunk:\n \
+        \                           selected.unregister(event.fileobj)\n                            continue\n \
+        \                       file, key = event.data\n                        writable = max(0, cap - counts[key])\n\
+        \                        counts[key] += len(chunk)\n                        file.write(chunk[:writable])\n\
+        \                        if counts[key] > cap:\n                            reason = \"output-limit\"\n\
+        \                            break\n                    if reason:\n                        break\n    \
+        \        if reason is None:\n                try:\n                    process.wait(timeout=max(0, deadline\
+        \ - time.monotonic()))\n                except subprocess.TimeoutExpired:\n                    reason =\
+        \ \"timeout\"\n        except Exception:\n            reason = reason or \"io-failure\"\n            raise\n\
+        \        finally:\n            # Always terminate only this invocation's group on an incomplete capture,\n\
+        \            # including descendants that inherited its pipes after the client exited.\n            if reason\
+        \ or process.poll() is None:\n                try:\n                    os.killpg(process.pid, signal.SIGTERM)\n\
+        \                except ProcessLookupError:\n                    pass\n                try:\n          \
+        \          process.wait(timeout=5)\n                except subprocess.TimeoutExpired:\n                \
+        \    pass\n                finally:\n                    try:\n                        os.killpg(process.pid,\
+        \ signal.SIGKILL)\n                    except ProcessLookupError:\n                        pass\n      \
+        \              process.wait()\n            else:\n                process.wait()\n            process.stdout.close()\n\
+        \            process.stderr.close()\n    counts.update(exit_code=process.returncode if process.returncode\
+        \ >= 0 else None,\n                  signal=-process.returncode if process.returncode < 0 else None)\n \
+        \   if reason or process.returncode:\n        raise MappingError(reason or \"nonzero-exit\", counts)\n \
+        \   return counts\n\n\ndef main():\n    root = Path.cwd()\n    sys.path.insert(0, str(root))\n    from tools.bazel.ci\
+        \ import dash_engine_image as dash, public_artifacts as public\n    require(subprocess.check_output([\"\
+        git\", \"rev-parse\", \"HEAD\"], text=True).strip() == SOURCE)\n    out = root / \"artifacts/dash-tool-identity\"\
+        \n    out.mkdir(parents=True, exist_ok=False)\n    result = None\n    phase, captures = \"metadata\", {}\n\
+        \    try:\n        dash.clean_source(out)\n        with tempfile.TemporaryDirectory(prefix=\"dash-tool-map-\"\
+        , dir=os.environ.get(\"RUNNER_TEMP\")) as tmp:\n            temp = Path(tmp)\n            # Reuse the exact\
+        \ metadata-only Make command before the original aquery.\n            def metadata(command, *_args):\n \
+        \               captures[\"metadata\"] = bounded(command, temp / \"metadata.stdout\", temp / \"metadata.stderr\"\
+        , root, timeout=180)\n            dash.prepare_manifests(metadata, out, {}, \"bazel-dash-engine-ci\")\n\
+        \            roots = [*dash.TARGETS.values(), dash.BASE, *[dash.OWNER + name for name in dash.IMAGES]]\n\
+        \            require(len(roots) == 22)\n            query = 'mnemonic(\"CcConfigureMakeRule\", deps(set('\
+        \ + \" \".join(roots) + ')))'\n            command = [os.environ[\"BAZEL\"], \"aquery\", *dash.root_options(),\
+        \ \"--output=jsonproto\",\n                       \"--include_artifacts=true\", \"--include_commandline=false\"\
+        , \"--include_param_files=false\",\n                       \"--include_file_write_contents=false\", query]\n\
+        \            phase = \"query\"\n            captures[\"query\"] = bounded(command, temp / \"graph.json\"\
+        , temp / \"analysis.stderr\", root)\n            phase = \"projection\"\n            try:\n            \
+        \    graph = public.load_json((temp / \"graph.json\").read_bytes())\n            except (ValueError, UnicodeError):\n\
+        \                raise MappingError(\"invalid-graph\") from None\n            result = project(graph, public,\
+        \ captures)\n        dash.clean_source(out)\n    except Exception as error:\n        result = {\"schema\"\
+        : 1, \"status\": \"analysis-incomplete\", \"source_revision\": SOURCE,\n                  \"phase\": phase,\n\
+        \                  \"reason\": error.reason if isinstance(error, MappingError) else \"io-failure\" if isinstance(error,\
+        \ OSError) else \"invalid-graph\",\n                  \"capture_counts\": captures,\n                  \"\
+        failed_capture\": error.metrics if isinstance(error, MappingError) else {}}\n    finally:\n        public.safe_json(result)\n\
+        \        data = (json.dumps(result, indent=2) + \"\\n\").encode()\n        require(len(data) <= PUBLIC_LIMIT)\n\
+        \        (out / \"tool-identity.json\").write_bytes(data)\n    return 0 if result[\"status\"] == \"analysis-complete\"\
+        \ else 1\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\nPYMAP\n"
+    - name: Retain bounded tool identity evidence
+      if: always() && steps.tool_map.outcome != 'skipped'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: dash-tool-input-identity
+        path: artifacts/dash-tool-identity/tool-identity.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 1
