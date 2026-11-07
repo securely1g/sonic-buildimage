@@ -1,0 +1,203 @@
+name: P4RT prior-run storage diagnostic
+
+on: create
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4rt-storage-diagnostics-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  storage:
+    name: Measure P4RT prior-run storage (no build)
+    if: github.repository == 'securely1g/sonic-buildimage' && github.event.ref_type == 'branch' && github.event.ref == 'codex/p4rt-storage-diagnostics'
+    runs-on: [sonic-slave-container-dpool, sonic-slave-lgh114-1]
+    timeout-minutes: 5
+    steps:
+      - name: Record workspace and scratch capacity
+        shell: bash
+        run: |
+          python3 -I -S -B - <<'PY_RESOURCE'
+          """Fixed, metadata-only diagnostic; no production execution is authorized here."""
+          import errno
+          import json
+          import os
+          import stat
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+          
+          WORKER = "sonic-slave-lgh114-1"
+          PRIOR_RUN = "42384540559"
+          PRIOR_ATTEMPT = "1"
+          MAX_ENTRIES = 250000
+          MAX_SECONDS = 120
+          MAX_DEPTH = 64
+          DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+          
+          
+          def open_directory(path):
+              """Resolve an absolute path using directory descriptors, never symlinks."""
+              path = Path(path)
+              if not path.is_absolute() or ".." in path.parts:
+                  raise ValueError("Expected a fixed absolute directory")
+              descriptor = os.open("/", DIRECTORY_FLAGS)
+              try:
+                  for part in path.parts[1:]:
+                      child = os.open(part, DIRECTORY_FLAGS, dir_fd=descriptor)
+                      os.close(descriptor)
+                      descriptor = child
+                  return descriptor
+              except BaseException:
+                  os.close(descriptor)
+                  raise
+          
+          
+          def measure(path, budget):
+              result = {"status": "complete", "allocated_bytes": 0,
+                        "regular_file_logical_bytes": 0, "unique_inodes": 0,
+                        "hardlink_duplicates": 0, "symlinks_not_followed": 0,
+                        "cross_device_entries_not_followed": 0, "error_errnos": []}
+              seen = set()
+          
+              def visit(descriptor, info, depth):
+                  if time.monotonic() >= budget["deadline"] or budget["entries"] >= budget["maximum_entries"] or depth > MAX_DEPTH:
+                      result["status"] = "partial_limit"
+                      return
+                  budget["entries"] += 1
+                  if info.st_dev != result["device"]:
+                      result["cross_device_entries_not_followed"] += 1
+                      result["status"] = "partial_cross_device"
+                      return
+                  key = (info.st_dev, info.st_ino)
+                  if key in seen:
+                      result["hardlink_duplicates"] += 1
+                      return
+                  seen.add(key)
+                  result["unique_inodes"] += 1
+                  result["allocated_bytes"] += info.st_blocks * 512
+                  if stat.S_ISREG(info.st_mode):
+                      result["regular_file_logical_bytes"] += info.st_size
+                  if stat.S_ISLNK(info.st_mode):
+                      result["symlinks_not_followed"] += 1
+                  if descriptor is None:
+                      return
+                  with os.scandir(descriptor) as entries:
+                      for entry in entries:
+                          if time.monotonic() >= budget["deadline"] or budget["entries"] >= budget["maximum_entries"]:
+                              result["status"] = "partial_limit"
+                              break
+                          child = None
+                          try:
+                              metadata = entry.stat(follow_symlinks=False)
+                              if stat.S_ISDIR(metadata.st_mode) and metadata.st_dev == result["device"]:
+                                  child = os.open(entry.name, DIRECTORY_FLAGS, dir_fd=descriptor)
+                                  metadata = os.fstat(child)
+                              visit(child, metadata, depth + 1)
+                          except OSError as error:
+                              result["status"] = "partial_error"
+                              if error.errno not in result["error_errnos"]:
+                                  result["error_errnos"].append(error.errno)
+                          finally:
+                              if child is not None:
+                                  os.close(child)
+          
+              descriptor = None
+              try:
+                  descriptor = open_directory(path)
+                  metadata = os.fstat(descriptor)
+                  usage = os.fstatvfs(descriptor)
+                  result.update(device=metadata.st_dev, free_bytes=usage.f_bavail * usage.f_frsize,
+                                free_inodes=usage.f_favail, total_bytes=usage.f_blocks * usage.f_frsize)
+                  visit(descriptor, metadata, 0)
+              except OSError as error:
+                  result["status"] = "missing" if error.errno == errno.ENOENT else "unavailable"
+                  result["error_errnos"] = [error.errno]
+              finally:
+                  if descriptor is not None:
+                      os.close(descriptor)
+              result["is_capacity_bound"] = False
+              return result
+          
+          
+          def paths(workspace, temporary):
+              suffix = f"{PRIOR_RUN}-{PRIOR_ATTEMPT}-{WORKER}"
+              source = workspace / ("source-image-source-" + suffix)
+              scratch = temporary / ("source-image-scratch-" + suffix)
+              artifacts = scratch / "artifacts"
+              cache = Path("/bazel_cache/source-images") / WORKER
+              return {
+                  "prior_public": artifacts / "public",
+                  "prior_owner_sdk": artifacts / "owner-sdk",
+                  "prior_owner_test_runtime": artifacts / "owner-test-runtime",
+                  "prior_owner_output": artifacts / "owner-output",
+                  "prior_owner_preparation": artifacts / "owner-preparation",
+                  "prior_docker": scratch / f"source-image-docker-{PRIOR_RUN}-{PRIOR_ATTEMPT}",
+                  "prior_artifacts_including_children": artifacts,
+                  "prior_source_including_owner_inputs": source,
+                  "prior_control": workspace / ("source-image-control-" + suffix),
+                  "prior_scratch_including_children": scratch,
+                  "cache_repository": cache / "repository", "cache_disk": cache / "disk",
+                  "cache_bazelisk": cache / "bazelisk", "cache_p4rt_output_base": cache / "p4rt/output-base",
+                  "owner_cache_repository": cache / "p4rt-owner/repository",
+                  "owner_cache_disk": cache / "p4rt-owner/disk",
+                  "owner_cache_bazelisk": cache / "p4rt-owner/bazelisk",
+                  "owner_cache_output_base": cache / "p4rt-owner/output-base",
+              }
+          
+          
+          def main():
+              if (os.environ.get("RUNNER_NAME"), os.environ.get("RUNNER_OS"), os.environ.get("RUNNER_ARCH")) != (WORKER, "Linux", "X64"):
+                  raise SystemExit("Unexpected worker identity; no traversal")
+              workspace, temporary = Path(os.environ["GITHUB_WORKSPACE"]), Path(os.environ["RUNNER_TEMP"])
+              if not all(path.is_relative_to("/actions/_work") for path in (workspace, temporary)):
+                  raise SystemExit("Unexpected worker roots; no traversal")
+              storage = {}
+              for label, path in (("workspace", workspace), ("scratch", temporary), ("cache", Path("/bazel_cache"))):
+                  descriptor = None
+                  try:
+                      descriptor = open_directory(path)
+                      usage = os.fstatvfs(descriptor)
+                      storage[label] = {"device": os.fstat(descriptor).st_dev,
+                                        "free_bytes": usage.f_bavail * usage.f_frsize,
+                                        "total_bytes": usage.f_blocks * usage.f_frsize,
+                                        "free_inodes": usage.f_favail, "total_inodes": usage.f_files}
+                  except OSError as error:
+                      storage[label] = {"measurement_error_errno": error.errno}
+                  finally:
+                      if descriptor is not None:
+                          os.close(descriptor)
+              budget = {"deadline": time.monotonic() + MAX_SECONDS, "entries": 0, "maximum_entries": MAX_ENTRIES}
+              result = {"schema": 1, "source": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                        "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "runner": WORKER,
+                        "prior_run": PRIOR_RUN, "prior_attempt": PRIOR_ATTEMPT,
+                        "filesystems": storage,
+                        "started_at": datetime.now(timezone.utc).isoformat(),
+                        "limits": {"entries": MAX_ENTRIES, "seconds": MAX_SECONDS, "depth": MAX_DEPTH},
+                        "paths": {label: measure(path, budget) for label, path in paths(workspace, temporary).items()},
+                        "entries_visited": budget["entries"], "capacity_admission": False,
+                        "notes": ["Overlapping roots must not be summed.", "Counts are live metadata observations, not an atomic snapshot.",
+                                  "Partial counts are lower bounds; missing means unavailable at this path, not proven cleanup.",
+                                  "Allocated blocks do not prove exclusive physical allocation or future peak.",
+                                  "No file contents, archive decoding, cache mutation, cleanup, builds, or tests."]}
+              text = json.dumps(result, indent=2, sort_keys=True) + "\n"
+              if len(text.encode()) > 65536:
+                  raise SystemExit("Unexpected diagnostic size")
+              print(text, end="", flush=True)
+              with (temporary / "p4rt-path-storage.json").open("x") as receipt:
+                  receipt.write(text)
+          
+          
+          if __name__ == "__main__":
+              main()
+          PY_RESOURCE
+      - name: Retain resource measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: p4rt-path-storage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p4rt-path-storage.json
+          if-no-files-found: error
+          retention-days: 14
