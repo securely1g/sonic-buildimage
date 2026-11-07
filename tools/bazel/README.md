@@ -470,7 +470,7 @@ The `p4rt` selection reuses the source's existing seven phases: prepare the Comm
 SDK and sealed owner TARs, prepare the declared owner test runtime, run the complete
 original and installed owner test selection, build, validate, verify incremental
 restoration, and run the loaded service probes. It requires the exact clean
-`sonic-pins` gitlink `5018f075a390f10bb74469edd6d39af448db3a1b`. The root uses Bazel
+`sonic-pins` gitlink `e66b705bc9d87a86b555866914dc1909cbf3e092`. The root uses Bazel
 8.5.1; the WORKSPACE owner uses Bazel 6.4.0 with one job, a 2GiB JVM, and its own
 repository/disk/Bazelisk caches and output base. Both retain the existing configured
 no-DEB audits, and the sealed SDK handoff prevents recompiling Common under Bazel6.
