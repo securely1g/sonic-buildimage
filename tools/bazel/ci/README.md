@@ -293,16 +293,7 @@ incremental/installed phases, no-DEB audit, worker affinity and persistent cache
 paths are unchanged; the selected source files are never rewritten.
 
 
-The worker verifies the immutable shared downloader configuration at
-`d53bed3dfbc53895f5ba348354210704f3872692` (48,072 bytes, SHA256
-`8fa62372c16b52945670df97b339e78907c7318fcf8495e4c9097a9854c9ec68`)
-before adding its existing gawk and four exact package supplements. This supplies
-the verified named-content alternatives for the original Socat `.tar.bz2` source
-and locked libc6 ARMHF package while retaining their existing checksums and
-fallbacks. The original-source route is separate from Socat's Debian patch
-archive route. Source/catalog choices, driver targets, resource limits and cache
-paths are unchanged. Public configuration byte verification does not establish
-new worker acceptance; each dispatch still requires its own admission.
+On dedicated source-image workers, Bazel uses the merged registry mirror configuration. Trusted jobs can select the private Debian archives, and hosted jobs use the public configuration.
 
 ## Direct shared-image worker profiles
 
