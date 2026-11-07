@@ -70,11 +70,29 @@ class NativeTransportTests(unittest.TestCase):
 
     def test_debian_and_security_keep_archive_path_and_select_reviewed_snapshot(self):
         for host, archive, key in (("deb.debian.org", "debian", "DEBIAN_MIRROR_ROOT"),
+                                   ("ftp.debian.org", "debian", "DEBIAN_MIRROR_ROOT"),
                                    ("security.debian.org", "debian-security", "DEBIAN_SECURITY_MIRROR_ROOT")):
             for suffix in ("dists/trixie/InRelease", "pool/main/a/audit/libaudit1_4.0.2-2+b2_amd64.deb"):
                 with self.subTest(archive=archive, suffix=suffix):
                     self.assertEqual(native.destination(f"http://{host}/{archive}/{suffix}", MIRRORS, MANIFEST),
                         (MIRRORS[key] + MANIFEST[archive]["current"] + "/" + suffix, archive))
+
+    def test_sonic_archive_alias_routes_pinned_libyang_sources_and_security(self):
+        host = "debian-archive.trafficmanager.net"
+        for filename in ("libyang_3.12.2-1.dsc", "libyang_3.12.2.orig.tar.xz",
+                         "libyang_3.12.2-1.debian.tar.xz"):
+            suffix = "pool/main/liby/libyang/" + filename
+            with self.subTest(filename=filename):
+                self.assertEqual(native.destination(f"http://{host}/debian/{suffix}", MIRRORS, MANIFEST),
+                    (MIRRORS["DEBIAN_MIRROR_ROOT"] + MANIFEST["debian"]["current"] + "/" + suffix, "debian"))
+        self.assertEqual(native.destination(f"http://{host}/debian-security/dists/trixie-security/InRelease",
+                                           MIRRORS, MANIFEST),
+            (MIRRORS["DEBIAN_SECURITY_MIRROR_ROOT"] + MANIFEST["debian-security"]["current"]
+             + "/dists/trixie-security/InRelease", "debian-security"))
+        unrelated = "http://debian-archive.trafficmanager.net.example.invalid/debian/pool/file.dsc"
+        self.assertEqual(native.destination(unrelated, MIRRORS, MANIFEST), (unrelated, None))
+        with self.assertRaises(ValueError):
+            native.destination(f"http://{host}/debian/%2e%2e/private", MIRRORS, MANIFEST)
 
     def test_snapshot_timestamp_is_preserved_and_unreviewed_snapshot_rejected(self):
         uri = "http://snapshot.debian.org/archive/debian/20260727T143429Z/pool/main/a/file.deb"

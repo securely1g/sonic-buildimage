@@ -25,7 +25,8 @@ import urllib.parse
 import urllib.request
 
 REGISTRY_REVISION = "1060b4084e0598312c446eb5bb66be938aeac22c"
-DEBIAN_HOSTS = {"deb.debian.org", "security.debian.org", "ftp.debian.org"}
+DEBIAN_HOSTS = {"deb.debian.org", "security.debian.org", "ftp.debian.org",
+                "debian-archive.trafficmanager.net"}
 SNAPSHOT_HOSTS = {"snapshot.debian.org", "snapshot-cloudflare.debian.org"}
 BRIDGE = "192.168.240.1"
 BRIDGE_NETWORK = ipaddress.ip_network("192.168.240.0/24")
