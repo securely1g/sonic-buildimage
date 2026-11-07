@@ -291,3 +291,6 @@ branches. Those branches need a separately reviewed compatible source selection.
 Database continues to use the common OCI workflow. The four build/validation/
 incremental/installed phases, no-DEB audit, worker affinity and persistent cache
 paths are unchanged; the selected source files are never rewritten.
+
+
+On dedicated source-image workers, Bazel uses the merged registry mirror configuration. Trusted jobs can select the private Debian archives, and hosted jobs use the public configuration.

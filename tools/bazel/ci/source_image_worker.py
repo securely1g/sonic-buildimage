@@ -25,7 +25,7 @@ from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
-           "radv": "radv", "macsec": "macsec", "mux": "mux"}
+           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -35,7 +35,7 @@ WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 WRAPPERS["framework"] = "review_bazel.sh"
-for name in ("database", "eventd", "lldp", "radv", "macsec", "mux"):
+for name in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
     WRAPPERS[name] = "review_bazel.sh"
 # Older service branches select their catalog in a dedicated image workflow.
 # Keep the common workflow first for reviewed combined-source checkouts.
@@ -220,14 +220,253 @@ print(json.dumps({"private_network_namespace": True, "tap_created_and_closed": T
         "device_major": 10, "device_minor": 200, "scope": "disposable network namespace; no VM or KVM"}, indent=2) + "\n")
 
 
+EXECUTION_NETWORK_PROBE = '''import json, os, urllib.error, urllib.request
+names = ("http_proxy", "https_proxy", "all_proxy", "no_proxy",
+         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+result = {"uid": os.getuid(), "proxy_names_present": {name: name in os.environ for name in names},
+          "urllib_proxy_schemes": sorted(set(urllib.request.getproxies()) & {"http", "https", "ftp", "all", "no"})}
+try:
+    with urllib.request.urlopen("https://deb.debian.org/debian/dists/trixie/InRelease", timeout=10) as response:
+        result["http_status"] = response.status
+except urllib.error.HTTPError as error:
+    result.update(http_status=error.code, error_class="HTTPError")
+except Exception as error:
+    result["error_class"] = type(error).__name__
+print(json.dumps(result))
+'''
+
+
+APT_TRANSPORT_PROBE = '''import hashlib, json, os, pwd, resource, shlex, signal, stat, subprocess, tempfile, time
+CAP = 1024 * 1024
+URL = "https://deb.debian.org/debian/dists/trixie/InRelease"
+PROXIES = tuple("Acquire::" + protocol + "::" + key for protocol in ("http", "https")
+                for key in ("Proxy", "Proxy::deb.debian.org", "Proxy-Auto-Detect", "ProxyAutoDetect"))
+FIELDS = PROXIES + ("Acquire::EnableSrvRecords/b", "APT::Sandbox::User", "Debug::NoDropPrivs/b")
+
+def configuration():
+    keys = FIELDS + tuple("Binary::" + method + "::" + key for method in ("http", "https") for key in FIELDS)
+    args = ["apt-get", "shell"]
+    for index, key in enumerate(keys):
+        args.extend(("K" + str(index), key))
+    # The executable is a query, not apt-get. argv[0] selects apt-get's Binary scope.
+    raw = subprocess.run(args, executable="/usr/bin/apt-config", check=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5).stdout
+    if len(raw) > 65536:
+        raise ValueError("configuration size")
+    values = {}
+    for token in shlex.split(raw):
+        key, separator, value = token.partition("=")
+        if not separator or key not in {"K" + str(i) for i in range(len(keys))} or key in values:
+            raise ValueError("configuration format")
+        values[key] = value
+    for index in (8, 10):
+        if "K" + str(index) in values and values["K" + str(index)] not in ("true", "false"):
+            raise ValueError("configuration boolean")
+    sandbox = values.get("K9", "_apt")
+    return {"proxy_entries_present": ["K" + str(i) in values for i in range(8)],
+            "srv_enabled": values.get("K8", "true") == "true", "srv_default": "K8" not in values,
+            "sandbox_kind": sandbox if sandbox in ("_apt", "root", "") else "other",
+            "no_drop_privs": values.get("K10", "false") == "true",
+            "method_overrides_present": any("K" + str(i) in values for i in range(11, len(keys))),
+            "apt_config_present": "APT_CONFIG" in os.environ}
+
+def stop(process):
+    # The leader is still unreaped: its PID/PGID cannot be recycled during cleanup.
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    time.sleep(2)
+    # A leader can exit before a method child. Always finish the owned group,
+    # then reap the leader; waiting for the leader alone cannot prove cleanup.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=2)
+
+def download(directory, disable_srv):
+    path = os.path.join(directory, "srv-disabled" if disable_srv else "baseline")
+    args = ["apt-get", "-o", "Acquire::Retries=0", "-o", "Acquire::http::Timeout=10",
+            "-o", "Acquire::https::Timeout=10"]
+    if disable_srv:
+        args += ["-o", "Acquire::EnableSrvRecords=false"]
+    args += ["download-file", URL, path]
+    # apt-helper uses APT's normal HTTPS acquisition, with apt-get's Binary scope.
+    process = subprocess.Popen(args, executable="/usr/lib/apt/apt-helper", start_new_session=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = {"status": "exit_failure"}
+    leader_owned = True
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            state = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if state is not None:
+                result["exit_code"] = state.si_status if state.si_code == os.CLD_EXITED else -state.si_status
+                break
+            time.sleep(0.05)
+        else:
+            result["status"] = "timeout"
+    except ChildProcessError:
+        # Do not signal a numeric group if an unexpected external reaper took
+        # away the leader identity that protects it against PID reuse.
+        leader_owned = False
+        raise
+    finally:
+        if leader_owned:
+            stop(process)
+    if result.get("exit_code") == 0:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode) or not 0 < size <= CAP:
+                return {"status": "size_or_type_rejected", "exit_code": 0}
+            data = stream.read(CAP + 1)
+        if len(data) != size:
+            return {"status": "size_or_type_rejected", "exit_code": 0}
+        result.update(status="downloaded", bytes=size, sha256=hashlib.sha256(data).hexdigest())
+    return result
+
+def main():
+    result = {"scope": "transport_only_no_signature_verification"}
+    try:
+        if os.getuid() != 0:
+            raise PermissionError("diagnostic identity")
+        config = configuration()
+        result["config"] = config
+        if config["method_overrides_present"] or config["sandbox_kind"] == "other":
+            result["status"] = "unsupported_configuration"
+            return result
+        account = pwd.getpwnam("_apt") if config["sandbox_kind"] == "_apt" else None
+        if account is not None and account.pw_uid == 0:
+            raise ValueError("sandbox identity")
+        # Generic download-file has no MaxReleaseFileSize bound. This limit is
+        # inherited by the helper and its methods, and applies only in this child.
+        resource.setrlimit(resource.RLIMIT_FSIZE, (CAP, CAP))
+        os.umask(0o077)
+        with tempfile.TemporaryDirectory(prefix="sonic-apt-diagnostic-") as directory:
+            if account is not None:
+                os.chown(directory, account.pw_uid, account.pw_gid)
+            # Private mode0700 remains accessible to the configured sandbox user;
+            # an inaccessible root-only target would make APT fall back to root.
+            result["attempts"] = []
+            for disable_srv in (False, True):
+                try:
+                    result["attempts"].append(download(directory, disable_srv))
+                except Exception as error:
+                    result["attempts"].append({"status": "error", "error_class": type(error).__name__})
+        result["status"] = "completed"
+    except Exception as error:
+        result.update(status="error", error_class=type(error).__name__)
+    return result
+
+if __name__ == "__main__":
+    print(json.dumps(main()))
+'''
+
+
+def prepare_apt_transport(artifacts):
+    """Keep only typed, bounded transport evidence; never publish APT output."""
+    try:
+        value = json.loads(output(["sudo", "-n", sys.executable, "-I", "-c", APT_TRANSPORT_PROBE],
+                                  timeout=50, stderr=subprocess.DEVNULL))
+        require(set(value) <= {"scope", "status", "config", "attempts", "error_class"} and
+                value["scope"] == "transport_only_no_signature_verification" and
+                value["status"] in {"completed", "error", "unsupported_configuration"}, "Unexpected APT diagnostic")
+        if value["status"] == "completed":
+            require("config" in value and "attempts" in value, "Incomplete APT diagnostic")
+        if value["status"] == "unsupported_configuration":
+            require("config" in value and "attempts" not in value, "Unexpected skipped APT attempts")
+        if "config" in value:
+            config = value["config"]
+            booleans = {"srv_enabled", "srv_default", "no_drop_privs", "method_overrides_present", "apt_config_present"}
+            require(set(config) == booleans | {"proxy_entries_present", "sandbox_kind"} and
+                    all(type(config[key]) is bool for key in booleans) and
+                    type(config["proxy_entries_present"]) is list and len(config["proxy_entries_present"]) == 8 and
+                    all(type(item) is bool for item in config["proxy_entries_present"]) and
+                    config["sandbox_kind"] in {"_apt", "root", "", "other"}, "Unexpected APT configuration diagnostic")
+        if "attempts" in value:
+            require(type(value["attempts"]) is list and len(value["attempts"]) == 2, "Unexpected APT attempts")
+        for row in [value, *value.get("attempts", [])]:
+            if row is not value:
+                require(set(row) <= {"status", "exit_code", "bytes", "sha256", "error_class"} and
+                        row["status"] in {"downloaded", "exit_failure", "timeout", "size_or_type_rejected", "error"},
+                        "Unexpected APT transport result")
+                if "exit_code" in row:
+                    require(type(row["exit_code"]) is int and -128 <= row["exit_code"] <= 255, "Unexpected APT exit")
+                if row["status"] == "downloaded":
+                    require(row.get("exit_code") == 0 and type(row.get("bytes")) is int and
+                            0 < row["bytes"] <= 1024 * 1024 and type(row.get("sha256")) is str and
+                            re.fullmatch("[0-9a-f]{64}", row["sha256"]), "Unexpected APT downloaded bytes")
+                else:
+                    require("bytes" not in row and "sha256" not in row, "Unexpected partial APT digest")
+            if "error_class" in row:
+                require(type(row["error_class"]) is str and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", row["error_class"]),
+                        "Unexpected APT error class")
+        safe_json(value)
+    except Exception as error:
+        value = {"status": "error", "error_class": type(error).__name__}
+    try:
+        (artifacts / "worker-apt-transport.json").write_text(json.dumps(value, indent=2) + "\n")
+    except OSError:
+        print("Worker APT transport diagnostic could not be retained", file=sys.stderr)
+
+
+def prepare_execution_network(artifacts):
+    """Compare the two existing APT execution identities without recording values."""
+    result = {}
+    names = {"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+    for context, prefix, expected_uid in (("worker", [], 1000), ("sudo", ["sudo", "-n"], 0)):
+        try:
+            value = json.loads(output([*prefix, sys.executable, "-I", "-c", EXECUTION_NETWORK_PROBE],
+                                      timeout=20, stderr=subprocess.DEVNULL))
+            require(set(value) <= {"uid", "proxy_names_present", "urllib_proxy_schemes", "http_status", "error_class"},
+                    "Unexpected network diagnostic field")
+            require(type(value["uid"]) is int and value["uid"] == expected_uid, "Unexpected diagnostic UID")
+            require(set(value["proxy_names_present"]) == names and
+                    all(type(present) is bool for present in value["proxy_names_present"].values()),
+                    "Unexpected proxy presence diagnostic")
+            require(isinstance(value["urllib_proxy_schemes"], list) and
+                    all(scheme in {"http", "https", "ftp", "all", "no"} for scheme in value["urllib_proxy_schemes"]),
+                    "Unexpected proxy scheme diagnostic")
+            require("http_status" in value or "error_class" in value, "Missing network diagnostic outcome")
+            if "http_status" in value:
+                require(type(value["http_status"]) is int and 100 <= value["http_status"] <= 599,
+                        "Unexpected HTTP status diagnostic")
+            if "error_class" in value:
+                require(isinstance(value["error_class"], str) and
+                        re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value["error_class"]),
+                        "Unexpected network error class")
+            safe_json(value)
+            result[context] = value
+        except Exception as error:
+            result[context] = {"error_class": type(error).__name__}
+    try:
+        (artifacts / "worker-execution-network.json").write_text(json.dumps(result, indent=2) + "\n")
+    except OSError:
+        # The existing APT command remains authoritative even if diagnostics cannot be retained.
+        print("Worker execution network diagnostic could not be retained", file=sys.stderr)
+    prepare_apt_transport(artifacts)
+
+
 def prepare_validation_tools(artifacts):
     """Install only missing execution tools in the disposable slave container."""
     packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils", "objcopy": "binutils"}
     missing = sorted({package for tool, package in packages.items() if shutil.which(tool) is None})
     if missing:
-        run(["sudo", "-n", "apt-get", "update"])
-        run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
-             "--no-install-recommends", *missing])
+        try:
+            run(["sudo", "-n", "apt-get", "-o", "Acquire::EnableSrvRecords=false", "update"])
+            run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get",
+                 "-o", "Acquire::EnableSrvRecords=false", "install", "-y",
+                 "--no-install-recommends", *missing])
+        except subprocess.CalledProcessError:
+            try:
+                prepare_execution_network(artifacts)
+            except Exception:
+                # Diagnostics must not replace the original APT failure.
+                print("Worker execution network diagnostic failed", file=sys.stderr)
+            raise
     for tool in packages:
         require(shutil.which(tool), "Missing image validation tool: " + tool)
     versions = output(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\n", *sorted(set(packages.values()))])
