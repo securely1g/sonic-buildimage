@@ -463,3 +463,24 @@ content retains its timestamp, updates are atomic, and invalid or empty values
 preserve the previous input. Newline, NUL and dollar characters are rejected to
 prevent extra environment records or rules_oci variable expansion. Make exports
 the value to the helper instead of interpolating it into shell code.
+
+### P4RT on the private source-image worker
+
+The `p4rt` selection reuses the source's existing seven phases: prepare the Common
+SDK and sealed owner TARs, prepare the declared owner test runtime, run the complete
+original and installed owner test selection, build, validate, verify incremental
+restoration, and run the loaded service probes. It requires the exact clean
+`sonic-pins` gitlink `e66b705bc9d87a86b555866914dc1909cbf3e092`. The root uses Bazel
+8.5.1; the WORKSPACE owner uses Bazel 6.4.0 with one job, a 2GiB JVM, and its own
+repository/disk/Bazelisk caches and output base. Both retain the existing configured
+no-DEB audits, and the sealed SDK handoff prevents recompiling Common under Bazel6.
+Each phase checks its predecessor's successful receipt before executing.
+
+The controller delegates publication to the existing P4RT artifact selector. It
+retains checked worker/runtime receipts and a bounded per-target XML summary with
+case counts and original XML hashes, while excluding private SDK/runtime paths,
+raw logs and environment data. The historical 59-target/990-case result is not an
+acceptance claim for a new source/catalog selection. A new run must establish its
+actual test graph, image/debug, incremental and private loaded-service results.
+The added controller branch is prepared for a separately reviewed manual request;
+its local mock checks do not establish native or full VS acceptance.
