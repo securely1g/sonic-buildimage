@@ -14,6 +14,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as artifacts
+from tools.bazel.ci.bazel_commands import artifact_paths
 from tools.bazel.oci import package_contract
 from tools.bazel.oci.runtime_smoke import gdb_lookup
 
@@ -23,6 +24,98 @@ FIB = re.compile(r"libfib|libnexthopgroup|sonic[-_]fib|(?:^|\s)-l(?:fib|nexthopg
                  r"\bfib_frr_|\bnexthopgroup_version\b|\bnexthopgroupfull_json_|\bC_NextHopGroupFull\b",
                  re.IGNORECASE)
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".rs", ".bzl", ".py", ".sh", ".lua"}
+
+
+def shared_owner_inputs(graph, action, arguments, libraries):
+    """Trace the selected library input through solib/interface producers."""
+    paths = artifact_paths(graph)
+    labels = {str(target["id"]): target["label"] for target in graph["targets"]}
+    sets = {str(row["id"]): row for row in graph.get("depSetOfFiles", [])}
+    artifacts.require(len(sets) == len(graph.get("depSetOfFiles", [])), "duplicate link input set")
+    producers = {}
+    for producer in graph["actions"]:
+        for identity in producer.get("outputIds", []):
+            identity = str(identity)
+            artifacts.require(identity not in producers, "ambiguous link input producer")
+            producers[identity] = producer
+    memo, active = {}, set()
+    def input_set(identity):
+        identity = str(identity)
+        artifacts.require(identity not in active, "cyclic link input sets")
+        if identity not in memo:
+            artifacts.require(identity in sets, "missing link input set")
+            active.add(identity)
+            row = sets[identity]
+            result = set(map(str, row.get("directArtifactIds", [])))
+            for child in row.get("transitiveDepSetIds", []):
+                result.update(input_set(child))
+            artifacts.require(result <= paths.keys(), "missing link input artifact")
+            memo[identity] = result
+            active.remove(identity)
+        return memo[identity]
+    def inputs(producer):
+        return set().union(*(input_set(identity) for identity in producer.get("inputDepSetIds", [])))
+    directories = []
+    for index, argument in enumerate(arguments):
+        if argument == "-L":
+            artifacts.require(index + 1 < len(arguments), "missing library search directory")
+            directory = arguments[index + 1]
+        elif argument.startswith("-L"):
+            directory = argument[2:]
+        else:
+            continue
+        # Do not skip an untracked host search directory and accidentally
+        # attribute a later declared library to a link it could shadow.
+        directories.append(artifacts.path_name(directory))
+    consumed = inputs(action)
+    result = {}
+    for library in sorted(libraries):
+        owner = "@@libteam+//:" + ("libteamdctl_shared" if library.startswith("libteamdctl.") else "libteam_shared")
+        candidates = []
+        for directory in directories:
+            candidates = [identity for identity in consumed if paths[identity] == directory + "/" + library]
+            if candidates:
+                break
+        artifacts.require(len(candidates) == 1, "SWSS link does not select a unique declared shared library: " + library)
+        visiting, resolved = set(), {}
+        def origins(identity):
+            artifacts.require(identity not in visiting, "cyclic library producer graph")
+            if identity in resolved:
+                return resolved[identity]
+            visiting.add(identity)
+            producer = producers.get(identity)
+            found = set()
+            if producer is not None:
+                if producer["mnemonic"] == "CppLink":
+                    # A different link owner is not an adapter, even when its
+                    # unrelated inputs include the expected libteam producer.
+                    if labels[str(producer["targetId"])] == owner:
+                        # Bazel emits the optional interface library as another
+                        # output of the same native link action. Require that
+                        # this exact input is its runtime or interface output.
+                        if Path(paths[identity]).name in {library, library + ".ifso"}:
+                            found = {str(item) for item in producer.get("outputIds", [])
+                                     if Path(paths[str(item)]).name == library}
+                elif producer["mnemonic"] == "SolibSymlink":
+                    # Bazel's SolibSymlinkAction has exactly one input and one
+                    # output. Arbitrary generators cannot prove this identity
+                    # merely by depending on an unrelated owner library.
+                    dependencies = inputs(producer)
+                    artifacts.require(len(dependencies) == 1 and
+                                      list(map(str, producer.get("outputIds", []))) == [identity],
+                                      "ambiguous solib adapter relationship")
+                    dependency = next(iter(dependencies))
+                    artifacts.require(Path(paths[dependency]).name in {library, library + ".ifso"},
+                                      "solib adapter input is not the required library")
+                    found.update(origins(dependency))
+            visiting.remove(identity)
+            resolved[identity] = found
+            return found
+        origins_found = origins(candidates[0])
+        artifacts.require(len(origins_found) == 1, "SWSS library input does not resolve to its shared libteam owner: " + library)
+        result[library] = {"owner": owner, "input": paths[candidates[0]],
+                           "producer_output": paths[next(iter(origins_found))]}
+    return result
 
 
 def verify(source, runtime, symbols, policy_path, graph_path):
@@ -64,17 +157,20 @@ def verify(source, runtime, symbols, policy_path, graph_path):
                           "review the libFIB dependency decision for link: " + label)
         artifacts.require(not any("libteam-dev" in arg for arg in arguments),
                           "stock Debian libteam returned to the SWSS link: " + label)
+        owner_inputs = None
         if name in {"teamsyncd", "tlm_teamd"}:
-            artifacts.require(any(arg.startswith("-L") and "/external/libteam+/" in arg for arg in arguments),
-                              "SWSS link does not select the shared libteam owner: " + label)
             expected_libraries = {"-l:libteamdctl.so.0.1.5"}
             if name == "teamsyncd":
                 expected_libraries.add("-l:libteam.so.5.6.1")
             artifacts.require(expected_libraries <= set(arguments),
                               "SWSS link does not select the owner library outputs: " + label)
+            owner_inputs = shared_owner_inputs(graph, action, arguments,
+                                               {value.removeprefix("-l:") for value in expected_libraries})
         # Keep link options/input paths, but not action environments or other
         # unrelated actions. The action graph is an ephemeral local input.
         record = {"target": label, "arguments": arguments}
+        if owner_inputs is not None:
+            record["shared_library_inputs"] = owner_inputs
         artifacts.require(name not in links or links[name] == record,
                           "ambiguous configured SWSS link: " + name)
         links[name] = record

@@ -125,7 +125,7 @@ jobs:
           graph="$(mktemp)"
           trap 'rm -f "$graph"' EXIT
           "$BAZEL" aquery --include_param_files --output=jsonproto \
-            'mnemonic("CppLink", deps(@sonic_swss//dist:swss_pkg))' > "$graph"
+            'mnemonic("^(CppLink|SolibSymlink)$", deps(@sonic_swss//dist:swss_pkg))' > "$graph"
           python3 -B tools/bazel/ci/swss_native_closure.py --source "$source" \
             --runtime "$runtime" --symbols "$symbols" --policy "$policy" \
             --link-graph "$graph" --output artifacts/native-closure.json
