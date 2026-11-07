@@ -122,6 +122,23 @@ class RedisFixtureTests(unittest.TestCase):
         self.assertFalse(any('src=/run/redis' in value or 'src=/var/run/redis' in value for value in args))
         self.assertIn('--rm', args)  # Docker removes this container's anonymous volume.
 
+    def test_optional_tcp_rejects_external_or_privileged_endpoints(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); helper = root / 'redis'; helper.write_bytes(b'fixture')
+            config = root / 'database.json'
+            params = {'executable': str(helper), 'sha256': hashlib.sha256(helper.read_bytes()).hexdigest(),
+                      'database_config': str(config), 'loopback_tcp': True}
+            for host, port in [('0.0.0.0', 6379), ('127.0.0.1', 80), ('127.0.0.1', '6379')]:
+                config.write_text(json.dumps({'INSTANCES': {'redis': {
+                    'unix_socket_path': '/run/redis/redis.sock', 'hostname': host, 'port': port}}}))
+                with self.subTest(host=host, port=port), \
+                     patch.object(runtime_smoke, 'command', return_value={'returncode': 0, 'stdout': 'Redis server v=7'}), \
+                     patch.object(runtime_smoke.subprocess, 'Popen') as launch:
+                    with self.assertRaisesRegex(ValueError, 'unprivileged loopback'):
+                        with runtime_smoke.redis_fixture(params):
+                            self.fail('Unexpected TCP fixture admission')
+                    launch.assert_not_called()
+
 
 class DockerIdentityTests(unittest.TestCase):
     def setUp(self):
