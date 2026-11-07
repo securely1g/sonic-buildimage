@@ -252,7 +252,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: 78c6c9cf422df0c3fb6ec681de5fb04dfd33d289
+          ref: c41c7baf15307ad1c8f94d5dca511ef952d28729
           path: ${{ env.SOURCE_WORKER_CONTROL }}/.source-mirror-registry
           sparse-checkout: ci
           persist-credentials: false
@@ -391,13 +391,6 @@ jobs:
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" loaded \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
-      - name: Prepare declared artifacts and public evidence
-        id: public_artifacts
-        if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
-        run: |
-          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" publish \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
-            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Stop only this job's private Docker daemon
         if: always() && steps.prepare.outcome != 'skipped'
         run: |
@@ -405,6 +398,13 @@ jobs:
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
 
+      - name: Prepare declared artifacts and public evidence
+        id: public_artifacts
+        if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" publish \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Scan staged source-image artifacts for private mirror locations
         id: scan_mirrors
         if: always() && steps.public_artifacts.outcome == 'success'

@@ -503,7 +503,7 @@ class ImageWorkerTest(unittest.TestCase):
                                    cwd=workspace, check=True, capture_output=True)
             commands = [json.loads(line) for line in trace.read_text().splitlines()]
             self.assertEqual([cmd[0] for cmd in commands],
-                             ["selection", "verify-input-run", "prepare-mirrors", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop", "scan-mirrors", "cleanup-mirrors"])
+                             ["selection", "verify-input-run", "prepare-mirrors", "prepare", "build", "validate", "incremental", "loaded", "stop", "publish", "scan-mirrors", "cleanup-mirrors"])
             for cmd in commands:
                 self.assertEqual(cmd[1:], ["--image", "dash-engine", "--revision", "a" * 40,
                     "--workspace", str(workspace / environment["SOURCE_WORKER_SOURCE"]),
