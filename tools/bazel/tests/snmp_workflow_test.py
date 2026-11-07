@@ -33,21 +33,9 @@ def condition(expression, *, event="pull_request", branch=BRANCH,
     return bool(eval(expression, {"__builtins__": {}}, {}))
 
 
-CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/18e7c652222449b906a17c2fd948e37bcad3324e/ci/source_mirrors.cfg"
-CONFIG_SHA = "fa60a63fd62f11e3c097905a3ff2a5dc4b25bd7ba42ebc9877fe7ea4dd1d3ee2"
-CONFIG = rb"""# BCR pigz@2.8.bcr.2 keeps its original source integrity and upstream patches.
-# Original SHA256: eb872b4f0e1f0ebe59c9f7bd8c506c4204893ba6a8492de31df416f0d5170fd0
-# Bazel matches the complete URL without its https:// prefix.
-rewrite zlib\.net/pigz/pigz-2\.8\.tar\.gz https://distfiles.macports.org/pigz/pigz-2.8.tar.gz
-
-# Prefer the official pool for pinned Debian binary packages. Bazel keeps the
-# repository rule's checksum; the original snapshot remains the second URL.
-# Indexes and source archives must retain their snapshot URLs.
-rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian/pool/$2
-rewrite (snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
-rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://deb.debian.org/debian-security/pool/$2
-rewrite (snapshot\.debian\.org/archive/debian-security/[0-9]{8}T[0-9]{6}Z/pool/([^?#]+\.deb)) https://$1
-"""
+CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+CONFIG_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+CONFIG = (Path(__file__).parent / "fixtures/source-mirrors-97cc5025.cfg").read_bytes()
 
 
 def workflow_step(name):
