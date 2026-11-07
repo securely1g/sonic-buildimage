@@ -9,6 +9,7 @@ import os
 import importlib.util
 import io
 from pathlib import Path
+import re
 import threading
 import types
 import tempfile
@@ -34,6 +35,24 @@ class Response(io.BytesIO):
 
 
 class NativeTransportTests(unittest.TestCase):
+    def test_gawk_mirror_preserves_original_sources_and_other_download_rules(self):
+        policy = "rewrite snapshot.example.invalid/(.*) https://private.example.invalid/$1\n"
+        configured = native.native_source_mirrors(policy)
+        preferred, fallback, unchanged = configured.splitlines()
+        self.assertEqual(unchanged + "\n", policy)
+        pattern = preferred.split()[1]
+        for host in ("mirrors.kernel.org", "ftp.gnu.org", "ftpmirror.gnu.org"):
+            original = host + "/gnu/gawk/gawk-5.3.2.tar.xz"
+            match = re.fullmatch(pattern, original)
+            self.assertIsNotNone(match)
+            self.assertEqual(preferred.split()[2], native.GAWK_MIRROR)
+            self.assertEqual(fallback.split()[1], pattern)
+            self.assertEqual(fallback.split()[2].replace("$1", match[1]), "https://" + original)
+        for other in ("ftp.gnu.org/gnu/gawk/gawk-5.3.1.tar.xz",
+                      "ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz.sig",
+                      "ftp.gnu.org/gnu/make/make-4.4.1.tar.gz"):
+            self.assertIsNone(re.fullmatch(pattern, other))
+
     def test_worker_sources_keep_public_hosts_snapshots_and_non_debian_tls(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -222,7 +241,8 @@ class WrapperLifecycleTests(unittest.TestCase):
                     "assert 'DEBIAN_MIRROR_ROOT' not in os.environ; "
                     "assert 'DEBIAN_SECURITY_MIRROR_ROOT' not in os.environ; "
                     "assert os.environ['SONIC_BAZEL_REMOTE_ONLY_RC'] == " + repr(str(managed)) + "; "
-                    "assert pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text() == 'private fixture policy'; "
+                    "assert pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text() == "
+                    + repr(native.native_source_mirrors("private fixture policy")) + "; "
                     "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''"])
             child_check = args.command[-1]
             clean_environment = {key: value for key, value in os.environ.items()
@@ -259,7 +279,7 @@ class WrapperLifecycleTests(unittest.TestCase):
                         self.assertEqual(private_mirrors.configuration.call_args.kwargs["fallback"],
                                          phase != "inputs")
                         receipt = json.loads((artifacts / ("private-downloads-" + phase + ".json")).read_text())
-                        self.assertEqual(receipt["public_bazel_fallback"], phase != "inputs")
+                        self.assertEqual(receipt["debian_public_bazel_fallback"], phase != "inputs")
             self.assertEqual(list(args.private_dir.iterdir()), [])
             self.assertIn("https://remote.example.invalid/", seen)
             receipt = json.loads((artifacts / "private-downloads-verification.json").read_text())

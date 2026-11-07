@@ -29,6 +29,16 @@ DEBIAN_HOSTS = {"deb.debian.org", "security.debian.org", "ftp.debian.org"}
 SNAPSHOT_HOSTS = {"snapshot.debian.org", "snapshot-cloudflare.debian.org"}
 BRIDGE = "192.168.240.1"
 BRIDGE_NETWORK = ipaddress.ip_network("192.168.240.0/24")
+GAWK_SOURCE = r"((?:mirrors\.kernel\.org|ftp\.gnu\.org|ftpmirror\.gnu\.org)/gnu/gawk/gawk-5\.3\.2\.tar\.xz)"
+GAWK_MIRROR = "https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz"
+
+
+def native_source_mirrors(configuration):
+    # The Bazel mirror has the exact archive selected by gawk@5.3.2.bcr.3.
+    # Bazel retains that module's independent integrity check; keep each
+    # declared source as a fallback and leave other versions/URLs untouched.
+    return (f"rewrite {GAWK_SOURCE} {GAWK_MIRROR}\n"
+            f"rewrite {GAWK_SOURCE} https://$1\n" + configuration)
 
 
 def public_apt_transport(root):
@@ -274,9 +284,9 @@ def run(args):
         # promptly when the mirror does not publish a compression format.
         # Public mirror connection retries delay those expected misses here.
         public_fallback = args.phase != "inputs"
-        private_mirrors.write_config(config, private_mirrors.configuration(
+        private_mirrors.write_config(config, native_source_mirrors(private_mirrors.configuration(
             Path("tools/bazel/debian_mirrors.cfg").read_text(), mirrors,
-            fallback=public_fallback, manifest=manifest))
+            fallback=public_fallback, manifest=manifest)))
         apt_map = private / "apt-mirrors.json"
         private_mirrors.write_config(apt_map, json.dumps({"schema_version": 1,
             "mirrors": private_mirrors.apt_mirror_map(mirrors, manifest)}))
@@ -326,7 +336,7 @@ def run(args):
                 thread.join(timeout=5)
             receipt = {"schema": 1, "helper_revision": REGISTRY_REVISION,
                        "private_mirrors_enabled": True, "native_apt_upstream_https": server is not None,
-                       "public_bazel_fallback": public_fallback,
+                       "debian_public_bazel_fallback": public_fallback,
                        "native_apt_upstream_responses": counts, "package_integrity_unchanged": True,
                        "public_apt_sources_preserved": True, "local_bazel_caches": False}
             (artifacts / ("private-downloads-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")
