@@ -12,7 +12,7 @@ env:
 jobs:
   dash_tool_identity:
     if: github.event_name == 'create' && github.repository == 'securely1g/sonic-buildimage' && github.event.ref_type
-      == 'branch' && github.event.ref == 'codex/dash-tool-input-map-706a'
+      == 'branch' && github.event.ref == 'codex/dash-tool-input-derived-map-706a'
     name: Map recorded DASH tool input identities (analysis only)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -97,10 +97,10 @@ jobs:
         eaed3062b1ba22548c41d5633d27e8400547f6d1ba0f1eaa39ef5a49188e60f2\",\n))\nPI = \"@@p4lang-pi++_repo_rules+pi_source//:sdk\"\
         \nINSTANCES = frozenset((\n    \"83b5d538b128984dacbaad576ebd807ebb25c2115532d9fe634ab23b7fecc6c4\",\n \
         \   \"fb31bb8666cf2e7f4b4919c933d89695024f7cfdf2010c30832719a8c8c283d9\",\n))\nRAW_LIMIT = 64 * 1024 * 1024\n\
-        PUBLIC_LIMIT = 2 * 1024 * 1024\nNODE_LIMIT = 250000\n\n\nclass MappingError(ValueError):\n    def __init__(self,\
-        \ reason, metrics=None):\n        require_reason = {\"timeout\", \"output-limit\", \"nonzero-exit\", \"\
-        invalid-graph\", \"privacy-failure\", \"io-failure\"}\n        if reason not in require_reason:\n      \
-        \      raise ValueError(\"unknown mapping failure\")\n        super().__init__(reason)\n        self.reason,\
+        PUBLIC_LIMIT = 2 * 1024 * 1024\nNODE_LIMIT = 250000\nDERIVED_LIMIT = 4096\n\n\nclass MappingError(ValueError):\n\
+        \    def __init__(self, reason, metrics=None):\n        require_reason = {\"timeout\", \"output-limit\"\
+        , \"nonzero-exit\", \"invalid-graph\", \"privacy-failure\", \"io-failure\"}\n        if reason not in require_reason:\n\
+        \            raise ValueError(\"unknown mapping failure\")\n        super().__init__(reason)\n        self.reason,\
         \ self.metrics = reason, metrics or {}\n\n\ndef require(value):\n    if not value:\n        raise MappingError(\"\
         invalid-graph\")\n\n\ndef fingerprint(value):\n    return hashlib.sha256(json.dumps(value, sort_keys=True,\
         \ separators=(\",\", \":\"),\n                                    allow_nan=False).encode()).hexdigest()\n\
@@ -111,32 +111,36 @@ jobs:
         +\\+_repo_rules\\+bmv2_source)\"\n        match = re.fullmatch(r\"(?:bazel-out/[A-Za-z0-9_.+-]+/bin/)?external/\"\
         \ + owner + r\"/(.+)\", path)\n        require(match is not None)\n        # The owner is an exact allowlist\
         \ entry, not a guessed target label.\n        return {\"repository\": \"@@\" + match[1], \"relative_path\"\
-        : path}\n    except ValueError:\n        return None\n\n\ndef project(graph, public, captures=None):\n \
-        \   require(isinstance(graph, dict))\n    def index(name):\n        rows = graph.get(name, [])\n       \
-        \ require(isinstance(rows, list) and len(rows) <= NODE_LIMIT)\n        out = {}\n        for row in rows:\n\
-        \            require(isinstance(row, dict) and \"id\" in row and str(row[\"id\"]) not in out)\n        \
-        \    out[str(row[\"id\"])] = row\n        return out\n    fragments, artifacts = index(\"pathFragments\"\
-        ), index(\"artifacts\")\n    targets, deps = index(\"targets\"), index(\"depSetOfFiles\")\n    memo = {}\n\
-        \    def path(identifier):\n        identifier = str(identifier)\n        if identifier not in memo:\n \
-        \           chain, seen, current = [], set(), identifier\n            while current not in memo:\n     \
-        \           require(current in fragments and current not in seen and len(chain) < 256)\n               \
-        \ seen.add(current)\n                row = fragments[current]\n                require(isinstance(row.get(\"\
-        label\"), str))\n                chain.append((current, row[\"label\"]))\n                if not row.get(\"\
-        parentId\"):\n                    prefix = \"\"\n                    break\n                current = str(row[\"\
-        parentId\"])\n            else:\n                prefix = memo[current]\n            for current, component\
-        \ in reversed(chain):\n                prefix = prefix + \"/\" + component if prefix else component\n  \
-        \              require(len(prefix) <= 16384)\n                memo[current] = prefix\n        return memo[identifier]\n\
-        \    def artifact(identifier):\n        return path(artifacts[str(identifier)][\"pathFragmentId\"])\n  \
-        \  def inputs(roots):\n        complete, active, found = set(), set(), set()\n        def visit(identifier,\
-        \ depth=0):\n            identifier = str(identifier)\n            require(depth < 256 and identifier in\
-        \ deps and identifier not in active)\n            if identifier in complete:\n                return\n \
-        \           active.add(identifier)\n            row = deps[identifier]\n            for child in row.get(\"\
-        transitiveDepSetIds\", []):\n                visit(child, depth + 1)\n            for value in row.get(\"\
-        directArtifactIds\", []):\n                require(str(value) in artifacts)\n                found.add(str(value))\n\
-        \            active.remove(identifier)\n            complete.add(identifier)\n        for root in roots:\n\
-        \            visit(root)\n        return found\n    actions = graph.get(\"actions\", [])\n    require(isinstance(actions,\
-        \ list) and len(actions) <= NODE_LIMIT)\n    rows = []\n    for action in actions:\n        require(isinstance(action,\
-        \ dict))\n        target = targets[str(action[\"targetId\"])][\"label\"]\n        if target != PI or action.get(\"\
+        : path}\n    except ValueError:\n        return None\n\n\ndef derived_support_paths(path):\n    \"\"\"Bazel8.5.1\
+        \ RunfilesSupport/Runfiles transformations, not observed files.\"\"\"\n    if path.endswith(\".repo_mapping\"\
+        ):\n        return [(\"repo-mapping-artifact\", path[:-len(\".repo_mapping\")] + \".runfiles/_repo_mapping\"\
+        )]\n    if path.endswith(\".runfiles\"):\n        return [(\"runfiles-root-artifact\", path + \"/_repo_mapping\"\
+        )]\n    return []\n\n\ndef project(graph, public, captures=None):\n    require(isinstance(graph, dict))\n\
+        \    def index(name):\n        rows = graph.get(name, [])\n        require(isinstance(rows, list) and len(rows)\
+        \ <= NODE_LIMIT)\n        out = {}\n        for row in rows:\n            require(isinstance(row, dict)\
+        \ and \"id\" in row and str(row[\"id\"]) not in out)\n            out[str(row[\"id\"])] = row\n        return\
+        \ out\n    fragments, artifacts = index(\"pathFragments\"), index(\"artifacts\")\n    targets, deps = index(\"\
+        targets\"), index(\"depSetOfFiles\")\n    memo = {}\n    def path(identifier):\n        identifier = str(identifier)\n\
+        \        if identifier not in memo:\n            chain, seen, current = [], set(), identifier\n        \
+        \    while current not in memo:\n                require(current in fragments and current not in seen and\
+        \ len(chain) < 256)\n                seen.add(current)\n                row = fragments[current]\n     \
+        \           require(isinstance(row.get(\"label\"), str))\n                chain.append((current, row[\"\
+        label\"]))\n                if not row.get(\"parentId\"):\n                    prefix = \"\"\n         \
+        \           break\n                current = str(row[\"parentId\"])\n            else:\n               \
+        \ prefix = memo[current]\n            for current, component in reversed(chain):\n                prefix\
+        \ = prefix + \"/\" + component if prefix else component\n                require(len(prefix) <= 16384)\n\
+        \                memo[current] = prefix\n        return memo[identifier]\n    def artifact(identifier):\n\
+        \        return path(artifacts[str(identifier)][\"pathFragmentId\"])\n    def inputs(roots):\n        complete,\
+        \ active, found = set(), set(), set()\n        def visit(identifier, depth=0):\n            identifier =\
+        \ str(identifier)\n            require(depth < 256 and identifier in deps and identifier not in active)\n\
+        \            if identifier in complete:\n                return\n            active.add(identifier)\n  \
+        \          row = deps[identifier]\n            for child in row.get(\"transitiveDepSetIds\", []):\n    \
+        \            visit(child, depth + 1)\n            for value in row.get(\"directArtifactIds\", []):\n   \
+        \             require(str(value) in artifacts)\n                found.add(str(value))\n            active.remove(identifier)\n\
+        \            complete.add(identifier)\n        for root in roots:\n            visit(root)\n        return\
+        \ found\n    actions = graph.get(\"actions\", [])\n    require(isinstance(actions, list) and len(actions)\
+        \ <= NODE_LIMIT)\n    rows = []\n    for action in actions:\n        require(isinstance(action, dict))\n\
+        \        target = targets[str(action[\"targetId\"])][\"label\"]\n        if target != PI or action.get(\"\
         mnemonic\") != \"CcConfigureMakeRule\":\n            continue\n        require(len(rows) < 16)\n       \
         \ outputs = [artifact(value) for value in action.get(\"outputIds\", [])]\n        require(outputs and len(set(outputs))\
         \ == len(outputs))\n        identity = fingerprint(sorted(outputs))\n        input_ids = inputs(action.get(\"\
@@ -144,20 +148,34 @@ jobs:
         \            name = artifact(identifier)\n            digest = fingerprint(name)\n            if digest\
         \ in KNOWN:\n                matched[digest].append({\"public_identity\": public_identity(name, public),\n\
         \                                        \"is_tree_artifact\": bool(artifacts[identifier].get(\"isTreeArtifact\"\
-        , False))})\n        rows.append({\"target\": PI, \"listed_outputs_sha256\": identity,\n               \
-        \      \"matches_original_instance\": identity in INSTANCES,\n                     \"declared_input_artifact_count\"\
-        : len(input_ids),\n                     \"known_inputs\": [{\"path_sha256\": value, \"match_count\": len(matches),\n\
-        \                                       \"status\": \"matched\" if len(matches) == 1 else \"unobserved\"\
-        \ if not matches else \"ambiguous\",\n                                       \"matches\": matches} for value,\
-        \ matches in sorted(matched.items())]})\n    for row in rows:\n        row[\"instance_status\"] = \"ambiguous\"\
-        \ if sum(\n            other[\"listed_outputs_sha256\"] == row[\"listed_outputs_sha256\"] for other in rows)\
-        \ != 1 else \"unique\"\n    result = {\"schema\": 1, \"status\": \"analysis-complete\", \"source_revision\"\
-        : SOURCE,\n              \"capture_counts\": captures or {},\n              \"scope\": \"declared PI input\
-        \ paths only; no native execution or content verification\",\n              \"action_count\": len(actions),\
-        \ \"artifact_count\": len(artifacts), \"selected_instance_count\": len(rows),\n              \"instances\"\
-        : rows, \"unobserved_original_instances\": sorted(INSTANCES - {r[\"listed_outputs_sha256\"] for r in rows}),\n\
-        \              \"limits\": [\"Tree leaves and execution-discovered/runfiles paths may be absent.\",\n  \
-        \                       \"Matching a declared path does not verify the original1476-byte tool content.\"\
+        , False))})\n        derived, evaluated = {value: [] for value in KNOWN}, 0\n        for identifier in sorted(input_ids):\n\
+        \            source = artifact(identifier)\n            for form, candidate in derived_support_paths(source):\n\
+        \                evaluated += 1\n                if evaluated > DERIVED_LIMIT:\n                    raise\
+        \ MappingError(\"output-limit\", {\"derived_candidate_limit\": DERIVED_LIMIT})\n                digest =\
+        \ fingerprint(candidate)\n                if digest in KNOWN:\n                    derived[digest].append({\n\
+        \                        \"form\": form, \"support_artifact_path_sha256\": fingerprint(source),\n      \
+        \                  \"public_identity\": public_identity(candidate, public),\n                    })\n  \
+        \      rows.append({\"target\": PI, \"listed_outputs_sha256\": identity,\n                     \"matches_original_instance\"\
+        : identity in INSTANCES,\n                     \"declared_input_artifact_count\": len(input_ids),\n    \
+        \                 \"derived_support_candidate_count\": evaluated,\n                     \"derived_known_inputs\"\
+        : [{\"path_sha256\": value, \"derivation_count\": len(matches),\n                                      \
+        \         \"status\": \"derived-match\" if len(matches) == 1 else \"unobserved\" if not matches else \"\
+        ambiguous-derivation\",\n                                               \"matches\": matches} for value,\
+        \ matches in sorted(derived.items())],\n                     \"known_inputs\": [{\"path_sha256\": value,\
+        \ \"match_count\": len(matches),\n                                       \"status\": \"matched\" if len(matches)\
+        \ == 1 else \"unobserved\" if not matches else \"ambiguous\",\n                                       \"\
+        matches\": matches} for value, matches in sorted(matched.items())]})\n    for row in rows:\n        row[\"\
+        instance_status\"] = \"ambiguous\" if sum(\n            other[\"listed_outputs_sha256\"] == row[\"listed_outputs_sha256\"\
+        ] for other in rows) != 1 else \"unique\"\n    result = {\"schema\": 1, \"status\": \"analysis-complete\"\
+        , \"source_revision\": SOURCE,\n              \"capture_counts\": captures or {},\n              \"scope\"\
+        : \"declared PI input paths and two source-derived repo-mapping forms; no native execution or content verification\"\
+        ,\n              \"action_count\": len(actions), \"artifact_count\": len(artifacts), \"selected_instance_count\"\
+        : len(rows),\n              \"instances\": rows, \"unobserved_original_instances\": sorted(INSTANCES - {r[\"\
+        listed_outputs_sha256\"] for r in rows}),\n              \"limits\": [\"Derived matches identify a path\
+        \ form only: not a declared execution input or verified1476-byte content.\",\n                         \
+        \ \"Only .repo_mapping and .runfiles support forms are derived; at most4096 candidates per selected instance.\"\
+        ,\n                          \"Tree leaves and other execution-discovered/runfiles paths may be absent.\"\
+        ,\n                         \"Matching a declared path does not verify the original1476-byte tool content.\"\
         ,\n                         \"Aquery action keys and IDs are not the original SpawnExec action digests.\"\
         ,\n                         \"Unknown paths remain hashes; absent or ambiguous mapping is inconclusive.\"\
         ]}\n    try:\n        public.safe_json(result)\n    except public.PublicArtifactError:\n        raise MappingError(\"\
