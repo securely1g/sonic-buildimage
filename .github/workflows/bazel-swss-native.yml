@@ -94,7 +94,7 @@ jobs:
             //tools/bazel/tests:swss_package_contract_test
             //tools/bazel/tests:swss_common_rust_test
             @sonic_swss//bazel:protobuf_runtime_test
-            //src/libteam:consumer_test
+            @libteam//:consumer_test
           )
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
             --output artifacts/action-audit.json "${targets[@]}"
