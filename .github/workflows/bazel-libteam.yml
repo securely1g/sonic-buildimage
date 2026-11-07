@@ -58,8 +58,8 @@ jobs:
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Fetch the verified shared downloader configuration
         env:
-          SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/087d351564c713ca88d241ace0b4f895a42f0c61/ci/source_mirrors.cfg
-          SOURCE_MIRRORS_SHA256: a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90
+          SOURCE_MIRRORS_URL: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg
+          SOURCE_MIRRORS_SHA256: ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720
         run: |
           set -euo pipefail
           config="$RUNNER_TEMP/libteam-source-mirrors.cfg"
