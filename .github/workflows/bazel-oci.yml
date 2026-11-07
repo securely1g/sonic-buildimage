@@ -89,11 +89,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #186 changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          # Use the checksum-verified public configuration from the merged registry.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -178,7 +178,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure' || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/orchagent-source-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
         run: |
           # This review-helper PR is scoped to source/TAR builds only.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -349,7 +349,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/swss_rebuild.py --bazel "$BAZEL" \
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
             --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
             --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
             --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
@@ -406,11 +406,105 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+
+      - name: Build Orchagent variants from source owners
+        id: orchagent_build
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          SONIC_BAZEL_REGISTRY_REVISION: 99ea0d52c0e780b340ff210aaa055f6cc1a03289
+          BAZELISK_GITHUB_TOKEN: ""
+        run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
+      - name: Validate installed Orchagent sources and Scapy wheel
+        if: matrix.architecture == 'amd64'
+        run: python3 -B tools/bazel/ci/orchagent_image.py validate --artifacts artifacts/orchagent
+      - name: Validate Orchagent owner packages and original Scapy tests
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/container.py --container //dockers/docker-orchagent \
+            --artifacts artifacts/orchagent-owner --bazel "$BAZEL" --reuse-build \
+            --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true \
+            --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
+            --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
+            --bazel-arg=--jobs=2 --bazel-arg=--local_resources=memory=8000
+      - name: Verify source edit and restored Orchagent archives
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
+            --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true \
+            --runtime-target //dockers/docker-orchagent:docker-orchagent.gz \
+            --additional-runtime-target //dockers/docker-orchagent:docker-orchagent-dbg.gz \
+            --additional-runtime-target //dockers/docker-orchagent:rdeps \
+            --symbols-target //dockers/docker-orchagent:rdeps_debug_symbols \
+            --unchanged-target //dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz \
+            --unchanged-target @scapy//:wheel --output artifacts/orchagent/rebuild
+          git diff --exit-code
+      - name: Review public Orchagent evidence
+        id: orchagent_public
+        if: always() && matrix.architecture == 'amd64' && steps.orchagent_build.outcome != 'skipped'
+        run: |
+          python3 - <<'PYORCH'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/orchagent')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          for path in list(root.glob('*.validation.json')) + [root / name for name in ('validation.json', 'action-audit.json', 'runtime-apt.json', 'debug-apt.json', 'base.packages.json', 'config-engine.packages.json', 'rebuild/rebuild.json')]:
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              if (root / name).exists():
+                  dependency_json(json.loads((root / name).read_text()), kind)
+          owner_report = Path('artifacts/orchagent-owner/report.json')
+          if owner_report.exists():
+              safe_json(json.loads(owner_report.read_text()))
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True) for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYORCH
+      - name: Retain Orchagent archives and source evidence
+        if: always() && matrix.architecture == 'amd64' && steps.orchagent_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: orchagent-source-amd64
+          path: |
+            artifacts/orchagent/*.gz
+            artifacts/orchagent/*.tar
+            artifacts/orchagent/*.whl
+            artifacts/orchagent/debug.status
+            artifacts/orchagent/debug.packages.json
+            artifacts/orchagent/runtime-apt.json
+            artifacts/orchagent/debug-apt.json
+            artifacts/orchagent/base.packages.json
+            artifacts/orchagent/config-engine.packages.json
+            artifacts/orchagent/*.validation.json
+            artifacts/orchagent/validation.json
+            artifacts/orchagent/public-receipt.json
+            artifacts/orchagent/action-audit.json
+            artifacts/orchagent/build-summary.json
+            artifacts/orchagent/rebuild/rebuild.json
+            artifacts/orchagent/MODULE.bazel.lock
+            artifacts/orchagent/module-graph.json
+            artifacts/orchagent-owner/report.json
+            artifacts/orchagent-owner/tests/**/test.xml
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
   swss_layer_runtime:
-    name: Load and run the shared SWSS image (AMD64)
+    name: Load and run SWSS and Orchagent images (AMD64)
     needs: archive
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -454,6 +548,24 @@ jobs:
         with:
           name: swss-layer-runtime-amd64
           path: artifacts/swss-layer/runtime-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: orchagent-source-amd64
+          path: artifacts/orchagent-download
+      - name: Exercise installed Orchagent and source Scapy variants
+        run: |
+          # The producer publishes two source directories; select its image evidence explicitly.
+          python3 -B tools/bazel/ci/orchagent_loaded.py --artifacts artifacts/orchagent-download/orchagent
+      - name: Retain installed Orchagent evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: orchagent-runtime-amd64
+          path: artifacts/orchagent-download/orchagent/*.runtime.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -529,7 +641,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-native-closure' || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/orchagent-source-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
         run: |
           # This review-helper PR is scoped to source/TAR builds only.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -982,7 +1094,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
-       github.head_ref != 'codex/swss-native-closure' && github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/review-registry-catalog') ||
+       github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/orchagent-source-amd64' && github.head_ref != 'codex/review-registry-catalog') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720

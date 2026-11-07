@@ -1,13 +1,19 @@
 """Exercise review command forwarding and setup-bazel's persistent caches."""
 
+import contextlib
+import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import tempfile
+import textwrap
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 WRAPPER = ROOT / 'tools/bazel/ci/review_bazel.sh'
@@ -46,6 +52,60 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
         environment.update(changes)
         return subprocess.run([str(WRAPPER), *arguments], cwd=self.workspace,
                               env=environment, capture_output=True, text=True)
+
+    def test_debian_bootstrap_verifies_bytes_and_keeps_existing_cache_settings(self):
+        for workflow, job, revision, expected in (
+            ('bazel-oci.yml', 'checks', '4f1b2b169066b4d12d94a5edee5b6e36e36b1370',
+             '8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18'),
+            ('bazel-oci.yml', 'archive', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-libteam.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-supervisor-rust.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-yang-models.yml', 'package', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-base-images.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-eventd.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+        ):
+            fixture = ROOT / 'tools/bazel/tests/fixtures' / ('source-mirrors-' + revision[:8] + '.cfg')
+            data = fixture.read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
+            url = 'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + revision + '/ci/source_mirrors.cfg'
+            document = (ROOT / '.github/workflows' / workflow).read_text()
+            section = re.search(r'^  ' + job + r':\n(.*?)(?=^  \S|\Z)', document, re.M | re.S).group(1)
+            steps = re.split(r'^      - ', section, flags=re.M)[1:]
+            setup = next(i for i, s in enumerate(steps) if 'setup-bazel@' in s)
+            bootstrap = next(s for s in steps if s.startswith('name: Configure the verified source mirror\n'))
+            self.assertEqual(steps.index(bootstrap), setup + 1)
+            code = textwrap.dedent(bootstrap.split("python3 - <<'PYCFG'\n", 1)[1].rsplit('          PYCFG', 1)[0])
+            for corrupt in (False, True):
+                with self.subTest(workflow=workflow, corrupt=corrupt), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    before = 'common --repository_cache=/retained/repository\nbuild --disk_cache=/retained/disk\ncommon --distdir=/retained/dist\n'
+                    (root / '.bazelrc.user').write_text(before)
+                    with contextlib.chdir(root), mock.patch.dict(os.environ, {'RUNNER_TEMP': str(root)}), \
+                            mock.patch('urllib.request.urlopen', return_value=io.BytesIO(data + (b'corrupt' if corrupt else b''))) as fetch:
+                        if corrupt:
+                            with self.assertRaisesRegex(SystemExit, '^Source mirror configuration checksum mismatch$'):
+                                exec(compile(code, workflow, 'exec'), {})
+                        else:
+                            exec(compile(code, workflow, 'exec'), {})
+                    fetch.assert_called_once_with(url, timeout=60)
+                    config = root / 'sonic-source-mirrors.cfg'
+                    self.assertEqual(config.exists(), not corrupt)
+                    self.assertEqual((root / '.bazelrc.user').read_text(), before + (
+                        '' if corrupt else 'common --experimental_downloader_config=' + str(config) + '\n'))
+                    if not corrupt:
+                        self.assertEqual(config.read_bytes(), data)
+                        (root / 'tools/bazel').mkdir(parents=True)
+                        (root / 'tools/bazel/common.bazelrc').write_text(self.common)
+                        effective = rc.configuration(root, self.home)
+                        for value in ('--repository_cache=/retained/repository', '--disk_cache=/retained/disk',
+                                      '--distdir=/retained/dist', '--experimental_downloader_config=' + str(config)):
+                            self.assertIn(value, effective)
 
     def test_actual_command_and_startup_argument_forwarding(self):
         for command in ('build', 'aquery', 'cquery', 'test', 'query', 'fetch', 'info', 'mod'):

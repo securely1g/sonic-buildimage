@@ -54,6 +54,25 @@ jobs:
           repository-cache: true
           disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Use the checksum-verified public configuration from the merged registry.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build source outputs and execute native tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -63,7 +82,8 @@ jobs:
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
           # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e0bf141cea82764b18d15d7d2c8516cbf3e99290
+          SONIC_BAZEL_REGISTRY_REVISION: 99ea0d52c0e780b340ff210aaa055f6cc1a03289
+          BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -72,10 +92,8 @@ jobs:
           printf '%s\n' "$(uname -m)" "$(dpkg --print-architecture)" > artifacts/architecture.txt
           git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD > artifacts/checkout-sha.txt
           git -c safe.directory="$GITHUB_WORKSPACE" cat-file -p HEAD > artifacts/checkout.txt
-          printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" "$CI_ARCHITECTURE" "$CI_DISTRIBUTION" "$SONIC_BAZEL_REGISTRY" > artifacts/inputs.txt
+          printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" "$CI_ARCHITECTURE" "$CI_DISTRIBUTION" "$SONIC_BAZEL_REGISTRY_REVISION" > artifacts/inputs.txt
           options=(
-            "--registry=$SONIC_BAZEL_REGISTRY"
-            --registry=https://bcr.bazel.build
             "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
             "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
             --jobs=2
@@ -83,10 +101,10 @@ jobs:
           run_bazel() {
             local command="$1"
             shift
-            bazel --nosystem_rc --nohome_rc --noworkspace_rc \
-              --bazelrc="$PWD/tools/bazel/common.bazelrc" \
-              "$command" "${options[@]}" "$@"
+            "$BAZEL" "$command" "${options[@]}" "$@"
           }
+          python3 tools/bazel/gzip/prepare_pigz.py --output "$PWD/.cache/bazel-distdir" > artifacts/pigz-source.json
+          options+=("--distdir=$PWD/.cache/bazel-distdir")
           targets=(
             //src/libteam:libteam_runtime
             //src/libteam:libteam_runtime.debug_symbols
