@@ -27,6 +27,89 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def scanner_budget_fixture(self, *, image="p4rt", patterns=True, error=None,
+                               redacted=False, usage_update=None, receipt_update=None):
+        from unittest.mock import MagicMock
+        usage = {"maximum_bytes": 32 * 1024 ** 3, "minimum_free_bytes": 16 * 1024 ** 3,
+                 "live_bytes": 0, "peak_bytes": 8192, "open_files": 0, "peak_open_files": 2}
+        usage.update(usage_update or {})
+        budget = MagicMock()
+        budget.usage.return_value = usage
+        make_budget = MagicMock(return_value=budget)
+        redactor = MagicMock()
+        redactor.patterns = ("private.example",) if patterns else ()
+        redactor.scrub_and_scan.side_effect = error
+        make_redactor = MagicMock(return_value=redactor)
+        mirrors = SimpleNamespace(MIRROR_ROOTS=(("TEST_MIRROR_ROOT", "unused"),), Redactor=make_redactor)
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            public = artifacts / "public"
+            public.mkdir()
+            original = {"schema": 1, "image": image, "source_revision": "a" * 40}
+            original.update(receipt_update or {})
+            path = public / "worker.json"
+            path.write_text(json.dumps(original))
+            if redacted:
+                (public / "mirror-redaction.json").write_text("{}")
+            with patch.dict(sys.modules, {"private_mirrors": mirrors,
+                                          "mirror_privacy": SimpleNamespace(TemporaryBudget=make_budget)}), \
+                    patch.object(sys, "path", list(sys.path)), \
+                    patch.dict(os.environ, {"TEST_MIRROR_ROOT": "https://private.example" if patterns else ""}, clear=True), \
+                    patch("sys.stderr", new_callable=io.StringIO) as diagnostic:
+                expected_error = error is not None or redacted or usage_update or receipt_update
+                if expected_error:
+                    with self.assertRaises(ValueError):
+                        worker.configure_worker_mirrors("scan-mirrors", artifacts, config=artifacts / "mirror.cfg", image=image)
+                    self.assertEqual(json.loads(path.read_text()), original)
+                else:
+                    worker.configure_worker_mirrors("scan-mirrors", artifacts, config=artifacts / "mirror.cfg", image=image)
+                self.assertNotIn("TEST_MIRROR_ROOT", os.environ)
+            redactor.scrub_and_scan.assert_called_once_with(public)
+            self.assertNotIn("private.example", diagnostic.getvalue())
+            result = json.loads(path.read_text())
+            worker.safe_json(result)
+            if image == "p4rt":
+                make_budget.assert_called_once_with(artifacts / "mirror-scan-temporaries",
+                                                    maximum_bytes=32 * 1024 ** 3, minimum_free_bytes=16 * 1024 ** 3)
+                self.assertEqual(stat.S_IMODE((artifacts / "mirror-scan-temporaries").stat().st_mode), 0o700)
+                make_redactor.assert_called_once_with(["https://private.example"] if patterns else [], temporary_budget=budget)
+            else:
+                make_budget.assert_not_called()
+                make_redactor.assert_called_once_with(["https://private.example"] if patterns else [])
+                self.assertFalse((artifacts / "mirror-scan-temporaries").exists())
+            return original, result
+
+    def test_p4rt_scanner_budget_records_only_typed_charged_extents(self):
+        original, result = self.scanner_budget_fixture()
+        self.assertEqual(result.pop("mirror_scan"), {
+            "status": "passed", "traversal_measured": True,
+            "maximum_bytes": 34359738368, "minimum_free_bytes": 17179869184,
+            "peak_charged_temporary_bytes": 8192, "peak_open_files": 2, "live_bytes": 0, "open_files": 0})
+        self.assertEqual(result, original)
+
+    def test_p4rt_scanner_without_patterns_reports_unmeasured(self):
+        original, result = self.scanner_budget_fixture(patterns=False)
+        self.assertEqual(result.pop("mirror_scan"), {
+            "status": "not_run_no_private_patterns", "traversal_measured": False,
+            "maximum_bytes": 34359738368, "minimum_free_bytes": 17179869184})
+        self.assertEqual(result, original)
+
+    def test_p4rt_scanner_other_profiles_keep_existing_interface(self):
+        original, result = self.scanner_budget_fixture(image="syncd")
+        self.assertEqual(result, original)
+
+    def test_p4rt_scanner_errors_remain_failures_without_receipt(self):
+        self.scanner_budget_fixture(error=ValueError("Scanner temporary-space budget exceeded"))
+        self.scanner_budget_fixture(redacted=True)
+
+    def test_p4rt_scanner_rejects_unclean_or_untyped_usage_and_wrong_receipt(self):
+        for change in ({"open_files": 1}, {"live_bytes": 4096}, {"peak_bytes": True}):
+            with self.subTest(usage=change):
+                self.scanner_budget_fixture(usage_update=change)
+        for change in ({"image": "syncd"}, {"mirror_scan": {}}):
+            with self.subTest(receipt=change):
+                self.scanner_budget_fixture(receipt_update=change)
+
     def network_result(self, uid):
         return {"uid": uid, "proxy_names_present": {name: False for name in
                 ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")},

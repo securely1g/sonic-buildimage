@@ -687,7 +687,7 @@ def temporary_directory():
 
 
 
-def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
+def configure_worker_mirrors(phase, artifacts, *, config=None, public=None, image=None):
     config = config or temporary_directory() / "source-image-mirrors.cfg"
     if phase == "cleanup-mirrors":
         config.unlink(missing_ok=True)
@@ -696,13 +696,46 @@ def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
     sys.path.insert(0, str(registry_ci))
     import private_mirrors
     roots = {key: os.environ.pop(key, "") for key, _ in private_mirrors.MIRROR_ROOTS}
-    redactor = private_mirrors.Redactor([root for root in roots.values() if root])
+    budget = None
+    if phase == "scan-mirrors" and image == "p4rt":
+        from mirror_privacy import TemporaryBudget
+        directory = artifacts / "mirror-scan-temporaries"
+        directory.mkdir(mode=0o700)
+        budget = TemporaryBudget(directory, maximum_bytes=32 * 1024 ** 3, minimum_free_bytes=16 * 1024 ** 3)
+    redactor = private_mirrors.Redactor([root for root in roots.values() if root],
+                                      **({"temporary_budget": budget} if budget else {}))
     redactor.mask_github()
     if phase == "scan-mirrors":
         public = public or artifacts / "public"
-        redactor.scrub_and_scan(public)
-        # Published image receipts bind their evidence and payloads by hash.
-        require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        try:
+            redactor.scrub_and_scan(public)
+            # Published image receipts bind their evidence and payloads by hash.
+            require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        finally:
+            if budget:
+                # Scalar diagnostics survive a failed scan; errors still fail the step.
+                print("Mirror scan temporary budget: " + json.dumps(budget.usage()), file=sys.stderr)
+        if budget:
+            usage = budget.usage()
+            require(all(type(value) is int and value >= 0 for value in usage.values()) and
+                    usage["live_bytes"] == usage["open_files"] == 0,
+                    "Scanner temporary files did not close cleanly")
+            measured = bool(redactor.patterns)
+            metrics = {"status": "passed" if measured else "not_run_no_private_patterns",
+                       "traversal_measured": measured,
+                       "maximum_bytes": usage["maximum_bytes"], "minimum_free_bytes": usage["minimum_free_bytes"]}
+            if measured:
+                metrics.update(peak_charged_temporary_bytes=usage["peak_bytes"],
+                               peak_open_files=usage["peak_open_files"], live_bytes=0, open_files=0)
+            path = public / "worker.json"
+            require(path.is_file() and not path.is_symlink(), "Missing regular worker receipt")
+            receipt = json.loads(path.read_text())
+            require(receipt.get("image") == "p4rt" and "mirror_scan" not in receipt,
+                    "Unexpected worker scan receipt")
+            receipt["mirror_scan"] = metrics
+            safe_json(receipt)
+            # Export copied this small JSON; the later CI bundle binds its final hash.
+            path.write_text(json.dumps(receipt, indent=2) + "\n")
         return
     mirrors = private_mirrors.selected_mirrors(roots)
     if mirrors:
@@ -1057,7 +1090,7 @@ def main():
     elif args.phase == "verify-input-run":
         verify_input_run(args)
     elif args.phase in ("prepare-mirrors", "scan-mirrors", "cleanup-mirrors"):
-        configure_worker_mirrors(args.phase, args.artifacts)
+        configure_worker_mirrors(args.phase, args.artifacts, image=args.image)
     elif args.phase == "prepare":
         prepare(args)
     elif args.phase == "publish":
