@@ -738,6 +738,10 @@ jobs:
           PYCFG
 
 
+      - name: Verify and mask the native remote cache
+        if: env.NATIVE_VS_ONLY == 'true'
+        run: python3 -B tools/bazel/ci/configure_runner_cache.py --remote-only
+
       - name: Check Make handoff and archive validation
         if: env.NATIVE_VS_ONLY != 'true'
         env:
@@ -780,7 +784,7 @@ jobs:
           run-id: 42346697611
           artifact-ids: 13569455281
           merge-multiple: true
-          path: artifacts/p4-source-inputs
+          path: ${{ runner.temp }}/native-p4-acquisition
 
       - name: Retain the verified GitLab source downloads
         run: |
@@ -861,8 +865,13 @@ jobs:
            github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
         run: |
-          acquisition=()
-          if [[ "$NATIVE_VS_ONLY" != true ]]; then acquisition+=(--fetch); fi
+          acquisition=(--fetch)
+          if [[ "$NATIVE_VS_ONLY" == true ]]; then
+            # Consume only raw bytes; the verifier creates a fresh receipt.
+            mkdir -p artifacts/p4-source-inputs
+            cp -R -- "$RUNNER_TEMP/native-p4-acquisition/sources" artifacts/p4-source-inputs/sources
+            acquisition=()
+          fi
           python3 -B tools/ci/p4_source_inputs.py "${acquisition[@]}" \
             --manifest src/p4lang/source-inputs.json \
             --directory artifacts/p4-source-inputs/sources \

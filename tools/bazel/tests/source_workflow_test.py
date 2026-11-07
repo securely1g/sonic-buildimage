@@ -123,19 +123,42 @@ class SourceWorkflowTest(unittest.TestCase):
     def recorded(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
+    def test_native_chroot_apt_proxy_keeps_transports_separate(self):
+        script = (ROOT / "build_debian.sh").read_text().split("## Setup proxy\n", 1)[1].split(
+            "\ntrap_push ", 1)[0]
+        commands = self.directory / "proxy-commands"
+        commands.mkdir()
+        sudo = commands / "sudo"
+        sudo.write_text('#!/bin/sh\nexec "$@"\n')
+        sudo.chmod(0o755)
+        image = self.directory / "image root"
+        config = image / "etc/apt/apt.conf.d/01proxy"
+        config.parent.mkdir(parents=True)
+        for https_proxy, expected in (("", "DIRECT"), ("http://https-proxy.example.invalid:3128", "http://https-proxy.example.invalid:3128")):
+            with self.subTest(https_proxy=https_proxy):
+                environment = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                                   FILESYSTEM_ROOT=str(image), SONIC_NATIVE_PRIVATE_APT="1",
+                                   http_proxy="http://192.168.240.1:12345", https_proxy=https_proxy)
+                subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                               env=environment, check=True, capture_output=True, text=True)
+                self.assertEqual(config.read_text(),
+                    'Acquire::http::Proxy "http://192.168.240.1:12345";\n'
+                    + 'Acquire::https::Proxy ' + json.dumps(expected) + ';\n')
+
     def test_hosted_regressions_gate_vs_without_source_compilation(self):
         workflow_jobs = jobs()
         self.assertNotIn("source", workflow_jobs)
         self.assertNotIn("syncd-contracts", workflow_jobs)
         checks = workflow_jobs["checks"]
-        self.assertIn("name: OCI regression checks (AMD64)", checks)
-        self.assertIn("runs-on: ubuntu-24.04", checks)
+        self.assertIn("'OCI regression checks (AMD64)'", checks)
+        self.assertIn('fromJSON(\'["ubuntu-24.04"]\')', checks)
+        self.assertIn("github.ref == 'refs/heads/codex/native-vs-k3s'", checks)
         self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: (?:checks|\[checks\])$")
         for name, step in steps(checks).items():
             script = shell(step)
             if script is not None:
                 with self.subTest(step=name):
-                    result = self.execute(script, HOSTED_CHECKS="1")
+                    result = self.execute(script, HOSTED_CHECKS="1", NATIVE_VS_ONLY="false")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.recorded()
         self.assertTrue(any(call["name"] == "python3" and
