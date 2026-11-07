@@ -23,6 +23,9 @@ on:
 permissions:
   contents: read
 
+env:
+  BAZEL: bazel
+
 jobs:
   package:
     name: YANG model distribution (${{ matrix.architecture }})
@@ -63,7 +66,7 @@ jobs:
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
           # The standalone module and image root use the same maintained registry.
-          (cd ../.. && bazel cquery --lockfile_mode=update \
+          (cd ../.. && "$BAZEL" cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt
           uname -m > artifacts/execution-machine.txt
