@@ -111,10 +111,10 @@ def build_images(args, directory):
         layouts = [BASE, *[OWNER + name for name in IMAGES]]
         receipt["action_audit"] = bazel_commands.audit_targets(args.bazel, root_options(), [*TARGETS.values(), *layouts],
             workspace=ROOT, output=directory / "action-audit.json")
-        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=root_options())
-        # Remote/cache hits for compressed archives need not materialize the
-        # layouts inspected below. Request those outputs explicitly.
-        execute([args.bazel, "build", *root_options(), *layouts], directory, receipt, "layouts")
+        # Materialize layouts and archives together. A later layout build can
+        # rebuild source packages after their archives have already been copied.
+        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel,
+                               options=root_options(), additional_targets=layouts)
         receipt["layouts"] = {name: execute([args.bazel, "cquery", *root_options(), "--output=files", OWNER + name],
             directory, receipt, name + ".layout").strip() for name in IMAGES}
         receipt["base_layout"] = execute([args.bazel, "cquery", *root_options(), "--output=files", BASE],

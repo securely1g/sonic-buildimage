@@ -34,6 +34,72 @@ def successful_build_events(*, processes=0, action_cache_hits=0, runners=None):
 
 
 class DashEngineImageTest(unittest.TestCase):
+    def test_archives_and_live_layouts_share_one_build_before_export(self):
+        # A separate layout build can replace a source package after its archive
+        # was exported. Exercise the real collector with one simulated action
+        # invocation, including failure before any prior publication is replaced.
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                directory = root / "evidence"
+                directory.mkdir()
+                execution = root / "execution"
+                layouts = [driver.BASE, *(driver.OWNER + name for name in driver.IMAGES)]
+                outputs = {label: "outputs/" + name for name, label in driver.TARGETS.items()}
+                outputs.update({label: "layouts/" + label.rsplit(":", 1)[1] for label in layouts})
+                previous = directory / (driver.IMAGES[0] + ".gz")
+                previous.write_bytes(b"previous publication")
+                calls = []
+
+                def execute(argv, _directory, _receipt, _name, **_kwargs):
+                    calls.append(argv)
+                    if argv[1] == "build":
+                        self.assertEqual(sum(call[1] == "build" for call in calls), 1)
+                        self.assertEqual(set(argv[2:]) - {arg for arg in argv[2:] if arg.startswith("--")},
+                                         set(driver.TARGETS.values()) | set(layouts))
+                        if fail:
+                            raise subprocess.CalledProcessError(1, argv)
+                        for label, relative in outputs.items():
+                            path = execution / relative
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            if label in layouts:
+                                path.mkdir()
+                            else:
+                                path.write_bytes(("same invocation " + label).encode())
+                        events = Path(next(arg.split("=", 1)[1] for arg in argv
+                                           if arg.startswith("--build_event_json_file=")))
+                        events.write_text(json.dumps({"workspaceInfo": {"localExecRoot": str(execution)}}) + "\n")
+                        return ""
+                    self.assertEqual(argv[1], "cquery")
+                    return outputs[argv[-1]] + "\n"
+
+                with ExitStack() as stack:
+                    for target, value in (("clean_source", None), ("prepare_manifests", None),
+                                          ("source_identity", {"revision": "a" * 40})):
+                        stack.enter_context(mock.patch.object(driver, target, return_value=value))
+                    stack.enter_context(mock.patch.object(driver.platform, "machine", return_value="x86_64"))
+                    stack.enter_context(mock.patch.object(driver.platform, "freedesktop_os_release",
+                                                          return_value={"VERSION_CODENAME": "trixie"}))
+                    stack.enter_context(mock.patch.object(driver.command_log, "execute", side_effect=execute))
+                    stack.enter_context(mock.patch.object(driver, "root_options", return_value=["--jobs=2"]))
+                    stack.enter_context(mock.patch.object(driver.bazel_commands, "audit_targets", return_value={}))
+                    stack.enter_context(mock.patch.object(driver.resolution, "collect", return_value={}))
+                    args = SimpleNamespace(bazel="must-not-execute-bazel", image_version="ci")
+                    if fail:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            driver.build_images(args, directory)
+                        self.assertEqual(previous.read_bytes(), b"previous publication")
+                    else:
+                        driver.build_images(args, directory)
+                        receipt = json.loads((directory / "build-receipt.json").read_text())
+                        self.assertEqual(receipt["status"], "built")
+                        self.assertEqual(set(receipt["artifacts"]), set(driver.TARGETS))
+                        for name, item in receipt["artifacts"].items():
+                            self.assertEqual(item["sha256"], hashlib.sha256((directory / name).read_bytes()).hexdigest())
+                        for path in [receipt["base_layout"], *receipt["layouts"].values()]:
+                            self.assertTrue((execution / path).is_dir())
+                self.assertEqual(sum(call[1] == "build" for call in calls), 1)
+
     def test_debug_lock_supplies_source_openssh_dependency_closure(self):
         # Actual openssh-client Depends from source 15fcb926's retained AMD64
         # runtime_packages.json (registry CI run 41958251171). This is a presence

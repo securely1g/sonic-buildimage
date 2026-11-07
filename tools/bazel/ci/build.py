@@ -21,13 +21,17 @@ def execution_root(events):
     raise ValueError("Build events lack the execution root")
 
 
-def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", options=()):
+def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", options=(),
+                     additional_targets=()):
     """Build filename-to-label declarations, exporting one nonempty file each.
 
     The caller owns target selection and payload validation. These are archive
     artifacts: publication uses the shared helper's mode 0644 and keeps a prior
     output intact if a query or copy fails. Commands and completed exports remain
     in the caller's receipt on failure.
+
+    Build additional targets in the same invocation before exporting files.
+    Their outputs stay in the execution root for the caller to inspect.
     """
     if not targets or any(not name or Path(name).name != name or name in (".", "..") for name in targets):
         raise ValueError("archive declarations need nonempty, plain output filenames")
@@ -35,7 +39,7 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
     receipt.setdefault("artifacts", {})
     execute([bazel, "build", *options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"),
-             *targets.values()], directory, receipt, "build")
+             *targets.values(), *additional_targets], directory, receipt, "build")
     root = execution_root(directory / "build-events.jsonl")
     paths = {}
     for name, target in targets.items():
