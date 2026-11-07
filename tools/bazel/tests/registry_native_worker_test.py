@@ -41,6 +41,9 @@ class RegistryWorkerTest(unittest.TestCase):
             with self.subTest(change=change),self.assertRaises(ValueError): self.selection(**change)
 
     def test_each_fixed_consumer_accepts_only_its_reviewed_sha(self):
+        self.assertEqual(worker.PROFILES['libteam']['revision'], 'a1334b9a9604733a2faf6cc96536d289da09e8d8')
+        with self.assertRaisesRegex(ValueError, 'Unreviewed registry selection'):
+            self.selection(consumer='libteam', revision='4ed05183275951b03342d89db98f709779487ec0')
         for name,profile in worker.PROFILES.items():
             with self.subTest(consumer=name):
                 self.assertEqual(self.selection(consumer=name,revision=profile['revision']),profile)
@@ -273,6 +276,80 @@ class RegistryWorkerTest(unittest.TestCase):
             with self.subTest(filename=filename),self.assertRaises(ValueError),patch.object(subprocess,'run'):
                 worker.publish(NS(artifacts=artifacts,workspace=self.root))
 
+    def github_receipt_fixture(self):
+        artifacts, _, _ = self.fixture()
+        workspace = self.root / 'registry'
+        workspace.mkdir()
+        locked = {'name': 'tool', 'path': 'bin/tool', 'size': 7, 'sha256': 'a' * 64}
+        source = {'url': 'https://github.com/example/tool/releases/download/v1/tool.zip',
+                  'format': 'zip', 'size': 100, 'files': [locked]}
+        manifest = {'schema_version': 1, 'sources': [source]}
+        path = workspace / 'selected.json'
+        path.write_text(json.dumps(manifest))
+        digest = worker.digest(path)
+        directory = artifacts / 'github-sources'
+        directory.mkdir()
+        receipt = directory / (digest + '.json')
+        value = {'schema_version': 1, 'manifest_sha256': digest,
+                 'sources': [{'url': source['url'], 'format': 'zip', 'size': 100,
+                              'whole_source_digest_declared': False}],
+                 'files': [{**locked, 'source': 'github'}]}
+        receipt.write_text(json.dumps(value))
+        runner = NS(github_source_manifests=Mock(return_value=[path]),
+                    github_sources=NS(load_manifest=Mock(return_value=(manifest, digest))))
+        return NS(artifacts=artifacts, workspace=workspace, consumer='libteam'), runner, receipt, value
+
+    def test_publish_only_selected_github_receipt_bytes(self):
+        args, runner, receipt, _ = self.github_receipt_fixture()
+        original = receipt.read_bytes()
+        with patch.object(worker, 'registry_config', return_value=(runner, {})) as selected, \
+             patch.object(subprocess, 'run') as archive:
+            worker.publish(args)
+        selected.assert_called_once_with(args.workspace, worker.PROFILES['libteam'])
+        runner.github_source_manifests.assert_called_once_with(args.workspace, 'libteam', '1.31.0.sonic.1', 'amd64')
+        self.assertEqual((args.artifacts / 'public/github-sources' / receipt.name).read_bytes(), original)
+        self.assertEqual(receipt.read_bytes(), original)
+        archive.assert_called_once()
+
+    def test_github_receipt_rejects_changed_identity_transport_and_locks(self):
+        args, runner, receipt, original = self.github_receipt_fixture()
+        bad = []
+        for key, value in [('schema_version', True), ('manifest_sha256', 'b' * 64), ('extra', 'field')]:
+            changed = copy.deepcopy(original); changed[key] = value; bad.append(changed)
+        for key, value in [('url', 'https://github.com/other/tool/archive/v1.zip'), ('size', 101),
+                           ('whole_source_digest_declared', 0)]:
+            changed = copy.deepcopy(original); changed['sources'][0][key] = value; bad.append(changed)
+        for key, value in [('sha256', 'b' * 64), ('size', 8), ('path', '../tool'),
+                           ('source', 'unverified'), ('env', {'TOKEN': 'private'})]:
+            changed = copy.deepcopy(original); changed['files'][0][key] = value; bad.append(changed)
+        changed = copy.deepcopy(original); changed['files'].append(changed['files'][0]); bad.append(changed)
+        with patch.object(worker, 'registry_config', return_value=(runner, {})):
+            for value in bad:
+                receipt.write_text(json.dumps(value))
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    worker.verify_github_source_receipts(receipt.parent, args.workspace, worker.PROFILES['libteam'])
+            receipt.write_text(json.dumps(original)[:-1] + ',"schema_version":1}')
+            with self.assertRaises(ValueError):
+                worker.verify_github_source_receipts(receipt.parent, args.workspace, worker.PROFILES['libteam'])
+
+    def test_github_receipt_rejects_unselected_extra_linked_or_large_files(self):
+        args, runner, receipt, original = self.github_receipt_fixture()
+        verify = lambda: worker.verify_github_source_receipts(receipt.parent, args.workspace, worker.PROFILES['libteam'])
+        with patch.object(worker, 'registry_config', return_value=(runner, {})):
+            extra = receipt.parent / 'unexpected.json'; extra.write_text('{}')
+            with self.assertRaises(ValueError): verify()
+            extra.unlink()
+            receipt.write_text(' ' * 65537)
+            with self.assertRaises(ValueError): verify()
+            outside = args.workspace / 'outside.json'; outside.write_text(json.dumps(original))
+            receipt.unlink(); receipt.symlink_to(outside)
+            with self.assertRaises(ValueError): verify()
+            receipt.unlink(); receipt.mkdir()
+            with self.assertRaises(ValueError): verify()
+            receipt.rmdir(); receipt.write_text(json.dumps(original))
+            runner.github_source_manifests.return_value = []
+            with self.assertRaises(ValueError): verify()
+
 def namespace(value):
     return NS(**{k:namespace(v) if isinstance(v,dict) else v for k,v in value.items()})
 def condition(expression,event='workflow_dispatch',mode='registry-native',actor='securely1g',repo='securely1g/sonic-buildimage',
@@ -320,6 +397,11 @@ class WorkflowTest(unittest.TestCase):
             self.assertFalse(condition(guard,event='pull_request',head_repo='foreign/repo'))
             self.assertFalse(condition(guard,event='pull_request',branch='codex/registry-native-workers-extra'))
         self.assertFalse(condition(self.flow['jobs']['vs_container']['if'],event='pull_request'))
+        for guard in guards:
+            self.assertTrue(condition(guard,event='pull_request',branch='codex/libteam-registry-worker'))
+            self.assertFalse(condition(guard,event='pull_request',branch='codex/libteam-registry-worker',head_repo='foreign/repo'))
+            self.assertFalse(condition(guard,event='pull_request',branch='codex/libteam-registry-worker-extra'))
+        self.assertFalse(condition(self.flow['jobs']['vs_container']['if'],event='pull_request',branch='codex/libteam-registry-worker'))
     def test_fixed_checkout_permissions_and_no_hosted_cache_dependency(self):
         job=self.flow['jobs']['registry_native'];self.assertEqual(job['permissions'],{'contents':'read','actions':'read'})
         checkouts=[s for s in job['steps'] if s.get('uses','').startswith('actions/checkout@')]
@@ -338,6 +420,174 @@ class WorkflowTest(unittest.TestCase):
         self.assertLess(names.index('Verify the existing successful source-download producer'),names.index(download[0]['name']))
         self.assertLess(names.index(download[0]['name']),names.index('Run the original native registry build and tests'))
         self.assertEqual(download[0]['if'],"inputs.source_inputs_run != ''")
+
+
+class LibteamWorkerTest(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory(prefix='registry worker ');self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name)
+        self.profile=copy.deepcopy(worker.PROFILES['libteam'])
+        self.names=['libteam_runtime','libteam_runtime.debug_symbols','libteamdctl_runtime',
+                    'libteamdctl_runtime.debug_symbols','libteam_utils_runtime','libteam_utils_runtime.debug_symbols',
+                    'libteam_dev','runtime_packages.json','library_runtime_packages.json']
+        self.targets=['@libteam//:'+name for name in self.names]
+        self.private=self.root/'private';self.private.mkdir()
+        self.artifacts=self.root/'artifacts';self.artifacts.mkdir()
+        self.work=self.root/'work';(self.work/'consumer').mkdir(parents=True)
+        self.output_base=self.work/'bazel/hash';self.execution_root=self.output_base/'execroot/_main'
+        self.execution_root.mkdir(parents=True)
+        self.script=self.output_base/'external/libteam+/bazel/verify_rebuild.py';self.script.parent.mkdir(parents=True)
+        self.script.write_text('# selected owner fixture\n')
+        self.config=self.script.parent/'config.h.in';self.config.write_bytes(b'original config')
+        self.profile['probe_sha256']=worker.digest(self.script)
+        self.flags=['--registry='+self.root.as_uri(),'--registry=https://bcr.bazel.build/',
+                    '--platforms=@sonic_build_infra//platforms:x86_64_trixie','--lockfile_mode=update']
+        self.startup=['--ignore_all_rc_files','--output_user_root='+str(self.work/'bazel')]
+        self.spec={'binary':'/usr/bin/fake-bazel','work':str(self.work),'artifacts':str(self.artifacts),
+            'repository_cache':str(self.root/'cache/repository'),'disk_cache':str(self.root/'cache/disk'),
+            'profile':{'jobs':1,'cpu':1,'scheduler_memory_mb':4000},'config':{'build_targets':self.targets,
+            'test_targets':['@libteam//:'+x for x in ['consumer_test','package_test','sdk_timestamp_test','verify_rebuild_test']]},
+            'libteam_probe':str(self.private)}
+        self.wrapper=self.root/'wrapper'
+        self.wrapper.write_text('#!/usr/bin/python3\nimport json,sys\nopen('+repr(str(self.root/'adapter-command.json'))+
+                                ',"w").write(json.dumps(sys.argv[1:]))\n')
+        self.wrapper.chmod(0o755)
+        self.spec_path=self.private/'spec.json'
+        self.spec_path.write_text(json.dumps(self.spec))
+
+    def freeze(self):
+        auditor=Mock()
+        worker.audit_before_build(self.spec,[*self.startup,'build',*self.flags,
+            '--build_event_json_file='+str(self.artifacts/'build-events.jsonl'),*self.targets],auditor)
+        return self.private/'ordinary-options.json'
+
+    def test_option_record_is_frozen_and_rejects_later_drift(self):
+        path=self.freeze();original=path.read_bytes()
+        self.freeze();self.assertEqual(path.read_bytes(),original)
+        with self.assertRaisesRegex(ValueError,'drifted'):
+            worker.audit_before_build(self.spec,[*self.startup,'build',*self.flags,'--jobs=17',*self.targets],Mock())
+        self.assertEqual(path.read_bytes(),original)
+        self.spec['libteam_probe_active']=True
+        for phase in worker.LIBTEAM_PHASES:
+            auditor=Mock()
+            _,_,flags=worker.audit_before_build(self.spec,[*self.startup,'build','--jobs=2',*self.flags,
+                '--build_event_json_file='+str(self.private/'rebuild'/(phase+'-events.json')),*self.targets],auditor)
+            self.assertEqual(flags[-3:],['--jobs=1','--local_resources=cpu=1','--local_resources=memory=4000'])
+            self.assertEqual(auditor.call_args.kwargs['output'],self.artifacts/('libteam-no-deb-'+phase+'.json'))
+        self.assertEqual(path.read_bytes(),original)
+        for extra in [[],['--jobs=99'],['--jobs=2','--registry=https://unreviewed.invalid']]:
+            with self.subTest(extra=extra),self.assertRaisesRegex(ValueError,'changed'):
+                worker.audit_before_build(self.spec,[*self.startup,'build',*extra,*self.flags,
+                    '--build_event_json_file='+str(self.private/'rebuild/baseline-events.json'),*self.targets],Mock())
+        with self.assertRaisesRegex(ValueError,'phase'):
+            worker.audit_before_build(self.spec,[*self.startup,'build','--jobs=2',*self.flags,
+                '--build_event_json_file=/tmp/other-events.json',*self.targets],Mock())
+        self.assertEqual(path.read_bytes(),original)
+
+    def owner_result(self):
+        evidence=self.private/'rebuild';evidence.mkdir()
+        output_dir=self.output_base/'execroot/_main/bazel-out';output_dir.mkdir()
+        (self.artifacts/'outputs').mkdir()
+        outputs={};index={}
+        for name,label in zip(self.names,self.targets):
+            path=output_dir/name;path.write_text('payload '+name)
+            outputs[str(path)]=worker.digest(path)
+            uploaded=self.artifacts/'outputs'/name;uploaded.write_bytes(path.read_bytes())
+            index[label]=[{'path':'outputs/'+name,'size':uploaded.stat().st_size,'sha256':worker.digest(uploaded)}]
+        (self.artifacts/'outputs.json').write_text(json.dumps(index))
+        builds=[]
+        for phase in worker.LIBTEAM_PHASES:
+            events=evidence/(phase+'-events.json')
+            events.write_text(json.dumps({'id':{'buildFinished':{}},'finished':{'overallSuccess':True,'exitCode':{'name':'SUCCESS'}}})+'\n')
+            phase_outputs=copy.deepcopy(outputs)
+            if phase=='config-edit':
+                for name in self.names[4:6]+['runtime_packages.json']:
+                    phase_outputs[str(output_dir/name)]='a'*64
+            builds.append({'phase':phase,'seconds':0.1,'outputs_sha256':phase_outputs,'config_sha256':worker.digest(self.config),
+                           'events':events.name,'events_sha256':worker.digest(events)})
+        result={'status':'passed','source_restored':True,'targets':self.targets,'bazel_arguments':self.flags,
+                'builds':builds,'owner_source_sha256':{'bazel/config.h.in':worker.digest(self.config)}}
+        (evidence/'rebuild.json').write_text(json.dumps(result))
+        return result
+
+    def exercise(self,change=None,queries=None):
+        self.freeze();calls=[]
+        def query(command,**kwargs):
+            calls.append(command)
+            self.assertEqual(kwargs['cwd'],self.work/'consumer')
+            self.assertEqual(command[0:3],[str(self.wrapper),*self.startup])
+            if command[3]=='info':
+                self.assertEqual(command[4:],[*self.flags,'output_base'])
+                return (queries or {}).get('info',str(self.output_base)+'\n')
+            self.assertEqual(command[3:],['cquery',*self.flags,worker.LIBTEAM_SCRIPT,'--output=files'])
+            return (queries or {}).get('cquery',str(self.script)+'\n')
+        def owner(command,**kwargs):
+            calls.append(command)
+            self.assertEqual(command,[sys.executable,'-B',str(self.script),'--bazel',str(self.private/'probe-bazel'),
+                *['--bazel-arg='+x for x in self.flags],'--output',str(self.private/'rebuild')])
+            self.assertEqual(kwargs['cwd'],self.work/'consumer')
+            result=self.owner_result()
+            if change:change(result)
+            (self.private/'rebuild/rebuild.json').write_text(json.dumps(result))
+            return NS(returncode=0)
+        with patch.object(subprocess,'check_output',side_effect=query),patch.object(subprocess,'run',side_effect=owner):
+            worker.libteam_incremental(self.profile,self.spec,self.spec_path,self.wrapper)
+        return calls
+
+    def test_selected_exported_probe_uses_real_adapter_and_bounded_public_receipt(self):
+        calls=self.exercise();self.assertEqual(len(calls),3)
+        receipt=json.loads((self.artifacts/'libteam-incremental.json').read_text())
+        self.assertEqual(receipt['status'],'passed');self.assertEqual(len(receipt['builds']),4)
+        self.assertTrue(receipt['original_and_restored_output_hashes_match_uploaded'])
+        self.assertNotIn('commands',receipt);self.assertNotIn('file://',json.dumps(receipt))
+        worker.safe_json(receipt)
+        subprocess.run([str(self.private/'probe-bazel'),'info',*self.flags,'output_base'],check=True)
+        self.assertEqual(json.loads((self.root/'adapter-command.json').read_text()),
+                         [*self.startup,'info',*self.flags,'output_base'])
+
+    def test_failed_owner_retains_restoration_status_without_success_claim(self):
+        def fail(result):
+            result['status']='failed'
+            raise subprocess.CalledProcessError(1,['owner'])
+        with self.assertRaises(subprocess.CalledProcessError):self.exercise(change=fail)
+        result=json.loads((self.artifacts/'libteam-incremental.json').read_text())
+        self.assertEqual(result['status'],'failed');self.assertTrue(result['source_restored'])
+
+    def test_unrestored_owner_input_is_rejected_and_recorded(self):
+        def changed(result):self.config.write_text('not restored')
+        with self.assertRaisesRegex(ValueError,'restore'):self.exercise(change=changed)
+        result=json.loads((self.artifacts/'libteam-incremental.json').read_text())
+        self.assertEqual(result['status'],'failed');self.assertFalse(result['source_restored'])
+
+    def test_missing_phase_evidence_fails_closed(self):
+        def missing(result):(self.private/'rebuild/no-op-events.json').unlink()
+        with self.assertRaisesRegex(ValueError,'evidence'):self.exercise(change=missing)
+
+    def test_restored_output_must_match_the_ordinary_uploaded_bytes(self):
+        def changed(result):
+            index_path=self.artifacts/'outputs.json';index=json.loads(index_path.read_text())
+            label=self.targets[0];payload=self.artifacts/index[label][0]['path'];payload.write_text('different uploaded payload')
+            index[label][0].update(size=payload.stat().st_size,sha256=worker.digest(payload))
+            index_path.write_text(json.dumps(index))
+        with self.assertRaisesRegex(ValueError,'uploaded outputs'):self.exercise(change=changed)
+
+    def test_wrong_or_ambiguous_selected_source_is_not_executed(self):
+        with self.assertRaisesRegex(ValueError,'one selected'):
+            self.exercise(queries={'cquery':str(self.script)+'\n'+str(self.script)+'\n'})
+
+    def test_wrong_output_base_is_not_used(self):
+        with self.assertRaisesRegex(ValueError,'escaped'):
+            self.exercise(queries={'info':'/tmp/unrelated\n'})
+
+    def test_corrupt_selected_probe_is_not_executed(self):
+        self.script.write_text('# changed owner source\n')
+        with self.assertRaisesRegex(ValueError,'reviewed source'):
+            self.exercise()
+
+    def test_same_bytes_outside_selected_owner_are_not_executed(self):
+        outside=self.root/'verify_rebuild.py';outside.write_bytes(self.script.read_bytes())
+        with self.assertRaisesRegex(ValueError,'reviewed source'):
+            self.exercise(queries={'cquery':str(outside)+'\n'})
 
 
 if __name__=='__main__': unittest.main()

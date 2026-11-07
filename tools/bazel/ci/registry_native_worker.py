@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit native registry consumers on the existing disposable dpool workers."""
 import argparse
+from collections import Counter
 import hashlib
 import importlib.util
 import json
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.source_worker_preflight import WORKERS, measure, marker_identity, select_build_profile, cpu_limit
 from tools.bazel.ci.bazel_commands import audit_targets
-from tools.bazel.ci.public_artifacts import safe_json, bep_summary, dependency_json
+from tools.bazel.ci.public_artifacts import safe_json, load_json, bep_summary, dependency_json
 
 PROFILES = {
     'common': {'revision': '03f870c62fa2bab567133c6a9303f71392e4986e',
@@ -44,7 +45,14 @@ PROFILES = {
          'presubmit_sha256': '6859c3c860387afeaf85752364bdf2992f933d80df31e0e39ea88243b6dd6efa',
          'builds': 4,
          'tests': 3},
+    'libteam': {'revision': 'a1334b9a9604733a2faf6cc96536d289da09e8d8',
+        'module': 'libteam', 'version': '1.31.0.sonic.1',
+        'presubmit_sha256': 'fc28ed4eeac3eb83913a1acd67a1b211725bd7a47c0738f9971b0318d9339b6e',
+        'builds': 9, 'tests': 4,
+        'probe_sha256': 'f010bf98fdf44cade60a181376eaca99857fe1e6830ac8ec4bb7b97bfe28fe97'},
 }
+LIBTEAM_PHASES = ('baseline', 'no-op', 'config-edit', 'restored')
+LIBTEAM_SCRIPT = '@libteam//:bazel/verify_rebuild.py'
 # Populate only from verified provisioner provenance. A local image ID alone is
 # not a registry image reference. Common remains fail-closed until one is known.
 SLAVE_IMAGE_REFERENCES = {}
@@ -225,12 +233,124 @@ def audit_before_build(spec, arguments, auditor=None):
     labels=[x for x in options if not x.startswith('--')]
     expected=spec['config'][command+'_targets']
     require(labels==expected, 'Bazel invocation differs from the complete original target list')
+    report=Path(spec['artifacts'])/('no-deb-'+command+'.json')
+    if spec.get('libteam_probe') and command=='build':
+        report=libteam_build_options(spec,arguments)
     flags=[x for x in options if x.startswith('--') and not x.startswith('--build_event_json_file=')]
     # These presentation/test flags do not select configured dependencies.
     flags=[x for x in flags if x!='--nocache_test_results' and not x.startswith('--test_output=')]
     auditor(startup[0],flags,spec['config']['build_targets']+spec['config']['test_targets'],
-            workspace=Path.cwd(),output=Path(spec['artifacts'])/('no-deb-'+command+'.json'),startup_options=startup[1:])
+            workspace=Path.cwd(),output=report,startup_options=startup[1:])
     return startup,command,options
+
+
+def libteam_build_options(spec, arguments):
+    """Freeze the first ordinary build's flags; probe phases cannot replace them."""
+    startup,command,options=command_parts(arguments)
+    flags=[x for x in options if x.startswith('--') and not x.startswith('--build_event_json_file=')]
+    path=Path(spec['libteam_probe'])/'ordinary-options.json'
+    record={'startup':startup,'flags':flags}
+    if not spec.get('libteam_probe_active'):
+        if path.exists():
+            require(json.loads(path.read_text())==record, 'Ordinary libteam options drifted')
+        else:
+            # Private provenance can contain local registry URLs. Never publish
+            # it as public JSON or overwrite it during a later probe phase.
+            with path.open('x') as stream:
+                json.dump(record,stream)
+        return Path(spec['artifacts'])/'no-deb-build.json'
+    require(path.is_file(), 'Missing ordinary libteam option provenance')
+    frozen=json.loads(path.read_text())
+    require(startup==frozen['startup'] and flags==['--jobs=2',*frozen['flags']],
+            'Owner probe changed the ordinary libteam options')
+    events=[x.split('=',1)[1] for x in options if x.startswith('--build_event_json_file=')]
+    expected={str(path.parent/'rebuild'/(phase+'-events.json')):phase for phase in LIBTEAM_PHASES}
+    require(len(events)==1 and events[0] in expected, 'Unexpected owner probe phase')
+    return Path(spec['artifacts'])/('libteam-no-deb-'+expected[events[0]]+'.json')
+
+
+def libteam_incremental(profile, spec, spec_path, wrapper):
+    """Run the selected owner's exported probe through the same fixed worker."""
+    private=Path(spec['libteam_probe'])
+    consumer=Path(spec['work'])/'consumer'
+    record=private/'ordinary-options.json'
+    frozen=json.loads(record.read_text())
+    startup=['--ignore_all_rc_files','--output_user_root='+str(Path(spec['work'])/'bazel')]
+    require(frozen['startup']==startup, 'Ordinary libteam startup changed')
+    flags=frozen['flags']
+    receipt={'status':'failed','module':profile['module'],'version':profile['version'],
+             'registry_revision':profile['revision'],'ordinary_options_sha256':digest(record),
+             'scope':'Same-output-base equality and config invalidation; no cold-cache or zero-action claim',
+             'raw_evidence':'Private owner receipt/BEPs; public evidence contains validated summaries'}
+    config=None
+    original=None
+    try:
+        def query(command):
+            return subprocess.check_output([str(wrapper),*startup,*command],cwd=consumer,text=True).splitlines()
+        roots=query(['info',*flags,'output_base'])
+        require(len(roots)==1 and roots[0], 'Expected one owner output base')
+        output_base=Path(roots[0])
+        require(output_base.is_absolute() and output_base.resolve().is_relative_to(Path(spec['work'])/'bazel'),
+                'Owner output base escaped the existing worker')
+        execution_root=output_base/'execroot/_main'
+        require(execution_root.is_dir(), 'Missing Bazel 8.5.1 Bzlmod execution root')
+        selected=query(['cquery',*flags,LIBTEAM_SCRIPT,'--output=files'])
+        require(len(selected)==1 and selected[0], 'Expected one selected owner probe')
+        script=(execution_root/selected[0]).resolve()
+        require(script.is_relative_to(output_base.resolve()/'external') and script.is_file() and
+                script.name=='verify_rebuild.py' and digest(script)==profile['probe_sha256'],
+                'Selected owner probe differs from the reviewed source')
+        config=script.parent/'config.h.in';original=config.read_bytes()
+        adapter=private/'probe-bazel'
+        # Only bridge the owner's command-only CLI to the already confined
+        # startup. Every command still reaches the existing audit/resource wrapper.
+        adapter.write_text('#!/usr/bin/python3\nimport os,sys\nos.execv('+repr(str(wrapper))+', ['+
+                           repr(str(wrapper))+','+','.join(repr(x) for x in startup)+',*sys.argv[1:]])\n')
+        adapter.chmod(0o755)
+        spec['libteam_probe_active']=True
+        spec_path.write_text(json.dumps(spec))
+        evidence=private/'rebuild'
+        subprocess.run([sys.executable,'-B',str(script),'--bazel',str(adapter),
+                        *['--bazel-arg='+x for x in flags],'--output',str(evidence)],cwd=consumer,check=True)
+        result_path=evidence/'rebuild.json'
+        result=json.loads(result_path.read_text())
+        require(result['status']=='passed' and result['source_restored'] is True and config.read_bytes()==original,
+                'Owner probe did not restore its declared input')
+        require(result['targets']==spec['config']['build_targets'] and result['bazel_arguments']==flags,
+                'Owner probe receipt changed targets or options')
+        require([phase['phase'] for phase in result['builds']]==list(LIBTEAM_PHASES), 'Missing owner probe phases')
+        builds=[]
+        for phase in result['builds']:
+            events=evidence/(phase['phase']+'-events.json')
+            require(phase['events']==events.name and events.is_file() and not events.is_symlink() and
+                    digest(events)==phase['events_sha256'], 'Owner phase evidence changed')
+            summary=bep_summary(events.read_text().splitlines())
+            require(summary['finished']=={'success':True,'exit_code':0}, 'Owner phase did not finish successfully')
+            builds.append({'phase':phase['phase'],'seconds':phase['seconds'],
+                           'config_sha256':phase['config_sha256'],'outputs_sha256':phase['outputs_sha256'],
+                           'events_sha256':phase['events_sha256'],'build_summary':summary})
+        before=builds[0]['outputs_sha256'];after=builds[-1]['outputs_sha256']
+        require(len(before)==9 and before==after, 'Owner restored outputs differ from baseline')
+        for name,expected in after.items():
+            path=Path(name)
+            require(path.resolve().is_relative_to(output_base.resolve()) and path.is_file() and digest(path)==expected,
+                    'Restored owner output differs from its receipt')
+        artifacts=Path(spec['artifacts'])
+        require(verify_outputs(artifacts), 'Missing ordinary indexed owner outputs')
+        index=json.loads((artifacts/'outputs.json').read_text())
+        require(set(index)==set(result['targets']) and all(len(records)==1 for records in index.values()),
+                'Ordinary owner output inventory changed')
+        require(Counter(after.values())==Counter(records[0]['sha256'] for records in index.values()),
+                'Owner probe did not restore the ordinary uploaded outputs')
+        receipt.update(status='passed',source_restored=True,targets=result['targets'],builds=builds,
+                       owner_source_sha256=result['owner_source_sha256'],owner_receipt_sha256=digest(result_path),
+                       original_and_restored_output_hashes_match_uploaded=True)
+    except BaseException as error:
+        receipt.update(error_class=type(error).__name__,
+                       source_restored=config is not None and config.is_file() and config.read_bytes()==original)
+        raise
+    finally:
+        write(Path(spec['artifacts'])/'libteam-incremental.json',receipt)
 
 
 def bazel_main():
@@ -322,6 +442,9 @@ def execute(args, profile, cache):
     work=private/'work'
     spec={'binary':shutil.which('bazel'),'work':str(work),'artifacts':str(args.artifacts),
           'repository_cache':str(cache/'repository'),'disk_cache':str(cache/'disk'),'profile':selected,'config':config}
+    if profile['module']=='libteam':
+        probe=private/'libteam-probe';probe.mkdir()
+        spec['libteam_probe']=str(probe)
     require(spec['binary'], 'Worker must provide Bazel/Bazelisk')
     require(subprocess.check_output([spec['binary'],'--version'],text=True).strip()=='bazel 8.5.1','Expected Bazel8.5.1')
     spec_path=private/'spec.json';spec_path.write_text(json.dumps(spec))
@@ -339,9 +462,9 @@ def execute(args, profile, cache):
     try:
         spec['distdirs']=verified_source_distdirs(cache,args.artifacts)
         spec['downloader_config']=verified_mirror_config(args.artifacts)
-        spec_path.write_text(json.dumps(spec))
         state['source_input_run']=os.environ.get('SOURCE_INPUTS_RUN') or None
         state['tools_installed']=prepare_tools()
+        spec_path.write_text(json.dumps(spec))
         command=[sys.executable,'-B',str(args.workspace/'ci/registry_ci.py'),'run','--module',profile['module'],
                  '--version',profile['version'],'--architecture','amd64','--work-dir',str(work),
                  '--artifacts',str(args.artifacts),'--bazel',str(wrapper)]
@@ -354,6 +477,8 @@ def execute(args, profile, cache):
                 break
             except subprocess.TimeoutExpired:
                 print(json.dumps({'kind':'registry-native','elapsed_seconds':round(time.monotonic()-started),'memory':memory()}),flush=True)
+        if profile['module']=='libteam':
+            libteam_incremental(profile,spec,spec_path,wrapper)
         clean_source(args.workspace,profile['revision'])
         after=memory()
         counts=lambda s:dict(line.split() for line in s.splitlines())
@@ -418,6 +543,39 @@ def validate_registry_lock(value, workspace, revision):
     dependency_json(checked(value),'lock')
 
 
+def verify_github_source_receipts(directory, workspace, profile):
+    """Publish only receipts for the selected registry's locked input manifests."""
+    runner, _ = registry_config(workspace, profile)
+    manifests = runner.github_source_manifests(workspace, profile['module'], profile['version'], 'amd64')
+    expected = {digest(path) + '.json': path for path in manifests}
+    require(bool(expected) and len(expected) == len(manifests) and
+            {path.name for path in directory.iterdir()} == set(expected),
+            'Unexpected GitHub source receipt inventory')
+    for name, manifest_path in expected.items():
+        path = directory / name
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536,
+                'Invalid GitHub source receipt file')
+        manifest, manifest_sha = runner.github_sources.load_manifest(manifest_path)
+        value = load_json(path.read_text())
+        safe_json(value)
+        require(isinstance(value, dict) and set(value) == {'schema_version', 'manifest_sha256', 'sources', 'files'} and
+                type(value['schema_version']) is int and value['schema_version'] == 1 and
+                value['manifest_sha256'] == manifest_sha == name[:-5], 'GitHub source receipt identity differs')
+        sources = [{'url': item['url'], 'format': item['format'], 'size': item['size'],
+                    'whole_source_digest_declared': 'sha256' in item} for item in manifest['sources']]
+        require(value['sources'] == sources and all(type(item['size']) is int and
+                type(item['whole_source_digest_declared']) is bool for item in value['sources']),
+                'GitHub source receipt transport differs')
+        files = [item for source in manifest['sources'] for item in source['files']]
+        require(isinstance(value['files'], list) and len(value['files']) == len(files),
+                'GitHub source receipt file count differs')
+        for actual, locked in zip(value['files'], files):
+            require(isinstance(actual, dict) and set(actual) == set(locked) | {'source'} and
+                    {key: actual[key] for key in locked} == locked and type(actual['size']) is int and
+                    actual['source'] in ('distdir', 'repository-cache', 'asset-cache', 'github'),
+                    'GitHub source receipt locked file differs')
+
+
 def publish(args):
     """Use the ordinary registry transport, with private control/env outside it."""
     indexed_outputs=verify_outputs(args.artifacts)
@@ -428,7 +586,10 @@ def publish(args):
         require(not source.is_symlink(), 'Evidence root must not contain symlinks')
         if source.is_dir():
             # Registry output collector already confines/materializes these paths.
-            require(source.name in ('outputs','test-results','testlogs'), 'Unexpected evidence directory')
+            if source.name == 'github-sources':
+                verify_github_source_receipts(source, args.workspace, PROFILES[args.consumer])
+            else:
+                require(source.name in ('outputs','test-results','testlogs'), 'Unexpected evidence directory')
             require(not any(item.is_symlink() for item in source.rglob('*')), 'Evidence subtree contains a symlink')
             shutil.copytree(source,destination/source.name,copy_function=shutil.copy2,symlinks=False)
         else:
