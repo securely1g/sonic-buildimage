@@ -6,6 +6,11 @@ builds install those DEBs. `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` selects Bazel
 only for registered OCI images; it does not change P4RT's package format or
 inject source TARs into its Dockerfile.
 
+Both the build and test commands use the local `source_mirrors.cfg`. It adds an
+official XZ release mirror for the exact archive selected by `sonic-pins`,
+preserving the upstream checksum and Fedora fallback. Other source URLs and
+the selected Bazel version, features, tests, and cache settings stay unchanged.
+
 For example, the full VS workflow requests both
 `target/debs/trixie/sonic-p4rt_0.0.1_amd64.deb` and
 `target/debs/trixie/sonic-p4rt-dbgsym_0.0.1_amd64.deb`, then verifies their
