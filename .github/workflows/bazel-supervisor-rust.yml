@@ -28,7 +28,7 @@ concurrency:
 # Draft PR #146 selects the existing Socat extraction repair from registry #242.
 env:
   BAZEL: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
-  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && '55e056426af5fca161c7c52dcdcf187e565e700c' || '' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && 'd5233d24b0b723b7ec3c4844e27f5a8902eba611' || '' }}
 
 jobs:
   native:

@@ -16,7 +16,7 @@ concurrency:
 # Draft PR #146 selects the existing Socat extraction repair from registry #242.
 env:
   BAZEL: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
-  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && '55e056426af5fca161c7c52dcdcf187e565e700c' || '' }}
+  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/review-registry-catalog' && 'd5233d24b0b723b7ec3c4844e27f5a8902eba611' || '' }}
 
 jobs:
   native:
@@ -60,11 +60,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #228 combines verified Debian and source routes; payload checksums remain required.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/8ba36072602dc98220d20834fdb8eb189c880afd/ci/source_mirrors.cfg"
+          # Use the checksum-verified public configuration from the merged registry.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "684669341ab310288dbb38da9bac0b7ead57d0fc19edf293ed18e399706bb543"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
