@@ -234,6 +234,12 @@ Run the helper tests from the repository root:
 python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
 ```
 
+Native Debian package analysis also requires `file`, `readelf` (from
+`binutils`) and `pkg-config` on the host running Bazel. `file` distinguishes GNU ld
+linker scripts from ELF libraries; `pkg-config` resolves the declared package
+interfaces. The source-base and Rust listener CI containers install these tools
+for both AMD64 and ARM64 before invoking Bazel.
+
 The ELF tests use `cc`, `readelf` and `objcopy`. The cache integration check uses
 the repository's selected Bazel version and platform; its artifact directory
 must be new:
