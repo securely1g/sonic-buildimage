@@ -215,7 +215,8 @@ jobs:
           retention-days: 14
 
   archive:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') }}
+    needs: [swss_layer_native, orchagent_native, sflow_native, otel_native, dash_ha_native, sysmgr_native, gearbox_native, dash_engine_native, p4rt_native, syncd_native, teamd_native]
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -238,16 +239,16 @@ jobs:
             platform: aarch64_trixie
             disk_cache: buildimage-gzip-arm64
             timeout: 60
-    container:
+    container: &native_container
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       volumes:
         - /usr/local/lib/android:/runner-unused/android
         - /usr/share/dotnet:/runner-unused/dotnet
         - /opt/ghc:/runner-unused/ghc
-    env:
+    env: &native_bazel
       # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
-    defaults:
+    defaults: &native_shell
       run:
         shell: bash
     steps:
@@ -313,11 +314,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #186 (landed 6974c59) changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
+          # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -422,7 +423,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -581,15 +582,139 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Require every native image family to pass
+        if: always() && matrix.architecture == 'amd64'
+        env:
+          NATIVE_RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          printf 'Native image job conclusions: %s\n' "$NATIVE_RESULTS"
+          IFS=',' read -r -a results <<< "$NATIVE_RESULTS"
+          test "${#results[@]}" -eq 11
+          for result in "${results[@]}"; do
+            test "$result" = success
+          done
+
+  # Keep each native family's output base, disk cache and staged archives on a
+  # separate disposable runner. Runtime jobs wait for the artifacts they consume.
+  # The existing archive checks run afterward and retain the required AMD64 gate.
+  swss_layer_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect shared SWSS images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - &native_space
+        name: Allocate source-build space on this disposable runner
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
+
+      - &native_tools
+        name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+          for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
+
+      - &native_checkout
+        name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - &native_architecture
+        name: Check native architecture and generated dependency state
+        run: |
+          test "$(uname -m)" = "x86_64"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+
+      - &native_gnoi
+        name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      - &native_p4rt_owner
+        name: Initialize P4RT's pinned source owner
+        run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+
+      - &native_p4rt_tools
+        name: Install P4RT source execution dependencies
+        run: |
+          apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \
+            libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+            libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-swss-layer-amd64
+          cache-version: "8.5.1"
+
+      - &native_mirror
+        name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+      - &native_caches
+        name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+
+      - &native_pigz
+        name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+          # Draft wrappers disable the home rc; share setup-bazel caches with them.
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          home = Path.home() / '.bazelrc'
+          cache_lines = [line for line in home.read_text().splitlines()
+                         if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+          assert len(cache_lines) == 2, 'setup-bazel cache settings are missing'
+          user = Path('.bazelrc.user')
+          user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
+          PYCODE
+
       - name: Build and inspect the shared runtime and symbols
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/tests/swss_layer_payload_test.py
           python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
       - name: Check cached no-op and source edit through the image
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -602,7 +727,7 @@ jobs:
           git diff --exit-code
       - name: Prepare shared SWSS image evidence
         id: swss_layer_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PY'
           import json
@@ -628,7 +753,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PY
       - name: Retain reviewed artifacts and receipts
-        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_public.outcome == 'success'
+        if: always() && steps.swss_layer_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: swss-layer-amd64
@@ -650,20 +775,45 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  orchagent_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect Orchagent images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-orchagent-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build Orchagent variants from source owners
         id: orchagent_build
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          SONIC_BAZEL_REGISTRY_REVISION: 6a69c2d89070d4d2ffc80b1e13626da387f7ea65
+          SONIC_BAZEL_REGISTRY_REVISION: 04164b00ec3f28c4b2806714d3825ac8f57a9af9
           BAZELISK_GITHUB_TOKEN: ""
         run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
       - name: Validate installed Orchagent sources and Scapy wheel
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/orchagent_image.py validate --artifacts artifacts/orchagent
       - name: Validate Orchagent owner packages and original Scapy tests
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -673,7 +823,6 @@ jobs:
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--jobs=2 --bazel-arg=--local_resources=memory=8000
       - name: Verify source edit and restored Orchagent archives
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -687,7 +836,7 @@ jobs:
           git diff --exit-code
       - name: Review public Orchagent evidence
         id: orchagent_public
-        if: always() && matrix.architecture == 'amd64' && steps.orchagent_build.outcome != 'skipped'
+        if: always() && steps.orchagent_build.outcome != 'skipped'
         run: |
           python3 - <<'PYORCH'
           import json
@@ -713,7 +862,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYORCH
       - name: Retain Orchagent archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.orchagent_public.outcome == 'success'
+        if: always() && steps.orchagent_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: orchagent-source-amd64
@@ -741,19 +890,44 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  sflow_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect sFlow images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-sflow-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build sFlow runtime and debug images from source owners
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 6a69c2d89070d4d2ffc80b1e13626da387f7ea65
+          SONIC_BAZEL_REGISTRY_REVISION: 04164b00ec3f28c4b2806714d3825ac8f57a9af9
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/sflow_image.py validate --artifacts artifacts/sflow
       - name: Validate sFlow producer contracts
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -783,11 +957,10 @@ jobs:
                       shutil.copyfile(xml.with_name(name), directory / name)
           PY
       - name: Verify sFlow no-op, Python source edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/sflow_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Review public sFlow evidence
         id: sflow_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PY'
           import json
@@ -810,7 +983,7 @@ jobs:
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
           PY
       - name: Retain sFlow archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.sflow_public.outcome == 'success'
+        if: always() && steps.sflow_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sflow-source-amd64
@@ -839,20 +1012,45 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  otel_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect OTEL images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-otel-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build OTEL runtime and debug images from source owners
         id: otel_build
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 6a69c2d89070d4d2ffc80b1e13626da387f7ea65
+          SONIC_BAZEL_REGISTRY_REVISION: 04164b00ec3f28c4b2806714d3825ac8f57a9af9
         run: python3 -B tools/bazel/ci/otel_image.py build --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Validate OTEL installed payloads and matching symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/otel_image.py validate --artifacts artifacts/otel
       - name: Validate OTEL producer contracts
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -879,11 +1077,10 @@ jobs:
               shutil.copyfile(xml, directory / 'test.xml')
           PY
       - name: Verify OTEL no-op, launcher source edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/otel_image.py incremental --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Review public OTEL evidence
         id: otel_public
-        if: always() && matrix.architecture == 'amd64' && steps.otel_build.outcome != 'skipped'
+        if: always() && steps.otel_build.outcome != 'skipped'
         run: |
           python3 - <<'PY'
           import json
@@ -906,7 +1103,7 @@ jobs:
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
           PY
       - name: Retain OTEL archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.otel_public.outcome == 'success'
+        if: always() && steps.otel_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: otel-source-amd64
@@ -934,15 +1131,41 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  dash_ha_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect DASH HA images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-dash-ha-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build DASH HA runtime and debug images
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/dash_ha_image.py build --bazel "$BAZEL" --artifacts artifacts/dash-ha
       - name: Validate DASH HA image contents and cache reuse
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -951,7 +1174,7 @@ jobs:
           python3 -B tools/bazel/ci/dash_ha_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dash-ha
       - name: Prepare reviewed public evidence
         id: dash_ha_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PYCODE'
           import json
@@ -980,7 +1203,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYCODE
       - name: Retain DASH HA image artifacts and evidence
-        if: always() && matrix.architecture == 'amd64' && steps.dash_ha_public.outcome == 'success'
+        if: always() && steps.dash_ha_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dash-ha-images-amd64-${{ github.sha }}
@@ -1003,15 +1226,41 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+  sysmgr_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect Sysmgr images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-sysmgr-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build Sysmgr runtime and debug images
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/sysmgr_image.py build --bazel "$BAZEL" --artifacts artifacts/sysmgr
       - name: Validate Sysmgr image contents and cache reuse
-        if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -1020,7 +1269,7 @@ jobs:
           python3 -B tools/bazel/ci/sysmgr_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sysmgr
       - name: Prepare reviewed Sysmgr public evidence
         id: sysmgr_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PYCODE'
           import json
@@ -1049,7 +1298,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYCODE
       - name: Retain Sysmgr image artifacts and evidence
-        if: always() && matrix.architecture == 'amd64' && steps.sysmgr_public.outcome == 'success'
+        if: always() && steps.sysmgr_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sysmgr-images-amd64-${{ github.sha }}
@@ -1073,89 +1322,244 @@ jobs:
           retention-days: 14
           compression-level: 0
 
-      - name: Build gearbox runtime and debug images from source packages
-        id: gearbox_build
-        if: matrix.architecture == 'amd64'
-        env:
-          BAZELISK_GITHUB_TOKEN: ""
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 -B tools/bazel/ci/gbsyncd_image.py build --bazel "$BAZEL" --artifacts artifacts/gbsyncd
-      - name: Validate gearbox installed contents and complete source symbols
-        if: matrix.architecture == 'amd64'
-        run: python3 -B tools/bazel/ci/gbsyncd_image.py validate --artifacts artifacts/gbsyncd
-      - name: Verify gearbox no-op, configuration edit and restored archives
-        if: matrix.architecture == 'amd64'
-        run: python3 -B tools/bazel/ci/gbsyncd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/gbsyncd
-      - name: Review public gearbox evidence
-        id: gearbox_public
-        if: always() && matrix.architecture == 'amd64' && steps.gearbox_build.outcome != 'skipped'
-        run: |
-          python3 - <<'PYCODE'
-          import json
-          from pathlib import Path
-          from tools.bazel.ci.public_artifacts import safe_json, dependency_json
-          root = Path('artifacts/gbsyncd')
-          for path in root.glob('*.json'):
-              if path.name not in ('build-receipt.json', 'module-graph.json'):
-                  value = json.loads(path.read_text())
-                  if path.name == 'policy.json':
-                      # This is checked-in image configuration, not a captured
-                      # process environment. Permit only this public constant.
-                      assert value['image_validation'].pop('environment') == {'DEBIAN_FRONTEND': 'noninteractive'}
-                  safe_json(value)
-          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
-              path = root / name
-              if path.exists():
-                  dependency_json(json.loads(path.read_text()), kind)
-          receipt = root / 'build-receipt.json'
-          if receipt.exists():
-              source = json.loads(receipt.read_text())
-              public = {key: source[key] for key in ('status', 'revision', 'architecture', 'image_version', 'artifacts', 'review_registry_revision', 'tested_revision_parents') if key in source}
-              safe_json(public)
-              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          PYCODE
-      - name: Retain gearbox archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.gearbox_public.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: gbsyncd-source-amd64
-          path: |
-            artifacts/gbsyncd/*.gz
-            artifacts/gbsyncd/*.tar
-            artifacts/gbsyncd/validation.json
-            artifacts/gbsyncd/source-contract.json
-            artifacts/gbsyncd/source-receipt.json
-            artifacts/gbsyncd/policy.json
-            artifacts/gbsyncd/runtime-apt.json
-            artifacts/gbsyncd/debug-apt.json
-            artifacts/gbsyncd/runtime-packages.json
-            artifacts/gbsyncd/debug-packages.json
-            artifacts/gbsyncd/base-packages.json
-            artifacts/gbsyncd/config-engine-packages.json
-            artifacts/gbsyncd/*.status
-            artifacts/gbsyncd/public-receipt.json
-            artifacts/gbsyncd/action-audit.json
-            artifacts/gbsyncd/incremental.json
-            artifacts/gbsyncd/MODULE.bazel.lock
-            artifacts/gbsyncd/module-graph.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
+  gearbox_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect gearbox images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+      - /usr/local/lib/android:/runner-unused/android
+      - /usr/share/dotnet:/runner-unused/dotnet
+      - /opt/ghc:/runner-unused/ghc
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      GEARBOX_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Install only receipt verification tools
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      run: 'apt-get update
 
+        apt-get install -y --no-install-recommends python3 git ca-certificates
+
+        '
+    - name: Checkout the normal CI merge for receipt verification
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: 'false'
+    - name: Preserve the original normal CI request
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      id: gearbox_request
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "git config --global --add safe.directory \"$GITHUB_WORKSPACE\"\npython3 -B -m tools.bazel.ci.image_worker_receipt origin \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\"\n"
+    - name: Upload the original Gearbox worker request
+      if: env.GEARBOX_WORKER_RECEIPT == 'true' && steps.gearbox_request.outputs.new_request == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ steps.gearbox_request.outputs.request_name }}
+        path: ${{ runner.temp }}/gearbox-ci-request/request.json
+        if-no-files-found: error
+        retention-days: '14'
+    - name: Download the immutable original Gearbox request
+      if: env.GEARBOX_WORKER_RECEIPT == 'true' && steps.gearbox_request.outputs.new_request == 'false'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ steps.gearbox_request.outputs.request_artifact }}
+        merge-multiple: 'true'
+        run-id: ${{ steps.gearbox_request.outputs.request_run }}
+        github-token: ${{ github.token }}
+        repository: securely1g/sonic-buildimage
+        path: ${{ runner.temp }}/gearbox-ci-request
+    - name: Require exact successful worker evidence for this CI merge
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      id: gearbox_acceptance
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "python3 -B -m tools.bazel.ci.image_worker_receipt discover \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\"\n"
+    - name: Download only the small public Gearbox JSON receipts
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ steps.gearbox_acceptance.outputs.artifact }}
+        merge-multiple: 'true'
+        run-id: ${{ steps.gearbox_acceptance.outputs.worker_run }}
+        github-token: ${{ github.token }}
+        repository: securely1g/sonic-buildimage
+        path: ${{ runner.temp }}/gearbox-ci-evidence
+    - name: Verify all original Gearbox acceptance checks
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      run: "python3 -B -m tools.bazel.ci.image_worker_receipt verify \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\" \\\n  --public \"$RUNNER_TEMP/gearbox-ci-evidence\" \\\n  --output \"$RUNNER_TEMP/gearbox-ci-verified.json\"\n"
+    - name: Retain the verified CI handoff summary
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gearbox-ci-gearbox_native-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/gearbox-ci-verified.json
+        if-no-files-found: error
+        retention-days: '14'
+    - name: Allocate source-build space on this disposable runner
+      run: "test \"$RUNNER_ENVIRONMENT\" = github-hosted\ndf -h / \"$GITHUB_WORKSPACE\"\ndu -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc\n# These host SDKs are not inputs to the pinned Trixie build. Preserve\n# all Bazel caches, the workspace, retained outputs and execution tools.\nfind /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \\\n  -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +\ndf -h / \"$GITHUB_WORKSPACE\"\n"
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Install execution tools
+      run: "apt-get update\napt-get install -y --no-install-recommends \\\n  autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd\nfor tool in bsdtar gdb readelf objcopy; do command -v \"$tool\"; done\n"
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Check native architecture and generated dependency state
+      run: 'test "$(uname -m)" = "x86_64"
+
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+        test ! -e MODULE.bazel.lock
+
+        test -z "$(git ls-files -- MODULE.bazel.lock)"
+
+        git check-ignore MODULE.bazel.lock
+
+        '
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Initialize Sysmgr's pinned gNOI source
+      run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Initialize P4RT's pinned source owner
+      run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Install P4RT source execution dependencies
+      run: "apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \\\n  libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \\\n  libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev\ngit config --global --add safe.directory \"$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins\"\n"
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Set up Bazel
+      uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+      with:
+        bazelisk-version: 1.29.0
+        bazelisk-cache: true
+        repository-cache: true
+        disk-cache: oci-gearbox-amd64
+        cache-version: 8.5.1
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Configure the verified source mirror
+      run: "python3 - <<'PYCFG'\nimport hashlib\nimport os\nfrom pathlib import Path\nfrom urllib.request import urlopen\n# Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.\nurl = \"https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg\"\nwith urlopen(url, timeout=60) as response:\n    data = response.read()\nexpected = \"ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720\"\nif hashlib.sha256(data).hexdigest() != expected:\n    raise SystemExit(\"Source mirror configuration checksum mismatch\")\nconfig = Path(os.environ[\"RUNNER_TEMP\"]) / \"sonic-source-mirrors.cfg\"\nconfig.write_bytes(data)\nwith Path(\".bazelrc.user\").open(\"a\") as rc:\n    rc.write(\"common --experimental_downloader_config=\" + str(config) + \"\\n\")\nPYCFG\n"
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Preserve configured caches for Draft validation
+      run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Prepare the checksum-pinned pigz source archive
+      run: "mkdir -p artifacts/source-downloads\npython3 -B tools/bazel/gzip/prepare_pigz.py \\\n  --output \"$PWD/artifacts/source-downloads\" | tee artifacts/pigz-source.json\n# common.bazelrc imports this ignored file, including through Draft wrappers.\nprintf 'common --distdir=%s\\n' \"$PWD/artifacts/source-downloads\" >> .bazelrc.user\n# Draft wrappers disable the home rc; share setup-bazel caches with them.\npython3 - <<'PYCODE'\nfrom pathlib import Path\nhome = Path.home() / '.bazelrc'\ncache_lines = [line for line in home.read_text().splitlines()\n               if line.startswith(('build --disk_cache=', 'common --repository_cache='))]\nassert len(cache_lines) == 2, 'setup-bazel cache settings are missing'\nuser = Path('.bazelrc.user')\nuser.write_text(user.read_text() + '\\n'.join(cache_lines) + '\\n')\nPYCODE\n"
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Build gearbox runtime and debug images from source packages
+      id: gearbox_build
+      env:
+        BAZELISK_GITHUB_TOKEN: ''
+        CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: python3 -B tools/bazel/ci/gbsyncd_image.py build --bazel "$BAZEL" --artifacts artifacts/gbsyncd
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Validate gearbox installed contents and complete source symbols
+      run: python3 -B tools/bazel/ci/gbsyncd_image.py validate --artifacts artifacts/gbsyncd
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Verify gearbox no-op, configuration edit and restored archives
+      run: python3 -B tools/bazel/ci/gbsyncd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/gbsyncd
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Review public gearbox evidence
+      id: gearbox_public
+      if: (always() && steps.gearbox_build.outcome != 'skipped') && env.GEARBOX_WORKER_RECEIPT != 'true'
+      run: "python3 - <<'PYCODE'\nimport json\nfrom pathlib import Path\nfrom tools.bazel.ci.public_artifacts import safe_json, dependency_json\nroot = Path('artifacts/gbsyncd')\nfor path in root.glob('*.json'):\n    if path.name not in ('build-receipt.json', 'module-graph.json'):\n        value = json.loads(path.read_text())\n        if path.name == 'policy.json':\n            # This is checked-in image configuration, not a captured\n            # process environment. Permit only this public constant.\n            assert value['image_validation'].pop('environment') == {'DEBIAN_FRONTEND': 'noninteractive'}\n        safe_json(value)\nfor name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):\n    path = root / name\n    if path.exists():\n        dependency_json(json.loads(path.read_text()), kind)\nreceipt = root / 'build-receipt.json'\nif receipt.exists():\n    source = json.loads(receipt.read_text())\n    public = {key: source[key] for key in ('status', 'revision',\
+        \ 'architecture', 'image_version', 'artifacts', 'review_registry_revision', 'tested_revision_parents') if key in source}\n    safe_json(public)\n    (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\\n')\nPYCODE\n"
+    - name: Retain gearbox archives and source evidence
+      if: (always() && steps.gearbox_public.outcome == 'success') && env.GEARBOX_WORKER_RECEIPT != 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gbsyncd-source-amd64
+        path: 'artifacts/gbsyncd/*.gz
+
+          artifacts/gbsyncd/*.tar
+
+          artifacts/gbsyncd/validation.json
+
+          artifacts/gbsyncd/source-contract.json
+
+          artifacts/gbsyncd/source-receipt.json
+
+          artifacts/gbsyncd/policy.json
+
+          artifacts/gbsyncd/runtime-apt.json
+
+          artifacts/gbsyncd/debug-apt.json
+
+          artifacts/gbsyncd/runtime-packages.json
+
+          artifacts/gbsyncd/debug-packages.json
+
+          artifacts/gbsyncd/base-packages.json
+
+          artifacts/gbsyncd/config-engine-packages.json
+
+          artifacts/gbsyncd/*.status
+
+          artifacts/gbsyncd/public-receipt.json
+
+          artifacts/gbsyncd/action-audit.json
+
+          artifacts/gbsyncd/incremental.json
+
+          artifacts/gbsyncd/MODULE.bazel.lock
+
+          artifacts/gbsyncd/module-graph.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 1
+    permissions:
+      contents: read
+      actions: read
+
+  dash_engine_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect DASH engine images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-dash-engine-amd64
+          cache-version: "8.5.1"
+
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build DASH engine runtime and debug images from source owners
         id: dash_engine_build
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/dash_engine_image.py build --bazel "$BAZEL" --artifacts artifacts/dash-engine
       - name: Validate DASH engine payloads and matching symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/dash_engine_image.py validate --artifacts artifacts/dash-engine
       - name: Validate nnpy in the selected image dependency graph
-        if: matrix.architecture == 'amd64'
         run: |
           options=(--jobs=2 --local_resources=cpu=2 --local_resources=memory=8000
             --platforms=@sonic_build_infra//platforms:x86_64_trixie
@@ -1169,14 +1573,13 @@ jobs:
           test -s bazel-testlogs/external/nnpy+/package_test/test.xml
           cp bazel-testlogs/external/nnpy+/package_test/test.xml artifacts/dash-engine/tests/test.xml
       - name: Verify DASH engine no-op, startup edit and restored archives
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/dash_engine_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dash-engine
       - name: Review public DASH engine evidence
         id: dash_engine_public
-        if: always() && matrix.architecture == 'amd64' && steps.dash_engine_build.outcome != 'skipped'
+        if: always() && steps.dash_engine_build.outcome != 'skipped'
         run: python3 -B tools/bazel/ci/dash_engine_public.py --artifacts artifacts/dash-engine
       - name: Retain DASH engine archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.dash_engine_public.outcome == 'success'
+        if: always() && steps.dash_engine_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dash-engine-source-amd64
@@ -1189,6 +1592,7 @@ jobs:
             artifacts/dash-engine/*.validation.json
             artifacts/dash-engine/validation.json
             artifacts/dash-engine/public-receipt.json
+            artifacts/dash-engine/layout-identities.json
             artifacts/dash-engine/action-audit.json
             artifacts/dash-engine/owner-action-audit.json
             artifacts/dash-engine/incremental.json
@@ -1199,8 +1603,188 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+  p4rt_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect P4RT images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      P4RT_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    defaults: *native_shell
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Install only receipt verification tools
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 git ca-certificates
+      - name: Checkout the normal CI merge for receipt verification
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: 'false'
+      - name: Preserve the original normal CI request
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B -m tools.bazel.ci.image_worker_receipt origin \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request"
+      - name: Upload the original P4RT worker request
+        if: env.P4RT_WORKER_RECEIPT == 'true' && steps.p4rt_request.outputs.new_request == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.p4rt_request.outputs.request_name }}
+          path: ${{ runner.temp }}/p4rt-ci-request/request.json
+          if-no-files-found: error
+          retention-days: '14'
+      - name: Download the immutable original P4RT request
+        if: env.P4RT_WORKER_RECEIPT == 'true' && steps.p4rt_request.outputs.new_request == 'false'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_request.outputs.request_artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_request.outputs.request_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-request
+      - name: Require exact successful worker evidence for this CI merge
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B -m tools.bazel.ci.image_worker_receipt discover \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request"
+      - name: Download only the small public P4RT JSON receipts
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_acceptance.outputs.artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_acceptance.outputs.worker_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-evidence
+      - name: Verify all original P4RT acceptance checks
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        run: |
+          python3 -B -m tools.bazel.ci.image_worker_receipt verify \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request" \
+            --public "$RUNNER_TEMP/p4rt-ci-evidence" \
+            --output "$RUNNER_TEMP/p4rt-ci-verified.json"
+      - name: Retain the verified CI handoff summary
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p4rt-ci-p4rt_native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p4rt-ci-verified.json
+          if-no-files-found: error
+          retention-days: '14'
+      - name: Allocate source-build space on this disposable runner
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+          for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: 'false'
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Check native architecture and generated dependency state
+        run: |
+          test "$(uname -m)" = "x86_64"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Initialize P4RT's pinned source owner
+        run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Install P4RT source execution dependencies
+        run: |
+          apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \
+            libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+            libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: 'true'
+          repository-cache: 'true'
+          disk-cache: oci-p4rt-amd64
+          cache-version: 8.5.1
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Preserve configured caches for Draft validation
+        run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Prepare the checksum-pinned pigz source archive
+        run: |
+          mkdir -p artifacts/source-downloads
+          python3 -B tools/bazel/gzip/prepare_pigz.py \
+            --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+          # Draft wrappers disable the home rc; share setup-bazel caches with them.
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          home = Path.home() / '.bazelrc'
+          cache_lines = [line for line in home.read_text().splitlines()
+                         if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+          assert len(cache_lines) == 2, 'setup-bazel cache settings are missing'
+          user = Path('.bazelrc.user')
+          user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
+          PYCODE
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Bound P4RT build phases and verify execution tools
-        if: matrix.architecture == 'amd64'
         run: |
           for tool in bsdtar gdb readelf objcopy make git python3 zip bison flex g++ pkg-config; do
             command -v "$tool" >/dev/null
@@ -1224,33 +1808,29 @@ jobs:
               output.write("BAZEL_REAL=" + str(directory / "root") + "\n")
               output.write("P4RT_OWNER_BAZEL=" + str(directory / "owner") + "\n")
           PYLAUNCH
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Prepare matching Common SDK and source-owned P4RT TARs
-        if: matrix.architecture == 'amd64'
         run: |
           python3 -B tools/bazel/ci/p4rt_image.py prepare-owner --bazel "$BAZEL" \
             --directory artifacts/p4rt --owner-source src/sonic-p4rt/sonic-pins \
             --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
             --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6" --owner-bazel "$P4RT_OWNER_BAZEL" --jobs 2
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Build P4RT runtime and debug images
-        if: matrix.architecture == 'amd64'
         run: |
           python3 -B tools/bazel/ci/p4rt_image.py build --bazel "$BAZEL" \
             --directory artifacts/p4rt --owner-source src/sonic-p4rt/sonic-pins \
             --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
             --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6"
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Validate P4RT image contents and cache reuse
-        if: matrix.architecture == 'amd64'
         run: |
           python3 -B tools/bazel/ci/p4rt_validate.py validate --directory artifacts/p4rt \
             --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
           python3 -B tools/bazel/ci/p4rt_validate.py incremental --directory artifacts/p4rt \
             --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Run all original P4RT tests against the selected image SDK
-        if: matrix.architecture == 'amd64'
         run: |
           for phase in prepare-owner-runtime owner-tests; do
             python3 -B tools/bazel/ci/p4rt_image.py "$phase" --bazel "$BAZEL" \
@@ -1258,104 +1838,316 @@ jobs:
               --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
               --owner-output-base "$RUNNER_TEMP/p4rt-bazel-6" --owner-bazel "$P4RT_OWNER_BAZEL" --jobs 2
           done
-
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Prepare reviewed P4RT public evidence
         id: p4rt_public
-        if: always() && matrix.architecture == 'amd64'
+        if: (always()) && env.P4RT_WORKER_RECEIPT != 'true'
         run: python3 -B tools/bazel/ci/p4rt_public.py --directory artifacts/p4rt
-
       - name: Retain P4RT images and acceptance evidence
-        if: always() && matrix.architecture == 'amd64' && steps.p4rt_public.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: (always() && steps.p4rt_public.outcome == 'success') && env.P4RT_WORKER_RECEIPT != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: p4rt-images-amd64-${{ github.sha }}
           path: artifacts/p4rt/public
           if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
+          retention-days: '14'
+          compression-level: '0'
 
-      - name: Build syncd runtime and debug images from source packages
-        id: syncd_build
-        if: matrix.architecture == 'amd64'
-        env:
-          BAZELISK_GITHUB_TOKEN: ""
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 -B tools/bazel/ci/syncd_image.py build --bazel "$BAZEL" --artifacts artifacts/syncd
-      - name: Validate syncd installed contents and complete source symbols
-        if: matrix.architecture == 'amd64'
-        run: python3 -B tools/bazel/ci/syncd_image.py validate --artifacts artifacts/syncd
-      - name: Verify syncd no-op, configuration edit and restored archives
-        if: matrix.architecture == 'amd64'
-        run: python3 -B tools/bazel/ci/syncd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/syncd
-      - name: Review public syncd evidence
-        id: syncd_public
-        if: always() && matrix.architecture == 'amd64' && steps.syncd_build.outcome != 'skipped'
-        run: |
-          python3 - <<'PYCODE'
-          import json
-          from pathlib import Path
-          from tools.bazel.ci.public_artifacts import safe_json, dependency_json
-          root = Path('artifacts/syncd')
-          for path in root.glob('*.json'):
-              if path.name not in ('build-receipt.json', 'module-graph.json'):
-                  value = json.loads(path.read_text())
-                  if path.name == 'policy.json':
-                      # This is checked-in image configuration, not a captured
-                      # process environment. Permit only this public constant.
-                      assert value['image_validation'].pop('environment') == {'DEBIAN_FRONTEND': 'noninteractive'}
-                  safe_json(value)
-          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
-              path = root / name
-              if path.exists():
-                  dependency_json(json.loads(path.read_text()), kind)
-          receipt = root / 'build-receipt.json'
-          if receipt.exists():
-              source = json.loads(receipt.read_text())
-              public = {key: source[key] for key in ('status', 'revision', 'architecture', 'image_version', 'artifacts', 'review_registry_revision', 'tested_revision_parents') if key in source}
-              safe_json(public)
-              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          PYCODE
-      - name: Retain syncd archives and source evidence
-        if: always() && matrix.architecture == 'amd64' && steps.syncd_public.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+  syncd_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect syncd images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+      - /usr/local/lib/android:/runner-unused/android
+      - /usr/share/dotnet:/runner-unused/dotnet
+      - /opt/ghc:/runner-unused/ghc
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      SYNCD_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      actions: read
+    steps:
+    - name: Install only receipt verification tools
+      if: env.SYNCD_WORKER_RECEIPT == 'true'
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends python3 git ca-certificates
+    - name: Checkout the normal CI merge for receipt verification
+      if: env.SYNCD_WORKER_RECEIPT == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: 'false'
+    - name: Preserve the original normal CI request
+      if: env.SYNCD_WORKER_RECEIPT == 'true'
+      id: syncd_request
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        python3 -B -m tools.bazel.ci.image_worker_receipt origin \
+          --contract tools/bazel/ci/syncd_worker_contract.json \
+          --directory "$RUNNER_TEMP/syncd-ci-request"
+    - name: Upload the original Syncd worker request
+      if: env.SYNCD_WORKER_RECEIPT == 'true' && steps.syncd_request.outputs.new_request == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ steps.syncd_request.outputs.request_name }}
+        path: ${{ runner.temp }}/syncd-ci-request/request.json
+        if-no-files-found: error
+        retention-days: '14'
+    - name: Download the immutable original Syncd request
+      if: env.SYNCD_WORKER_RECEIPT == 'true' && steps.syncd_request.outputs.new_request == 'false'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ steps.syncd_request.outputs.request_artifact }}
+        merge-multiple: 'true'
+        run-id: ${{ steps.syncd_request.outputs.request_run }}
+        github-token: ${{ github.token }}
+        repository: securely1g/sonic-buildimage
+        path: ${{ runner.temp }}/syncd-ci-request
+    - name: Require exact successful worker evidence for this CI merge
+      if: env.SYNCD_WORKER_RECEIPT == 'true'
+      id: syncd_acceptance
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B -m tools.bazel.ci.image_worker_receipt discover \
+          --contract tools/bazel/ci/syncd_worker_contract.json \
+          --directory "$RUNNER_TEMP/syncd-ci-request"
+    - name: Download only the small public Syncd JSON receipts
+      if: env.SYNCD_WORKER_RECEIPT == 'true'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ steps.syncd_acceptance.outputs.artifact }}
+        merge-multiple: 'true'
+        run-id: ${{ steps.syncd_acceptance.outputs.worker_run }}
+        github-token: ${{ github.token }}
+        repository: securely1g/sonic-buildimage
+        path: ${{ runner.temp }}/syncd-ci-evidence
+    - name: Verify all original Syncd acceptance checks
+      if: env.SYNCD_WORKER_RECEIPT == 'true'
+      run: |
+        python3 -B -m tools.bazel.ci.image_worker_receipt verify \
+          --contract tools/bazel/ci/syncd_worker_contract.json \
+          --directory "$RUNNER_TEMP/syncd-ci-request" \
+          --public "$RUNNER_TEMP/syncd-ci-evidence" \
+          --output "$RUNNER_TEMP/syncd-ci-verified.json"
+    - name: Retain the verified CI handoff summary
+      if: env.SYNCD_WORKER_RECEIPT == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: syncd-ci-syncd_native-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/syncd-ci-verified.json
+        if-no-files-found: error
+        retention-days: '14'
+    - name: Allocate source-build space on this disposable runner
+      run: |
+        test "$RUNNER_ENVIRONMENT" = github-hosted
+        df -h / "$GITHUB_WORKSPACE"
+        du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+        # These host SDKs are not inputs to the pinned Trixie build. Preserve
+        # all Bazel caches, the workspace, retained outputs and execution tools.
+        find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+          -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        df -h / "$GITHUB_WORKSPACE"
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Install execution tools
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+        for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Check native architecture and generated dependency state
+      run: |
+        test "$(uname -m)" = "x86_64"
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        test ! -e MODULE.bazel.lock
+        test -z "$(git ls-files -- MODULE.bazel.lock)"
+        git check-ignore MODULE.bazel.lock
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Initialize Sysmgr's pinned gNOI source
+      run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Initialize P4RT's pinned source owner
+      run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Install P4RT source execution dependencies
+      run: |
+        apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \
+          libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+          libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
+        git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Set up Bazel
+      uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+      with:
+        bazelisk-version: 1.29.0
+        bazelisk-cache: true
+        repository-cache: true
+        disk-cache: oci-syncd-amd64
+        cache-version: 8.5.1
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Configure the verified source mirror
+      run: |
+        python3 - <<'PYCFG'
+        import hashlib
+        import os
+        from pathlib import Path
+        from urllib.request import urlopen
+        # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
+        url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+        with urlopen(url, timeout=60) as response:
+            data = response.read()
+        expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise SystemExit("Source mirror configuration checksum mismatch")
+        config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+        config.write_bytes(data)
+        with Path(".bazelrc.user").open("a") as rc:
+            rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+        PYCFG
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Preserve configured caches for Draft validation
+      run: python3 -B tools/bazel/ci/lldp_draft_cache.py
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Prepare the checksum-pinned pigz source archive
+      run: |
+        mkdir -p artifacts/source-downloads
+        python3 -B tools/bazel/gzip/prepare_pigz.py \
+          --output "$PWD/artifacts/source-downloads" | tee artifacts/pigz-source.json
+        # common.bazelrc imports this ignored file, including through Draft wrappers.
+        printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+        # Draft wrappers disable the home rc; share setup-bazel caches with them.
+        python3 - <<'PYCODE'
+        from pathlib import Path
+        home = Path.home() / '.bazelrc'
+        cache_lines = [line for line in home.read_text().splitlines()
+                       if line.startswith(('build --disk_cache=', 'common --repository_cache='))]
+        assert len(cache_lines) == 2, 'setup-bazel cache settings are missing'
+        user = Path('.bazelrc.user')
+        user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
+        PYCODE
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Build syncd runtime and debug images from source packages
+      id: syncd_build
+      env:
+        BAZELISK_GITHUB_TOKEN: ''
+        CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: python3 -B tools/bazel/ci/syncd_image.py build --bazel "$BAZEL" --artifacts artifacts/syncd
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Validate syncd installed contents and complete source symbols
+      run: python3 -B tools/bazel/ci/syncd_image.py validate --artifacts artifacts/syncd
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Verify syncd no-op, configuration edit and restored archives
+      run: python3 -B tools/bazel/ci/syncd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/syncd
+      if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Review public syncd evidence
+      id: syncd_public
+      if: (always() && steps.syncd_build.outcome != 'skipped') && env.SYNCD_WORKER_RECEIPT != 'true'
+      run: |
+        python3 - <<'PYCODE'
+        import json
+        from pathlib import Path
+        from tools.bazel.ci.public_artifacts import safe_json, dependency_json
+        root = Path('artifacts/syncd')
+        for path in root.glob('*.json'):
+            if path.name not in ('build-receipt.json', 'module-graph.json'):
+                value = json.loads(path.read_text())
+                if path.name == 'policy.json':
+                    # This is checked-in image configuration, not a captured
+                    # process environment. Permit only this public constant.
+                    assert value['image_validation'].pop('environment') == {'DEBIAN_FRONTEND': 'noninteractive'}
+                safe_json(value)
+        for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+            path = root / name
+            if path.exists():
+                dependency_json(json.loads(path.read_text()), kind)
+        receipt = root / 'build-receipt.json'
+        if receipt.exists():
+            source = json.loads(receipt.read_text())
+            public = {key: source[key] for key in ('status', 'revision', 'architecture', 'image_version', 'artifacts', 'review_registry_revision', 'tested_revision_parents') if key in source}
+            safe_json(public)
+            (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+        PYCODE
+    - name: Retain syncd archives and source evidence
+      if: (always() && steps.syncd_public.outcome == 'success') && env.SYNCD_WORKER_RECEIPT != 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: syncd-source-amd64
+        path: |
+          artifacts/syncd/*.gz
+          artifacts/syncd/*.tar
+          artifacts/syncd/validation.json
+          artifacts/syncd/source-contract.json
+          artifacts/syncd/source-receipt.json
+          artifacts/syncd/policy.json
+          artifacts/syncd/runtime-apt.json
+          artifacts/syncd/debug-apt.json
+          artifacts/syncd/runtime-packages.json
+          artifacts/syncd/debug-packages.json
+          artifacts/syncd/base-packages.json
+          artifacts/syncd/config-engine-packages.json
+          artifacts/syncd/*.status
+          artifacts/syncd/public-receipt.json
+          artifacts/syncd/action-audit.json
+          artifacts/syncd/incremental.json
+          artifacts/syncd/MODULE.bazel.lock
+          artifacts/syncd/module-graph.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 1
+
+  teamd_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Build and inspect Teamd images (AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: *native_container
+    env: *native_bazel
+    defaults: *native_shell
+    steps:
+      - *native_space
+      - *native_tools
+      - *native_checkout
+      - *native_architecture
+      - *native_gnoi
+      - *native_p4rt_owner
+      - *native_p4rt_tools
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          name: syncd-source-amd64
-          path: |
-            artifacts/syncd/*.gz
-            artifacts/syncd/*.tar
-            artifacts/syncd/validation.json
-            artifacts/syncd/source-contract.json
-            artifacts/syncd/source-receipt.json
-            artifacts/syncd/policy.json
-            artifacts/syncd/runtime-apt.json
-            artifacts/syncd/debug-apt.json
-            artifacts/syncd/runtime-packages.json
-            artifacts/syncd/debug-packages.json
-            artifacts/syncd/base-packages.json
-            artifacts/syncd/config-engine-packages.json
-            artifacts/syncd/*.status
-            artifacts/syncd/public-receipt.json
-            artifacts/syncd/action-audit.json
-            artifacts/syncd/incremental.json
-            artifacts/syncd/MODULE.bazel.lock
-            artifacts/syncd/module-graph.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: oci-teamd-amd64
+          cache-version: "8.5.1"
 
+      - *native_mirror
+      - *native_caches
+      - *native_pigz
       - name: Build Teamd runtime and debug images from source owners
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           python3 -B tools/bazel/ci/teamd_image.py build --artifacts artifacts/teamd
       - name: Validate Teamd image contents and source symbols
-        if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/teamd_image.py validate --artifacts artifacts/teamd
       - name: Check Teamd incremental rebuild and restored image digests
-        if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -1363,7 +2155,7 @@ jobs:
           git diff --exit-code
       - name: Prepare reviewed Teamd evidence
         id: teamd_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always()
         run: |
           python3 - <<'PYCODE'
           import json
@@ -1392,7 +2184,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYCODE
       - name: Retain Teamd images and reviewed build evidence
-        if: always() && matrix.architecture == 'amd64' && steps.teamd_public.outcome == 'success'
+        if: always() && steps.teamd_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: teamd-image-amd64
@@ -1417,7 +2209,7 @@ jobs:
 
   swss_layer_runtime:
     name: Load and run the shared SWSS image (AMD64)
-    needs: archive
+    needs: swss_layer_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1468,7 +2260,7 @@ jobs:
 
   teamd_runtime:
     name: Run installed Teamd images (AMD64)
-    needs: archive
+    needs: teamd_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1537,7 +2329,7 @@ jobs:
 
   orchagent_runtime:
     name: Load and run SWSS and Orchagent images (AMD64)
-    needs: archive
+    needs: [swss_layer_native, orchagent_native]
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -1581,7 +2373,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: swss-layer-runtime-amd64
+          name: swss-layer-runtime-orchagent-amd64
           path: artifacts/swss-layer/runtime-smoke.json
           if-no-files-found: warn
           retention-days: 14
@@ -1606,7 +2398,7 @@ jobs:
 
   sflow_runtime:
     name: Load and run SWSS and sFlow images (AMD64)
-    needs: archive
+    needs: [swss_layer_native, sflow_native]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1650,7 +2442,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: swss-layer-runtime-amd64
+          name: swss-layer-runtime-sflow-amd64
           path: artifacts/swss-layer/runtime-smoke.json
           if-no-files-found: warn
           retention-days: 14
@@ -1675,7 +2467,7 @@ jobs:
 
   otel_runtime:
     name: Load and run OTEL images (AMD64)
-    needs: archive
+    needs: otel_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1702,7 +2494,7 @@ jobs:
 
   dash_ha_runtime:
     name: Load and run DASH HA images (AMD64)
-    needs: archive
+    needs: dash_ha_native
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1729,7 +2521,7 @@ jobs:
 
   sysmgr_runtime:
     name: Load and run Sysmgr images (AMD64)
-    needs: archive
+    needs: sysmgr_native
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1757,31 +2549,87 @@ jobs:
 
   gearbox_runtime:
     name: Load and run gearbox images (AMD64)
-    needs: archive
+    needs: gearbox_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: gbsyncd-source-amd64
-          path: artifacts/gbsyncd
-      - name: Exercise installed gearbox manager, context and private Redis
-        run: python3 -B tools/bazel/ci/gbsyncd_loaded.py --artifacts artifacts/gbsyncd
-      - name: Retain installed gearbox evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: gbsyncd-runtime-amd64
-          path: artifacts/gbsyncd/*.runtime.json
-          if-no-files-found: warn
-          retention-days: 14
+    - name: Checkout the normal CI merge for receipt verification
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: 'false'
+    - name: Preserve the original normal CI request
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      id: gearbox_request
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "git config --global --add safe.directory \"$GITHUB_WORKSPACE\"\npython3 -B -m tools.bazel.ci.image_worker_receipt origin \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\" --existing-only\n"
+    - name: Download the immutable original Gearbox request
+      if: env.GEARBOX_WORKER_RECEIPT == 'true' && steps.gearbox_request.outputs.new_request == 'false'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ steps.gearbox_request.outputs.request_artifact }}
+        merge-multiple: 'true'
+        run-id: ${{ steps.gearbox_request.outputs.request_run }}
+        github-token: ${{ github.token }}
+        repository: securely1g/sonic-buildimage
+        path: ${{ runner.temp }}/gearbox-ci-request
+    - name: Require exact successful worker evidence for this CI merge
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      id: gearbox_acceptance
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "python3 -B -m tools.bazel.ci.image_worker_receipt discover \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\"\n"
+    - name: Download only the small public Gearbox JSON receipts
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ steps.gearbox_acceptance.outputs.artifact }}
+        merge-multiple: 'true'
+        run-id: ${{ steps.gearbox_acceptance.outputs.worker_run }}
+        github-token: ${{ github.token }}
+        repository: securely1g/sonic-buildimage
+        path: ${{ runner.temp }}/gearbox-ci-evidence
+    - name: Verify all original Gearbox acceptance checks
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      run: "python3 -B -m tools.bazel.ci.image_worker_receipt verify \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\" \\\n  --public \"$RUNNER_TEMP/gearbox-ci-evidence\" \\\n  --output \"$RUNNER_TEMP/gearbox-ci-verified.json\"\n"
+    - name: Retain the verified CI handoff summary
+      if: env.GEARBOX_WORKER_RECEIPT == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gearbox-ci-gearbox_runtime-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/gearbox-ci-verified.json
+        if-no-files-found: error
+        retention-days: '14'
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: gbsyncd-source-amd64
+        path: artifacts/gbsyncd
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Exercise installed gearbox manager, context and private Redis
+      run: python3 -B tools/bazel/ci/gbsyncd_loaded.py --artifacts artifacts/gbsyncd
+      if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Retain installed gearbox evidence
+      if: (always()) && env.GEARBOX_WORKER_RECEIPT != 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: gbsyncd-runtime-amd64
+        path: artifacts/gbsyncd/*.runtime.json
+        if-no-files-found: warn
+        retention-days: 14
+    env:
+      GEARBOX_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      contents: read
+      actions: read
 
   dash_engine_runtime:
     name: Load and run DASH engine images (AMD64)
-    needs: archive
+    needs: dash_engine_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1810,49 +2658,186 @@ jobs:
 
   p4rt_runtime:
     name: Load and run P4RT images (AMD64)
-    needs: archive
+    needs: p4rt_native
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      P4RT_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout the normal CI merge for receipt verification
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          persist-credentials: false
+          persist-credentials: 'false'
+      - name: Preserve the original normal CI request
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B -m tools.bazel.ci.image_worker_receipt origin \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request" --existing-only
+      - name: Download the immutable original P4RT request
+        if: env.P4RT_WORKER_RECEIPT == 'true' && steps.p4rt_request.outputs.new_request == 'false'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_request.outputs.request_artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_request.outputs.request_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-request
+      - name: Require exact successful worker evidence for this CI merge
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        id: p4rt_acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B -m tools.bazel.ci.image_worker_receipt discover \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request"
+      - name: Download only the small public P4RT JSON receipts
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.p4rt_acceptance.outputs.artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.p4rt_acceptance.outputs.worker_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/p4rt-ci-evidence
+      - name: Verify all original P4RT acceptance checks
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        run: |
+          python3 -B -m tools.bazel.ci.image_worker_receipt verify \
+            --contract tools/bazel/ci/p4rt_worker_contract.json \
+            --directory "$RUNNER_TEMP/p4rt-ci-request" \
+            --public "$RUNNER_TEMP/p4rt-ci-evidence" \
+            --output "$RUNNER_TEMP/p4rt-ci-verified.json"
+      - name: Retain the verified CI handoff summary
+        if: env.P4RT_WORKER_RECEIPT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p4rt-ci-p4rt_runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p4rt-ci-verified.json
+          if-no-files-found: error
+          retention-days: '14'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: 'false'
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Initialize P4RT's pinned probe owner
         run: git submodule update --init -- src/sonic-p4rt/sonic-pins
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: env.P4RT_WORKER_RECEIPT != 'true'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: p4rt-images-amd64-${{ github.sha }}
           path: artifacts/p4rt
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Check installed P4RT startup, ConfigDB and software RPCs
         run: |
           python3 -B tools/bazel/ci/p4rt_loaded.py --directory artifacts/p4rt \
             --owner-source src/sonic-p4rt/sonic-pins
+        if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Retain installed P4RT evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: (always()) && env.P4RT_WORKER_RECEIPT != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: p4rt-installed-amd64-${{ github.sha }}
           path: artifacts/p4rt/*.runtime.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: '14'
 
   syncd_runtime:
     name: Load and run syncd images (AMD64)
-    needs: archive
+    needs: syncd_native
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      SYNCD_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      contents: read
+      actions: read
     steps:
+      - name: Checkout the normal CI merge for receipt verification
+        if: env.SYNCD_WORKER_RECEIPT == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: 'false'
+      - name: Preserve the original normal CI request
+        if: env.SYNCD_WORKER_RECEIPT == 'true'
+        id: syncd_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B -m tools.bazel.ci.image_worker_receipt origin \
+            --contract tools/bazel/ci/syncd_worker_contract.json \
+            --directory "$RUNNER_TEMP/syncd-ci-request" --existing-only
+      - name: Download the immutable original Syncd request
+        if: env.SYNCD_WORKER_RECEIPT == 'true' && steps.syncd_request.outputs.new_request == 'false'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.syncd_request.outputs.request_artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.syncd_request.outputs.request_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/syncd-ci-request
+      - name: Require exact successful worker evidence for this CI merge
+        if: env.SYNCD_WORKER_RECEIPT == 'true'
+        id: syncd_acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B -m tools.bazel.ci.image_worker_receipt discover \
+            --contract tools/bazel/ci/syncd_worker_contract.json \
+            --directory "$RUNNER_TEMP/syncd-ci-request"
+      - name: Download only the small public Syncd JSON receipts
+        if: env.SYNCD_WORKER_RECEIPT == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.syncd_acceptance.outputs.artifact }}
+          merge-multiple: 'true'
+          run-id: ${{ steps.syncd_acceptance.outputs.worker_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/syncd-ci-evidence
+      - name: Verify all original Syncd acceptance checks
+        if: env.SYNCD_WORKER_RECEIPT == 'true'
+        run: |
+          python3 -B -m tools.bazel.ci.image_worker_receipt verify \
+            --contract tools/bazel/ci/syncd_worker_contract.json \
+            --directory "$RUNNER_TEMP/syncd-ci-request" \
+            --public "$RUNNER_TEMP/syncd-ci-evidence" \
+            --output "$RUNNER_TEMP/syncd-ci-verified.json"
+      - name: Retain the verified CI handoff summary
+        if: env.SYNCD_WORKER_RECEIPT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: syncd-ci-syncd_runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/syncd-ci-verified.json
+          if-no-files-found: error
+          retention-days: '14'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+        if: env.SYNCD_WORKER_RECEIPT != 'true'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: syncd-source-amd64
           path: artifacts/syncd
+        if: env.SYNCD_WORKER_RECEIPT != 'true'
       - name: Exercise original Syncd startup and private Redis
         run: python3 -B tools/bazel/ci/syncd_loaded.py --artifacts artifacts/syncd
+        if: env.SYNCD_WORKER_RECEIPT != 'true'
       - name: Retain installed syncd evidence
-        if: always()
+        if: (always()) && env.SYNCD_WORKER_RECEIPT != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: syncd-runtime-amd64
@@ -1886,7 +2871,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl \
-            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
+            gdb git j2cli jq libarchive-tools libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1935,7 +2920,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.number == 5 || github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'frr-native-bazel') || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/libteam-current-native-inputs') || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') || contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref)) }}
         run: |
           # Source-only branches skip the DEB-generating kernel fixtures.
           if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
@@ -1949,6 +2934,8 @@ jobs:
           else
             python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           fi
+          python3 -B -m unittest tools.bazel.ci.p4rt_worker_receipt_test \
+            tools.bazel.ci.image_worker_receipt_test tools.bazel.ci.syncd_receipt_semantics_test
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
@@ -2401,7 +3388,7 @@ jobs:
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && github.head_ref != 'frr-native-bazel' && github.event.pull_request.head.ref != 'codex/libteam-current-native-inputs' && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref))) ||
+       (github.event.pull_request.number != 5 && github.event.pull_request.number != 51 && github.event.pull_request.number != 61 && github.head_ref != 'frr-native-bazel' && github.event.pull_request.head.ref != 'codex/libteam-current-native-inputs' && !(github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/dash-engine-review-catalog') && !contains(fromJSON('["codex/image-environment","codex/config-engine-amd64","codex/swss-native-closure","codex/swss-layer-amd64","codex/bazel-snmp","codex/eventd-oci-amd64","codex/database-oci-amd64","codex/radv-oci-amd64","codex/lldp-oci-amd64","codex/frr-oci-amd64","codex/teamd-oci-amd64","codex/orchagent-source-amd64","codex/review-registry-catalog","codex/final23-integration-staging","codex/sflow-oci-amd64","codex/otel-oci-amd64","codex/dash-ha-oci-amd64","codex/sysmgr-source-image","codex/mux-oci-amd64","codex/gbsyncd-oci-amd64","codex/dash-engine-source-image","codex/gnmi-ci-wiring","codex/p4rt-source-image","codex/syncd-source-completion","codex/source-image-worker-dispatch","codex/mgmt-framework-image"]'), github.head_ref))) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
@@ -2597,7 +3584,7 @@ jobs:
         shell: bash
     env:
       BAZEL: tools/bazel/ci/review_bazel.sh
-      SONIC_BAZEL_REGISTRY_REVISION: 6a69c2d89070d4d2ffc80b1e13626da387f7ea65
+      SONIC_BAZEL_REGISTRY_REVISION: 04164b00ec3f28c4b2806714d3825ac8f57a9af9
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
@@ -2621,11 +3608,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #186 changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -2718,7 +3705,7 @@ jobs:
     name: Run installed gNMI images (AMD64)
     needs: gnmi_native
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

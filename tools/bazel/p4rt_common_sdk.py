@@ -54,8 +54,10 @@ def prepare_libnl(staging, archives, parent_archive, arch):
                   "Declared libnl SDK handoff requires an AMD64 image parent")
     selected, sources = {}, {}
     prefix = "usr/lib/x86_64-linux-gnu/"
-    paths = {prefix + stem + suffix for stem in LIBNL_STEMS
-             for suffix in (".so.200", ".so.200.26.0")}
+    runtime_paths = {prefix + stem + suffix for stem in LIBNL_STEMS
+                     for suffix in (".so.200", ".so.200.26.0")}
+    development_paths = {prefix + stem + ".so" for stem in LIBNL_STEMS}
+    paths = runtime_paths | development_paths
     for target, archive in archives.items():
         # Aggregate SDK archives may have producer UID metadata. Installed image
         # ownership is checked on the parent; SDK files are private build inputs.
@@ -81,8 +83,11 @@ def prepare_libnl(staging, archives, parent_archive, arch):
                 if member.issym():
                     # Flattened owner archives may add a harmless './' prefix.
                     # metadata() normalizes that prefix without resolving '..'.
-                    check.require(name in paths and item["linkname"] == destination.name + ".26.0",
-                                  "Unexpected libnl SONAME link: " + name)
+                    development = name in development_paths
+                    suffix = ".200" if development else ".26.0"
+                    check.require(name in paths and item["linkname"] == destination.name + suffix,
+                                  "Unexpected libnl " + ("development" if development else "SONAME") +
+                                  " link: " + name)
                     destination.symlink_to(item["linkname"])
                 else:
                     with package.extractfile(member) as source, destination.open("wb") as output:
@@ -95,8 +100,12 @@ def prepare_libnl(staging, archives, parent_archive, arch):
     parent = check.payload(parent_archive)
     for name in paths:
         item = selected[name]
-        check.require(item["kind"] == ("symlink" if name.endswith(".so.200") else "file"),
+        check.require(item["kind"] == ("file" if name.endswith(".so.200.26.0") else "symlink"),
                       "Unexpected libnl SDK library kind: " + name)
+        # Development aliases are declared SDK inputs, not installed runtime files.
+        # Their exact relative targets lead to the parent-bound SONAME and bytes.
+        if name in development_paths:
+            continue
         if item["kind"] == "file":
             check.require(item.get("elf_machine") == 62 and
                           parent.get(name, {}).get("sha256") == item["sha256"],
@@ -109,7 +118,47 @@ def prepare_libnl(staging, archives, parent_archive, arch):
             "files": selected}
 
 
-def prepare_repository(archive, output_dir, arch, receipt, *, libnl_archives=None, parent_archive=None):
+def prepare_libyang(staging, archive, parent_archive, arch):
+    """Import the existing runtime TAR's SONAME and exact selected parent bytes."""
+    from tools.bazel.ci import artifact_validation as check
+
+    check.require(arch == "amd64" and parent_archive is not None,
+                  "Declared libyang SDK handoff requires an AMD64 image parent")
+    prefix = "usr/lib/x86_64-linux-gnu/"
+    library, soname = prefix + "libyang.so.3.9.1", prefix + "libyang.so.3"
+    inventory, parent = check.payload(archive), check.payload(parent_archive)
+    item, link = inventory.get(library, {}), inventory.get(soname, {})
+    check.require(item.get("kind") == "file" and item.get("elf_machine") == 62,
+                  "libyang SDK requires the real AMD64 libyang.so.3.9.1")
+    check.require(parent.get(library, {}).get("kind") == "file" and
+                  parent[library].get("sha256") == item["sha256"],
+                  "libyang SDK differs from the selected parent runtime")
+    check.require(link.get("kind") == "symlink" and link.get("linkname") == "libyang.so.3.9.1" and
+                  parent.get(soname, {}).get("kind") == "symlink" and
+                  parent[soname].get("linkname") == link["linkname"],
+                  "libyang SDK SONAME differs from the selected parent")
+    with tarfile.open(archive) as package:
+        for member in package:
+            name = check.path_name(member.name)
+            if name not in (library, soname):
+                continue
+            destination = staging / "lib" / name.removeprefix(prefix)
+            check.require(not destination.exists() and not destination.is_symlink(),
+                          "SDK input already exists: " + str(destination))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if member.issym():
+                destination.symlink_to(link["linkname"])
+            else:
+                with package.extractfile(member) as source, destination.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                destination.chmod(member.mode)
+    return {"producer_targets": {"@libyang//:libyang_pkg": check.sha(archive)},
+            "parent_source_tar_sha256": check.sha(parent_archive),
+            "files": {name: inventory[name] for name in (library, soname)}}
+
+
+def prepare_repository(archive, output_dir, arch, receipt, *, libnl_archives=None,
+                       libyang_archive=None, parent_archive=None):
     """Use a fresh directory so removed producer headers cannot remain cached."""
     output_dir = output_dir.resolve()
     if output_dir.exists():
@@ -124,6 +173,7 @@ def prepare_repository(archive, output_dir, arch, receipt, *, libnl_archives=Non
             package.extractall(staging, filter="data")
         validate_sdk(staging, arch)
         libnl = prepare_libnl(staging, libnl_archives, parent_archive, arch) if libnl_archives else None
+        libyang = prepare_libyang(staging, libyang_archive, parent_archive, arch) if libyang_archive else None
         generated = "# Auto-generated by tools/bazel/p4rt_common_sdk.py; do not edit manually.\n"
         (staging / "WORKSPACE.bazel").write_text(generated + 'workspace(name = "sonic_swss_common")\n')
         template = TEMPLATE.read_text()
@@ -131,6 +181,10 @@ def prepare_repository(archive, output_dir, arch, receipt, *, libnl_archives=Non
             if template.count("_DECLARED_LIBNL = False") != 1:
                 raise ValueError("SDK template must explicitly select the libnl dependency contract")
             template = template.replace("_DECLARED_LIBNL = False", "_DECLARED_LIBNL = True")
+        if libyang is not None:
+            if template.count("_DECLARED_LIBYANG = False") != 1:
+                raise ValueError("SDK template must explicitly select the libyang dependency contract")
+            template = template.replace("_DECLARED_LIBYANG = False", "_DECLARED_LIBYANG = True")
         (staging / "BUILD.bazel").write_text(generated + template)
         (staging / "sdk-build.json").write_text(json.dumps({
             "_generated": "Auto-generated by tools/bazel/p4rt_common_sdk.py; do not edit manually.",
@@ -139,6 +193,7 @@ def prepare_repository(archive, output_dir, arch, receipt, *, libnl_archives=Non
             "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
             **receipt,
             **({"libnl": libnl} if libnl is not None else {}),
+            **({"libyang": libyang} if libyang is not None else {}),
         }, indent=2, sort_keys=True) + "\n")
         if output_dir.exists():
             shutil.rmtree(output_dir)

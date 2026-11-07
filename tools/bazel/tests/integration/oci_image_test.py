@@ -549,8 +549,12 @@ class ValidateImageTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "gzip header"):
             subject.docker_archive(path, "docker-example:latest", digest, descriptors)
         self.write_archive(path, config_bytes=b"{}")
-        with self.assertRaisesRegex(ValueError, "config differs"):
+        with self.assertRaisesRegex(ValueError, "config differs") as error:
             subject.docker_archive(path, "docker-example:latest", digest, descriptors)
+        self.assertEqual(json.loads(str(error.exception).split(": ", 1)[1]), {
+            "tag": "docker-example:latest", "expected": digest,
+            "actual": "sha256:" + hashlib.sha256(b"{}").hexdigest(),
+        })
         self.write_archive(path, corrupt_layer=True)
         with self.assertRaisesRegex(ValueError, "layer differs"):
             subject.docker_archive(path, "docker-example:latest", digest, descriptors)

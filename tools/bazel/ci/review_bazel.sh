@@ -4,7 +4,11 @@
 set -euo pipefail
 bazel_real=${BAZEL_REAL:-bazel}
 if [[ $# == 1 && "$1" == --version ]]; then
-    exec "$bazel_real" --version
+    # Resource launchers prepend startup options, which require a real command.
+    # Bazelisk prints its own banner before Bazel's GNU-format version line.
+    # Keep the backend's remaining output and failure status (via pipefail).
+    "$bazel_real" version --gnu_format | sed '1{/^Bazelisk /d;}'
+    exit
 fi
 startup=()
 while [[ $# -gt 0 && "$1" == --* ]]; do

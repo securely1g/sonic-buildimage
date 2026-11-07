@@ -41,6 +41,214 @@ def shell(step):
     return match[1]
 
 
+def step_blocks(job):
+    """Expand the workflow's step aliases; accept either YAML list indentation."""
+    body = job.split("    steps:\n", 1)[1]
+    indent = re.search(r"^( +)- ", body, re.MULTILINE)[1]
+    blocks = re.findall(r"^" + indent + r"- .*?(?=^" + indent + r"- |^    [a-z][\w-]*:|\Z)",
+                        body, re.MULTILINE | re.DOTALL)
+    anchors = dict(re.findall(r"^      - &(\w+)\n(.*?)(?=^      - |^  \w|\Z)",
+                              WORKFLOW.read_text(), re.MULTILINE | re.DOTALL))
+    result = []
+    for block in blocks:
+        block = textwrap.indent(textwrap.dedent(block), "      ")
+        alias = re.fullmatch(r"      - \*(\w+)\s*", block)
+        if alias:
+            block = "      - " + anchors[alias[1]].lstrip()
+        else:
+            block = re.sub(r"^      - &\w+\n        ", "      - ", block)
+        result.append(block)
+    return result
+
+
+def step_value(block, key, indent=8):
+    """Read only the existing scalar forms; no third-party YAML dependency."""
+    match = re.search(r"^" + " " * indent + re.escape(key) + r": (.*?)(?=^" +
+                      r" {1," + str(indent) + r"}[\w-]+: |\Z)", block, re.MULTILINE | re.DOTALL)
+    if match is None:
+        return None
+    value = match[1].strip()
+    if value.startswith("|\n"):
+        return textwrap.dedent(match[1].split("\n", 1)[1]).rstrip() + "\n"
+    if value.startswith(('"', "'")):
+        # YAML flow scalars fold physical newlines; quoted escapes stay intact.
+        value = re.sub(r"\\\n[ \t]*", "", value)
+        value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
+        value = re.sub(r"\n+", lambda m: " " if len(m[0]) == 1 else "\n" * (len(m[0]) - 1), value)
+        return json.loads(value) if value.startswith('"') else value[1:-1].replace("''", "'")
+    return value
+
+
+class NativeFamilyJobsTest(unittest.TestCase):
+    receipt_families = ("p4rt", "syncd", "gearbox")
+    families = ("swss_layer", "orchagent", "sflow", "otel", "dash_ha", "sysmgr",
+                "gearbox", "dash_engine", "p4rt", "syncd", "teamd")
+
+    def test_native_families_keep_separate_hosted_caches_and_manual_selection(self):
+        workflow = jobs()
+        archive = workflow["archive"].split("    steps:\n", 1)[0]
+        self.assertIn("architecture: amd64", archive)
+        self.assertIn("architecture: arm64", archive)
+        self.assertIn("runner: ubuntu-24.04-arm", archive)
+        caches = set()
+        for family in self.families:
+            with self.subTest(family=family):
+                job = workflow[family + "_native"]
+                header = job.split("    steps:\n", 1)[0]
+                self.assertIn("runs-on: ubuntu-24.04\n", header)
+                self.assertNotIn("    needs:", header)
+                self.assertNotIn("matrix.", job)
+                if family == "swss_layer":
+                    self.assertIn('test "$(uname -m)" = "x86_64"', job)
+                    self.assertIn("tools/bazel/ci/lldp_draft_cache.py", job)
+                elif family not in self.receipt_families:
+                    self.assertIn("      - *native_architecture\n", job)
+                    self.assertIn("      - *native_caches\n", job)
+                expanded = step_blocks(job)
+                reference = step_blocks(workflow["swss_layer_native"])
+                for name in ("Check native architecture and generated dependency state",
+                             "Preserve configured caches for Draft validation",
+                             "Configure the verified source mirror"):
+                    selected = [b for b in expanded if b.startswith("      - name: " + name + "\n")]
+                    original = [b for b in reference if b.startswith("      - name: " + name + "\n")]
+                    self.assertEqual(len(selected), 1)
+                    self.assertEqual(len(original), 1)
+                    self.assertEqual(step_value(selected[0], "run"), step_value(original[0], "run"))
+                    if name == "Configure the verified source mirror":
+                        self.assertIn("97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg", step_value(selected[0], "run"))
+                        self.assertIn("ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720", step_value(selected[0], "run"))
+                    if family in self.receipt_families:
+                        self.assertEqual(step_value(selected[0], "if"),
+                                         "env." + family.upper() + "_WORKER_RECEIPT != 'true'")
+                setup = [b for b in expanded if b.startswith("      - name: Set up Bazel\n")]
+                self.assertEqual(len(setup), 1)
+                self.assertEqual(step_value(setup[0], "uses").split()[0],
+                                 "bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86")
+                for option in ("bazelisk-cache", "repository-cache"):
+                    self.assertEqual(step_value(setup[0], option, 10), "true")
+                self.assertEqual(step_value(setup[0], "bazelisk-version", 10), "1.29.0")
+                self.assertEqual(step_value(setup[0], "cache-version", 10), "8.5.1")
+                cache = step_value(setup[0], "disk-cache", 10)
+                self.assertNotIn(cache, caches)
+                self.assertNotEqual(cache, "swss-layer-amd64")
+                caches.add(cache)
+                condition = re.search(r"^    if: (.+)$", header, re.MULTILINE)[1]
+                self.assertEqual("${{ !cancelled() && (" + condition + ") }}",
+                                 re.search(r"^    if: (.+)$", archive, re.MULTILINE)[1])
+                for event, selected, expected in (("pull_request", "", True),
+                                                  ("push", "", True),
+                                                  ("workflow_dispatch", "none", True),
+                                                  ("workflow_dispatch", "sflow", False)):
+                    expression = condition.replace("github.event_name", repr(event)).replace(
+                        "inputs.source_image", repr(selected)).replace("||", " or ")
+                    self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
+
+    def test_required_archive_check_rejects_any_non_success_native_result(self):
+        workflow = jobs()
+        archive = workflow["archive"]
+        required = re.search(r"^    needs: \[(.+)\]$", archive, re.MULTILINE)[1]
+        self.assertEqual(set(required.split(", ")), {family + "_native" for family in self.families})
+        gate = steps(archive)["Require every native image family to pass"]
+        self.assertIn("if: always() && matrix.architecture == 'amd64'", gate)
+        self.assertIn("NATIVE_RESULTS: ${{ join(needs.*.result, ',') }}", gate)
+        script = shell(gate)
+        cases = [("all successful", ["success"] * 11, True),
+                 ("missing result", ["success"] * 10, False),
+                 ("extra result", ["success"] * 12, False),
+                 ("no results", [], False)]
+        for status in ("failure", "cancelled", "skipped", ""):
+            cases.append((status or "empty result", ["success"] * 5 + [status] + ["success"] * 5, False))
+        for name, results, passed in cases:
+            with self.subTest(case=name):
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                                        env=dict(os.environ, NATIVE_RESULTS=",".join(results)),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, passed, result.stdout + result.stderr)
+
+    def test_runtime_jobs_wait_for_every_downloaded_native_artifact(self):
+        workflow = jobs()
+
+        def artifacts(job, action):
+            return [block for block in step_blocks(job)
+                    if "uses: actions/" + action + "-artifact@" in block]
+
+        def split_uploads(family, kind):
+            uploads = artifacts(workflow[family + "_" + kind], "upload")
+            if family not in self.receipt_families:
+                return uploads
+            flag = "env." + family.upper() + "_WORKER_RECEIPT"
+            receipt_names = {
+                family + "-ci-" + family + "_" + kind + "-${{ github.run_id }}-${{ github.run_attempt }}":
+                    (flag + " == 'true'", "${{ runner.temp }}/" + family + "-ci-verified.json"),
+            }
+            if kind == "native":
+                receipt_names["${{ steps." + family + "_request.outputs.request_name }}"] = (
+                    flag + " == 'true' && steps." + family + "_request.outputs.new_request == 'true'",
+                    "${{ runner.temp }}/" + family + "-ci-request/request.json")
+            native = []
+            for block in uploads:
+                name = step_value(block, "name", 10)
+                if name in receipt_names:
+                    guard, path = receipt_names.pop(name)
+                    self.assertEqual(step_value(block, "if"), guard)
+                    self.assertEqual(step_value(block, "path", 10), path)
+                    self.assertEqual(step_value(block, "if-no-files-found", 10), "error")
+                else:
+                    self.assertIn(flag + " != 'true'", step_value(block, "if"))
+                    native.append(block)
+            self.assertFalse(receipt_names, "Missing guarded request or verified summary upload")
+            return native
+
+        producers = {}
+        for family in self.families:
+            job = family + "_native"
+            uploads = split_uploads(family, "native")
+            self.assertEqual(len(uploads), 1)
+            name = step_value(uploads[0], "name", 10)
+            if family in self.receipt_families:
+                expected = {"p4rt": "p4rt-images-amd64-${{ github.sha }}", "syncd": "syncd-source-amd64",
+                            "gearbox": "gbsyncd-source-amd64"}
+                self.assertEqual(name, expected[family])
+            self.assertNotIn(name, producers)
+            producers[name] = job
+        evidence_names = set()
+        for family in self.families:
+            with self.subTest(family=family):
+                job = workflow[family + "_runtime"]
+                needed = re.search(r"^    needs: (.+)$", job, re.MULTILINE)[1]
+                needed = set(needed.strip("[]").replace(" ", "").split(","))
+                downloads = artifacts(job, "download")
+                if family in self.receipt_families:
+                    flag = "env." + family.upper() + "_WORKER_RECEIPT"
+                    receipt_downloads = [b for b in downloads if step_value(b, "artifact-ids", 10)]
+                    self.assertEqual(len(receipt_downloads), 2)
+                    expected = {
+                        "${{ steps." + family + "_request.outputs.request_artifact }}":
+                            (flag + " == 'true' && steps." + family + "_request.outputs.new_request == 'false'",
+                             "${{ steps." + family + "_request.outputs.request_run }}"),
+                        "${{ steps." + family + "_acceptance.outputs.artifact }}":
+                            (flag + " == 'true'", "${{ steps." + family + "_acceptance.outputs.worker_run }}"),
+                    }
+                    for block in receipt_downloads:
+                        artifact_id = step_value(block, "artifact-ids", 10)
+                        self.assertIn(artifact_id, expected)
+                        guard, run_id = expected.pop(artifact_id)
+                        self.assertEqual(step_value(block, "if"), guard)
+                        self.assertEqual(step_value(block, "run-id", 10), run_id)
+                        self.assertEqual(step_value(block, "repository", 10), "securely1g/sonic-buildimage")
+                    self.assertFalse(expected)
+                    downloads = [b for b in downloads if b not in receipt_downloads]
+                    self.assertEqual(len(downloads), 1)
+                    self.assertEqual(step_value(downloads[0], "if"), flag + " != 'true'")
+                names = [step_value(block, "name", 10) for block in downloads]
+                self.assertTrue(names)
+                self.assertEqual(needed, {producers[name] for name in names})
+                for block in split_uploads(family, "runtime"):
+                    name = step_value(block, "name", 10)
+                    self.assertNotIn(name, evidence_names, "Runtime jobs must not overwrite each other's evidence")
+                    evidence_names.add(name)
+
+
 class SourceWorkflowTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="source-workflow-")
@@ -158,6 +366,9 @@ class SourceWorkflowTest(unittest.TestCase):
             (999, "frr-native-bazel", "securely1g/sonic-buildimage", True, False),
             (999, "frr-native-bazel", "example/sonic-buildimage", False, False),
             (999, "frr-native-bazel-extra", "securely1g/sonic-buildimage", False, True),
+            (999, "codex/dash-engine-review-catalog", "securely1g/sonic-buildimage", True, False),
+            (999, "codex/dash-engine-review-catalog", "example/sonic-buildimage", False, False),
+            (999, "codex/dash-engine-review-catalog-extra", "securely1g/sonic-buildimage", False, True),
             (999, "unrelated", "securely1g/sonic-buildimage", False, True),
         ):
             with self.subTest(number=number, branch=branch, owner=owner):
