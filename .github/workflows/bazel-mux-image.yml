@@ -48,7 +48,7 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Reviewed PR228 candidate; Bazel retains every locked payload checksum.
+          # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
           url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
