@@ -41,7 +41,7 @@ class RegistryWorkerTest(unittest.TestCase):
             with self.subTest(change=change),self.assertRaises(ValueError): self.selection(**change)
 
     def test_each_fixed_consumer_accepts_only_its_reviewed_sha(self):
-        self.assertEqual(worker.PROFILES['libteam']['revision'], '856b34a53734da57b9276bf8c2a7e95a299f93af')
+        self.assertEqual(worker.PROFILES['libteam']['revision'], 'a1334b9a9604733a2faf6cc96536d289da09e8d8')
         with self.assertRaisesRegex(ValueError, 'Unreviewed registry selection'):
             self.selection(consumer='libteam', revision='4ed05183275951b03342d89db98f709779487ec0')
         for name,profile in worker.PROFILES.items():
