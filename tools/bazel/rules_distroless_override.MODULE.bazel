@@ -4,7 +4,7 @@
 # normal registry resolution before marking this consumer ready.
 # https://github.com/securely1g/sonic-bazel-registry/pull/237
 
-_REGISTRY_MODULE = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4c8066187ccc4c9895d8e495e6612d1d001efb2b/modules/rules_distroless/0.9.4.sonic.18"
+_REGISTRY_MODULE = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/3b6086e56db4fa598c7bcae5877f6b3cf2bcdc47/modules/rules_distroless/0.9.4.sonic.18"
 
 archive_override(
     module_name = "rules_distroless",
@@ -50,6 +50,7 @@ archive_override(
         _REGISTRY_MODULE + "/patches/0036-preserve-legacy-lock-imports.patch": "sha256-2pdP27zYewqYK2cbF0Xu0bjl6FAApjPdRFcEZ1wgNAo=",
         _REGISTRY_MODULE + "/patches/0037-share-prepared-lock-transport.patch": "sha256-HU7fk3UCNx02aTEi26Ae64ldnaWPAnW2CxCIq2zFmU8=",
         _REGISTRY_MODULE + "/patches/0038-declare-native-runtime-link-search.patch": "sha256-PMVLjyUH9EKCqstdFaMwaqVFYxFDUtmomoQAH600Cwc=",
+        _REGISTRY_MODULE + "/patches/0039-default-pkgconfig-header-exports.patch": "sha256-ZvtDW9uGtbeOpJtmkywPVnJ5Dq3eQ1HcBPrUqSWWf2Y=",
     },
     remote_patch_strip = 1,
     remote_file_urls = {
