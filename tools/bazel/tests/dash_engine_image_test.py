@@ -33,6 +33,35 @@ def successful_build_events(*, processes=0, action_cache_hits=0, runners=None):
     ]
 
 
+def foreign_record(instance='first', target=None):
+    digest = {'hash': 'a' * 64, 'sizeBytes': '12', 'hashFunctionName': 'SHA-256'}
+    output = 'bazel-out/' + instance + '/foreign-sdk'
+    return {'targetLabel': target or '@@p4lang-pi++_repo_rules+pi_source//:sdk', 'mnemonic': 'CcConfigureMakeRule',
+            'runner': 'processwrapper-sandbox', 'cacheHit': False, 'cacheable': True, 'remoteCacheable': True,
+            'digest': digest, 'commandArgs': ['/home/private/compiler', 'private-argument'],
+            'environmentVariables': [{'name': 'PRIVATE_CONTEXT', 'value': 'private-environment'}],
+            'platform': {'properties': [{'name': 'os', 'value': 'linux'}]},
+            'inputs': [{'path': '/home/private/source.c', 'digest': digest, 'isTool': False}],
+            'listedOutputs': [output], 'actualOutputs': [{'path': output + '/lib.so', 'digest': digest}]}
+
+
+def foreign_summary(records=()):
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / 'execution.json'
+        path.write_text('\n'.join(json.dumps(record) for record in records))
+        hits = sum(record.get('cacheHit', False) for record in records)
+        return driver.foreign_diagnostics(path, {'action_count': len(records), 'cache_hit_count': hits,
+            'executed_count': len(records) - hits}, {name: None for name in driver.FOREIGN_PAYLOADS})
+
+
+def input_differences(before, after):
+    with tempfile.TemporaryDirectory() as temporary:
+        paths = [Path(temporary) / name for name in ('initial.json', 'baseline.json')]
+        for path, records in zip(paths, (before, after)):
+            path.write_text('\n'.join(json.dumps(record) for record in records))
+        return driver.foreign_input_differences(*paths)
+
+
 class DashEngineImageTest(unittest.TestCase):
     def test_archives_and_live_layouts_share_one_build_before_export(self):
         # A separate layout build can replace a source package after its archive
@@ -68,7 +97,11 @@ class DashEngineImageTest(unittest.TestCase):
                                 path.write_bytes(("same invocation " + label).encode())
                         events = Path(next(arg.split("=", 1)[1] for arg in argv
                                            if arg.startswith("--build_event_json_file=")))
-                        events.write_text(json.dumps({"workspaceInfo": {"localExecRoot": str(execution)}}) + "\n")
+                        events.write_text('\n'.join(json.dumps(value) for value in [
+                            {"id": {"workspace": {}}, "workspaceInfo": {"localExecRoot": str(execution)}},
+                            *successful_build_events()]) + '\n')
+                        Path(next(arg.split('=', 1)[1] for arg in argv
+                                  if arg.startswith('--execution_log_json_file='))).write_text('')
                         return ""
                     self.assertEqual(argv[1], "cquery")
                     return outputs[argv[-1]] + "\n"
@@ -532,18 +565,22 @@ class DashEngineImageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             evidence = root / 'artifacts' / 'engine'; evidence.mkdir(parents=True)
+            (evidence / 'build.execution.json').write_text('')
             source = root / 'platform/vs/docker-dash-engine/start.sh'
             source.parent.mkdir(parents=True); source.write_bytes(b'#!/bin/sh\nexit 0\n'); source.chmod(0o755)
             original = source.read_bytes()
             revision = {'revision': 'a'*40, 'tested_revision_parents': []}
             inventory = {name + '.gz': {'sha256': 'original'} for name in driver.IMAGES}
             (evidence / 'build-receipt.json').write_text(json.dumps({**revision, 'status': 'built',
-                'artifacts': inventory, 'layouts': {name: name for name in driver.IMAGES}}))
+                'artifacts': inventory, 'layouts': {name: name for name in driver.IMAGES},
+                'foreign_diagnostics': foreign_summary()}))
             calls = []
             def run(argv, **kwargs):
                 execution = Path(next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--execution_log_json_file=')))
                 phase = execution.name.removeprefix('incremental-').removesuffix('.execution.json')
                 calls.append(phase)
+                self.assertEqual(any(arg.startswith('--explain=') for arg in argv), phase == 'baseline')
+                self.assertNotIn('--verbose_explanations', argv)
                 execution.write_text('')
                 events = Path(next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--build_event_json_file=')))
                 events.write_text('\n'.join(json.dumps(v) for v in successful_build_events()) + '\n')
@@ -571,6 +608,290 @@ class DashEngineImageTest(unittest.TestCase):
             self.assertEqual(receipt['status'], 'failed')
             self.assertEqual(receipt['restored'], receipt['baseline'])
 
+
+    def test_foreign_projection_keeps_instances_and_only_public_fingerprints(self):
+        records = [foreign_record('one'), foreign_record('two'),
+                   foreign_record('bmv2', '@@p4lang-bmv2++_repo_rules+bmv2_source//:bmv2_build')]
+        unrelated = {**foreign_record('unrelated'), 'targetLabel': '@@other+//:build'}
+        summary = foreign_summary([*records, unrelated])
+        self.assertEqual(len(summary['observations']), 3)
+        self.assertEqual(summary['spawn_counts']['action_count'], 4)
+        self.assertEqual(summary['unobserved_targets'], [])
+        text = json.dumps(summary)
+        for private in ('/home/private', 'private-argument', 'PRIVATE_CONTEXT', 'private-environment', 'source.c', 'lib.so'):
+            self.assertNotIn(private, text)
+        self.assertEqual(summary, foreign_summary([unrelated, *reversed(records)]))
+        self.assertEqual(len({row['listed_outputs_sha256'] for row in summary['observations']}), 3)
+        comparison = driver.compare_foreign_diagnostics(summary, summary)
+        self.assertEqual([row['status'] for row in comparison['instances']], ['matched'] * 3)
+        self.assertTrue(all(not row['changed_recorded_fields'] for row in comparison['instances']))
+        # More initial configured instances are evidence, not a presumed error.
+        self.assertEqual(len(foreign_summary([foreign_record(str(n)) for n in range(16)])['observations']), 16)
+        with self.assertRaisesRegex(ValueError, 'too many configured'):
+            foreign_summary([foreign_record(str(n)) for n in range(17)])
+
+    def test_foreign_fingerprints_distinguish_definition_inputs_and_outputs(self):
+        original = foreign_record()
+        initial = foreign_summary([original])
+        cases = ('arguments_sha256', 'environment_sha256', 'platform_sha256', 'inputs_sha256',
+                 'actual_outputs_sha256', 'action_digest', 'unrecorded_listed_outputs')
+        for field in cases:
+            with self.subTest(field=field):
+                record = deepcopy(original)
+                if field == 'arguments_sha256': record['commandArgs'].append('changed')
+                elif field == 'environment_sha256': record['environmentVariables'][0]['value'] = 'changed'
+                elif field == 'platform_sha256': record['platform']['properties'][0]['value'] = 'changed'
+                elif field == 'inputs_sha256': record['inputs'][0]['digest']['hash'] = 'b' * 64
+                elif field == 'actual_outputs_sha256': record['actualOutputs'][0]['digest']['hash'] = 'b' * 64
+                elif field == 'action_digest': record['digest']['hash'] = 'b' * 64
+                else: record['actualOutputs'] = []
+                comparison = driver.compare_foreign_diagnostics(initial, foreign_summary([record]))
+                row = comparison['instances'][0]
+                self.assertEqual(row['status'], 'matched')
+                self.assertIn(field, row['changed_recorded_fields'])
+        first, second = foreign_summary([original]), foreign_summary([original])
+        first['payloads'] = {name: 'a' * 64 for name in driver.FOREIGN_PAYLOADS}
+        second['payloads'] = {name: ('b' if name.startswith('pi.') else 'a') * 64 for name in driver.FOREIGN_PAYLOADS}
+        self.assertEqual(driver.compare_foreign_diagnostics(first, second)['payloads'],
+                         {'pi.source.tar': 'changed', 'bmv2.source.tar': 'same-reported-sha256'})
+
+    def test_foreign_absent_spawns_digests_outputs_and_ambiguous_instances_are_explicit(self):
+        empty = foreign_summary()
+        self.assertEqual(empty['unobserved_targets'], sorted(driver.FOREIGN_TARGETS))
+        record = foreign_record()
+        observed = foreign_summary([record])
+        comparison = driver.compare_foreign_diagnostics(empty, observed)
+        self.assertEqual(comparison['instances'][0]['status'], 'unobserved-initial')
+        self.assertEqual(driver.compare_foreign_diagnostics(observed, empty)['instances'][0]['status'],
+                         'unobserved-baseline')
+        duplicate = foreign_summary([record, record])
+        row = driver.compare_foreign_diagnostics(duplicate, observed)['instances'][0]
+        self.assertEqual(row['status'], 'ambiguous')
+        self.assertEqual(row['changed_recorded_fields'], [])
+        record.pop('digest'); record['inputs'][0].pop('digest'); record['actualOutputs'][0].pop('digest')
+        partial = foreign_summary([record])
+        row = driver.compare_foreign_diagnostics(partial, partial)['instances'][0]
+        self.assertEqual(row['unobserved_fields'], ['action_digest', 'input_digest_unobserved', 'output_digest_unobserved'])
+        self.assertEqual(driver.compare_foreign_diagnostics(partial, partial)['payloads'],
+                         {name: 'unobserved' for name in driver.FOREIGN_PAYLOADS})
+        other_configuration = foreign_summary([foreign_record('different-output-configuration')])
+        self.assertEqual({row['status'] for row in driver.compare_foreign_diagnostics(observed, other_configuration)['instances']},
+                         {'unobserved-initial', 'unobserved-baseline'})
+
+    def test_foreign_public_schema_rejects_unknown_private_fields_and_bad_counts(self):
+        valid = foreign_summary([foreign_record()])
+        for change in ('extra', 'private', 'target', 'count', 'digest', 'cache', 'payload', 'schema', 'missing'):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                value = deepcopy(valid)
+                if change == 'extra': value['raw'] = 'not allowed'
+                elif change == 'private': value['observations'][0]['argv'] = ['/home/private/bin']
+                elif change == 'target': value['observations'][0]['target'] = '@@other+//:build'
+                elif change == 'count': value['spawn_counts']['action_count'] = True
+                elif change == 'digest': value['observations'][0]['inputs_sha256'] = 'not-a-hash'
+                elif change == 'cache': value['observations'][0]['cache_hit'] = True
+                elif change == 'payload': value['payloads']['pi.source.tar'] = '/home/private/output'
+                elif change == 'schema': value['schema'] = True
+                else: value['observations'][0]['input_digest_unobserved'] = 2
+                driver.validate_foreign_diagnostics(value)
+        size = len((json.dumps(valid, indent=2) + '\n').encode())
+        with mock.patch.object(driver, 'DIAGNOSTIC_LIMIT', size): driver.validate_foreign_diagnostics(valid)
+        with mock.patch.object(driver, 'DIAGNOSTIC_LIMIT', size - 1), self.assertRaises(ValueError):
+            driver.validate_foreign_diagnostics(valid)
+
+    def test_foreign_projection_reuses_strict_streaming_parser_and_digest_validation(self):
+        for raw in ('{"targetLabel":"one","targetLabel":"two"}', '{"metric":NaN}', '{'):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'execution.json'; path.write_text(raw)
+                with self.assertRaises(ValueError):
+                    driver.foreign_diagnostics(path, {'action_count': 0, 'cache_hit_count': 0, 'executed_count': 0},
+                                               {name: None for name in driver.FOREIGN_PAYLOADS})
+        for bad in (True, '-1', '1.2'):
+            record = foreign_record(); record['digest']['sizeBytes'] = bad
+            with self.subTest(size=bad), self.assertRaises(ValueError): foreign_summary([record])
+        record = foreign_record(); record['environmentVariables'].append(record['environmentVariables'][0])
+        with self.assertRaisesRegex(ValueError, 'duplicate foreign key-value'): foreign_summary([record])
+
+    def test_public_review_checks_diagnostic_schema_and_derived_comparison(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            initial = foreign_summary([foreign_record()]); baseline = foreign_summary([foreign_record()])
+            receipt = {'status': 'built', 'foreign_diagnostics': initial, 'commands': [{'argv': ['/home/private']}]}
+            (directory / 'build-receipt.json').write_text(json.dumps(receipt))
+            incremental = {'status': 'failed', 'foreign_diagnostics': {'initial': initial, 'baseline': baseline},
+                           'foreign_comparison': driver.compare_foreign_diagnostics(initial, baseline),
+                           'foreign_input_differences': input_differences([foreign_record()], [foreign_record()]),
+                           'foreign_explain': driver.foreign_explain(directory / 'absent.log'),
+                           'foreign_payloads_before_baseline': {name: None for name in driver.FOREIGN_PAYLOADS}}
+            path = directory / 'incremental.json'; path.write_text(json.dumps(incremental))
+            public.review(directory)
+            self.assertEqual(json.loads((directory / 'public-receipt.json').read_text())['foreign_diagnostics'], initial)
+            self.assertNotIn('/home/private', (directory / 'public-receipt.json').read_text())
+            incremental['foreign_comparison']['instances'][0]['status'] = 'invented-match'
+            path.write_text(json.dumps(incremental))
+            with self.assertRaisesRegex(ValueError, 'diagnostic comparison'): public.review(directory)
+
+    def test_baseline_drift_keeps_original_error_and_no_edit_even_if_diagnostics_fail(self):
+        for diagnostic_failure, matching_archives in ((None, False), ('projection', False), ('input-diff', False), ('input-diff', True)):
+            with self.subTest(diagnostic_failure=diagnostic_failure, matching_archives=matching_archives), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); directory = root / 'evidence'; directory.mkdir()
+                (directory / 'build.execution.json').write_text('')
+                for name in driver.FOREIGN_PAYLOADS: (root / name).write_bytes(b'known payload')
+                revision = {'revision': 'a' * 40, 'tested_revision_parents': []}
+                (directory / 'build-receipt.json').write_text(json.dumps({**revision, 'status': 'built',
+                    'artifacts': {name + '.gz': {'sha256': ('a' if matching_archives else 'b') * 64} for name in driver.IMAGES},
+                    'layouts': {name: name for name in driver.IMAGES}, 'foreign_diagnostics': foreign_summary()}))
+                calls = []
+                def run(argv, **kwargs):
+                    calls.append(argv)
+                    Path(next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--execution_log_json_file='))).write_text('')
+                    Path(next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--build_event_json_file='))).write_text(
+                        '\n'.join(json.dumps(value) for value in successful_build_events()) + '\n')
+                    kwargs['stdout'].write('INFO: 0 processes.\n')
+                    return subprocess.CompletedProcess(argv, 0)
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(driver, 'clean_source'))
+                    stack.enter_context(mock.patch.object(driver, 'source_identity', return_value=revision))
+                    stack.enter_context(mock.patch.object(driver.build, 'execution_root', return_value=root))
+                    def query(argv, **kwargs):
+                        return next((name for name in driver.FOREIGN_PAYLOADS if driver.TARGETS[name] == argv[-1]),
+                                    argv[-1].split(':')[-1]) + '\n'
+                    stack.enter_context(mock.patch.object(driver.subprocess, 'check_output', side_effect=query))
+                    stack.enter_context(mock.patch.object(driver.subprocess, 'run', side_effect=run))
+                    stack.enter_context(mock.patch.object(driver.check, 'sha', side_effect=lambda path:
+                        ('c' if Path(path).name in driver.FOREIGN_PAYLOADS and calls else 'a') * 64))
+                    stack.enter_context(mock.patch.object(driver.oci_layout, 'validate_layout', return_value=SimpleNamespace(descriptor={'digest': 'a' * 64})))
+                    if diagnostic_failure:
+                        method = 'foreign_diagnostics' if diagnostic_failure == 'projection' else 'foreign_input_differences'
+                        stack.enter_context(mock.patch.object(driver, method, side_effect=ValueError('/home/private/failure')))
+                    expected_error = 'foreign diagnostics unavailable' if matching_archives else 'incremental baseline differs from verified archives'
+                    with self.assertRaisesRegex(ValueError, '^' + expected_error + '$'):
+                        driver.incremental(SimpleNamespace(bazel='must-not-run'), directory)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual([arg for arg in calls[0] if arg.startswith('--explain=')],
+                                 ['--explain=' + str(directory / 'incremental-baseline.explain.log')])
+                expected = {driver.OWNER + name + suffix for name in driver.IMAGES for suffix in ('', '.gz')}
+                expected.update([driver.BASE, driver.TARGETS['engine.source.tar'], driver.TARGETS['base.source.tar']])
+                self.assertEqual({arg for arg in calls[0][2:] if not arg.startswith('--')}, expected)
+                result = json.loads((directory / 'incremental.json').read_text())
+                self.assertEqual(result['error'], expected_error)
+                self.assertNotIn('/home/private', json.dumps(result))
+                self.assertEqual(result['foreign_payloads_before_baseline'], {name: 'a' * 64 for name in driver.FOREIGN_PAYLOADS})
+                if diagnostic_failure:
+                    self.assertEqual(result['foreign_diagnostics_error'], 'foreign-diagnostics-unavailable')
+                else:
+                    self.assertIn('baseline', result['foreign_diagnostics'])
+                    self.assertEqual(result['foreign_diagnostics']['baseline']['payloads'],
+                                     {name: 'c' * 64 for name in driver.FOREIGN_PAYLOADS})
+                public.review(directory)
+
+    def test_input_differences_identify_public_files_and_hash_private_paths(self):
+        before = foreign_record()
+        public_path = 'external/p4lang-pi++_repo_rules+pi_source/src/pi.c'
+        before['inputs'] = [{'path': public_path, 'digest': before['digest']},
+                            {'path': 'host/toolchain/private-name', 'symlinkTargetPath': '/home/private/target'},
+                            {'path': '/home/private/removed', 'digest': before['digest']}]
+        after = deepcopy(before)
+        after['inputs'][0]['digest'] = {**before['digest'], 'hash': 'b' * 64}
+        after['inputs'][1]['isTool'] = True
+        after['inputs'][2] = {'path': 'tools/bazel/new.h'}
+        row = input_differences([before], [after])[0]
+        self.assertEqual((row['status'], row['changed_input_count'], row['truncated']), ('matched', 4, False))
+        by_hash = {change['path_sha256']: change for change in row['changes']}
+        changed = by_hash[driver._fingerprint(public_path)]
+        self.assertEqual(changed['public_path'], public_path)
+        self.assertEqual(changed['initial']['digest']['hash'], 'a' * 64)
+        self.assertEqual(changed['baseline']['digest']['hash'], 'b' * 64)
+        self.assertIsNone(by_hash[driver._fingerprint('/home/private/removed')]['baseline'])
+        self.assertIsNone(by_hash[driver._fingerprint('tools/bazel/new.h')]['initial'])
+        private = by_hash[driver._fingerprint('host/toolchain/private-name')]
+        self.assertIsNone(private['public_path']); self.assertIsNone(private['initial']['digest'])
+        self.assertNotEqual(private['initial']['identity_sha256'], private['baseline']['identity_sha256'])
+        for value in ('/home/private', 'host/toolchain/private-name'):
+            self.assertNotIn(value, json.dumps(row))
+        for path in ('external/p4lang-pi++_repo_rules+pi_source/../secret',
+                     'tools/bazel//host', 'tools/bazel/./host', 'tools/bazel/../../host',
+                     '/tools/bazel/host', 'arbitrary/relative/name', 'tools/bazel/a\x00b'):
+            with self.subTest(path=path): self.assertIsNone(driver._public_input_path(path))
+
+    def test_input_differences_bound_rows_and_preserve_unobserved_instances(self):
+        before, after = foreign_record(), foreign_record()
+        before['inputs'] = []
+        after['inputs'] = [{'path': 'tools/bazel/input-%03d' % n, 'digest': after['digest']} for n in range(65)]
+        row = input_differences([before], [after])[0]
+        self.assertEqual((row['changed_input_count'], len(row['changes']), row['truncated']), (65, 64, True))
+        for left, right, status in (([], [after], 'unobserved-initial'), ([before], [], 'unobserved-baseline'),
+                                     ([before, before], [after], 'ambiguous')):
+            row = input_differences(left, right)[0]
+            self.assertEqual(row['status'], status); self.assertIsNone(row['changed_input_count'])
+            self.assertEqual(row['changes'], [])
+        valid = input_differences([before], [after])
+        for field in ('raw', 'count', 'truncated', 'path', 'digest', 'identity'):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                value = deepcopy(valid)
+                if field == 'raw': value[0]['argv'] = []
+                elif field == 'count': value[0]['changed_input_count'] = 64
+                elif field == 'truncated': value[0]['truncated'] = False
+                elif field == 'path': value[0]['changes'][0]['public_path'] = 'host/private'
+                elif field == 'digest': value[0]['changes'][0]['baseline']['digest']['hash'] = 'bad'
+                else: value[0]['changes'][0]['baseline']['raw_path'] = 'private'
+                driver.validate_foreign_input_differences(value)
+
+    def test_private_explain_projects_fixed_reasons_without_configuration_attribution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'baseline.explain.log'
+            self.assertEqual(driver.foreign_explain(path)['status'], 'unobserved')
+            header = 'Build options: --client_env=SECRET=/home/private\n'
+            rows = ['Executing Foreign Cc - Configure: Building sdk: ' + reason + '.\n' for reason in driver.EXPLAIN_REASONS]
+            rows += ['Executing Foreign Cc - Configure: Building bmv2_build: One of the files has changed.\n',
+                     'Executing Foreign Cc - Configure: Building sdk: unknown /home/private.\n',
+                     'Executing unrelated /home/private: One of the files has changed.\n']
+            path.write_text(header + ''.join(rows))
+            value = driver.foreign_explain(path)
+            self.assertEqual((value['status'], value['matched_lines'], value['unrecognized_lines']), ('complete', 9, 1))
+            self.assertNotIn('/home/private', json.dumps(value)); self.assertNotIn('SECRET', json.dumps(value))
+            self.assertEqual(value['scope'], 'fixed-progress-descriptions-unbound-configurations')
+            with mock.patch.object(driver, 'EXPLAIN_LIMIT', len((header + rows[0]).encode())):
+                partial = driver.foreign_explain(path)
+            self.assertEqual(partial['status'], 'partial'); self.assertEqual(partial['matched_lines'], 1)
+            for field in ('extra', 'reason', 'count', 'status'):
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    invalid = deepcopy(value)
+                    if field == 'extra': invalid['raw'] = header
+                    elif field == 'reason': invalid['reasons'][0]['reason'] = 'private reason'
+                    elif field == 'count': invalid['matched_lines'] += 1
+                    else: invalid['status'] = 'cache-hit'
+                    driver.validate_foreign_explain(invalid)
+
+    def test_public_review_retains_partial_diagnostics_only_on_failed_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary); path = directory / 'incremental.json'
+            value = {'status': 'failed', 'foreign_diagnostics_error': 'foreign-diagnostics-unavailable',
+                     'foreign_diagnostics': {'initial': foreign_summary(), 'baseline': foreign_summary()}}
+            path.write_text(json.dumps(value)); public.review(directory)
+            value['status'] = 'passed'; path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, 'diagnostic error'): public.review(directory)
+            value['status'] = 'failed'; value['foreign_comparison'] = {'raw': '/home/private'}
+            path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, 'diagnostic comparison'): public.review(directory)
+
+    def test_public_member_bound_counts_actual_indentation_and_newline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary); path = directory / 'incremental.json'
+            value = {'status': 'failed', 'foreign_diagnostics': {'initial': foreign_summary()}}
+            path.write_text(json.dumps(value, indent=2) + '\n')
+            emitted = len(path.read_bytes())
+            self.assertGreater(emitted, len(json.dumps(value).encode()))
+            with mock.patch.object(public, 'DIAGNOSTIC_LIMIT', emitted): public.review(directory)
+            with mock.patch.object(public, 'DIAGNOSTIC_LIMIT', emitted - 1), self.assertRaisesRegex(ValueError, 'member exceeds'):
+                public.review(directory)
+            path.unlink()
+            value = {'status': 'built', 'foreign_diagnostics': foreign_summary()}
+            (directory / 'build-receipt.json').write_text(json.dumps(value))
+            emitted = len((json.dumps(value, indent=2) + '\n').encode())
+            with mock.patch.object(public, 'DIAGNOSTIC_LIMIT', emitted): public.review(directory)
+            self.assertEqual((directory / 'public-receipt.json').stat().st_size, emitted)
+            with mock.patch.object(public, 'DIAGNOSTIC_LIMIT', emitted - 1), self.assertRaisesRegex(ValueError, 'receipt exceeds'):
+                public.review(directory)
 
     def test_resource_options_keep_platform_fixed(self):
         with mock.patch.dict('os.environ', {'SONIC_CONTAINER_BAZEL_OPTIONS': '--jobs=1 --local_resources=memory=4000'}):

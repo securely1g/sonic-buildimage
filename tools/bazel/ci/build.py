@@ -22,7 +22,7 @@ def execution_root(events):
 
 
 def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", options=(),
-                     additional_targets=()):
+                     additional_targets=(), execution_log=None):
     """Build filename-to-label declarations, exporting one nonempty file each.
 
     The caller owns target selection and payload validation. These are archive
@@ -37,7 +37,8 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
         raise ValueError("archive declarations need nonempty, plain output filenames")
     execute = partial(command_log.execute, cwd=workspace)
     receipt.setdefault("artifacts", {})
-    execute([bazel, "build", *options,
+    log_options = ["--execution_log_json_file=" + str(execution_log)] if execution_log is not None else []
+    execute([bazel, "build", *options, *log_options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"),
              *targets.values(), *additional_targets], directory, receipt, "build")
     root = execution_root(directory / "build-events.jsonl")
