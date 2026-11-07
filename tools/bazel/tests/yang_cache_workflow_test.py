@@ -24,7 +24,7 @@ class YangCacheWorkflowTest(unittest.TestCase):
 
     def steps(self):
         steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["package"]["steps"]
-        cache = next(s for s in steps if s.get("name") == "Preserve setup-bazel caches for isolated CI")
+        cache = next(s for s in steps if s.get("name") == "Preserve setup-bazel caches for the image-root query")
         build = next(s for s in steps if s.get("name") == "Build and verify the installed source distribution")
         setup = next(s for s in steps if s.get("uses", "").startswith("bazel-contrib/setup-bazel@"))
         self.assertLess(steps.index(setup), steps.index(cache))
@@ -112,7 +112,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
                 (work / ".bazelrc.user").write_text(before)
                 result = subprocess.run(["bash", "-euc", setup], cwd=work, env=dict(os.environ, HOME=str(home), BASH_ENV="/dev/null"), capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("setup-bazel cache", result.stderr)
+                self.assertIn("cache setting", result.stderr)
                 self.assertEqual((work / ".bazelrc.user").read_text(), before)
 
 
