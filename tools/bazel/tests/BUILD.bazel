@@ -12,26 +12,14 @@ load("//tools/bazel/dpkg:defs.bzl", "PATH_INCLUDES", "dpkg_filter", "sonic_layer
 load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
 load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
-load(":runtime.bzl", "common_runtime_test")
 
 package(default_visibility = ["//visibility:public"])
 
-# Run the unchanged Rust tests with Common's declared native runtime. The owner
-# helper, runtime TAR and Rust binary are all inputs to the Bazel test action.
-sh_test(
+# SWSS supplies the declared native runtime with its public Rust test. Keep the
+# existing consumer label without running a second runtime wrapper around it.
+test_suite(
     name = "swss_common_rust_test",
-    srcs = ["@sonic_swss_common//tools/bazel/runtime:run_with_runtime.py"],
-    args = [
-        "$(rootpath @sonic_swss_common//tools/bazel/runtime:test_runtime)",
-        "-",
-    ] + select({
-        "@sonic_swss_common//tools/bazel:yang_modules_enabled": ["enabled"],
-        "//conditions:default": ["disabled"],
-    }) + ["$(rootpath @sonic_swss//crates/countersyncd:common_rust_test)"],
-    data = [
-        "@sonic_swss//crates/countersyncd:common_rust_test",
-        "@sonic_swss_common//tools/bazel/runtime:test_runtime",
-    ],
+    tests = ["@sonic_swss//crates/countersyncd:common_rust_test"],
 )
 
 _OCI_OWNER_POLICIES = [
@@ -1001,11 +989,11 @@ py_test(
     main = "integration/oci_license_filter_test.py",
 )
 
-# Rust links Common's shared library; its indirect runtime imports need the
-# same pinned package closure used by Common's own native consumer tests.
-common_runtime_test(
+# Preserve the former wrapper label for callers; the owner now declares the
+# shared-library runtime and executes the same Rust tests itself.
+test_suite(
     name = "common_rust_runtime_test",
-    binary = "@sonic_swss//crates/countersyncd:common_rust_test",
+    tests = ["@sonic_swss//crates/countersyncd:common_rust_test"],
 )
 
 # Shared OCI regression fixtures exercise the same algorithms for both owners.

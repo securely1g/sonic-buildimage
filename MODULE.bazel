@@ -26,7 +26,7 @@ bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libya
 bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.13")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.16")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -45,21 +45,21 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
+    version = "0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
     name = "sonic-dash-api",
-    version = "0.0.4-2a6e390b96a4fc17c191fa0da4b7ed1f40aed069",
+    version = "0.0.5-9b2893e890734a2db0c53a5e5c64b031ec0dcfbd",
     repo_name = "sonic_dash_api",
 )
 bazel_dep(
     name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
     repo_name = "sonic_sairedis",
 )
-bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.8-a0450924719a9f706125cc44a07dc88934935003", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss", version = "0.0.1-88d9cc2bcda39b0ebac16c95de9601e62021e3eb", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -69,13 +69,6 @@ bazel_dep(
     name = "sonic-yang-models",
     version = "1.0.1-b0a9362a7a1b4b5e1b7188c019d256f7c8aaff9f",
     repo_name = "sonic_yang_models",
-)
-
-# SWSS is not registered yet. Select its maintained-branch merge explicitly.
-git_override(
-    module_name = "sonic-swss",
-    commit = "252a506ae5a94e36a4e330b736a3781a9f7bcf9b",
-    remote = "https://github.com/securely1g/sonic-swss.git",
 )
 
 # Dependency overrides do not propagate from Common. Keep its cgo header
@@ -97,7 +90,7 @@ single_version_override(
 
 single_version_override(
     module_name = "libnl3",
-    version = "3.7.0.sonic.6",
+    version = "3.7.0.sonic.7",
 )
 
 single_version_override(
@@ -245,21 +238,21 @@ apt_inputs(
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
-bazel_dep(name = "libnl3", version = "3.7.0.sonic.6")
-bazel_dep(name = "libyang", version = "3.12.2.sonic.5")
+bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
+bazel_dep(name = "libyang", version = "3.12.2.sonic.6")
 
 single_version_override(
     module_name = "sonic-rust-deps",
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.4-ef423363e8fd50358f0aa2a8a20d3e08d4450a56", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "0.0.3-15fcb926a302059ec379f0c2fd15eb3d88bda4c9", repo_name = "sonic_fips")
 
-# Select the shared producer-file checks while older consumers retain
-# their previous infrastructure declarations.
+# Select the landed build interfaces even when a consumer requests the older
+# combined candidate, whose numeric release is higher.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
+    version = "0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e",
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
@@ -283,17 +276,17 @@ source_modules(
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.8-a0450924719a9f706125cc44a07dc88934935003",
+    version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61",
 )
 
 single_version_override(
     module_name = "sonic-sairedis",
-    version = "0.0.3-5e765149371aeca207254641873791db76a95f5f",
+    version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
 )
 
 single_version_override(
     module_name = "sonic-fips",
-    version = "0.0.4-ef423363e8fd50358f0aa2a8a20d3e08d4450a56",
+    version = "0.0.3-15fcb926a302059ec379f0c2fd15eb3d88bda4c9",
 )
 
 # Syncd uses the same pinned Debian snapshot as its source-built base.

@@ -149,6 +149,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 self.assertEqual(calls.read_text().splitlines(), expected)
 
     def test_active_slave_runs_shared_validation_and_retains_both_static_results(self):
+        """Use the private daemon and reject failed probes or unresolved runtime libraries."""
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         legacy, active = workflow.split("\n  vs_container:\n", 1)
         self.assertIn("if: ${{ false }}", legacy.split("\n  vs:\n", 1)[1])
@@ -175,20 +176,64 @@ class VerificationWorkflowTest(unittest.TestCase):
                               "'docker_host': os.environ.get('DOCKER_HOST')}))\n"
                               "sys.exit(int(os.environ['PROBE_EXIT']))\n")
             python.chmod(0o755)
+            docker_arguments = [
+                "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--env", "LD_BIND_NOW=1",
+                "--entrypoint", "/usr/bin/ldd", "docker-orchagent:latest",
+                "-r", "/usr/bin/tlm_teamd",
+            ]
+            docker = directory / "docker"
+            docker.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''\
+                import json, os, sys
+                from pathlib import Path
+                args = sys.argv[1:]
+                if args != json.loads(os.environ['EXPECTED_DOCKER_ARGUMENTS']):
+                    print('Unexpected Docker invocation', file=sys.stderr)
+                    sys.exit(125)
+                Path('linkage-call.json').write_text(json.dumps({
+                    'args': args, 'docker_host': os.environ.get('DOCKER_HOST')}))
+                sys.stdout.write(os.environ['LINKAGE_OUTPUT'])
+                sys.exit(int(os.environ['DOCKER_EXIT']))
+                '''))
+            docker.chmod(0o755)
             # Bind the workflow's /sonic location to this test checkout.
             shell = 'cd() { test "$1" = /sonic; builtin cd "$TEST_WORKSPACE"; }\n' + script
-            for status in (0, 19):
-                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell], cwd=directory,
-                    env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
-                             RUNNER_TEMP=str(directory), TEST_WORKSPACE=str(directory), PROBE_EXIT=str(status)),
-                    capture_output=True, text=True)
-                self.assertEqual(result.returncode, status, result.stderr)
-                called = json.loads((directory / "docker-call.json").read_text())
-                self.assertEqual(called["docker_host"], "unix:///worker-private.sock")
-                self.assertEqual(called["args"], ["-B", "tools/bazel/ci/validate_runtime.py",
-                    "--images-policy", "artifacts/vs/swss-installed-images-policy.json",
-                    "--images-policy", "artifacts/vs/syncd-installed-images-policy.json", "--target", "target",
-                    "--output", "artifacts/vs/installed-images.json"])
+            cases = (
+                ("resolved", 0, 0, "libnl-3.so.200 => /usr/lib/libnl-3.so.200\n", 0),
+                ("probe failed", 19, 0, "", 19),
+                ("docker failed", 0, 23, "Docker launch failed\n", 23),
+                ("missing library", 0, 0, "libnl-3.so.200 => not found\n", 1),
+                ("unresolved symbol", 0, 0,
+                 "undefined symbol: nl_msg_parse, version libnl_3 (/usr/lib/libswsscommon.so.0)\n", 1),
+                ("loader failed", 0, 0, "symbol lookup error: /usr/bin/tlm_teamd\n", 1),
+            )
+            linkage_call = directory / "linkage-call.json"
+            linkage_report = directory / "artifacts/vs/tlm-teamd-linkage.txt"
+            for name, probe_exit, docker_exit, output, expected_status in cases:
+                with self.subTest(name=name):
+                    for path in (directory / "docker-call.json", linkage_call, linkage_report):
+                        path.unlink(missing_ok=True)
+                    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell], cwd=directory,
+                        env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                                 RUNNER_TEMP=str(directory), TEST_WORKSPACE=str(directory),
+                                 PROBE_EXIT=str(probe_exit), DOCKER_EXIT=str(docker_exit),
+                                 EXPECTED_DOCKER_ARGUMENTS=json.dumps(docker_arguments), LINKAGE_OUTPUT=output),
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
+                    called = json.loads((directory / "docker-call.json").read_text())
+                    self.assertEqual(called["docker_host"], "unix:///worker-private.sock")
+                    self.assertEqual(called["args"], ["-B", "tools/bazel/ci/validate_runtime.py",
+                        "--images-policy", "artifacts/vs/swss-installed-images-policy.json",
+                        "--images-policy", "artifacts/vs/syncd-installed-images-policy.json", "--target", "target",
+                        "--output", "artifacts/vs/installed-images.json"])
+                    if probe_exit:
+                        self.assertFalse(linkage_call.exists())
+                        self.assertFalse(linkage_report.exists())
+                    else:
+                        linkage = json.loads(linkage_call.read_text())
+                        self.assertEqual(linkage["args"], docker_arguments)
+                        self.assertEqual(linkage["docker_host"], "unix:///worker-private.sock")
+                        self.assertEqual(linkage_report.read_text(), output)
         retained = active.split("      - name: Retain shared image validation evidence\n", 1)[1].split(
             "\n      - ", 1)[0]
         self.assertIn("if: always()", retained)
