@@ -1,0 +1,252 @@
+name: P4RT disk CAS potential overlap diagnostic
+
+on: create
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4rt-cas-overlap-diagnostics-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  storage:
+    name: Measure potential disk CAS overlap (no build)
+    if: github.repository == 'securely1g/sonic-buildimage' && github.event.ref_type == 'branch' && github.event.ref == 'codex/p4rt-cas-overlap-diagnostics'
+    runs-on: [sonic-slave-container-dpool, sonic-slave-lgh114-1]
+    timeout-minutes: 5
+    steps:
+      - name: Record aggregate CAS name and size overlap
+        shell: bash
+        run: |
+          python3 -I -S -B - <<'PY_RESOURCE'
+          """Proposed metadata-only two-CAS overlap diagnostic; no execution grant."""
+          import errno
+          import json
+          import os
+          import re
+          import stat
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+          
+          WORKER = "sonic-slave-lgh114-1"
+          MAX_ENTRIES = 250000
+          MAX_SECONDS = 120
+          THRESHOLD_BYTES = 13 * 1024**3
+          DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+          SHARD = re.compile(r"[0-9a-f]{2}")
+          DIGEST = re.compile(r"[0-9a-f]{64}")
+          ROOTS = {
+              "main": Path("/bazel_cache/source-images") / WORKER / "disk/cas",
+              "owner": Path("/bazel_cache/source-images") / WORKER / "p4rt-owner/disk/cas",
+          }
+          
+          
+          def open_directory(path):
+              """Resolve an absolute path using directory descriptors, never symlinks."""
+              path = Path(path)
+              if not path.is_absolute() or ".." in path.parts:
+                  raise ValueError("Expected a fixed absolute directory")
+              descriptor = os.open("/", DIRECTORY_FLAGS)
+              try:
+                  for part in path.parts[1:]:
+                      child = os.open(part, DIRECTORY_FLAGS, dir_fd=descriptor)
+                      os.close(descriptor)
+                      descriptor = child
+                  return descriptor
+              except BaseException:
+                  os.close(descriptor)
+                  raise
+          
+          
+          
+          def inspect_cas(path, budget):
+              """Read directory entries and lstat metadata only, two layout levels deep."""
+              rows = {}
+              inodes = set()
+              result = {"status": "complete", "entry_count": 0, "objects": 0,
+                        "logical_bytes": 0, "allocated_bytes": 0,
+                        "multiple_link_objects": 0, "duplicate_inodes": 0,
+                        "symlinks_not_followed": 0, "cross_device_not_followed": 0,
+                        "unexpected_layout_entries": 0, "error_errnos": [], "limits_reached": []}
+          
+              def available():
+                  reason = ("entries" if budget["entries"] >= budget["maximum_entries"] else
+                            "seconds" if time.monotonic() >= budget["deadline"] else None)
+                  if reason:
+                      result["status"] = "partial"
+                      if reason not in result["limits_reached"]:
+                          result["limits_reached"].append(reason)
+                      return False
+                  return True
+          
+              def consume():
+                  if not available():
+                      return False
+                  budget["entries"] += 1
+                  result["entry_count"] += 1
+                  return True
+          
+              def error(number):
+                  result["status"] = "partial"
+                  if number not in result["error_errnos"]:
+                      result["error_errnos"].append(number)
+          
+              def allowed(info):
+                  if stat.S_ISLNK(info.st_mode):
+                      result["symlinks_not_followed"] += 1
+                      result["status"] = "partial"
+                      return False
+                  if info.st_dev != result["device"]:
+                      result["cross_device_not_followed"] += 1
+                      result["status"] = "partial"
+                      return False
+                  return True
+          
+              def unexpected():
+                  result["unexpected_layout_entries"] += 1
+                  result["status"] = "partial"
+          
+              descriptor = None
+              try:
+                  if not consume():
+                      return result, rows
+                  descriptor = open_directory(path)
+                  result["device"] = os.fstat(descriptor).st_dev
+                  with os.scandir(descriptor) as shards:
+                      for shard in shards:
+                          if not consume():
+                              break
+                          child = None
+                          try:
+                              info = shard.stat(follow_symlinks=False)
+                              if not allowed(info):
+                                  continue
+                              if not SHARD.fullmatch(shard.name) or not stat.S_ISDIR(info.st_mode):
+                                  unexpected()
+                                  continue
+                              child = os.open(shard.name, DIRECTORY_FLAGS, dir_fd=descriptor)
+                              if not allowed(os.fstat(child)):
+                                  continue
+                              with os.scandir(child) as entries:
+                                  for entry in entries:
+                                      if not consume():
+                                          break
+                                      try:
+                                          info = entry.stat(follow_symlinks=False)
+                                          if not allowed(info):
+                                              continue
+                                          if (not DIGEST.fullmatch(entry.name) or
+                                                  not entry.name.startswith(shard.name) or
+                                                  not stat.S_ISREG(info.st_mode)):
+                                              unexpected()
+                                              continue
+                                          inode = (info.st_dev, info.st_ino)
+                                          if inode in inodes:
+                                              result["duplicate_inodes"] += 1
+                                              result["status"] = "partial"
+                                              continue
+                                          inodes.add(inode)
+                                          rows[entry.name] = (info.st_size, info.st_dev, info.st_ino,
+                                                              info.st_blocks * 512, info.st_nlink)
+                                          result["objects"] += 1
+                                          result["logical_bytes"] += info.st_size
+                                          result["allocated_bytes"] += info.st_blocks * 512
+                                          result["multiple_link_objects"] += int(info.st_nlink > 1)
+                                      except OSError as exc:
+                                          error(exc.errno)
+                          except OSError as exc:
+                              error(exc.errno)
+                          finally:
+                              if child is not None:
+                                  os.close(child)
+              except OSError as exc:
+                  result["status"] = "missing" if exc.errno == errno.ENOENT else "unavailable"
+                  if exc.errno not in result["error_errnos"]:
+                      result["error_errnos"].append(exc.errno)
+              finally:
+                  if descriptor is not None:
+                      os.close(descriptor)
+              return result, rows
+          
+          
+          def compare(main, owner, deadline):
+              result = {"status": "complete", "matching_name_and_size_objects": 0,
+                        "matching_name_different_size_objects": 0, "already_same_inode_objects": 0,
+                        "distinct_inode_potential_objects": 0, "distinct_inode_logical_bytes": 0,
+                        "distinct_inode_main_reported_blocks_bytes": 0,
+                        "distinct_inode_owner_reported_blocks_bytes": 0,
+                        "distinct_inode_both_single_link_objects": 0,
+                        "distinct_inode_both_single_link_logical_bytes": 0,
+                        "different_device_matching_objects": 0}
+              for name, right in owner.items():
+                  if time.monotonic() >= deadline:
+                      result["status"] = "partial_time_limit"
+                      break
+                  left = main.get(name)
+                  if left is None:
+                      continue
+                  if left[0] != right[0]:
+                      result["matching_name_different_size_objects"] += 1
+                      continue
+                  result["matching_name_and_size_objects"] += 1
+                  if left[1:3] == right[1:3]:
+                      result["already_same_inode_objects"] += 1
+                      continue
+                  result["distinct_inode_potential_objects"] += 1
+                  result["distinct_inode_logical_bytes"] += right[0]
+                  result["distinct_inode_main_reported_blocks_bytes"] += left[3]
+                  result["distinct_inode_owner_reported_blocks_bytes"] += right[3]
+                  result["different_device_matching_objects"] += int(left[1] != right[1])
+                  if left[4] == right[4] == 1:
+                      result["distinct_inode_both_single_link_objects"] += 1
+                      result["distinct_inode_both_single_link_logical_bytes"] += right[0]
+              result["at_least_13gib_observed_potential_logical_overlap"] = (
+                  result["distinct_inode_logical_bytes"] >= THRESHOLD_BYTES)
+              return result
+          
+          
+          def measure_roots(roots, budget):
+              main, main_rows = inspect_cas(roots["main"], budget)
+              owner, owner_rows = inspect_cas(roots["owner"], budget)
+              overlap = compare(main_rows, owner_rows, budget["deadline"])
+              complete = main["status"] == owner["status"] == overlap["status"] == "complete"
+              return {"roots": {"main": main, "owner": owner}, "overlap": overlap,
+                      "enumeration_complete": complete, "entries_visited": budget["entries"],
+                      "same_root_device": (None if "device" not in main or "device" not in owner else
+                                            main["device"] == owner["device"]),
+                      "capacity_admission": False, "byte_identity_verified": False,
+                      "reclaimable_bytes": None}
+          
+          
+          def main():
+              if (os.environ.get("RUNNER_NAME"), os.environ.get("RUNNER_OS"), os.environ.get("RUNNER_ARCH")) != (WORKER, "Linux", "X64"):
+                  raise SystemExit("Unexpected worker identity; no traversal")
+              workspace, temporary = Path(os.environ["GITHUB_WORKSPACE"]), Path(os.environ["RUNNER_TEMP"])
+              if not all(path.is_absolute() and ".." not in path.parts and path.is_relative_to("/actions/_work")
+                         for path in (workspace, temporary)):
+                  raise SystemExit("Unexpected worker roots; no traversal")
+              budget = {"deadline": time.monotonic() + MAX_SECONDS, "entries": 0, "maximum_entries": MAX_ENTRIES}
+              result = {"schema": 1, "source": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                        "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "runner": WORKER,
+                        "started_at": datetime.now(timezone.utc).isoformat(),
+                        "limits": {"entries": MAX_ENTRIES, "seconds": MAX_SECONDS, "layout_depth": 2},
+                        "scope": "Two fixed SHA256-shaped disk CAS namespaces; no AC, temporary or repository cache",
+                        **measure_roots(ROOTS, budget),
+                        "notes": ["Names and sizes are potential overlap, not verified content identity or reclaimable space.",
+                                  "Live metadata is not an atomic snapshot; partial and missing results are inconclusive.",
+                                  "Reported blocks and link counts do not expose reflinks or exclusive physical allocation.",
+                                  "Unexpected digest lengths or layout are counted and excluded, not searched elsewhere.",
+                                  "No content reads, file mutation, cache cleanup, build, test or capacity authorization."]}
+              text = json.dumps(result, indent=2, sort_keys=True) + "\n"
+              if len(text.encode()) > 65536:
+                  raise SystemExit("Unexpected diagnostic size")
+              print(text, end="", flush=True)
+              with (temporary / "cas-overlap.json").open("x") as receipt:
+                  receipt.write(text)
+          
+          
+          if __name__ == "__main__":
+              main()
+          PY_RESOURCE
