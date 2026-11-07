@@ -19,8 +19,8 @@ sudo -n true || die 'This build requires the privileged runner profile and passw
 for command in docker dockerd make git python3 dpkg-deb mount findmnt ip timeout unshare; do
     command -v "$command" >/dev/null || die "Missing required tool: $command"
 done
-mountpoint -q /actions || die '/actions must be a worker-private Docker volume.'
-for cache in /dpkg_cache /bazel_cache; do
+mountpoint -q /actions || die '/actions must be a worker-private volume.'
+for cache in /dpkg_cache; do
     mountpoint -q "$cache" && [[ -w $cache ]] || die "Required writable cache mount is missing: $cache"
 done
 
@@ -104,7 +104,7 @@ PY
 stage=kernel-sandbox
 # Exercise the producer's pinned helper as the build user, including its
 # mounts: namespace creation alone does not establish sandbox readiness.
-export BAZELISK_HOME=/bazel_cache/bazelisk
+export BAZELISK_HOME=/actions/bazel/bazelisk
 if timeout --kill-after=5s 300s python3 -B "$workspace/tools/bazel/ci/check_kernel_sandbox.py" \
     > "$artifacts/kernel-sandbox.log" 2>&1; then
     python3 - "$artifacts/slave-preparation.json" <<'PY'
@@ -180,6 +180,10 @@ fi
 docker version --format '{{json .Server}}' > "$artifacts/private-docker-version.json"
 
 stage=configuration
+if [[ ${SONIC_NATIVE_PRIVATE_APT:-} == 1 ]]; then
+    sudo -n python3 -B tools/bazel/ci/private_native_downloads.py public-apt-transport \
+        > "$artifacts/public-apt-transport.json"
+fi
 # Makefile.work normally supplies this identity. Native package recipes such
 # as ifupdown2 create temporary Git repositories and need it in the build user
 # configuration, which lives only in this ephemeral worker.
@@ -199,11 +203,12 @@ export PREFER_DEBIAN_REPO="${PREFER_DEBIAN_REPO:-n}"
 export DOCKER_USERNAME=sonic DOCKER_USERTAG=latest DOCKER_LOCKDIR=/tmp/docklock
 export SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=y SONIC_CONFIG_USE_DOCKER_CACHE=y
 export SONIC_DPKG_CACHE_SOURCE=/dpkg_cache SONIC_DPKG_CACHE_METHOD=rwcache
-export SONIC_BAZEL_CACHE_SOURCE=/bazel_cache BAZELISK_HOME=/bazel_cache/bazelisk
+export SONIC_BAZEL_CACHE_SOURCE= BAZEL_CONTAINER_CACHE_DIR= BAZEL_SWSS_CACHE_DIR= BAZELISK_HOME=/actions/bazel/bazelisk
 export SONIC_DEFAULT_CONTAINER_REGISTRY='' DEFAULT_CONTAINER_REGISTRY=''
 # The minimal installer rootfs installs CA certificates after its first apt
 # update. Keep Make's HTTP bootstrap transport and signed APT metadata checks,
-# using the public Debian mirrors instead of the default Traffic Manager mirror.
+# keeping public sources in the output. The private-download wrapper's local
+# HTTP proxy fetches their content over verified HTTPS from the private mirror.
 export MIRROR_URLS=http://deb.debian.org/debian/
 export MIRROR_SECURITY_URLS=http://deb.debian.org/debian-security/
 export SONIC_BUILD_JOBS=1 SONIC_BUILD_MEMORY=20g
@@ -215,7 +220,7 @@ export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" BUILD_HOSTNAME="$(ho
 export SLAVE_DIR=sonic-slave-trixie DISTRO=trixie IMAGENAME=sonic-slave-trixie
 export SONIC_BUILD_TARGET=target/sonic-vs.bin
 export SLAVE_TAG="$(python3 -c 'import json; print(json.load(open("/etc/sonic-slave-github-runner.json"))["base_image"].split(":")[1])')"
-mkdir -p "$DOCKER_LOCKDIR" /dpkg_cache/vcache /bazel_cache/bazelisk
+mkdir -p "$DOCKER_LOCKDIR" /dpkg_cache/vcache /actions/bazel/bazelisk
 # The root build hook creates its package-cache path before Make's configure
 # recipe runs. Keep the checkout's output directories owned by the build user.
 mkdir -p "target/vcache/$IMAGENAME/deb" target/versions dpkg
@@ -317,7 +322,7 @@ for variable in PLATFORM_ARCH TARGET_BOOTLOADER BUILD_WITH_BAZEL_WHEN_AVAILABLE 
     PREFER_DEBIAN_REPO \
     MULTIARCH_QEMU_ENVIRON DOCKER_HOST DOCKER_CONFIG DOCKER_USERNAME DOCKER_USERTAG DOCKER_LOCKDIR \
     SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD SONIC_CONFIG_USE_DOCKER_CACHE \
-    SONIC_DPKG_CACHE_SOURCE SONIC_DPKG_CACHE_METHOD SONIC_BAZEL_CACHE_SOURCE BAZELISK_HOME \
+    SONIC_DPKG_CACHE_SOURCE SONIC_DPKG_CACHE_METHOD SONIC_BAZEL_CACHE_SOURCE BAZEL_CONTAINER_CACHE_DIR BAZEL_SWSS_CACHE_DIR BAZELISK_HOME \
     SONIC_DEFAULT_CONTAINER_REGISTRY DEFAULT_CONTAINER_REGISTRY MIRROR_URLS MIRROR_SECURITY_URLS \
     SONIC_BUILD_JOBS SONIC_BUILD_MEMORY MAKEFLAGS BUILD_NUMBER BUILD_TIMESTAMP SOURCE_DATE_EPOCH BUILD_HOSTNAME \
     SLAVE_DIR SLAVE_TAG DISTRO IMAGENAME SONIC_BUILD_TARGET TRUSTED_GPG_URLS \
