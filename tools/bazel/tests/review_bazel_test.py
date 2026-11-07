@@ -55,20 +55,20 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
 
     def test_debian_bootstrap_verifies_bytes_and_keeps_existing_cache_settings(self):
         for workflow, job, revision, expected in (
-            ('bazel-oci.yml', 'archive', '353f3a98adaa4ecfe6aaa7229cdf2d825ff36dfe',
-             'e5fbd7add242accf33663c830d7647e02184bbc408e15033183de787f483d9e5'),
-            ('bazel-libteam.yml', 'native', '353f3a98adaa4ecfe6aaa7229cdf2d825ff36dfe',
-             'e5fbd7add242accf33663c830d7647e02184bbc408e15033183de787f483d9e5'),
-            ('bazel-supervisor-rust.yml', 'native', '88056e0b3c1c05c79db474fa7c324f6ced4a4f00',
-             '734b0e505fac9f2fd8b0386bf367f7f1de7cc6d72e5fcc40c98f653afa1f1346'),
-            ('bazel-yang-models.yml', 'package', '45065949f5163bd5d99793026b076eafec213ef8',
-             'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
-            ('bazel-base-images.yml', 'native', '087d351564c713ca88d241ace0b4f895a42f0c61',
-             'a7b7f70554a91612181015734651a2148ad04e7ec3263e344e2806ebc2a39c90'),
-            ('bazel-eventd.yml', 'native', '45065949f5163bd5d99793026b076eafec213ef8',
-             'cea2192b4b562c4dd5c0a42535164560d910253a00a60c298bba7e6f12a5e186'),
+            ('bazel-oci.yml', 'archive', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-libteam.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-supervisor-rust.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-yang-models.yml', 'package', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-base-images.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
+            ('bazel-eventd.yml', 'native', '97cc502556b7ec3435d2d67b105315bcc18bb47e',
+             'ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720'),
         ):
-            fixture = ROOT / 'tools/bazel/tests/fixtures' / ('source-mirrors-' + revision[:10] + '.cfg')
+            fixture = ROOT / 'tools/bazel/tests/fixtures' / ('source-mirrors-' + revision[:8] + '.cfg')
             data = fixture.read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
             url = 'https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + revision + '/ci/source_mirrors.cfg'

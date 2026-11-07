@@ -89,11 +89,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #228 changes only transport; Bazel retains the package checksums.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/353f3a98adaa4ecfe6aaa7229cdf2d825ff36dfe/ci/source_mirrors.cfg"
+          # Use the checksum-verified public configuration from the merged registry.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "e5fbd7add242accf33663c830d7647e02184bbc408e15033183de787f483d9e5"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -630,7 +630,7 @@ jobs:
           url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
