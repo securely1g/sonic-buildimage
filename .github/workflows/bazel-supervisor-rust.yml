@@ -6,8 +6,6 @@ on:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
       - tools/bazel/common.bazelrc
-      - tools/bazel/ci/review_bazel.sh
-      - tools/bazel/ci/review_bazel_rc.py
       - tools/bazel/tests/runtime.bzl
       - src/sonic-supervisord-utilities-rs/**
   push:
@@ -16,8 +14,6 @@ on:
       - .github/workflows/bazel-supervisor-rust.yml
       - MODULE.bazel
       - tools/bazel/common.bazelrc
-      - tools/bazel/ci/review_bazel.sh
-      - tools/bazel/ci/review_bazel_rc.py
       - tools/bazel/tests/runtime.bzl
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
@@ -29,11 +25,8 @@ concurrency:
   group: bazel-supervisor-rust-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
-# Remove this selection after #164 lands; ordinary invocations keep canonical main.
 env:
-  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
-  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
+  BAZEL: bazel
 
 jobs:
   native:

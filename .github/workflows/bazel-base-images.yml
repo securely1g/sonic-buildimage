@@ -13,11 +13,8 @@ concurrency:
   group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Temporary Draft validation: registry #164 owns the unmerged SNMP entry.
-# Remove this selection after #164 lands; ordinary invocations keep canonical main.
 env:
-  BAZEL: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && format('{0}/tools/bazel/ci/review_bazel.sh', github.workspace) || 'bazel' }}
-  SONIC_BAZEL_REGISTRY_REVISION: ${{ github.event_name == 'pull_request' && github.head_ref == 'codex/bazel-snmp' && '74aedb27ffcaf831f3db7d6e62a175f5cdf867d5' || '' }}
+  BAZEL: bazel
 
 jobs:
   native:
@@ -69,10 +66,10 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6e305126f13965fd01b6b3aa06e98d4595832d39/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          if hashlib.sha256(data).hexdigest() != "e9f004bfce0501f998c7d624d028d40c72eabddc12c1f7b34fc474f14042d6a8":
+          if hashlib.sha256(data).hexdigest() != "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720":
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "base-source-mirrors.cfg"
           config.write_bytes(data)

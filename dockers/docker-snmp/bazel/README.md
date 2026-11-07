@@ -82,36 +82,28 @@ client retains the owner's `_ssh` GID104 and setgid mode; Vim alternatives use
 the existing shared implementation. Services are managed by SONiC supervisor,
 so the build does not enable or start Debian init/systemd services.
 
-Platform-common `1.0.0` is published, and both source owners are merged. SNMP
-uses `2.1.0-a27e093fac394f7871ec1b19bb12ca6739c29fa9` from registry
-[#164](https://github.com/securely1g/sonic-bazel-registry/pull/164). That entry is
-still unmerged, so this image PR remains Draft. The obsolete source archive
-overrides have been removed.
+Both source owners are published on the registry's maintained `main` branch.
+SNMP selects `2.1.0-a27e093fac394f7871ec1b19bb12ca6739c29fa9`, published by
+[#164](https://github.com/securely1g/sonic-bazel-registry/pull/164), and
+platform-common selects `1.0.0`. Their source commits and archive integrity
+remain pinned by the registry entries; neither needs a source archive override.
 
-Committed `.bazelrc` keeps the canonical registry `main` URL. While #164 is open,
-this PR's CI explicitly selects its reviewed catalog
-`74aedb27ffcaf831f3db7d6e62a175f5cdf867d5` for every image-root invocation. The
-existing `review_bazel.sh` utility replaces the default registry endpoint for
-that invocation, retains local download/action caches, and leaves tracked
-configuration untouched. To reproduce this Draft validation locally:
+Local builds and CI use the canonical registry `main` URL in `.bazelrc` directly.
+The temporary SNMP catalog selection is no longer needed. To reproduce CI in
+the same native AMD64 Trixie environment:
 
 ```sh
 git submodule update --init -- src/sonic-sysmgr/gnoi
-export SONIC_BAZEL_REGISTRY_REVISION=74aedb27ffcaf831f3db7d6e62a175f5cdf867d5
-python3 -B tools/bazel/ci/snmp_image.py build \
-  --bazel "$PWD/tools/bazel/ci/review_bazel.sh" --artifacts artifacts/snmp
+python3 -B tools/bazel/ci/snmp_image.py build --artifacts artifacts/snmp
 python3 -B tools/bazel/ci/snmp_image.py validate --artifacts artifacts/snmp
-python3 -B tools/bazel/ci/snmp_image.py incremental \
-  --bazel "$PWD/tools/bazel/ci/review_bazel.sh" --artifacts artifacts/snmp
+python3 -B tools/bazel/ci/snmp_image.py incremental --artifacts artifacts/snmp
 ```
 
-Before this PR becomes Ready, remove the temporary CI selection after #164
-lands, remove the retained branch-specific CI exclusions, and validate normal
-required CI through canonical `main`. The current no-DEB scope remains in force;
-this adoption does not authorize the excluded DEB-producing checks. Keep the
-generated, ignored `MODULE.bazel.lock` and resolved source/registry evidence with
-the CI artifacts. The commands above require the same native AMD64 Trixie
-execution environment and verified compression source as the workflow.
+Keep the generated, ignored `MODULE.bazel.lock` and resolved source/registry
+evidence with the CI artifacts. Prepare the same verified compression source
+and execution tools as the workflow. The existing no-DEB and full-VS exclusions
+described above remain; this input refresh does not establish full installer or
+ARM64 SNMP acceptance.
 
 ## Refresh external inputs
 
