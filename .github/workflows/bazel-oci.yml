@@ -1295,10 +1295,10 @@ jobs:
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 720
-    # The four registered slots share one worker node. Only one full native
-    # build may consume its memory at a time; each worker handles one job.
+    # The four K3s slots share one worker node. Serialize every ref on this
+    # pool independently of the legacy lgh4 pool; each worker handles one job.
     concurrency:
-      group: sonic-slave-container-vs
+      group: sonic-slave-container-k3s-vs
       cancel-in-progress: false
     defaults:
       run:
