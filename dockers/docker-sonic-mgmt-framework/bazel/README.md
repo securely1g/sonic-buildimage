@@ -42,7 +42,7 @@ On a native AMD64 Trixie worker:
 ```sh
 # This wrapper selects one immutable reviewed registry catalog plus BCR.
 # Canonical .bazelrc remains on registry main.
-export SONIC_BAZEL_REGISTRY_REVISION=a671057872af23ab8cabc70e686e4351d4f080c5
+export SONIC_BAZEL_REGISTRY_REVISION=42f483de361bb680e6d02560f8074d729a29b68b
 BAZEL="$PWD/tools/bazel/ci/review_bazel.sh"
 python3 -B tools/bazel/ci/mgmt_framework_image.py build --bazel "$BAZEL" --artifacts artifacts/mgmt-framework
 python3 -B tools/bazel/ci/mgmt_framework_image.py validate --artifacts artifacts/mgmt-framework
