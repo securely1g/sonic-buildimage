@@ -221,6 +221,26 @@ class SourceScopeTest(unittest.TestCase):
         self.assertEqual(self.lock.read_bytes(), before)
         self.assertTrue(result["inspection"]["module_graph_complete"])
 
+    def test_collect_retains_bazel_failure_before_inspecting_json(self):
+        """A crashed inspector retains its real exit code and diagnostic output."""
+        graph_command = Path(self.temporary.name) / "failed_graph.py"
+        error = "FATAL: bazel ran out of memory and crashed.\n"
+        graph_command.write_text(
+            "import sys\n"
+            "if sys.argv[1] == 'shutdown': sys.exit(0)\n"
+            "sys.stderr.write(" + repr(error) + ")\n"
+            "sys.exit(33)\n")
+        before = self.lock.read_bytes()
+        with self.assertRaisesRegex(ValueError, "exit code 33"):
+            resolution.collect(self.root, self.output,
+                               bazel=(sys.executable, str(graph_command)))
+        self.assertEqual((self.output / "module-graph.json").read_text(), "")
+        self.assertEqual((self.output / "module-graph.stderr").read_text(), error)
+        self.assertEqual(json.loads((self.output / "module-graph-inspection.json").read_text())
+                         ["returncode"], 33)
+        self.assertEqual(self.lock.read_bytes(), before)
+        self.assertFalse((self.output / "MODULE.bazel.lock").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

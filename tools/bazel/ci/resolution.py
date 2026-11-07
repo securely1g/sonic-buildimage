@@ -10,6 +10,8 @@ import subprocess
 
 def inspect_graph(stdout, stderr, returncode):
     """Validate the full graph, allowing complete known unused extension failures."""
+    if returncode not in (0, 2):
+        raise ValueError(f"Bazel module graph failed with exit code {returncode}; see module-graph.stderr")
     graph = json.loads(stdout)
     if graph.get("key") != "<root>" or not graph.get("root") or not graph.get("dependencies"):
         raise ValueError("Missing resolved module graph")
@@ -68,6 +70,10 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     """Retain module provenance without changing the tested extension lock."""
     lock = workspace / "MODULE.bazel.lock"
     tested_lock = lock.read_bytes()
+    # The inspector evaluates unused extensions too, including large APT indexes.
+    # Release the completed build's analysis graph while preserving its disk cache.
+    subprocess.run([*bazel, "shutdown"], cwd=workspace, text=True,
+                   capture_output=True, check=True)
     command = [*bazel, "mod", "graph", "--output=json", "--extension_info=hidden",
                "--lockfile_mode=off", "--color=no", "--curses=no", *options]
     result = subprocess.run(command, cwd=workspace, text=True, capture_output=True)
