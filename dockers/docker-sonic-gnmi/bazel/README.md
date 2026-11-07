@@ -40,7 +40,7 @@ maintained registry. Build, artifact validation and installed-service validation
 are separate commands; run them in a clean, committed source checkout:
 
 ```sh
-export SONIC_BAZEL_REGISTRY_REVISION=5c98d70e43ab113d04029900a4a36cbe717f19c0
+export SONIC_BAZEL_REGISTRY_REVISION=2d7ac4ec8e38c6e2b7b78b351a90ab763d997c68
 python3 -B tools/bazel/ci/gnmi_image.py build \
   --bazel tools/bazel/ci/review_bazel.sh --dialout enabled \
   --artifacts artifacts/gnmi/enabled

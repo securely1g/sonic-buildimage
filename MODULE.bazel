@@ -47,7 +47,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.26-2cfc059c2cf1dc3b2f2b2ec1bcd70400b04ecb75",
+    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -61,7 +61,7 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.0", repo_name = "sonic_swss")
-bazel_dep(name = "sonic-swss-common", version = "0.0.8-a0450924719a9f706125cc44a07dc88934935003", repo_name = "sonic_swss_common")
+bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -311,8 +311,8 @@ source_files(
 
 # The gNMI and schema owners supply direct runtime TARs; the image adds only
 # its original startup/configuration files and pinned external dependencies.
-bazel_dep(name = "sonic-gnmi", version = "0.1.0-6a854f16f9a63a4357b5f2db6969f5c9c00cbdde", repo_name = "sonic_gnmi")
-bazel_dep(name = "sonic-mgmt-common", version = "1.0.1-24211db5e3f7e514246f60572169260a0b5f0589", repo_name = "sonic_mgmt_common")
+bazel_dep(name = "sonic-gnmi", version = "0.1.0-3cc2cba22ba980128518aafe4ddae14aeebebb08", repo_name = "sonic_gnmi")
+bazel_dep(name = "sonic-mgmt-common", version = "1.0.1-05f83dcab8fe2e1a0e0fc37ac172b289d6968e2b", repo_name = "sonic_mgmt_common")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "openconfig_goyang", version = "0.0.0.sonic.1-20200309174518-a00bece872fc", repo_name = "com_github_openconfig_goyang")
 bazel_dep(name = "openconfig_ygot", version = "0.7.1.sonic.1", repo_name = "com_github_openconfig_ygot")
@@ -402,15 +402,15 @@ go_patches.module_override(
 # Keep the complete review catalog selection explicit in this image root.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.26-2cfc059c2cf1dc3b2f2b2ec1bcd70400b04ecb75",
+    version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
 )
 
 single_version_override(
     module_name = "sonic-swss-common",
-    version = "0.0.8-a0450924719a9f706125cc44a07dc88934935003",
+    version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61",
 )
 
 single_version_override(
     module_name = "sonic-mgmt-common",
-    version = "1.0.1-24211db5e3f7e514246f60572169260a0b5f0589",
+    version = "1.0.1-05f83dcab8fe2e1a0e0fc37ac172b289d6968e2b",
 )
