@@ -36,8 +36,7 @@ def shared_owner_inputs(graph, action, arguments, libraries):
     for producer in graph["actions"]:
         for identity in producer.get("outputIds", []):
             identity = str(identity)
-            artifacts.require(identity not in producers, "ambiguous link input producer")
-            producers[identity] = producer
+            producers.setdefault(identity, []).append(producer)
     memo, active = {}, set()
     def input_set(identity):
         identity = str(identity)
@@ -83,7 +82,45 @@ def shared_owner_inputs(graph, action, arguments, libraries):
             if identity in resolved:
                 return resolved[identity]
             visiting.add(identity)
-            producer = producers.get(identity)
+            matches = producers.get(identity, [])
+            if len(matches) > 1:
+                # Bazel creates shareable solib artifacts and emits actions per
+                # configured target. Accept repeated adapters only after every
+                # one proves the same single edge and nonempty action key.
+                signatures = set()
+                for candidate in matches:
+                    dependencies = inputs(candidate)
+                    outputs = list(map(str, candidate.get("outputIds", [])))
+                    key = candidate.get("actionKey", "")
+                    if (candidate["mnemonic"] != "SolibSymlink" or
+                            len(dependencies) != 1 or outputs != [identity] or
+                            not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{32,128}", key)):
+                        signatures = set()
+                        break
+                    signatures.add((next(iter(dependencies)), key))
+                if len(signatures) != 1:
+                    details = []
+                    for candidate in matches[:4]:
+                        label = labels.get(str(candidate.get("targetId")), "")
+                        public_label = (len(label) <= 256 and re.fullmatch(
+                            r"@@(?:libteam|sonic-swss|sonic-build-infra)\+//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+", label))
+                        key = candidate.get("actionKey", "")
+                        config = str(candidate.get("configurationId", ""))
+                        mnemonic = candidate.get("mnemonic", "")
+                        details.append({
+                            "mnemonic": mnemonic if mnemonic in {"CppLink", "SolibSymlink"} else "other",
+                            "target": label if public_label else "sha256:" + hashlib.sha256(label.encode()).hexdigest(),
+                            "action_key": key if isinstance(key, str) and re.fullmatch(r"[0-9a-f]{32,128}", key) else "unavailable",
+                            "configuration_id": config if re.fullmatch(r"[0-9]{1,20}", config) else "unavailable",
+                        })
+                    name = library if library in {"libteam.so.5.6.1", "libteamdctl.so.0.1.5"} else "other-library"
+                    artifacts.require(False, "ambiguous selected library producer: " + json.dumps({
+                        "library": name, "producer_count": len(matches),
+                        "producers": details, "truncated": len(matches) > len(details)}, sort_keys=True))
+            # A sole producer, or an explicitly equivalent set of solib edges.
+            # Ambiguity elsewhere in the dependency graph is not this link's
+            # ownership evidence and does not reject an unrelated consumer.
+            producer = matches[0] if matches else None
             found = set()
             if producer is not None:
                 if producer["mnemonic"] == "CppLink":

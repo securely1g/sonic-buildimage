@@ -221,6 +221,62 @@ class LibteamOwnerLinkTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "shared libteam owner"):
                 self.check_graph(graph)
 
+    def test_unrelated_duplicate_outputs_do_not_reject_selected_libraries(self):
+        for consumed in (False, True):
+            with self.subTest(consumed=consumed):
+                graph = self.graph("bazel-out/k8-opt/bin/_solib_k8/owner", adapter="solib")
+                graph["artifacts"].append({"id": "99", "pathFragmentId": "99"})
+                graph["pathFragments"].append({"id": "99", "label": "bazel-out/k8-opt/bin/other/helper.so"})
+                graph["targets"].append({"id": "99", "label": "@@other+//:helper"})
+                graph["actions"].extend([
+                    {"mnemonic": "CppLink", "targetId": "99", "outputIds": ["99"], "actionKey": "a" * 64},
+                    {"mnemonic": "CppLink", "targetId": "99", "outputIds": ["99"], "actionKey": "b" * 64},
+                ])
+                if consumed:
+                    graph["depSetOfFiles"][-2]["directArtifactIds"].append("99")
+                self.check_graph(graph)
+
+    def test_equivalent_shareable_solib_edges_preserve_unique_leaf_owner(self):
+        for adapter in ("solib", "interface"):
+            with self.subTest(adapter=adapter):
+                graph = self.graph("bazel-out/k8-opt/bin/_solib_k8/owner", adapter=adapter)
+                original = next(action for action in graph["actions"] if action["mnemonic"] == "SolibSymlink")
+                original["actionKey"] = "a" * 64
+                original["configurationId"] = "1"
+                other = dict(original, targetId=graph["actions"][-2]["targetId"], configurationId="2")
+                graph["actions"].append(other)
+                self.check_graph(graph)
+                graph["actions"].append(dict(graph["actions"][0]))
+                with self.assertRaisesRegex(ValueError, "ambiguous selected library producer"):
+                    self.check_graph(graph)
+
+    def test_conflicting_or_keyless_selected_adapters_are_rejected_safely(self):
+        for variant in ("keyless", "different-key", "different-input", "multiple-inputs", "mixed", "too-many", "private-label"):
+            with self.subTest(variant=variant):
+                graph = self.graph("bazel-out/k8-opt/bin/_solib_k8/owner", adapter="solib")
+                original = next(action for action in graph["actions"] if action["mnemonic"] == "SolibSymlink")
+                original["actionKey"] = "a" * 64
+                other = dict(original)
+                if variant == "keyless": other.pop("actionKey")
+                elif variant == "different-key": other["actionKey"] = "b" * 64
+                elif variant in ("different-input", "multiple-inputs"):
+                    graph["depSetOfFiles"].append({"id": "99", "directArtifactIds": ["3"] if variant == "different-input" else ["1", "3"]})
+                    other["inputDepSetIds"] = ["99"]
+                elif variant == "private-label":
+                    graph["targets"].append({"id": "99", "label": "@@private-token-secret//private:target"})
+                    other.update(targetId="99", actionKey="secret-key", configurationId="private-config")
+                else: other["mnemonic"] = "CppLink"
+                graph["actions"].extend([other] * (7 if variant == "too-many" else 1))
+                with self.assertRaisesRegex(ValueError, "ambiguous selected library producer") as caught:
+                    self.check_graph(graph)
+                message = str(caught.exception)
+                self.assertIn('"library": "libteam.so.5.6.1"', message)
+                self.assertNotIn("private-token-secret", message)
+                self.assertNotIn("secret-key", message)
+                self.assertNotIn("private-config", message)
+                self.assertLess(len(message), 4096)
+                if variant == "too-many": self.assertIn('"truncated": true', message)
+
     def test_provenance_records_actual_link_input_and_owner_output(self):
         graph = self.graph("bazel-out/k8-opt/bin/_solib_k8/owner", adapter="interface")
         link = graph["actions"][-2]
