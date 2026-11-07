@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -26,11 +26,27 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+        - /usr/local/lib/android:/runner-unused/android
+        - /usr/share/dotnet:/runner-unused/dotnet
+        - /opt/ghc:/runner-unused/ghc
     defaults:
       run:
         shell: bash
     steps:
+      - name: Allocate source-build space on this disposable runner
+        if: matrix.architecture == 'amd64'
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
       - name: Install execution and verification tools
         run: |
           apt-get update
@@ -48,6 +64,8 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'
@@ -56,10 +74,10 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Pin the transport fallback; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/17ba6a540f7d3fb4726a2c8d5a733da8324eab43/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -79,7 +97,11 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          set -euo pipefail
+          mkdir -p artifacts/base-images
+          cp tools/bazel/ci/libteam_draft_bazel.sh artifacts/base-images/registry-input.txt
           python3 -B tools/bazel/ci/base_images.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
           git diff --exit-code
       - name: Retain images, symbols and build evidence
@@ -93,6 +115,7 @@ jobs:
             artifacts/base-images/*.json
             artifacts/base-images/*.jsonl
             artifacts/base-images/*.log
+            artifacts/base-images/registry-input.txt
             artifacts/base-images/MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
