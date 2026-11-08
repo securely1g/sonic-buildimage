@@ -19,7 +19,7 @@ from unittest import mock
 from tools.bazel.tests.source_image_worker_test import worker, ROOT, SHARED_CONFIG_FIXTURE
 from tools.bazel.tests.source_workflow_test import jobs, steps, shell
 
-PIN = "3a7e32d09e511735f36a47b276d6524cf9c2a5c4"
+PIN = "997796400cc3eefc1f0590b227cd9b74c2141424"
 
 
 def block(first, stop):

@@ -32,10 +32,10 @@ PROFILES = {
          'presubmit_sha256': '8d72692557b6d74bdc6a6c29ebc2af7eeb1ae3858006e8b7f38449ca04a723cc',
          'builds': 19,
          'tests': 7},
-    'dash': {'revision': '28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623',
+    'dash': {'revision': '39726e4b38d77e462a9481adef898c35e5cf4daa',
          'module': 'sonic-dash',
          'version': '0.0.3-53e524a348589e2b2e0585a8c148bd9b2f8bc686',
-         'presubmit_sha256': '41137940b8899634d4a36077fa40745d6a22b16145998963883162be5b56d58f',
+         'presubmit_sha256': '663edbc36d3d30e55bb048eba34e3a0aaa47903f86cbd9b66ef76a67fef85310',
          'builds': 4,
          'tests': 2},
     'linkmgrd': {'revision': 'b6b0b1bfcd784c7b2fa4bc7ada101c276d0258aa',
@@ -151,19 +151,19 @@ def verified_source_distdirs(cache, artifacts):
 
 
 def verified_pi_rule_inputs(consumer):
-    if consumer != 'pi':
+    if consumer not in ('pi', 'dash'):
         return None
     temporary = Path(os.environ['RUNNER_TEMP'])
     distdir = temporary / 'registry-native-rule-inputs'
     receipt = temporary / 'registry-native-rule-sources.json'
     require(distdir.is_dir() and not distdir.is_symlink() and
-            distdir.resolve().is_relative_to(temporary.resolve()), 'Invalid PI rule input directory')
+            distdir.resolve().is_relative_to(temporary.resolve()), 'Invalid registry rule input directory')
     require(receipt.is_file() and not receipt.is_symlink() and receipt.stat().st_size <= 65536,
-            'Missing bounded PI rule receipt')
+            'Missing bounded registry rule receipt')
     value = load_json(receipt.read_text())
     safe_json(value)
     manifest = ROOT / 'bazel-public-inputs/ci/github_sources/sonic-buildimage-rule-inputs.json'
-    require(value.get('manifest_sha256') == digest(manifest), 'PI rule receipt differs from pinned manifest')
+    require(value.get('manifest_sha256') == digest(manifest), 'Registry rule receipt differs from pinned manifest')
     return str(distdir), value
 
 

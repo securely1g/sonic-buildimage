@@ -76,6 +76,27 @@ class RegistryWorkerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'complete original target list'):
                 worker.audit_before_build(self.spec,[*self.startup,verb,*targets[:-1]],auditor)
             self.assertEqual(auditor.call_count,1)
+    def test_dash_keeps_the_complete_reviewed_build_and_runtime_tests(self):
+        profile=worker.PROFILES['dash']
+        self.assertEqual(profile,{
+            'revision':'39726e4b38d77e462a9481adef898c35e5cf4daa',
+            'module':'sonic-dash','version':'0.0.3-53e524a348589e2b2e0585a8c148bd9b2f8bc686',
+            'presubmit_sha256':'663edbc36d3d30e55bb048eba34e3a0aaa47903f86cbd9b66ef76a67fef85310',
+            'builds':4,'tests':2})
+        self.assertEqual(self.selection(consumer='dash',revision=profile['revision']),profile)
+        builds=['@sonic-dash//:runtime','@sonic-dash//:runtime.debug_symbols',
+                '@sonic-dash//:sdk','@sonic-dash//:runtime_packages.json']
+        tests=['@sonic-dash//bazel:runtime_test','@sonic-dash//bazel:make_flags_test']
+        self.spec['config']={'build_targets':builds,'test_targets':tests}
+        for verb,targets in [('build',builds),('test',tests)]:
+            auditor=Mock()
+            _,actual,flags=worker.audit_before_build(self.spec,[*self.startup,verb,*targets],auditor)
+            self.assertEqual(actual,verb)
+            self.assertEqual([flag for flag in flags if not flag.startswith('--')],targets)
+            self.assertEqual(auditor.call_args.args[2],builds+tests)
+            with self.assertRaisesRegex(ValueError,'complete original target list'):
+                worker.audit_before_build(self.spec,[*self.startup,verb,*targets[:-1]],auditor)
+            self.assertEqual(auditor.call_count,1)
     def test_child_environment_excludes_credentials(self):
         result=worker.child_environment({**self.environment,'GH_TOKEN':'private','ACTIONS_RUNTIME_TOKEN':'private',
             'GIT_CONFIG_GLOBAL':'private','HTTP_PROXY':'http://private.invalid','OTHER':'private'},Path('/actions/_work/registry'),Path('/bazel_cache/registry-native/w'))
@@ -99,7 +120,9 @@ class RegistryWorkerTest(unittest.TestCase):
     def test_pi_rule_receipt_binds_manifest_and_preserves_cache_flags(self):
         directory,receipt,value=self.pi_rule_fixture()
         with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root)}),patch.object(worker,'ROOT',self.root/'control'):
-            self.assertEqual(worker.verified_pi_rule_inputs('pi'),(str(directory),value))
+            for consumer in ('pi','dash'):
+                with self.subTest(consumer=consumer):
+                    self.assertEqual(worker.verified_pi_rule_inputs(consumer),(str(directory),value))
             self.assertIsNone(worker.verified_pi_rule_inputs('fips'))
         self.spec['distdirs']=[str(directory)]
         auditor=Mock()
@@ -114,15 +137,19 @@ class RegistryWorkerTest(unittest.TestCase):
             for text in ['{',json.dumps({**value,'manifest_sha256':'0'*64}),
                          json.dumps({**value,'env':{'TOKEN':'secret'}}),' '*65537]:
                 receipt.write_text(text)
-                with self.subTest(text=text[:32]),self.assertRaises((ValueError,TypeError)):
-                    worker.verified_pi_rule_inputs('pi')
+                for consumer in ('pi','dash'):
+                    with self.subTest(consumer=consumer,text=text[:32]),self.assertRaises((ValueError,TypeError)):
+                        worker.verified_pi_rule_inputs(consumer)
             receipt.unlink()
-            with self.assertRaises(ValueError):worker.verified_pi_rule_inputs('pi')
+            for consumer in ('pi','dash'):
+                with self.subTest(consumer=consumer),self.assertRaises(ValueError):worker.verified_pi_rule_inputs(consumer)
             receipt.symlink_to(self.root/'other')
-            with self.assertRaises(ValueError):worker.verified_pi_rule_inputs('pi')
+            for consumer in ('pi','dash'):
+                with self.subTest(consumer=consumer),self.assertRaises(ValueError):worker.verified_pi_rule_inputs(consumer)
             receipt.unlink();receipt.write_text(json.dumps(value))
             directory.rmdir();directory.symlink_to(self.root,target_is_directory=True)
-            with self.assertRaises(ValueError):worker.verified_pi_rule_inputs('pi')
+            for consumer in ('pi','dash'):
+                with self.subTest(consumer=consumer),self.assertRaises(ValueError):worker.verified_pi_rule_inputs(consumer)
     def test_registry_mirror_phase_uses_shared_public_config_and_receipt_contract(self):
         from tools.bazel.ci import source_image_worker as shared
         # Execute the unchanged mirror-phase dispatch from main, excluding native phases.
@@ -134,7 +161,7 @@ class RegistryWorkerTest(unittest.TestCase):
             posonlyargs=[],args=[],kwonlyargs=[],kw_defaults=[],defaults=[]),
             body=[copy.deepcopy(branch)],decorator_list=[])],type_ignores=[])
         code=compile(ast.fix_missing_locations(module),'<actual-registry-mirror-delegation>','exec')
-        original=(ROOT/'tools/bazel/tests/fixtures/source-mirrors-3a7e32d0.cfg').read_bytes()
+        original=(ROOT/'tools/bazel/tests/fixtures/source-mirrors-99779640.cfg').read_bytes()
         for corrupt,private_root in [(False,''),(False,'https://fixture.example.invalid/debian/'),(True,'')]:
             with self.subTest(corrupt=corrupt,private=bool(private_root)),tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary);artifacts=root/'artifacts';artifacts.mkdir()
@@ -437,7 +464,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(checkouts[1]['with']['repository'],'securely1g/sonic-bazel-registry')
         self.assertEqual(checkouts[1]['with']['ref'],'c41c7baf15307ad1c8f94d5dca511ef952d28729')
         self.assertEqual(checkouts[2]['with']['repository'],'securely1g/sonic-bazel-registry')
-        self.assertEqual(checkouts[2]['with']['ref'],'3a7e32d09e511735f36a47b276d6524cf9c2a5c4')
+        self.assertEqual(checkouts[2]['with']['ref'],'997796400cc3eefc1f0590b227cd9b74c2141424')
         self.assertEqual(checkouts[2]['with']['path'],'control/bazel-public-inputs')
         self.assertIs(checkouts[2]['with']['sparse-checkout-cone-mode'],False)
         self.assertEqual(checkouts[2]['with']['sparse-checkout'].split(),[
@@ -453,12 +480,14 @@ class WorkflowTest(unittest.TestCase):
         self.assertLess(names.index('Verify the existing successful source-download producer'),names.index(download[0]['name']))
         self.assertLess(names.index(download[0]['name']),names.index('Run the original native registry build and tests'))
         self.assertEqual(download[0]['if'],"inputs.source_inputs_run != ''")
-    def test_pi_preparation_is_token_scoped_and_fail_closed_before_native(self):
+    def test_pi_and_dash_preparation_is_token_scoped_and_fail_closed_before_native(self):
         job=self.flow['jobs']['registry_native'];steps=job['steps']
-        step=next(s for s in steps if s.get('name')=='Prepare verified PI rule inputs')
+        step=next(s for s in steps if s.get('name')=='Prepare verified PI and DASH rule inputs')
         native=next(s for s in steps if s.get('id')=='native')
         self.assertLess(steps.index(step),steps.index(native))
-        self.assertEqual(step['if'],"inputs.registry_consumer == 'pi'")
+        self.assertEqual(step['if'],"inputs.registry_consumer == 'pi' || inputs.registry_consumer == 'dash'")
+        for consumer in [*worker.PROFILES,'none','unknown']:
+            self.assertEqual(condition(step['if'],consumer=consumer),consumer in ('pi','dash'))
         self.assertEqual(step['env'],{'GITHUB_TOKEN':'$'+'{{ github.token }}'})
         self.assertNotIn('GITHUB_TOKEN',job['env']);self.assertNotIn('env',native)
         self.assertNotIn('continue-on-error',step);self.assertNotIn('if',native)
