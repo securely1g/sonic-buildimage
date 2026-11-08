@@ -44,7 +44,7 @@ PROFILES = {
          'presubmit_sha256': '6859c3c860387afeaf85752364bdf2992f933d80df31e0e39ea88243b6dd6efa',
          'builds': 4,
          'tests': 3},
-    'pi': {'revision': '61f5d2cba5c3be067ec0f84b29c83eb03cf83687',
+    'pi': {'revision': '261bdc36d08b90b5ad568b199c377903277644ae',
            'module': 'p4lang-pi', 'version': '0.1.3.sonic.3',
            'presubmit_sha256': '74b9da56345cc46fa0f0bba6f0ede910c23dab46f9a2f85eb2e4b7a9e0c8558d',
            'builds': 4, 'tests': 1},

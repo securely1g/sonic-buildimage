@@ -58,7 +58,7 @@ class RegistryWorkerTest(unittest.TestCase):
     def test_pi_keeps_the_complete_reviewed_build_and_runtime_test(self):
         profile=worker.PROFILES['pi']
         self.assertEqual(profile,{
-            'revision':'61f5d2cba5c3be067ec0f84b29c83eb03cf83687',
+            'revision':'261bdc36d08b90b5ad568b199c377903277644ae',
             'module':'p4lang-pi','version':'0.1.3.sonic.3',
             'presubmit_sha256':'74b9da56345cc46fa0f0bba6f0ede910c23dab46f9a2f85eb2e4b7a9e0c8558d',
             'builds':4,'tests':1})
