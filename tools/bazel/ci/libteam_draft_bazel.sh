@@ -2,5 +2,5 @@
 # Compatibility entry point for inherited source-only image workflows.
 # Keep one complete immutable catalog and the shared cache-preserving implementation.
 set -euo pipefail
-export SONIC_BAZEL_REGISTRY_REVISION=1a7de6cd36285bd696b3bfe2bdc19aa58e6e1bf5
+export SONIC_BAZEL_REGISTRY_REVISION=7b20b91ef97c45c30b83db8aadc605137e6d40a3
 exec "$(dirname "$0")/review_bazel.sh" "$@"
