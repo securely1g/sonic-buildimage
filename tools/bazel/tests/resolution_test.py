@@ -1,11 +1,14 @@
 """Fail-closed checks for module evidence collection; no build actions."""
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
@@ -110,6 +113,81 @@ class GraphInspectionTest(unittest.TestCase):
         graph = json.loads(GRAPH)
         graph["dependencies"].append({"key": "rules_apple@3.5.1", "unexpanded": True})
         self.assertEqual(resolution.inspect_graph(json.dumps(graph), ERRORS, 2)["module_count"], 3)
+
+
+class CollectionDiagnosticsTest(unittest.TestCase):
+    """Preserve the real subprocess error when graph output cannot be inspected."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.lock = self.root / "MODULE.bazel.lock"
+        self.lock.write_text('{"registryFileHashes": {}}\n')
+        self.output = self.root / "evidence"
+        self.output.mkdir()
+
+    def command(self, stdout, stderr, returncode):
+        script = self.root / "graph.py"
+        script.write_text("import sys\n" +
+                          "sys.stdout.write(" + repr(stdout) + ")\n" +
+                          "sys.stderr.write(" + repr(stderr) + ")\n" +
+                          "sys.exit(" + str(returncode) + ")\n")
+        return (sys.executable, str(script))
+
+    def test_empty_failed_graph_reports_primary_error_before_inspection(self):
+        """An empty graph must expose its download error and exit code, not just JSONDecodeError."""
+        primary = "ERROR: repository download failed: HTTP 504\n"
+        console = io.StringIO()
+        inspect = resolution.inspect_graph
+
+        def check_before_parse(*args):
+            self.assertIn("Bazel mod graph returned 17", console.getvalue())
+            self.assertIn(primary, console.getvalue())
+            return inspect(*args)
+
+        before = self.lock.read_bytes()
+        with contextlib.redirect_stderr(console), \
+                mock.patch.object(resolution, "inspect_graph", side_effect=check_before_parse), \
+                self.assertRaisesRegex(ValueError, "not valid JSON.*return code 17"):
+            resolution.collect(self.root, self.output, bazel=self.command("", primary, 17))
+        self.assertEqual((self.output / "module-graph.stderr").read_text(), primary)
+        self.assertEqual((self.output / "module-graph.json").read_text(), "")
+        receipt = json.loads((self.output / "module-graph-inspection.json").read_text())
+        self.assertEqual(receipt["returncode"], 17)
+        self.assertEqual(self.lock.read_bytes(), before)
+
+    def test_large_diagnostics_are_bounded_but_complete_local_evidence_survives(self):
+        """Keep the causal beginning/end while avoiding huge stdout/stderr dumps in job logs."""
+        stderr = "first error\n" + "x" * 100000 + "\nlast error\n"
+        stdout = "not-json-start\n" + "y" * 100000 + "\nnot-json-end\n"
+        console = io.StringIO()
+        with contextlib.redirect_stderr(console), self.assertRaisesRegex(ValueError, "return code 33"):
+            resolution.collect(self.root, self.output, bazel=self.command(stdout, stderr, 33))
+        text = console.getvalue()
+        self.assertLess(len(text.encode()), 11000)
+        for marker in ("first error", "last error", "not-json-start", "not-json-end", "bytes omitted"):
+            self.assertIn(marker, text)
+        self.assertEqual((self.output / "module-graph.stderr").read_text(), stderr)
+        self.assertEqual((self.output / "module-graph.json").read_text(), stdout)
+
+    def test_zero_exit_with_invalid_json_is_still_rejected_with_diagnostics(self):
+        """A process success must not turn malformed graph output into accepted evidence."""
+        console = io.StringIO()
+        with contextlib.redirect_stderr(console), self.assertRaisesRegex(ValueError, "return code 0"):
+            resolution.collect(self.root, self.output,
+                               bazel=self.command("not JSON", "unexpected wrapper output\n", 0))
+        self.assertIn("unexpected wrapper output", console.getvalue())
+        self.assertIn("not JSON", console.getvalue())
+
+    def test_known_unused_extension_failure_keeps_existing_acceptance(self):
+        """Reporting a nonzero process result must not change the existing complete-graph policy."""
+        console = io.StringIO()
+        with contextlib.redirect_stderr(console), mock.patch.object(resolution, "retain", return_value={}):
+            result = resolution.collect(self.root, self.output, bazel=self.command(GRAPH, ERRORS, 2))
+        self.assertTrue(result["inspection"]["module_graph_complete"])
+        self.assertFalse(result["inspection"]["extension_inspection_complete"])
+        self.assertEqual(len(result["inspection"]["unused_extension_failures"]), 2)
 
 
 class SourceScopeTest(unittest.TestCase):

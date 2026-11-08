@@ -6,6 +6,25 @@ from pathlib import PurePosixPath
 import re
 import shutil
 import subprocess
+import sys
+
+
+def _preview(text, limit):
+    """Keep the first and last diagnostics without dumping a large command log."""
+    data = text.encode("utf-8")
+    if len(data) <= limit:
+        return text
+    half = limit // 2
+    return (data[:half].decode("utf-8", errors="ignore") +
+            f"\n... {len(data) - limit} bytes omitted ...\n" +
+            data[-half:].decode("utf-8", errors="ignore"))
+
+
+def _report_graph_result(result):
+    """Expose the primary process failure in the normal masked CI job log."""
+    print(f"Bazel mod graph returned {result.returncode}; "
+          f"stderr ({len(result.stderr.encode('utf-8'))} bytes):", file=sys.stderr)
+    print(_preview(result.stderr, 8192) or "(empty)", file=sys.stderr)
 
 
 def inspect_graph(stdout, stderr, returncode):
@@ -75,7 +94,17 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     (directory / "module-graph.stderr").write_text(result.stderr)
     (directory / "module-graph-inspection.json").write_text(
         json.dumps({"argv": command, "returncode": result.returncode}, indent=2) + "\n")
-    inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    if result.returncode:
+        _report_graph_result(result)
+    try:
+        inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    except json.JSONDecodeError as error:
+        if not result.returncode:
+            _report_graph_result(result)
+        print(f"Invalid module graph stdout ({len(result.stdout.encode('utf-8'))} bytes):\n" +
+              (_preview(result.stdout, 2048) or "(empty)"), file=sys.stderr)
+        raise ValueError(f"Bazel module graph is not valid JSON (return code {result.returncode}); "
+                         "see the command diagnostics above and module-graph.stderr") from error
     inspection["argv"] = command
     (directory / "module-graph-inspection.json").write_text(json.dumps(inspection, indent=2) + "\n")
     if lock.read_bytes() != tested_lock:
