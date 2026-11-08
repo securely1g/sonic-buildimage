@@ -34,7 +34,7 @@ class DownloadError(Exception):
         self.category = category
 
 
-FAILURE_CATEGORY = r"(?:metadata|asset):(?:transport|http:[45][0-9]{2}(?::rate_limited)?)|validation|other"
+FAILURE_CATEGORY = r"(?:metadata|asset):(?:transport|http:[345][0-9]{2}(?::rate_limited)?)|validation|other"
 
 
 def http_failure(stage, error):
@@ -90,7 +90,7 @@ class PublicAssets:
             request.add_unredirected_header("Authorization", "Bearer " + self._token)
         return self._opener.open(request, timeout=60)
 
-    def _json(self, path):
+    def _json(self, path, *, repository_redirect=False):
         try:
             with self._request("https://api.github.com" + path, api=True) as response:
                 data = response.read(2 * 1024 * 1024 + 1)
@@ -99,10 +99,26 @@ class PublicAssets:
                 value = json.loads(data)
                 if not isinstance(value, dict):
                     raise DownloadError("Invalid public release metadata")
-                return value
+                return (value, None) if repository_redirect else value
         except urllib.error.HTTPError as error:
             category = http_failure("metadata", error)
+            location = error.headers.get("Location", "") if error.headers else ""
+            code = error.code
             error.close()
+            if (repository_redirect and code in {301, 302, 307, 308}
+                    and re.fullmatch(r"/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", path)):
+                target = urllib.parse.urlsplit(location)
+                identity = re.fullmatch(r"/repositories/([1-9][0-9]{0,19})", target.path)
+                if (target.scheme != "https" or target.netloc != "api.github.com"
+                        or target.query or target.fragment or not identity):
+                    raise DownloadError("Unsupported repository identity redirect") from None
+                # Follow only one API-owned identity redirect. A second redirect
+                # is refused by _json's normal no-redirect metadata policy.
+                value = self._json(target.path)
+                repository_id = int(identity[1])
+                if type(value.get("id")) is not int or value["id"] != repository_id:
+                    raise DownloadError("Repository identity changed") from None
+                return value, repository_id
             raise DownloadError("Public release metadata unavailable", category=category) from None
         except (OSError, ValueError, urllib.error.URLError):
             raise DownloadError("Public release metadata unavailable", category="metadata:transport") from None
@@ -112,11 +128,16 @@ class PublicAssets:
         key = (repo, tag, name)
         with self._lock:
             if key not in self._assets:
-                repository = self._json("/repos/" + repo)
+                repository, redirected_id = self._json("/repos/" + repo, repository_redirect=True)
+                canonical = repository.get("full_name", "")
                 if (repository.get("private") is not False or repository.get("visibility") != "public"
-                        or repository.get("full_name", "").casefold() != repo.casefold()):
+                        or type(repository.get("id")) is not int or repository["id"] <= 0
+                        or not isinstance(canonical, str)
+                        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", canonical)
+                        or any(part in {".", ".."} for part in canonical.split("/"))
+                        or (redirected_id is None and canonical.casefold() != repo.casefold())):
                     raise DownloadError("Only public repositories are allowed")
-                release = self._json("/repos/" + repo + "/releases/tags/" + urllib.parse.quote(tag, safe=""))
+                release = self._json("/repos/" + canonical + "/releases/tags/" + urllib.parse.quote(tag, safe=""))
                 if (release.get("draft") is not False or not release.get("published_at")
                         or release.get("tag_name") != tag):
                     raise DownloadError("Only published releases are allowed")
@@ -130,7 +151,7 @@ class PublicAssets:
                 if (asset.get("state") != "uploaded" or type(asset.get("id")) is not int or asset["id"] <= 0
                         or type(asset.get("size")) is not int or not 0 < asset["size"] <= MAX_ASSET_BYTES):
                     raise DownloadError("Invalid release asset metadata")
-                self._assets[key] = ("https://api.github.com/repos/" + repo + "/releases/assets/" + str(asset["id"]), asset["size"])
+                self._assets[key] = ("https://api.github.com/repos/" + canonical + "/releases/assets/" + str(asset["id"]), asset["size"])
             return self._assets[key]
 
     def open(self, url):

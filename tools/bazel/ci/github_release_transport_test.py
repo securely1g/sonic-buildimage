@@ -32,10 +32,11 @@ class Response(io.BytesIO):
 
 
 class Origin:
-    def __init__(self, *, private=False, draft=False, location=CDN, direct=False):
+    def __init__(self, *, private=False, draft=False, location=CDN, direct=False, repo="example/tools"):
         self.calls = []
+        self.api_base = "https://api.github.com/repos/" + repo
         self.repository = {"private": private, "visibility": "private" if private else "public",
-                           "full_name": "example/tools"}
+                           "full_name": repo, "id": 42}
         self.release = {"tag_name": "v1.0", "draft": draft, "published_at": "2026-11-08T00:00:00Z",
                         "assets": [{"id": 17, "name": "tool.tar.gz", "state": "uploaded", "size": len(BODY)}]}
         self.location, self.direct = location, direct
@@ -43,11 +44,11 @@ class Origin:
     def open(self, request, timeout):
         self.calls.append(request)
         url = request.full_url
-        if url == "https://api.github.com/repos/example/tools":
+        if url == self.api_base:
             return Response(json.dumps(self.repository).encode())
-        if url == "https://api.github.com/repos/example/tools/releases/tags/v1.0":
+        if url == self.api_base + "/releases/tags/v1.0":
             return Response(json.dumps(self.release).encode())
-        if url == API:
+        if url == self.api_base + "/releases/assets/17":
             if self.direct:
                 return Response(BODY, "application/octet-stream")
             raise urllib.error.HTTPError(url, 302, "Found", {"Location": self.location}, io.BytesIO())
@@ -56,7 +57,75 @@ class Origin:
         raise AssertionError("Unexpected origin request")
 
 
+class MovedOrigin(Origin):
+    def __init__(self, *, redirect="https://api.github.com/repositories/42", code=301):
+        super().__init__(repo="new-owner/tools")
+        self.redirect, self.code = redirect, code
+
+    def open(self, request, timeout):
+        if request.full_url == "https://api.github.com/repos/example/tools":
+            self.calls.append(request)
+            raise urllib.error.HTTPError(request.full_url, self.code, "Moved", {"Location": self.redirect}, io.BytesIO())
+        if request.full_url == "https://api.github.com/repositories/42":
+            self.calls.append(request)
+            return Response(json.dumps(self.repository).encode())
+        return super().open(request, timeout)
+
+
 class ReleaseTransportTests(unittest.TestCase):
+    def test_moved_repository_uses_verified_public_id_and_canonical_api_paths(self):
+        for code in (301, 302, 307, 308):
+            with self.subTest(code=code):
+                origin = MovedOrigin(code=code)
+                with contextlib.closing(transport.PublicAssets(TOKEN, origin).open(URL)[0]) as response:
+                    self.assertEqual(response.read(), BODY)
+                self.assertEqual([call.full_url for call in origin.calls], [
+                    "https://api.github.com/repos/example/tools", "https://api.github.com/repositories/42",
+                    "https://api.github.com/repos/new-owner/tools/releases/tags/v1.0",
+                    "https://api.github.com/repos/new-owner/tools/releases/assets/17", CDN])
+                self.assertTrue(all(call.get_header("Authorization") == "Bearer " + TOKEN for call in origin.calls[:-1]))
+                self.assertIsNone(origin.calls[-1].get_header("Authorization"))
+
+    def test_repository_redirects_refuse_cross_origin_paths_and_credential_locations(self):
+        for location in (CDN, "http://api.github.com/repositories/42", "https://evil.invalid/repositories/42",
+                         "https://user@api.github.com/repositories/42", "https://api.github.com:444/repositories/42",
+                         "https://api.github.com/repos/new-owner/tools", "https://api.github.com/repositories/0",
+                         "https://api.github.com/repositories/42?token=secret", "https://api.github.com/repositories/42#fragment"):
+            with self.subTest(location=location):
+                origin = MovedOrigin(redirect=location)
+                with self.assertRaises(transport.DownloadError):
+                    transport.PublicAssets(TOKEN, origin).open(URL)
+                self.assertEqual(len(origin.calls), 1)
+
+    def test_redirected_identity_must_match_and_remain_public(self):
+        for changed in ({"id": 43}, {"id": True}, {"id": None}, {"private": True},
+                        {"visibility": "private"}, {"full_name": "../tools"}, {"full_name": "owner/nested/repo"}):
+            with self.subTest(changed=changed):
+                origin = MovedOrigin()
+                origin.repository.update(changed)
+                with self.assertRaises(transport.DownloadError):
+                    transport.PublicAssets(TOKEN, origin).open(URL)
+                self.assertEqual(len(origin.calls), 2)
+        origin = Origin()
+        origin.repository["full_name"] = "unexpected/tools"
+        with self.assertRaises(transport.DownloadError):
+            transport.PublicAssets(TOKEN, origin).open(URL)
+        self.assertEqual(len(origin.calls), 1)
+
+    def test_repository_identity_redirect_cannot_chain(self):
+        class Loop(MovedOrigin):
+            def open(self, request, timeout):
+                if request.full_url.endswith("/repositories/42"):
+                    self.calls.append(request)
+                    raise urllib.error.HTTPError(request.full_url, 301, "Moved",
+                                                 {"Location": "https://api.github.com/repositories/43"}, io.BytesIO())
+                return super().open(request, timeout)
+        origin = Loop()
+        with self.assertRaises(transport.DownloadError) as caught:
+            transport.PublicAssets(TOKEN, origin).open(URL)
+        self.assertEqual(caught.exception.category, "metadata:http:301")
+        self.assertEqual(len(origin.calls), 2)
+
     def test_loopback_proxy_bypass_preserves_each_existing_case(self):
         for initial in ({}, {"no_proxy": ""}, {"NO_PROXY": "existing.example"},
                         {"no_proxy": "lower.example", "NO_PROXY": "upper.example"},
@@ -127,7 +196,7 @@ class ReleaseTransportTests(unittest.TestCase):
         class Redirect:
             def open(self, request, timeout):
                 raise urllib.error.HTTPError(request.full_url, 302, "Found", {"Location": CDN}, io.BytesIO())
-        with self.assertRaisesRegex(transport.DownloadError, "metadata unavailable"):
+        with self.assertRaisesRegex(transport.DownloadError, "Unsupported repository identity redirect"):
             transport.PublicAssets(TOKEN, Redirect()).open(URL)
         self.assertIsNone(transport.NoRedirects().redirect_request(None, None, 302, None, {}, CDN))
 
