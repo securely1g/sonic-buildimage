@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-08T00:13:24.001933Z",
+  "generated_at": "2026-11-08T00:15:18.685294Z",
   "pull_requests": [
     {
       "base_sha": "848def96513e2519810b449667a28f8172617cd7",
@@ -1873,7 +1873,7 @@
           "phases": {
             "build": null,
             "other": null,
-            "setup": 5.0,
+            "setup": 159.0,
             "upload": null,
             "validation": null
           },
@@ -1891,14 +1891,14 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:15:09Z",
+              "conclusion": "success",
+              "duration_seconds": 154.0,
               "name": "Install execution tools",
               "number": 2,
               "phase": "setup",
               "started_at": "2026-11-08T00:12:35Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -1907,8 +1907,8 @@
               "name": "Checkout repository",
               "number": 3,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:15:09Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
@@ -2066,6 +2066,16 @@
               "duration_seconds": null,
               "name": "Retain Sysmgr image artifacts and evidence",
               "number": 19,
+              "phase": "other",
+              "started_at": null,
+              "status": "pending"
+            },
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "duration_seconds": null,
+              "name": "Post Checkout repository",
+              "number": 38,
               "phase": "other",
               "started_at": null,
               "status": "pending"
@@ -4565,7 +4575,7 @@
           "kind": "container",
           "name": "Container archive (AMD64)",
           "phases": {
-            "build": null,
+            "build": 1234.0,
             "other": 35.0,
             "setup": 167.0,
             "upload": 2.0,
@@ -4755,14 +4765,14 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:15:14Z",
+              "conclusion": "success",
+              "duration_seconds": 1234.0,
               "name": "Build Sysmgr runtime and debug images",
               "number": 19,
               "phase": "build",
               "started_at": "2026-11-07T23:54:40Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -4771,8 +4781,8 @@
               "name": "Validate Sysmgr image contents and cache reuse",
               "number": 20,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:15:14Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
@@ -8679,9 +8689,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-08T00:14:11Z",
+          "conclusion": "success",
+          "duration_seconds": 81.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 128572584681,
@@ -8689,13 +8699,13 @@
           "name": "Load and run Sysmgr images (AMD64)",
           "phases": {
             "build": null,
-            "other": 18.0,
+            "other": 19.0,
             "setup": 1.0,
             "upload": null,
-            "validation": null
+            "validation": 58.0
           },
           "started_at": "2026-11-08T00:12:50Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-08T00:12:52Z",
@@ -8728,34 +8738,44 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:14:08Z",
+              "conclusion": "success",
+              "duration_seconds": 58.0,
               "name": "Check installed Sysmgr startup and private Redis-to-D-Bus notifications",
               "number": 4,
               "phase": "validation",
               "started_at": "2026-11-08T00:13:10Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:14:09Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Retain installed Sysmgr evidence",
               "number": 5,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:14:08Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:14:09Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
               "number": 10,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:14:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-08T00:14:09Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 11,
+              "phase": "other",
+              "started_at": "2026-11-08T00:14:09Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42423009044/job/128572584681"
@@ -8769,8 +8789,8 @@
       "run_id": 42423009044,
       "source_sha": "3e57d80089d079d78b784e5aa0a6b633cb2d8f87",
       "started_at": "2026-11-07T22:57:37Z",
-      "status": "queued",
-      "updated_at": "2026-11-08T00:12:45Z",
+      "status": "in_progress",
+      "updated_at": "2026-11-08T00:12:51Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42423009044/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
@@ -18477,9 +18497,9 @@
         },
         {
           "architecture": "arm64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-08T00:14:14Z",
+          "conclusion": "success",
+          "duration_seconds": 992.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 128564447525,
@@ -18487,13 +18507,13 @@
           "name": "Container archive (ARM64)",
           "phases": {
             "build": null,
-            "other": 9.0,
-            "setup": 190.0,
-            "upload": null,
+            "other": 65.0,
+            "setup": 198.0,
+            "upload": 1.0,
             "validation": 725.0
           },
           "started_at": "2026-11-07T23:57:42Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-07T23:57:43Z",
@@ -18676,74 +18696,84 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:13:44Z",
+              "conclusion": "success",
+              "duration_seconds": 38.0,
               "name": "Retain generated module lock and graph",
               "number": 19,
               "phase": "other",
               "started_at": "2026-11-08T00:13:06Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:13:52Z",
+              "conclusion": "success",
+              "duration_seconds": 8.0,
               "name": "Prepare public artifact list",
               "number": 20,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:13:44Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:13:53Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Upload public archive evidence",
               "number": 21,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:13:52Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-08T00:13:53Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Require every native image family to pass",
               "number": 22,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:13:53Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:14:10Z",
+              "conclusion": "success",
+              "duration_seconds": 17.0,
               "name": "Post Set up Bazel",
               "number": 42,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:13:53Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:14:10Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository",
               "number": 43,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:14:10Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:14:11Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Stop containers",
               "number": 44,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:14:10Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-08T00:14:11Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 45,
+              "phase": "other",
+              "started_at": "2026-11-08T00:14:11Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42413618410/job/128564447525"
@@ -18760,10 +18790,10 @@
           "name": "Container archive (AMD64)",
           "phases": {
             "build": null,
-            "other": 107.0,
+            "other": 110.0,
             "setup": 54.0,
             "upload": null,
-            "validation": 188.0
+            "validation": 829.0
           },
           "started_at": "2026-11-07T23:56:52Z",
           "status": "in_progress",
@@ -18919,24 +18949,24 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:13:23Z",
+              "conclusion": "success",
+              "duration_seconds": 641.0,
               "name": "Test Python packages and check startup generation",
               "number": 16,
               "phase": "validation",
               "started_at": "2026-11-08T00:02:42Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-08T00:13:26Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
               "name": "Retain wheels and required Python test evidence",
               "number": 17,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:13:23Z",
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -18945,8 +18975,8 @@
               "name": "Check local cache reuse across fresh checkouts",
               "number": 18,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-08T00:13:26Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
