@@ -36,6 +36,82 @@ class Response(io.BytesIO):
 
 
 class NativeTransportTests(unittest.TestCase):
+    def test_preparation_and_verification_do_not_require_the_bridge(self):
+        with mock.patch.object(native, "worker_proxy_peer", side_effect=OSError("bridge does not exist")) as probe:
+            for phase in ("preparation", "verification"):
+                self.assertTrue(issubclass(native.phase_handler(phase, MIRRORS, MANIFEST, {}),
+                                           native.http.server.BaseHTTPRequestHandler))
+            probe.assert_not_called()
+            with self.assertRaises(ValueError):
+                native.phase_handler("inputs", MIRRORS, MANIFEST, {})
+            with self.assertRaises(OSError):
+                native.phase_handler("build", MIRRORS, MANIFEST, {})
+
+    def test_tcp_self_probe_discovers_a_local_peer_without_dns(self):
+        with mock.patch.object(native, "BRIDGE", "127.0.0.1"):
+            self.assertEqual(native.worker_proxy_peer(), native.ipaddress.IPv4Address("127.0.0.1"))
+
+    def test_self_probe_uses_accepted_peer_after_nat_and_requires_local_bind(self):
+        nonce = b"n" * 32
+        listener, client, local, connection = [mock.MagicMock() for _ in range(4)]
+        for item in (listener, client, local, connection):
+            item.__enter__.return_value = item
+        listener.getsockname.return_value = (native.BRIDGE, 43210)
+        listener.accept.return_value = (connection, ("10.42.1.23", 45678))
+        connection.makefile.return_value.__enter__.return_value.read.return_value = nonce
+        with mock.patch.object(native.secrets, "token_bytes", return_value=nonce), \
+                mock.patch.object(native.socket, "socket", side_effect=[listener, client, local]):
+            self.assertEqual(native.worker_proxy_peer(), native.ipaddress.IPv4Address("10.42.1.23"))
+        listener.bind.assert_called_once_with((native.BRIDGE, 0))
+        client.connect.assert_called_once_with((native.BRIDGE, 43210))
+        client.sendall.assert_called_once_with(nonce)
+        client.getsockname.assert_not_called()
+        local.bind.assert_called_once_with(("10.42.1.23", 0))
+
+    def test_self_probe_rejects_foreign_connections_invalid_peers_and_routes(self):
+        nonce = b"n" * 32
+        for failure in ("nonce", "extra_byte", "unspecified", "multicast", "broadcast", "bridge_bind", "peer_bind", "connect"):
+            with self.subTest(failure=failure):
+                listener, client, local, connection = [mock.MagicMock() for _ in range(4)]
+                for item in (listener, client, local, connection):
+                    item.__enter__.return_value = item
+                peer = {"unspecified": "0.0.0.0", "multicast": "224.0.0.1",
+                        "broadcast": "255.255.255.255"}.get(failure, "10.42.1.23")
+                listener.accept.return_value = (connection, (peer, 45678))
+                payload = b"foreign" if failure == "nonce" else nonce + (b"x" if failure == "extra_byte" else b"")
+                connection.makefile.return_value.__enter__.return_value.read.return_value = payload
+                failed_call = {"bridge_bind": listener.bind, "peer_bind": local.bind, "connect": client.connect}.get(failure)
+                if failed_call is not None:
+                    failed_call.side_effect = OSError("private route details")
+                with mock.patch.object(native.secrets, "token_bytes", return_value=nonce), \
+                        mock.patch.object(native.socket, "socket", side_effect=[listener, client, local]), \
+                        self.assertRaises(ValueError) as error:
+                    native.worker_proxy_peer()
+                self.assertNotIn("private route details", str(error.exception))
+
+    def test_proxy_accepts_only_discovered_worker_loopback_and_nested_docker(self):
+        for peer, allowed in (("10.42.1.23", True), ("127.0.0.1", True),
+                              ("192.168.240.7", True), ("10.42.1.24", False),
+                              ("192.0.2.5", False), ("203.0.113.10", False)):
+            with self.subTest(peer=peer):
+                opener = mock.Mock()
+                opener.open.return_value = Response(b"signed metadata")
+                counts = {"debian": 0, "debian-security": 0}
+                proxy = native.handler(MIRRORS, MANIFEST, counts, opener=opener,
+                                       worker_peer=native.ipaddress.IPv4Address("10.42.1.23"))
+                client, request = native.socket.socketpair()
+                with client, request:
+                    client.settimeout(5)
+                    request.settimeout(5)
+                    client.sendall(b"GET http://deb.debian.org/debian/dists/trixie/InRelease HTTP/1.0\r\n\r\n")
+                    proxy(request, (peer, 45678), types.SimpleNamespace())
+                    request.shutdown(native.socket.SHUT_WR)
+                    with client.makefile("rb") as stream:
+                        response = stream.read()
+                self.assertTrue(response.startswith(b"HTTP/1.0 " + (b"200" if allowed else b"403")))
+                self.assertEqual(opener.open.call_count, int(allowed))
+                self.assertEqual(counts["debian"], int(allowed))
+
     def test_input_diagnostics_export_only_vetted_facts_after_privacy_check(self):
         from resolution import graph_diagnostics
         with tempfile.TemporaryDirectory() as directory:
@@ -397,7 +473,10 @@ class WrapperLifecycleTests(unittest.TestCase):
             clean_environment.update(http_proxy="http://existing-http.example.invalid:3128",
                                      HTTP_PROXY="http://existing-http.example.invalid:3128")
             proxy_url = "http://configured-proxy.example.invalid:3128"
-            for phase in ("verification", "inputs"):
+            actual_handler = native.handler
+            opener = mock.Mock()
+            opener.open.side_effect = lambda *args, **kwargs: Response(b"signed metadata")
+            for phase in ("preparation", "build", "verification", "inputs"):
                 args.phase = phase
                 for inherited, expected in (({}, ""), ({"HTTPS_PROXY": proxy_url}, proxy_url),
                                             ({"https_proxy": proxy_url}, proxy_url),
@@ -417,6 +496,14 @@ class WrapperLifecycleTests(unittest.TestCase):
                         args.command[-1] += "; assert os.environ['https_proxy'] == " + repr(expected)
                         args.command[-1] += "; assert os.environ['HTTPS_PROXY'] == " + repr(expected)
                         bridge_guard = contextlib.nullcontext()
+                    if phase == "build":
+                        args.command[-1] += (
+                            "\nimport http.client,urllib.parse\n"
+                            "for url in ['http://deb.debian.org/debian/dists/trixie/InRelease',"
+                            "'http://security.debian.org/debian-security/dists/trixie-security/InRelease']:\n"
+                            " c=http.client.HTTPConnection('127.0.0.1',urllib.parse.urlsplit(os.environ['HTTP_PROXY']).port)\n"
+                            " c.request('GET',url); r=c.getresponse(); assert r.status==200; r.read(); c.close()\n")
+                    peer_probe_error = None if phase == "build" else OSError("bridge does not exist")
                     with self.subTest(phase=phase, inherited=inherited), bridge_guard, \
                          mock.patch.dict(native.sys.modules, {"private_mirrors": private_mirrors,
                              "mirror_privacy": types.SimpleNamespace(Redactor=Redactor)}), \
@@ -425,8 +512,12 @@ class WrapperLifecycleTests(unittest.TestCase):
                              "SONIC_BAZEL_REMOTE_ONLY_RC": str(managed)}, clear=True), \
                          mock.patch.object(native.subprocess, "check_output", return_value=native.REGISTRY_REVISION + "\n"), \
                          mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
+                         mock.patch.object(native, "worker_proxy_peer", return_value=native.ipaddress.IPv4Address("10.42.1.23"),
+                                           side_effect=peer_probe_error) as peer_probe, \
+                         mock.patch.object(native, "handler", side_effect=lambda *a, **kw: actual_handler(*a, **kw, opener=opener)), \
                          contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(native.run(args), 0)
+                        self.assertEqual(peer_probe.call_count, int(phase == "build"))
                         self.assertEqual([call.kwargs["fallback"] for call in
                                           private_mirrors.configuration.call_args_list[-2:]],
                                          [phase != "inputs", False])

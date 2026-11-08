@@ -15,8 +15,10 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -117,7 +119,41 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, "Redirect refused", None, None)
 
 
-def handler(mirrors, manifest, counters, *, opener=None):
+def worker_proxy_peer():
+    """Identify this worker's TCP peer after local bridge NAT, without DNS.
+
+    The native host can reach its own Docker bridge with its Pod address as
+    the accepted peer. A UDP route probe sees the pre-NAT address instead.
+    Only trust a nonce-bound self-connection and a locally bindable peer.
+    """
+    nonce = secrets.token_bytes(32)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.settimeout(5)
+            listener.bind((BRIDGE, 0))
+            listener.listen(1)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(listener.getsockname())
+                client.sendall(nonce)
+                client.shutdown(socket.SHUT_WR)
+                connection, address = listener.accept()
+                with connection:
+                    connection.settimeout(5)
+                    with connection.makefile("rb") as stream:
+                        if stream.read(len(nonce) + 1) != nonce:
+                            raise ValueError("Native proxy self-connection did not match")
+                peer = ipaddress.IPv4Address(address[0])
+                if peer.is_unspecified or peer.is_multicast or peer == ipaddress.IPv4Address("255.255.255.255"):
+                    raise ValueError("Native proxy peer is not a unicast address")
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as local:
+                    local.bind((str(peer), 0))
+                return peer
+    except OSError:
+        raise ValueError("Cannot verify the native worker's local proxy peer") from None
+
+
+def handler(mirrors, manifest, counters, *, opener=None, worker_peer=None):
     private_opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirects())
     public_opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
     counter_lock = threading.Lock()
@@ -137,7 +173,7 @@ def handler(mirrors, manifest, counters, *, opener=None):
 
         def transfer(self, *, head):
             source = ipaddress.ip_address(self.client_address[0])
-            if not (source.is_loopback or source in BRIDGE_NETWORK):
+            if not (source.is_loopback or source in BRIDGE_NETWORK or source == worker_peer):
                 self.send_error(403, "Only the private build network is allowed")
                 return
             try:
@@ -179,6 +215,15 @@ def handler(mirrors, manifest, counters, *, opener=None):
                 self.send_error(502, "Upstream download unavailable")
 
     return Proxy
+
+
+def phase_handler(phase, mirrors, manifest, counters):
+    if phase not in {"preparation", "build", "verification"}:
+        raise ValueError("This phase has no native APT proxy")
+    # Preparation creates the bridge in its child process. Only the later
+    # Make build needs the worker's own translated peer for host bootstrap.
+    peer = worker_proxy_peer() if phase == "build" else None
+    return handler(mirrors, manifest, counters, worker_peer=peer)
 
 
 def compose_downloader_config(config, arguments):
@@ -453,7 +498,8 @@ def run(args):
         if args.phase != "inputs":
             # The input producer only resolves Bazel repositories. It has no
             # Docker bridge yet and needs the private downloader, not an APT proxy.
-            server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), handler(mirrors, manifest, counts))
+            server = http.server.ThreadingHTTPServer(("0.0.0.0", 0),
+                phase_handler(args.phase, mirrors, manifest, counts))
             server.daemon_threads = True
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
