@@ -27,7 +27,7 @@ on:
       registry_consumer:
         description: Fixed ordinary registry consumer (registry-native mode only)
         type: choice
-        options: [none, common, fips, sairedis, dash, linkmgrd]
+        options: [none, common, fips, sairedis, dash, linkmgrd, pi]
         default: none
       source_worker:
         description: Dedicated worker for an image pilot
@@ -57,7 +57,7 @@ env:
 jobs:
   registry_native:
     name: Registry native (${{ inputs.registry_consumer }}, AMD64)
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_image == 'registry-native' && contains(fromJSON('["common", "fips", "sairedis", "dash", "linkmgrd"]'), inputs.registry_consumer)
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_image == 'registry-native' && contains(fromJSON('["common", "fips", "sairedis", "dash", "linkmgrd", "pi"]'), inputs.registry_consumer)
     runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
     timeout-minutes: 360
     permissions:
@@ -85,13 +85,16 @@ jobs:
           path: control/.source-mirror-registry
           sparse-checkout: ci
           persist-credentials: false
-      - name: Checkout verified public registry mirror config
+      - name: Checkout verified public registry inputs
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
           ref: 3a7e32d09e511735f36a47b276d6524cf9c2a5c4
           path: control/bazel-public-inputs
-          sparse-checkout: ci/source_mirrors.cfg
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/sonic-buildimage-rule-inputs.json
+            ci/source_mirrors.cfg
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Validate the fixed registry dispatch
@@ -133,6 +136,19 @@ jobs:
           python3 -B control/tools/bazel/ci/registry_native_worker.py prepare-mirrors \
             --consumer "$REGISTRY_CONSUMER" --revision "$REGISTRY_REVISION" --worker "$EXPECTED_WORKER" \
             --workspace "$GITHUB_WORKSPACE/registry" --artifacts "$RUNNER_TEMP/registry-native-artifacts"
+      - name: Prepare verified PI rule inputs
+        if: inputs.registry_consumer == 'pi'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B control/bazel-public-inputs/ci/github_sources.py \
+            --manifest control/bazel-public-inputs/ci/github_sources/sonic-buildimage-rule-inputs.json \
+            --distdir "$RUNNER_TEMP/registry-native-rule-inputs" \
+            --repository-cache "/bazel_cache/registry-native/$EXPECTED_WORKER/repository" \
+            --cache-dir "$RUNNER_TEMP/registry-native-github-cache" \
+            --receipt "$RUNNER_TEMP/registry-native-rule-sources.json" \
+            --github-token-env GITHUB_TOKEN
       - name: Run the original native registry build and tests
         id: native
         run: |

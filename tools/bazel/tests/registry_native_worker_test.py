@@ -55,6 +55,27 @@ class RegistryWorkerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'provisioner-verified'):
             worker.container_reference({'test_runtime_preparation':{'script':'checked.py'}},marker)
         self.assertEqual(worker.SLAVE_IMAGE_REFERENCES,{})
+    def test_pi_keeps_the_complete_reviewed_build_and_runtime_test(self):
+        profile=worker.PROFILES['pi']
+        self.assertEqual(profile,{
+            'revision':'61f5d2cba5c3be067ec0f84b29c83eb03cf83687',
+            'module':'p4lang-pi','version':'0.1.3.sonic.3',
+            'presubmit_sha256':'74b9da56345cc46fa0f0bba6f0ede910c23dab46f9a2f85eb2e4b7a9e0c8558d',
+            'builds':4,'tests':1})
+        self.assertEqual(self.selection(consumer='pi',revision=profile['revision']),profile)
+        builds=['@p4lang-pi//:runtime','@p4lang-pi//:runtime.debug_symbols',
+                '@p4lang-pi//:sdk','@p4lang-pi//:runtime_packages.json']
+        tests=['@p4lang-pi//:runtime_test']
+        self.spec['config']={'build_targets':builds,'test_targets':tests}
+        for verb,targets in [('build',builds),('test',tests)]:
+            auditor=Mock()
+            _,actual,flags=worker.audit_before_build(self.spec,[*self.startup,verb,*targets],auditor)
+            self.assertEqual(actual,verb)
+            self.assertEqual([flag for flag in flags if not flag.startswith('--')],targets)
+            self.assertEqual(auditor.call_args.args[2],builds+tests)
+            with self.assertRaisesRegex(ValueError,'complete original target list'):
+                worker.audit_before_build(self.spec,[*self.startup,verb,*targets[:-1]],auditor)
+            self.assertEqual(auditor.call_count,1)
     def test_child_environment_excludes_credentials(self):
         result=worker.child_environment({**self.environment,'GH_TOKEN':'private','ACTIONS_RUNTIME_TOKEN':'private',
             'GIT_CONFIG_GLOBAL':'private','HTTP_PROXY':'http://private.invalid','OTHER':'private'},Path('/actions/_work/registry'),Path('/bazel_cache/registry-native/w'))
@@ -63,6 +84,45 @@ class RegistryWorkerTest(unittest.TestCase):
         self.assertEqual(result['GIT_CONFIG_VALUE_0'],'/actions/_work/registry')
         self.assertEqual(result['GIT_CONFIG_VALUE_1'],str(ROOT))
         self.assertEqual(result['USE_BAZEL_VERSION'],'8.5.1')
+    def test_pi_reader_token_is_not_in_native_environment(self):
+        result=worker.child_environment({**self.environment,'GITHUB_TOKEN':'fixture-token'},
+            self.root/'registry',self.root/'cache')
+        self.assertNotIn('GITHUB_TOKEN',result)
+    def pi_rule_fixture(self):
+        directory=self.root/'registry-native-rule-inputs';directory.mkdir()
+        manifest=self.root/'control/bazel-public-inputs/ci/github_sources/sonic-buildimage-rule-inputs.json'
+        manifest.parent.mkdir(parents=True);manifest.write_text('{"schema_version":1,"sources":[]}')
+        receipt=self.root/'registry-native-rule-sources.json'
+        value={'schema_version':1,'manifest_sha256':worker.digest(manifest),'sources':[],'files':[]}
+        receipt.write_text(json.dumps(value))
+        return directory,receipt,value
+    def test_pi_rule_receipt_binds_manifest_and_preserves_cache_flags(self):
+        directory,receipt,value=self.pi_rule_fixture()
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root)}),patch.object(worker,'ROOT',self.root/'control'):
+            self.assertEqual(worker.verified_pi_rule_inputs('pi'),(str(directory),value))
+            self.assertIsNone(worker.verified_pi_rule_inputs('fips'))
+        self.spec['distdirs']=[str(directory)]
+        auditor=Mock()
+        _,_,flags=worker.audit_before_build(self.spec,[*self.startup,'build',*self.spec['config']['build_targets']],auditor)
+        self.assertIn('--distdir='+str(directory),flags)
+        self.assertIn('--repository_cache='+self.spec['repository_cache'],flags)
+        self.assertIn('--disk_cache='+self.spec['disk_cache'],flags)
+        self.assertIn('--distdir='+str(directory),auditor.call_args.args[1])
+    def test_pi_rule_receipt_rejects_missing_malformed_private_and_wrong_manifest(self):
+        directory,receipt,value=self.pi_rule_fixture()
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root)}),patch.object(worker,'ROOT',self.root/'control'):
+            for text in ['{',json.dumps({**value,'manifest_sha256':'0'*64}),
+                         json.dumps({**value,'env':{'TOKEN':'secret'}}),' '*65537]:
+                receipt.write_text(text)
+                with self.subTest(text=text[:32]),self.assertRaises((ValueError,TypeError)):
+                    worker.verified_pi_rule_inputs('pi')
+            receipt.unlink()
+            with self.assertRaises(ValueError):worker.verified_pi_rule_inputs('pi')
+            receipt.symlink_to(self.root/'other')
+            with self.assertRaises(ValueError):worker.verified_pi_rule_inputs('pi')
+            receipt.unlink();receipt.write_text(json.dumps(value))
+            directory.rmdir();directory.symlink_to(self.root,target_is_directory=True)
+            with self.assertRaises(ValueError):worker.verified_pi_rule_inputs('pi')
     def test_registry_mirror_phase_uses_shared_public_config_and_receipt_contract(self):
         from tools.bazel.ci import source_image_worker as shared
         # Execute the unchanged mirror-phase dispatch from main, excluding native phases.
@@ -380,8 +440,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(checkouts[2]['with']['ref'],'3a7e32d09e511735f36a47b276d6524cf9c2a5c4')
         self.assertEqual(checkouts[2]['with']['path'],'control/bazel-public-inputs')
         self.assertIs(checkouts[2]['with']['sparse-checkout-cone-mode'],False)
-        self.assertEqual(checkouts[2]['with']['sparse-checkout'],'ci/source_mirrors.cfg')
-        self.assertFalse(any('Prepare verified PI rule inputs' == s.get('name') for s in job['steps']))
+        self.assertEqual(checkouts[2]['with']['sparse-checkout'].split(),[
+            'ci/github_sources.py','ci/github_sources/sonic-buildimage-rule-inputs.json','ci/source_mirrors.cfg'])
         self.assertEqual(checkouts[3]['with']['ref'],'$'+'{{ inputs.source_revision }}')
         self.assertFalse(any('setup-bazel' in s.get('uses','') or 'actions/cache' in s.get('uses','') for s in job['steps']))
         download=[s for s in job['steps'] if 'download-artifact' in s.get('uses','')]
@@ -393,6 +453,36 @@ class WorkflowTest(unittest.TestCase):
         self.assertLess(names.index('Verify the existing successful source-download producer'),names.index(download[0]['name']))
         self.assertLess(names.index(download[0]['name']),names.index('Run the original native registry build and tests'))
         self.assertEqual(download[0]['if'],"inputs.source_inputs_run != ''")
+    def test_pi_preparation_is_token_scoped_and_fail_closed_before_native(self):
+        job=self.flow['jobs']['registry_native'];steps=job['steps']
+        step=next(s for s in steps if s.get('name')=='Prepare verified PI rule inputs')
+        native=next(s for s in steps if s.get('id')=='native')
+        self.assertLess(steps.index(step),steps.index(native))
+        self.assertEqual(step['if'],"inputs.registry_consumer == 'pi'")
+        self.assertEqual(step['env'],{'GITHUB_TOKEN':'$'+'{{ github.token }}'})
+        self.assertNotIn('GITHUB_TOKEN',job['env']);self.assertNotIn('env',native)
+        self.assertNotIn('continue-on-error',step);self.assertNotIn('if',native)
+        command=step['run']
+        self.assertIn('--repository-cache "/bazel_cache/registry-native/$EXPECTED_WORKER/repository"',command)
+        self.assertIn('--distdir "$RUNNER_TEMP/registry-native-rule-inputs"',command)
+        self.assertIn('--github-token-env GITHUB_TOKEN',command)
+        upload=next(s for s in steps if 'upload-artifact@' in s.get('uses',''))
+        self.assertEqual(upload['with']['path'],'$'+'{{ runner.temp }}/registry-native-upload/')
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);binary=root/'bin';binary.mkdir();trace=root/'trace.json'
+            fake=binary/'python3'
+            fake.write_text('#!/usr/bin/python3\nimport json,os,sys\nfrom pathlib import Path\n'
+                'Path(os.environ["TRACE"]).write_text(json.dumps({"argv":sys.argv[1:],"token_present":bool(os.environ.get("GITHUB_TOKEN"))}))\n'
+                'sys.exit(int(os.environ["FAKE_EXIT"]))\n')
+            fake.chmod(0o755)
+            for code in (0,27):
+                env={'PATH':str(binary),'RUNNER_TEMP':str(root),'EXPECTED_WORKER':'sonic-slave-lgh114-1',
+                     'GITHUB_TOKEN':'fixture-token','TRACE':str(trace),'FAKE_EXIT':str(code)}
+                result=subprocess.run(['/bin/bash','-e','-c',command],env=env,cwd=root,capture_output=True,timeout=10)
+                self.assertEqual(result.returncode,code)
+                observed=json.loads(trace.read_text());self.assertTrue(observed['token_present'])
+                self.assertIn('/bazel_cache/registry-native/sonic-slave-lgh114-1/repository',observed['argv'])
+                self.assertEqual(observed['argv'][-2:],['--github-token-env','GITHUB_TOKEN'])
 
 
 if __name__=='__main__': unittest.main()

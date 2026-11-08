@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.source_worker_preflight import WORKERS, measure, marker_identity, select_build_profile, cpu_limit
 from tools.bazel.ci.bazel_commands import audit_targets
-from tools.bazel.ci.public_artifacts import safe_json, bep_summary, dependency_json
+from tools.bazel.ci.public_artifacts import safe_json, bep_summary, dependency_json, load_json
 
 PROFILES = {
     'common': {'revision': '03f870c62fa2bab567133c6a9303f71392e4986e',
@@ -44,6 +44,10 @@ PROFILES = {
          'presubmit_sha256': '6859c3c860387afeaf85752364bdf2992f933d80df31e0e39ea88243b6dd6efa',
          'builds': 4,
          'tests': 3},
+    'pi': {'revision': '61f5d2cba5c3be067ec0f84b29c83eb03cf83687',
+           'module': 'p4lang-pi', 'version': '0.1.3.sonic.3',
+           'presubmit_sha256': '74b9da56345cc46fa0f0bba6f0ede910c23dab46f9a2f85eb2e4b7a9e0c8558d',
+           'builds': 4, 'tests': 1},
 }
 # Populate only from verified provisioner provenance. A local image ID alone is
 # not a registry image reference. Common remains fail-closed until one is known.
@@ -144,6 +148,23 @@ def verified_source_distdirs(cache, artifacts):
     directories,receipt=prepare_source_downloads(archives,cache)
     write(artifacts/'worker-source-downloads.json',receipt)
     return [str(path) for path in directories]
+
+
+def verified_pi_rule_inputs(consumer):
+    if consumer != 'pi':
+        return None
+    temporary = Path(os.environ['RUNNER_TEMP'])
+    distdir = temporary / 'registry-native-rule-inputs'
+    receipt = temporary / 'registry-native-rule-sources.json'
+    require(distdir.is_dir() and not distdir.is_symlink() and
+            distdir.resolve().is_relative_to(temporary.resolve()), 'Invalid PI rule input directory')
+    require(receipt.is_file() and not receipt.is_symlink() and receipt.stat().st_size <= 65536,
+            'Missing bounded PI rule receipt')
+    value = load_json(receipt.read_text())
+    safe_json(value)
+    manifest = ROOT / 'bazel-public-inputs/ci/github_sources/sonic-buildimage-rule-inputs.json'
+    require(value.get('manifest_sha256') == digest(manifest), 'PI rule receipt differs from pinned manifest')
+    return str(distdir), value
 
 
 UPLOAD_RECEIPTS = (
@@ -338,6 +359,11 @@ def execute(args, profile, cache):
     started=time.monotonic()
     try:
         spec['distdirs']=verified_source_distdirs(cache,args.artifacts)
+        rule_inputs=verified_pi_rule_inputs(args.consumer)
+        if rule_inputs:
+            rule_distdir,rule_sources=rule_inputs
+            spec['distdirs'].append(rule_distdir)
+            state['rule_sources']=rule_sources
         spec['downloader_config']=verified_mirror_config(args.artifacts)
         spec_path.write_text(json.dumps(spec))
         state['source_input_run']=os.environ.get('SOURCE_INPUTS_RUN') or None
