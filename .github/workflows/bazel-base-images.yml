@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}
+  group: bazel-base-images-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -72,6 +72,8 @@ jobs:
           repository-cache: true
           disk-cache: base-images-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Configure shared source download mirrors
         run: |
           python3 -B tools/bazel/ci/source_mirrors.py \
@@ -88,11 +90,15 @@ jobs:
           # Bazel records its client environment in retained build events.
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          set -euo pipefail
+          mkdir -p artifacts/base-images
+          cp tools/bazel/ci/libteam_draft_bazel.sh artifacts/base-images/registry-input.txt
           acceptance=()
           if [[ '${{ matrix.architecture }}' == amd64 ]]; then
             acceptance+=(--config-engine-acceptance)
           fi
           python3 -B tools/bazel/ci/base_images.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
             --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images "${acceptance[@]}"
           git diff --exit-code
       - name: Verify config-engine no-op and template rebuilds
@@ -101,6 +107,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/ci/config_engine_rebuild.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
             --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
       - name: Retain images, symbols and build evidence
@@ -114,6 +121,7 @@ jobs:
             artifacts/base-images/*.json
             artifacts/base-images/*.jsonl
             artifacts/base-images/*.log
+            artifacts/base-images/registry-input.txt
             artifacts/base-images/MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14

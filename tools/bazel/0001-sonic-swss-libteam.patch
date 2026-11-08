@@ -1,0 +1,88 @@
+Subject: Consume shared libteam libraries and runtime metadata in registered SWSS
+
+Purpose: Keep the image's source-owned libteam integration when consuming SWSS
+88d9cc2. Link teamsyncd and tlm_teamd with the shared libteam module and take
+libteam5/libteamdctl0 TARs and package metadata from that same owner, replacing
+the stock APT copies. Keep Jansson for tlm_teamd and use Distroless's public
+libzmq_cc C++ provider at its current CFGMGR_DEPS location.
+
+Source: sonic-swss 88d9cc2bcda39b0ebac16c95de9601e62021e3eb
+https://github.com/securely1g/sonic-swss/tree/88d9cc2bcda39b0ebac16c95de9601e62021e3eb
+Registry: sonic-swss 0.0.1-88d9cc2bcda39b0ebac16c95de9601e62021e3eb;
+apply after the registry's 0001-module-version.patch with strip 1.
+Provenance: Adapted from sonic-buildimage PR #162 at
+233bde227dc62712bb3324ab4249cfbf145de893, retained by PR #191 at
+8a332daad7ae48daf055d8780e54978d0541a7a1. Refresh the original compile-provider
+change for registered SWSS's new runtime-metadata contract. This image-root
+adaptation has not landed in the SWSS source owner.
+
+diff --git a/MODULE.bazel b/MODULE.bazel
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -14,5 +14,6 @@
+ bazel_dep(name = "bazel_skylib", version = "1.9.0")
+ bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
++bazel_dep(name = "libteam", version = "1.31.0.sonic.1")
+ bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
+ bazel_dep(name = "platforms", version = "1.1.0")
+ bazel_dep(name = "protobuf-legacy", version = "3.21.12-sonic.1", repo_name = "protobuf_legacy")
+@@ -92,9 +93,6 @@
+         "libjansson4",
+         "libjemalloc-dev",
+         "libjemalloc2",
+-        "libteam-dev",
+-        "libteam5",
+-        "libteamdctl0",
+         "libyaml-cpp-dev",
+         "libyaml-cpp0.8",
+     ],
+diff --git a/tools/bazel/deps.bzl b/tools/bazel/deps.bzl
+--- a/tools/bazel/deps.bzl
++++ b/tools/bazel/deps.bzl
+@@ -18,6 +18,6 @@
+ CFGMGR_DEPS = SWSS_DEPS + [
+     "@sonic_sairedis//meta:saimeta_shared",
+-    "@trixie//libzmq3-dev:libzmq3",
++    "@trixie//libzmq3-dev:libzmq_cc",
+ ]
+-
++
+ ORCHAGENT_DEPS = CFGMGR_DEPS + [
+@@ -28,7 +28,13 @@
+     "@swss_debian//libyaml-cpp-dev:libyaml-cpp",
+ ]
+-
++
+-# rules_distroless exposes libteam and libteamdctl through one public target.
+-TEAM_DEPS = SWSS_DEPS + ["@swss_debian//libteam-dev:libteam"]
++# Use the same source owner for linking and installed runtime metadata.
++TEAM_DEPS = SWSS_DEPS + [
++    "@libteam//:libteam",
++    "@libteam//:libteamdctl",
++]
+-
++
+-TLM_TEAM_DEPS = TEAM_DEPS + ["@swss_debian//libjansson-dev:libjansson"]
++TLM_TEAM_DEPS = SWSS_DEPS + [
++    "@libteam//:libteamdctl",
++    "@swss_debian//libjansson-dev:libjansson",
++]
+diff --git a/dist/BUILD.bazel b/dist/BUILD.bazel
+--- a/dist/BUILD.bazel
++++ b/dist/BUILD.bazel
+@@ -136,14 +136,13 @@
+             "libjemalloc2",
+             "libyaml-cpp0.8",
+             "libjansson4",
+-            "libteam5",
+-            "libteamdctl0",
+         ]
+     },
+     changelog = "//:debian/changelog",
+     control = "//:debian/control",
+     debian_files = {"compat": "//:debian/compat"},
+     dependencies = [
++        "@libteam//:library_runtime_packages.json",
+         "@sonic_swss_common//:runtime_packages.json",
+         "@sonic_sairedis//:library_runtime_packages.json",
+         "@sonic_dash_api//:runtime_packages.json",

@@ -56,6 +56,8 @@ FILES = {
     "source": [
         ("swss-tar", "artifacts/swss/swss.tar", "binary"),
         ("protobuf-tar", "artifacts/swss/protobuf.tar", "binary"),
+        ("libteam-tar", "artifacts/swss/libteam.tar", "binary"),
+        ("libteamdctl-tar", "artifacts/swss/libteamdctl.tar", "binary"),
         ("runtime-dependencies", "artifacts/swss/rdeps.tar", "binary"),
         ("startup-files", "artifacts/swss/config.tar", "binary"),
         ("debug-symbols", "artifacts/swss/debug-symbols.tar", "binary"),

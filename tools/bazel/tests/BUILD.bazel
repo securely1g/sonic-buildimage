@@ -43,6 +43,8 @@ py_test(
         "--policy=$(rootpath //dockers/docker-orchagent:package_policy)",
         "--runtime=$(rootpath //dockers/docker-orchagent:ci_swss)",
         "--library=protobuf.tar=$(rootpath //dockers/docker-orchagent:ci_protobuf)",
+        "--library=libteam.tar=$(rootpath //dockers/docker-orchagent:ci_libteam)",
+        "--library=libteamdctl.tar=$(rootpath //dockers/docker-orchagent:ci_libteamdctl)",
         "--dependencies=$(rootpath //dockers/docker-orchagent:ci_rdeps)",
         "--config=$(rootpath //dockers/docker-orchagent:ci_config)",
         "--debug-symbols=$(rootpath //dockers/docker-orchagent:ci_debug_symbols)",
@@ -62,6 +64,8 @@ py_test(
     data = [
         "//dockers/docker-orchagent:ci_config",
         "//dockers/docker-orchagent:ci_debug_symbols",
+        "//dockers/docker-orchagent:ci_libteam",
+        "//dockers/docker-orchagent:ci_libteamdctl",
         "//dockers/docker-orchagent:ci_protobuf",
         "//dockers/docker-orchagent:ci_rdeps",
         "//dockers/docker-orchagent:ci_swss",

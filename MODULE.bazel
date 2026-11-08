@@ -72,6 +72,14 @@ bazel_dep(
     repo_name = "sonic_yang_models",
 )
 
+# Preserve master's shared libteam ownership on the registered SWSS source.
+single_version_override(
+    module_name = "sonic-swss",
+    version = "0.0.1-88d9cc2bcda39b0ebac16c95de9601e62021e3eb",
+    patches = ["//tools/bazel:0001-sonic-swss-libteam.patch"],
+    patch_strip = 1,
+)
+
 # Dependency overrides do not propagate from Common. Keep its cgo header
 # repair selected when another module requests the unpatched stable release.
 single_version_override(
@@ -239,6 +247,7 @@ apt_inputs(
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.3")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.3")
 bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
+bazel_dep(name = "libteam", version = "1.31.0.sonic.1")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.6")
 
 single_version_override(
@@ -356,6 +365,7 @@ source_modules(
         "@libyang//:MODULE.bazel": "libyang",
         "@libyang_python//:MODULE.bazel": "libyang-python",
         "@libnl3//:MODULE.bazel": "libnl3",
+        "@libteam//:MODULE.bazel": "libteam",
         "//:MODULE.bazel": "sonic-buildimage",
         "@sonic_sysmgr//:MODULE.bazel": "sonic-sysmgr",
         "@sonic_protobuf//:MODULE.bazel": "protobuf-legacy",
