@@ -263,6 +263,9 @@ bazel_dep(name = "sonic-fips", version = "0.0.4-ef423363e8fd50358f0aa2a8a20d3e08
 single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
+    # Backport the landed PI configure fix without changing Debian lock policy.
+    patches = ["//tools/bazel:0002-sonic-build-infra-configure-includes.patch"],
+    patch_strip = 1,
 )
 
 # Bind image receipts to the modules that Bazel actually selected.

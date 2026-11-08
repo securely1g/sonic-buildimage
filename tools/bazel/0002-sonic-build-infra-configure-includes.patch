@@ -1,0 +1,71 @@
+Subject: Forward quote and system include paths during PI configure
+
+The VS Syncd build passes hundreds of header and library search paths to GCC.
+GCC copies its driver options into COLLECT_GCC_OPTIONS; on Linux that value
+can grow too large to start cc1, so Autoconf cannot compile its test program.
+Backport the configure launcher change only. It preserves include search order
+and leaves this build’s Debian package locks and resolver version unchanged.
+
+Upstream: https://github.com/securely1g/sonic-build-infra/commit/826b99f5ab3069ef7e1ee40f84d90bd1f0eb21b0
+Remove this backport when the root can consume a release containing the fix.
+
+diff --git a/tools/build_tools/configure_environment.sh b/tools/build_tools/configure_environment.sh
+index e94024869641f33a989342627ab55680b76207aa..dc4a0039bd1563531a8fe988dbd25ccb0614db83 100644
+--- a/tools/build_tools/configure_environment.sh
++++ b/tools/build_tools/configure_environment.sh
+@@ -11,10 +11,11 @@ case "$LD" in
+     "$EXT_BUILD_ROOT"/*) test -x "$LD" ;;
+     *) echo "Selected GCC did not return a declared linker: $LD" >&2; exit 1 ;;
+ esac
+-# GCC copies native -I arguments into COLLECT_GCC_OPTIONS before spawning cc1.
++# GCC copies native include arguments into COLLECT_GCC_OPTIONS before spawning cc1.
+ # Large CcInfo include/library closures can exceed Linux's per-string limit even
+-# when argv itself fits. Forward the native include group to the preprocessor;
+-# keep its precedence before existing forwarded options. Shorten absolute -L
++# when argv itself fits. Forward native -I, -iquote and -isystem options to the
++# preprocessor without changing their search classes or order. Keep their
++# precedence before existing forwarded options. Shorten absolute -L
+ # directories relative to the physical working directory without changing their
+ # order or forwarding them behind GCC's default library paths. Materialize the
+ # launcher in this private configure tree so consumers still need only this
+@@ -74,18 +75,24 @@ pending=
+ for argument in "$@"; do
+     case "$pending" in
+         include) set -- "$@" -Xpreprocessor "-I$argument"; pending=; continue ;;
++        -iquote|-isystem)
++            set -- "$@" -Xpreprocessor "$pending" -Xpreprocessor "$argument"
++            pending=; continue ;;
+         operand) pending=; continue ;;
+     esac
+     case "$argument" in
+         -I) pending=include ;;
+-        -I?*) set -- "$@" -Xpreprocessor "$argument" ;;
++        -iquote|-isystem) pending=$argument ;;
++        -I?*|-iquote?*|-isystem?*) set -- "$@" -Xpreprocessor "$argument" ;;
+         *) if takes_operand "$argument"; then pending=operand; fi ;;
+     esac
+ done
+-if test "$pending" = include; then
+-    echo 'Missing compiler argument after -I' >&2
+-    exit 2
+-fi
++test "$pending" != include || pending=-I
++case "$pending" in
++    -I|-iquote|-isystem)
++        echo "Missing compiler argument after $pending" >&2
++        exit 2 ;;
++esac
+ remaining=$original_count
+ pending=
+ for argument in "$@"; do
+@@ -98,8 +105,8 @@ for argument in "$@"; do
+                  set -- "$@" "$library_path"; pending=; continue ;;
+     esac
+     case "$argument" in
+-        -I) pending=include ;;
+-        -I?*) ;;
++        -I|-iquote|-isystem) pending=include ;;
++        -I?*|-iquote?*|-isystem?*) ;;
+         -L) set -- "$@" "$argument"; pending=library ;;
+         -L?*) short_library_path "${argument#-L}"
+               set -- "$@" "-L$library_path" ;;
