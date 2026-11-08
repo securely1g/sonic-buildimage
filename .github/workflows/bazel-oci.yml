@@ -808,7 +808,7 @@ jobs:
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          SONIC_BAZEL_REGISTRY_REVISION: 04a71b7883384e995a5ae089e2b6f6a0601164de
+          SONIC_BAZEL_REGISTRY_REVISION: af9c810989f0577a555933f836e80610d6eda06b
           BAZELISK_GITHUB_TOKEN: ""
         run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
       - name: Validate installed Orchagent sources and Scapy wheel
@@ -923,7 +923,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 04a71b7883384e995a5ae089e2b6f6a0601164de
+          SONIC_BAZEL_REGISTRY_REVISION: af9c810989f0577a555933f836e80610d6eda06b
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
         run: python3 -B tools/bazel/ci/sflow_image.py validate --artifacts artifacts/sflow
@@ -1046,7 +1046,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 04a71b7883384e995a5ae089e2b6f6a0601164de
+          SONIC_BAZEL_REGISTRY_REVISION: af9c810989f0577a555933f836e80610d6eda06b
         run: python3 -B tools/bazel/ci/otel_image.py build --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Validate OTEL installed payloads and matching symbols
         run: python3 -B tools/bazel/ci/otel_image.py validate --artifacts artifacts/otel
@@ -3584,7 +3584,7 @@ jobs:
         shell: bash
     env:
       BAZEL: tools/bazel/ci/review_bazel.sh
-      SONIC_BAZEL_REGISTRY_REVISION: 04a71b7883384e995a5ae089e2b6f6a0601164de
+      SONIC_BAZEL_REGISTRY_REVISION: af9c810989f0577a555933f836e80610d6eda06b
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
