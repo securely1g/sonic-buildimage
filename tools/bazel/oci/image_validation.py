@@ -166,6 +166,20 @@ def assert_payload(expected, actual, description):
     require(not differences, description + " differs at: " + ", ".join(differences[:20]))
 
 
+def oci_filtered(files, excludes_path, includes_path):
+    """Apply the declared OCI filter lists, including its legal-notice exceptions."""
+    excludes, includes = (path.read_text().splitlines() for path in (excludes_path, includes_path))
+    require(excludes and includes and all(pattern for pattern in excludes + includes),
+            "OCI layer filtering requires nonempty exclude and include policies")
+
+    def matches(name, patterns):
+        return any(fnmatch.fnmatchcase(candidate, pattern)
+                   for candidate in (name, "./" + name) for pattern in patterns)
+
+    return {name: item for name, item in files.items()
+            if not matches(name, excludes) or matches(name, includes)}
+
+
 def expected_state(path):
     contract = json.loads(path.read_bytes())
     require(contract.get("schema") == 1, "invalid runtime package state contract")
@@ -265,7 +279,8 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                     runtime_archive=None, debug_archive=None,
                     source_runtime_tar=None, source_debug_tar=None, source_receipt=None,
                     base_debug_symbols=None, base_debug_receipt=None, base_debug_package_manifest=None,
-                    runtime_payload_layers=(), debug_payload_layers=()):
+                    runtime_payload_layers=(), debug_payload_layers=(),
+                    source_layer_excludes=None, source_layer_includes=None):
     validate_policy(policy)
     expectations = policy.get("image_validation", {})
     native_expectations = policy.get("native", {})
@@ -320,7 +335,20 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
              not native_expectations.get("require_source", False)) or
             (source_retained and has_source))),
             "declared source layers cannot replace a required package receipt")
+    filter_inputs = (source_layer_excludes, source_layer_includes)
+    require(all(path is not None for path in filter_inputs) or all(path is None for path in filter_inputs),
+            "OCI source filter inputs must be supplied together")
+    require(not any(path is not None for path in filter_inputs) or (direct_layers and has_source),
+            "OCI source filtering requires direct receipted runtime layers")
     if direct_layers:
+        if has_source:
+            require(all(path is not None for path in filter_inputs),
+                    "direct receipted runtime requires its declared OCI filter policy")
+            filtered_runtime = oci_filtered(expected_source_runtime, *filter_inputs)
+            required = {name for record in source_contract["packages"] for name in record["required_paths"]}
+            required.update(name for name, item in expected_source_runtime.items() if "elf_machine" in item)
+            require(required <= filtered_runtime.keys(), "OCI filter removes a required source path or ELF")
+            expected_source_runtime = filtered_runtime
         declared_runtime, declared_debug = {}, {}
         for path in runtime_payload_layers:
             apply_layer(Path(path), declared_runtime)

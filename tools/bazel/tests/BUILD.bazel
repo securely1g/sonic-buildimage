@@ -985,14 +985,21 @@ py_test(
     name = "oci_license_filter_test",
     srcs = ["integration/oci_license_filter_test.py"],
     args = [
+        "$(rootpath :oci_license_fixture_tar)",
+        "$(rootpath //tools/bazel/dpkg:dpkg_excludes.txt)",
+        "$(rootpath //tools/bazel/dpkg:oci_includes.txt)",
         "$(rootpath :oci_license_filtered)",
         "$(rootpath :oci_license_refiltered)",
     ],
     data = [
+        ":oci_license_fixture_tar",
+        "//tools/bazel/dpkg:dpkg_excludes.txt",
+        "//tools/bazel/dpkg:oci_includes.txt",
         ":oci_license_filtered",
         ":oci_license_refiltered",
     ],
     main = "integration/oci_license_filter_test.py",
+    deps = ["//tools/bazel/oci:container_validation"],
 )
 
 # Preserve the former wrapper label for callers; the owner now declares the
@@ -1214,6 +1221,8 @@ _SWSS_IMAGE_INPUTS = {
     "source_runtime_tar": _SWSS_OWNER + ":libteam_source_runtime.tar",
     "source_debug_tar": _SWSS_OWNER + ":docker-orchagent.debug_symbols",
     "source_receipt": _SWSS_OWNER + ":libteam_source_receipt",
+    "source_layer_excludes": "//tools/bazel/dpkg:dpkg_excludes.txt",
+    "source_layer_includes": "//tools/bazel/dpkg:oci_includes.txt",
     "base_symbols": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
     "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
     "config_metadata": "//dockers/docker-config-engine-trixie:runtime_package_metadata",

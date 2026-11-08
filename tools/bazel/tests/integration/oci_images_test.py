@@ -15,6 +15,7 @@ IMAGE_INPUTS = (
     "apt_lock_path", "base_path", "apt_layer", "debug_tools_layer",
     "runtime_apt_selection", "debug_apt_selection", "runtime_archive", "debug_archive",
     "source_contract_path", "source_runtime_tar", "source_debug_tar", "source_receipt",
+    "source_layer_excludes", "source_layer_includes",
 )
 
 
