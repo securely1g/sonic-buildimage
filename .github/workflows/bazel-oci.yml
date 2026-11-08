@@ -806,6 +806,7 @@ jobs:
           path: ${{ runner.temp }}/native-p4-acquisition
 
       - name: Retain the verified GitLab source downloads
+        id: native_inputs
         env:
           SONIC_GITHUB_RELEASE_TOKEN: ${{ env.NATIVE_VS_ONLY == 'true' && github.token || '' }}
           DEBIAN_MIRROR_ROOT: ${{ env.NATIVE_VS_ONLY == 'true' && secrets.DEBIAN_MIRROR_ROOT || '' }}
@@ -848,6 +849,23 @@ jobs:
               --output artifacts/repository-inputs \
               > artifacts/repository-inputs/receipt.json
           fi
+
+      - name: Check native input diagnostics before publication
+        id: native_input_privacy
+        if: always() && env.NATIVE_VS_ONLY == 'true' && steps.native_inputs.outcome == 'failure'
+        env:
+          DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
+        run: python3 -B tools/bazel/ci/private_native_downloads.py --phase inputs --artifacts artifacts/repository-inputs --export-input-diagnostics
+
+      - name: Preserve native input diagnostics
+        if: always() && steps.native_input_privacy.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-input-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/native-input-diagnostics/diagnostics.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |

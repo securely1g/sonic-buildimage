@@ -42,6 +42,17 @@ def shell(step):
 
 
 class SourceWorkflowTest(unittest.TestCase):
+    def test_native_failure_diagnostics_keep_source_artifacts_success_only(self):
+        source_steps = steps(jobs()["checks"])
+        privacy = source_steps["Check native input diagnostics before publication"]
+        upload = source_steps["Preserve native input diagnostics"]
+        self.assertIn("always() && env.NATIVE_VS_ONLY == 'true' && steps.native_inputs.outcome == 'failure'", privacy)
+        self.assertIn("--export-input-diagnostics", privacy)
+        self.assertIn("always() && steps.native_input_privacy.outcome == 'success'", upload)
+        self.assertIn("path: artifacts/native-input-diagnostics/diagnostics.json", upload)
+        self.assertNotIn("module-graph.stderr", upload)
+        self.assertNotIn("always()", source_steps["Upload the source downloads for the VS job"])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="source-workflow-")
         self.addCleanup(temporary.cleanup)

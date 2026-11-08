@@ -289,6 +289,64 @@ def native_redactor(base):
     return NativeRedactor
 
 
+def export_input_diagnostics(artifacts, redactor):
+    """Publish only validated facts; raw Bazel stderr stays worker-private."""
+    from resolution import DIAGNOSTIC_SIGNALS
+    from github_release_transport import FAILURE_CATEGORY
+
+    def counter(value):
+        return type(value) is int and 0 <= value <= 10**12
+
+    def read(name):
+        path = artifacts / name
+        if not path.exists():
+            return None
+        if path.is_symlink() or path.stat().st_size > 65536:
+            raise ValueError("Invalid native diagnostic receipt")
+        return json.loads(path.read_text())
+
+    result = {"schema": 1}
+    graph = read("module-graph-diagnostics.json")
+    if graph is not None:
+        if (not isinstance(graph, dict) or set(graph) != {
+                "returncode", "stdout_bytes", "stderr_bytes", "stdout_valid_json", "http_statuses", "signals",
+                "public_source_url_sha256"}
+                or type(graph["returncode"]) is not int or not -255 <= graph["returncode"] <= 255
+                or not all(counter(graph[key]) for key in ("stdout_bytes", "stderr_bytes"))
+                or type(graph["stdout_valid_json"]) is not bool
+                or not isinstance(graph["http_statuses"], list) or len(graph["http_statuses"]) > 200
+                or any(type(code) is not int or not 400 <= code <= 599 for code in graph["http_statuses"])
+                or not isinstance(graph["public_source_url_sha256"], list) or len(graph["public_source_url_sha256"]) > 32
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for value in graph["public_source_url_sha256"])
+                or not isinstance(graph["signals"], list) or len(graph["signals"]) > len(DIAGNOSTIC_SIGNALS)
+                or any(not isinstance(signal, str) or signal not in DIAGNOSTIC_SIGNALS for signal in graph["signals"])):
+            raise ValueError("Invalid native graph diagnostics")
+        result["graph"] = graph
+    receipt = read("private-downloads-inputs.json")
+    if receipt is not None:
+        release = receipt.get("github_release_transport")
+        if (not isinstance(release, dict) or type(release.get("authenticated")) is not bool
+                or not all(counter(release.get(key)) for key in ("completed", "failed"))):
+            raise ValueError("Invalid native release diagnostics")
+        categories = release.get("failure_categories", {})
+        if (not isinstance(categories, dict) or len(categories) > 403
+                or any(not re.fullmatch(FAILURE_CATEGORY, key) or not counter(value)
+                       for key, value in categories.items())):
+            raise ValueError("Invalid native release failure categories")
+        result["github_release_transport"] = {
+            key: release[key] for key in ("authenticated", "completed", "failed")}
+        result["github_release_transport"]["failure_categories"] = categories
+    if len(result) == 1:
+        raise ValueError("No native input diagnostics were recorded")
+    destination = artifacts.parent / "native-input-diagnostics"
+    destination.mkdir(mode=0o700)
+    (destination / "diagnostics.json").write_text(json.dumps(result, indent=2) + "\n")
+    redactor.scrub_and_scan(destination)
+    print("Native input diagnostics: " + json.dumps(result, sort_keys=True), flush=True)
+    return destination
+
+
 def run(args):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import github_release_transport
@@ -317,6 +375,9 @@ def run(args):
     manifest = private_mirrors.load_manifest()
     artifacts = args.artifacts.resolve()
     artifacts.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "export_input_diagnostics", False):
+        export_input_diagnostics(artifacts, redactor)
+        return 0
     if args.check_artifacts:
         redactor.scrub_and_scan(artifacts)
         # These are the container archives selected by this job for publication.
@@ -451,6 +512,7 @@ def main():
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts/vs"))
     parser.add_argument("--phase", required=True, choices=("inputs", "preparation", "build", "verification"))
     parser.add_argument("--check-artifacts", action="store_true")
+    parser.add_argument("--export-input-diagnostics", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:

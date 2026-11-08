@@ -29,6 +29,20 @@ TRANSFER_SECONDS = 900
 class DownloadError(Exception):
     """A deliberately URL/credential-free transport error."""
 
+    def __init__(self, message, *, category="validation"):
+        super().__init__(message)
+        self.category = category
+
+
+FAILURE_CATEGORY = r"(?:metadata|asset):(?:transport|http:[45][0-9]{2}(?::rate_limited)?)|validation|other"
+
+
+def http_failure(stage, error):
+    category = f"{stage}:http:{error.code}"
+    if error.headers and error.headers.get("X-RateLimit-Remaining") == "0":
+        category += ":rate_limited"
+    return category if re.fullmatch(FAILURE_CATEGORY, category) else "other"
+
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -87,10 +101,11 @@ class PublicAssets:
                     raise DownloadError("Invalid public release metadata")
                 return value
         except urllib.error.HTTPError as error:
+            category = http_failure("metadata", error)
             error.close()
-            raise DownloadError("Public release metadata unavailable") from None
+            raise DownloadError("Public release metadata unavailable", category=category) from None
         except (OSError, ValueError, urllib.error.URLError):
-            raise DownloadError("Public release metadata unavailable") from None
+            raise DownloadError("Public release metadata unavailable", category="metadata:transport") from None
 
     def resolve(self, url):
         repo, tag, name = parse_release(url)
@@ -131,12 +146,13 @@ class PublicAssets:
             except urllib.error.HTTPError as error:
                 location = error.headers.get("Location") if error.headers else None
                 code = error.code
+                category = http_failure("asset", error)
                 error.close()
                 if code != 302 or not location:
-                    raise DownloadError("Public release asset unavailable") from None
+                    raise DownloadError("Public release asset unavailable", category=category) from None
                 target = location
             except (OSError, ValueError, urllib.error.URLError):
-                raise DownloadError("Public release asset unavailable") from None
+                raise DownloadError("Public release asset unavailable", category="asset:transport") from None
         raise DownloadError("Too many release redirects")
 
 
@@ -178,7 +194,7 @@ def loopback_environment(environment):
 @contextlib.contextmanager
 def serve(token="", *, client=None):
     assets = client or PublicAssets(token)
-    counts = {"completed": 0, "failed": 0}
+    counts = {"completed": 0, "failed": 0, "failure_categories": {}}
     lock = threading.Lock()
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -216,11 +232,15 @@ def serve(token="", *, client=None):
                         raise DownloadError("Incomplete release asset")
                 with lock:
                     counts["completed"] += 1
-            except Exception:
+            except Exception as error:
                 # No exception text is safe here: upstream errors may contain
                 # expiring asset signatures. Keep them off stderr and HTTP.
                 with lock:
                     counts["failed"] += 1
+                    category = error.category if isinstance(error, DownloadError) else "other"
+                    if not isinstance(category, str) or not re.fullmatch(FAILURE_CATEGORY, category):
+                        category = "other"
+                    counts["failure_categories"][category] = counts["failure_categories"].get(category, 0) + 1
                 if not started:
                     try:
                         self.send_error(502, "Public release transport unavailable")

@@ -35,6 +35,50 @@ class Response(io.BytesIO):
 
 
 class NativeTransportTests(unittest.TestCase):
+    def test_input_diagnostics_export_only_vetted_facts_after_privacy_check(self):
+        from resolution import graph_diagnostics
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory) / "repository-inputs"
+            artifacts.mkdir()
+            secret = "private-credential-and-path"
+            graph = graph_diagnostics("", "ERROR: HTTP 504 " + secret, 37)
+            (artifacts / "module-graph-diagnostics.json").write_text(json.dumps(graph))
+            (artifacts / "module-graph.stderr").write_text(secret)
+            (artifacts / "private-downloads-inputs.json").write_text(json.dumps({
+                "not_for_export": secret,
+                "github_release_transport": {"authenticated": True, "completed": 2, "failed": 1,
+                    "failure_categories": {"metadata:http:403:rate_limited": 1}, "not_for_export": secret}}))
+            redactor = mock.Mock()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                destination = native.export_input_diagnostics(artifacts, redactor)
+            redactor.scrub_and_scan.assert_called_once_with(destination)
+            self.assertEqual([p.name for p in destination.iterdir()], ["diagnostics.json"])
+            exported = (destination / "diagnostics.json").read_text()
+            self.assertNotIn(secret, exported + output.getvalue())
+            self.assertEqual(json.loads(exported)["graph"]["returncode"], 37)
+            self.assertEqual(json.loads(exported)["github_release_transport"]["failed"], 1)
+
+    def test_input_diagnostics_reject_arbitrary_strings_and_privacy_failure(self):
+        from resolution import graph_diagnostics
+        for invalid in (True, False):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                artifacts = Path(directory) / "repository-inputs"
+                artifacts.mkdir()
+                graph = graph_diagnostics("", "ERROR: HTTP 504", 8)
+                if invalid:
+                    graph["signals"] = ["https://secret.invalid/credential"]
+                (artifacts / "module-graph-diagnostics.json").write_text(json.dumps(graph))
+                redactor = mock.Mock()
+                redactor.scrub_and_scan.side_effect = ValueError("Privacy check failed")
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output), self.assertRaises(ValueError):
+                    native.export_input_diagnostics(artifacts, redactor)
+                self.assertEqual(output.getvalue(), "")
+                if invalid:
+                    self.assertFalse((Path(directory) / "native-input-diagnostics").exists())
+                    redactor.scrub_and_scan.assert_not_called()
+
     def test_bridge_proxy_cannot_relay_to_release_listener(self):
         for host in ("127.0.0.1", "localhost", "2130706433"):
             with self.subTest(host=host), self.assertRaisesRegex(ValueError, "direct loopback"):
@@ -377,7 +421,7 @@ class WrapperLifecycleTests(unittest.TestCase):
                         receipt = json.loads((artifacts / ("private-downloads-" + phase + ".json")).read_text())
                         self.assertEqual(receipt["debian_public_bazel_fallback"], phase != "inputs")
                         self.assertEqual(receipt["github_release_transport"],
-                                         {"authenticated": True, "completed": 0, "failed": 0})
+                                         {"authenticated": True, "completed": 0, "failed": 0, "failure_categories": {}})
             self.assertEqual(list(args.private_dir.iterdir()), [])
             self.assertIn("https://remote.example.invalid/", seen)
             receipt = json.loads((artifacts / "private-downloads-verification.json").read_text())

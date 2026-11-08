@@ -6,6 +6,55 @@ from pathlib import PurePosixPath
 import re
 import shutil
 import subprocess
+import sys
+import urllib.parse
+
+
+DIAGNOSTIC_SIGNALS = {
+    "socket_error": r"SocketException|ConnectionResetError|Connection reset",
+    "timeout": r"SocketTimeoutException|TimeoutError|[Tt]imed out",
+    "dns_error": r"UnknownHostException|Name or service not known",
+    "tls_error": r"SSLHandshakeException|CERTIFICATE_VERIFY_FAILED|PKIX",
+    "out_of_memory": r"OutOfMemoryError|[Oo]ut of memory|[Jj]ava heap space",
+    "disk_full": r"No space left on device",
+    "permission_denied": r"Permission denied",
+    "integrity_error": r"[Cc]hecksum.*(?:mismatch|was|expected)|[Ii]ntegrity.*(?:mismatch|failed)",
+    "repository_error": r"[Ff]ailed to fetch|[Ee]rror downloading|[Ee]rror loading|[Nn]o such package",
+    "extension_error": r"does not export a module extension|extensions? failed",
+    "invalid_option": r"[Uu]nrecognized option|[Ii]nvalid options?",
+}
+
+
+def graph_diagnostics(stdout, stderr, returncode):
+    """Export bounded facts, never stderr excerpts, URLs, headers or credentials."""
+    statuses = re.findall(r"\b(?:HTTP(?:/\d(?:\.\d)?)?(?: Error)?|response code|status(?: code)?|GET returned)"
+                          r"[ \t:=]+([45]\d\d)\b", stderr, re.IGNORECASE)
+    try:
+        json.loads(stdout)
+        valid_json = True
+    except ValueError:
+        valid_json = False
+    public_urls = set()
+    for line in stderr.splitlines():
+        if not re.search(r"ERROR:|Error:|[Dd]ownload.*failed|[Ee]rror downloading|GET returned", line):
+            continue
+        for url in re.findall(r"https?://[^\s<>\"']+", line):
+            try:
+                value = urllib.parse.urlsplit(url.rstrip(",;)]}"))
+                if value.hostname == "127.0.0.1" and value.path.startswith("/_sonic_github_release/"):
+                    value = urllib.parse.urlsplit("https://" + value.path.removeprefix("/_sonic_github_release/"))
+                if value.hostname in {"github.com", "bcr.bazel.build"} and len(public_urls) < 32:
+                    # Compare against pinned descriptors without retaining paths,
+                    # userinfo, query signatures, ports, or private origins.
+                    public_urls.add(hashlib.sha256((value.hostname + value.path).encode()).hexdigest())
+            except ValueError:
+                pass
+    return {"returncode": returncode, "stdout_bytes": len(stdout.encode()),
+            "stderr_bytes": len(stderr.encode()), "stdout_valid_json": valid_json,
+            "http_statuses": sorted({int(status) for status in statuses}),
+            "public_source_url_sha256": sorted(public_urls),
+            "signals": sorted(name for name, pattern in DIAGNOSTIC_SIGNALS.items()
+                              if re.search(pattern, stderr))}
 
 
 def inspect_graph(stdout, stderr, returncode):
@@ -75,7 +124,13 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     (directory / "module-graph.stderr").write_text(result.stderr)
     (directory / "module-graph-inspection.json").write_text(
         json.dumps({"argv": command, "returncode": result.returncode}, indent=2) + "\n")
-    inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    diagnostic = graph_diagnostics(result.stdout, result.stderr, result.returncode)
+    (directory / "module-graph-diagnostics.json").write_text(json.dumps(diagnostic, indent=2) + "\n")
+    try:
+        inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    except Exception:
+        print("Bazel graph inspection failed: " + json.dumps(diagnostic, sort_keys=True), file=sys.stderr)
+        raise
     inspection["argv"] = command
     (directory / "module-graph-inspection.json").write_text(json.dumps(inspection, indent=2) + "\n")
     if lock.read_bytes() != tested_lock:

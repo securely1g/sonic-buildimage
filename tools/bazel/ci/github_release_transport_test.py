@@ -155,7 +155,7 @@ class ReleaseTransportTests(unittest.TestCase):
                 self.assertEqual(response.read(), BODY)
                 self.assertIsNone(response.headers.get("Location"))
                 self.assertIsNone(response.headers.get("Authorization"))
-        self.assertEqual(counters, {"completed": 1, "failed": 0})
+        self.assertEqual(counters, {"completed": 1, "failed": 0, "failure_categories": {}})
 
     def test_transport_errors_never_disclose_signed_urls_or_credentials(self):
         class Broken:
@@ -166,10 +166,24 @@ class ReleaseTransportTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}" + transport.PREFIX + URL.removeprefix("https://"))
             body = caught.exception.read().decode()
-        self.assertEqual(counters, {"completed": 0, "failed": 1})
+        self.assertEqual(counters, {"completed": 0, "failed": 1, "failure_categories": {"other": 1}})
         self.assertEqual(output.getvalue(), "")
         self.assertNotIn(TOKEN, body)
         self.assertNotIn("signature", body)
+
+    def test_api_http_failure_retains_only_stage_status_and_rate_limit(self):
+        class Denied:
+            def open(self, request, timeout):
+                headers = email.message.Message()
+                headers["X-RateLimit-Remaining"] = "0"
+                raise urllib.error.HTTPError(request.full_url, 403, TOKEN + CDN, headers, io.BytesIO(TOKEN.encode()))
+        with transport.serve(client=transport.PublicAssets(TOKEN, Denied())) as (port, counters):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}" + transport.PREFIX + URL.removeprefix("https://"))
+            body = caught.exception.read().decode()
+        self.assertEqual(counters["failure_categories"], {"metadata:http:403:rate_limited": 1})
+        for forbidden in (TOKEN, CDN, "signature", "Authorization"):
+            self.assertNotIn(forbidden, body + json.dumps(counters))
 
 
 if __name__ == "__main__":

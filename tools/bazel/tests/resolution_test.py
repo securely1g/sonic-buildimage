@@ -1,6 +1,9 @@
 """Fail-closed checks for module evidence collection; no build actions."""
 
 import json
+import contextlib
+import hashlib
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -32,6 +35,46 @@ ERRORS = diagnostics(APPLE_ERRORS, ABSEIL_ERRORS)
 
 class GraphInspectionTest(unittest.TestCase):
     """Classify complete module graphs and narrowly recognized extension diagnostics."""
+
+    def test_failed_bazel_preserves_cause_without_urls_or_credentials(self):
+        """An actual failing child leaves diagnostics before strict JSON rejection."""
+        secret = "do-not-publish-this-credential"
+        public_path = "github.com/example/tools/releases/download/v1/tool.tar.gz"
+        stderr = ("ERROR: Error downloading https://user:" + secret + "@" + public_path
+                  + "?signature=" + secret + ": GET returned 504 Gateway Timeout\n"
+                  + "ERROR: https://private.invalid/secret/path HTTP 403\n"
+                  + "Authorization: Bearer " + secret + "\n")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "MODULE.bazel.lock").write_text("original lock\n")
+            evidence = root / "evidence"
+            evidence.mkdir()
+            failing_bazel = root / "failing-bazel.py"
+            failing_bazel.write_text("import sys\nsys.stderr.write(" + repr(stderr) + ")\nsys.exit(37)\n")
+            captured = io.StringIO()
+            with contextlib.redirect_stderr(captured), self.assertRaises(json.JSONDecodeError):
+                resolution.collect(root, evidence, bazel=[sys.executable, str(failing_bazel)])
+            diagnostic = json.loads((evidence / "module-graph-diagnostics.json").read_text())
+            self.assertEqual(diagnostic["returncode"], 37)
+            self.assertEqual(diagnostic["stdout_bytes"], 0)
+            self.assertEqual(diagnostic["stderr_bytes"], len(stderr.encode()))
+            self.assertFalse(diagnostic["stdout_valid_json"])
+            self.assertEqual(diagnostic["http_statuses"], [403, 504])
+            self.assertEqual(diagnostic["signals"], ["repository_error"])
+            self.assertEqual(diagnostic["public_source_url_sha256"],
+                             [hashlib.sha256(public_path.encode()).hexdigest()])
+            for forbidden in (secret, "private.invalid", "signature", "Authorization", "https://", public_path):
+                self.assertNotIn(forbidden, captured.getvalue() + json.dumps(diagnostic))
+            self.assertEqual((evidence / "module-graph.stderr").read_text(), stderr)
+            self.assertEqual((root / "MODULE.bazel.lock").read_text(), "original lock\n")
+
+    def test_graph_diagnostic_signals_are_bounded_and_fail_closed(self):
+        stderr = ("ERROR: java.net.SocketTimeoutException java.lang.OutOfMemoryError PKIX\n" * 10000
+                  + "ERROR: http://127.0.0.1:123/_sonic_github_release/github.com/example/r/releases/download/v1/a.gz?token=secret HTTP 502\n")
+        diagnostic = resolution.graph_diagnostics("not JSON", stderr, 8)
+        self.assertEqual(diagnostic["signals"], ["out_of_memory", "timeout", "tls_error"])
+        self.assertLess(len(json.dumps(diagnostic)), 1000)
+        self.assertNotIn("secret", json.dumps(diagnostic))
 
     def test_success(self):
         """Record the module count and complete inspection after a clean graph command."""
