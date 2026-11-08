@@ -1,0 +1,31 @@
+Transport BMv2's complete include closure before configure starts.
+
+Local adaptation to p4lang-bmv2 1.15.0.sonic.2 for sonic-buildimage PR203,
+native run42445834848: its 138,337-byte CPPFLAGS prevented /bin/sh from
+starting. Retain every source, dependency, feature and compiler option.
+
+The declared helper follows the owner's pre-exec configure_prefix pattern:
+https://github.com/securely1g/sonic-build-infra/commit/3009f64f0e546afca33ee249351ea8794de3a5cc
+Issue: https://github.com/securely1g/sonic-buildimage/pull/203
+
+diff --git a/bazel/bmv2.BUILD.bazel b/bazel/bmv2.BUILD.bazel
+--- a/bazel/bmv2.BUILD.bazel
++++ b/bazel/bmv2.BUILD.bazel
+@@ -112,6 +112,7 @@
+     ],
+     build_data = [
+         "@sonic_build_infra//tools/build_tools:configure_environment.sh",
++        "@sonic_build_infra//tools/build_tools:configure_preprocessor_flags.sh",
+         "@sonic_build_infra//tools/build_tools:foreign_runtime",
+         "@sonic_build_infra//tools/build_tools:pkgconf",
+     ],
+@@ -129,7 +130,8 @@
+         "--with-nanomsg",
+         "--with-pi",
+     ] + select({platform: ["--libdir=/usr/lib/" + triplet] for platform, triplet in _TRIPLETS.items()}),
+-    configure_prefix = "/bin/sh",
++    # Compact CPPFLAGS in the existing shell before its first exec.
++    configure_prefix = 'source "$$EXT_BUILD_ROOT$$/$(execpath @sonic_build_infra//tools/build_tools:configure_preprocessor_flags.sh)" "$${BAZEL_P4_TOOLS}/bin/python3" /bin/sh',
+     # Match the maintained Debian recipe: optimized ELF files with full symbols.
+     copts = [
+         "-O3",

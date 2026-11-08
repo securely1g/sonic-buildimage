@@ -264,7 +264,18 @@ single_version_override(
     module_name = "sonic-build-infra",
     version = "0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568",
     # Backport the landed PI configure fix without changing Debian lock policy.
-    patches = ["//tools/bazel:0002-sonic-build-infra-configure-includes.patch"],
+    patches = [
+        "//tools/bazel:0002-sonic-build-infra-configure-includes.patch",
+        "//tools/bazel:0003-sonic-build-infra-configure-preprocessor.patch",
+    ],
+    patch_strip = 1,
+)
+
+# Keep BMv2's full include closure below exec's environment-string limit.
+single_version_override(
+    module_name = "p4lang-bmv2",
+    version = "1.15.0.sonic.2",
+    patches = ["//tools/bazel:0004-p4lang-bmv2-configure-preprocessor.patch"],
     patch_strip = 1,
 )
 
