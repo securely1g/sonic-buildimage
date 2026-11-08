@@ -1,6 +1,7 @@
 # Module versions, source commits and package snapshots remain pinned.
 common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
 common --registry=https://bcr.bazel.build
+common --downloader_config=tools/bazel/debian_mirrors.cfg
 import %workspace%/tools/bazel/common.bazelrc
 
 common --remote_cache=grpc://172.16.0.4:9092

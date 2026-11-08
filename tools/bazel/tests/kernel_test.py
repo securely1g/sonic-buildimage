@@ -75,6 +75,7 @@ class KernelBundleTest(unittest.TestCase):
         shutil.copyfile(ROOT / "Makefile.work", self.root / "Makefile.work")
         shutil.copyfile(ROOT / ".gitmodules", self.root / ".gitmodules")
         shutil.copytree(ROOT / "tools/bazel/kernel", self.root / "tools/bazel/kernel")
+        shutil.copyfile(ROOT / kernel.DOWNLOADER_CONFIG, self.root / kernel.DOWNLOADER_CONFIG)
         consumer_module = self.root / "tools/bazel/kernel/MODULE.bazel"
         consumer_module.write_text(module.replace(next(line for line in module.splitlines() if 'name = "sonic-linux-kernel"' in line),
             'bazel_dep(name = "sonic-linux-kernel", version = "0.0.1-' + self.gitlink + '", repo_name = "sonic_linux_kernel")'))
@@ -382,6 +383,10 @@ class KernelBundleTest(unittest.TestCase):
             consumer = Path(command[command.index("--workspace") + 1])
             workdir = Path(command[command.index("--work-dir") + 1])
             self.assertIn(kernel.DEFAULT_REGISTRY, (consumer / ".bazelrc").read_text())
+            self.assertIn("common --downloader_config=debian_mirrors.cfg",
+                          (consumer / ".bazelrc").read_text().splitlines())
+            self.assertEqual((consumer / kernel.DOWNLOADER_CONFIG.name).read_bytes(),
+                             (self.root / kernel.DOWNLOADER_CONFIG).read_bytes())
             self.assertIn(kernel.DEFAULT_REGISTRY, (self.root / "tools/bazel/kernel/.bazelrc").read_text())
             outputs = workdir / "outputs"
             outputs.mkdir(parents=True)
@@ -794,6 +799,25 @@ class KernelBundleTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(before, {p.name: p.stat().st_mtime_ns for p in self.bundle.iterdir() if p.name != kernel.PROVENANCE})
         self.assertTrue(kernel.ensure(self.root, builder=builder)["reused"])
+        self.assertEqual(len(calls), 1)
+
+    def test_downloader_policy_changes_invalidate_kernel_reuse(self):
+        policy = self.root / kernel.DOWNLOADER_CONFIG
+        policy.write_text(policy.read_text() + "\n# changed download policy\n")
+        with self.assertRaisesRegex(ValueError, "handoff inputs must match"):
+            kernel.source_state(self.root)
+        subprocess.run(["git", "-C", str(self.root), "add", str(policy)], check=True)
+        self.commit(self.root, "Change Debian download policy")
+        current = kernel.source_state(self.root)
+        self.assertNotEqual(current["consumer_inputs_sha256"], self.state["consumer_inputs_sha256"])
+        calls = []
+
+        def builder(*args, **options):
+            calls.append(options)
+            raise RuntimeError("rebuild required for changed download policy")
+
+        with self.assertRaisesRegex(RuntimeError, "rebuild required"):
+            kernel.ensure(self.root, builder=builder)
         self.assertEqual(len(calls), 1)
 
     def test_runtime_installation_excludes_matching_debug_package(self):

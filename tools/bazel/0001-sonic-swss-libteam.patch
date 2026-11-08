@@ -1,0 +1,52 @@
+Subject: Use the image's source-owned libteam providers in pinned SWSS
+
+Purpose: Remove the stock libteam development-package input and route teamsyncd
+and tlm_teamd through the image root's libteam/libteamdctl compatibility labels.
+Those labels now forward to the shared libteam module. Keep Jansson for tlm_teamd
+and select Distroless's public libzmq_cc C++ provider instead of libzmq3.
+
+Source: sonic-swss 252a506ae5a94e36a4e330b736a3781a9f7bcf9b
+https://github.com/securely1g/sonic-swss/tree/252a506ae5a94e36a4e330b736a3781a9f7bcf9b
+Provenance: Existing sonic-buildimage PR #162 adaptation at 233bde227dc62712bb3324ab4249cfbf145de893;
+the diff body is unchanged. This is a temporary image-root adaptation for that
+pinned source, not a claim that the patch has landed in the SWSS owner.
+
+diff --git a/MODULE.bazel b/MODULE.bazel
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -92,7 +92,6 @@
+     packages = [
+         "libjansson-dev",
+         "libjemalloc-dev",
+-        "libteam-dev",
+         "libyaml-cpp-dev",
+     ],
+     suites = [
+diff --git a/tools/bazel/deps.bzl b/tools/bazel/deps.bzl
+--- a/tools/bazel/deps.bzl
++++ b/tools/bazel/deps.bzl
+@@ -12,6 +12,6 @@
+     "@trixie//libboost-dev:libboost",
+     "@trixie//libhiredis-dev:libhiredis",
+-    "@trixie//libzmq3-dev:libzmq3",
++    "@trixie//libzmq3-dev:libzmq_cc",
+     "@trixie//nlohmann-json3-dev:nlohmann-json3",
+ ]
+ 
+@@ -26,7 +26,13 @@
+     "@swss_debian//libyaml-cpp-dev:libyaml-cpp",
+ ]
+ 
+-# rules_distroless exposes libteam and libteamdctl through one public target.
+-TEAM_DEPS = SWSS_DEPS + ["@swss_debian//libteam-dev:libteam"]
++# This buildimage integration consumes its patched source libraries.
++TEAM_DEPS = SWSS_DEPS + [
++    "@@//src/libteam:libteam",
++    "@@//src/libteam:libteamdctl",
++]
+ 
+-TLM_TEAM_DEPS = TEAM_DEPS + ["@swss_debian//libjansson-dev:libjansson"]
++TLM_TEAM_DEPS = SWSS_DEPS + [
++    "@@//src/libteam:libteamdctl",
++    "@swss_debian//libjansson-dev:libjansson",
++]
