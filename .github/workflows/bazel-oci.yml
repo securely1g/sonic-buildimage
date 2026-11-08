@@ -660,7 +660,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          ref: 3a7e32d09e511735f36a47b276d6524cf9c2a5c4
           path: .bazel-inputs/github-reader
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -702,10 +702,10 @@ jobs:
           from pathlib import Path
           from urllib.request import urlopen
           # Load the checksum-verified pinned configuration. Archive integrity checks remain unchanged.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d50f730c4f1d8d334d6b5062238d8d33934a2bbd/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/3a7e32d09e511735f36a47b276d6524cf9c2a5c4/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "1a2bc2ac4c1b4f11217d0f86523f9c25ae1b7601b0f3626aa145968c44627246"
+          expected = "38192a1561fac945a22474f1f10f29397d3164974e6f6b1e71de7c4748088f96"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -876,7 +876,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          ref: 3a7e32d09e511735f36a47b276d6524cf9c2a5c4
           path: .bazel-inputs/github-reader
           sparse-checkout-cone-mode: false
           sparse-checkout: |

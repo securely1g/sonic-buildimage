@@ -58,7 +58,7 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
                     self.assertNotIn("if:", selected[name])
                     self.assertNotIn("continue-on-error", selected[name])
                 checkout = selected["Check out the pinned GitHub input reader"]
-                self.assertIn("d50f730c4f1d8d334d6b5062238d8d33934a2bbd", checkout)
+                self.assertIn("3a7e32d09e511735f36a47b276d6524cf9c2a5c4", checkout)
                 self.assertIn("persist-credentials: false", checkout)
                 self.assertIn("sparse-checkout-cone-mode: false", checkout)
                 for path in ("ci/github_sources.py",
@@ -216,7 +216,7 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
         self.assertIn('--startup-arg="--bazelrc=$RUNNER_TEMP/sysmgr-github-inputs/downloads.bazelrc"', job)
         self.assertIn('            ci/source_mirrors.cfg\n', job)
         script = shell(steps(job)['Prepare verified GitHub build inputs'])
-        original = (ROOT / 'tools/bazel/tests/fixtures/source-mirrors-d50f730c.cfg').read_bytes()
+        original = (ROOT / 'tools/bazel/tests/fixtures/source-mirrors-3a7e32d0.cfg').read_bytes()
         for reader_exit, corrupt in ((23, False), (0, True), (0, False)):
             with self.subTest(reader_exit=reader_exit, corrupt=corrupt), tempfile.TemporaryDirectory() as temp:
                 directory = Path(temp)
