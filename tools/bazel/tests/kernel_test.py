@@ -4,7 +4,7 @@
 import base64
 import copy
 import concurrent.futures
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
@@ -320,6 +320,31 @@ class KernelBundleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different kernel tools module"):
             kernel.inspect_resolution(workdir, consumer, self.state, kernel.DEFAULT_REGISTRY,
                                       fetch=lambda url: metadata[url])
+
+    def test_stored_graph_failure_reports_primary_command_without_fetching(self):
+        """Keep a post-build graph failure visible through the kernel's direct inspection path."""
+        workdir, consumer = self.root / "resolution", self.root / "consumer"
+        consumer.mkdir()
+        self.resolution_files(workdir, consumer)
+        primary = "ERROR: interpreter checksum download failed: HTTP 503\n"
+        (workdir / "module-graph.stderr").write_text(primary)
+        (workdir / "module-graph.exit-code").write_text("2\n")
+        before = {path: path.read_bytes() for path in [
+            workdir / "module-graph.json", workdir / "module-graph.stderr",
+            workdir / "module-graph.exit-code", consumer / "MODULE.bazel.lock",
+        ]}
+        console = io.StringIO()
+
+        def unexpected_fetch(url):
+            self.fail("A rejected module graph must not fetch package metadata")
+
+        with redirect_stderr(console), \
+                self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
+            kernel.inspect_resolution(workdir, consumer, self.state, kernel.DEFAULT_REGISTRY,
+                                      fetch=unexpected_fetch)
+        self.assertIn("Bazel mod graph returned 2", console.getvalue())
+        self.assertIn(primary, console.getvalue())
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
 
     def test_cli_managed_trust_reaches_plan_with_explicit_override(self):
         managed = self.root / "managed-cacerts"

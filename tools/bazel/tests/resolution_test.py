@@ -38,9 +38,81 @@ class GraphInspectionTest(unittest.TestCase):
 
     def test_success(self):
         """Record the module count and complete inspection after a clean graph command."""
-        receipt = resolution.inspect_graph(GRAPH, "", 0)
+        console = io.StringIO()
+        with contextlib.redirect_stderr(console):
+            receipt = resolution.inspect_graph(GRAPH, "", 0)
         self.assertTrue(receipt["extension_inspection_complete"])
         self.assertEqual(receipt["module_count"], 3)
+        self.assertEqual(console.getvalue(), "")
+
+    def test_direct_failure_reports_primary_result_before_validation(self):
+        """Stored graph callers must expose an unknown extension error before rejecting it."""
+        primary = "ERROR: interpreter checksum download failed: HTTP 503\n"
+        console = io.StringIO()
+        validate = resolution._inspect_graph
+
+        def check_before_validation(*args):
+            self.assertIn("Bazel mod graph returned 2", console.getvalue())
+            self.assertIn(primary, console.getvalue())
+            return validate(*args)
+
+        with contextlib.redirect_stderr(console), \
+                mock.patch.object(resolution, "_inspect_graph", side_effect=check_before_validation), \
+                self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
+            resolution.inspect_graph(GRAPH, primary, 2)
+        self.assertEqual(console.getvalue().count("Bazel mod graph returned"), 1)
+
+    def test_zero_exit_validation_failure_keeps_primary_context_and_exception(self):
+        """A zero process status must not hide diagnostics or accept an invalid graph."""
+        primary = "unexpected graph wrapper warning\n"
+        console = io.StringIO()
+        with contextlib.redirect_stderr(console), \
+                self.assertRaisesRegex(ValueError, "^Missing resolved module graph$"):
+            resolution.inspect_graph("{}", primary, 0)
+        self.assertIn("Bazel mod graph returned 0", console.getvalue())
+        self.assertIn(primary, console.getvalue())
+
+    def test_direct_malformed_json_reports_bounded_stdout(self):
+        """Direct stored-output callers get the same malformed-JSON context as collect."""
+        console = io.StringIO()
+        with contextlib.redirect_stderr(console), \
+                self.assertRaisesRegex(ValueError, "not valid JSON.*return code 0"):
+            resolution.inspect_graph("not JSON", "wrapper warning\n", 0)
+        self.assertIn("wrapper warning", console.getvalue())
+        self.assertIn("Invalid module graph stdout", console.getvalue())
+        self.assertIn("not JSON", console.getvalue())
+
+    def test_long_warnings_do_not_hide_the_first_fatal_download_error(self):
+        """Retain a middle HTTP failure and its URL without dumping long APT warnings."""
+        url = "https://example.test/python/20260303/SHA256SUMS"
+        warning = "WARNING: APT mirror contents download still pending\n" * 150
+        for fatal in ("ERROR: python_interpreters failed\n", "Error in download: "):
+            primary = ("initial context\n" + warning + fatal + url +
+                       " GET returned 503 Service Unavailable\n" + warning + "final context\n")
+            console = io.StringIO()
+            with self.subTest(fatal=fatal), contextlib.redirect_stderr(console), \
+                    self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
+                resolution.inspect_graph(GRAPH, primary, 2)
+            self.assertLessEqual(len(resolution._stderr_preview(primary).encode()), 8192)
+            self.assertLess(len(console.getvalue().encode()), 8500)
+            for marker in ("initial context", "final context", url, "503 Service Unavailable", "bytes omitted"):
+                self.assertIn(marker, console.getvalue())
+
+    def test_fatal_header_near_head_cutoff_keeps_its_following_cause(self):
+        """A visible ERROR header must not hide the causal URL just beyond the head window."""
+        url = "https://example.test/python/SHA256SUMS"
+        for prefix_size, warning in ((0, "APT warning\n"), (3900, "APT warning\n"),
+                                     (3900, "APT avertissement: accès différé\n")):
+            prefix = (warning * 500)[:prefix_size]
+            primary = (prefix + "\nERROR: interpreter extension failed\n" + "frame\n" * 100 +
+                       url + " GET returned 503 Service Unavailable\n" +
+                       warning * 2000 + "final context\n")
+            with self.subTest(prefix_size=prefix_size, warning=warning):
+                preview = resolution._stderr_preview(primary)
+                self.assertLessEqual(len(preview.encode()), 8192)
+                for marker in ("ERROR: interpreter extension failed", url,
+                               "503 Service Unavailable", "final context"):
+                    self.assertIn(marker, preview)
 
     def test_known_unused_extensions_are_recorded(self):
         """Retain known failures without calling their extension inspection complete."""
@@ -139,7 +211,7 @@ class CollectionDiagnosticsTest(unittest.TestCase):
         """An empty graph must expose its download error and exit code, not just JSONDecodeError."""
         primary = "ERROR: repository download failed: HTTP 504\n"
         console = io.StringIO()
-        inspect = resolution.inspect_graph
+        inspect = resolution._inspect_graph
 
         def check_before_parse(*args):
             self.assertIn("Bazel mod graph returned 17", console.getvalue())
@@ -148,7 +220,7 @@ class CollectionDiagnosticsTest(unittest.TestCase):
 
         before = self.lock.read_bytes()
         with contextlib.redirect_stderr(console), \
-                mock.patch.object(resolution, "inspect_graph", side_effect=check_before_parse), \
+                mock.patch.object(resolution, "_inspect_graph", side_effect=check_before_parse), \
                 self.assertRaisesRegex(ValueError, "not valid JSON.*return code 17"):
             resolution.collect(self.root, self.output, bazel=self.command("", primary, 17))
         self.assertEqual((self.output / "module-graph.stderr").read_text(), primary)
