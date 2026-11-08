@@ -81,9 +81,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
+          ref: c41c7baf15307ad1c8f94d5dca511ef952d28729
           path: control/.source-mirror-registry
           sparse-checkout: ci
+          persist-credentials: false
+      - name: Checkout verified public registry mirror config
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          path: control/bazel-public-inputs
+          sparse-checkout: ci/source_mirrors.cfg
+          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Validate the fixed registry dispatch
         run: |
@@ -173,14 +182,80 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Checkout verified public source inputs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          path: bazel-public-inputs
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+            ci/github_sources/sonic-buildimage-rule-inputs.json
+            ci/source_mirrors.cfg
+          persist-credentials: false
+      - name: Prepare checksum-pinned Bazelisk for source downloads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=bazel-public-inputs/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt "$RUNNER_TEMP/source-input-bazelisk.json" \
+            --github-token-env GITHUB_TOKEN
+          python3 - "$RUNNER_TEMP/source-input-bazelisk.json" <<'PYRECEIPT'
+          import json, sys
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, safe_json
+          value = load_json(Path(sys.argv[1]).read_text())
+          safe_json(value)
+          print(json.dumps(value, sort_keys=True))
+          PYRECEIPT
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
       - name: Set up Bazel for repository downloads only
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: false
           cache-version: "8.5.1"
+      - name: Prepare verified public rule downloads and mirrors
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=bazel-public-inputs/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --distdir "$RUNNER_TEMP/source-input-rules" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt "$RUNNER_TEMP/source-input-rules.json" \
+            --github-token-env GITHUB_TOKEN
+          python3 - <<'PYINPUTS'
+          import hashlib, json, os
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, safe_json
+          temporary = Path(os.environ["RUNNER_TEMP"])
+          receipt = load_json((temporary / "source-input-rules.json").read_text())
+          safe_json(receipt)
+          print(json.dumps(receipt, sort_keys=True))
+          data = Path("bazel-public-inputs/ci/source_mirrors.cfg").read_bytes()
+          if hashlib.sha256(data).hexdigest() != "1a2bc2ac4c1b4f11217d0f86523f9c25ae1b7601b0f3626aa145968c44627246":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = temporary / "source-input-mirrors.cfg"
+          config.write_bytes(data)
+          # The fixed five-archive handoff remains unchanged.
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --distdir=" + str(temporary / "source-input-rules") + "\n")
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYINPUTS
       - name: Retain the same verified GitLab sources used by the VS workflow
         run: |
           mkdir -p artifacts/source-image-inputs
@@ -255,6 +330,19 @@ jobs:
           ref: c41c7baf15307ad1c8f94d5dca511ef952d28729
           path: ${{ env.SOURCE_WORKER_CONTROL }}/.source-mirror-registry
           sparse-checkout: ci
+          persist-credentials: false
+      - name: Checkout verified public source inputs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          path: ${{ env.SOURCE_WORKER_CONTROL }}/bazel-public-inputs
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+            ci/github_sources/sonic-buildimage-rule-inputs.json
+            ci/source_mirrors.cfg
           persist-credentials: false
       - name: Validate the fixed image selection
         run: |
@@ -341,6 +429,8 @@ jobs:
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Prepare private Docker and persistent worker caches
         id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \

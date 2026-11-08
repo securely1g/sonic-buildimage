@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Guard fixed registry workers without running Bazel or package installers."""
+import ast
 import copy
 import json
 import os
@@ -62,6 +63,55 @@ class RegistryWorkerTest(unittest.TestCase):
         self.assertEqual(result['GIT_CONFIG_VALUE_0'],'/actions/_work/registry')
         self.assertEqual(result['GIT_CONFIG_VALUE_1'],str(ROOT))
         self.assertEqual(result['USE_BAZEL_VERSION'],'8.5.1')
+    def test_registry_mirror_phase_uses_shared_public_config_and_receipt_contract(self):
+        from tools.bazel.ci import source_image_worker as shared
+        # Execute the unchanged mirror-phase dispatch from main, excluding native phases.
+        main=next(n for n in ast.parse((ROOT/'tools/bazel/ci/registry_native_worker.py').read_text()).body
+                  if isinstance(n,ast.FunctionDef) and n.name=='main')
+        branch=next(n for n in main.body if isinstance(n,ast.If) and
+                    ast.unparse(n.test)=="args.phase in ('prepare-mirrors', 'scan-mirrors', 'cleanup-mirrors')")
+        module=ast.Module(body=[ast.FunctionDef(name='delegate',args=ast.arguments(
+            posonlyargs=[],args=[],kwonlyargs=[],kw_defaults=[],defaults=[]),
+            body=[copy.deepcopy(branch)],decorator_list=[])],type_ignores=[])
+        code=compile(ast.fix_missing_locations(module),'<actual-registry-mirror-delegation>','exec')
+        original=(ROOT/'tools/bazel/tests/fixtures/source-mirrors-d50f730c.cfg').read_bytes()
+        for corrupt,private_root in [(False,''),(False,'https://fixture.example.invalid/debian/'),(True,'')]:
+            with self.subTest(corrupt=corrupt,private=bool(private_root)),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);artifacts=root/'artifacts';artifacts.mkdir()
+                public=root/'control/bazel-public-inputs/ci/source_mirrors.cfg'
+                public.parent.mkdir(parents=True);public.write_bytes(original+(b'corrupt' if corrupt else b''))
+                private=Mock();private.MIRROR_ROOTS=(('TEST_MIRROR_ROOT','unused'),)
+                selected=[private_root] if private_root else []
+                private.selected_mirrors.return_value=selected
+                expected=shared.mirror_configuration(original).decode()
+                private.configuration.return_value=expected+'# composed by private fixture\n'
+                def write_config(path,data):
+                    path.write_text(data);path.chmod(0o600)
+                private.write_config.side_effect=write_config
+                env={**self.environment,'RUNNER_TEMP':str(root),'TEST_MIRROR_ROOT':private_root}
+                namespace={**worker.__dict__,'args':NS(phase='prepare-mirrors',artifacts=artifacts)}
+                with patch.object(shared,'ROOT',root/'control'),patch.object(sys,'path',list(sys.path)), \
+                        patch.dict(sys.modules,{'private_mirrors':private}),patch.dict(os.environ,env,clear=True), \
+                        patch.object(shared.platform,'machine',return_value='x86_64'), \
+                        patch.object(shared.platform,'freedesktop_os_release',return_value={'VERSION_CODENAME':'trixie'}):
+                    exec(code,namespace)
+                    if corrupt:
+                        with self.assertRaisesRegex(ValueError,'checksum mismatch'):namespace['delegate']()
+                        private.write_config.assert_not_called()
+                        self.assertFalse(worker.registry_mirror_path().exists())
+                        self.assertFalse((artifacts/'worker-source-mirrors.json').exists())
+                    else:
+                        namespace['delegate']()
+                        result=worker.verified_mirror_config(artifacts)
+                        self.assertEqual(result,str(worker.registry_mirror_path()))
+                        receipt=json.loads((artifacts/'worker-source-mirrors.json').read_text())
+                        self.assertEqual(receipt,{'original_sha256':shared.MIRROR_SHA,'archive_integrity_unchanged':True})
+                        self.assertEqual(Path(result).read_text(),private.configuration.return_value if private_root else expected)
+                        if private_root:private.configuration.assert_called_once_with(expected,selected)
+                        else:private.configuration.assert_not_called()
+                    self.assertIn(str(root/'control/.source-mirror-registry/ci'),sys.path)
+                    self.assertNotIn('TEST_MIRROR_ROOT',os.environ)
+
     def test_source_input_numeric_context_propagates_without_credentials(self):
         for value in ['41689621493','']:
             result=worker.child_environment({**self.environment,'SOURCE_INPUTS_RUN':value,'GH_TOKEN':'secret'},
@@ -323,11 +373,16 @@ class WorkflowTest(unittest.TestCase):
     def test_fixed_checkout_permissions_and_no_hosted_cache_dependency(self):
         job=self.flow['jobs']['registry_native'];self.assertEqual(job['permissions'],{'contents':'read','actions':'read'})
         checkouts=[s for s in job['steps'] if s.get('uses','').startswith('actions/checkout@')]
-        self.assertEqual(len(checkouts),3);self.assertTrue(all(s['with']['persist-credentials'] is False for s in checkouts))
+        self.assertEqual(len(checkouts),4);self.assertTrue(all(s['with']['persist-credentials'] is False for s in checkouts))
         self.assertEqual(checkouts[1]['with']['repository'],'securely1g/sonic-bazel-registry')
-        self.assertEqual(checkouts[1]['with']['ref'],'97cc502556b7ec3435d2d67b105315bcc18bb47e')
+        self.assertEqual(checkouts[1]['with']['ref'],'c41c7baf15307ad1c8f94d5dca511ef952d28729')
         self.assertEqual(checkouts[2]['with']['repository'],'securely1g/sonic-bazel-registry')
-        self.assertEqual(checkouts[2]['with']['ref'],'$'+'{{ inputs.source_revision }}')
+        self.assertEqual(checkouts[2]['with']['ref'],'d50f730c4f1d8d334d6b5062238d8d33934a2bbd')
+        self.assertEqual(checkouts[2]['with']['path'],'control/bazel-public-inputs')
+        self.assertIs(checkouts[2]['with']['sparse-checkout-cone-mode'],False)
+        self.assertEqual(checkouts[2]['with']['sparse-checkout'],'ci/source_mirrors.cfg')
+        self.assertFalse(any('Prepare verified PI rule inputs' == s.get('name') for s in job['steps']))
+        self.assertEqual(checkouts[3]['with']['ref'],'$'+'{{ inputs.source_revision }}')
         self.assertFalse(any('setup-bazel' in s.get('uses','') or 'actions/cache' in s.get('uses','') for s in job['steps']))
         download=[s for s in job['steps'] if 'download-artifact' in s.get('uses','')]
         self.assertEqual(len(download),1)

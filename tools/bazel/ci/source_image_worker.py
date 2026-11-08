@@ -19,7 +19,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary, load_json
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
@@ -62,8 +62,8 @@ P4RT_OWNER_PROFILE = {"revision": P4RT_OWNER, "bazel": "6.4.0", "jobs": 1, "jvm_
                       "scheduler_memory_mb": 4096, "cache_mode": "separate_persistent_worker_local"}
 P4RT_PHASES = ("prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded")
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-MIRROR_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/d50f730c4f1d8d334d6b5062238d8d33934a2bbd/ci/source_mirrors.cfg"
+MIRROR_SHA = "1a2bc2ac4c1b4f11217d0f86523f9c25ae1b7601b0f3626aa145968c44627246"
 
 
 def mirror_configuration(original):
@@ -746,11 +746,13 @@ def configure_worker_mirrors(phase, artifacts, *, config=None, public=None, imag
                 platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie" and
                 re.fullmatch(r"sonic-slave-lgh114-[1-4]", os.environ.get("RUNNER_NAME", "")),
                 "Private Debian mirrors require a trusted native Trixie worker")
-    public = mirror_configuration((registry_ci / "source_mirrors.cfg").read_bytes()).decode()
+    public_config = ROOT / "bazel-public-inputs/ci/source_mirrors.cfg"
+    public = mirror_configuration(public_config.read_bytes()).decode()
     private_mirrors.write_config(config, private_mirrors.configuration(public, mirrors) if mirrors else public)
 
 
 def prepare(args):
+    github_token = os.environ.pop("GITHUB_TOKEN", "")
     workspace, artifacts = args.workspace, args.artifacts
     if args.image == "teamd":
         prepare_teamd_kernel(artifacts)
@@ -813,6 +815,17 @@ def prepare(args):
     temporary.mkdir(parents=True, exist_ok=True)
     distdirs, download_receipt = prepare_source_downloads(temporary / "source-image-inputs", cache)
     (artifacts / "worker-source-downloads.json").write_text(json.dumps(download_receipt, indent=2) + "\n")
+    public_inputs = ROOT / "bazel-public-inputs/ci"
+    rule_distdir = cache / "rule-distdir"
+    rule_receipt = temporary / "rule-sources.json"
+    run([sys.executable, "-B", str(public_inputs / "github_sources.py"),
+         "--manifest", str(public_inputs / "github_sources/sonic-buildimage-rule-inputs.json"),
+         "--distdir", str(rule_distdir), "--repository-cache", str(cache / "repository"),
+         "--cache-dir", str(cache / "github-sources"), "--receipt", str(rule_receipt),
+         "--github-token-env", "GITHUB_TOKEN"], env={**os.environ, "GITHUB_TOKEN": github_token})
+    rule_sources = load_json(rule_receipt.read_text())
+    safe_json(rule_sources)
+    distdirs.append(rule_distdir)
     launch = temporary / "source-image-bazel"
     launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile))
     launch.chmod(0o755)
@@ -876,7 +889,7 @@ def prepare(args):
                "source_revision": args.revision, "dispatcher_revision": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
                "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "persistent_worker_local",
                "build_profile": profile, "memory": memory_snapshot(),
-               "docker_network": "none", "image": args.image}
+               "docker_network": "none", "image": args.image, "rule_sources": rule_sources}
     if args.image == "p4rt":
         receipt["owner_profile"] = P4RT_OWNER_PROFILE
     safe_json(receipt)
