@@ -197,9 +197,27 @@ use_repo(toolchains, "bsd_tar_toolchains")
 register_toolchains("@bsd_tar_toolchains//:all")
 
 # Import exact package sources and dependency sets from the reviewed lock.
-apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+# Shared build tools retain their reviewed unified production lock.
+shared_apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+use_repo(shared_apt, "trixie")
+
+# Keep the image payload locks and their original package requests separate.
+apt = use_extension("//tools/bazel/apt:legacy_trixie.bzl", "apt")
+apt.sources_list(
+    architectures = ["amd64", "arm64", "armhf"],
+    components = ["main"],
+    suites = ["trixie", "trixie-updates"],
+    uris = ["https://snapshot.debian.org/archive/debian/20260727T143429Z"],
+)
+
+apt.sources_list(
+    architectures = ["amd64", "arm64", "armhf"],
+    components = ["main"],
+    suites = ["trixie-security"],
+    uris = ["https://snapshot.debian.org/archive/debian-security/20260726T121236Z"],
+)
 apt.import_lock(lock = "//dockers/docker-orchagent/bazel:apt.lock.json")
-use_repo(apt, "orchagent_debian", "orchagent_debug_debian", "trixie")
+use_repo(apt, "orchagent_debian", "orchagent_debug_debian")
 
 # Generate BUILD input labels from the same reviewed lock during repository setup.
 apt_inputs = use_repo_rule("@sonic_build_infra//apt:inputs_repository.bzl", "apt_inputs")
@@ -351,8 +369,21 @@ apt.install(
 )
 use_repo(apt, "fib_deps")
 
-# Reuse the isolated Bookworm snapshot declared by the FRR dependency include.
-apt_bookworm_metadata = use_extension("@sonic_build_infra//toolchains/bookworm:apt.bzl", "apt")
+# Keep the existing Bookworm FIB package request on its reviewed snapshot.
+apt_bookworm_metadata = use_extension("//tools/bazel/apt:legacy_bookworm.bzl", "apt")
+apt_bookworm_metadata.sources_list(
+    architectures = ["amd64", "arm64"],
+    components = ["main"],
+    suites = ["bookworm", "bookworm-updates"],
+    uris = ["https://snapshot.debian.org/archive/debian/20260727T143429Z"],
+)
+
+apt_bookworm_metadata.sources_list(
+    architectures = ["amd64", "arm64"],
+    components = ["main"],
+    suites = ["bookworm-security"],
+    uris = ["https://snapshot.debian.org/archive/debian-security/20260726T121236Z"],
+)
 apt_bookworm_metadata.install(
     dependency_set = "fib_bookworm_deps",
     packages = [
