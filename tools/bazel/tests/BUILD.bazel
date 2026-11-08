@@ -1240,7 +1240,7 @@ py_test(
     args = ["--" + name.replace("_", "-") + "=$(rootpath " + label + ")" for name, label in _SWSS_IMAGE_INPUTS.items()] +
            ["--runtime-payload-layer=$(rootpath " + label + ")" for label in _SWSS_RUNTIME_LAYERS] +
            ["--debug-payload-layer=$(rootpath " + label + ")" for label in _SWSS_DEBUG_LAYERS],
-    data = _SWSS_IMAGE_INPUTS.values() + _SWSS_RUNTIME_LAYERS + _SWSS_DEBUG_LAYERS,
+    data = depset(_SWSS_IMAGE_INPUTS.values() + _SWSS_RUNTIME_LAYERS + _SWSS_DEBUG_LAYERS).to_list(),
     main = "integration/oci_images_test.py",
     tags = ["manual"],
     target_compatible_with = [
