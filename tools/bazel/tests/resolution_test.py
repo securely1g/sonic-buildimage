@@ -69,10 +69,13 @@ class GraphInspectionTest(unittest.TestCase):
             self.assertEqual((root / "MODULE.bazel.lock").read_text(), "original lock\n")
 
     def test_graph_diagnostic_signals_are_bounded_and_fail_closed(self):
+        archive = "github.com/example/repo/archive/" + "a" * 40 + ".tar.gz"
         stderr = ("ERROR: java.net.SocketTimeoutException java.lang.OutOfMemoryError PKIX\n" * 10000
-                  + "ERROR: http://127.0.0.1:123/_sonic_github_release/github.com/example/r/releases/download/v1/a.gz?token=secret HTTP 502\n")
+                  + "ERROR: http://127.0.0.1:123/_sonic_github_release/github.com/example/r/releases/download/v1/a.gz?token=secret HTTP 502\n"
+                  + "ERROR: http://127.0.0.1:123/_sonic_github_archive/" + archive + "?token=secret HTTP 502\n")
         diagnostic = resolution.graph_diagnostics("not JSON", stderr, 8)
         self.assertEqual(diagnostic["signals"], ["out_of_memory", "timeout", "tls_error"])
+        self.assertIn(hashlib.sha256(archive.encode()).hexdigest(), diagnostic["public_source_url_sha256"])
         self.assertLess(len(json.dumps(diagnostic)), 1000)
         self.assertNotIn("secret", json.dumps(diagnostic))
 

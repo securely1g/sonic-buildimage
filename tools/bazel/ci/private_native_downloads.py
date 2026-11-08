@@ -87,7 +87,7 @@ def destination(uri, mirrors, manifest):
         raise ValueError("Unsupported native HTTP request")
     # Do not let the bridge-facing APT proxy relay to the credential-bearing
     # release listener. Bazel reaches that separate listener over loopback.
-    if parsed.path.startswith("/_sonic_github_release/"):
+    if parsed.path.startswith(("/_sonic_github_release/", "/_sonic_github_archive/")):
         raise ValueError("Release transport requires direct loopback access")
     if parsed.hostname in DEBIAN_HOSTS:
         if parsed.query or ".." in urllib.parse.unquote(parsed.path).split("/"):
@@ -325,18 +325,21 @@ def export_input_diagnostics(artifacts, redactor):
         result["graph"] = graph
     receipt = read("private-downloads-inputs.json")
     if receipt is not None:
-        release = receipt.get("github_release_transport")
-        if (not isinstance(release, dict) or type(release.get("authenticated")) is not bool
-                or not all(counter(release.get(key)) for key in ("completed", "failed"))):
-            raise ValueError("Invalid native release diagnostics")
-        categories = release.get("failure_categories", {})
-        if (not isinstance(categories, dict) or len(categories) > 403
-                or any(not re.fullmatch(FAILURE_CATEGORY, key) or not counter(value)
-                       for key, value in categories.items())):
-            raise ValueError("Invalid native release failure categories")
-        result["github_release_transport"] = {
-            key: release[key] for key in ("authenticated", "completed", "failed")}
-        result["github_release_transport"]["failure_categories"] = categories
+        for field in ("github_release_transport", "github_commit_archive_transport"):
+            if field not in receipt and field == "github_commit_archive_transport":
+                continue
+            transfer = receipt.get(field)
+            if (not isinstance(transfer, dict) or type(transfer.get("authenticated")) is not bool
+                    or (field == "github_commit_archive_transport" and transfer["authenticated"])
+                    or not all(counter(transfer.get(key)) for key in ("completed", "failed"))):
+                raise ValueError("Invalid native release diagnostics")
+            categories = transfer.get("failure_categories", {})
+            if (not isinstance(categories, dict) or len(categories) > 403
+                    or any(not re.fullmatch(FAILURE_CATEGORY, key) or not counter(value)
+                           for key, value in categories.items())):
+                raise ValueError("Invalid native release failure categories")
+            result[field] = {key: transfer[key] for key in ("authenticated", "completed", "failed")}
+            result[field]["failure_categories"] = categories
     if len(result) == 1:
         raise ValueError("No native input diagnostics were recorded")
     destination = artifacts.parent / "native-input-diagnostics"
@@ -395,11 +398,12 @@ def run(args):
     if args.private_dir.resolve().is_relative_to(artifacts):
         raise ValueError("Private download configuration must be outside artifacts")
     counts = {"debian": 0, "debian-security": 0}
+    archive_counts = {}
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         raise ValueError("Missing native command")
     with tempfile.TemporaryDirectory(prefix="native-", dir=args.private_dir) as temporary, \
-            github_release_transport.serve(release_token) as (release_port, release_counts):
+            github_release_transport.serve(release_token, archive_counts=archive_counts) as (release_port, release_counts):
         private = Path(temporary)
         config = private / "downloader.cfg"
         # Native input resolution must try the next signed-index variant
@@ -472,6 +476,7 @@ def run(args):
                 thread.join(timeout=5)
             receipt = {"schema": 1, "helper_revision": REGISTRY_REVISION,
                        "github_release_transport": {"authenticated": bool(release_token), **release_counts},
+                       "github_commit_archive_transport": {"authenticated": False, **archive_counts},
                        "private_mirrors_enabled": True, "native_apt_upstream_https": server is not None,
                        "debian_public_bazel_fallback": public_fallback,
                        "native_docker_apt_private_component": "main",

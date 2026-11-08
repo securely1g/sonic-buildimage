@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sys
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 
@@ -20,6 +21,8 @@ API = "https://api.github.com/repos/example/tools/releases/assets/17"
 CDN = "https://release-assets.githubusercontent.com/asset?signature=private-test-signature"
 BODY = b"byte-identical release archive\x00\xff"
 TOKEN = "fixture-only-api-credential"
+ARCHIVE_URL = "https://github.com/securely1g/sonic-swss-common/archive/334389eae54afd1f4f5ee69f89c3a7ad2062ee61.tar.gz"
+CODELOAD_URL = "https://codeload.github.com/securely1g/sonic-swss-common/tar.gz/334389eae54afd1f4f5ee69f89c3a7ad2062ee61"
 
 
 class Response(io.BytesIO):
@@ -72,7 +75,91 @@ class MovedOrigin(Origin):
         return super().open(request, timeout)
 
 
+class ArchiveOrigin:
+    def __init__(self, *, length=True):
+        self.calls = []
+        self.length = length
+
+    def open(self, request, timeout):
+        self.calls.append(request)
+        if request.full_url != CODELOAD_URL:
+            raise AssertionError("Unexpected archive origin")
+        response = Response(BODY, "application/x-gzip")
+        if not self.length:
+            del response.headers["Content-Length"]
+        return response
+
+
 class ReleaseTransportTests(unittest.TestCase):
+    def test_full_commit_archives_prefer_exact_codeload_format_and_keep_original(self):
+        archive = ARCHIVE_URL.removeprefix("https://")
+        original = "rewrite deb.example/(.*) https://private.example/$1\n"
+        configured = transport.downloader_policy(original, 12345)
+        candidates = []
+        for line in configured.splitlines():
+            _, pattern, replacement = line.split()
+            match = re.fullmatch(pattern, archive)
+            if match:
+                for index, group in enumerate(match.groups(), 1):
+                    replacement = replacement.replace("$" + str(index), group)
+                candidates.append(replacement)
+        self.assertEqual(candidates, [
+            "http://127.0.0.1:12345" + transport.ARCHIVE_PREFIX + archive,
+            "https://" + archive])
+        self.assertTrue(configured.endswith(original))
+        self.assertEqual(transport.downloader_policy(configured, 12345), configured)
+        for unsupported in (archive.replace(".tar.gz", ".zip"), archive.replace("334389eae54afd1f4f5ee69f89c3a7ad2062ee61", "v1.0"),
+                            archive.replace("/archive/", "/archive/refs/tags/")):
+            self.assertIsNone(re.fullmatch(transport.COMMIT_ARCHIVE_PATTERN, unsupported))
+
+    def test_commit_archive_identity_is_narrow_and_not_legacy_tarball(self):
+        self.assertEqual(transport.archive_target(ARCHIVE_URL), CODELOAD_URL)
+        for url in (ARCHIVE_URL.replace("https:", "http:"), ARCHIVE_URL + "?token=secret", ARCHIVE_URL + "#fragment",
+                    ARCHIVE_URL.replace("github.com", "github.com.evil.invalid"),
+                    ARCHIVE_URL.replace("github.com", "user@github.com"), ARCHIVE_URL.replace("github.com", "github.com:443"),
+                    ARCHIVE_URL.replace("/securely1g/", "/../"), ARCHIVE_URL.replace(".tar.gz", ".zip"),
+                    ARCHIVE_URL.replace("334389eae54afd1f4f5ee69f89c3a7ad2062ee61", "main")):
+            with self.subTest(url=url), self.assertRaises(transport.DownloadError):
+                transport.archive_target(url)
+
+    def test_commit_archive_streams_without_api_credential_with_or_without_length(self):
+        for length in (True, False):
+            with self.subTest(length=length):
+                origin = ArchiveOrigin(length=length)
+                archives = {}
+                with transport.serve(client=transport.PublicAssets(TOKEN, origin), archive_counts=archives) as (port, counters):
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}" + transport.ARCHIVE_PREFIX + ARCHIVE_URL[8:]) as response:
+                        self.assertEqual(response.read(), BODY)
+                        self.assertEqual(response.headers.get("Content-Length"), str(len(BODY)) if length else None)
+                self.assertEqual(counters, {"completed": 0, "failed": 0, "failure_categories": {}})
+                self.assertEqual(archives, {"completed": 1, "failed": 0, "failure_categories": {}})
+                self.assertEqual([call.full_url for call in origin.calls], [CODELOAD_URL])
+                self.assertIsNone(origin.calls[0].get_header("Authorization"))
+                self.assertIsNone(origin.calls[0].get_header("Cookie"))
+
+    def test_commit_archive_redirects_and_oversized_responses_fail_closed(self):
+        class Redirect(ArchiveOrigin):
+            def open(self, request, timeout):
+                self.calls.append(request)
+                raise urllib.error.HTTPError(request.full_url, 302, TOKEN,
+                                             {"Location": "https://api.github.com/repos/private/data"}, io.BytesIO())
+        origin = Redirect()
+        with self.assertRaises(transport.DownloadError) as caught:
+            transport.PublicAssets(TOKEN, origin).open_archive(ARCHIVE_URL)
+        self.assertEqual(caught.exception.category, "asset:http:302")
+        self.assertEqual(len(origin.calls), 1)
+        self.assertIsNone(origin.calls[0].get_header("Authorization"))
+        with mock.patch.object(transport, "MAX_ASSET_BYTES", 8):
+            with self.assertRaises(transport.DownloadError):
+                transport.PublicAssets(TOKEN, ArchiveOrigin()).open_archive(ARCHIVE_URL)
+            archives = {}
+            with transport.serve(client=transport.PublicAssets(TOKEN, ArchiveOrigin(length=False)), archive_counts=archives) as (port, counters):
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}" + transport.ARCHIVE_PREFIX + ARCHIVE_URL[8:]) as response:
+                    self.assertEqual(response.read(), b"")
+            self.assertEqual(archives["failed"], 1)
+            self.assertEqual(counters["failed"], 0)
+            self.assertEqual(counters["completed"], 0)
+
     def test_moved_repository_uses_verified_public_id_and_canonical_api_paths(self):
         for code in (301, 302, 307, 308):
             with self.subTest(code=code):

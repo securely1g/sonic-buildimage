@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Serve public GitHub release bytes through the native job's loopback listener.
+"""Serve public GitHub source bytes through the native job's loopback listener.
 
 This changes transport only. Bazel retains the original archive integrity, and
-the original release URL remains a downloader candidate. API credentials never
+the original source URL remains a downloader candidate. API credentials never
 enter downloader URLs, asset redirects, child processes, or retained receipts.
 """
 
@@ -19,7 +19,9 @@ import urllib.request
 
 
 PREFIX = "/_sonic_github_release/"
+ARCHIVE_PREFIX = "/_sonic_github_archive/"
 PATTERN = r"(github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download/[^/?#]+/[^/?#]+)"
+COMMIT_ARCHIVE_PATTERN = r"(github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/archive/([0-9a-f]{40})\.tar\.gz)"
 ASSET_HOSTS = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 TOKEN_ENV = "SONIC_GITHUB_RELEASE_TOKEN"
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
@@ -64,6 +66,15 @@ def parse_release(url):
     return "/".join(parts[:2]), tag, name
 
 
+def archive_target(url):
+    value = urllib.parse.urlsplit(url)
+    match = re.fullmatch(COMMIT_ARCHIVE_PATTERN, value.netloc + value.path)
+    if (value.scheme != "https" or value.query or value.fragment or not match
+            or any(part in {".", ".."} for part in match[2].split("/"))):
+        raise DownloadError("Unsupported public commit archive URL")
+    return "https://codeload.github.com/" + match[2] + "/tar.gz/" + match[3]
+
+
 class PublicAssets:
     def __init__(self, token="", opener=None):
         if (not isinstance(token, str) or len(token) > 4096
@@ -74,11 +85,12 @@ class PublicAssets:
         self._assets = {}
         self._lock = threading.Lock()
 
-    def _request(self, url, *, api=False, binary=False):
+    def _request(self, url, *, api=False, binary=False, archive=False):
         parsed = urllib.parse.urlsplit(url)
-        allowed = {"api.github.com"} if api else ASSET_HOSTS
+        allowed = {"codeload.github.com"} if archive else {"api.github.com"} if api else ASSET_HOSTS
         if (parsed.scheme != "https" or parsed.hostname not in allowed or parsed.username is not None
                 or parsed.password is not None or parsed.port not in (None, 443) or parsed.fragment
+                or (archive and (api or parsed.query))
                 or any(character.isspace() for character in url)):
             raise DownloadError("Unsupported release redirect")
         headers = {"User-Agent": "sonic-native-release-transport", "Accept-Encoding": "identity"}
@@ -176,6 +188,30 @@ class PublicAssets:
                 raise DownloadError("Public release asset unavailable", category="asset:transport") from None
         raise DownloadError("Too many release redirects")
 
+    def open_archive(self, url):
+        # This is the byte-identical destination of GitHub's commit archive
+        # route, not the API's differently packaged legacy tarball. No API
+        # credential, cookie or redirect is used for this public request.
+        target = archive_target(url)
+        try:
+            response = self._request(target, archive=True)
+            size = response.headers.get("Content-Length")
+            try:
+                size = int(size) if size is not None else None
+                if (response.status != 200 or response.headers.get_content_type() in {"application/json", "text/html"}
+                        or (size is not None and not 0 < size <= MAX_ASSET_BYTES)):
+                    raise DownloadError("Invalid commit archive response")
+            except Exception:
+                response.close()
+                raise
+            return response, size
+        except urllib.error.HTTPError as error:
+            category = http_failure("asset", error)
+            error.close()
+            raise DownloadError("Public commit archive unavailable", category=category) from None
+        except (OSError, ValueError, urllib.error.URLError):
+            raise DownloadError("Public commit archive unavailable", category="asset:transport") from None
+
 
 def downloader_policy(original, port):
     # Bazel applies rewrites once. Cover already-declared release mirrors too
@@ -195,8 +231,12 @@ def downloader_policy(original, port):
                     rows.append(preferred)
         rows.append(line)
     policy = "\n".join(rows) + "\n"
+    # Retain the original archive basename: Bazel infers its extraction type
+    # from the first rewritten URL, while codeload's URL ends with a bare SHA.
     prefix = (f"rewrite {PATTERN} http://127.0.0.1:{port}{PREFIX}$1\n"
-              f"rewrite {PATTERN} https://$1\n")
+              f"rewrite {PATTERN} https://$1\n"
+              f"rewrite {COMMIT_ARCHIVE_PATTERN} http://127.0.0.1:{port}{ARCHIVE_PREFIX}$1\n"
+              f"rewrite {COMMIT_ARCHIVE_PATTERN} https://$1\n")
     return policy if policy.startswith(prefix) else prefix + policy
 
 
@@ -213,9 +253,12 @@ def loopback_environment(environment):
 
 
 @contextlib.contextmanager
-def serve(token="", *, client=None):
+def serve(token="", *, client=None, archive_counts=None):
     assets = client or PublicAssets(token)
     counts = {"completed": 0, "failed": 0, "failure_categories": {}}
+    if archive_counts is None:
+        archive_counts = {}
+    archive_counts.update({"completed": 0, "failed": 0, "failure_categories": {}})
     lock = threading.Lock()
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -224,17 +267,21 @@ def serve(token="", *, client=None):
 
         def do_GET(self):
             started = False
+            selected_counts = counts
             try:
-                if (not ipaddress.ip_address(self.client_address[0]).is_loopback
-                        or not self.path.startswith(PREFIX)):
+                prefix = next((value for value in (PREFIX, ARCHIVE_PREFIX) if self.path.startswith(value)), None)
+                if not ipaddress.ip_address(self.client_address[0]).is_loopback or prefix is None:
                     self.send_error(403, "Only native loopback release requests are allowed")
                     return
-                url = "https://" + self.path[len(PREFIX):]
-                response, size = assets.open(url)
+                if prefix == ARCHIVE_PREFIX:
+                    selected_counts = archive_counts
+                url = "https://" + self.path[len(prefix):]
+                response, size = assets.open_archive(url) if prefix == ARCHIVE_PREFIX else assets.open(url)
                 with contextlib.closing(response):
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("Content-Length", str(size))
+                    if size is not None:
+                        self.send_header("Content-Length", str(size))
                     self.end_headers()
                     started = True
                     copied = 0
@@ -242,26 +289,27 @@ def serve(token="", *, client=None):
                     while True:
                         if time.monotonic() > deadline:
                             raise DownloadError("Release asset transfer exceeded deadline")
-                        data = response.read1(min(1024 * 1024, size - copied + 1))
+                        limit = size if size is not None else MAX_ASSET_BYTES
+                        data = response.read1(min(1024 * 1024, limit - copied + 1))
                         if not data:
                             break
                         copied += len(data)
-                        if copied > size:
+                        if copied > limit:
                             raise DownloadError("Release asset size changed")
                         self.wfile.write(data)
-                    if copied != size:
+                    if copied == 0 or (size is not None and copied != size):
                         raise DownloadError("Incomplete release asset")
                 with lock:
-                    counts["completed"] += 1
+                    selected_counts["completed"] += 1
             except Exception as error:
                 # No exception text is safe here: upstream errors may contain
                 # expiring asset signatures. Keep them off stderr and HTTP.
                 with lock:
-                    counts["failed"] += 1
+                    selected_counts["failed"] += 1
                     category = error.category if isinstance(error, DownloadError) else "other"
                     if not isinstance(category, str) or not re.fullmatch(FAILURE_CATEGORY, category):
                         category = "other"
-                    counts["failure_categories"][category] = counts["failure_categories"].get(category, 0) + 1
+                    selected_counts["failure_categories"][category] = selected_counts["failure_categories"].get(category, 0) + 1
                 if not started:
                     try:
                         self.send_error(502, "Public release transport unavailable")

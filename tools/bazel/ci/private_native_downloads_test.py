@@ -20,6 +20,7 @@ import urllib.error
 SPEC = importlib.util.spec_from_file_location("native_downloads", Path(__file__).with_name("private_native_downloads.py"))
 native = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(native)
+native.sys.path.insert(0, str(Path(__file__).resolve().parent))
 MIRRORS = {"DEBIAN_MIRROR_ROOT": "https://private.example.invalid/archive/debian/",
            "DEBIAN_SECURITY_MIRROR_ROOT": "https://private.example.invalid/archive/debian-security/"}
 MANIFEST = {name: {"current": stamp, "snapshots": {stamp: {}}} for name, stamp in
@@ -47,7 +48,9 @@ class NativeTransportTests(unittest.TestCase):
             (artifacts / "private-downloads-inputs.json").write_text(json.dumps({
                 "not_for_export": secret,
                 "github_release_transport": {"authenticated": True, "completed": 2, "failed": 1,
-                    "failure_categories": {"metadata:http:403:rate_limited": 1}, "not_for_export": secret}}))
+                    "failure_categories": {"metadata:http:403:rate_limited": 1}, "not_for_export": secret},
+                "github_commit_archive_transport": {"authenticated": False, "completed": 3, "failed": 0,
+                    "failure_categories": {}, "not_for_export": secret}}))
             redactor = mock.Mock()
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
@@ -58,6 +61,21 @@ class NativeTransportTests(unittest.TestCase):
             self.assertNotIn(secret, exported + output.getvalue())
             self.assertEqual(json.loads(exported)["graph"]["returncode"], 37)
             self.assertEqual(json.loads(exported)["github_release_transport"]["failed"], 1)
+            self.assertEqual(json.loads(exported)["github_commit_archive_transport"],
+                             {"authenticated": False, "completed": 3, "failed": 0, "failure_categories": {}})
+
+    def test_archive_diagnostics_cannot_claim_authenticated_transfers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory) / "repository-inputs"
+            artifacts.mkdir()
+            counters = {"authenticated": True, "completed": 1, "failed": 0, "failure_categories": {}}
+            (artifacts / "private-downloads-inputs.json").write_text(json.dumps({
+                "github_release_transport": counters, "github_commit_archive_transport": counters}))
+            redactor = mock.Mock()
+            with self.assertRaises(ValueError):
+                native.export_input_diagnostics(artifacts, redactor)
+            redactor.scrub_and_scan.assert_not_called()
+            self.assertFalse((Path(directory) / "native-input-diagnostics").exists())
 
     def test_input_diagnostics_reject_arbitrary_strings_and_privacy_failure(self):
         from resolution import graph_diagnostics
@@ -81,9 +99,10 @@ class NativeTransportTests(unittest.TestCase):
 
     def test_bridge_proxy_cannot_relay_to_release_listener(self):
         for host in ("127.0.0.1", "localhost", "2130706433"):
-            with self.subTest(host=host), self.assertRaisesRegex(ValueError, "direct loopback"):
-                native.destination(f"http://{host}/_sonic_github_release/github.com/example/repo/releases/download/v1/a.tar.gz",
-                                   MIRRORS, MANIFEST)
+            for prefix in ("/_sonic_github_release/", "/_sonic_github_archive/"):
+                with self.subTest(host=host, prefix=prefix), self.assertRaisesRegex(ValueError, "direct loopback"):
+                    native.destination(f"http://{host}{prefix}github.com/example/repo/releases/download/v1/a.tar.gz",
+                                       MIRRORS, MANIFEST)
 
     def test_gawk_mirror_preserves_original_sources_and_other_download_rules(self):
         policy = "rewrite snapshot.example.invalid/(.*) https://private.example.invalid/$1\n"
@@ -422,6 +441,8 @@ class WrapperLifecycleTests(unittest.TestCase):
                         self.assertEqual(receipt["debian_public_bazel_fallback"], phase != "inputs")
                         self.assertEqual(receipt["github_release_transport"],
                                          {"authenticated": True, "completed": 0, "failed": 0, "failure_categories": {}})
+                        self.assertEqual(receipt["github_commit_archive_transport"],
+                                         {"authenticated": False, "completed": 0, "failed": 0, "failure_categories": {}})
             self.assertEqual(list(args.private_dir.iterdir()), [])
             self.assertIn("https://remote.example.invalid/", seen)
             receipt = json.loads((artifacts / "private-downloads-verification.json").read_text())

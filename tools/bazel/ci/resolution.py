@@ -41,8 +41,10 @@ def graph_diagnostics(stdout, stderr, returncode):
         for url in re.findall(r"https?://[^\s<>\"']+", line):
             try:
                 value = urllib.parse.urlsplit(url.rstrip(",;)]}"))
-                if value.hostname == "127.0.0.1" and value.path.startswith("/_sonic_github_release/"):
-                    value = urllib.parse.urlsplit("https://" + value.path.removeprefix("/_sonic_github_release/"))
+                for prefix in ("/_sonic_github_release/", "/_sonic_github_archive/"):
+                    if value.hostname == "127.0.0.1" and value.path.startswith(prefix):
+                        value = urllib.parse.urlsplit("https://" + value.path.removeprefix(prefix))
+                        break
                 if value.hostname in {"github.com", "bcr.bazel.build"} and len(public_urls) < 32:
                     # Compare against pinned descriptors without retaining paths,
                     # userinfo, query signatures, ports, or private origins.
