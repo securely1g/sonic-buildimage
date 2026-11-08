@@ -55,7 +55,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0",
+    version = "0.0.28-8e15b3341e4665f7bf6ed9be0aaaf1c92dcf9175",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -199,6 +199,11 @@ register_toolchains("@bsd_tar_toolchains//:all")
 # Import exact package sources and dependency sets from the reviewed lock.
 # Shared build tools retain their reviewed unified production lock.
 shared_apt = use_extension("@rules_distroless//apt:extensions.bzl", "apt")
+shared_apt.import_lock(
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    requests = "@sonic_build_infra//apt:requests.json",
+    sources = "@sonic_build_infra//apt:sources.json",
+)
 use_repo(shared_apt, "trixie")
 
 # Keep the image payload locks and their original package requests separate.
@@ -438,7 +443,7 @@ single_version_override(
 
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0",
+    version = "0.0.28-8e15b3341e4665f7bf6ed9be0aaaf1c92dcf9175",
 )
 
 single_version_override(

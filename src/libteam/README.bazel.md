@@ -10,7 +10,7 @@ programs, runtime/debug TARs, development TAR and package metadata are aliases
 to the shared module. SWSS keeps its existing image-root labels; Teamd binds
 its package records to the shared module's actual MODULE file.
 
-The coherent review catalog `618c7279e814b858f803fd6b4891e99eedcb2400` retains
+The coherent review catalog `1a7de6cd36285bd696b3bfe2bdc19aa58e6e1bf5` retains
 the exact landed libteam entry added by parent catalog
 `04a71b7883384e995a5ae089e2b6f6a0601164de` from registry main
 `a1334b9a9604733a2faf6cc96536d289da09e8d8`. It also refreshes dependency metadata
@@ -18,10 +18,14 @@ and documentation for the existing `net-snmp@5.9.3.sonic.1` registration; that
 module's version, source archives, patches and TAR/test contract are unchanged.
 The libteam and Net-SNMP contracts remain unchanged. The root now selects
 `p4lang-pi@0.1.3.sonic.3`,
-`sonic-build-infra@0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0`,
+`sonic-build-infra@0.0.28-8e15b3341e4665f7bf6ed9be0aaaf1c92dcf9175`,
 `rules_distroless@0.9.4.sonic.18` and `tar.bzl@0.10.5.sonic.2`. Combined image
 validation of this selection remains pending. The composition is a review
 input, not a claim that every other image prerequisite has landed.
+
+The root imports the shared source, requests and generated APT lock from
+that Infra version. The generated metadata passed the owner checker and
+checks against actual consumer declarations; native image validation is pending.
 
 The native libteam workflow selects the owner's `@libteam//:consumer_test`
 directly and resolves its exported `bazel/verify_rebuild.py` through the same
