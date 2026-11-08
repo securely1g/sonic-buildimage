@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
-SHARED_CONFIG_FIXTURE = (Path(__file__).parent / "fixtures/source-mirrors-3a7e32d0.cfg").read_text()
+SHARED_CONFIG_FIXTURE = (Path(__file__).parent / "fixtures/source-mirrors-99779640.cfg").read_text()
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location("source_image_worker", ROOT / "tools/bazel/ci/source_image_worker.py")
@@ -698,7 +698,7 @@ class ImageWorkerTest(unittest.TestCase):
         # Bind the actual immutable base while preserving the existing suffix rules.
         actual = SHARED_CONFIG_FIXTURE.encode()
         self.assertEqual(worker.MIRROR_URL,
-                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/3a7e32d09e511735f36a47b276d6524cf9c2a5c4/ci/source_mirrors.cfg")
+                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/997796400cc3eefc1f0590b227cd9b74c2141424/ci/source_mirrors.cfg")
         self.assertEqual(hashlib.sha256(actual).hexdigest(), worker.MIRROR_SHA)
         self.assertTrue(worker.mirror_configuration(actual).startswith(actual))
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):

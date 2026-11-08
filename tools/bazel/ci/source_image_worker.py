@@ -62,8 +62,8 @@ P4RT_OWNER_PROFILE = {"revision": P4RT_OWNER, "bazel": "6.4.0", "jobs": 1, "jvm_
                       "scheduler_memory_mb": 4096, "cache_mode": "separate_persistent_worker_local"}
 P4RT_PHASES = ("prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded")
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/3a7e32d09e511735f36a47b276d6524cf9c2a5c4/ci/source_mirrors.cfg"
-MIRROR_SHA = "38192a1561fac945a22474f1f10f29397d3164974e6f6b1e71de7c4748088f96"
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/997796400cc3eefc1f0590b227cd9b74c2141424/ci/source_mirrors.cfg"
+MIRROR_SHA = "a937b05d4197544bac965bb2b96634e12423c7f82b0fd6b13d894bcd087bce3b"
 
 
 def mirror_configuration(original):
