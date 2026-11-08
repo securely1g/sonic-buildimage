@@ -26,6 +26,11 @@ endif
 
 DEPENDS := $(shell find scripts hooks debian -type f)
 $(SONIC_BUILD_HOOKS_TARGET): $(DEPENDS)
+	@case "$(SONIC_DEB_BUILD_POLICY)" in \
+		""|build) ;; \
+		reuse-only) echo "Cannot generate $@: SONIC_DEB_BUILD_POLICY=reuse-only requires an existing up-to-date artifact" >&2; exit 1 ;; \
+		*) echo "SONIC_DEB_BUILD_POLICY must be build or reuse-only" >&2; exit 1 ;; \
+	esac
 	@rm -rf $(BUILDINFO_DIR)/$(SONIC_BUILD_HOOKS) $(TMP_DIR)
 	@mkdir -p $(DEBIAN_DIR) $(SCRIPTS_PATH) $(HOOKS_PATH) $(SYMBOL_LINK_PATH) $(TRUSTED_GPG_PATH) $(BUILDINFO_DIR)
 	@chmod 0775 $(DEBIAN_DIR)
@@ -37,3 +42,14 @@ $(SONIC_BUILD_HOOKS_TARGET): $(DEPENDS)
 	@$(BUILD_COMMAND)
 
 all: $(SONIC_BUILD_HOOKS_TARGET)
+
+.PHONY: verify
+verify: $(DEPENDS)
+	@if [ ! -f "$(SONIC_BUILD_HOOKS_TARGET)" ] || [ ! -r "$(SONIC_BUILD_HOOKS_TARGET)" ] || [ ! -s "$(SONIC_BUILD_HOOKS_TARGET)" ]; then \
+		echo "Missing readable nonempty existing package $(SONIC_BUILD_HOOKS_TARGET)" >&2; exit 1; \
+	fi
+	@for prerequisite in $(DEPENDS); do \
+		if [ ! -e "$$prerequisite" ] || [ "$$prerequisite" -nt "$(SONIC_BUILD_HOOKS_TARGET)" ]; then \
+			echo "Existing package $(SONIC_BUILD_HOOKS_TARGET) is older than or missing prerequisite $$prerequisite" >&2; exit 1; \
+		fi; \
+	done

@@ -948,6 +948,21 @@ define ARCHIVE_PATCHED_SOURCE
 	fi
 endef
 
+# Invocation policy for the three generic DEB producers below. Custom producers
+# and the kernel preparation selector require separate admission checks.
+SONIC_DEB_BUILD_POLICY ?= build
+ifneq ($(SONIC_DEB_BUILD_POLICY),build)
+ifneq ($(SONIC_DEB_BUILD_POLICY),reuse-only)
+$(error SONIC_DEB_BUILD_POLICY must be build or reuse-only)
+endif
+endif
+ifeq ($(SONIC_DEB_BUILD_POLICY),reuse-only)
+export SONIC_DEB_BUILD_POLICY
+ifneq ($(SONIC_BAZEL_KERNEL_PREPARE),verify)
+$(error SONIC_DEB_BUILD_POLICY=reuse-only requires SONIC_BAZEL_KERNEL_PREPARE=verify)
+endif
+endif
+
 $(addprefix $(DEBS_PATH)/, $(SONIC_MAKE_DEBS)) : $(DEBS_PATH)/% : .platform $$(addsuffix -install,$$(addprefix $(DEBS_PATH)/,$$($$*_DEPENDS))) \
 			$$(addsuffix -install,$$(addprefix $(PYTHON_WHEELS_PATH)/,$$($$*_WHEEL_DEPENDS))) \
 			$$(addprefix $(DEBS_PATH)/,$$($$*_AFTER)) \
@@ -961,6 +976,10 @@ $(addprefix $(DEBS_PATH)/, $(SONIC_MAKE_DEBS)) : $(DEBS_PATH)/% : .platform $$(a
 
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			echo "Cannot generate $@: SONIC_DEB_BUILD_POLICY=reuse-only requires an existing cache entry" >&2
+			exit 1
+		fi
 
 		# Remove target to force rebuild
 		rm -f $(addprefix $(DEBS_PATH)/, $* $($*_DERIVED_DEBS) $($*_EXTRA_DEBS))
@@ -1009,6 +1028,10 @@ $(addprefix $(DEBS_PATH)/, $(SONIC_DPKG_DEBS)) : $(DEBS_PATH)/% : .platform $$(a
 
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			echo "Cannot generate $@: SONIC_DEB_BUILD_POLICY=reuse-only requires an existing cache entry" >&2
+			exit 1
+		fi
 
 		# Remove old build logs if they exist
 		rm -f $($*_SRC_PATH)/debian/*.debhelper.log
@@ -1134,6 +1157,10 @@ $(addprefix $(PYTHON_DEBS_PATH)/, $(SONIC_PYTHON_STDEB_DEBS)) : $(PYTHON_DEBS_PA
 
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			echo "Cannot generate $@: SONIC_DEB_BUILD_POLICY=reuse-only requires an existing cache entry" >&2
+			exit 1
+		fi
 
 		# Apply series of patches if exist
 		if [ -f $($*_SRC_PATH).patch/series ]; then pushd $($*_SRC_PATH) && ( quilt pop -a -f 1>/dev/null 2>&1 || true ) && QUILT_PATCHES=../$(notdir $($*_SRC_PATH)).patch quilt push -a; popd; fi $(LOG)
@@ -1948,6 +1975,14 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	j2 -f env files/initramfs-tools/arista-convertfs.j2 onie-image.conf > files/initramfs-tools/arista-convertfs
 
 	$(if $($*_DOCKERS),
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			for organization_template in files/build_templates/sonic_debian_extension_organization_packages.j2 files/build_templates/sonic_debian_extension_organization_docker_images.j2; do
+				if [ -e "$$organization_template" ] || [ -L "$$organization_template" ]; then
+					echo "Cannot include $$organization_template: SONIC_DEB_BUILD_POLICY=reuse-only does not admit optional organization templates" >&2
+					exit 1
+				fi
+			done
+		fi
 		j2 files/build_templates/sonic_debian_extension.j2 > sonic_debian_extension.sh
 		chmod +x sonic_debian_extension.sh,
 	)

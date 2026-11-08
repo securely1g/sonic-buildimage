@@ -56,3 +56,35 @@ changed input, or changed archive fails the final23 contract.
 These checks bind archives to the successful Make selection. They do not replace
 owner payload/ELF tests, service probes, loaded-image checks, or installer boot
 checks, and do not themselves establish full VS image acceptance.
+
+## Assembly with existing Debian packages
+
+For validation that must not generate DEBs, select `reuse-only` for both the
+outer host Make process and the inner builder. With the existing CI builder
+environment configured, preserve its other overrides and run:
+
+```sh
+SONIC_DEB_BUILD_POLICY=reuse-only \
+SONIC_BUILD_VARS="${SONIC_BUILD_VARS:+$SONIC_BUILD_VARS }SONIC_DEB_BUILD_POLICY=reuse-only SONIC_BAZEL_KERNEL_PREPARE=verify SONIC_BAZEL_VS_ARCHIVE_PROFILE=final23" \
+bash tools/bazel/ci/build_vs.sh
+```
+
+The outer setting is necessary because Make prepares `sonic-build-hooks`
+before starting the builder. Its read-only verification keeps the original
+source prerequisites and rejects missing, empty or older packages while leaving
+Make's force-build flags intact. The inner setting rejects generic package cache
+misses and requires verification of an existing kernel bundle. Optional
+organization hooks and templates, and development or production signing, are
+rejected in this mode before their unreviewed commands can run. The normal
+`build` policy retains the existing producer behavior.
+
+This mode permits existing package imports and does not make assembly offline.
+It does not establish that the required inputs are present or correct. Before
+running it, validate the actual configuration, source and workspace overlays,
+the existing host-hook package, and all other selected package/archive inputs.
+The five kernel DEBs and both kernel manifests must match the genuine watched
+source and configuration of this checkout. A missing or mismatched input must
+stop the build; do not restamp provenance or enable a generation fallback.
+
+The local integration has not yet passed a full installer build under this
+policy. Package timestamps alone are not proof of contents or source provenance.
