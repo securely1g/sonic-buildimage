@@ -42,9 +42,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 0fbdfc43d56daad4fb41aab6eb73313b790e39b7
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+          persist-credentials: false
+      - name: Prepare checksum-pinned Bazelisk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/bazelisk-bootstrap.json \
+            --github-token-env GITHUB_TOKEN
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          # Use the verified launcher prepared above.
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: swss-native-amd64
@@ -158,7 +184,7 @@ jobs:
               summaries[str(path.relative_to(directory))] = bep_summary(path.read_text().splitlines(), partial=True)
           safe_json(summaries)
           (directory / 'build-test-summary.json').write_text(json.dumps(summaries, indent=2) + '\n')
-          for name in ('action-audit.json', 'native-closure.json', 'rebuild/rebuild.json'):
+          for name in ('action-audit.json', 'native-closure.json', 'rebuild/rebuild.json', 'bazelisk-bootstrap.json'):
               path = directory / name
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -186,6 +212,7 @@ jobs:
             artifacts/checkout.txt
             artifacts/inputs.txt
             artifacts/registry-input.txt
+            artifacts/bazelisk-bootstrap.json
             artifacts/action-audit.json
             artifacts/native-closure.json
             artifacts/rebuild/rebuild.json

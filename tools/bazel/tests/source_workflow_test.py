@@ -126,7 +126,8 @@ class NativeFamilyJobsTest(unittest.TestCase):
                                  "bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86")
                 for option in ("bazelisk-cache", "repository-cache"):
                     self.assertEqual(step_value(setup[0], option, 10), "true")
-                self.assertEqual(step_value(setup[0], "bazelisk-version", 10), "1.29.0")
+                self.assertEqual(step_value(setup[0], "bazelisk-version", 10),
+                                 "" if family == "swss_layer" else "1.29.0")
                 self.assertEqual(step_value(setup[0], "cache-version", 10), "8.5.1")
                 cache = step_value(setup[0], "disk-cache", 10)
                 self.assertNotIn(cache, caches)
@@ -247,6 +248,77 @@ class NativeFamilyJobsTest(unittest.TestCase):
                     name = step_value(block, "name", 10)
                     self.assertNotIn(name, evidence_names, "Runtime jobs must not overwrite each other's evidence")
                     evidence_names.add(name)
+
+
+class BazeliskBootstrapTest(unittest.TestCase):
+    def test_only_verified_reader_success_exposes_executable_on_path(self):
+        scripts = {
+            "swss_native": shell(steps((ROOT / ".github/workflows/bazel-swss-native.yml").read_text())[
+                "Prepare checksum-pinned Bazelisk"]),
+            "swss_layer_native": shell(steps(jobs()["swss_layer_native"])[
+                "Prepare checksum-pinned Bazelisk"]),
+        }
+        reader = textwrap.dedent(r'''
+            import json, os, sys
+            from pathlib import Path
+            args = sys.argv[1:]
+            assert args[args.index('--github-token-env') + 1] == 'GITHUB_TOKEN'
+            assert os.environ['GITHUB_TOKEN'] == 'fixture-token'
+            assert Path(args[args.index('--manifest') + 1]).is_file()
+            calls = Path(os.environ['CALLS'])
+            calls.write_text('reader\n')
+            binary = Path(args[args.index('--distdir') + 1]) / 'bazel'
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'fixture bytes; never executed\n')
+            binary.chmod(0o600)
+            # Leave partial bytes even on failure: the shell must not expose them.
+            if int(os.environ['READER_EXIT']):
+                raise SystemExit(int(os.environ['READER_EXIT']))
+            receipt = Path(args[args.index('--receipt') + 1])
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text(json.dumps({'verified': True}))
+            calls.write_text('reader\nverified\n')
+        ''')
+        chmod = "#!" + sys.executable + "\n" + textwrap.dedent(r'''
+            import os, sys
+            from pathlib import Path
+            binary = Path(os.environ['RUNNER_TEMP']) / 'sonic-bazelisk/bin/bazel'
+            assert sys.argv[1:] == ['0755', str(binary)]
+            calls = Path(os.environ['CALLS'])
+            assert calls.read_text() == 'reader\nverified\n'
+            assert Path(os.environ['GITHUB_PATH']).read_text() == ''
+            binary.chmod(0o755)
+            calls.write_text('reader\nverified\nchmod\n')
+        ''')
+        for name, script in scripts.items():
+            for reader_exit in (23, 0):
+                with self.subTest(workflow=name, reader_exit=reader_exit), tempfile.TemporaryDirectory() as tmp:
+                    directory = Path(tmp)
+                    commands = directory / "commands"
+                    commands.mkdir()
+                    (commands / "python3").symlink_to(sys.executable)
+                    (commands / "chmod").write_text(chmod)
+                    (commands / "chmod").chmod(0o755)
+                    inputs = directory / ".bazel-inputs/github-reader/ci"
+                    (inputs / "github_sources").mkdir(parents=True)
+                    (inputs / "github_sources.py").write_text(reader)
+                    (inputs / "github_sources/bazelisk-1.29.0-linux-amd64.json").write_text("{}\n")
+                    path_file = directory / "github-path"
+                    path_file.write_text("")
+                    calls = directory / "calls"
+                    runner_temp = directory / "runner-temp"
+                    result = subprocess.run(
+                        ["/bin/bash", "-e", "-o", "pipefail", "-c", script], cwd=directory,
+                        env={"PATH": str(commands), "HOME": str(directory),
+                             "RUNNER_TEMP": str(runner_temp), "GITHUB_PATH": str(path_file),
+                             "GITHUB_TOKEN": "fixture-token", "CALLS": str(calls),
+                             "READER_EXIT": str(reader_exit)},
+                        capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, reader_exit, result.stdout + result.stderr)
+                    binary = runner_temp / "sonic-bazelisk/bin/bazel"
+                    self.assertEqual(binary.stat().st_mode & 0o777, 0o600 if reader_exit else 0o755)
+                    self.assertEqual(calls.read_text(), "reader\n" if reader_exit else "reader\nverified\nchmod\n")
+                    self.assertEqual(path_file.read_text(), "" if reader_exit else str(binary.parent) + "\n")
 
 
 class SourceWorkflowTest(unittest.TestCase):
