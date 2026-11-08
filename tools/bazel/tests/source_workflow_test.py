@@ -113,10 +113,20 @@ class NativeFamilyJobsTest(unittest.TestCase):
                     original = [b for b in reference if b.startswith("      - name: " + name + "\n")]
                     self.assertEqual(len(selected), 1)
                     self.assertEqual(len(original), 1)
-                    self.assertEqual(step_value(selected[0], "run"), step_value(original[0], "run"))
+                    expected_run = step_value(original[0], "run")
+                    mirror_ref = "0c9c263778f736141b6475f4a867f18092e3119c"
+                    mirror_sha = "7eb5875991b984b91b4120520a6133e9f5a89d8e149ff2ad9f00bddf8b725988"
+                    if name == "Configure the verified source mirror" and family in self.receipt_families:
+                        expected_run = expected_run.replace(mirror_ref, "97cc502556b7ec3435d2d67b105315bcc18bb47e").replace(
+                            mirror_sha, "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720").replace(
+                            "# Load the checksum-verified pinned configuration. Archive integrity checks remain unchanged.",
+                            "# Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.")
+                        mirror_ref = "97cc502556b7ec3435d2d67b105315bcc18bb47e"
+                        mirror_sha = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+                    self.assertEqual(step_value(selected[0], "run"), expected_run)
                     if name == "Configure the verified source mirror":
-                        self.assertIn("97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg", step_value(selected[0], "run"))
-                        self.assertIn("ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720", step_value(selected[0], "run"))
+                        self.assertIn(mirror_ref + "/ci/source_mirrors.cfg", step_value(selected[0], "run"))
+                        self.assertIn(mirror_sha, step_value(selected[0], "run"))
                     if family in self.receipt_families:
                         self.assertEqual(step_value(selected[0], "if"),
                                          "env." + family.upper() + "_WORKER_RECEIPT != 'true'")
@@ -127,7 +137,7 @@ class NativeFamilyJobsTest(unittest.TestCase):
                 for option in ("bazelisk-cache", "repository-cache"):
                     self.assertEqual(step_value(setup[0], option, 10), "true")
                 self.assertEqual(step_value(setup[0], "bazelisk-version", 10),
-                                 "" if family == "swss_layer" else "1.29.0")
+                                 "" if family not in self.receipt_families else "1.29.0")
                 self.assertEqual(step_value(setup[0], "cache-version", 10), "8.5.1")
                 cache = step_value(setup[0], "disk-cache", 10)
                 self.assertNotIn(cache, caches)
@@ -251,11 +261,18 @@ class NativeFamilyJobsTest(unittest.TestCase):
 
 
 class BazeliskBootstrapTest(unittest.TestCase):
-    def test_rules_cc_archive_uses_restored_cache_and_existing_distdir(self):
+    propagated = ('orchagent', 'sflow', 'otel', 'dash_ha', 'sysmgr', 'dash_engine', 'teamd')
+
+    def native_steps(self, family):
+        return ''.join(step_blocks(jobs()[family + '_native']))
+
+    def test_rule_archives_use_restored_cache_and_existing_distdir(self):
         selections = {
             "swss_native": (ROOT / ".github/workflows/bazel-swss-native.yml").read_text(),
             "swss_layer_native": jobs()["swss_layer_native"],
+            "frr_native": (ROOT / ".github/workflows/bazel-frr.yml").read_text(),
         }
+        selections.update({family + '_native': self.native_steps(family) for family in self.propagated})
         reader = textwrap.dedent(r'''
             import json, os, sys
             from pathlib import Path
@@ -263,7 +280,7 @@ class BazeliskBootstrapTest(unittest.TestCase):
             options = dict(zip(args[::2], args[1::2]))
             assert set(options) == {'--manifest', '--distdir', '--repository-cache',
                                     '--cache-dir', '--receipt', '--github-token-env'}
-            assert options['--manifest'] == '.bazel-inputs/github-reader/ci/github_sources/rules-cc-0.2.22.json'
+            assert options['--manifest'] == '.bazel-inputs/github-reader/ci/github_sources/sonic-buildimage-rule-inputs.json'
             assert Path(options['--manifest']).is_file()
             assert options['--github-token-env'] == 'GITHUB_TOKEN'
             assert os.environ['GITHUB_TOKEN'] == 'fixture-token'
@@ -283,16 +300,17 @@ class BazeliskBootstrapTest(unittest.TestCase):
             receipt.write_text(json.dumps({'origin': 'repository-cache'}))
         ''')
         for name, job in selections.items():
-            prepare = steps(job)["Prepare the checksum-pinned rules_cc archive"]
+            prepare = steps(job)["Prepare checksum-pinned Bazel rule archives"]
             self.assertNotIn("continue-on-error", prepare)
             self.assertNotIn("if:", prepare)
             self.assertLess(job.index("bazel-contrib/setup-bazel@"),
-                            job.index("Prepare the checksum-pinned pigz source archive"))
-            self.assertLess(job.index("Prepare the checksum-pinned pigz source archive"),
-                            job.index("Prepare the checksum-pinned rules_cc archive"))
+                            job.index("Prepare checksum-pinned Bazel rule archives"))
+            if name != "frr_native":
+                self.assertLess(job.index("Prepare the checksum-pinned pigz source archive"),
+                                job.index("Prepare checksum-pinned Bazel rule archives"))
             self.assertIn('common --distdir=%s', job)
-            receipt_name = ("artifacts/rules-cc-source.json" if name == "swss_native"
-                            else "artifacts/swss-layer/rules-cc-source.json")
+            receipt_name = ("artifacts/rule-sources.json" if name in ("swss_native", "frr_native")
+                            else "artifacts/" + name.removesuffix('_native').replace('_', '-') + "/rule-sources.json")
             for reader_exit in (23, 0):
                 with self.subTest(workflow=name, reader_exit=reader_exit), tempfile.TemporaryDirectory() as tmp:
                     directory = Path(tmp)
@@ -302,7 +320,7 @@ class BazeliskBootstrapTest(unittest.TestCase):
                     inputs = directory / ".bazel-inputs/github-reader/ci"
                     (inputs / "github_sources").mkdir(parents=True)
                     (inputs / "github_sources.py").write_text(reader)
-                    (inputs / "github_sources/rules-cc-0.2.22.json").write_text("{}\n")
+                    (inputs / "github_sources/sonic-buildimage-rule-inputs.json").write_text("{}\n")
                     repository = directory / ".cache/bazel-repo"
                     repository.mkdir(parents=True)
                     (repository / "fixture-archive").write_bytes(b'cached archive fixture')
@@ -313,11 +331,16 @@ class BazeliskBootstrapTest(unittest.TestCase):
                         ["/bin/bash", "-e", "-o", "pipefail", "-c", shell(prepare)], cwd=directory,
                         env={"PATH": str(commands), "HOME": str(directory), "PWD": str(directory),
                              "GITHUB_TOKEN": "fixture-token", "EXPECTED_RECEIPT": receipt_name,
-                             "READER_EXIT": str(reader_exit)}, capture_output=True, text=True, timeout=10)
+                             "READER_EXIT": str(reader_exit), "GITHUB_JOB": name}, capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, reader_exit, result.stdout + result.stderr)
                     self.assertEqual((distdir / "pigz-2.8.tar.gz").read_bytes(), b'existing pigz')
                     self.assertEqual((repository / "fixture-archive").read_bytes(), b'cached archive fixture')
                     self.assertEqual((directory / receipt_name).exists(), reader_exit == 0)
+                    if name == "frr_native":
+                        rc = directory / ".bazelrc.user"
+                        self.assertEqual(rc.exists(), reader_exit == 0)
+                        if not reader_exit:
+                            self.assertEqual(rc.read_text(), "common --distdir=" + str(distdir) + "\n")
                     archive = distdir / "rules_cc-0.2.22.tar.gz"
                     self.assertEqual(archive.exists(), reader_exit == 0)
                     if reader_exit == 0:
@@ -329,7 +352,11 @@ class BazeliskBootstrapTest(unittest.TestCase):
                 "Prepare checksum-pinned Bazelisk"]),
             "swss_layer_native": shell(steps(jobs()["swss_layer_native"])[
                 "Prepare checksum-pinned Bazelisk"]),
+            "frr_native": shell(steps((ROOT / ".github/workflows/bazel-frr.yml").read_text())[
+                "Prepare checksum-pinned Bazelisk"]),
         }
+        scripts.update({family + '_native': shell(steps(self.native_steps(family))[
+            "Prepare checksum-pinned Bazelisk"]) for family in self.propagated})
         reader = textwrap.dedent(r'''
             import json, os, sys
             from pathlib import Path
@@ -384,13 +411,119 @@ class BazeliskBootstrapTest(unittest.TestCase):
                         env={"PATH": str(commands), "HOME": str(directory),
                              "RUNNER_TEMP": str(runner_temp), "GITHUB_PATH": str(path_file),
                              "GITHUB_TOKEN": "fixture-token", "CALLS": str(calls),
-                             "READER_EXIT": str(reader_exit)},
+                             "READER_EXIT": str(reader_exit), "GITHUB_JOB": name},
                         capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, reader_exit, result.stdout + result.stderr)
                     binary = runner_temp / "sonic-bazelisk/bin/bazel"
                     self.assertEqual(binary.stat().st_mode & 0o777, 0o600 if reader_exit else 0o755)
                     self.assertEqual(calls.read_text(), "reader\n" if reader_exit else "reader\nverified\nchmod\n")
                     self.assertEqual(path_file.read_text(), "" if reader_exit else str(binary.parent) + "\n")
+
+
+    def test_propagated_jobs_use_the_pinned_reader_and_existing_artifact_roots(self):
+        for family in self.propagated:
+            with self.subTest(family=family):
+                job = self.native_steps(family)
+                selected = steps(job)
+                names = list(selected)
+                checkout = selected['Check out the pinned GitHub input reader']
+                self.assertIn('ref: 0c9c263778f736141b6475f4a867f18092e3119c', checkout)
+                self.assertIn('persist-credentials: false', checkout)
+                self.assertIn('path: .bazel-inputs/github-reader', checkout)
+                self.assertIn('ci/github_sources/sonic-buildimage-rule-inputs.json', checkout)
+                self.assertLess(names.index('Prepare checksum-pinned Bazelisk'), names.index('Set up Bazel'))
+                self.assertIn('bazelisk-version: ""', selected['Set up Bazel'])
+                self.assertLess(names.index('Preserve configured caches for Draft validation'),
+                                names.index('Prepare checksum-pinned Bazel rule archives'))
+                self.assertLess(names.index('Prepare the checksum-pinned pigz source archive'),
+                                names.index('Prepare checksum-pinned Bazel rule archives'))
+                upload = next(block for block in step_blocks(jobs()[family + '_native'])
+                              if 'uses: actions/upload-artifact@' in block)
+                self.assertEqual(step_value(upload, 'if'),
+                                 "always() && steps." + family + "_public.outcome == 'success'")
+                paths = step_value(upload, 'path', 10).splitlines()
+                root = 'artifacts/' + family.replace('_', '-')
+                for filename in ('bazelisk-bootstrap.json', 'rule-sources.json'):
+                    self.assertEqual(paths.count(root + '/' + filename), 1)
+                self.assertFalse(any('source-downloads' in path or '.bazel-inputs' in path for path in paths))
+
+    def test_propagated_receipts_use_existing_public_sanitizers(self):
+        import contextlib
+        import io
+        import socket
+        from unittest import mock
+        from tools.bazel.ci import dash_engine_public
+        previous = Path.cwd()
+        values = (None, b'{"files": [], "sources": []}',
+                  b'{"authorization": "private-sentinel"}', b'{"malformed":')
+        for family in self.propagated:
+            job = self.native_steps(family)
+            review = next(value for value in steps(job).values()
+                          if 'id: ' + family + '_public' in value)
+            code = None if family == 'dash_engine' else '\n'.join(shell(review).splitlines()[1:-1])
+            for filename in ('bazelisk-bootstrap.json', 'rule-sources.json'):
+                for value in values:
+                    with self.subTest(family=family, filename=filename, value=value), tempfile.TemporaryDirectory() as temp:
+                        workspace = Path(temp)
+                        root = workspace / 'artifacts' / family.replace('_', '-')
+                        root.mkdir(parents=True)
+                        if value is not None:
+                            (root / filename).write_bytes(value)
+                        output = io.StringIO()
+                        try:
+                            os.chdir(workspace)
+                            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output), \
+                                    mock.patch.object(subprocess, 'Popen', side_effect=AssertionError('process denied')), \
+                                    mock.patch.object(socket.socket, 'connect', side_effect=AssertionError('network denied')):
+                                def execute():
+                                    if code is None:
+                                        dash_engine_public.review(root)
+                                    else:
+                                        exec(compile(code, '<actual-native-public-evidence-step>', 'exec'), {})
+
+                                if value in values[:2]:
+                                    execute()
+                                else:
+                                    with self.assertRaises(ValueError):
+                                        execute()
+                            self.assertEqual(output.getvalue(), '')
+                            if value is not None:
+                                self.assertEqual((root / filename).read_bytes(), value)
+                        finally:
+                            os.chdir(previous)
+
+    def test_frr_download_receipts_gate_upload_without_exposing_private_values(self):
+        import contextlib
+        import io
+        import socket
+        from unittest import mock
+        workflow = (ROOT / ".github/workflows/bazel-frr.yml").read_text()
+        self.assertIn("if: always() && steps.download_receipts.outcome == 'success'", workflow)
+        self.assertIn("!artifacts/source-downloads/**", workflow)
+        script = shell(steps(workflow)["Validate public download receipts"]).splitlines()
+        code = "\n".join(script[1:-1])
+        previous = Path.cwd()
+        for value in (None, b'{"files": [], "sources": []}',
+                      b'{"authorization": "private-sentinel"}', b'{"malformed":'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temp:
+                workspace = Path(temp)
+                (workspace / 'artifacts').mkdir()
+                if value is not None:
+                    (workspace / 'artifacts/rule-sources.json').write_bytes(value)
+                output = io.StringIO()
+                try:
+                    os.chdir(workspace)
+                    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output), \
+                            mock.patch.object(subprocess, 'Popen', side_effect=AssertionError('process denied')), \
+                            mock.patch.object(socket.socket, 'connect', side_effect=AssertionError('network denied')):
+                        if value in (None, b'{"files": [], "sources": []}'):
+                            exec(compile(code, '<FRR-download-receipt-step>', 'exec'), {})
+                        else:
+                            with self.assertRaises(ValueError):
+                                exec(compile(code, '<FRR-download-receipt-step>', 'exec'), {})
+                    self.assertEqual(output.getvalue(), '')
+                finally:
+                    os.chdir(previous)
 
 
 class SourceWorkflowTest(unittest.TestCase):
@@ -656,14 +789,14 @@ class RootLockFailureEvidenceTest(unittest.TestCase):
                     folder = workspace / destination
                     folder.mkdir(parents=True)
                     receipt = b'{"files": [], "status": "verified"}\n'
-                    (folder / 'rules-cc-source.json').write_bytes(receipt)
+                    (folder / 'rule-sources.json').write_bytes(receipt)
                     (folder / 'receipt.json').write_text('{"status":"failed","architecture":"amd64","argv":["private"]}')
                     value = json.dumps(self.lock()).encode()
                     if old_lock:
                         (folder / 'MODULE.bazel.lock').write_bytes(value)
                     self.assertEqual(self.execute(code, workspace), (None, ''))
                     self.assertEqual(json.loads((folder / summary).read_text()), {})
-                    self.assertEqual((folder / 'rules-cc-source.json').read_bytes(), receipt)
+                    self.assertEqual((folder / 'rule-sources.json').read_bytes(), receipt)
                     self.assertEqual((folder / 'MODULE.bazel.lock').exists(), old_lock)
                     if old_lock:
                         self.assertEqual((folder / 'MODULE.bazel.lock').read_bytes(), value)

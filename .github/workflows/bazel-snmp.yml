@@ -30,9 +30,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 0c9c263778f736141b6475f4a867f18092e3119c
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+            ci/github_sources/sonic-buildimage-rule-inputs.json
+          persist-credentials: false
+      - name: Prepare checksum-pinned Bazelisk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/snmp/bazelisk-bootstrap.json \
+            --github-token-env GITHUB_TOKEN
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: snmp-image-amd64
@@ -42,6 +68,19 @@ jobs:
           mkdir -p artifacts/snmp
           python3 tools/bazel/gzip/prepare_pigz.py --output "$RUNNER_TEMP/pigz-distdir" > artifacts/snmp/pigz-source.json
           printf 'common --distdir=%s\n' "$RUNNER_TEMP/pigz-distdir" > .bazelrc.user
+      - name: Prepare checksum-pinned Bazel rule archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --distdir "$RUNNER_TEMP/pigz-distdir" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/snmp/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
       - name: Configure verified Debian payload transport
         run: |
           python3 - <<'PYCFG'
@@ -49,10 +88,10 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/0c9c263778f736141b6475f4a867f18092e3119c/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          if hashlib.sha256(data).hexdigest() != "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720":
+          if hashlib.sha256(data).hexdigest() != "7eb5875991b984b91b4120520a6133e9f5a89d8e149ff2ad9f00bddf8b725988":
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "base-source-mirrors.cfg"
           config.write_bytes(data)
@@ -76,8 +115,20 @@ jobs:
         run: |
           python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --artifacts artifacts/snmp
           git diff --exit-code
-      - name: Retain images and exact build evidence
+      - name: Validate public download receipts
+        id: download_receipts
         if: always()
+        run: |
+          python3 - <<'PYRECEIPTS'
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, safe_json
+          for name in ('bazelisk-bootstrap.json', 'rule-sources.json'):
+              path = Path('artifacts/snmp') / name
+              if path.exists():
+                  safe_json(load_json(path.read_bytes()))
+          PYRECEIPTS
+      - name: Retain images and exact build evidence
+        if: always() && steps.download_receipts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: snmp-image-amd64

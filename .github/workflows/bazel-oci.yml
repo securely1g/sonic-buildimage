@@ -660,13 +660,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: 815933e565c75c897124e88d10d006017eed4c44
+          ref: 0c9c263778f736141b6475f4a867f18092e3119c
           path: .bazel-inputs/github-reader
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             ci/github_sources.py
             ci/github_sources/bazelisk-1.29.0-linux-amd64.json
-            ci/github_sources/rules-cc-0.2.22.json
+            ci/github_sources/sonic-buildimage-rule-inputs.json
           persist-credentials: false
       - name: Prepare checksum-pinned Bazelisk
         env:
@@ -701,11 +701,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          # Load the checksum-verified pinned configuration. Archive integrity checks remain unchanged.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/0c9c263778f736141b6475f4a867f18092e3119c/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          expected = "7eb5875991b984b91b4120520a6133e9f5a89d8e149ff2ad9f00bddf8b725988"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -736,18 +736,18 @@ jobs:
           user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
           PYCODE
 
-      - name: Prepare the checksum-pinned rules_cc archive
+      - name: Prepare checksum-pinned Bazel rule archives
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           inputs=.bazel-inputs/github-reader/ci
           python3 -B "$inputs/github_sources.py" \
-            --manifest "$inputs/github_sources/rules-cc-0.2.22.json" \
+            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
             --distdir "$PWD/artifacts/source-downloads" \
             --repository-cache "$HOME/.cache/bazel-repo" \
             --cache-dir "$HOME/.cache/sonic-github-sources" \
-            --receipt artifacts/swss-layer/rules-cc-source.json \
+            --receipt artifacts/swss-layer/rule-sources.json \
             --github-token-env GITHUB_TOKEN
       - name: Build and inspect the shared runtime and symbols
         env:
@@ -817,7 +817,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for name in ('validation.json', 'action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json', 'bazelisk-bootstrap.json', 'rules-cc-source.json'):
+          for name in ('validation.json', 'action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json', 'bazelisk-bootstrap.json', 'rule-sources.json'):
               path = root / name
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -847,7 +847,7 @@ jobs:
             artifacts/swss-layer/packages.json
             artifacts/swss-layer/build-summary.json
             artifacts/swss-layer/bazelisk-bootstrap.json
-            artifacts/swss-layer/rules-cc-source.json
+            artifacts/swss-layer/rule-sources.json
             artifacts/swss-layer/rebuild/rebuild.json
             artifacts/swss-layer/MODULE.bazel.lock
             artifacts/swss-layer/module-graph.json
@@ -871,10 +871,41 @@ jobs:
       - *native_gnoi
       - *native_p4rt_owner
       - *native_p4rt_tools
+      - &native_github_reader
+        name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 0c9c263778f736141b6475f4a867f18092e3119c
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+            ci/github_sources/sonic-buildimage-rule-inputs.json
+          persist-credentials: false
+      - &native_bazelisk
+        name: Prepare checksum-pinned Bazelisk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_root="artifacts/${GITHUB_JOB%_native}"
+          artifact_root="${artifact_root//_/-}"
+          inputs=.bazel-inputs/github-reader/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt "$artifact_root/bazelisk-bootstrap.json" \
+            --github-token-env GITHUB_TOKEN
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
+
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: oci-orchagent-amd64
@@ -883,6 +914,22 @@ jobs:
       - *native_mirror
       - *native_caches
       - *native_pigz
+      - &native_rule_sources
+        name: Prepare checksum-pinned Bazel rule archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_root="artifacts/${GITHUB_JOB%_native}"
+          artifact_root="${artifact_root//_/-}"
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --distdir "$PWD/artifacts/source-downloads" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt "$artifact_root/rule-sources.json" \
+            --github-token-env GITHUB_TOKEN
       - name: Build Orchagent variants from source owners
         id: orchagent_build
         env:
@@ -928,7 +975,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for path in list(root.glob('*.validation.json')) + [root / name for name in ('validation.json', 'action-audit.json', 'runtime-apt.json', 'debug-apt.json', 'base.packages.json', 'config-engine.packages.json', 'rebuild/rebuild.json')]:
+          for path in list(root.glob('*.validation.json')) + [root / name for name in ('bazelisk-bootstrap.json', 'rule-sources.json', 'validation.json', 'action-audit.json', 'runtime-apt.json', 'debug-apt.json', 'base.packages.json', 'config-engine.packages.json', 'rebuild/rebuild.json')]:
               if path.exists():
                   safe_json(json.loads(path.read_text()))
           for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
@@ -947,6 +994,8 @@ jobs:
         with:
           name: orchagent-source-amd64
           path: |
+            artifacts/orchagent/bazelisk-bootstrap.json
+            artifacts/orchagent/rule-sources.json
             artifacts/orchagent/*.gz
             artifacts/orchagent/*.tar
             artifacts/orchagent/*.whl
@@ -986,10 +1035,12 @@ jobs:
       - *native_gnoi
       - *native_p4rt_owner
       - *native_p4rt_tools
+      - *native_github_reader
+      - *native_bazelisk
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: oci-sflow-amd64
@@ -998,6 +1049,7 @@ jobs:
       - *native_mirror
       - *native_caches
       - *native_pigz
+      - *native_rule_sources
       - name: Build sFlow runtime and debug images from source owners
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -1047,7 +1099,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json
           root = Path('artifacts/sflow')
-          names = ('validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json', 'sflow.packages.json', 'sflow-debug.packages.json', 'base.packages.json', 'config-engine.packages.json')
+          names = ('bazelisk-bootstrap.json', 'rule-sources.json', 'validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json', 'sflow.packages.json', 'sflow-debug.packages.json', 'base.packages.json', 'config-engine.packages.json')
           for path in list(root.glob('*.validation.json')) + [root / name for name in names]:
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -1068,6 +1120,8 @@ jobs:
         with:
           name: sflow-source-amd64
           path: |
+            artifacts/sflow/bazelisk-bootstrap.json
+            artifacts/sflow/rule-sources.json
             artifacts/sflow/*.gz
             artifacts/sflow/*.tar
             artifacts/sflow/runtime-apt.json
@@ -1108,10 +1162,12 @@ jobs:
       - *native_gnoi
       - *native_p4rt_owner
       - *native_p4rt_tools
+      - *native_github_reader
+      - *native_bazelisk
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: oci-otel-amd64
@@ -1120,6 +1176,7 @@ jobs:
       - *native_mirror
       - *native_caches
       - *native_pigz
+      - *native_rule_sources
       - name: Build OTEL runtime and debug images from source owners
         id: otel_build
         env:
@@ -1167,7 +1224,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json
           root = Path('artifacts/otel')
-          names = ('validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json', 'otel.packages.json', 'otel-debug.packages.json', 'base.packages.json', 'config-engine.packages.json')
+          names = ('bazelisk-bootstrap.json', 'rule-sources.json', 'validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json', 'otel.packages.json', 'otel-debug.packages.json', 'base.packages.json', 'config-engine.packages.json')
           for path in list(root.glob('*.validation.json')) + [root / name for name in names]:
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -1188,6 +1245,8 @@ jobs:
         with:
           name: otel-source-amd64
           path: |
+            artifacts/otel/bazelisk-bootstrap.json
+            artifacts/otel/rule-sources.json
             artifacts/otel/*.gz
             artifacts/otel/*.tar
             artifacts/otel/runtime-apt.json
@@ -1227,10 +1286,12 @@ jobs:
       - *native_gnoi
       - *native_p4rt_owner
       - *native_p4rt_tools
+      - *native_github_reader
+      - *native_bazelisk
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: oci-dash-ha-amd64
@@ -1239,6 +1300,7 @@ jobs:
       - *native_mirror
       - *native_caches
       - *native_pigz
+      - *native_rule_sources
       - name: Build DASH HA runtime and debug images
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -1266,7 +1328,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names = ['bazelisk-bootstrap.json', 'rule-sources.json', 'validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
           names += [path.name for path in root.glob('*.validation.json')]
           names += [path.name for path in root.glob('*.packages.json')]
           for name in names:
@@ -1288,6 +1350,8 @@ jobs:
         with:
           name: dash-ha-images-amd64-${{ github.sha }}
           path: |
+            artifacts/dash-ha/bazelisk-bootstrap.json
+            artifacts/dash-ha/rule-sources.json
             artifacts/dash-ha/*.gz
             artifacts/dash-ha/*.tar
             artifacts/dash-ha/*.packages.json
@@ -1322,10 +1386,12 @@ jobs:
       - *native_gnoi
       - *native_p4rt_owner
       - *native_p4rt_tools
+      - *native_github_reader
+      - *native_bazelisk
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: oci-sysmgr-amd64
@@ -1334,6 +1400,7 @@ jobs:
       - *native_mirror
       - *native_caches
       - *native_pigz
+      - *native_rule_sources
       - name: Build Sysmgr runtime and debug images
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -1361,7 +1428,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names = ['bazelisk-bootstrap.json', 'rule-sources.json', 'validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
           names += [path.name for path in root.glob('*.validation.json')]
           names += [path.name for path in root.glob('*.packages.json')]
           for name in names:
@@ -1383,6 +1450,8 @@ jobs:
         with:
           name: sysmgr-images-amd64-${{ github.sha }}
           path: |
+            artifacts/sysmgr/bazelisk-bootstrap.json
+            artifacts/sysmgr/rule-sources.json
             artifacts/sysmgr/*.gz
             artifacts/sysmgr/*.tar
             artifacts/sysmgr/dbus-mock
@@ -1618,10 +1687,12 @@ jobs:
       - *native_gnoi
       - *native_p4rt_owner
       - *native_p4rt_tools
+      - *native_github_reader
+      - *native_bazelisk
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: oci-dash-engine-amd64
@@ -1630,6 +1701,7 @@ jobs:
       - *native_mirror
       - *native_caches
       - *native_pigz
+      - *native_rule_sources
       - name: Build DASH engine runtime and debug images from source owners
         id: dash_engine_build
         env:
@@ -1664,6 +1736,8 @@ jobs:
         with:
           name: dash-engine-source-amd64
           path: |
+            artifacts/dash-engine/bazelisk-bootstrap.json
+            artifacts/dash-engine/rule-sources.json
             artifacts/dash-engine/*.gz
             artifacts/dash-engine/*.tar
             artifacts/dash-engine/*.status
@@ -2207,10 +2281,12 @@ jobs:
       - *native_gnoi
       - *native_p4rt_owner
       - *native_p4rt_tools
+      - *native_github_reader
+      - *native_bazelisk
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: oci-teamd-amd64
@@ -2219,6 +2295,7 @@ jobs:
       - *native_mirror
       - *native_caches
       - *native_pigz
+      - *native_rule_sources
       - name: Build Teamd runtime and debug images from source owners
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -2247,7 +2324,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names = ['bazelisk-bootstrap.json', 'rule-sources.json', 'validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
           names += [path.name for path in root.glob('*.validation.json')]
           names += [path.name for path in root.glob('*.packages.json')]
           for name in names:
@@ -2269,6 +2346,8 @@ jobs:
         with:
           name: teamd-image-amd64
           path: |
+            artifacts/teamd/bazelisk-bootstrap.json
+            artifacts/teamd/rule-sources.json
             artifacts/teamd/*.gz
             artifacts/teamd/*.tar
             artifacts/teamd/*.status

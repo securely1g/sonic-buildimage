@@ -21,7 +21,8 @@ def review(directory):
         raise ValueError('unexpected baseline diagnostic file')
     retention_checked = False
     names = {name for name in TARGETS if name.endswith('.json')}
-    names.update(('validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json',
+    names.update(('bazelisk-bootstrap.json', 'rule-sources.json',
+                  'validation.json', 'action-audit.json', 'owner-action-audit.json', 'incremental.json',
                   'layout-identities.json'))
     names.update(name + '.validation.json' for name in IMAGES)
     for name in sorted(names):

@@ -41,36 +41,71 @@ jobs:
           persist-credentials: false
       - name: Check out the owner's pinned gNOI messages
         run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 0c9c263778f736141b6475f4a867f18092e3119c
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+            ci/github_sources/sonic-buildimage-rule-inputs.json
+            ci/github_sources/cosmos-4.0.2.json
+          persist-credentials: false
+      - name: Prepare checksum-pinned Bazelisk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/sysmgr/bazelisk-bootstrap.json \
+            --github-token-env GITHUB_TOKEN
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           module-root: src/sonic-sysmgr
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: sysmgr-amd64
           cache-version: "8.5.1"
       - name: Prepare verified GitHub build inputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           inputs="$RUNNER_TEMP/sysmgr-github-inputs"
+          reader=.bazel-inputs/github-reader/ci
           mkdir -p "$inputs" artifacts/sysmgr
-          # Reuse the maintained reader and its locked Cosmos manifest.
-          transport="https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/0f459395f8852b5c89e9895afeeea01b95b281ea/ci"
-          curl --disable --fail --silent --show-error --proto '=https' --connect-timeout 20 --max-time 60 \
-            --output "$inputs/github_sources.py" "$transport/github_sources.py"
-          curl --disable --fail --silent --show-error --proto '=https' --connect-timeout 20 --max-time 60 \
-            --output "$inputs/cosmos-4.0.2.json" "$transport/github_sources/cosmos-4.0.2.json"
-          printf '%s  %s\n' \
-            9c1ad2a9548608d06e49de0c9c119ae19d97ab95cca2505fc1e7e233e62e9b3d "$inputs/github_sources.py" \
-            1579ad34288945a28a2d77f96f4764b8910dd3d856d688971e46e63e58119af5 "$inputs/cosmos-4.0.2.json" \
-            | sha256sum --check --strict
-          python3 -B "$inputs/github_sources.py" \
-            --manifest "$inputs/cosmos-4.0.2.json" \
+          python3 -B "$reader/github_sources.py" \
+            --manifest "$reader/github_sources/cosmos-4.0.2.json" \
             --distdir "$inputs/distdir" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
             --cache-dir "$HOME/.cache/sonic-github-sources" \
-            --receipt "$PWD/artifacts/sysmgr/github-sources.json"
+            --receipt "$PWD/artifacts/sysmgr/github-sources.json" \
+            --github-token-env GITHUB_TOKEN
           # The driver applies explicit startup RCs to query, audit and build.
           printf 'common --distdir=%s\n' "$inputs/distdir" > "$inputs/downloads.bazelrc"
+      - name: Prepare checksum-pinned Bazel rule archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --distdir "$RUNNER_TEMP/sysmgr-github-inputs/distdir" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/sysmgr/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
       - name: Audit, build and validate installed packages and original tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -80,8 +115,20 @@ jobs:
           python3 -B src/sonic-sysmgr/bazel/ci.py \
             --startup-arg="--bazelrc=$RUNNER_TEMP/sysmgr-github-inputs/downloads.bazelrc" \
             --artifacts artifacts/sysmgr 2>&1 | tee artifacts/sysmgr/ci.log
-      - name: Upload packages, original XML and installed-package evidence
+      - name: Validate public download receipts
+        id: download_receipts
         if: always()
+        run: |
+          python3 - <<'PYRECEIPTS'
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, safe_json
+          for name in ('bazelisk-bootstrap.json', 'rule-sources.json', 'github-sources.json'):
+              path = Path('artifacts/sysmgr') / name
+              if path.exists():
+                  safe_json(load_json(path.read_bytes()))
+          PYRECEIPTS
+      - name: Upload packages, original XML and installed-package evidence
+        if: always() && steps.download_receipts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sysmgr-amd64
