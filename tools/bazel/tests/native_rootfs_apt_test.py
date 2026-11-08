@@ -21,7 +21,7 @@ class NativeRootfsAptTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="native-rootfs-apt-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name) / "image root"
         self.apt = self.root / "etc/apt"
         (self.apt / "apt.conf.d").mkdir(parents=True)
         (self.apt / "sources.list.d").mkdir()
@@ -43,6 +43,8 @@ class NativeRootfsAptTest(unittest.TestCase):
         for stage in ("first", "last"):
             with self.subTest(stage=stage):
                 os.environ["http_proxy"] = "http://192.168.240.1:" + ("12345" if stage == "first" else "54321")
+                https_proxy = "" if stage == "first" else "http://https-proxy.example.invalid:3128"
+                os.environ["https_proxy"] = https_proxy
                 previous_umask = os.umask(0o077)
                 try:
                     rootfs_apt.setup(self.root, STAMPS)
@@ -74,7 +76,7 @@ class NativeRootfsAptTest(unittest.TestCase):
                 self.assertIn("parts='" + str(vendor.parent) + "'", result.stdout)
                 self.assertIn("trust='/usr/share/sonic-native-apt/ca-certificates.crt'", result.stdout)
                 self.assertIn("proxy='" + os.environ["http_proxy"] + "'", result.stdout)
-                self.assertIn("https_proxy='DIRECT'", result.stdout)
+                self.assertIn("https_proxy='" + (https_proxy or "DIRECT") + "'", result.stdout)
                 self.assertNotIn("global_trust=", result.stdout)
                 rootfs_apt.cleanup(self.root)
                 rootfs_apt.cleanup(self.root)
