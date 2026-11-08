@@ -780,6 +780,7 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
           python3 -B tools/bazel/ci/private_native_downloads_test.py
+          python3 -B tools/bazel/ci/github_release_transport_test.py
 
       # Only raw source bytes from this successful authenticated producer are
       # reused. The current pins, graph, and P4 manifest are checked again below;
@@ -806,6 +807,7 @@ jobs:
 
       - name: Retain the verified GitLab source downloads
         env:
+          SONIC_GITHUB_RELEASE_TOKEN: ${{ env.NATIVE_VS_ONLY == 'true' && github.token || '' }}
           DEBIAN_MIRROR_ROOT: ${{ env.NATIVE_VS_ONLY == 'true' && secrets.DEBIAN_MIRROR_ROOT || '' }}
           DEBIAN_SECURITY_MIRROR_ROOT: ${{ env.NATIVE_VS_ONLY == 'true' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
         run: |
@@ -1358,6 +1360,7 @@ jobs:
 
       - name: Prepare the privileged SONiC slave
         env:
+          SONIC_GITHUB_RELEASE_TOKEN: ${{ github.token }}
           DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
           DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
         run: python3 -B tools/bazel/ci/private_native_downloads.py --phase preparation -- bash tools/bazel/ci/prepare_vs_slave.sh
@@ -1392,6 +1395,7 @@ jobs:
       - name: Build sonic-vs.bin directly with slave.mk
         id: native_build
         env:
+          SONIC_GITHUB_RELEASE_TOKEN: ${{ github.token }}
           DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
           DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
         run: |
@@ -1414,6 +1418,7 @@ jobs:
 
       - name: Validate the installer and retained container pairs
         env:
+          SONIC_GITHUB_RELEASE_TOKEN: ${{ github.token }}
           DEBIAN_MIRROR_ROOT: ${{ secrets.DEBIAN_MIRROR_ROOT }}
           DEBIAN_SECURITY_MIRROR_ROOT: ${{ secrets.DEBIAN_SECURITY_MIRROR_ROOT }}
         run: |

@@ -7,6 +7,7 @@ No private origin is copied into a Docker layer or the installer filesystem.
 """
 
 import argparse
+import hashlib
 import http.server
 import io
 import ipaddress
@@ -84,6 +85,10 @@ def destination(uri, mirrors, manifest):
             or parsed.password is not None or parsed.fragment or parsed.port not in (None, 80)
             or any(character.isspace() for character in uri)):
         raise ValueError("Unsupported native HTTP request")
+    # Do not let the bridge-facing APT proxy relay to the credential-bearing
+    # release listener. Bazel reaches that separate listener over loopback.
+    if parsed.path.startswith("/_sonic_github_release/"):
+        raise ValueError("Release transport requires direct loopback access")
     if parsed.hostname in DEBIAN_HOSTS:
         if parsed.query or ".." in urllib.parse.unquote(parsed.path).split("/"):
             raise ValueError("Unsupported Debian archive path")
@@ -176,12 +181,53 @@ def handler(mirrors, manifest, counters, *, opener=None):
     return Proxy
 
 
-def bazel_command(arguments, config, real_bazel):
+def compose_downloader_config(config, arguments):
+    caller = None
+    for index, argument in enumerate(arguments):
+        for flag in ("--experimental_downloader_config", "--downloader_config"):
+            if argument.startswith(flag + "="):
+                caller = argument.split("=", 1)[1]
+            elif argument == flag and index + 1 < len(arguments):
+                caller = arguments[index + 1]
+    if not caller or Path(caller).resolve() == config.resolve():
+        return config
+    def read(path):
+        with path.open() as source:
+            value = source.read(1024 * 1024 + 1)
+        if len(value) > 1024 * 1024:
+            raise ValueError("Downloader policy is too large")
+        return value
+    managed, requested = read(config).rstrip(), read(Path(caller)).rstrip()
+    if requested == managed:
+        return config
+    combined = managed + "\n" + requested + "\n"
+    match = re.search(r"(?m)^rewrite .* http://127\.0\.0\.1:([0-9]+)/_sonic_github_release/\$1$", combined)
+    if match:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import github_release_transport
+        combined = github_release_transport.downloader_policy(combined, int(match[1]))
+    destination = config.parent / ("combined-" + hashlib.sha256(combined.encode()).hexdigest() + ".cfg")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=config.parent, delete=False) as output:
+            temporary = Path(output.name)
+            output.write(combined)
+        temporary.replace(destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return destination
+
+
+def bazel_command(arguments, config, real_bazel, metadata_config=None):
     commands = {"build", "test", "run", "fetch", "query", "cquery", "aquery", "info", "mod", "sync"}
     command = next((argument for argument in arguments
                     if argument in commands | {"version", "help", "shutdown", "clean"}), None)
     if command in commands:
         end = arguments.index("--") if "--" in arguments else len(arguments)
+        if command == "mod" and metadata_config is not None:
+            config = metadata_config
+        config = compose_downloader_config(config, arguments[:end])
         arguments = [*arguments[:end], "--experimental_downloader_config=" + str(config),
                      "--disk_cache=", "--repository_cache=", *arguments[end:]]
     return [real_bazel, *arguments]
@@ -244,6 +290,9 @@ def native_redactor(base):
 
 
 def run(args):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import github_release_transport
+    release_token = os.environ.pop(github_release_transport.TOKEN_ENV, "")
     # The workflow checks out this exact first-parent main revision. Import its
     # reviewed validation, rewrite, and privacy code instead of inventing roots.
     helpers = args.helpers.resolve(strict=True)
@@ -288,7 +337,8 @@ def run(args):
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         raise ValueError("Missing native command")
-    with tempfile.TemporaryDirectory(prefix="native-", dir=args.private_dir) as temporary:
+    with tempfile.TemporaryDirectory(prefix="native-", dir=args.private_dir) as temporary, \
+            github_release_transport.serve(release_token) as (release_port, release_counts):
         private = Path(temporary)
         config = private / "downloader.cfg"
         # Native input resolution must try the next signed-index variant
@@ -296,14 +346,16 @@ def run(args):
         # Public mirror connection retries delay those expected misses here.
         public_fallback = args.phase != "inputs"
         public_config = public_downloader_policy(helpers, Path("tools/bazel/debian_mirrors.cfg"))
-        private_mirrors.write_config(config, native_source_mirrors(private_mirrors.configuration(
-            public_config, mirrors, fallback=public_fallback, manifest=manifest)))
+        private_mirrors.write_config(config, github_release_transport.downloader_policy(
+            native_source_mirrors(private_mirrors.configuration(
+                public_config, mirrors, fallback=public_fallback, manifest=manifest)), release_port))
         # The isolated kernel launcher inspects its complete module graph after
         # building. Expected missing index variants must advance promptly; keep
         # this policy separate from ordinary build/cquery download fallbacks.
         metadata_config = private / "metadata-downloader.cfg"
-        private_mirrors.write_config(metadata_config, native_source_mirrors(private_mirrors.configuration(
-            public_config, mirrors, fallback=False, manifest=manifest)))
+        private_mirrors.write_config(metadata_config, github_release_transport.downloader_policy(
+            native_source_mirrors(private_mirrors.configuration(
+                public_config, mirrors, fallback=False, manifest=manifest)), release_port))
         apt_map = private / "apt-mirrors.json"
         private_mirrors.write_config(apt_map, json.dumps({"schema_version": 1,
             "mirrors": private_mirrors.apt_mirror_map(mirrors, manifest)}))
@@ -314,13 +366,16 @@ def run(args):
         launcher.write_text("#!/bin/sh\nexec " + shlex.join([
             sys.executable, "-B", str(Path(__file__).resolve()), "bazel", str(config), real_bazel]) + ' "$@"\n')
         launcher.chmod(0o700)
-        inherited = private_mirrors.child_environment()
+        inherited = github_release_transport.loopback_environment(private_mirrors.child_environment())
+        inherited.pop(github_release_transport.TOKEN_ENV, None)
         # APT's HTTPS method otherwise inherits http_proxy and sends CONNECT
         # to this HTTP-only adapter. Preserve an explicit HTTPS proxy; an
         # explicit empty value keeps unrelated HTTPS downloads direct.
         https_proxy = inherited.get("https_proxy", inherited.get("HTTPS_PROXY", ""))
         environment = inherited | {
             "BAZEL": str(launcher), "SONIC_BAZEL_DOWNLOADER_CONFIG": str(config),
+            "PATH": str(private) + os.pathsep + inherited.get("PATH", os.defpath),
+            "SONIC_NATIVE_BAZEL_ORIGINAL_PATH": inherited.get("PATH", os.defpath),
             "SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG": str(metadata_config),
             "SONIC_BAZEL_REMOTE_ONLY_RC": str(remote_rc),
             "SONIC_APT_MIRROR_CONFIG": str(apt_map),
@@ -355,6 +410,7 @@ def run(args):
                 server.server_close()
                 thread.join(timeout=5)
             receipt = {"schema": 1, "helper_revision": REGISTRY_REVISION,
+                       "github_release_transport": {"authenticated": bool(release_token), **release_counts},
                        "private_mirrors_enabled": True, "native_apt_upstream_https": server is not None,
                        "debian_public_bazel_fallback": public_fallback,
                        "native_docker_apt_private_component": "main",
@@ -376,7 +432,19 @@ def main():
                           "transport_files_changed": public_apt_transport(Path("/etc/apt"))}))
         return 0
     if sys.argv[1:2] == ["bazel"]:
-        os.execv(sys.argv[3], bazel_command(sys.argv[4:], Path(sys.argv[2]), sys.argv[3]))
+        try:
+            os.environ.pop("SONIC_GITHUB_RELEASE_TOKEN", None)
+            metadata = os.environ.get("SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG")
+            # Route bare Make invocations without placing a random temporary
+            # launcher directory in Bazel's action PATH or cache keys.
+            original_path = os.environ.pop("SONIC_NATIVE_BAZEL_ORIGINAL_PATH", None)
+            if original_path is not None:
+                os.environ["PATH"] = original_path
+            os.execv(sys.argv[3], bazel_command(sys.argv[4:], Path(sys.argv[2]), sys.argv[3],
+                                               Path(metadata) if metadata else None))
+        except (OSError, ValueError):
+            print("Native Bazel downloader policy could not be prepared.", file=sys.stderr)
+            return 1
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--helpers", type=Path, default=Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "private-downloads/ci")
     parser.add_argument("--private-dir", type=Path, default=Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "native-downloads")

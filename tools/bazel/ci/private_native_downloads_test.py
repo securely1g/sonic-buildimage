@@ -35,6 +35,12 @@ class Response(io.BytesIO):
 
 
 class NativeTransportTests(unittest.TestCase):
+    def test_bridge_proxy_cannot_relay_to_release_listener(self):
+        for host in ("127.0.0.1", "localhost", "2130706433"):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, "direct loopback"):
+                native.destination(f"http://{host}/_sonic_github_release/github.com/example/repo/releases/download/v1/a.tar.gz",
+                                   MIRRORS, MANIFEST)
+
     def test_gawk_mirror_preserves_original_sources_and_other_download_rules(self):
         policy = "rewrite snapshot.example.invalid/(.*) https://private.example.invalid/$1\n"
         configured = native.native_source_mirrors(policy)
@@ -186,6 +192,54 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(actual[-3:], arguments[-3:])
         self.assertEqual(actual[actual.index("--") - 1], "--repository_cache=")
 
+    def test_caller_xz_policy_and_mod_policy_preserve_native_routing(self):
+        native.sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import github_release_transport as release
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            managed, metadata = root / "managed.cfg", root / "metadata.cfg"
+            managed.write_text(release.downloader_policy("rewrite deb.example/(.*) https://private.example/$1\n", 32123))
+            metadata.write_text(release.downloader_policy("rewrite metadata.example/(.*) https://private.example/$1\n", 32123))
+            caller = Path("src/sonic-p4rt/source_mirrors.cfg").resolve()
+            arguments = ["build", "--experimental_downloader_config=" + str(caller), "//p4rt_app:p4rt_deb"]
+            command = native.bazel_command(arguments, managed, "/real-bazel", metadata)
+            combined = Path(command[-3].split("=", 1)[1])
+            policy = combined.read_text()
+            previous = -1
+            for line in caller.read_text().splitlines():
+                if line.startswith("rewrite "):
+                    position = policy.index(line)
+                    self.assertGreater(position, previous)
+                    previous = position
+            self.assertIn("http://127.0.0.1:32123/_sonic_github_release/github.com/tukaani-project/xz/", policy)
+            self.assertEqual(command[-2:], ["--disk_cache=", "--repository_cache="])
+            self.assertEqual(combined.stat().st_mode & 0o777, 0o600)
+            selected = native.bazel_command(["mod", "graph"], managed, "/real-bazel", metadata)
+            self.assertEqual(selected[-3], "--experimental_downloader_config=" + str(metadata))
+            self.assertNotIn("deb.example", metadata.read_text())
+            args = ["run", "//:tool", "--", "--downloader_config=/nonexistent/target-argument"]
+            selected = native.bazel_command(args, managed, "/real-bazel", metadata)
+            self.assertEqual(selected[-2:], args[-2:])
+            self.assertEqual(selected[selected.index("--") - 3], "--experimental_downloader_config=" + str(managed))
+
+    def test_launcher_restores_action_path_and_drops_credential_before_real_bazel(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "real-bazel"
+            fake.write_text("#!/usr/bin/python3\nimport json,os,sys\nprint(json.dumps({'path':os.environ['PATH'],"
+                            "'token': 'SONIC_GITHUB_RELEASE_TOKEN' in os.environ,'arguments':sys.argv[1:]}))\n")
+            fake.chmod(0o755)
+            environment = dict(os.environ, PATH="/temporary-launcher:/usr/bin:/bin",
+                               SONIC_NATIVE_BAZEL_ORIGINAL_PATH="/usr/bin:/bin",
+                               SONIC_GITHUB_RELEASE_TOKEN="fixture-token")
+            result = native.subprocess.run([native.sys.executable, "-I", "-S", str(Path(native.__file__).resolve()),
+                "bazel", str(root / "managed.cfg"), str(fake), "build", "//:target"],
+                env=environment, text=True, capture_output=True, check=True)
+            receipt = json.loads(result.stdout)
+            self.assertEqual(receipt["path"], "/usr/bin:/bin")
+            self.assertFalse(receipt["token"])
+            self.assertEqual(receipt["arguments"][-2:], ["--disk_cache=", "--repository_cache="])
+
 
 class AlternativesPrivacyTests(unittest.TestCase):
     member = "var/lib/dpkg/alternatives/builtins.7.gz"
@@ -257,21 +311,26 @@ class WrapperLifecycleTests(unittest.TestCase):
             args = types.SimpleNamespace(helpers=helpers, artifacts=artifacts,
                 private_dir=root / "private", phase="verification", check_artifacts=False,
                 command=[native.sys.executable, "-c",
-                    "import json,os,pathlib; "
+                    "import json,os,pathlib,shutil; "
                     "assert 'DEBIAN_MIRROR_ROOT' not in os.environ; "
                     "assert 'DEBIAN_SECURITY_MIRROR_ROOT' not in os.environ; "
+                    "assert 'SONIC_GITHUB_RELEASE_TOKEN' not in os.environ; "
+                    "assert '127.0.0.1' in os.environ['no_proxy'].split(','); "
+                    "assert '127.0.0.1' in os.environ['NO_PROXY'].split(','); "
+                    "assert shutil.which('bazel') == os.environ['BAZEL']; "
                     "assert os.environ['SONIC_BAZEL_REMOTE_ONLY_RC'] == " + repr(str(managed)) + "; "
-                    "assert pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text() == "
-                    + repr(native.native_source_mirrors("private fixture policy")) + "; "
-                    "assert pathlib.Path(os.environ['SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG']).read_text() == "
-                    + repr(native.native_source_mirrors("private fixture policy")) + "; "
+                    "assert pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text().rstrip().endswith("
+                    + repr(native.native_source_mirrors("private fixture policy")) + "); "
+                    "assert 'fixture-release-token' not in pathlib.Path(os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']).read_text(); "
+                    "assert pathlib.Path(os.environ['SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG']).read_text().rstrip().endswith("
+                    + repr(native.native_source_mirrors("private fixture policy")) + "); "
                     "assert os.environ['SONIC_BAZEL_METADATA_DOWNLOADER_CONFIG'] != os.environ['SONIC_BAZEL_DOWNLOADER_CONFIG']; "
                     "assert os.environ['BAZEL_CONTAINER_CACHE_DIR'] == ''; "
                     "assert os.environ['SONIC_NATIVE_DEBIAN_SNAPSHOT'] == '20260727T143429Z'; "
                     "assert os.environ['SONIC_NATIVE_DEBIAN_SECURITY_SNAPSHOT'] == '20260726T121236Z'"])
             child_check = args.command[-1]
             clean_environment = {key: value for key, value in os.environ.items()
-                                 if key not in {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"}}
+                                 if key not in {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY"}}
             clean_environment.update(http_proxy="http://existing-http.example.invalid:3128",
                                      HTTP_PROXY="http://existing-http.example.invalid:3128")
             proxy_url = "http://configured-proxy.example.invalid:3128"
@@ -285,8 +344,11 @@ class WrapperLifecycleTests(unittest.TestCase):
                         args.command[-1] += "; assert os.environ['HTTP_PROXY'] == 'http://existing-http.example.invalid:3128'"
                         for key in ("https_proxy", "HTTPS_PROXY"):
                             args.command[-1] += "; assert os.environ.get(" + repr(key) + ") == " + repr(inherited.get(key))
-                        bridge_guard = mock.patch.object(native.http.server, "ThreadingHTTPServer",
-                            side_effect=AssertionError("Input resolution must not start a Docker bridge proxy"))
+                        server_class = native.http.server.ThreadingHTTPServer
+                        def loopback_only(address, handler):
+                            self.assertEqual(address[0], "127.0.0.1", "Inputs must not start a Docker bridge proxy")
+                            return server_class(address, handler)
+                        bridge_guard = mock.patch.object(native.http.server, "ThreadingHTTPServer", side_effect=loopback_only)
                     else:
                         args.command[-1] += "; assert os.environ['HTTP_PROXY'].startswith('http://192.168.240.1:')"
                         args.command[-1] += "; assert os.environ['https_proxy'] == " + repr(expected)
@@ -296,6 +358,7 @@ class WrapperLifecycleTests(unittest.TestCase):
                          mock.patch.dict(native.sys.modules, {"private_mirrors": private_mirrors,
                              "mirror_privacy": types.SimpleNamespace(Redactor=Redactor)}), \
                          mock.patch.dict(os.environ, {**clean_environment, **MIRRORS, **inherited,
+                             "SONIC_GITHUB_RELEASE_TOKEN": "fixture-release-token",
                              "SONIC_BAZEL_REMOTE_ONLY_RC": str(managed)}, clear=True), \
                          mock.patch.object(native.subprocess, "check_output", return_value=native.REGISTRY_REVISION + "\n"), \
                          mock.patch.object(native.shutil, "which", return_value="/bin/true"), \
@@ -313,6 +376,8 @@ class WrapperLifecycleTests(unittest.TestCase):
                                 "https://zlib.net/pigz/pigz-2.8.tar.gz\n"))
                         receipt = json.loads((artifacts / ("private-downloads-" + phase + ".json")).read_text())
                         self.assertEqual(receipt["debian_public_bazel_fallback"], phase != "inputs")
+                        self.assertEqual(receipt["github_release_transport"],
+                                         {"authenticated": True, "completed": 0, "failed": 0})
             self.assertEqual(list(args.private_dir.iterdir()), [])
             self.assertIn("https://remote.example.invalid/", seen)
             receipt = json.loads((artifacts / "private-downloads-verification.json").read_text())

@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Serve public GitHub release bytes through the native job's loopback listener.
+
+This changes transport only. Bazel retains the original archive integrity, and
+the original release URL remains a downloader candidate. API credentials never
+enter downloader URLs, asset redirects, child processes, or retained receipts.
+"""
+
+import contextlib
+import http.server
+import ipaddress
+import json
+import re
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+PREFIX = "/_sonic_github_release/"
+PATTERN = r"(github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download/[^/?#]+/[^/?#]+)"
+ASSET_HOSTS = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
+TOKEN_ENV = "SONIC_GITHUB_RELEASE_TOKEN"
+MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
+TRANSFER_SECONDS = 900
+
+
+class DownloadError(Exception):
+    """A deliberately URL/credential-free transport error."""
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def parse_release(url):
+    value = urllib.parse.urlsplit(url)
+    parts = value.path.strip("/").split("/")
+    if (value.scheme != "https" or value.netloc != "github.com" or value.query or value.fragment
+            or len(parts) != 6 or parts[2:4] != ["releases", "download"]
+            or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name in {".", ".."}
+                   for name in parts[:2])):
+        raise DownloadError("Unsupported public release URL")
+    tag, name = (urllib.parse.unquote(part, errors="strict") for part in parts[4:])
+    if (not tag or not name or "/" in name or name in {".", ".."}
+            or any(ord(character) < 32 or ord(character) == 127 for character in tag + name)):
+        raise DownloadError("Unsupported public release name")
+    return "/".join(parts[:2]), tag, name
+
+
+class PublicAssets:
+    def __init__(self, token="", opener=None):
+        if (not isinstance(token, str) or len(token) > 4096
+                or any(not 33 <= ord(character) <= 126 for character in token)):
+            raise DownloadError("Invalid API credential")
+        self._token = token
+        self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirects())
+        self._assets = {}
+        self._lock = threading.Lock()
+
+    def _request(self, url, *, api=False, binary=False):
+        parsed = urllib.parse.urlsplit(url)
+        allowed = {"api.github.com"} if api else ASSET_HOSTS
+        if (parsed.scheme != "https" or parsed.hostname not in allowed or parsed.username is not None
+                or parsed.password is not None or parsed.port not in (None, 443) or parsed.fragment
+                or any(character.isspace() for character in url)):
+            raise DownloadError("Unsupported release redirect")
+        headers = {"User-Agent": "sonic-native-release-transport", "Accept-Encoding": "identity"}
+        if api:
+            headers.update({"Accept": "application/octet-stream" if binary else "application/vnd.github+json",
+                            "X-GitHub-Api-Version": "2022-11-28"})
+        request = urllib.request.Request(url, headers=headers)
+        if api and self._token:
+            request.add_unredirected_header("Authorization", "Bearer " + self._token)
+        return self._opener.open(request, timeout=60)
+
+    def _json(self, path):
+        try:
+            with self._request("https://api.github.com" + path, api=True) as response:
+                data = response.read(2 * 1024 * 1024 + 1)
+                if response.status != 200 or len(data) > 2 * 1024 * 1024:
+                    raise DownloadError("Invalid public release metadata")
+                value = json.loads(data)
+                if not isinstance(value, dict):
+                    raise DownloadError("Invalid public release metadata")
+                return value
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise DownloadError("Public release metadata unavailable") from None
+        except (OSError, ValueError, urllib.error.URLError):
+            raise DownloadError("Public release metadata unavailable") from None
+
+    def resolve(self, url):
+        repo, tag, name = parse_release(url)
+        key = (repo, tag, name)
+        with self._lock:
+            if key not in self._assets:
+                repository = self._json("/repos/" + repo)
+                if (repository.get("private") is not False or repository.get("visibility") != "public"
+                        or repository.get("full_name", "").casefold() != repo.casefold()):
+                    raise DownloadError("Only public repositories are allowed")
+                release = self._json("/repos/" + repo + "/releases/tags/" + urllib.parse.quote(tag, safe=""))
+                if (release.get("draft") is not False or not release.get("published_at")
+                        or release.get("tag_name") != tag):
+                    raise DownloadError("Only published releases are allowed")
+                candidates = release.get("assets", [])
+                if not isinstance(candidates, list) or not all(isinstance(asset, dict) for asset in candidates):
+                    raise DownloadError("Invalid release asset list")
+                matches = [asset for asset in candidates if asset.get("name") == name]
+                if len(matches) != 1:
+                    raise DownloadError("Release asset is not unique")
+                asset = matches[0]
+                if (asset.get("state") != "uploaded" or type(asset.get("id")) is not int or asset["id"] <= 0
+                        or type(asset.get("size")) is not int or not 0 < asset["size"] <= MAX_ASSET_BYTES):
+                    raise DownloadError("Invalid release asset metadata")
+                self._assets[key] = ("https://api.github.com/repos/" + repo + "/releases/assets/" + str(asset["id"]), asset["size"])
+            return self._assets[key]
+
+    def open(self, url):
+        target, size = self.resolve(url)
+        for attempt in range(4):
+            try:
+                response = self._request(target, api=attempt == 0, binary=True)
+                if (response.status != 200 or response.headers.get_content_type() in {"application/json", "text/html"}
+                        or int(response.headers.get("Content-Length", size)) != size):
+                    response.close()
+                    raise DownloadError("Invalid release asset response")
+                return response, size
+            except urllib.error.HTTPError as error:
+                location = error.headers.get("Location") if error.headers else None
+                code = error.code
+                error.close()
+                if code != 302 or not location:
+                    raise DownloadError("Public release asset unavailable") from None
+                target = location
+            except (OSError, ValueError, urllib.error.URLError):
+                raise DownloadError("Public release asset unavailable") from None
+        raise DownloadError("Too many release redirects")
+
+
+def downloader_policy(original, port):
+    # Bazel applies rewrites once. Cover already-declared release mirrors too
+    # (for example the P4RT Fedora XZ URL's GitHub replacement), retaining each
+    # original candidate in its original relative order.
+    rows = []
+    for line in original.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[0] == "rewrite" and fields[2].startswith("https://github.com/"):
+            try:
+                parse_release(fields[2])
+            except (DownloadError, ValueError):
+                pass
+            else:
+                preferred = f"rewrite {fields[1]} http://127.0.0.1:{port}{PREFIX}" + fields[2][8:]
+                if not rows or rows[-1] != preferred:
+                    rows.append(preferred)
+        rows.append(line)
+    policy = "\n".join(rows) + "\n"
+    prefix = (f"rewrite {PATTERN} http://127.0.0.1:{port}{PREFIX}$1\n"
+              f"rewrite {PATTERN} https://$1\n")
+    return policy if policy.startswith(prefix) else prefix + policy
+
+
+def loopback_environment(environment):
+    """Bazel does not implicitly bypass an HTTP proxy for loopback URLs."""
+    result = dict(environment)
+    for key, other in (("no_proxy", "NO_PROXY"), ("NO_PROXY", "no_proxy")):
+        original = environment.get(key, environment.get(other, ""))
+        values = [part.strip() for part in original.split(",") if part.strip()]
+        if "127.0.0.1" not in values:
+            values.append("127.0.0.1")
+        result[key] = ",".join(values)
+    return result
+
+
+@contextlib.contextmanager
+def serve(token="", *, client=None):
+    assets = client or PublicAssets(token)
+    counts = {"completed": 0, "failed": 0}
+    lock = threading.Lock()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            started = False
+            try:
+                if (not ipaddress.ip_address(self.client_address[0]).is_loopback
+                        or not self.path.startswith(PREFIX)):
+                    self.send_error(403, "Only native loopback release requests are allowed")
+                    return
+                url = "https://" + self.path[len(PREFIX):]
+                response, size = assets.open(url)
+                with contextlib.closing(response):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(size))
+                    self.end_headers()
+                    started = True
+                    copied = 0
+                    deadline = time.monotonic() + TRANSFER_SECONDS
+                    while True:
+                        if time.monotonic() > deadline:
+                            raise DownloadError("Release asset transfer exceeded deadline")
+                        data = response.read1(min(1024 * 1024, size - copied + 1))
+                        if not data:
+                            break
+                        copied += len(data)
+                        if copied > size:
+                            raise DownloadError("Release asset size changed")
+                        self.wfile.write(data)
+                    if copied != size:
+                        raise DownloadError("Incomplete release asset")
+                with lock:
+                    counts["completed"] += 1
+            except Exception:
+                # No exception text is safe here: upstream errors may contain
+                # expiring asset signatures. Keep them off stderr and HTTP.
+                with lock:
+                    counts["failed"] += 1
+                if not started:
+                    try:
+                        self.send_error(502, "Public release transport unavailable")
+                    except OSError:
+                        pass
+                self.close_connection = True
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port, counts
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
