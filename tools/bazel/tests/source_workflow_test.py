@@ -251,6 +251,78 @@ class NativeFamilyJobsTest(unittest.TestCase):
 
 
 class BazeliskBootstrapTest(unittest.TestCase):
+    def test_rules_cc_archive_uses_restored_cache_and_existing_distdir(self):
+        selections = {
+            "swss_native": (ROOT / ".github/workflows/bazel-swss-native.yml").read_text(),
+            "swss_layer_native": jobs()["swss_layer_native"],
+        }
+        reader = textwrap.dedent(r'''
+            import json, os, sys
+            from pathlib import Path
+            args = sys.argv[1:]
+            options = dict(zip(args[::2], args[1::2]))
+            assert set(options) == {'--manifest', '--distdir', '--repository-cache',
+                                    '--cache-dir', '--receipt', '--github-token-env'}
+            assert options['--manifest'] == '.bazel-inputs/github-reader/ci/github_sources/rules-cc-0.2.22.json'
+            assert Path(options['--manifest']).is_file()
+            assert options['--github-token-env'] == 'GITHUB_TOKEN'
+            assert os.environ['GITHUB_TOKEN'] == 'fixture-token'
+            repository = Path(os.environ['HOME']) / '.cache/bazel-repo'
+            assert Path(options['--repository-cache']) == repository
+            assert Path(options['--cache-dir']) == Path(os.environ['HOME']) / '.cache/sonic-github-sources'
+            distdir = Path.cwd() / 'artifacts/source-downloads'
+            assert Path(options['--distdir']) == distdir
+            assert options['--receipt'] == os.environ['EXPECTED_RECEIPT']
+            assert (distdir / 'pigz-2.8.tar.gz').read_bytes() == b'existing pigz'
+            data = (repository / 'fixture-archive').read_bytes()
+            if int(os.environ['READER_EXIT']):
+                raise SystemExit(int(os.environ['READER_EXIT']))
+            (distdir / 'rules_cc-0.2.22.tar.gz').write_bytes(data)
+            receipt = Path(options['--receipt'])
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text(json.dumps({'origin': 'repository-cache'}))
+        ''')
+        for name, job in selections.items():
+            prepare = steps(job)["Prepare the checksum-pinned rules_cc archive"]
+            self.assertNotIn("continue-on-error", prepare)
+            self.assertNotIn("if:", prepare)
+            self.assertLess(job.index("bazel-contrib/setup-bazel@"),
+                            job.index("Prepare the checksum-pinned pigz source archive"))
+            self.assertLess(job.index("Prepare the checksum-pinned pigz source archive"),
+                            job.index("Prepare the checksum-pinned rules_cc archive"))
+            self.assertIn('common --distdir=%s', job)
+            receipt_name = ("artifacts/rules-cc-source.json" if name == "swss_native"
+                            else "artifacts/swss-layer/rules-cc-source.json")
+            for reader_exit in (23, 0):
+                with self.subTest(workflow=name, reader_exit=reader_exit), tempfile.TemporaryDirectory() as tmp:
+                    directory = Path(tmp)
+                    commands = directory / "commands"
+                    commands.mkdir()
+                    (commands / "python3").symlink_to(sys.executable)
+                    inputs = directory / ".bazel-inputs/github-reader/ci"
+                    (inputs / "github_sources").mkdir(parents=True)
+                    (inputs / "github_sources.py").write_text(reader)
+                    (inputs / "github_sources/rules-cc-0.2.22.json").write_text("{}\n")
+                    repository = directory / ".cache/bazel-repo"
+                    repository.mkdir(parents=True)
+                    (repository / "fixture-archive").write_bytes(b'cached archive fixture')
+                    distdir = directory / "artifacts/source-downloads"
+                    distdir.mkdir(parents=True)
+                    (distdir / "pigz-2.8.tar.gz").write_bytes(b'existing pigz')
+                    result = subprocess.run(
+                        ["/bin/bash", "-e", "-o", "pipefail", "-c", shell(prepare)], cwd=directory,
+                        env={"PATH": str(commands), "HOME": str(directory), "PWD": str(directory),
+                             "GITHUB_TOKEN": "fixture-token", "EXPECTED_RECEIPT": receipt_name,
+                             "READER_EXIT": str(reader_exit)}, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, reader_exit, result.stdout + result.stderr)
+                    self.assertEqual((distdir / "pigz-2.8.tar.gz").read_bytes(), b'existing pigz')
+                    self.assertEqual((repository / "fixture-archive").read_bytes(), b'cached archive fixture')
+                    self.assertEqual((directory / receipt_name).exists(), reader_exit == 0)
+                    archive = distdir / "rules_cc-0.2.22.tar.gz"
+                    self.assertEqual(archive.exists(), reader_exit == 0)
+                    if reader_exit == 0:
+                        self.assertEqual(archive.read_bytes(), b'cached archive fixture')
+
     def test_only_verified_reader_success_exposes_executable_on_path(self):
         scripts = {
             "swss_native": shell(steps((ROOT / ".github/workflows/bazel-swss-native.yml").read_text())[

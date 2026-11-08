@@ -660,12 +660,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: 0fbdfc43d56daad4fb41aab6eb73313b790e39b7
+          ref: 815933e565c75c897124e88d10d006017eed4c44
           path: .bazel-inputs/github-reader
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             ci/github_sources.py
             ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+            ci/github_sources/rules-cc-0.2.22.json
           persist-credentials: false
       - name: Prepare checksum-pinned Bazelisk
         env:
@@ -735,6 +736,19 @@ jobs:
           user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
           PYCODE
 
+      - name: Prepare the checksum-pinned rules_cc archive
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/rules-cc-0.2.22.json" \
+            --distdir "$PWD/artifacts/source-downloads" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/swss-layer/rules-cc-source.json \
+            --github-token-env GITHUB_TOKEN
       - name: Build and inspect the shared runtime and symbols
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -767,7 +781,7 @@ jobs:
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for name in ('validation.json', 'action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json', 'bazelisk-bootstrap.json'):
+          for name in ('validation.json', 'action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json', 'bazelisk-bootstrap.json', 'rules-cc-source.json'):
               path = root / name
               if path.exists():
                   safe_json(json.loads(path.read_text()))
@@ -797,6 +811,7 @@ jobs:
             artifacts/swss-layer/packages.json
             artifacts/swss-layer/build-summary.json
             artifacts/swss-layer/bazelisk-bootstrap.json
+            artifacts/swss-layer/rules-cc-source.json
             artifacts/swss-layer/rebuild/rebuild.json
             artifacts/swss-layer/MODULE.bazel.lock
             artifacts/swss-layer/module-graph.json
