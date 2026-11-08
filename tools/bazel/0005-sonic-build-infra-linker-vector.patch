@@ -1,0 +1,89 @@
+Backport the owner linker-vector transport onto selected infrastructure .26.
+
+Upstream: https://github.com/securely1g/sonic-build-infra/commit/8e15b3341e4665f7bf6ed9be0aaaf1c92dcf9175
+DASH consumer: https://github.com/securely1g/DASH/commit/2f71c2d7b940b746e2b7cf16597ff0eaff765539
+PR #203 run 42474481735 failed in DASH. A matched native reproduction
+failed to start GCC; replaying its captured flags exported a 148278-byte
+MAKEFLAGS entry, above Linux's per-string limit. Apply after consumer
+patches 0002 and 0003, keeping the dependency versions and image locks. Preserve the private
+preprocessor reader; add the linker reader before ordinary GCC response handling.
+
+diff --git a/tools/build_tools/configure_environment.sh b/tools/build_tools/configure_environment.sh
+--- a/tools/build_tools/configure_environment.sh
++++ b/tools/build_tools/configure_environment.sh
+@@ -53,4 +53,35 @@
+     done
+ fi
++# Only the owner-generated vector beside this launcher uses this transport.
++# Ordinary GCC response files remain opaque. Expand before the existing -L
++# shortening, so recursive Make/Libtool keeps its own working directory and
++# GCC still receives library searches in their original driver order.
++linker_response="${0%/*}/.sonic-linker-arguments"
++remaining=0
++for argument in "$@"; do
++    if test "$argument" = "@$linker_response"; then
++        remaining=$#
++        break
++    fi
++done
++while test "$remaining" -gt 0; do
++    argument=$1
++    shift
++    remaining=$((remaining - 1))
++    if test "$argument" = "@$linker_response"; then
++        {
++            IFS= read -r response_format
++            test "$response_format" = sonic-linker-arguments-v1 || {
++                echo "Invalid private linker argument response" >&2
++                exit 2
++            }
++            while IFS= read -r response_argument || test -n "$response_argument"; do
++                set -- "$@" "$response_argument"
++            done
++        } < "$linker_response"
++    else
++        set -- "$@" "$argument"
++    fi
++done
+ # Response files may contain native includes. Preserve their driver ordering
+ # rather than partially rewriting a group whose contents are not visible here.
+diff --git a/tools/build_tools/configure_linker_flags.sh b/tools/build_tools/configure_linker_flags.sh
+new file mode 100644
+--- /dev/null
++++ b/tools/build_tools/configure_linker_flags.sh
+@@ -0,0 +1,26 @@
++# Source before the first exec: . configure_linker_flags.sh PYTHON COMMAND [ARG...]
++# PYTHON is a declared execution-side interpreter. configure_environment.sh must
++# create its compiler launcher in this same directory to consume the vector.
++(
++    set -eu
++    sonic_python=${1:?a declared Python interpreter is required}
++    shift
++    : "${1:?a configure command is required}"
++    sonic_linker_arguments="$PWD/.sonic-linker-arguments"
++    # Only shell builtins may run until the oversized environment entry is gone.
++    printf '%s\n' "${LDFLAGS:-}" > "$sonic_linker_arguments.raw"
++    export LDFLAGS="@$sonic_linker_arguments"
++    "$sonic_python" - "$sonic_linker_arguments.raw" "$sonic_linker_arguments" <<'PY'
++import pathlib
++import shlex
++import sys
++
++arguments = shlex.split(pathlib.Path(sys.argv[1]).read_text())
++if any("\n" in value or "\r" in value for value in arguments):
++    raise ValueError("Linker arguments cannot contain line breaks")
++pathlib.Path(sys.argv[2]).write_text(
++    "sonic-linker-arguments-v1\n" + "".join(value + "\n" for value in arguments)
++)
++PY
++    "$@"
++)
+diff --git a/tools/build_tools/BUILD.bazel b/tools/build_tools/BUILD.bazel
+--- a/tools/build_tools/BUILD.bazel
++++ b/tools/build_tools/BUILD.bazel
+@@ -530,4 +530,5 @@
+ exports_files([
+     "configure_environment.sh",
++    "configure_linker_flags.sh",
+     "configure_preprocessor_flags.sh",
+ ])

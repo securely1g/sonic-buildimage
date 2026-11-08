@@ -1,0 +1,301 @@
+Backport DASH's owner flag transport for recursive native Make.
+
+Origin: https://github.com/securely1g/DASH/pull/4
+CPP transport: https://github.com/securely1g/DASH/commit/53e524a348589e2b2e0585a8c148bd9b2f8bc686
+Linker transport: https://github.com/securely1g/DASH/commit/2f71c2d7b940b746e2b7cf16597ff0eaff765539
+
+PR #203 run 42474481735 failed in dash_build. A matching native reproduction
+failed to start GCC. Replaying its captured flags exported 148278 bytes in
+MAKEFLAGS, above Linux's 131072-byte limit. Keep all ordered compiler flags
+in owner response files before entering recursive Make. Preserve the current
+DASH source version, dependencies, original Makefile and runtime payload.
+
+The four-file owner change is based on selected 5c930540 and includes its
+compile/link regression. The consumer separately supplies the compatible
+linker helper over infrastructure .26; no dependency-version bump is needed.
+
+diff --git a/bazel/BUILD.bazel b/bazel/BUILD.bazel
+index 2b18de8d..a2417221 100644
+--- a/bazel/BUILD.bazel
++++ b/bazel/BUILD.bazel
+@@ -7,9 +7,27 @@ package(default_visibility = ["//visibility:public"])
+
+ exports_files([
+     "Makefile.dash",
++    "make_with_flags.sh",
+     "requirements_lock.txt",
+ ])
+
++py_test(
++    name = "make_flags_test",
++    srcs = ["make_flags_test.py"],
++    args = [
++        "$(rootpath :make_with_flags.sh)",
++        "$(rootpath :Makefile.dash)",
++        "$(rootpath @sonic_build_infra//tools/build_tools:configure_linker_flags.sh)",
++        "$(rootpath @sonic_build_infra//tools/build_tools:configure_environment.sh)",
++    ],
++    data = [
++        "Makefile.dash",
++        "make_with_flags.sh",
++        "@sonic_build_infra//tools/build_tools:configure_environment.sh",
++        "@sonic_build_infra//tools/build_tools:configure_linker_flags.sh",
++    ],
++)
++
+ py_binary(
+     name = "prepare",
+     srcs = ["prepare.py"],
+diff --git a/bazel/make_flags_test.py b/bazel/make_flags_test.py
+new file mode 100644
+index 00000000..3a83af9f
+--- /dev/null
++++ b/bazel/make_flags_test.py
+@@ -0,0 +1,195 @@
++"""Exercise the original recursive Make adapter with ordered GCC flags."""
++
++import hashlib
++import json
++import os
++from pathlib import Path
++import shlex
++import shutil
++import subprocess
++import sys
++import tempfile
++
++
++def main():
++    adapter, frontend, linker_adapter, compiler_adapter = [Path(value).resolve() for value in sys.argv[1:]]
++    tools = {name: shutil.which(name) for name in ("bash", "make", "gcc", "g++", "ar", "as", "ld", "which")}
++    assert all(tools.values()), tools
++    with tempfile.TemporaryDirectory(dir=os.environ.get("TEST_TMPDIR")) as temporary:
++        root = Path(temporary).resolve()
++        # Give the shared adapter an explicit fixture linker/assembler root;
++        # the selected host GCC still performs the actual compile and link.
++        compiler_tools = root / "compiler-tools"
++        compiler_tools.mkdir()
++        for name in ("as", "ld"):
++            (compiler_tools / name).symlink_to(tools[name])
++        generated = root / "generated_sources"
++        metadata = generated / "dash-pipeline/SAI/SAI/meta"
++        library = generated / "dash-pipeline/SAI/lib"
++        metadata.mkdir(parents=True)
++        library.mkdir(parents=True)
++        shutil.copyfile(frontend, generated / "Makefile")
++        for name, value in (("first", 13), ("second", 29)):
++            (root / name).mkdir()
++            (root / name / "selected.h").write_text(f"#define SELECTED {value}\n")
++        (root / "quoted include").mkdir()
++        (root / "quoted include/quoted_path.h").write_text("#define SPACE_HEADER 31\n")
++        (root / "compiler-system").mkdir()
++        (root / "compiler-system/selected.h").write_text("#define SELECTED 47\n")
++        # Competing archives make linker search order observable in the result;
++        # spaced directories also exercise the driver's response-file quoting.
++        for name, value in (("link first", 13), ("link second", 29)):
++            directory = root / name
++            directory.mkdir()
++            (directory / "value.c").write_text(f"int linker_value(void) {{ return {value}; }}\n")
++            subprocess.run([tools["gcc"], "-c", str(directory / "value.c"),
++                            "-o", str(directory / "value.o")], check=True)
++            subprocess.run([tools["ar"], "rcs", str(directory / "liborder.a"),
++                            str(directory / "value.o")], check=True)
++        program = (
++            "#include <selected.h>\n#include <quoted_path.h>\n"
++            '#ifdef __cplusplus\nextern "C"\n#endif\nint linker_value(void);\n'
++            "static const char *text = STRING;\n"
++            "int main(void) { return VALUE + SELECTED != 24 || SPACE_HEADER != 31 || "
++            "text[0] != 'q' || text[6] != ' ' || text[7] != 'v' || linker_value() != 13; }\n"
++        )
++        (metadata / "unit.c").write_text(program)
++        (library / "unit.cc").write_text(program)
++        # Use the real frontend's two recursive calls. The metadata call carries
++        # link flags in CXX (used only to link the C object); the library call
++        # carries GXX_FLAGS and LDFLAGS as
++        # command-line overrides, which GNU Make also exports in MAKEFLAGS.
++        (metadata / "Makefile").write_text(
++            # Match the upstream parse-time tool probe; gcc is known to exist.
++            "BINS = gcc\n"
++            '$(foreach bin,$(BINS),$(if $(shell which $(bin)),,$(error "Missing $(bin) in PATH")))\n'
++            ".PHONY: libsaimetadata.so\nlibsaimetadata.so:\n"
++            "\t$(file >makeflags.txt,$(MAKEFLAGS))\n"
++            "\t$(CC) $(CFLAGS) -c unit.c -o unit.o\n"
++            "\t$(CXX) unit.o -o program\n"
++        )
++        (library / "Makefile").write_text(
++            ".PHONY: all\nall:\n"
++            "\t$(file >makeflags.txt,$(MAKEFLAGS))\n"
++            "\t$(file >linkflags.txt,$(LDFLAGS))\n"
++            "\t$(file >libs.txt,$(LIBS))\n"
++            "\t$(CXX) $(GXX_FLAGS) -c unit.cc -o unit.o\n"
++            "\t$(CXX) unit.o $(LDFLAGS) -o program\n"
++        )
++        common = shlex.join([
++            "-DVALUE=1", "-UVALUE", "-DVALUE=7", '-DSTRING="quoted value"',
++            "-isystem", str(root / "first"), "-isystem", str(root / "second"),
++            "-I" + str(root / "quoted include"), "-Wno-unused-parameter",
++        ])
++        large_cpp = " ".join(f"-I/nonexistent/{i}/" + "x" * 180 for i in range(430)) + " " + common
++        link_flags = [
++            "-L" + str(root / "link first"), "-L" + str(root / "link second"),
++            "-Wl,--whole-archive", "-lorder", "-Wl,--no-whole-archive", "-Wl,--as-needed",
++        ]
++        common_link = shlex.join(link_flags)
++        large_link = " ".join(f"-L/nonexistent/{i}/" + "y" * 180 for i in range(330)) + " " + common_link
++        # Each original variable fits execve, but their recursive Make export
++        # exceeds the per-string bound seen in the actual DASH failure.
++        assert len(large_cpp) < 131072 and len(large_link) < 131072
++        assert len(large_cpp) + len(large_link) > 131072
++
++        # The observed 130,698-byte LDFLAGS fits execve on its own. Embedding
++        # it in CXX and escaping that override into MAKEFLAGS overflows even
++        # after CPPFLAGS is compact. Keep each synthetic directory bounded.
++        remaining = 130698 - len(common_link.encode()) - 1
++        near_paths = []
++        near_prefix = "-L" + str(root / "nonexistent/near")
++        tail = "-L" + str(root / "nonexistent/padding") + "/"
++        while remaining > len(near_prefix) + len(tail) + 200:
++            token = f"{near_prefix}/{len(near_paths)}/" + "z" * 180
++            near_paths.append(token)
++            remaining -= len(token) + 1
++        assert remaining >= len(tail)
++        near_paths.append(tail + "z" * (remaining - len(tail)))
++        near_limit_link = " ".join(near_paths) + " " + common_link
++        assert len(near_limit_link.encode()) == 130698
++
++        def run(cppflags, ldflags, prefix):
++            assignments = {
++                "CC": tools["gcc"], "CXX": tools["g++"], "CPPFLAGS": cppflags,
++                "CFLAGS": "-O2 -g -frandom-seed=fixture -UVALUE -DVALUE=11 -isystem " + shlex.quote(str(root / "compiler-system")),
++                "CXXFLAGS": "-O2 -g -frandom-seed=fixture -UVALUE -DVALUE=11 -isystem " + shlex.quote(str(root / "compiler-system")),
++                "LDFLAGS": ldflags, "LIBS": "",
++            }
++            command = " ".join(key + "=" + shlex.quote(value) for key, value in assignments.items())
++            if prefix:
++                command += " source " + shlex.join([str(adapter), str(linker_adapter), str(compiler_adapter), sys.executable])
++            command += " " + shlex.join([tools["make"], "--no-print-directory", "-f", "generated_sources/Makefile", "all"])
++            script = root / "invoke.sh"
++            script.write_text(command + "\n")
++            env = dict(os.environ, EXT_BUILD_ROOT=str(root), COMPILER_PATH=str(compiler_tools))
++            return subprocess.run([tools["bash"], script], cwd=root, env=env, capture_output=True, text=True)
++
++        # Prove the exact recursive override/export failure independently of
++        # GCC: a trivial child cannot start when MAKEFLAGS exceeds the limit.
++        probe = root / "probe"
++        probe.mkdir()
++        (probe / "Makefile").write_text(
++            "all:\n\t$(file >makeflags.txt,$(MAKEFLAGS))\n\t@/bin/true\n"
++        )
++        old = subprocess.run(
++            [tools["make"], "--no-print-directory", "-C", str(probe),
++             "GXX_FLAGS=" + large_cpp, "LDFLAGS=" + large_link],
++            capture_output=True, text=True,
++        )
++        assert len((probe / "makeflags.txt").read_bytes()) > 131072
++        assert old.returncode != 0 and "Argument list too long" in old.stderr, old.stderr
++
++        # A preprocessor-only response would reorder CPPFLAGS after native
++        # compiler include options. Keep this concrete negative control: the
++        # first header must win across the CPPFLAGS/CFLAGS boundary.
++        (root / "order.c").write_text("#include <selected.h>\nSELECTED\n")
++        (root / "order.rsp").write_text("-isystem " + str(root / "first") + "\n")
++        def selected(flags):
++            return subprocess.check_output([tools["gcc"], "-E", "-P", *flags,
++                                            "-isystem", str(root / "compiler-system"),
++                                            str(root / "order.c")], text=True).strip()
++        assert selected(["-isystem", str(root / "first")]) == "13"
++        assert selected(["-Wp,@" + str(root / "order.rsp")]) == "47"
++        assert selected(["@" + str(root / "order.rsp")]) == "13"
++
++        hashes = []
++        for cppflags, ldflags in ((common, near_limit_link), (common, common_link), (large_cpp, large_link)):
++            accepted = run(cppflags, ldflags, True)
++            assert accepted.returncode == 0, accepted.stdout + accepted.stderr
++            assert (root / ".bazel-dash-cppflags.rsp").read_text() == cppflags + "\n"
++            linker_response = root / ".sonic-linker-arguments"
++            assert linker_response.read_text().splitlines() == ["sonic-linker-arguments-v1", *shlex.split(ldflags)]
++            installed = root / "dash-pipeline/SAI"
++            assert (installed / "lib/linkflags.txt").read_text() == "@" + str(linker_response) + " -Wl,-z,defs\n"
++            assert (installed / "lib/libs.txt").read_text().strip() == "-lpiprotogrpc -lpiprotobuf -lgrpc++ -lgrpc -lprotobuf -lgpr -labsl_synchronization"
++            assert len((installed / "SAI/meta/makeflags.txt").read_bytes()) < 131072
++            assert len((installed / "lib/makeflags.txt").read_bytes()) < 131072
++            row = {}
++            for name in ("SAI/meta/program", "lib/program"):
++                binary = installed / name
++                subprocess.run([binary], check=True)
++                row[name] = hashlib.sha256(binary.read_bytes()).hexdigest()
++            hashes.append(row)
++        assert hashes[0] == hashes[1] == hashes[2], hashes
++        # Reversing only the search directories must select the other archive,
++        # proving that the successful binaries checked actual linker ordering.
++        reversed_link = shlex.join(list(reversed(link_flags[:2])) + link_flags[2:])
++        assert run(common, reversed_link, True).returncode == 0
++        for name in ("SAI/meta/program", "lib/program"):
++            assert subprocess.run([root / "dash-pipeline/SAI" / name]).returncode == 1
++        # Isolate option rejection from the header/archive fixtures: both the
++        # original command and the adapted command must reach the same error.
++        for source in (metadata / "unit.c", library / "unit.cc"):
++            source.write_text("int main(void) { return 0; }\n")
++        for prefix in (False, True):
++            rejected = run("-fdefinitely-invalid-dash-option", "", prefix)
++            assert rejected.returncode != 0 and "unrecognized command-line option" in rejected.stderr, rejected.stderr
++            rejected = run("", "-Wl,--definitely-invalid-dash-linker-option", prefix)
++            assert rejected.returncode != 0 and "unrecognized option" in rejected.stderr, rejected.stderr
++        print(json.dumps({"status": "passed", "cppflags_bytes": len(large_cpp), "ldflags_bytes": len(large_link),
++                          "near_limit_ldflags_bytes": len(near_limit_link), "binaries": hashes[0]}, sort_keys=True))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/bazel/make_with_flags.sh b/bazel/make_with_flags.sh
+new file mode 100644
+index 00000000..c66a832e
+--- /dev/null
++++ b/bazel/make_with_flags.sh
+@@ -0,0 +1,15 @@
++# Sourced by rules_foreign_cc's public tool_prefix before starting Make.
++# Keep ordered flags out of recursive Make's MAKEFLAGS export. The CPP response
++# stays at its driver position. Shared linker transport and compiler adaptation
++# also avoid GCC's COLLECT_GCC_OPTIONS limit without changing -L precedence.
++(
++    set -eu
++    linker_adapter=${1:?the declared linker transport is required}
++    compiler_adapter=${2:?the declared compiler adapter is required}
++    python=${3:?the declared Python interpreter is required}
++    shift 3
++    cppflags_file="$PWD/.bazel-dash-cppflags.rsp"
++    printf '%s\n' "${CPPFLAGS:-}" > "$cppflags_file"
++    export CPPFLAGS="@$cppflags_file"
++    . "$linker_adapter" "$python" /bin/sh "$compiler_adapter" "$@"
++)
+diff --git a/dash-pipeline/SAI/BUILD.bazel b/dash-pipeline/SAI/BUILD.bazel
+index 2daa8755..39ca24b6 100644
+--- a/dash-pipeline/SAI/BUILD.bazel
++++ b/dash-pipeline/SAI/BUILD.bazel
+@@ -43,10 +43,13 @@ make(
+         "-j4",
+     ],
+     build_data = [
++        "@sonic_build_infra//tools/build_tools:configure_environment.sh",
++        "@sonic_build_infra//tools/build_tools:configure_linker_flags.sh",
+         "@sonic_build_infra//tools/build_tools:foreign_runtime",
+         "@sonic_build_infra//tools/build_tools:metadata_runtime",
+     ],
+     copts = ["-g"],
++    data = ["//bazel:make_with_flags.sh"],
+     env = {
+         "PATH": "$(execpath @sonic_build_infra//tools/build_tools:foreign_runtime)/bin:$(execpath @sonic_build_infra//tools/build_tools:metadata_runtime)/bin",
+         "SAI_ASPELL": "$(execpath @sonic_build_infra//tools/build_tools:metadata_runtime)/bin/aspell",
+@@ -71,6 +74,12 @@ make(
+         "all",
+         "install",
+     ],
++    tool_prefix = " ".join([
++        'source "$$EXT_BUILD_ROOT$$/$(execpath //bazel:make_with_flags.sh)"',
++        '"$$EXT_BUILD_ROOT$$/$(execpath @sonic_build_infra//tools/build_tools:configure_linker_flags.sh)"',
++        '"$$EXT_BUILD_ROOT$$/$(execpath @sonic_build_infra//tools/build_tools:configure_environment.sh)"',
++        '"$$EXT_BUILD_ROOT$$/$(execpath @sonic_build_infra//tools/build_tools:foreign_runtime)/bin/python3"',
++    ]),
+     deps = [
+         "@dash_deps//libgrpc++-dev:libgrpc++",
+         "@dash_deps//libprotobuf-dev:libprotobuf",

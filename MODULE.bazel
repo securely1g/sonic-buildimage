@@ -267,6 +267,7 @@ single_version_override(
     patches = [
         "//tools/bazel:0002-sonic-build-infra-configure-includes.patch",
         "//tools/bazel:0003-sonic-build-infra-configure-preprocessor.patch",
+        "//tools/bazel:0005-sonic-build-infra-linker-vector.patch",
     ],
     patch_strip = 1,
 )
@@ -276,6 +277,15 @@ single_version_override(
     module_name = "p4lang-bmv2",
     version = "1.15.0.sonic.2",
     patches = ["//tools/bazel:0004-p4lang-bmv2-configure-preprocessor.patch"],
+    patch_strip = 1,
+)
+
+# Keep recursive Make's exported flags below the process limit without changing
+# DASH's source version or its dependency and image-lock requirements.
+single_version_override(
+    module_name = "sonic-dash",
+    version = "0.0.2-5c9305403585a7ae54f86918219acb8ed39f740a",
+    patches = ["//tools/bazel:0006-sonic-dash-recursive-flags.patch"],
     patch_strip = 1,
 )
 
