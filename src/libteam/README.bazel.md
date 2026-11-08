@@ -10,7 +10,7 @@ programs, runtime/debug TARs, development TAR and package metadata are aliases
 to the shared module. SWSS keeps its existing image-root labels; Teamd binds
 its package records to the shared module's actual MODULE file.
 
-The coherent review catalog `9f225754068d1253ca56d6d40a7c5b2bd9de35ac` retains
+The coherent review catalog `618c7279e814b858f803fd6b4891e99eedcb2400` retains
 the exact landed libteam entry added by parent catalog
 `04a71b7883384e995a5ae089e2b6f6a0601164de` from registry main
 `a1334b9a9604733a2faf6cc96536d289da09e8d8`. It also refreshes dependency metadata
@@ -18,7 +18,7 @@ and documentation for the existing `net-snmp@5.9.3.sonic.1` registration; that
 module's version, source archives, patches and TAR/test contract are unchanged.
 The libteam and Net-SNMP contracts remain unchanged. The root now selects
 `p4lang-pi@0.1.3.sonic.3`,
-`sonic-build-infra@0.0.28-f5f3f20e0735e5048cc5c82b0a36e02219d2a1c2`,
+`sonic-build-infra@0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0`,
 `rules_distroless@0.9.4.sonic.18` and `tar.bzl@0.10.5.sonic.2`. Combined image
 validation of this selection remains pending. The composition is a review
 input, not a claim that every other image prerequisite has landed.
