@@ -4,6 +4,7 @@
 import json
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -354,6 +355,23 @@ selection:
         self.assertTrue((cache / 'repository_cache').is_dir())
         self.assertTrue((cache / 'disk_cache').is_dir())
         self.assertFalse((self.root / 'SHOULD_NOT_EXIST').exists())
+
+    def test_native_workflow_supplies_verified_p4_sources_to_build_and_query(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        native = workflow.split("\n  vs_container:\n", 1)[1]
+        options = re.search(r"(?m)^      BAZEL_CONTAINER_ARGS: >-\n((?:        .*\n)+)", native)
+        self.assertIsNotNone(options)
+        arguments = " ".join(line.strip() for line in options[1].splitlines())
+        self.assert_success(self.run_make(environment={
+            "BAZEL_CONTAINER_ARGS": arguments, "BAZEL_CONTAINER_CACHE_DIR": "",
+        }))
+        calls = self.recorded_calls()
+        self.assertEqual([call["arguments"][0] for call in calls], ["build", "cquery"])
+        for call in calls:
+            args = call["arguments"]
+            self.assertIn("--distdir=/sonic/artifacts/vs/p4-source-inputs/sources", args)
+            for flag in ("--repository_cache=", "--disk_cache="):
+                self.assertEqual([arg for arg in args if arg.startswith(flag)], [flag])
 
     def test_legacy_environment_fallback_and_explicit_new_overrides(self):
         """Retain legacy cache settings unless generic settings override them, including an
