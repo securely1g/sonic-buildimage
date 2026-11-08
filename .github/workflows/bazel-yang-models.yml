@@ -93,7 +93,9 @@ jobs:
           test ! -e MODULE.bazel.lock
           git check-ignore MODULE.bazel.lock
           registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
-          options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
+          # This standalone module does not read the image root's .bazelrc.user.
+          mirror="--experimental_downloader_config=$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update "$mirror")
           mkdir -p artifacts
           # The standalone module stays canonical; the image root needs libteam's Draft entries.
           (cd ../.. && tools/bazel/ci/libteam_draft_bazel.sh cquery --lockfile_mode=update \
@@ -102,6 +104,7 @@ jobs:
           uname -m > artifacts/execution-machine.txt
           python3 ../../tools/bazel/ci/bazel_commands.py --output artifacts/action-audit.json \
             --bazel-arg="--registry=$registry" --bazel-arg=--registry=https://bcr.bazel.build \
+            --bazel-arg="$mirror" \
             //:yang_models_package_test //:yang_models_wheel //:yang_models_pkg
           bazel test "${options[@]}" --test_output=all //:yang_models_package_test
           bazel build "${options[@]}" //:yang_models_wheel //:yang_models_pkg
