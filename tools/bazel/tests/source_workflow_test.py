@@ -596,6 +596,175 @@ class SourceWorkflowTest(unittest.TestCase):
                     self.assertEqual(len(analyses), int(dash and not source_exit and not make_exit))
                     self.assertFalse(any(call["name"] == "rm" or "clean" in call["args"] for call in calls))
 
+class RootLockFailureEvidenceTest(unittest.TestCase):
+    """Execute the actual two evidence snippets without a build or resolver."""
+
+    def snippets(self):
+        native = (ROOT / '.github/workflows/bazel-swss-native.yml').read_text()
+        cases = (
+            (steps(native)['Prepare public validation evidence'], 'artifacts',
+             'build-test-summary.json', "steps.public.outcome == 'success'", native),
+            (steps(jobs()['swss_layer_native'])['Prepare shared SWSS image evidence'],
+             'artifacts/swss-layer', 'build-summary.json',
+             "steps.swss_layer_public.outcome == 'success'", jobs()['swss_layer_native']),
+        )
+        for step, destination, summary, gate, workflow in cases:
+            self.assertIn('if: always()', step)
+            self.assertIn('if: always() && ' + gate, workflow)
+            script = shell(step).splitlines()
+            self.assertRegex(script[0], r"^python3 - <<'PY(?:CODE)?'$")
+            self.assertIn(script[-1], ('PY', 'PYCODE'))
+            yield '\n'.join(script[1:-1]), destination, summary
+
+    @staticmethod
+    def lock(**extra):
+        return {'lockFileVersion': 13, 'registryFileHashes': {}, 'moduleExtensions': {}, **extra}
+
+    def execute(self, code, workspace):
+        import contextlib
+        import io
+        import socket
+        from unittest import mock
+        output = io.StringIO()
+        previous = Path.cwd()
+        try:
+            os.chdir(workspace)
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output), \
+                    mock.patch.object(subprocess, 'Popen', side_effect=AssertionError('process denied')), \
+                    mock.patch.object(os, 'system', side_effect=AssertionError('process denied')), \
+                    mock.patch.object(socket, 'create_connection', side_effect=AssertionError('network denied')), \
+                    mock.patch.object(socket.socket, 'connect', side_effect=AssertionError('network denied')):
+                try:
+                    exec(compile(code, '<actual-public-evidence-step>', 'exec'), {'__name__': '__main__'})
+                except SystemExit as error:
+                    return str(error), output.getvalue()
+            return None, output.getvalue()
+        finally:
+            os.chdir(previous)
+
+    def rejected(self, code, workspace, destination):
+        error, output = self.execute(code, workspace)
+        self.assertEqual(error, 'Root module lock is not safe to publish')
+        self.assertEqual(output, '')
+        self.assertFalse((workspace / destination / 'MODULE.bazel.lock').exists())
+
+    def test_missing_root_preserves_summaries_and_existing_safe_evidence(self):
+        for code, destination, summary in self.snippets():
+            for old_lock in (False, True):
+                with self.subTest(destination=destination, old_lock=old_lock), tempfile.TemporaryDirectory() as temp:
+                    workspace = Path(temp)
+                    folder = workspace / destination
+                    folder.mkdir(parents=True)
+                    receipt = b'{"files": [], "status": "verified"}\n'
+                    (folder / 'rules-cc-source.json').write_bytes(receipt)
+                    (folder / 'receipt.json').write_text('{"status":"failed","architecture":"amd64","argv":["private"]}')
+                    value = json.dumps(self.lock()).encode()
+                    if old_lock:
+                        (folder / 'MODULE.bazel.lock').write_bytes(value)
+                    self.assertEqual(self.execute(code, workspace), (None, ''))
+                    self.assertEqual(json.loads((folder / summary).read_text()), {})
+                    self.assertEqual((folder / 'rules-cc-source.json').read_bytes(), receipt)
+                    self.assertEqual((folder / 'MODULE.bazel.lock').exists(), old_lock)
+                    if old_lock:
+                        self.assertEqual((folder / 'MODULE.bazel.lock').read_bytes(), value)
+                    if destination.endswith('swss-layer'):
+                        self.assertEqual(json.loads((folder / 'public-receipt.json').read_text()),
+                                         {'status': 'failed', 'architecture': 'amd64'})
+
+    def test_valid_root_is_copied_byte_exactly_without_modifying_it(self):
+        value = b' { "lockFileVersion": 13, "registryFileHashes": {}, "moduleExtensions": {} }\n\n'
+        for code, destination, _ in self.snippets():
+            with self.subTest(destination=destination), tempfile.TemporaryDirectory() as temp:
+                workspace = Path(temp)
+                source = workspace / 'MODULE.bazel.lock'
+                source.write_bytes(value)
+                folder = workspace / destination
+                folder.mkdir(parents=True)
+                (folder / source.name).write_bytes(json.dumps(self.lock(facts={'old': True})).encode())
+                self.assertEqual(self.execute(code, workspace), (None, ''))
+                self.assertEqual(source.read_bytes(), value)
+                self.assertEqual((folder / source.name).read_bytes(), value)
+                self.assertFalse(list(folder.glob('.module-lock-*')))
+
+    def test_invalid_or_private_root_never_becomes_public(self):
+        values = [
+            b'{"invalid-private-sentinel":',
+            b'{"lockFileVersion":13,"lockFileVersion":13,"registryFileHashes":{},"moduleExtensions":{}}',
+            json.dumps(self.lock(facts={'value': float('nan')})).encode(),
+            json.dumps({'private-sentinel': 'invalid schema'}).encode(),
+            json.dumps(self.lock(facts={'authorization': 'private-sentinel'})).encode(),
+            json.dumps(self.lock(facts={'value': 'ghp_' + 'A' * 30})).encode(),
+            json.dumps(self.lock(facts={'envVariables': {'secret': 'private-sentinel'}})).encode(),
+            json.dumps(self.lock(facts={'value': '/home/fixture/.cache/private-sentinel'})).encode(),
+            json.dumps(self.lock(facts={'value': 'https://user:private-sentinel@example.invalid/input'})).encode(),
+            json.dumps(self.lock(facts={'value': 'https://example.invalid/input?token=private-sentinel'})).encode(),
+        ]
+        for code, destination, _ in self.snippets():
+            for number, value in enumerate(values):
+                with self.subTest(destination=destination, case=number), tempfile.TemporaryDirectory() as temp:
+                    workspace = Path(temp)
+                    (workspace / 'MODULE.bazel.lock').write_bytes(value)
+                    self.rejected(code, workspace, destination)
+
+    def test_source_types_and_actual_size_limit_fail_before_copy(self):
+        for code, destination, _ in self.snippets():
+            for kind in ('symlink', 'directory', 'fifo', 'oversized'):
+                with self.subTest(destination=destination, kind=kind), tempfile.TemporaryDirectory() as temp:
+                    workspace = Path(temp)
+                    source = workspace / 'MODULE.bazel.lock'
+                    if kind == 'symlink':
+                        (workspace / 'other').write_text(json.dumps(self.lock()))
+                        source.symlink_to('other')
+                    elif kind == 'directory':
+                        source.mkdir()
+                    elif kind == 'fifo':
+                        os.mkfifo(source)
+                    else:
+                        with source.open('wb') as stream:
+                            stream.truncate(128 * 1024 * 1024 + 1)
+                    self.rejected(code, workspace, destination)
+
+    def test_destination_symlinks_and_nonfiles_are_rejected_without_writes(self):
+        for code, destination, _ in self.snippets():
+            for kind in ('file-link', 'parent-link', 'directory'):
+                with self.subTest(destination=destination, kind=kind), tempfile.TemporaryDirectory() as temp:
+                    workspace = Path(temp)
+                    (workspace / 'MODULE.bazel.lock').write_text(json.dumps(self.lock()))
+                    outside = workspace / 'outside'
+                    outside.mkdir()
+                    sentinel = outside / 'sentinel'
+                    sentinel.write_bytes(b'unchanged')
+                    folder = workspace / destination
+                    if kind == 'parent-link':
+                        (workspace / 'artifacts').symlink_to(outside, target_is_directory=True)
+                    else:
+                        folder.mkdir(parents=True)
+                        if kind == 'file-link':
+                            (folder / 'MODULE.bazel.lock').symlink_to(sentinel)
+                        else:
+                            (folder / 'MODULE.bazel.lock').mkdir()
+                    error, output = self.execute(code, workspace)
+                    self.assertEqual((error, output), ('Root module lock is not safe to publish', ''))
+                    self.assertEqual(sentinel.read_bytes(), b'unchanged')
+                    self.assertEqual(sorted(p.name for p in outside.iterdir()), ['sentinel'])
+
+    def test_changed_root_is_rejected_after_validation(self):
+        from unittest import mock
+        from tools.bazel.ci import public_artifacts
+        validate = public_artifacts.dependency_json
+        for code, destination, _ in self.snippets():
+            with self.subTest(destination=destination), tempfile.TemporaryDirectory() as temp:
+                workspace = Path(temp)
+                source = workspace / 'MODULE.bazel.lock'
+                source.write_text(json.dumps(self.lock()))
+
+                def change_after_validation(value, kind):
+                    validate(value, kind)
+                    source.write_bytes(source.read_bytes() + b' ')
+
+                with mock.patch.object(public_artifacts, 'dependency_json', side_effect=change_after_validation):
+                    self.rejected(code, workspace, destination)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -771,10 +771,46 @@ jobs:
         if: always()
         run: |
           python3 - <<'PY'
-          import json
+          import json, os, stat, tempfile
           from pathlib import Path
-          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary, load_json
           root = Path('artifacts/swss-layer')
+          # Preserve an already-generated lock even when the first analysis failed.
+          source = Path('MODULE.bazel.lock')
+          temporary = None
+          try:
+              destination = root / source.name
+              for parent in (root, *root.parents):
+                  if parent.is_symlink():
+                      raise ValueError
+              if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+                  raise ValueError
+              if source.exists() or source.is_symlink():
+                  identity = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                                           info.st_mtime_ns, info.st_ctime_ns)
+                  before = source.lstat()
+                  maximum = 128 * 1024 * 1024
+                  if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+                      raise ValueError
+                  with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+                      if identity(os.fstat(stream.fileno())) != identity(before):
+                          raise ValueError
+                      data = stream.read(maximum + 1)
+                      if len(data) != before.st_size or identity(os.fstat(stream.fileno())) != identity(before):
+                          raise ValueError
+                  dependency_json(load_json(data), 'lock')
+                  if identity(source.lstat()) != identity(before):
+                      raise ValueError
+                  root.mkdir(parents=True, exist_ok=True)
+                  with tempfile.NamedTemporaryFile(dir=root, prefix='.module-lock-', delete=False) as stream:
+                      temporary = Path(stream.name)
+                      stream.write(data)
+                  temporary.replace(destination)
+          except Exception:
+              raise SystemExit('Root module lock is not safe to publish') from None
+          finally:
+              if temporary is not None:
+                  temporary.unlink(missing_ok=True)
           root.mkdir(parents=True, exist_ok=True)
           if (root / 'receipt.json').exists():
               receipt = json.loads((root / 'receipt.json').read_text())
