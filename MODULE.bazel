@@ -18,8 +18,8 @@ bazel_dep(name = "platforms", version = "1.1.0")
 # P4 producers retain their upstream Make/configure builds and export TARs.
 bazel_dep(name = "p4lang-pi", version = "0.1.3.sonic.3", repo_name = "p4lang_pi")
 bazel_dep(name = "p4lang-bmv2", version = "1.15.0.sonic.3", repo_name = "p4lang_bmv2")
-bazel_dep(name = "p4c", version = "1.2.4.2.sonic.2")
-bazel_dep(name = "sonic-dash", version = "0.0.2-5c9305403585a7ae54f86918219acb8ed39f740a", repo_name = "sonic_dash")
+bazel_dep(name = "p4c", version = "1.2.4.2.sonic.3")
+bazel_dep(name = "sonic-dash", version = "0.0.3-3bd0d9cdcaf6b527dcbe6e79f21331a6059d94df", repo_name = "sonic_dash")
 
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
@@ -46,7 +46,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0",
+    version = "0.0.28-58112470001b1c450fd9e859079e92c62c236242",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -94,7 +94,7 @@ single_version_override(
 
 single_version_override(
     module_name = "tar.bzl",
-    version = "0.10.5-sonic.1",
+    version = "0.10.5.sonic.2",
 )
 
 single_version_override(
@@ -262,27 +262,27 @@ bazel_dep(name = "sonic-fips", version = "0.0.6-b7a5b1903d0a6bf11fd5283bd6eaba0c
 archive_override(
     module_name = "sonic-build-infra",
     urls = [
-        "https://github.com/securely1g/sonic-build-infra/archive/91047b9df85b8172e60084fd2722a62c39d79be0.tar.gz"
+        "https://github.com/securely1g/sonic-build-infra/archive/58112470001b1c450fd9e859079e92c62c236242.tar.gz"
     ],
-    integrity = "sha256-I4D6d1kvX+IkhtBbwLDQ9K83sNQLhmVA23bH1+TO/CE=",
-    strip_prefix = "sonic-build-infra-91047b9df85b8172e60084fd2722a62c39d79be0",
+    integrity = "sha256-Kuq0CcHSuyvBYZdSAEc4XUJOpAKyQRj3VfZ7/ndG6KA=",
+    strip_prefix = "sonic-build-infra-58112470001b1c450fd9e859079e92c62c236242",
     remote_patches = {
-        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/34448f24b7c170b3d0c2782d244129562596c2a2/modules/sonic-build-infra/0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0/patches/0001-bump-version.patch": "sha256-Mi2zyAlBLNiLeRi+dCxYPEp50UZYmrsrMaIIHyciY/s=",
-        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/34448f24b7c170b3d0c2782d244129562596c2a2/modules/sonic-build-infra/0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0/patches/0002-registry-cross-test-visibility.patch": "sha256-2+0NUZ9mcSHEHa+PIU3NVGG8uFBEgaA8LC9wDkg+GrY="
+        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/patches/0001-bump-version.patch": "sha256-M7p+jmmZqMk7jKVwAst8k58E2GPxZHtprw9WqFW3d9M=",
+        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/patches/0002-registry-cross-test-visibility.patch": "sha256-2+0NUZ9mcSHEHa+PIU3NVGG8uFBEgaA8LC9wDkg+GrY="
     },
     remote_patch_strip = 1,
     remote_file_urls = {
         "registry_ci/BUILD.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/34448f24b7c170b3d0c2782d244129562596c2a2/modules/sonic-build-infra/0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0/overlay/registry_ci/BUILD.bazel"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/BUILD.bazel"
         ],
         "registry_ci/kernel_tools_test.py": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/34448f24b7c170b3d0c2782d244129562596c2a2/modules/sonic-build-infra/0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0/overlay/registry_ci/kernel_tools_test.py"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/kernel_tools_test.py"
         ],
         "registry_ci/prefix_map.c": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/34448f24b7c170b3d0c2782d244129562596c2a2/modules/sonic-build-infra/0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0/overlay/registry_ci/prefix_map.c"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/prefix_map.c"
         ],
         "registry_ci/prefix_map_test.py": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/34448f24b7c170b3d0c2782d244129562596c2a2/modules/sonic-build-infra/0.0.28-91047b9df85b8172e60084fd2722a62c39d79be0/overlay/registry_ci/prefix_map_test.py"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/prefix_map_test.py"
         ]
     },
     remote_file_integrity = {
@@ -304,42 +304,42 @@ archive_override(
     type = "tar.gz",
     remote_file_urls = {
         "BUILD.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/BUILD.bazel"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/BUILD.bazel"
         ],
         "MODULE.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/MODULE.bazel"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/MODULE.bazel"
         ],
         "bazel/runtime_test.py": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/runtime_test.py"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/runtime_test.py"
         ],
         "bazel/sdk_test.cc": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/sdk_test.cc"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/sdk_test.cc"
         ],
         "bazel/runtime.bzl": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/runtime.bzl"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/runtime.bzl"
         ],
         "bazel/BUILD.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/BUILD.bazel"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/BUILD.bazel"
         ],
         "bazel/configure.sh": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/configure.sh"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/configure.sh"
         ],
         "bazel/source.bzl": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/source.bzl"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/source.bzl"
         ],
         "bazel/pi.BUILD.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/pi.BUILD.bazel"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/pi.BUILD.bazel"
         ],
         "runtime_packages.md": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/runtime_packages.md"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/runtime_packages.md"
         ],
         "bazel/cross-configure.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e02d9751419da7a90d86fb62ea2b4d232665e27e/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/cross-configure.patch"
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/93a54705a6fc1b8a369157cdc7aca78f0f8c1f9a/modules/p4lang-pi/0.1.3.sonic.3/overlay/bazel/cross-configure.patch"
         ]
     },
     remote_file_integrity = {
         "BUILD.bazel": "sha256-9ONS+vsL9ViH8JL05+9ZSbIaXpbvP+JT8ojBPsLTIks=",
-        "MODULE.bazel": "sha256-cpwDHOyxRXsoSRWH+iBnKTU5YdAj5WmXaZyS+qVpbKA=",
+        "MODULE.bazel": "sha256-a3SpMXcXeQ3Jf+CCo5tHYkeFo2KeffLz1bgNq6elLgM=",
         "bazel/runtime_test.py": "sha256-c8qTLTAYNzu1WgxdAv1eLnkFaB4/n/NedTthXiAdmB4=",
         "bazel/sdk_test.cc": "sha256-8Xhj1/JvO/BymtyugoLpzUd1mg7iCcL5FQMia9xvqhY=",
         "bazel/runtime.bzl": "sha256-lYcQjDWBbT9m1LilP3YGTXbml633irlcTPPBhDBXFw4=",
@@ -350,6 +350,114 @@ archive_override(
         "runtime_packages.md": "sha256-qAWXsYsO8tj5EjkQ+FkG+k1eZ/anv43cFJJHKv4F5b8=",
         "bazel/cross-configure.patch": "sha256-lFPVqqpRu5qqCQCEhLeC+9+Z4Fo7FMYfWg/oEwz16qk="
     },
+)
+
+# Draft validation of registry #276: reuse the complete P4C .3 recipe.
+# Remove after publication, then verify normal main-registry resolution.
+archive_override(
+    module_name = "p4c",
+    urls = [
+        "https://codeload.github.com/p4lang/p4c/tar.gz/624c6be8076881e9af1e2f7d7691bc6c4416f4b1"
+    ],
+    integrity = "sha256-hnGpC27CUr3n9SL0tp+FLmsehx5w3444FfgtrPtuk5Q=",
+    strip_prefix = "p4c-624c6be8076881e9af1e2f7d7691bc6c4416f4b1",
+    type = "tar.gz",
+    remote_file_urls = {
+        "BUILD.bazel": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/BUILD.bazel"
+        ],
+        "MODULE.bazel": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/MODULE.bazel"
+        ],
+        "bazel/0001-native-protoc.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0001-native-protoc.patch"
+        ],
+        "bazel/0002-use-boost-1.83.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0002-use-boost-1.83.patch"
+        ],
+        "bazel/0003-fix-build-for-boost-1.83.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0003-fix-build-for-boost-1.83.patch"
+        ],
+        "bazel/0004-update-thrift-dependency.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0004-update-thrift-dependency.patch"
+        ],
+        "bazel/0005-remove-protobuf-from-debian-dependency.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0005-remove-protobuf-from-debian-dependency.patch"
+        ],
+        "bazel/0006-remove-scapy-from-debian-dependency.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0006-remove-scapy-from-debian-dependency.patch"
+        ],
+        "bazel/foreign.cmake": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/foreign.cmake"
+        ],
+        "bazel/p4c.BUILD.bazel": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/p4c.BUILD.bazel"
+        ],
+        "bazel/package_test.py": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/package_test.py"
+        ],
+        "bazel/python.py": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/python.py"
+        ],
+        "bazel/runtime.bzl": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/runtime.bzl"
+        ],
+        "bazel/source.bzl": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/source.bzl"
+        ],
+        "bazel/tool.bzl": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/tool.bzl"
+        ],
+        "runtime_packages.md": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/runtime_packages.md"
+        ],
+        "bazel/0007-cross-kernel-version.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0007-cross-kernel-version.patch"
+        ],
+        "bazel/codegen.bzl": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/codegen.bzl"
+        ],
+        "bazel/0008-execution-platform-ir-generator.patch": [
+            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0008-execution-platform-ir-generator.patch"
+        ]
+    },
+    remote_file_integrity = {
+        "BUILD.bazel": "sha256-Ogui7jU6GIwuPZFRsxWarLejWoYdzgDo3w0XHbQIhx0=",
+        "MODULE.bazel": "sha256-oDn64ivFQt8a1hCSsW+3O0HaBbA5lVW9HIQtC9XXeIg=",
+        "bazel/0001-native-protoc.patch": "sha256-qlJafmRxKJxhJVnFMfRgE2gxeMzuRi1g5k/4vYCVFts=",
+        "bazel/0002-use-boost-1.83.patch": "sha256-S7mHEysJW4XvI+uW2xzQ7A/hz1iN1H+4+zvILwyOG3s=",
+        "bazel/0003-fix-build-for-boost-1.83.patch": "sha256-lIir3S1os2V47iAljZNqEOp0TSG18yiDsBmDDQu9obM=",
+        "bazel/0004-update-thrift-dependency.patch": "sha256-o1tKrVH4aQhq42whdit69M4IZNUpCRiEAlToyqsMmAQ=",
+        "bazel/0005-remove-protobuf-from-debian-dependency.patch": "sha256-YTZk6iagtgMuLRzm4fQvzCW9rzViB6YFbzetpBTHUoA=",
+        "bazel/0006-remove-scapy-from-debian-dependency.patch": "sha256-Wl0MCiaXaXZv5P/tlT5wGyPG40aUYfGIVE+iLo9FZU0=",
+        "bazel/foreign.cmake": "sha256-SKGIy2YCZqUoe+57OnScWX4VDzrazlvT7xiFdy2rcS8=",
+        "bazel/p4c.BUILD.bazel": "sha256-KDj8JELl4T86CGMyucT48Ow2qXZEYfQRE28y+Mr+lFg=",
+        "bazel/package_test.py": "sha256-rXroyBbKy3+QNMElI5vl7jxMqT9OPYs2rzH2eC5s14o=",
+        "bazel/python.py": "sha256-Q9tldxy5/kZLxbaivZ5I+Tc5hpkE1UtRD4SCwJZvWvw=",
+        "bazel/runtime.bzl": "sha256-I3E0JcwjIVvafvGzZ0gu3Ps6bqonqWeHMlfVPVBEuYQ=",
+        "bazel/source.bzl": "sha256-A1itwaCAU/O74W8mXyEDzQSFKKdoj4+bSvVjXDvFN5g=",
+        "bazel/tool.bzl": "sha256-SD0REg4lIZ0vGQzw5+4ERygD5fYcfwuk6uMBiUIVRzc=",
+        "runtime_packages.md": "sha256-pcAPU9KpYouH5brGxYGV6zaRxRhCDQwi74BBbjCBbs4=",
+        "bazel/0007-cross-kernel-version.patch": "sha256-Xu6NtFnfMd4uvPt2YwuxB/jTxHmKLhxG/N9iDbfs74s=",
+        "bazel/codegen.bzl": "sha256-Y4z6sg+ddjp3Jl0IybAohnuwhp5RgtRJI4sqXUC+fXc=",
+        "bazel/0008-execution-platform-ir-generator.patch": "sha256-E4HvZt501SjEidJDwE4YJhv0N3ligxGVkc9Fdyd8BLk="
+    },
+)
+
+# Draft validation of registry #215: transport DASH compiler/linker flags.
+# Remove after publication, then verify normal main-registry resolution.
+archive_override(
+    module_name = "sonic-dash",
+    urls = [
+        "https://codeload.github.com/securely1g/DASH/tar.gz/3bd0d9cdcaf6b527dcbe6e79f21331a6059d94df"
+    ],
+    integrity = "sha256-jw9dBYyAy8TSFcQRCMpQ1x2ClXt35lXjmK1MqjzEW20=",
+    strip_prefix = "DASH-3bd0d9cdcaf6b527dcbe6e79f21331a6059d94df",
+    type = "tar.gz",
+    remote_patches = {
+        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/73a61db93b527b7b37818f3ba065e63116846438/modules/sonic-dash/0.0.3-3bd0d9cdcaf6b527dcbe6e79f21331a6059d94df/patches/0001-set-registry-module.patch": "sha256-kWS6G7j7+k16YdMVDzw3D9VvjrVUe5qpHPY+JqOhijQ="
+    },
+    remote_patch_strip = 1,
 )
 
 # Bind image receipts to the modules that Bazel actually selected.
