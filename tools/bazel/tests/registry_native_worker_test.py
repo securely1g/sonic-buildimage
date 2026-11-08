@@ -74,7 +74,7 @@ class RegistryWorkerTest(unittest.TestCase):
             posonlyargs=[],args=[],kwonlyargs=[],kw_defaults=[],defaults=[]),
             body=[copy.deepcopy(branch)],decorator_list=[])],type_ignores=[])
         code=compile(ast.fix_missing_locations(module),'<actual-registry-mirror-delegation>','exec')
-        original=(ROOT/'tools/bazel/tests/fixtures/source-mirrors-d50f730c.cfg').read_bytes()
+        original=(ROOT/'tools/bazel/tests/fixtures/source-mirrors-3a7e32d0.cfg').read_bytes()
         for corrupt,private_root in [(False,''),(False,'https://fixture.example.invalid/debian/'),(True,'')]:
             with self.subTest(corrupt=corrupt,private=bool(private_root)),tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary);artifacts=root/'artifacts';artifacts.mkdir()
@@ -377,7 +377,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(checkouts[1]['with']['repository'],'securely1g/sonic-bazel-registry')
         self.assertEqual(checkouts[1]['with']['ref'],'c41c7baf15307ad1c8f94d5dca511ef952d28729')
         self.assertEqual(checkouts[2]['with']['repository'],'securely1g/sonic-bazel-registry')
-        self.assertEqual(checkouts[2]['with']['ref'],'d50f730c4f1d8d334d6b5062238d8d33934a2bbd')
+        self.assertEqual(checkouts[2]['with']['ref'],'3a7e32d09e511735f36a47b276d6524cf9c2a5c4')
         self.assertEqual(checkouts[2]['with']['path'],'control/bazel-public-inputs')
         self.assertIs(checkouts[2]['with']['sparse-checkout-cone-mode'],False)
         self.assertEqual(checkouts[2]['with']['sparse-checkout'],'ci/source_mirrors.cfg')

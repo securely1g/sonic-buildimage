@@ -89,7 +89,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          ref: 3a7e32d09e511735f36a47b276d6524cf9c2a5c4
           path: control/bazel-public-inputs
           sparse-checkout: ci/source_mirrors.cfg
           sparse-checkout-cone-mode: false
@@ -186,7 +186,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          ref: 3a7e32d09e511735f36a47b276d6524cf9c2a5c4
           path: bazel-public-inputs
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -247,7 +247,7 @@ jobs:
           safe_json(receipt)
           print(json.dumps(receipt, sort_keys=True))
           data = Path("bazel-public-inputs/ci/source_mirrors.cfg").read_bytes()
-          if hashlib.sha256(data).hexdigest() != "1a2bc2ac4c1b4f11217d0f86523f9c25ae1b7601b0f3626aa145968c44627246":
+          if hashlib.sha256(data).hexdigest() != "38192a1561fac945a22474f1f10f29397d3164974e6f6b1e71de7c4748088f96":
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = temporary / "source-input-mirrors.cfg"
           config.write_bytes(data)
@@ -335,7 +335,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
+          ref: 3a7e32d09e511735f36a47b276d6524cf9c2a5c4
           path: ${{ env.SOURCE_WORKER_CONTROL }}/bazel-public-inputs
           sparse-checkout-cone-mode: false
           sparse-checkout: |
