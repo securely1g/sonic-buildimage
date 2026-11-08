@@ -624,7 +624,7 @@ source_modules(
 # The gNMI and schema owners supply direct runtime TARs; the image adds only
 # its original startup/configuration files and pinned external dependencies.
 bazel_dep(name = "sonic-gnmi", version = "0.1.0-ce49e93eb3a0cff8daf77a3092535d76265ebc3d", repo_name = "sonic_gnmi")
-bazel_dep(name = "sonic-mgmt-common", version = "1.0.0-71eb5f710b5347ca0510ee8e3f5294a7c64bb744", repo_name = "sonic_mgmt_common")
+bazel_dep(name = "sonic-mgmt-common", version = "1.0.1-05f83dcab8fe2e1a0e0fc37ac172b289d6968e2b", repo_name = "sonic_mgmt_common")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "openconfig_goyang", version = "0.0.0.sonic.1-20200309174518-a00bece872fc", repo_name = "com_github_openconfig_goyang")
 bazel_dep(name = "openconfig_ygot", version = "0.7.1.sonic.1", repo_name = "com_github_openconfig_ygot")
@@ -705,11 +705,6 @@ go_patches.module_override(
     patch_strip = 1,
     patches = ["@sonic_gnmi//patches/bazel:0008-pam-build.patch"],
     path = "github.com/msteinert/pam",
-)
-
-single_version_override(
-    module_name = "sonic-mgmt-common",
-    version = "1.0.0-71eb5f710b5347ca0510ee8e3f5294a7c64bb744",
 )
 
 # P4RT retains its source-owned Bazel 6 build. The explicit preparation step

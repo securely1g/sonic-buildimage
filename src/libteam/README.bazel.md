@@ -10,7 +10,7 @@ programs, runtime/debug TARs, development TAR and package metadata are aliases
 to the shared module. SWSS keeps its existing image-root labels; Teamd binds
 its package records to the shared module's actual MODULE file.
 
-The coherent review catalog `d732010ffb76ee857b4a906f3648bf51e7aa57ae` retains
+The coherent review catalog `ade59395fe876f7bed63d27c6330faf3c6848f72` retains
 the exact landed libteam entry added by parent catalog
 `04a71b7883384e995a5ae089e2b6f6a0601164de` from registry main
 `a1334b9a9604733a2faf6cc96536d289da09e8d8`. It also refreshes dependency metadata
