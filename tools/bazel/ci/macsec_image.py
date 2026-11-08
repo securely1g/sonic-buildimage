@@ -22,6 +22,7 @@ OWNER = "//dockers/docker-macsec:"
 IMAGES = ("docker-macsec", "docker-macsec-dbg")
 BASE = "//dockers/docker-swss-layer-trixie:docker-swss-layer-trixie"
 OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=8000",
+           "--experimental_ui_max_stdouterr_bytes=4194304",
            "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
            "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
 TARGETS = {
