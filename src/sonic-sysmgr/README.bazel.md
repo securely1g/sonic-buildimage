@@ -7,30 +7,53 @@ for a separate `docker-sysmgr` integration. The selected native
 configuration is AMD64 on Debian Trixie, without sanitizers. Existing Make,
 Debian packaging and sanitizer recipes remain available.
 
-## Build the current review branch
+## Prepare the build inputs
 
-Initialize the owner's protobuf inputs from the repository root:
+Initialize the owner's protobuf inputs from the repository root. Use the
+maintained registry's generic GitHub reader to prepare the locked Cosmos 4.0.2
+tools before running Bazel. It verifies every selected file's size and hash,
+reuses its download cache, and supplies Bazel's standard `--distdir`. This keeps
+the selected tool versions and bytes while avoiding a cold `cosmo.zip` download.
 
-```sh
+```bash
+set -euo pipefail
 git submodule update --init -- src/sonic-sysmgr/gnoi
-cd src/sonic-sysmgr
+inputs=$(mktemp -d "${TMPDIR:-/tmp}/sysmgr-github-inputs.XXXXXX")
+transport="https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/0f459395f8852b5c89e9895afeeea01b95b281ea/ci"
+curl --disable --fail --silent --show-error --proto '=https' --connect-timeout 20 --max-time 60 \
+  --output "$inputs/github_sources.py" "$transport/github_sources.py"
+curl --disable --fail --silent --show-error --proto '=https' --connect-timeout 20 --max-time 60 \
+  --output "$inputs/cosmos-4.0.2.json" "$transport/github_sources/cosmos-4.0.2.json"
+printf '%s  %s\n' \
+  9c1ad2a9548608d06e49de0c9c119ae19d97ab95cca2505fc1e7e233e62e9b3d "$inputs/github_sources.py" \
+  1579ad34288945a28a2d77f96f4764b8910dd3d856d688971e46e63e58119af5 "$inputs/cosmos-4.0.2.json" \
+  | sha256sum --check --strict
+python3 -B "$inputs/github_sources.py" \
+  --manifest "$inputs/cosmos-4.0.2.json" \
+  --distdir "$inputs/distdir" \
+  --cache-dir "$HOME/.cache/sonic-github-sources" \
+  --receipt "$inputs/github-sources.json"
+printf 'common --distdir=%s\n' "$inputs/distdir" > "$inputs/downloads.bazelrc"
 ```
 
-The review currently needs unmerged shared interfaces. Use its complete,
-immutable review registry followed by Bazel Central Registry:
+Stop if preparation fails. The manifest includes both architecture aliases as
+downloaded inputs; this module's validation remains AMD64. The first preparation
+may download the upstream GitHub release ZIP (about 403 MB); later preparations
+reuse verified files or the cached ZIP. `--distdir` supplies those inputs; it is
+not a general network restriction.
+
+## Build the source packages
+
+The module's `.bazelrc` selects the maintained SONiC registry and Bazel Central
+Registry. Add the prepared input directory through the same explicit startup RC
+used by CI:
 
 ```sh
-bazel --nosystem_rc --noworkspace_rc build \
-  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/b88af269424359f5d34017e4d95de09265b7a803 \
-  --registry=https://bcr.bazel.build/ \
-  --platforms=@sonic_build_infra//platforms:x86_64_trixie \
-  --compilation_mode=opt \
+cd src/sonic-sysmgr
+bazel --bazelrc="$inputs/downloads.bazelrc" build -c opt \
   //:sysmgr_pkg //:sysmgr_debug_pkg //:runtime_packages.json
 ```
 
-Once those registrations land, `.bazelrc` uses the maintained registry and BCR.
-Normal builds can then use
-`bazel build -c opt //:sysmgr_pkg //:sysmgr_debug_pkg //:runtime_packages.json`.
 Bazel generates the ignored `MODULE.bazel.lock`; CI retains it as evidence.
 
 | Public target | Installed contract |
@@ -58,11 +81,13 @@ and strict Linux sandboxing. Its test container permits nested user/mount/PID
 namespaces. The private Redis server and mock D-Bus service live inside those
 namespaces and use a private `/run` directory.
 
-From that environment, run the same driver from the repository root:
+After preparing the inputs above, run the same driver from the repository root
+in that environment. Its existing startup argument reaches the initial queries,
+the action audit, and all build/test commands, while retaining the home cache RC:
 
 ```sh
 python3 -B src/sonic-sysmgr/bazel/ci.py \
-  --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/b88af269424359f5d34017e4d95de09265b7a803 \
+  --startup-arg="--bazelrc=$inputs/downloads.bazelrc" \
   --artifacts artifacts/sysmgr
 ```
 

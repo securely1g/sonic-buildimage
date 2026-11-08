@@ -49,6 +49,28 @@ jobs:
           repository-cache: true
           disk-cache: sysmgr-amd64
           cache-version: "8.5.1"
+      - name: Prepare verified GitHub build inputs
+        run: |
+          set -euo pipefail
+          inputs="$RUNNER_TEMP/sysmgr-github-inputs"
+          mkdir -p "$inputs" artifacts/sysmgr
+          # Reuse the maintained reader and its locked Cosmos manifest.
+          transport="https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/0f459395f8852b5c89e9895afeeea01b95b281ea/ci"
+          curl --disable --fail --silent --show-error --proto '=https' --connect-timeout 20 --max-time 60 \
+            --output "$inputs/github_sources.py" "$transport/github_sources.py"
+          curl --disable --fail --silent --show-error --proto '=https' --connect-timeout 20 --max-time 60 \
+            --output "$inputs/cosmos-4.0.2.json" "$transport/github_sources/cosmos-4.0.2.json"
+          printf '%s  %s\n' \
+            9c1ad2a9548608d06e49de0c9c119ae19d97ab95cca2505fc1e7e233e62e9b3d "$inputs/github_sources.py" \
+            1579ad34288945a28a2d77f96f4764b8910dd3d856d688971e46e63e58119af5 "$inputs/cosmos-4.0.2.json" \
+            | sha256sum --check --strict
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/cosmos-4.0.2.json" \
+            --distdir "$inputs/distdir" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt "$PWD/artifacts/sysmgr/github-sources.json"
+          # The driver applies explicit startup RCs to query, audit and build.
+          printf 'common --distdir=%s\n' "$inputs/distdir" > "$inputs/downloads.bazelrc"
       - name: Audit, build and validate installed packages and original tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -56,6 +78,7 @@ jobs:
         run: |
           mkdir -p artifacts/sysmgr
           python3 -B src/sonic-sysmgr/bazel/ci.py \
+            --startup-arg="--bazelrc=$RUNNER_TEMP/sysmgr-github-inputs/downloads.bazelrc" \
             --artifacts artifacts/sysmgr 2>&1 | tee artifacts/sysmgr/ci.log
       - name: Upload packages, original XML and installed-package evidence
         if: always()
