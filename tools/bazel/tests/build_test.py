@@ -36,6 +36,9 @@ class BuildEvidenceTest(unittest.TestCase):
 import json, pathlib, sys
 args = sys.argv[1:]
 mode = pathlib.Path('mode').read_text()
+for arg in args:
+    if arg.startswith('--execution_log_json_file='):
+        pathlib.Path(arg.split('=', 1)[1]).write_text('initial spawn sentinel' if args[0] == 'build' else 'query clobbered log')
 labels = {self.targets!r}
 root = pathlib.Path({str(self.root / 'execution root')!r})
 def output_path(name):
@@ -112,6 +115,22 @@ else:
                 self.assertEqual(self.receipt['artifacts'], {})
                 self.assertEqual(len(self.receipt['commands']), 2)
                 self.assertIn('INFO: query diagnostic', (self.directory / 'telemetry.tar.query.log').read_text())
+
+    def test_archive_execution_log_is_build_only_and_survives_all_queries(self):
+        execution = self.directory / 'initial execution.json'
+        with contextlib.redirect_stdout(io.StringIO()):
+            build.collect_archives(self.workspace, self.directory, self.receipt, self.targets,
+                                   bazel=str(self.bazel), options=self.options, execution_log=execution)
+        commands = [command['argv'] for command in self.receipt['commands']]
+        flag = '--execution_log_json_file=' + str(execution)
+        self.assertEqual([command[1] for command in commands], ['build', 'cquery', 'cquery'])
+        self.assertIn(flag, commands[0])
+        self.assertTrue(all(flag not in command for command in commands[1:]))
+        self.assertEqual(execution.read_text(), 'initial spawn sentinel')
+        self.receipt = {'commands': []}
+        self.collect()
+        self.assertFalse(any(arg.startswith('--execution_log_json_file=')
+                             for command in self.receipt['commands'] for arg in command['argv']))
 
     def test_external_and_main_source_files_use_the_recorded_execution_root(self):
         """Export source filegroups without relying on generated-output symlinks."""
