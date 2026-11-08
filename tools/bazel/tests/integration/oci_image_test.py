@@ -382,6 +382,93 @@ class ValidateImageTest(unittest.TestCase):
         return subject.validate_images(self.root / "runtime.oci", self.root / "debug.oci", None, None,
             self.runtime_manifest, self.debug_manifest, self.root, policy=self.policy, **inputs)
 
+    def complete_receipted_layers(self):
+        """Compose an owned library with other payloads, retaining its independent receipt."""
+        # This fixture installs one real file; link semantics have independent
+        # package-contract tests and are not needed for the composition case.
+        for record in self.source_contract["packages"]:
+            record["required_paths"] = {name: kind for name, kind in record["required_paths"].items()
+                                        if kind != "symlink"}
+        self.source_contract_path.write_text(json.dumps(self.source_contract))
+        source = self.source_archives()
+        combined = io.BytesIO()
+        with tarfile.open(fileobj=combined, mode="w") as output:
+            for path in (self.runtime_payload, source["source_runtime_tar"]):
+                with tarfile.open(path) as archive:
+                    for member in archive:
+                        output.addfile(member, archive.extractfile(member) if member.isfile() else None)
+        self.runtime_payload.write_bytes(combined.getvalue())
+        self.debug_payload = source["source_debug_tar"]
+        inputs = self.complete_make_only_inputs(direct_layers=True)
+        self.policy["retained_source"] = "source"
+        receipt = json.loads(source["source_receipt"].read_bytes())
+        receipt["base_manifest_digest"] = subject.image(inputs["base_path"])[0]["digest"]
+        source["source_receipt"].write_text(json.dumps(receipt))
+        for variant in ("runtime", "debug"):
+            path = inputs[variant + "_apt_selection"]
+            selection = json.loads(path.read_bytes())
+            selection.update(variant=selection.pop("group"), skipped_source=selection.pop("skipped_retained"),
+                             skipped_make=[], make_manifest_sha256=None,
+                             source_receipt_sha256=subject.sha(source["source_receipt"]))
+            path.write_text(json.dumps(selection))
+        return {**inputs, **source, "source_contract_path": self.source_contract_path}
+
+    def test_direct_layers_keep_their_source_package_ownership_receipt(self):
+        """An aggregate layer can add files while preserving independently checked owner bytes."""
+        inputs = self.complete_receipted_layers()
+        result = self.validate_direct_images(inputs)
+        self.assertEqual(result["validation_mode"], "complete")
+        self.assertEqual(result["source_receipt_sha256"], subject.sha(inputs["source_receipt"]))
+        self.assertEqual(result["source_runtime_payload_entries"], 3)
+        self.assertEqual(result["archives"]["runtime"]["sha256"], subject.sha(inputs["runtime_archive"]))
+
+    def test_source_retaining_direct_layers_cannot_omit_their_receipt(self):
+        """Actual source policy must not fall back to the unreceipted direct-layer adapter."""
+        inputs = self.complete_make_only_inputs(direct_layers=True)
+        self.policy["retained_source"] = "source"
+        with self.assertRaisesRegex(ValueError, "cannot replace a required package receipt"):
+            self.validate_direct_images(inputs)
+
+    def test_direct_layers_cannot_replace_a_receipted_package(self):
+        """A valid receipt cannot be hidden by composing different bytes at its installed path."""
+        inputs = self.complete_receipted_layers()
+        replacement = self.root / "replacement.tar"
+        replacement.write_bytes(layer([("usr/lib/libexample.so.2.4.0", self.ssh_elf + b"changed", 0o755)]))
+        inputs["runtime_payload_layers"].append(replacement)
+        with self.assertRaisesRegex(ValueError, "declared layers change the receipted runtime payload"):
+            self.validate_direct_images(inputs)
+
+    def test_receipted_layers_bind_both_apt_selections_and_the_base(self):
+        """Runtime/debug APT must retain the same receipt prepared for this exact base."""
+        inputs = self.complete_receipted_layers()
+        for variant in ("runtime", "debug"):
+            path = inputs[variant + "_apt_selection"]
+            original = path.read_bytes()
+            selection = json.loads(original)
+            selection["source_receipt_sha256"] = "f" * 64
+            path.write_text(json.dumps(selection))
+            with self.subTest(variant=variant), self.assertRaisesRegex(ValueError, variant + " APT selection uses a different source receipt"):
+                self.validate_direct_images(inputs)
+            path.write_bytes(original)
+        receipt = json.loads(inputs["source_receipt"].read_bytes())
+        receipt["base_manifest_digest"] = "sha256:" + "f" * 64
+        inputs["source_receipt"].write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, "prepared for a different OCI base"):
+            self.validate_direct_images(inputs)
+
+    def test_receipted_direct_layers_bind_contract_and_archive(self):
+        """Owner metadata and the checked TAR remain mandatory even with exact image layers."""
+        inputs = self.complete_receipted_layers()
+        contract = inputs["source_contract_path"]
+        original = contract.read_bytes()
+        contract.write_bytes(original + b"\n")
+        with self.assertRaisesRegex(ValueError, "different reviewed contract"):
+            self.validate_direct_images(inputs)
+        contract.write_bytes(original)
+        inputs["source_runtime_tar"].write_bytes(inputs["source_runtime_tar"].read_bytes() + b"changed")
+        with self.assertRaisesRegex(ValueError, "archive hash differs"):
+            self.validate_direct_images(inputs)
+
     def test_complete_declared_source_layers_use_shared_image_and_archive_checks(self):
         inputs = self.complete_make_only_inputs(direct_layers=True)
         result = self.validate_direct_images(inputs)

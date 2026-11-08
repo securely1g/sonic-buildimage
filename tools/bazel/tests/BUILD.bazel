@@ -1193,8 +1193,8 @@ py_test(
     deps = ["//tools/bazel/oci:source_contract_lib"],
 )
 
-# The source-only owner has no Make package receipt. The common image validator
-# instead binds its exact declared native/configuration TARs to the final OCI.
+# The owner composes native/configuration TARs directly and retains libteam's
+# generated package receipt for APT ownership. Validate both against the OCI.
 _SWSS_OWNER = "//dockers/docker-orchagent"
 
 _SWSS_IMAGE_INPUTS = {
@@ -1210,6 +1210,10 @@ _SWSS_IMAGE_INPUTS = {
     "debug_apt_selection": _SWSS_OWNER + ":debug_apt_selection",
     "runtime_archive": _SWSS_OWNER + ":docker-orchagent.gz",
     "debug_archive": _SWSS_OWNER + ":docker-orchagent-dbg.gz",
+    "source_contract_path": _SWSS_OWNER + ":libteam_source_contract",
+    "source_runtime_tar": _SWSS_OWNER + ":libteam_source_runtime.tar",
+    "source_debug_tar": _SWSS_OWNER + ":docker-orchagent.debug_symbols",
+    "source_receipt": _SWSS_OWNER + ":libteam_source_receipt",
     "base_symbols": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
     "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
     "config_metadata": "//dockers/docker-config-engine-trixie:runtime_package_metadata",

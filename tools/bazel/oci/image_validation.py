@@ -310,19 +310,25 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         source_provenance, expected_source_runtime, expected_source_debug = source_payloads(
             source_runtime_tar, source_debug_tar, source_receipt,
             contract_path=source_contract_path, fixture=fixture)
-    # Source-only owners compose already-validated native TARs directly. Their
-    # actual layers are declared inputs; receipt-backed owners retain the
-    # existing contract and may not substitute this alternative.
+    # Direct composition still needs the package receipt when APT retains
+    # source-built owners. Bind that checked subset before adding the other
+    # native/configuration layers, so composition cannot replace its bytes.
     direct_layers = bool(runtime_payload_layers or debug_payload_layers)
-    require(not direct_layers or (policy["retained_source"] == "none" and not has_source and
-            not native_expectations.get("require_source", False) and
-            runtime_payload_layers and debug_payload_layers),
+    source_retained = policy["retained_source"] == "source"
+    require(not direct_layers or (runtime_payload_layers and debug_payload_layers and (
+            (policy["retained_source"] == "none" and not has_source and
+             not native_expectations.get("require_source", False)) or
+            (source_retained and has_source))),
             "declared source layers cannot replace a required package receipt")
     if direct_layers:
+        declared_runtime, declared_debug = {}, {}
         for path in runtime_payload_layers:
-            apply_layer(Path(path), expected_source_runtime)
+            apply_layer(Path(path), declared_runtime)
         for path in debug_payload_layers:
-            apply_layer(Path(path), expected_source_debug)
+            apply_layer(Path(path), declared_debug)
+        assert_payload(expected_source_runtime, declared_runtime, "declared layers change the receipted runtime payload")
+        assert_payload(expected_source_debug, declared_debug, "declared layers change the checked debug payload")
+        expected_source_runtime, expected_source_debug = declared_runtime, declared_debug
     runtime_layout = image(runtime_path, expected_platform=expected_platform)
     runtime_descriptor, runtime_manifest, runtime_config, runtime_layers = runtime_layout
     debug_layout = image(debug_path, expected_platform=expected_platform)
@@ -482,12 +488,13 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
             (runtime_selection, "runtime", base_descriptor["digest"], runtime_receipt["manifest_sha256"]),
             (debug_selection, "debug", runtime_descriptor["digest"], debug_receipt["manifest_sha256"]),
         ):
-            selected_variant = selection.get("group") if direct_layers else selection.get("variant")
+            unretained = policy["retained_source"] == "none"
+            selected_variant = selection.get("group") if unretained else selection.get("variant")
             require(selection.get("schema") == 1 and selected_variant == variant and
                     selection.get("base_manifest_digest") == base_digest and selection.get("apt_lock_sha256") == lock_sha and
                     selection.get("make_manifest_sha256") == make_sha, variant + " APT selection identity differs")
             if direct_layers:
-                require(selection.get("image") == policy["image"] and
+                require((not unretained or selection.get("image") == policy["image"]) and
                         selection.get("dependency_check", {}).get("status") == "satisfied",
                         variant + " APT selection has the wrong image or unsatisfied dependencies")
             if has_source:
@@ -523,7 +530,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                           "debug_alternative_links": [path for item in expectations.get("debug_alternatives", []) for path in item["paths"]],
                           "runtime_apt_selected": len(runtime_selection["selected"]),
                           "runtime_apt_skipped_base": len(runtime_selection["skipped_base"]),
-                          "runtime_apt_skipped_make": len(runtime_selection["skipped_retained" if direct_layers else "skipped_make"]),
+                          "runtime_apt_skipped_make": len(runtime_selection["skipped_retained" if unretained else "skipped_make"]),
                           "debug_apt_selected": len(debug_selection["selected"]),
                           "runtime_non_elf_base_changes": runtime_selection["changed_non_elf_base_paths"],
                           "debug_non_elf_base_changes": debug_selection["changed_non_elf_base_paths"]}
