@@ -58,7 +58,7 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
                     self.assertNotIn("if:", selected[name])
                     self.assertNotIn("continue-on-error", selected[name])
                 checkout = selected["Check out the pinned GitHub input reader"]
-                self.assertIn("0c9c263778f736141b6475f4a867f18092e3119c", checkout)
+                self.assertIn("d50f730c4f1d8d334d6b5062238d8d33934a2bbd", checkout)
                 self.assertIn("persist-credentials: false", checkout)
                 self.assertIn("sparse-checkout-cone-mode: false", checkout)
                 for path in ("ci/github_sources.py",
@@ -198,6 +198,57 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
                     self.assertEqual(startup.read_text(), "common --distdir=" + str(distdir) + "\n")
                     if family == "sysmgr":
                         self.assertIn('--startup-arg="--bazelrc=$RUNNER_TEMP/sysmgr-github-inputs/downloads.bazelrc"', job)
+
+    def test_sysmgr_explicit_rc_keeps_distdir_and_verified_mirrors(self):
+        reader = r'''
+            import os, sys
+            from pathlib import Path
+            options = dict(zip(sys.argv[1:][::2], sys.argv[1:][1::2]))
+            assert options['--manifest'].endswith('/cosmos-4.0.2.json')
+            assert options['--github-token-env'] == 'GITHUB_TOKEN'
+            assert os.environ['GITHUB_TOKEN'] == 'fixture-token'
+            cache = Path(os.environ['HOME']) / '.cache/bazel-repo'
+            assert Path(options['--repository-cache']) == cache
+            assert (cache / 'retained-input').read_bytes() == b'existing input'
+            raise SystemExit(int(os.environ['READER_EXIT']))
+        '''
+        job = native_job('sysmgr')
+        self.assertIn('--startup-arg="--bazelrc=$RUNNER_TEMP/sysmgr-github-inputs/downloads.bazelrc"', job)
+        self.assertIn('            ci/source_mirrors.cfg\n', job)
+        script = shell(steps(job)['Prepare verified GitHub build inputs'])
+        original = (ROOT / 'tools/bazel/tests/fixtures/source-mirrors-d50f730c.cfg').read_bytes()
+        for reader_exit, corrupt in ((23, False), (0, True), (0, False)):
+            with self.subTest(reader_exit=reader_exit, corrupt=corrupt), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                commands = fixture(directory, reader)
+                (commands / 'mkdir').symlink_to('/bin/mkdir')
+                source = directory / '.bazel-inputs/github-reader/ci/source_mirrors.cfg'
+                source.write_bytes(original + (b'corrupt' if corrupt else b''))
+                runner = directory / 'runner-temp'
+                inputs = runner / 'sysmgr-github-inputs'
+                inputs.mkdir(parents=True)
+                rc = inputs / 'downloads.bazelrc'
+                rc.write_text('prior configuration\n')
+                cache = directory / '.cache/bazel-repo'
+                cache.mkdir(parents=True)
+                (cache / 'retained-input').write_bytes(b'existing input')
+                result = subprocess.run(
+                    ['/bin/bash', '-e', '-o', 'pipefail', '-c', script], cwd=directory,
+                    env={'PATH': str(commands), 'HOME': str(directory), 'PWD': str(directory),
+                         'RUNNER_TEMP': str(runner), 'GITHUB_TOKEN': 'fixture-token',
+                         'READER_EXIT': str(reader_exit)},
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, reader_exit or int(corrupt), result.stdout + result.stderr)
+                self.assertEqual((cache / 'retained-input').read_bytes(), b'existing input')
+                self.assertFalse((directory / '.bazelrc.user').exists())
+                config = inputs / 'source-mirrors.cfg'
+                if reader_exit or corrupt:
+                    self.assertFalse(config.exists())
+                    self.assertEqual(rc.read_text(), 'prior configuration\n')
+                else:
+                    self.assertEqual(config.read_bytes(), original)
+                    self.assertEqual(rc.read_text(), 'common --distdir=' + str(inputs / 'distdir') + '\n'
+                                     'common --experimental_downloader_config=' + str(config) + '\n')
 
     def test_receipt_gate_rejects_malformed_or_private_evidence(self):
         previous = Path.cwd()

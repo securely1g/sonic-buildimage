@@ -114,8 +114,8 @@ class NativeFamilyJobsTest(unittest.TestCase):
                     self.assertEqual(len(selected), 1)
                     self.assertEqual(len(original), 1)
                     expected_run = step_value(original[0], "run")
-                    mirror_ref = "0c9c263778f736141b6475f4a867f18092e3119c"
-                    mirror_sha = "7eb5875991b984b91b4120520a6133e9f5a89d8e149ff2ad9f00bddf8b725988"
+                    mirror_ref = "d50f730c4f1d8d334d6b5062238d8d33934a2bbd"
+                    mirror_sha = "1a2bc2ac4c1b4f11217d0f86523f9c25ae1b7601b0f3626aa145968c44627246"
                     if name == "Configure the verified source mirror" and family in self.receipt_families:
                         expected_run = expected_run.replace(mirror_ref, "97cc502556b7ec3435d2d67b105315bcc18bb47e").replace(
                             mirror_sha, "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720").replace(
@@ -427,7 +427,7 @@ class BazeliskBootstrapTest(unittest.TestCase):
                 selected = steps(job)
                 names = list(selected)
                 checkout = selected['Check out the pinned GitHub input reader']
-                self.assertIn('ref: 0c9c263778f736141b6475f4a867f18092e3119c', checkout)
+                self.assertIn('ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd', checkout)
                 self.assertIn('persist-credentials: false', checkout)
                 self.assertIn('path: .bazel-inputs/github-reader', checkout)
                 self.assertIn('ci/github_sources/sonic-buildimage-rule-inputs.json', checkout)

@@ -45,7 +45,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: 0c9c263778f736141b6475f4a867f18092e3119c
+          ref: d50f730c4f1d8d334d6b5062238d8d33934a2bbd
           path: .bazel-inputs/github-reader
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -53,6 +53,7 @@ jobs:
             ci/github_sources/bazelisk-1.29.0-linux-amd64.json
             ci/github_sources/sonic-buildimage-rule-inputs.json
             ci/github_sources/cosmos-4.0.2.json
+            ci/source_mirrors.cfg
           persist-credentials: false
       - name: Prepare checksum-pinned Bazelisk
         env:
@@ -92,7 +93,21 @@ jobs:
             --receipt "$PWD/artifacts/sysmgr/github-sources.json" \
             --github-token-env GITHUB_TOKEN
           # The driver applies explicit startup RCs to query, audit and build.
-          printf 'common --distdir=%s\n' "$inputs/distdir" > "$inputs/downloads.bazelrc"
+          python3 - <<'PYCONFIG'
+          import hashlib
+          import os
+          from pathlib import Path
+          inputs = Path(os.environ["RUNNER_TEMP"]) / "sysmgr-github-inputs"
+          data = Path(".bazel-inputs/github-reader/ci/source_mirrors.cfg").read_bytes()
+          if hashlib.sha256(data).hexdigest() != "1a2bc2ac4c1b4f11217d0f86523f9c25ae1b7601b0f3626aa145968c44627246":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = inputs / "source-mirrors.cfg"
+          config.write_bytes(data)
+          (inputs / "downloads.bazelrc").write_text(
+              "common --distdir=" + str(inputs / "distdir") + "\n"
+              "common --experimental_downloader_config=" + str(config) + "\n"
+          )
+          PYCONFIG
       - name: Prepare checksum-pinned Bazel rule archives
         env:
           GITHUB_TOKEN: ${{ github.token }}
