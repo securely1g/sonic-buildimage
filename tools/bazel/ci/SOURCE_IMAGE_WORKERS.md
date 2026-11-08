@@ -168,3 +168,23 @@ source-download producer retains its existing ordering and only fetches pinned
 source archives. The installed Teamd probe keeps its original private Redis,
 network capabilities, control, SWSS and GDB checks. This selector does not replace
 owner tests or establish image acceptance.
+
+## Native K3s full-installer workspace
+
+The separate `vs_container` job on `sonic-slave-container-k3s` builds the full
+`target/sonic-vs.bin` installer. Immediately after checkout, it requires at least
+256 GiB available on the checkout filesystem before preparing the worker or
+running Make. It measures `statvfs.f_bavail * statvfs.f_frsize`, so filesystem
+blocks reserved from the build user do not count toward the threshold.
+
+This is an entry guard, not a disk quota or reservation; other activity can
+still consume the measured space. Worker workspace placement and capacity must
+be provisioned separately. The guard does not alter the 50 GiB source-image
+worker profile, legacy jobs, shared Make cache, or authenticated remote-only
+Bazel cache.
+
+The job log and `artifacts/vs/workspace-capacity.json` record available and
+required bytes on both admission and rejection. The receipt matches the normal
+`artifacts/vs/*.json` evidence allowlist. An early rejection can precede the
+private helper checkout, so evidence upload still depends on the existing
+privacy gate; the log retains the measurement even when no artifact is uploaded.

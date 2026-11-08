@@ -1332,6 +1332,11 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: Check native VS workspace capacity
+        run: |
+          python3 -B tools/bazel/ci/check_native_vs_storage.py \
+            --workspace "$PWD" --output artifacts/vs/workspace-capacity.json
+
       - name: Checkout pinned private download helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
