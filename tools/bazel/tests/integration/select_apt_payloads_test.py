@@ -87,7 +87,13 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.mapping = self.root / "mapping.json"
         self.mapping.write_text(json.dumps({"architecture": "amd64", "locked": mapping}))
         self.policy = self.root / "policy.json"
-        self.policy.write_bytes(POLICY.read_bytes())
+        # These fixtures contain only a base image and Debian additions. Source
+        # receipt binding is covered by apt_selection_test.py; keep this fixture
+        # independent of the packages supplied by the production image policy.
+        self.policy.write_text(json.dumps({
+            "schema": 1, "image": "docker-orchagent", "architecture": "amd64",
+            "distribution": "trixie", "retained_source": "none", "features": {},
+        }))
 
     def write_base(self, *, status=True):
         entries = [("usr/lib/libssl.so.3", self.base_elf), ("etc/base", b"base config")]
@@ -181,7 +187,7 @@ class SelectAptPayloadsTest(unittest.TestCase):
     def test_public_input_mapping_covers_the_reviewed_lock_closures(self):
         self.assertEqual(json.loads(POLICY.read_bytes()), {
             "schema": 1, "image": "docker-orchagent", "architecture": "amd64",
-            "distribution": "trixie", "retained_source": "none",
+            "distribution": "trixie", "retained_source": "source",
             "features": {},
         })
         lock = json.loads(LOCK.read_bytes())
@@ -201,6 +207,11 @@ class SelectAptPayloadsTest(unittest.TestCase):
                 expected[group][architecture] = candidates
         actual = ast.literal_eval(GENERATED_INPUTS.read_text().split("APT_INPUTS =", 1)[1])
         self.assertEqual(actual, expected)
+
+    def test_production_policy_requires_the_built_source_receipt(self):
+        """The real image cannot select Debian additions without its source evidence."""
+        with self.assertRaisesRegex(ValueError, "source policy requires a source receipt"):
+            subject.select(self.base, self.lock, POLICY, self.mapping, variant="runtime")
 
     def test_imported_runtime_and_debug_packages_match_locked_bytes_and_identity(self):
         """Inspect the public import_lock outputs without executing package binaries."""
