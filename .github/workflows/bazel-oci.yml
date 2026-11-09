@@ -1217,7 +1217,7 @@ jobs:
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
-    # Source-only PRs #5/#51/#61 and the owned FRR branch exclude DEB generation.
+    # Source-only PRs #5/#51/#61 exclude DEB generation.
     if: >-
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
@@ -1230,7 +1230,6 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.number != 5 &&
        github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
-       github.head_ref != 'frr-native-bazel' &&
        github.head_ref != 'codex/libteam-owner-consumer') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
