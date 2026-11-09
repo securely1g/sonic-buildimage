@@ -363,9 +363,19 @@ def bind_worker(args):
             and image(contract) == image(request) and contract.get('owner') == request.get('owner') and contract['catalog'] == request['catalog']
             and contract['controller'] == request['controller'], 'Reviewed source contract differs')
     pull = api('/pulls/' + str(request['pr']))
-    require(pull['state'] == 'open' and pull['head']['sha'] == request['head'] and pull['base']['sha'] == request['base']
+    require(pull['state'] == 'open' and pull['head']['sha'] == request['head']
             and pull['head']['repo']['full_name'] == pull['base']['repo']['full_name'] == REPOSITORY,
             'PR head/base changed before worker admission')
+    # REST base.sha can retain an older PR snapshot; resolve the live base ref.
+    base_ref = pull['base'].get('ref')
+    require(isinstance(base_ref, str) and re.fullmatch(r'[^\x00-\x20\x7f]+', base_ref),
+            'Missing or invalid PR base branch')
+    live_base = api('/git/ref/heads/' + urllib.parse.quote(base_ref, safe=''))
+    require(isinstance(live_base, dict) and live_base.get('ref') == 'refs/heads/' + base_ref
+            and isinstance(live_base.get('object'), dict)
+            and live_base['object'].get('type') == 'commit'
+            and live_base['object'].get('sha') == request['base'],
+            'PR base ref changed before worker admission')
     write(args.directory / 'binding.json', {'request': request, 'request_artifact': origin['artifact']['id'],
                                            'request_sha256': sha((args.directory / 'payload' / 'request.json').read_bytes())})
 
