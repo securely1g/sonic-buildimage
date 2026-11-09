@@ -185,6 +185,24 @@ class NativeFamilyJobsTest(unittest.TestCase):
 
         def split_uploads(family, kind):
             uploads = artifacts(workflow[family + "_" + kind], "upload")
+            # Context is a separate JSON sidecar, never image/request evidence.
+            context_name = ("source-context-${{ github.job }}-"
+                            "${{ strategy.job-index || 0 }}-${{ github.run_attempt }}")
+            contexts = [block for block in uploads
+                        if step_value(block, "name", 10) == context_name]
+            self.assertEqual(len(contexts), 0 if family in ("swss_layer", "teamd") else 1)
+            for block in contexts:
+                self.assertIn("        uses: actions/upload-artifact@"
+                              "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a\n", block)
+                outcomes = "steps.source_context.outcome == 'success'"
+                if family in self.receipt_families:
+                    outcomes += " || steps.source_context_fallback.outcome == 'success'"
+                self.assertEqual(step_value(block, "if"),
+                                 "always() && github.event_name == 'pull_request' && (" + outcomes + ")")
+                self.assertEqual(step_value(block, "path", 10), "artifacts/source-context/context.json")
+                self.assertEqual(step_value(block, "if-no-files-found", 10), "error")
+                self.assertEqual(step_value(block, "retention-days", 10), "14")
+            uploads = [block for block in uploads if block not in contexts]
             if family not in self.receipt_families:
                 return uploads
             flag = "env." + family.upper() + "_WORKER_RECEIPT"
