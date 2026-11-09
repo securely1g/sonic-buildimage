@@ -5,8 +5,6 @@ on:
     paths:
       - src/sonic-sysmgr/**
       - tools/bazel/ci/bazel_commands.py
-      - tools/bazel/ci/source_image_worker.py
-      - .github/workflows/bazel-oci.yml
       - tools/bazel/ci/sonic-buildimage-rule-inputs.json
       - .github/workflows/bazel-sysmgr.yml
   push:
@@ -14,8 +12,6 @@ on:
     paths:
       - src/sonic-sysmgr/**
       - tools/bazel/ci/bazel_commands.py
-      - tools/bazel/ci/source_image_worker.py
-      - .github/workflows/bazel-oci.yml
       - tools/bazel/ci/sonic-buildimage-rule-inputs.json
       - .github/workflows/bazel-sysmgr.yml
   workflow_dispatch:
@@ -132,13 +128,8 @@ jobs:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           mkdir -p artifacts/sysmgr
-          registry="$(python3 - <<'PYCATALOG'
-          from pathlib import Path
-          from tools.bazel.ci.source_image_worker import catalog_for
-          print("https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/" +
-                catalog_for("sysmgr", Path.cwd()))
-          PYCATALOG
-          )"
+          # Pin the maintained catalog containing this standalone module's declarations.
+          registry="https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a1334b9a9604733a2faf6cc96536d289da09e8d8"
           python3 -B src/sonic-sysmgr/bazel/ci.py \
             --registry="$registry" \
             --startup-arg="--bazelrc=$RUNNER_TEMP/sysmgr-github-inputs/downloads.bazelrc" \
