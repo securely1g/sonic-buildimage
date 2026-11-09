@@ -268,7 +268,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates file gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
           for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
 
       - name: Checkout repository
@@ -1556,7 +1556,7 @@ jobs:
       run: "test \"$RUNNER_ENVIRONMENT\" = github-hosted\ndf -h / \"$GITHUB_WORKSPACE\"\ndu -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc\n# These host SDKs are not inputs to the pinned Trixie build. Preserve\n# all Bazel caches, the workspace, retained outputs and execution tools.\nfind /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \\\n  -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +\ndf -h / \"$GITHUB_WORKSPACE\"\n"
       if: env.GEARBOX_WORKER_RECEIPT != 'true'
     - name: Install execution tools
-      run: "apt-get update\napt-get install -y --no-install-recommends \\\n  autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd\nfor tool in bsdtar gdb readelf objcopy; do command -v \"$tool\"; done\n"
+      run: "apt-get update\napt-get install -y --no-install-recommends \\\n  autoconf automake binutils binutils-gold build-essential busybox ca-certificates file gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd\nfor tool in bsdtar gdb readelf objcopy; do command -v \"$tool\"; done\n"
       if: env.GEARBOX_WORKER_RECEIPT != 'true'
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -1859,7 +1859,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates file gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
           for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
         if: env.P4RT_WORKER_RECEIPT != 'true'
       - name: Checkout repository
@@ -2116,7 +2116,7 @@ jobs:
       run: |
         apt-get update
         apt-get install -y --no-install-recommends \
-          autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+          autoconf automake binutils binutils-gold build-essential busybox ca-certificates file gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
         for tool in bsdtar gdb readelf objcopy; do command -v "$tool"; done
       if: env.SYNCD_WORKER_RECEIPT != 'true'
     - name: Checkout repository

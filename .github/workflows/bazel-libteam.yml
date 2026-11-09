@@ -11,6 +11,7 @@ on:
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/resolution.py
       - tools/bazel/oci/runtime_smoke.py
       - .github/workflows/bazel-libteam.yml
   workflow_dispatch:
@@ -177,6 +178,33 @@ jobs:
               --bazel-arg="--distdir=$PWD/.cache/bazel-distdir" \
               --output artifacts/rebuild
           fi
+          # Capture the graph in this tested workspace; platform and jobs flags
+          # configure build actions and are recorded rather than passed to mod.
+          python3 -B - "${options[@]}" <<'PYRESOLUTION'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from tools.bazel.ci import resolution
+
+          workspace = Path.cwd()
+          directory = (workspace / "artifacts").resolve()
+          build_options = sys.argv[1:]
+          build_only = ("--host_platform=", "--platforms=", "--jobs=")
+          graph_options = [option for option in build_options
+                           if not option.startswith(build_only)]
+          evidence = resolution.collect(
+              workspace, directory,
+              bazel=[os.environ["BAZEL"]],
+              options=graph_options,
+          )
+          evidence["build_options"] = build_options
+          evidence["omitted_build_only_options"] = [
+              option for option in build_options if option.startswith(build_only)
+          ]
+          evidence["scope"] = "Same-job module resolution; target configuration is recorded separately"
+          (directory / "resolution.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          PYRESOLUTION
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload source outputs and validation evidence
         if: always()
