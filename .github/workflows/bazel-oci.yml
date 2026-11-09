@@ -182,6 +182,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Checkout the immutable source rule manifest
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: source-input-source
+          sparse-checkout-cone-mode: false
+          sparse-checkout: tools/bazel/ci/sonic-buildimage-rule-inputs.json
+          persist-credentials: false
       - name: Checkout verified public source inputs
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -228,11 +236,20 @@ jobs:
       - name: Prepare verified public rule downloads and mirrors
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
           inputs=bazel-public-inputs/ci
+          python3 - <<'PYSOURCE'
+          import json, os
+          from pathlib import Path
+          from tools.bazel.ci.source_image_worker import digest, source_rule_manifest
+          manifest = source_rule_manifest(Path("source-input-source"), os.environ["SOURCE_REVISION"])
+          print(json.dumps({"source_revision": os.environ["SOURCE_REVISION"],
+                            "manifest_sha256": digest(manifest)}, sort_keys=True))
+          PYSOURCE
           python3 -B "$inputs/github_sources.py" \
-            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --manifest "source-input-source/tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
             --distdir "$RUNNER_TEMP/source-input-rules" \
             --repository-cache "$HOME/.cache/bazel-repo" \
             --cache-dir "$HOME/.cache/sonic-github-sources" \

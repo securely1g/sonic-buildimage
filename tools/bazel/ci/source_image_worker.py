@@ -191,6 +191,21 @@ def source_check(workspace, revision):
     run(["git", "-C", str(workspace), "diff", "--exit-code", "--ignore-submodules=none", "HEAD"])
 
 
+def source_rule_manifest(workspace, revision):
+    """Read the reviewed SOURCE manifest as data; executable tools remain in CONTROL."""
+    require(re.fullmatch(r"[0-9a-f]{40}", revision), "Source revision must be a full lowercase Git SHA")
+    source_check(workspace, revision)
+    relative = "tools/bazel/ci/sonic-buildimage-rule-inputs.json"
+    manifest = workspace / relative
+    require(manifest.is_file() and not manifest.is_symlink() and
+            manifest.resolve().is_relative_to(workspace.resolve()), "Missing or unsafe reviewed source rule manifest")
+    data = manifest.read_bytes()
+    blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+    require(output(["git", "-C", str(workspace), "rev-parse", revision + ":" + relative]) == blob,
+            "Source rule manifest bytes differ from the reviewed commit")
+    return manifest
+
+
 def prepare_teamd_kernel(artifacts, modules=Path("/sys/module")):
     """Require the original Teamd fixture's preloaded modules without host changes."""
     required = ("team", "team_mode_loadbalance")
@@ -785,7 +800,7 @@ def prepare(args):
     if args.image == "syncd":
         prepare_tap_fixture(artifacts)
     prepare_validation_tools(artifacts)
-    source_check(workspace, args.revision)
+    rule_manifest = source_rule_manifest(workspace, args.revision)
     if args.image in SHARED_PROFILES:
         from tools.bazel.ci.shared_image_worker import required_source_files
         for name in required_source_files(args.image):
@@ -819,7 +834,7 @@ def prepare(args):
     rule_distdir = cache / "rule-distdir"
     rule_receipt = temporary / "rule-sources.json"
     run([sys.executable, "-B", str(public_inputs / "github_sources.py"),
-         "--manifest", str(public_inputs / "github_sources/sonic-buildimage-rule-inputs.json"),
+         "--manifest", str(rule_manifest),
          "--distdir", str(rule_distdir), "--repository-cache", str(cache / "repository"),
          "--cache-dir", str(cache / "github-sources"), "--receipt", str(rule_receipt),
          "--github-token-env", "GITHUB_TOKEN"], env={**os.environ, "GITHUB_TOKEN": github_token})

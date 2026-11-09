@@ -1260,6 +1260,79 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertNotIn('database', worker.SOURCE_WORKFLOWS)
             with self.assertRaises(ValueError): worker.catalog_for('database', root, 'b' * 40)
 
+    def test_rule_manifest_is_tracked_data_from_exact_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, control = Path(directory) / "source", Path(directory) / "control"
+            relative = "tools/bazel/ci/sonic-buildimage-rule-inputs.json"
+            for root, payload in ((source, b"reviewed source data"), (control, b"old control data")):
+                path = root / relative
+                path.parent.mkdir(parents=True)
+                path.write_bytes(payload)
+            with patch.object(worker, "ROOT", control), patch.object(worker, "source_check") as checked, \
+                    patch.object(worker, "output", return_value=hashlib.sha1(b"blob 20\0reviewed source data").hexdigest()) as git:
+                manifest = worker.source_rule_manifest(source, "a" * 40)
+                self.assertEqual(manifest.read_bytes(), b"reviewed source data")
+                checked.assert_called_once_with(source, "a" * 40)
+                git.assert_called_once_with(["git", "-C", str(source), "rev-parse", "a" * 40 + ":" + relative])
+            with patch.object(worker, "output", return_value="b" * 40), patch.object(worker, "run") as run:
+                with self.assertRaisesRegex(ValueError, "checkout differs"):
+                    worker.source_rule_manifest(source, "a" * 40)
+                run.assert_not_called()
+            with patch.object(worker, "source_check") as checked:
+                with self.assertRaisesRegex(ValueError, "full lowercase Git SHA"):
+                    worker.source_rule_manifest(source, "main")
+                checked.assert_not_called()
+
+    def test_rule_manifest_rejects_missing_untracked_and_linked_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            relative = "tools/bazel/ci/sonic-buildimage-rule-inputs.json"
+            manifest = source / relative
+            manifest.parent.mkdir(parents=True)
+            with patch.object(worker, "source_check"), patch.object(worker, "output", return_value=relative):
+                with self.assertRaisesRegex(ValueError, "Missing or unsafe"):
+                    worker.source_rule_manifest(source, "a" * 40)
+                manifest.mkdir()
+                with self.assertRaisesRegex(ValueError, "Missing or unsafe"):
+                    worker.source_rule_manifest(source, "a" * 40)
+                manifest.rmdir()
+                outside = Path(directory) / "outside.json"
+                outside.write_text("data only")
+                manifest.symlink_to(outside)
+                with self.assertRaisesRegex(ValueError, "Missing or unsafe"):
+                    worker.source_rule_manifest(source, "a" * 40)
+                manifest.unlink()
+                manifest.write_text("changed data")
+                with patch.object(worker, "output", return_value="b" * 40):
+                    with self.assertRaisesRegex(ValueError, "bytes differ"):
+                        worker.source_rule_manifest(source, "a" * 40)
+                with patch.object(worker, "output", side_effect=subprocess.CalledProcessError(1, ["git", "rev-parse"])):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        worker.source_rule_manifest(source, "a" * 40)
+
+    def test_hosted_source_downloads_keep_control_tools_and_source_manifest(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        job = workflow["jobs"]["source_image_inputs"]
+        steps = {step["name"]: step for step in job["steps"]}
+        checkout = steps["Checkout the immutable source rule manifest"]["with"]
+        self.assertEqual(checkout["ref"], "${{ inputs.source_revision }}")
+        self.assertEqual(checkout["path"], "source-input-source")
+        self.assertEqual(checkout["sparse-checkout"], "tools/bazel/ci/sonic-buildimage-rule-inputs.json")
+        self.assertFalse(checkout["persist-credentials"])
+        self.assertFalse(checkout["sparse-checkout-cone-mode"])
+        self.assertEqual(steps["Checkout verified public source inputs"]["with"]["ref"],
+                         "997796400cc3eefc1f0590b227cd9b74c2141424")
+        prepare = steps["Prepare verified public rule downloads and mirrors"]
+        self.assertEqual(prepare["env"]["SOURCE_REVISION"], "${{ inputs.source_revision }}")
+        self.assertIn('from tools.bazel.ci.source_image_worker import digest, source_rule_manifest', prepare["run"])
+        self.assertIn('--manifest "source-input-source/tools/bazel/ci/sonic-buildimage-rule-inputs.json"', prepare["run"])
+        self.assertNotIn('--manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json"', prepare["run"])
+        self.assertIn('python3 -B "$inputs/github_sources.py"', prepare["run"])
+        self.assertEqual(job["timeout-minutes"], 20)
+        self.assertEqual(steps["Upload verified source downloads"]["with"]["path"],
+                         "artifacts/source-image-inputs/*/src.tar.gz\nartifacts/source-image-inputs/receipt.json\n")
+
     def test_source_download_handoff_rejects_changed_archives(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
