@@ -261,6 +261,55 @@ class NativeFamilyJobsTest(unittest.TestCase):
 
 
 class BazeliskBootstrapTest(unittest.TestCase):
+    def test_archive_keeps_amd64_and_arm64_launcher_selection_separate(self):
+        job = jobs()['archive']
+        selected = steps(job)
+        setup = selected['Set up Bazel']
+        self.assertEqual(step_value(setup, 'bazelisk-version', 10), '${{ matrix.bazelisk_version }}')
+        rows = dict(re.findall(r'^          - name: (\w+)\n(.*?)(?=^          - name:|^    [\w-]+:|\Z)',
+                               job, re.MULTILINE | re.DOTALL))
+        self.assertEqual(set(rows), {'AMD64', 'ARM64'})
+        self.assertEqual(step_value(rows['AMD64'], 'bazelisk_version', 12), '')
+        self.assertEqual(step_value(rows['ARM64'], 'bazelisk_version', 12), '1.29.0')
+        prepare = selected['Prepare checksum-pinned Bazelisk']
+        self.assertEqual(re.search(r"^        if: ([^\n]+)$", prepare, re.MULTILINE)[1],
+                         "matrix.architecture == 'amd64'")
+        self.assertNotIn('continue-on-error', prepare)
+        for key, value in (('bazelisk-cache', 'true'), ('repository-cache', 'true'),
+                           ('disk-cache', '${{ matrix.disk_cache }}'), ('cache-version', '8.5.1')):
+            self.assertEqual(step_value(setup, key, 10), value)
+        names = list(selected)
+        self.assertLess(names.index('Check out the pinned GitHub input reader'),
+                        names.index('Prepare checksum-pinned Bazelisk'))
+        self.assertLess(names.index('Prepare checksum-pinned Bazelisk'), names.index('Set up Bazel'))
+
+    def test_archive_reuses_verified_bazelisk_and_separate_safe_receipt(self):
+        selected = steps(jobs()['archive'])
+        self.assertIn('Prepare checksum-pinned Bazelisk', selected)
+        reader = selected['Check out the pinned GitHub input reader']
+        self.assertEqual(step_value(reader, 'ref', 10), '997796400cc3eefc1f0590b227cd9b74c2141424')
+        self.assertIn('ci/github_sources/bazelisk-1.29.0-linux-amd64.json', reader)
+        script = shell(selected['Prepare checksum-pinned Bazelisk'])
+        validation = '''python3 - <<'PYRECEIPT'
+from pathlib import Path
+from tools.bazel.ci.public_artifacts import load_json, safe_json
+safe_json(load_json(Path("artifacts/bazelisk-inputs/bazelisk-bootstrap.json").read_bytes()))
+PYRECEIPT
+'''
+        self.assertIn(validation, script)
+        donor = shell(steps(jobs()['swss_layer_native'])['Prepare checksum-pinned Bazelisk'])
+        self.assertEqual(script.replace(validation, '').replace(
+            'artifacts/bazelisk-inputs/bazelisk-bootstrap.json', 'artifacts/swss-layer/bazelisk-bootstrap.json'), donor)
+        retain = selected['Retain verified Bazelisk input provenance']
+        self.assertEqual(step_value(retain, 'if'),
+                         "always() && matrix.architecture == 'amd64' && steps.bazelisk_bootstrap.outcome == 'success'")
+        self.assertEqual(step_value(retain, 'path', 10), 'artifacts/bazelisk-inputs/bazelisk-bootstrap.json')
+        self.assertEqual(step_value(retain, 'if-no-files-found', 10), 'error')
+        self.assertEqual(step_value(retain, 'name', 10),
+                         'bazelisk-inputs-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}')
+        self.assertEqual(step_value(selected['Retain verified Bazel rule input provenance'], 'path', 10),
+                         'artifacts/rule-inputs/rule-sources.json')
+
     def test_checks_use_verified_common_mirrors_before_gitlab_fetch(self):
         import ast
         import hashlib
