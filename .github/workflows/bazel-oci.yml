@@ -1062,6 +1062,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/orchagent')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
@@ -1469,6 +1470,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/dash-ha')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
@@ -1587,6 +1589,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/sysmgr')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
@@ -2584,6 +2587,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/teamd')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
