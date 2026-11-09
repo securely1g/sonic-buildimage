@@ -298,6 +298,16 @@ jobs:
             libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
           git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
 
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 997796400cc3eefc1f0590b227cd9b74c2141424
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: ci/github_sources.py
+          persist-credentials: false
+
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -346,6 +356,30 @@ jobs:
           user = Path('.bazelrc.user')
           user.write_text(user.read_text() + '\n'.join(cache_lines) + '\n')
           PYCODE
+
+      - name: Prepare checksum-pinned Bazel rule archives
+        id: rule_sources
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
+            --distdir "$PWD/artifacts/source-downloads" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/rule-inputs/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
+
+      - name: Retain verified Bazel rule input provenance
+        if: always() && steps.rule_sources.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bazel-rule-inputs-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/rule-inputs/rule-sources.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
@@ -743,7 +777,7 @@ jobs:
           set -euo pipefail
           inputs=.bazel-inputs/github-reader/ci
           python3 -B "$inputs/github_sources.py" \
-            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
             --distdir "$PWD/artifacts/source-downloads" \
             --repository-cache "$HOME/.cache/bazel-repo" \
             --cache-dir "$HOME/.cache/sonic-github-sources" \
@@ -924,7 +958,7 @@ jobs:
           artifact_root="${artifact_root//_/-}"
           inputs=.bazel-inputs/github-reader/ci
           python3 -B "$inputs/github_sources.py" \
-            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
             --distdir "$PWD/artifacts/source-downloads" \
             --repository-cache "$HOME/.cache/bazel-repo" \
             --cache-dir "$HOME/.cache/sonic-github-sources" \
@@ -3047,6 +3081,16 @@ jobs:
       - name: Check hosted storage
         run: df -h "$GITHUB_WORKSPACE" "$HOME"
 
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 997796400cc3eefc1f0590b227cd9b74c2141424
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: ci/github_sources.py
+          persist-credentials: false
+
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -3076,6 +3120,31 @@ jobs:
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
+
+      - name: Prepare checksum-pinned Bazel rule archives
+        id: rule_sources
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
+            --distdir "$PWD/artifacts/source-downloads" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/rule-inputs/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+
+      - name: Retain verified Bazel rule input provenance
+        if: always() && steps.rule_sources.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bazel-rule-inputs-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/rule-inputs/rule-sources.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Check Make handoff and archive validation
         env:
