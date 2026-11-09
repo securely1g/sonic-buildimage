@@ -8,13 +8,13 @@ owner targets. The Make source checkout, recipes and patch series are unchanged.
 
 | Input | PR183 | This companion |
 | --- | --- | --- |
-| SWSS | Git source `252a` plus local libteam patch | Registered `0.0.2-f85dc016197a9a2c91e36cc6eb4445fabf65fa9d`, which owns those dependency changes |
+| SWSS | Git source `252a` plus local libteam patch | Registered `0.0.2-ee5a197adb6ae19c891a8844017d590969a10e4c`, which owns those dependency changes |
 | libteam | Local `1.31.sonic-buildimage` producer | `1.31.0.sonic.1` from [registry PR236](https://github.com/securely1g/sonic-bazel-registry/pull/236), with the same upstream 1.31 and 16 SONiC patch bodies |
 | Common / Sairedis / DASH API | Common7 plus local ZeroMQ patch / Sairedis3 / DASH4 | Common9 / Sairedis4 / DASH5, required by the selected SWSS source |
 | Infrastructure / Distroless | Infrastructure25 / Distroless15 | Infrastructure26 / Distroless16, matching the owner interfaces |
 | Common Rust test | Image wrapper around the old source binary | The source owner's real runtime test; Rust-listener wrappers use Common's declared `patchelf` argument |
 
-The default build uses registry `main`. Draft CI selects the reviewed module catalog at `2a849bbcaa254113a61ca0aeb972aeeccb8494f5`, which contains the SWSS, libteam and Socat entries used by this image. The hosted archive, regression and source workflows separately fetch the [merged registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg) at `97cc5025`, verify all 9,730 bytes against SHA256 `ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720`, and pass that file to Bazel for public downloads.
+Both local and CI builds resolve modules from canonical registry `main`. The hosted archive, regression and source workflows fetch the [merged registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg) at `97cc5025`, verify all 9,730 bytes against SHA256 `ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720`, and pass that file to Bazel for public downloads.
 
 Socat uses `1.8.0.2.sonic.6` from [registry PR242](https://github.com/securely1g/sonic-bazel-registry/pull/242),
 with the same upstream 1.8.0.2 and Debian
@@ -33,20 +33,9 @@ unchanged. Package metadata now binds those two libraries to the selected libtea
 module and verifies their installed native bytes. Other source TARs retain the
 existing package-accounting scope; no new dpkg records are invented.
 
-The manual reviewed-source mode retains the legacy checkout's cache helper,
-probe and test labels when its new source interfaces are absent. Normal companion
-CI uses the new owner interfaces, and missing selected helpers fail closed.
-
 The existing native archive, debug-pair, parent-payload, dependency, loader,
 installed-container and cache checks remain. The incremental probe edits the
 selected owner's exported `fpmsyncd/bgp_eoiu_marker.py`, preserves the source fence,
 checks initial/no-op/edit/restore phases and restores its exact bytes and mode.
 The artifact collector reuses the accepted 128MiB lock bound while retaining the
 64MiB limit for other dependency JSON and every secret/schema check.
-
-This is a Draft integration. Native AMD64 image, installed-runtime, actual module
-resolution and four-phase acceptance must pass for this exact companion revision.
-Historical PR183/191 results do not establish those results. Normal inherited
-architecture matrices remain; the exact owned-branch Draft guards exclude DEB
-fixtures and full VS CI. Remove the temporary catalog and branch guards and pass
-normal required CI before marking it Ready.

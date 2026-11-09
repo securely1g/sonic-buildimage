@@ -14,7 +14,7 @@ from unittest import mock
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-CATALOG = "2a849bbcaa254113a61ca0aeb972aeeccb8494f5"
+CATALOG = "main"
 CONFIG_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
 CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
 JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
@@ -90,23 +90,19 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
             self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"+CATALOG, args)
             self.assertEqual(args[-2:], ["--disk_cache=/private/disk", "@sonic_swss//crates/countersyncd:common_rust_test"])
 
-    def test_manual_legacy_and_current_source_interfaces_keep_cache_tests_and_probe(self):
+    def test_source_interfaces_keep_cache_tests_and_probe(self):
         document = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         steps = document["jobs"]["archive"]["steps"]
         selected = [next(s for s in steps if s.get("name") == name) for name in (
             "Preserve setup-bazel caches for source checks", "Validate reviewed SWSS consumer contracts",
             "Check cached no-op and source edit through the image")]
-        for source, mode, success in (("legacy", "swss-layer-hosted", True),
-                                      ("current", "swss-layer-hosted", True),
-                                      ("current", "none", True), ("legacy", "none", False),
-                                      ("missing", "swss-layer-hosted", False)):
-            with self.subTest(source=source, mode=mode), tempfile.TemporaryDirectory() as temporary:
+        for present in (True, False):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 helper = root / "tools/bazel/ci"
                 helper.mkdir(parents=True)
-                if source != "missing":
-                    names = (["lldp_draft_cache.py", "swss_rebuild.py"] if source == "legacy" else
-                             ["preserve_setup_bazel_cache.py", "swss_image_rebuild.py"])
+                names = ["preserve_setup_bazel_cache.py", "swss_image_rebuild.py"]
+                if present:
                     for name in names:
                         (helper / name).write_text("# source interface fixture\n")
                 recorder = """#!/usr/bin/python3
@@ -123,12 +119,12 @@ with Path(os.environ['RECORD']).open('a') as out: out.write(json.dumps({'name':n
                 for command in ("python3", "bazel", "git"):
                     (root / command).write_text(recorder)
                     (root / command).chmod(0o755)
-                env = dict(os.environ, PATH=str(root)+":/usr/bin:/bin", SOURCE_IMAGE=mode,
+                env = dict(os.environ, PATH=str(root)+":/usr/bin:/bin",
                            BAZEL=str(root/"bazel"), RECORD=str(root/"calls.jsonl"), BASH_ENV="/dev/null")
                 result = subprocess.run(["bash", "-eu", "-c", "\n".join(s["run"] for s in selected)],
                                         cwd=root, env=env, capture_output=True, text=True)
-                self.assertEqual(result.returncode == 0, success, result.stderr)
-                if not success:
+                self.assertEqual(result.returncode == 0, present, result.stderr)
+                if not present:
                     self.assertFalse((root/"calls.jsonl").exists())
                     continue
                 recorded = [json.loads(line) for line in (root/"calls.jsonl").read_text().splitlines()]
@@ -136,11 +132,8 @@ with Path(os.environ['RECORD']).open('a') as out: out.write(json.dumps({'name':n
                 self.assertIn("tools/bazel/ci/"+names[0], paths)
                 self.assertIn("tools/bazel/ci/"+names[1], paths)
                 test = next(item["argv"] for item in recorded if item["name"] == "bazel")
-                expected = (["//src/libteam:consumer_test", "//tools/bazel/tests:swss_common_rust_test"]
-                            if source == "legacy" else
-                            ["@libteam//:consumer_test", "@sonic_swss//crates/countersyncd:common_rust_test"])
-                self.assertEqual(test[-4:], expected + ["@sonic_swss//bazel:protobuf_runtime_test",
-                                                      "//tools/bazel/tests:swss_package_contract_test"])
+                self.assertEqual(test[-4:], ["@libteam//:consumer_test", "@sonic_swss//crates/countersyncd:common_rust_test",
+                                             "@sonic_swss//bazel:protobuf_runtime_test", "//tools/bazel/tests:swss_package_contract_test"])
                 self.assertIn("--nocache_test_results", test)
                 self.assertIn("--host_platform=@sonic_build_infra//platforms:x86_64_trixie", test)
                 probe = next(item["argv"] for item in recorded if "tools/bazel/ci/"+names[1] in item["argv"])

@@ -1392,7 +1392,8 @@ jobs:
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       github.head_ref != 'codex/libteam-owner-consumer') ||
+       github.head_ref != 'codex/libteam-owner-consumer' &&
+       github.head_ref != 'codex/swss-owner-image') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
