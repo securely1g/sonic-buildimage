@@ -101,7 +101,7 @@ jobs:
           set -euo pipefail
           inputs=.bazel-inputs/github-reader/ci
           python3 -B "$inputs/github_sources.py" \
-            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
             --distdir "$RUNNER_TEMP/pigz-distdir" \
             --repository-cache "$HOME/.cache/bazel-repo" \
             --cache-dir "$HOME/.cache/sonic-github-sources" \
