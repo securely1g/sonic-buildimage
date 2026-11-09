@@ -36,6 +36,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     env:
+      KERNEL_RUN_TEMP: /mnt/build/k
       KERNEL_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache && 'http://127.0.0.1:8080' || 'grpc://172.16.0.4:9092' }}
       UPLOAD_KERNEL_CACHE: ${{ (github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache) || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
     steps:
@@ -85,25 +86,56 @@ jobs:
           python3 -B tools/bazel/tests/kernel_sbom_test.py
           python3 -B tools/bazel/tests/public_artifacts_test.py
           python3 -B tools/bazel/tests/kernel_artifacts_test.py
+      - name: Provision short kernel scratch root
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(id -u)" -eq 0 || "$KERNEL_RUN_TEMP" != /mnt/build/k ]]; then
+            echo 'Refusing privileged provisioning for an unexpected user or scratch path.' >&2
+            exit 1
+          fi
+          for parent in /mnt /mnt/build; do
+            if [[ ! -d "$parent" || -L "$parent" || "$(realpath -e -- "$parent")" != "$parent" ]]; then
+              echo "Refusing redirected scratch parent: $parent" >&2
+              exit 1
+            fi
+            mode="$(stat -c %a -- "$parent")"
+            if [[ "$(stat -c %u -- "$parent")" != 0 ]] || (( (8#$mode & 0022) != 0 )); then
+              echo "Scratch parent must be root-owned and not group/world-writable: $parent" >&2
+              exit 1
+            fi
+          done
+          if [[ "$(stat -c %d -- /mnt/build)" != "$(stat -c %d -- "$RUNNER_TEMP")" ]]; then
+            echo 'Kernel scratch must be on the same filesystem as RUNNER_TEMP.' >&2
+            exit 1
+          fi
+          if [[ -L /mnt/build/k || ( -e /mnt/build/k && ! -d /mnt/build/k ) ]]; then
+            echo 'Refusing redirected or non-directory kernel scratch root.' >&2
+            exit 1
+          fi
+          if [[ ! -e /mnt/build/k ]]; then
+            sudo -n mkdir --mode=0700 -- /mnt/build/k
+            sudo -n chown --no-dereference -- "$(id -u):$(id -g)" /mnt/build/k
+            echo 'Created private kernel scratch root for this agent.'
+          else
+            echo 'Existing kernel scratch root left unchanged for ownership and identity validation.'
+          fi
+      - name: Prepare short kernel scratch root
+        run: python3 -B tools/bazel/ci/kernel_scratch.py prepare --architecture "${{ matrix.arch }}"
+      - name: Remove stale fixed kernel state
+        id: kernel_state
+        run: python3 -B tools/bazel/ci/kernel_scratch.py cleanup
       - name: Check available scratch space
         run: |
           python3 - <<'PY'
           import os, shutil
-          if shutil.disk_usage(os.environ['RUNNER_TEMP']).free < 45 * 2**30:
+          if shutil.disk_usage(os.environ['KERNEL_RUN_TEMP']).free < 45 * 2**30:
               raise SystemExit('Kernel source validation requires 45 GiB free scratch space')
           PY
       - name: Require unprivileged Linux sandboxing
         run: |
           test "$(id -u)" -ne 0
           unshare --user --map-current-user --mount --pid --fork true
-      - name: Allocate fresh kernel scratch directory
-        id: kernel_scratch
-        run: |
-          set -euo pipefail
-          umask 077
-          scratch="$(mktemp -d "$RUNNER_TEMP/kernel-job.XXXXXXXX")"
-          printf 'KERNEL_RUN_TEMP=%s\n' "$scratch" >> "$GITHUB_ENV"
-          printf 'Kernel job scratch directory: %s\n' "$scratch"
       - name: Start a disposable cache for optional cold-build verification
         if: github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache
         run: |
@@ -212,9 +244,9 @@ jobs:
           path: ${{ env.KERNEL_RUN_TEMP }}/kernel-bundle-artifacts
       - name: Stop the disposable verification cache
         id: kernel_cache_stop
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache
+        if: always() && steps.kernel_state.outcome == 'success' && github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache
         run: |
-          if [[ -n "${KERNEL_RUN_TEMP:-}" && -f "$KERNEL_RUN_TEMP/kernel-cache/server.pid" ]]; then
+          if [[ -f "$KERNEL_RUN_TEMP/kernel-cache/server.pid" ]]; then
             pid="$(cat "$KERNEL_RUN_TEMP/kernel-cache/server.pid")"
             kill "$pid"
             for attempt in $(seq 1 30); do
@@ -226,40 +258,6 @@ jobs:
               exit 1
             fi
           fi
-      - name: Clean this job's kernel scratch directory
-        if: always() && steps.kernel_scratch.outcome == 'success' && (steps.kernel_cache_stop.outcome == 'success' || steps.kernel_cache_stop.outcome == 'skipped')
-        run: |
-          set -euo pipefail
-          if [[ -z "${KERNEL_RUN_TEMP:-}" ]]; then
-            echo 'No kernel scratch directory was allocated.'
-            exit 0
-          fi
-          python3 -B - <<'PY'
-          import os
-          from pathlib import Path
-          import re
-          from tools.bazel.kernel.prepare import remove_build_tree, require
-
-          scratch = Path(os.environ["KERNEL_RUN_TEMP"])
-          require(scratch.is_absolute() and not scratch.is_symlink(),
-                  "refusing redirected kernel scratch directory")
-          require(re.fullmatch(r"kernel-job\.[A-Za-z0-9]{8}", scratch.name),
-                  "refusing unexpected kernel scratch directory name")
-          scratch = scratch.resolve()
-          require(scratch.parent == Path(os.environ["RUNNER_TEMP"]).resolve(strict=True),
-                  "kernel scratch directory must be directly under RUNNER_TEMP")
-          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
-          require(scratch != workspace and scratch not in workspace.parents,
-                  "kernel scratch directory must not contain the workspace")
-          mounts = [
-              Path(re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), line.split()[4]))
-              for line in Path("/proc/self/mountinfo").read_text().splitlines()
-          ]
-          require(not any(mount == scratch or scratch in mount.parents for mount in mounts),
-                  "refusing mounted kernel scratch directory")
-          require(not scratch.exists() or scratch.is_dir(),
-                  "kernel scratch path must be a directory")
-          if scratch.exists():
-              print("Removing this job's kernel scratch directory: " + str(scratch), flush=True)
-              remove_build_tree(scratch)
-          PY
+      - name: Clean fixed kernel scratch state
+        if: always() && steps.kernel_state.outcome == 'success' && (steps.kernel_cache_stop.outcome == 'success' || steps.kernel_cache_stop.outcome == 'skipped')
+        run: python3 -B tools/bazel/ci/kernel_scratch.py cleanup

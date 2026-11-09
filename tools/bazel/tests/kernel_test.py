@@ -23,6 +23,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.kernel import prepare as kernel
+from tools.bazel.ci import kernel_scratch as kernel_cleanup
 
 
 class KernelBundleTest(unittest.TestCase):
@@ -983,65 +984,242 @@ class KernelWorkflowTest(unittest.TestCase):
         for name in ("Start a disposable cache for optional cold-build verification",
                      "Verify a fresh output directory reuses the kernel action"):
             self.assertIn("if: " + cold, self.steps[name])
-        self.assertIn("if: always() && " + cold,
+        self.assertIn("if: always() && steps.kernel_state.outcome == 'success' && " + cold,
                       self.steps["Stop the disposable verification cache"])
         self.assertIn("'kernel-cache-hit' || 'kernel-bundle-state'",
                       self.steps["Select verified DEBs and a public validation summary"])
         self.assertNotIn("sudo rm", self.workflow)
 
-    def test_scratch_allocation_is_unique_and_preserves_previous_state(self):
-        step = self.steps["Allocate fresh kernel scratch directory"]
-        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+    def test_fixed_state_is_cleaned_before_build_and_after_artifact_upload(self):
+        before = self.steps["Remove stale fixed kernel state"]
+        after = self.steps["Clean fixed kernel scratch state"]
+        command = "run: python3 -B tools/bazel/ci/kernel_scratch.py cleanup"
+        self.assertIn(command, before)
+        self.assertIn(command, after)
+        self.assertIn("id: kernel_state", before)
+        self.assertIn(
+            "if: always() && steps.kernel_state.outcome == 'success' "
+            "&& (steps.kernel_cache_stop.outcome == 'success' "
+            "|| steps.kernel_cache_stop.outcome == 'skipped')", after
+        )
+        self.assertLess(self.workflow.index("- name: Remove stale fixed kernel state"),
+                        self.workflow.index("- name: Check available scratch space"))
+        self.assertLess(self.workflow.index("- name: Retain verified DEBs"),
+                        self.workflow.index("- name: Clean fixed kernel scratch state"))
+        self.assertLess(self.workflow.index("- name: Stop the disposable verification cache"),
+                        self.workflow.index("- name: Clean fixed kernel scratch state"))
+        self.assertIn("KERNEL_RUN_TEMP: /mnt/build/k", self.workflow)
+        self.assertNotIn("kernel-job.", self.workflow)
+        self.assertIn("path: ${{ env.KERNEL_RUN_TEMP }}/kernel-bundle-artifacts", self.workflow)
+        self.assertLess(self.workflow.index("- name: Prepare short kernel scratch root"),
+                        self.workflow.index("- name: Remove stale fixed kernel state"))
+        self.assertLess(self.workflow.index("- name: Provision short kernel scratch root"),
+                        self.workflow.index("- name: Prepare short kernel scratch root"))
+        for name, step in self.steps.items():
+            if name not in ("Restore workspace access before checkout", "Provision short kernel scratch root"):
+                self.assertNotIn("$RUNNER_TEMP", step, name)
+        self.assertIn("os.environ['KERNEL_RUN_TEMP']", self.steps["Check available scratch space"])
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            retained = root / "kernel-bundle-state"
-            retained.mkdir()
-            (retained / "receipt").write_text("retained")
-            environment = root / "github-env"
-            allocated = []
+            workspace = root / "workspace"
+            workspace.mkdir()
             for _ in range(2):
+                (root / "kernel-bundle-state").mkdir()
                 result = subprocess.run(
-                    ["bash", "-e", "-o", "pipefail", "-c", script],
-                    cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=temporary, GITHUB_ENV=str(environment)),
+                    [sys.executable, "-B", str(ROOT / "tools/bazel/ci/kernel_scratch.py"), "cleanup"],
+                    cwd=ROOT, capture_output=True, text=True,
+                    env=dict(os.environ, KERNEL_RUN_TEMP=temporary, GITHUB_WORKSPACE=str(workspace)),
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                key, value = environment.read_text().splitlines()[-1].split("=", 1)
-                self.assertEqual(key, "KERNEL_RUN_TEMP")
-                scratch = Path(value)
-                self.assertEqual(scratch.parent, root)
-                self.assertRegex(scratch.name, r"^kernel-job\.[A-Za-z0-9]{8}$")
-                self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
-                self.assertEqual(list(scratch.iterdir()), [])
-                allocated.append(scratch)
-            self.assertNotEqual(*allocated)
-            self.assertEqual((retained / "receipt").read_text(), "retained")
-        for name, step in self.steps.items():
-            if name not in ("Restore workspace access before checkout",
-                            "Check available scratch space",
-                            "Allocate fresh kernel scratch directory"):
-                self.assertNotIn("$RUNNER_TEMP", step, name)
-        self.assertIn("path: ${{ env.KERNEL_RUN_TEMP }}/kernel-bundle-artifacts", self.workflow)
+                self.assertFalse((root / "kernel-bundle-state").exists())
+                self.assertTrue(workspace.is_dir())
 
-    def test_scratch_cleanup_is_scoped_and_rejects_redirected_paths(self):
-        name = "Clean this job's kernel scratch directory"
-        step = self.steps[name]
-        self.assertIn(
-            "if: always() && steps.kernel_scratch.outcome == 'success' "
-            "&& (steps.kernel_cache_stop.outcome == 'success' "
-            "|| steps.kernel_cache_stop.outcome == 'skipped')", step
-        )
-        self.assertLess(self.workflow.index("- name: Retain verified DEBs"),
-                        self.workflow.index("- name: " + name))
-        self.assertLess(self.workflow.index("- name: Stop the disposable verification cache"),
-                        self.workflow.index("- name: " + name))
+    def test_scratch_provisioning_creates_only_an_absent_root_without_elevating_builds(self):
+        step = self.steps["Provision short kernel scratch root"]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1])
-        for scenario in ("cleanup", "symlink", "workspace", "workspace-parent", "file",
-                         "mount", "nested-mount", "outside", "wrong-name", "unallocated"):
+        for scenario in ("absent", "existing", "wrong-owner", "symlink", "dangling-symlink", "file",
+                         "parent-symlink", "parent-writable", "parent-owner", "other-disk",
+                         "wrong-path", "sudo-failure", "chown-failure", "mkdir-race"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                scratch = root / "kernel-job.ABC12345"
-                scratch.mkdir()
+                build = root / "build"
+                build.mkdir()
+                scratch = build / "k"
+                runner_temp = root / "temp"
+                runner_temp.mkdir()
+                commands = root / "commands"
+                commands.mkdir()
+                calls = root / "sudo-calls.jsonl"
+                retained = root / "retained"
+                retained.mkdir()
+                (retained / "receipt").write_text("keep")
+                if scenario in ("existing", "wrong-owner"):
+                    scratch.mkdir(mode=0o700 if scenario == "existing" else 0o755)
+                    (scratch / "receipt").write_text("keep")
+                elif scenario in ("symlink", "dangling-symlink"):
+                    scratch.symlink_to(retained if scenario == "symlink" else root / "missing")
+                elif scenario == "file":
+                    scratch.write_text("not a directory")
+                elif scenario == "parent-symlink":
+                    build.rmdir()
+                    build.symlink_to(retained, target_is_directory=True)
+                sudo = commands / "sudo"
+                sudo.write_text(
+                    "#!" + sys.executable + "\n"
+                    "import json, os, subprocess, sys\n"
+                    "from pathlib import Path\n"
+                    "with open(os.environ['CALLS'], 'a') as stream:\n"
+                    "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                    "assert sys.argv[1] == '-n'\n"
+                    "scenario = os.environ['SCENARIO']\n"
+                    "if scenario == 'sudo-failure': sys.exit(23)\n"
+                    "if sys.argv[2] == 'mkdir':\n"
+                    "    if scenario == 'mkdir-race': Path(sys.argv[-1]).mkdir(mode=0o755)\n"
+                    "    sys.exit(subprocess.run(sys.argv[2:]).returncode)\n"
+                    "assert sys.argv[2] == 'chown'\n"
+                    "assert sys.argv[3:5] == ['--no-dereference', '--']\n"
+                    "assert sys.argv[5] == str(os.getuid()) + ':' + str(os.getgid())\n"
+                    "sys.exit(24 if scenario == 'chown-failure' else 0)\n")
+                sudo.chmod(0o755)
+                stat_command = commands / "stat"
+                stat_command.write_text(
+                    "#!" + sys.executable + "\n"
+                    "import os, subprocess, sys\n"
+                    "scenario = os.environ['SCENARIO']\n"
+                    "field = sys.argv[2]\n"
+                    "if field == '%u':\n"
+                    "    print('1000' if scenario == 'parent-owner' else '0')\n"
+                    "elif field == '%a' and scenario == 'parent-writable': print('777')\n"
+                    "elif field == '%d' and scenario == 'other-disk' "
+                    "and sys.argv[-1] == os.environ['RUNNER_TEMP']: print('-1')\n"
+                    "else: sys.exit(subprocess.run(['/usr/bin/stat'] + sys.argv[1:]).returncode)\n")
+                stat_command.chmod(0o755)
+                selected_script = script.replace("/mnt", str(root))
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", selected_script],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                             RUNNER_TEMP=str(runner_temp), KERNEL_RUN_TEMP=str(
+                                 retained if scenario == "wrong-path" else scratch),
+                             CALLS=str(calls), SCENARIO=scenario))
+                success = scenario in ("absent", "existing", "wrong-owner")
+                expected_exit = 0 if success else {"sudo-failure": 23, "chown-failure": 24}.get(scenario, 1)
+                self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
+                if scenario in ("absent", "chown-failure"):
+                    self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(
+                        [json.loads(line) for line in calls.read_text().splitlines()],
+                        [["-n", "mkdir", "--mode=0700", "--", str(scratch)],
+                         ["-n", "chown", "--no-dereference", "--",
+                          f"{os.getuid()}:{os.getgid()}", str(scratch)]])
+                elif scenario in ("sudo-failure", "mkdir-race"):
+                    self.assertEqual(len(calls.read_text().splitlines()), 1)
+                else:
+                    self.assertFalse(calls.exists())
+                if scenario in ("existing", "wrong-owner"):
+                    self.assertEqual((scratch / "receipt").read_text(), "keep")
+                    self.assertEqual(scratch.stat().st_mode & 0o777,
+                                     0o700 if scenario == "existing" else 0o755)
+                self.assertEqual((retained / "receipt").read_text(), "keep")
+                self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+                if scenario != "parent-symlink":
+                    self.assertEqual(build.stat().st_mode & 0o777, 0o755)
+        for name, content in self.steps.items():
+            if name not in ("Restore workspace access before checkout", "Provision short kernel scratch root"):
+                self.assertNotIn("sudo", content, name)
+
+    def test_short_scratch_root_is_private_and_bound_to_one_runner(self):
+        for scenario in ("reuse", "other-runner", "other-temp", "symlink", "dangling-symlink",
+                         "alias-parent", "public", "file", "workspace", "temp", "relative",
+                         "owner-symlink", "owner-file", "owner-directory", "wrong-uid", "other-disk"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                workspace = root / "workspace"
+                workspace.mkdir()
+                runner_temp = root / "temp"
+                runner_temp.mkdir()
+                scratch = root / "k"
+                kernel_cleanup.prepare_root(scratch, runner_temp, workspace, "agent-one")
+                owner = scratch / ".runner-owner"
+                identity = owner.read_text()
+                (scratch / "kernel-bundle-state").mkdir()
+                retained = scratch / "kernel-bundle-state/receipt"
+                retained.write_text("retained")
+                runner_name = "agent-one"
+                selected = scratch
+                if scenario == "other-runner":
+                    runner_name = "agent-two"
+                elif scenario == "other-temp":
+                    runner_temp = root / "other-temp"
+                    runner_temp.mkdir()
+                elif scenario in ("symlink", "dangling-symlink"):
+                    selected = root / "link"
+                    selected.symlink_to(scratch if scenario == "symlink" else root / "missing")
+                elif scenario == "alias-parent":
+                    alias = root / "alias"
+                    alias.symlink_to(root, target_is_directory=True)
+                    selected = alias / "k"
+                elif scenario == "public":
+                    scratch.chmod(0o755)
+                elif scenario == "file":
+                    selected = root / "file"
+                    selected.write_text("not a directory")
+                elif scenario == "workspace":
+                    workspace = scratch / "kernel-bundle-state"
+                elif scenario == "temp":
+                    runner_temp = scratch
+                elif scenario == "relative":
+                    selected = Path("relative")
+                elif scenario.startswith("owner-"):
+                    owner.unlink()
+                    if scenario == "owner-symlink":
+                        owner.symlink_to(retained)
+                    elif scenario == "owner-directory":
+                        owner.mkdir()
+                    else:
+                        owner.write_text("another identity")
+                original_stat = Path.stat
+
+                def filesystem(path, *args, **kwargs):
+                    metadata = original_stat(path, *args, **kwargs)
+                    if scenario == "other-disk" and path == runner_temp:
+                        values = list(metadata)
+                        values[2] = metadata.st_dev + 1
+                        return os.stat_result(values)
+                    return metadata
+
+                with patch.object(Path, "stat", autospec=True, side_effect=filesystem), \
+                        patch.object(kernel_cleanup.os, "geteuid",
+                                     return_value=-1 if scenario == "wrong-uid" else os.geteuid()):
+                    if scenario == "reuse":
+                        kernel_cleanup.prepare_root(selected, runner_temp, workspace, runner_name)
+                        self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
+                        kernel_cleanup.cleanup(scratch, workspace)
+                        self.assertFalse(retained.exists())
+                        self.assertEqual(owner.read_text(), identity)
+                    else:
+                        with self.assertRaises((ValueError, FileExistsError)):
+                            kernel_cleanup.prepare_root(selected, runner_temp, workspace, runner_name)
+                        self.assertEqual(retained.read_text(), "retained")
+
+    def test_kernel_scratch_path_budget_includes_worst_case_sandbox_and_longest_header(self):
+        kernel_cleanup.check_path_budget(Path("/mnt/build/k"), "6.12.41")
+        kernel_cleanup.check_path_budget(Path("/mnt/build/" + "k" * 11), "6.12.41")
+        for root, version in (
+                (Path("/mnt/build/" + "k" * 12), "6.12.41"),
+                (Path("/mnt/build/actions-runner-work/_temp"), "6.12.41"),
+                (Path("/mnt/build/" + "\u00e9" * 6), "6.12.41"),
+                (Path("/mnt/build/k"), "6.12.41" + "0" * 11)):
+            with self.subTest(root=root, version=version):
+                with self.assertRaisesRegex(ValueError, "255-byte limit"):
+                    kernel_cleanup.check_path_budget(root, version)
+
+    def test_scratch_cleanup_is_scoped_and_rejects_redirected_paths(self):
+        for scenario in ("cleanup", "symlink", "dangling-symlink", "workspace", "workspace-parent",
+                         "file", "mount", "nested-mount", "file-symlink", "file-directory",
+                         "workspace-child", "relative", "root"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
                 workspace = root / "workspace"
                 workspace.mkdir()
                 shared = root / "shared-cache"
@@ -1049,58 +1227,89 @@ class KernelWorkflowTest(unittest.TestCase):
                 retained = shared / "object"
                 retained.write_text("retained")
                 retained.chmod(0o444)
-                for name in ("kernel-bundle-state", "kernel-cache-hit", "kernel-unsupported",
-                             "kernel-cache-proof", "kernel-bundle-artifacts"):
-                    state = scratch / name
+                metadata = retained.stat()
+                unrelated = root / "unrelated"
+                unrelated.mkdir()
+                (unrelated / "receipt").write_text("keep")
+                for name in kernel_cleanup.DIRECTORIES:
+                    state = root / name
                     state.mkdir()
                     os.link(retained, state / "hardlink")
                     (state / "cache-link").symlink_to(shared, target_is_directory=True)
-                    state.chmod(0o555)
-                old_state = scratch
-                if scenario in ("symlink", "file"):
-                    for state in old_state.iterdir():
-                        state.chmod(0o755)
-                    shutil.rmtree(old_state)
-                    if scenario == "symlink":
-                        old_state.symlink_to(shared, target_is_directory=True)
+                    if scenario == "cleanup":
+                        state.chmod(0o555)
+                for name in kernel_cleanup.FILES:
+                    (root / name).write_text("disposable")
+                scratch = root / "kernel-unsupported"
+                if scenario in ("symlink", "dangling-symlink", "file"):
+                    shutil.rmtree(scratch)
+                    if scenario in ("symlink", "dangling-symlink"):
+                        scratch.symlink_to(shared if scenario == "symlink" else root / "missing",
+                                           target_is_directory=True)
                     else:
-                        old_state.write_text("unexpected file")
+                        scratch.write_text("unexpected file")
                 if scenario == "workspace":
                     workspace = scratch
                 elif scenario == "workspace-parent":
-                    workspace = scratch / "kernel-bundle-state"
-                selected_scratch = scratch
-                if scenario == "wrong-name":
-                    selected_scratch = root
-                selected_script = script
+                    workspace = scratch / "nested-workspace"
+                    workspace.mkdir()
+                elif scenario == "workspace-child":
+                    workspace = root
+                if scenario in ("file-symlink", "file-directory"):
+                    path = root / kernel_cleanup.FILES[-1]
+                    path.unlink()
+                    if scenario == "file-symlink":
+                        path.symlink_to(retained)
+                    else:
+                        path.mkdir()
+                mountinfo = ""
                 if scenario in ("mount", "nested-mount"):
-                    mount = old_state if scenario == "mount" else old_state / "nested"
-                    mountinfo = root / "mountinfo"
-                    mountinfo.write_text(f"1 0 0:0 / {mount} rw - ext4 /dev/fixture rw\n")
-                    selected_script = script.replace(
-                        'Path("/proc/self/mountinfo")', f"Path({str(mountinfo)!r})"
-                    )
-                environment = root / "github-env"
-                result = subprocess.run(
-                    ["bash", "-e", "-o", "pipefail", "-c", selected_script],
-                    cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=str(workspace if scenario == "outside" else root),
-                             KERNEL_RUN_TEMP="" if scenario == "unallocated" else str(selected_scratch),
-                             GITHUB_ENV=str(environment), GITHUB_WORKSPACE=str(workspace),
-                             PYTHONPATH=str(ROOT)),
-                )
-                self.assertEqual(result.returncode, 0 if scenario in ("cleanup", "unallocated") else 1,
-                                 result.stdout + result.stderr)
+                    mount = scratch if scenario == "mount" else scratch / "nested"
+                    mountinfo = f"1 0 0:0 / {mount} rw - ext4 /dev/fixture rw\n"
+                selected = Path(".") if scenario == "relative" else Path("/") if scenario == "root" else root
+                with patch.object(Path, "read_text", return_value=mountinfo):
+                    if scenario == "cleanup":
+                        kernel_cleanup.cleanup(selected, workspace)
+                        kernel_cleanup.cleanup(selected, workspace)
+                    else:
+                        with self.assertRaises(ValueError):
+                            kernel_cleanup.cleanup(selected, workspace)
                 self.assertEqual(retained.read_text(), "retained")
-                self.assertEqual(retained.stat().st_mode & 0o777, 0o444)
+                self.assertEqual(retained.stat().st_mode, metadata.st_mode)
+                self.assertEqual(retained.stat().st_mtime_ns, metadata.st_mtime_ns)
+                self.assertEqual((unrelated / "receipt").read_text(), "keep")
                 if scenario == "cleanup":
-                    self.assertFalse(scratch.exists())
+                    self.assertTrue(all(not (root / name).exists()
+                                        for name in kernel_cleanup.DIRECTORIES + kernel_cleanup.FILES))
                 else:
-                    self.assertFalse(environment.exists())
-                    self.assertTrue(old_state.exists())
-                if scratch.is_dir() and not scratch.is_symlink():
-                    for state in scratch.iterdir():
-                        state.chmod(0o755)
+                    self.assertTrue((root / "kernel-bundle-state/hardlink").exists())
+
+    def test_scratch_cleanup_requires_a_stopped_cache(self):
+        for scenario in ("live", "stopped", "invalid", "symlink", "denied"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                workspace = root / "workspace"
+                workspace.mkdir()
+                cache = root / "kernel-cache"
+                cache.mkdir()
+                pid = cache / "server.pid"
+                pid.write_text("12345\n" if scenario != "invalid" else "-1\n")
+                if scenario == "symlink":
+                    pid.unlink()
+                    pid.symlink_to(workspace / "missing")
+                error = ProcessLookupError() if scenario == "stopped" else PermissionError() if scenario == "denied" else None
+                with patch.object(kernel_cleanup.os, "kill", side_effect=error) as probe:
+                    if scenario == "stopped":
+                        kernel_cleanup.cleanup(root, workspace)
+                        self.assertFalse(cache.exists())
+                    else:
+                        with self.assertRaises(PermissionError if scenario == "denied" else ValueError):
+                            kernel_cleanup.cleanup(root, workspace)
+                        self.assertTrue(cache.exists())
+                    if scenario in ("invalid", "symlink"):
+                        probe.assert_not_called()
+                    else:
+                        probe.assert_called_once_with(12345, 0)
 
     def test_workspace_repair_is_scoped_and_preserves_cache_links(self):
         name = "Restore workspace access before checkout"

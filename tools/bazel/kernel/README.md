@@ -195,7 +195,13 @@ The `Bazel kernel DEBs` matrix runs on self-hosted native AMD64
 `master` upload results to the shared cache; pull requests and normal manual
 runs are read-only. Agents require network access to the cache, server-enforced
 write permissions, Docker for installation checks, unprivileged user namespaces,
-and at least 45 GiB of free scratch space.
+and at least 45 GiB of free scratch space. CI uses the short physical
+`/mnt/build/k` scratch root, preserving master directory names while keeping
+Speakup's absolute input paths within its 255-byte limit. The root must be private
+to the unprivileged runner and on the same filesystem as its normal temp storage.
+CI can provision an absent root using guarded noninteractive sudo, without
+changing existing directory permissions or elevating the build; see the
+[CI scratch requirements](../ci/README.md).
 
 Agents must have GNU Make preinstalled for the contract tests and Make handoff
 checks. The workflow does not install host packages. Kernel compilation still

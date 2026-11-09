@@ -41,16 +41,41 @@ hardlinked files.
 It does not delete files or change shared-cache targets. Any repair failure
 stops the job before checkout.
 
-Kernel host jobs allocate a unique private `kernel-job.*` directory under
-`RUNNER_TEMP` and export it as `KERNEL_RUN_TEMP` for build state, optional
-cold-cache proof, logs and artifact collection. The producer still requires new
-state directories; previous jobs' scratch state is neither deleted nor reused.
-After artifact upload and cache-server shutdown, cleanup removes only this
-job's directory. It rejects workspace overlap, redirected paths and nested
-mounts, and preserves shared-cache symlink targets and hardlinked file metadata.
-Cleanup errors fail the job; a cache shutdown failure preserves its directory.
-Cancelled jobs may leave scratch state for periodic agent maintenance.
-Bazel's default startup location and kernel build settings are unchanged.
+Kernel host jobs retain the master's fixed directory names under the short
+`KERNEL_RUN_TEMP=/mnt/build/k` root; GitHub's `RUNNER_TEMP` is unchanged. Before
+building, [`kernel_scratch.py`](kernel_scratch.py) checks the Speakup path budget,
+including the longest header, encoded path bytes and a ten-digit sandbox ID.
+The workflow first provisions a missing `/mnt/build/k` using noninteractive sudo.
+It requires the physical `/mnt` and `/mnt/build` parents to be root-owned and
+not group/world-writable, and checks that the build disk is the same filesystem
+as the runner's temp storage. An exclusive `mkdir` creates only the absent `k`
+with mode 0700, then `chown --no-dereference` assigns that new directory to the
+runner's numeric UID/GID. Existing directories are never chmodded or chowned;
+the unprivileged preparation step validates their ownership and runner identity.
+Symlinks and non-directory roots are rejected. The agent needs passwordless sudo
+permission for these two provisioning commands; failures stop the job. Parent
+permissions are unchanged, and no repository Python or kernel build runs under
+sudo. There is no fallback to a smaller boot disk.
+
+A retained `.runner-owner` identity binds the root to the runner name and physical
+runner temp directory. A second agent cannot reuse that root: provision a separate
+short root for it and keep one active job per runner work/temp directory. This is
+an operational guard, not isolation from hostile jobs running as the same user.
+After preparing the root and before checking its 45 GiB free-space requirement,
+cleanup removes only the allowlisted kernel build/verification state, disposable
+cache, artifacts and logs. The producer still requires new state directories;
+stale state is deleted, not reused. The same cleanup runs after artifact upload
+and cache-server shutdown, retaining the root and its runner identity.
+It validates all targets before deleting any, rejects workspace overlap,
+redirected paths and nested mounts, and preserves shared-cache symlink targets
+and hardlinked file metadata. An existing live cache PID blocks cleanup rather
+than killing a possibly unrelated process. Cleanup errors fail the job; a cache
+shutdown failure preserves state. Cancelled jobs can leave state for the next job's cleanup;
+old `kernel-job.*` directories still require periodic agent maintenance.
+Bazel's default startup location, cache policy and kernel build settings are
+unchanged. Compared with the observed 36-byte runner temp prefix, the short root
+saves 24 bytes. The longest Speakup input is 238 bytes with the observed sandbox
+ID, or 245 bytes with the reserved ten-digit ID, below its 255-byte limit.
 
 Base-image, event-services, Rust supervisor and OCI archive container jobs keep
 Bazel's default `/github/home/.cache/bazel/_bazel_root` startup directory.
