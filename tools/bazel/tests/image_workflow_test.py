@@ -18,6 +18,25 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_base_image_runtime_uses_guarded_kernel_workspace_repair(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-base-images.yml").read_text()
+        )
+        kernel = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text()
+        )
+        repair = next(
+            step for step in kernel["jobs"]["kernel-bundle"]["steps"]
+            if step.get("name") == "Restore workspace access before checkout"
+        )
+        runtime = workflow["jobs"]["runtime"]
+        self.assertNotIn("container", runtime)
+        self.assertEqual(runtime["steps"][0], repair)
+        self.assertTrue(runtime["steps"][1]["uses"].startswith("actions/checkout@"))
+        self.assertTrue(
+            runtime["steps"][2]["uses"].startswith("actions/download-artifact@")
+        )
+
     def test_eventd_startup_diagnostics_probe_writes_and_preserve_bazel_failure(self):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/bazel-eventd.yml").read_text()
