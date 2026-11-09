@@ -47,8 +47,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-    env:
-      BAZEL_OUTPUT_USER_ROOT: ${{ runner.temp }}/bazel-output-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.arch }}
     defaults:
       run:
         shell: bash
@@ -74,6 +72,12 @@ jobs:
 
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+      - name: Configure job-local Bazel startup directory
+        run: |
+          set -euo pipefail
+          printf 'BAZEL_OUTPUT_USER_ROOT=%s/bazel-output-%s-%s-%s-%s\n' \
+            "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "$GITHUB_JOB" '${{ matrix.arch }}' >> "$GITHUB_ENV"
       - name: Verify native architecture and clean dependency inputs
         env:
           EXPECTED_MACHINE: ${{ matrix.machine }}

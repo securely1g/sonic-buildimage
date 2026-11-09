@@ -244,7 +244,6 @@ jobs:
     env:
       # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
-      BAZEL_OUTPUT_USER_ROOT: ${{ runner.temp }}/bazel-output-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.architecture }}
     defaults:
       run:
         shell: bash
@@ -290,6 +289,12 @@ jobs:
           cache-version: "8.5.1"
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+      - name: Configure job-local Bazel startup directory
+        run: |
+          set -euo pipefail
+          printf 'BAZEL_OUTPUT_USER_ROOT=%s/bazel-output-%s-%s-%s-%s\n' \
+            "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "$GITHUB_JOB" '${{ matrix.architecture }}' >> "$GITHUB_ENV"
 
       - name: Configure the verified source mirror
         run: |

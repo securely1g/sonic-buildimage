@@ -30,24 +30,39 @@ class SetupBazelCacheTest(unittest.TestCase):
             ("bazel-supervisor-rust.yml", "native", "arch"),
             ("bazel-oci.yml", "archive", "architecture"),
         ]
-        prefix = ("${{ runner.temp }}/bazel-output-${{ github.run_id }}-"
-                  "${{ github.run_attempt }}-${{ github.job }}-")
         for filename, name, architecture in jobs:
-            with self.subTest(workflow=filename), tempfile.TemporaryDirectory() as temporary:
-                job = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())["jobs"][name]
-                self.assertIn("container", job)
-                self.assertEqual(job["env"]["BAZEL_OUTPUT_USER_ROOT"],
-                                 prefix + "${{ matrix." + architecture + " }}")
-                root = Path(temporary)
-                env = self.prepare(root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n")
-                env["BAZEL_OUTPUT_USER_ROOT"] = str(root / "job startup")
-                handoff = next(step for step in job["steps"] if HELPER in step.get("run", ""))
-                subprocess.run(["bash", "-euc", handoff["run"]], cwd=root, env=env, check=True)
-                subprocess.run(["bash", WRAPPER, "info", "output_base"], cwd=root, env=env, check=True)
-                record = json.loads((root / "record.json").read_text())
-                self.assertEqual(record["argv"][0], "--output_user_root=" + env["BAZEL_OUTPUT_USER_ROOT"])
-                self.assertEqual(record["user"].splitlines(),
-                                 ["build --disk_cache=/disk", "common --repository_cache=/repo"])
+            document = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+            job = document["jobs"][name]
+            for entry in job["strategy"]["matrix"]["include"]:
+                with self.subTest(workflow=filename, architecture=entry[architecture]), \
+                        tempfile.TemporaryDirectory(prefix="bazel startup ") as temporary:
+                    self.check_startup_handoff(document, job, name, architecture, entry, Path(temporary))
+
+    def check_startup_handoff(self, document, job, name, architecture, entry, root):
+        self.assertIn("container", job)
+        for other_job in document["jobs"].values():
+            self.assertNotIn("runner.", str(other_job.get("env", {})))
+        self.assertNotIn("BAZEL_OUTPUT_USER_ROOT", job.get("env", {}))
+        env = self.prepare(root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n")
+        env.pop("BAZEL_OUTPUT_USER_ROOT", None)
+        env.update(GITHUB_ENV=str(root / "github-env"), GITHUB_RUN_ID="101",
+                   GITHUB_RUN_ATTEMPT="2", GITHUB_JOB=name)
+        handoff = next(step for step in job["steps"] if HELPER in step.get("run", ""))
+        subprocess.run(["bash", "-euc", handoff["run"]], cwd=root, env=env, check=True)
+        startup = next(step for step in job["steps"]
+                       if step.get("name") == "Configure job-local Bazel startup directory")
+        self.assertEqual(job["steps"].index(startup), job["steps"].index(handoff) + 1)
+        script = startup["run"].replace("${{ matrix." + architecture + " }}", entry[architecture])
+        subprocess.run(["bash", "-euc", script], cwd=root, env=env, check=True)
+        expected = str(root / ("bazel-output-101-2-" + name + "-" + entry[architecture]))
+        self.assertEqual((root / "github-env").read_text().splitlines(),
+                         ["BAZEL_OUTPUT_USER_ROOT=" + expected])
+        env["BAZEL_OUTPUT_USER_ROOT"] = expected
+        subprocess.run(["bash", WRAPPER, "info", "output_base"], cwd=root, env=env, check=True)
+        record = json.loads((root / "record.json").read_text())
+        self.assertEqual(record["argv"][0], "--output_user_root=" + env["BAZEL_OUTPUT_USER_ROOT"])
+        self.assertEqual(record["user"].splitlines(),
+                         ["build --disk_cache=/disk", "common --repository_cache=/repo"])
 
     def test_startup_root_preserves_defaults_and_explicit_overrides(self):
         for configured in (None, "", "/job startup"):

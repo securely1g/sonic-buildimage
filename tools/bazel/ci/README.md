@@ -34,7 +34,8 @@ stops the job before checkout.
 
 Base-image, event-services, Rust supervisor and OCI archive container jobs set
 `BAZEL_OUTPUT_USER_ROOT` to a job/architecture-specific directory beneath
-`runner.temp`, including the run ID and attempt. The shared
+`RUNNER_TEMP`, including the run ID and attempt. A runtime step exports it via
+`GITHUB_ENV`: the `runner` context is unavailable in job-level `env`. The shared
 [`libteam_draft_bazel.sh`](libteam_draft_bazel.sh) wrapper passes this as a Bazel
 startup option. This avoids reusing a container-home startup directory owned by
 a different UID: Bazel requires that directory's owner to match its effective
