@@ -19,6 +19,20 @@ def request():
             'contract_sha256': '2' * 64}
 
 
+def pr_event(value):
+    return {'number': value['pr'], 'repository': {'full_name': receipt.REPOSITORY},
+        'pull_request': {'number': value['pr'],
+            'head': {'sha': value['head'], 'ref': 'feature', 'repo': {'full_name': receipt.REPOSITORY}},
+            'base': {'sha': value['base'], 'ref': 'main', 'repo': {'full_name': receipt.REPOSITORY}}}}
+
+
+def pr_environment(value):
+    return {'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_REPOSITORY': receipt.REPOSITORY,
+        'GITHUB_REF': 'refs/pull/' + str(value['pr']) + '/merge', 'GITHUB_SHA': value['merge'],
+        'GITHUB_BASE_REF': 'main', 'GITHUB_HEAD_REF': 'feature',
+        'CI_HEAD_SHA': value['head'], 'CI_BASE_SHA': value['base']}
+
+
 def metadata():
     req = request()
     artifact = {'id': 300, 'name': receipt.acceptance_name(req), 'expired': False,
@@ -123,17 +137,21 @@ class ReceiptTest(unittest.TestCase):
     def test_checkout_requires_merge_and_selected_owner(self):
         req = request()
         contract = {k: req[k] for k in ('owner', 'catalog', 'controller')}
-        event = {'pull_request': {'number': 159,
-            'head': {'sha': req['head'], 'repo': {'full_name': receipt.REPOSITORY}},
-            'base': {'sha': req['base'], 'repo': {'full_name': receipt.REPOSITORY}}}}
+        event = pr_event(req)
         answers = [req['merge'], 'tree ' + req['tree'] + '\nparent ' + req['base'] + '\nparent ' + req['head'] + '\n\nMerge',
-                   '160000 commit ' + req['owner'] + '\tsrc/sonic-p4rt/sonic-pins', req['tree']]
-        with patch.object(receipt, 'git', side_effect=answers):
+                   req['tree'], req['merge'], '160000 commit ' + req['owner'] + '\tsrc/sonic-p4rt/sonic-pins']
+        with patch.dict(os.environ, pr_environment(req)), patch.object(receipt, 'git', side_effect=answers):
             result = receipt.checkout_request(self.root, contract, event=event, run=123, attempt=1)
         self.assertEqual(result['merge'], req['merge'])
         for parents in (req['head'], req['head'] + ' ' + req['base'], '9' * 40 + ' ' + req['head']):
-            with patch.object(receipt, 'git', side_effect=[req['merge'], '\n'.join('parent ' + p for p in parents.split()) + '\n\nMerge']), self.assertRaises(ValueError):
+            rejected = [req['merge'], '\n'.join('parent ' + p for p in parents.split()) + '\n\nMerge',
+                        receipt.subprocess.CalledProcessError(1, ['git', 'merge-base'])]
+            with patch.dict(os.environ, pr_environment(req)), patch.object(receipt, 'git', side_effect=rejected), self.assertRaises(ValueError):
                 receipt.checkout_request(self.root, contract, event=event, run=123, attempt=1)
+        with patch.dict(os.environ, pr_environment(req)), patch.object(receipt, 'git',
+                side_effect=[*answers[:-1], '160000 commit ' + '9' * 40 + '\tsrc/sonic-p4rt/sonic-pins']), \
+                self.assertRaisesRegex(ValueError, 'Selected owner changed'):
+            receipt.checkout_request(self.root, contract, event=event, run=123, attempt=1)
         event['pull_request']['head']['repo']['full_name'] = 'someone/sonic-buildimage'
         with self.assertRaises(ValueError):
             receipt.checkout_request(self.root, contract, event=event, run=123, attempt=1)

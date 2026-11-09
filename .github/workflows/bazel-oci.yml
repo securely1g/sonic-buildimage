@@ -276,6 +276,13 @@ jobs:
         with:
           persist-credentials: false
 
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Check native architecture and generated dependency state
         run: |
           test "$(uname -m)" = "${{ matrix.machine }}"
@@ -563,7 +570,7 @@ jobs:
         env:
           CI_JOB_STATUS: ${{ job.status }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/public_artifacts.py archive \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
@@ -597,6 +604,14 @@ jobs:
   # Keep each native family's output base, disk cache and staged archives on a
   # separate disposable runner. Runtime jobs wait for the artifacts they consume.
   # The existing archive checks run afterward and retain the required AMD64 gate.
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   swss_layer_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect shared SWSS images (AMD64)
@@ -866,7 +881,17 @@ jobs:
     steps:
       - *native_space
       - *native_tools
-      - *native_checkout
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - *native_architecture
       - *native_gnoi
       - *native_p4rt_owner
@@ -934,7 +959,7 @@ jobs:
         id: orchagent_build
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
           SONIC_BAZEL_REGISTRY_REVISION: ade59395fe876f7bed63d27c6330faf3c6848f72
           BAZELISK_GITHUB_TOKEN: ""
         run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
@@ -1019,6 +1044,14 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   sflow_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect sFlow images (AMD64)
@@ -1030,7 +1063,17 @@ jobs:
     steps:
       - *native_space
       - *native_tools
-      - *native_checkout
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - *native_architecture
       - *native_gnoi
       - *native_p4rt_owner
@@ -1054,7 +1097,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
           SONIC_BAZEL_REGISTRY_REVISION: ade59395fe876f7bed63d27c6330faf3c6848f72
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
@@ -1146,6 +1189,14 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   otel_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect OTEL images (AMD64)
@@ -1157,7 +1208,17 @@ jobs:
     steps:
       - *native_space
       - *native_tools
-      - *native_checkout
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - *native_architecture
       - *native_gnoi
       - *native_p4rt_owner
@@ -1182,7 +1243,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
           SONIC_BAZEL_REGISTRY_REVISION: ade59395fe876f7bed63d27c6330faf3c6848f72
         run: python3 -B tools/bazel/ci/otel_image.py build --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Validate OTEL installed payloads and matching symbols
@@ -1270,6 +1331,14 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   dash_ha_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect DASH HA images (AMD64)
@@ -1281,7 +1350,17 @@ jobs:
     steps:
       - *native_space
       - *native_tools
-      - *native_checkout
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - *native_architecture
       - *native_gnoi
       - *native_p4rt_owner
@@ -1304,13 +1383,13 @@ jobs:
       - name: Build DASH HA runtime and debug images
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/dash_ha_image.py build --bazel "$BAZEL" --artifacts artifacts/dash-ha
       - name: Validate DASH HA image contents and cache reuse
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/dash_ha_image.py validate --artifacts artifacts/dash-ha
           python3 -B tools/bazel/ci/dash_ha_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dash-ha
@@ -1370,6 +1449,14 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   sysmgr_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect Sysmgr images (AMD64)
@@ -1381,7 +1468,17 @@ jobs:
     steps:
       - *native_space
       - *native_tools
-      - *native_checkout
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - *native_architecture
       - *native_gnoi
       - *native_p4rt_owner
@@ -1404,13 +1501,13 @@ jobs:
       - name: Build Sysmgr runtime and debug images
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/sysmgr_image.py build --bazel "$BAZEL" --artifacts artifacts/sysmgr
       - name: Validate Sysmgr image contents and cache reuse
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/sysmgr_image.py validate --artifacts artifacts/sysmgr
           python3 -B tools/bazel/ci/sysmgr_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sysmgr
@@ -1471,6 +1568,14 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   gearbox_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect gearbox images (AMD64)
@@ -1501,6 +1606,13 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: 'false'
+        fetch-depth: 64
+    - name: Verify the tested PR source context
+      id: source_context
+      if: github.event_name == 'pull_request' && (env.GEARBOX_WORKER_RECEIPT == 'true')
+      run: |
+        git config --global --add safe.directory "$PWD"
+        python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - name: Preserve the original normal CI request
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
       id: gearbox_request
@@ -1562,7 +1674,14 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
+        fetch-depth: 64
       if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Verify the tested PR source context
+      id: source_context_fallback
+      if: github.event_name == 'pull_request' && (env.GEARBOX_WORKER_RECEIPT != 'true')
+      run: |
+        git config --global --add safe.directory "$PWD"
+        python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - name: Check native architecture and generated dependency state
       run: 'test "$(uname -m)" = "x86_64"
 
@@ -1608,7 +1727,7 @@ jobs:
       env:
         BAZELISK_GITHUB_TOKEN: ''
         CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        CI_BASE_SHA: ${{ steps.source_context_fallback.outputs.tested_base || steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
       run: python3 -B tools/bazel/ci/gbsyncd_image.py build --bazel "$BAZEL" --artifacts artifacts/gbsyncd
       if: env.GEARBOX_WORKER_RECEIPT != 'true'
     - name: Validate gearbox installed contents and complete source symbols
@@ -1667,6 +1786,14 @@ jobs:
         if-no-files-found: error
         retention-days: 14
         compression-level: 1
+    - name: Retain the tested PR source context
+      if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success' || steps.source_context_fallback.outcome == 'success')
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+        path: artifacts/source-context/context.json
+        if-no-files-found: error
+        retention-days: 14
     permissions:
       contents: read
       actions: read
@@ -1682,7 +1809,17 @@ jobs:
     steps:
       - *native_space
       - *native_tools
-      - *native_checkout
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - *native_architecture
       - *native_gnoi
       - *native_p4rt_owner
@@ -1707,7 +1844,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/dash_engine_image.py build --bazel "$BAZEL" --artifacts artifacts/dash-engine
       - name: Validate DASH engine payloads and matching symbols
         run: python3 -B tools/bazel/ci/dash_engine_image.py validate --artifacts artifacts/dash-engine
@@ -1757,6 +1894,14 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   p4rt_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect P4RT images (AMD64)
@@ -1781,6 +1926,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: 'false'
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request' && (env.P4RT_WORKER_RECEIPT == 'true')
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Preserve the original normal CI request
         if: env.P4RT_WORKER_RECEIPT == 'true'
         id: p4rt_request
@@ -1866,7 +2018,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: 'false'
+          fetch-depth: 64
         if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Verify the tested PR source context
+        id: source_context_fallback
+        if: github.event_name == 'pull_request' && (env.P4RT_WORKER_RECEIPT != 'true')
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Check native architecture and generated dependency state
         run: |
           test "$(uname -m)" = "x86_64"
@@ -2007,6 +2166,14 @@ jobs:
           retention-days: '14'
           compression-level: '0'
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success' || steps.source_context_fallback.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   syncd_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect syncd images (AMD64)
@@ -2038,6 +2205,13 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: 'false'
+        fetch-depth: 64
+    - name: Verify the tested PR source context
+      id: source_context
+      if: github.event_name == 'pull_request' && (env.SYNCD_WORKER_RECEIPT == 'true')
+      run: |
+        git config --global --add safe.directory "$PWD"
+        python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - name: Preserve the original normal CI request
       if: env.SYNCD_WORKER_RECEIPT == 'true'
       id: syncd_request
@@ -2123,7 +2297,14 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
+        fetch-depth: 64
       if: env.SYNCD_WORKER_RECEIPT != 'true'
+    - name: Verify the tested PR source context
+      id: source_context_fallback
+      if: github.event_name == 'pull_request' && (env.SYNCD_WORKER_RECEIPT != 'true')
+      run: |
+        git config --global --add safe.directory "$PWD"
+        python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - name: Check native architecture and generated dependency state
       run: |
         test "$(uname -m)" = "x86_64"
@@ -2200,7 +2381,7 @@ jobs:
       env:
         BAZELISK_GITHUB_TOKEN: ''
         CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        CI_BASE_SHA: ${{ steps.source_context_fallback.outputs.tested_base || steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
       run: python3 -B tools/bazel/ci/syncd_image.py build --bazel "$BAZEL" --artifacts artifacts/syncd
       if: env.SYNCD_WORKER_RECEIPT != 'true'
     - name: Validate syncd installed contents and complete source symbols
@@ -2265,6 +2446,14 @@ jobs:
         retention-days: 14
         compression-level: 1
 
+    - name: Retain the tested PR source context
+      if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success' || steps.source_context_fallback.outcome == 'success')
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+        path: artifacts/source-context/context.json
+        if-no-files-found: error
+        retention-days: 14
   teamd_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect Teamd images (AMD64)
@@ -2495,6 +2684,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: swss-layer-amd64
@@ -2555,6 +2751,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   sflow_runtime:
     name: Load and run SWSS and sFlow images (AMD64)
     needs: [swss_layer_native, sflow_native]
@@ -2564,6 +2768,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: swss-layer-amd64
@@ -2613,7 +2824,7 @@ jobs:
       - name: Exercise installed sFlow manager, mapper and exporter variants
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/sflow_loaded.py --artifacts artifacts/sflow
       - name: Retain installed sFlow evidence
         if: always()
@@ -2624,6 +2835,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   otel_runtime:
     name: Load and run OTEL images (AMD64)
     needs: otel_native
@@ -2633,6 +2852,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: otel-source-amd64
@@ -2640,7 +2866,7 @@ jobs:
       - name: Exercise installed collector launchers and telemetry
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/otel_loaded.py --artifacts artifacts/otel
       - name: Retain installed OTEL evidence
         if: always()
@@ -2651,6 +2877,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   dash_ha_runtime:
     name: Load and run DASH HA images (AMD64)
     needs: dash_ha_native
@@ -2660,6 +2894,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dash-ha-images-amd64-${{ github.sha }}
@@ -2667,7 +2908,7 @@ jobs:
       - name: Check installed HA startup, peer routing and PMON reset state
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/dash_ha_loaded.py --artifacts artifacts/dash-ha
       - name: Retain installed HA evidence
         if: always()
@@ -2678,6 +2919,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   sysmgr_runtime:
     name: Load and run Sysmgr images (AMD64)
     needs: sysmgr_native
@@ -2687,6 +2936,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sysmgr-images-amd64-${{ github.sha }}
@@ -2694,7 +2950,7 @@ jobs:
       - name: Check installed Sysmgr startup and private Redis-to-D-Bus notifications
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/sysmgr_loaded.py --artifacts artifacts/sysmgr
       - name: Retain installed Sysmgr evidence
         if: always()
@@ -2706,6 +2962,14 @@ jobs:
           retention-days: 14
 
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   gearbox_runtime:
     name: Load and run gearbox images (AMD64)
     needs: gearbox_native
@@ -2717,6 +2981,13 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: 'false'
+        fetch-depth: 64
+    - name: Verify the tested PR source context
+      id: source_context
+      if: github.event_name == 'pull_request' && (env.GEARBOX_WORKER_RECEIPT == 'true')
+      run: |
+        git config --global --add safe.directory "$PWD"
+        python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - name: Preserve the original normal CI request
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
       id: gearbox_request
@@ -2763,7 +3034,14 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
+        fetch-depth: 64
       if: env.GEARBOX_WORKER_RECEIPT != 'true'
+    - name: Verify the tested PR source context
+      id: source_context_fallback
+      if: github.event_name == 'pull_request' && (env.GEARBOX_WORKER_RECEIPT != 'true')
+      run: |
+        git config --global --add safe.directory "$PWD"
+        python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
       with:
         name: gbsyncd-source-amd64
@@ -2780,6 +3058,14 @@ jobs:
         path: artifacts/gbsyncd/*.runtime.json
         if-no-files-found: warn
         retention-days: 14
+    - name: Retain the tested PR source context
+      if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success' || steps.source_context_fallback.outcome == 'success')
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+        path: artifacts/source-context/context.json
+        if-no-files-found: error
+        retention-days: 14
     env:
       GEARBOX_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     permissions:
@@ -2795,6 +3081,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dash-engine-source-amd64
@@ -2802,7 +3095,7 @@ jobs:
       - name: Exercise original startup and installed controller interfaces
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: python3 -B tools/bazel/ci/dash_engine_loaded.py --artifacts artifacts/dash-engine
       - name: Retain installed DASH engine evidence
         if: always()
@@ -2815,6 +3108,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   p4rt_runtime:
     name: Load and run P4RT images (AMD64)
     needs: p4rt_native
@@ -2831,6 +3132,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: 'false'
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request' && (env.P4RT_WORKER_RECEIPT == 'true')
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Preserve the original normal CI request
         if: env.P4RT_WORKER_RECEIPT == 'true'
         id: p4rt_request
@@ -2889,7 +3197,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: 'false'
+          fetch-depth: 64
         if: env.P4RT_WORKER_RECEIPT != 'true'
+      - name: Verify the tested PR source context
+        id: source_context_fallback
+        if: github.event_name == 'pull_request' && (env.P4RT_WORKER_RECEIPT != 'true')
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Initialize P4RT's pinned probe owner
         run: git submodule update --init -- src/sonic-p4rt/sonic-pins
         if: env.P4RT_WORKER_RECEIPT != 'true'
@@ -2912,6 +3227,14 @@ jobs:
           if-no-files-found: error
           retention-days: '14'
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success' || steps.source_context_fallback.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   syncd_runtime:
     name: Load and run syncd images (AMD64)
     needs: syncd_native
@@ -2928,6 +3251,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: 'false'
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request' && (env.SYNCD_WORKER_RECEIPT == 'true')
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Preserve the original normal CI request
         if: env.SYNCD_WORKER_RECEIPT == 'true'
         id: syncd_request
@@ -2986,7 +3316,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 64
         if: env.SYNCD_WORKER_RECEIPT != 'true'
+      - name: Verify the tested PR source context
+        id: source_context_fallback
+        if: github.event_name == 'pull_request' && (env.SYNCD_WORKER_RECEIPT != 'true')
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: syncd-source-amd64
@@ -3006,6 +3343,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success' || steps.source_context_fallback.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: OCI regression checks (AMD64)
@@ -3245,6 +3590,13 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+          fetch-depth: 64
+      - name: Verify the tested PR source context
+        id: source_context
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global --add safe.directory "$PWD"
+          python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Check VS build prerequisites
         run: python3 -B tools/ci/runner/preflight.py --workspace "$PWD" --build-target sonic-vs.bin
 
@@ -3384,7 +3736,7 @@ jobs:
         env:
           CI_JOB_STATUS: ${{ steps.swss_validation.outcome == 'success' && 'success' || 'failure' }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/public_artifacts.py source \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
@@ -3443,7 +3795,7 @@ jobs:
         env:
           CI_JOB_STATUS: ${{ steps.syncd_validation.outcome == 'success' && 'success' || 'failure' }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/public_artifacts.py syncd \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
@@ -3492,7 +3844,7 @@ jobs:
         env:
           CI_JOB_STATUS: ${{ job.status }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
         run: |
           python3 -B tools/bazel/ci/public_artifacts.py vs \
             --workspace "$PWD" --upload-root "$GITHUB_WORKSPACE" \
@@ -3538,6 +3890,14 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+      - name: Retain the tested PR source context
+        if: always() && github.event_name == 'pull_request' && (steps.source_context.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/source-context/context.json
+          if-no-files-found: error
+          retention-days: 14
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
