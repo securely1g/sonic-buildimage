@@ -298,7 +298,7 @@ class BazeliskBootstrapTest(unittest.TestCase):
             options = dict(zip(args[::2], args[1::2]))
             assert set(options) == {'--manifest', '--distdir', '--repository-cache',
                                     '--cache-dir', '--receipt', '--github-token-env'}
-            assert options['--manifest'] == '.bazel-inputs/github-reader/ci/github_sources/sonic-buildimage-rule-inputs.json'
+            assert options['--manifest'] == 'tools/bazel/ci/sonic-buildimage-rule-inputs.json'
             assert Path(options['--manifest']).is_file()
             assert options['--github-token-env'] == 'GITHUB_TOKEN'
             assert os.environ['GITHUB_TOKEN'] == 'fixture-token'
@@ -338,7 +338,9 @@ class BazeliskBootstrapTest(unittest.TestCase):
                     inputs = directory / ".bazel-inputs/github-reader/ci"
                     (inputs / "github_sources").mkdir(parents=True)
                     (inputs / "github_sources.py").write_text(reader)
-                    (inputs / "github_sources/sonic-buildimage-rule-inputs.json").write_text("{}\n")
+                    manifest = directory / "tools/bazel/ci/sonic-buildimage-rule-inputs.json"
+                    manifest.parent.mkdir(parents=True)
+                    manifest.write_text("{}\n")
                     repository = directory / ".cache/bazel-repo"
                     repository.mkdir(parents=True)
                     (repository / "fixture-archive").write_bytes(b'cached archive fixture')
@@ -448,7 +450,9 @@ class BazeliskBootstrapTest(unittest.TestCase):
                 self.assertIn('ref: 997796400cc3eefc1f0590b227cd9b74c2141424', checkout)
                 self.assertIn('persist-credentials: false', checkout)
                 self.assertIn('path: .bazel-inputs/github-reader', checkout)
-                self.assertIn('ci/github_sources/sonic-buildimage-rule-inputs.json', checkout)
+                self.assertIn('ci/github_sources.py', checkout)
+                self.assertIn('ci/github_sources/bazelisk-1.29.0-linux-amd64.json', checkout)
+                self.assertNotIn('ci/github_sources/sonic-buildimage-rule-inputs.json', checkout)
                 self.assertLess(names.index('Prepare checksum-pinned Bazelisk'), names.index('Set up Bazel'))
                 self.assertIn('bazelisk-version: ""', selected['Set up Bazel'])
                 self.assertLess(names.index('Preserve configured caches for Draft validation'),

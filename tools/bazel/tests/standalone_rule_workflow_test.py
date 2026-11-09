@@ -39,8 +39,10 @@ def fixture(directory, reader):
     inputs = directory / ".bazel-inputs/github-reader/ci"
     (inputs / "github_sources").mkdir(parents=True)
     (inputs / "github_sources.py").write_text(textwrap.dedent(reader))
-    for name in ("bazelisk-1.29.0-linux-amd64", "sonic-buildimage-rule-inputs"):
-        (inputs / "github_sources" / (name + ".json")).write_text("{}\n")
+    (inputs / "github_sources/bazelisk-1.29.0-linux-amd64.json").write_text("{}\n")
+    manifest = directory / "tools/bazel/ci/sonic-buildimage-rule-inputs.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}\n")
     return commands
 
 
@@ -62,9 +64,9 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
                 self.assertIn("persist-credentials: false", checkout)
                 self.assertIn("sparse-checkout-cone-mode: false", checkout)
                 for path in ("ci/github_sources.py",
-                             "ci/github_sources/bazelisk-1.29.0-linux-amd64.json",
-                             "ci/github_sources/sonic-buildimage-rule-inputs.json"):
+                             "ci/github_sources/bazelisk-1.29.0-linux-amd64.json"):
                     self.assertIn("            " + path + "\n", checkout)
+                self.assertNotIn("ci/github_sources/sonic-buildimage-rule-inputs.json", checkout)
                 if family == "sysmgr":
                     self.assertIn("ci/github_sources/cosmos-4.0.2.json", checkout)
                 self.assertLess(job.index("Prepare checksum-pinned Bazelisk"),
@@ -80,6 +82,75 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
                 self.assertNotIn("artifacts/source-downloads", upload)
                 self.assertNotIn("RUNNER_TEMP", upload)
                 self.assertNotIn("path: artifacts\n", upload)
+
+    def test_consumer_manifest_changes_trigger_every_filtered_reader(self):
+        manifest = "      - tools/bazel/ci/sonic-buildimage-rule-inputs.json\n"
+        for family, count in (("frr", 1), ("libteam", 1), ("sysmgr", 2)):
+            with self.subTest(family=family):
+                workflow = (ROOT / f".github/workflows/bazel-{family}.yml").read_text()
+                events = workflow.split("\npermissions:", 1)[0]
+                self.assertEqual(events.count(manifest), count)
+
+    def test_libteam_reader_keeps_matrix_caches_and_native_artifact_boundary(self):
+        job = native_job("libteam")
+        selected = steps(job)
+        checkout = selected["Check out the pinned GitHub input reader"]
+        self.assertIn("ref: 997796400cc3eefc1f0590b227cd9b74c2141424", checkout)
+        self.assertIn("persist-credentials: false", checkout)
+        self.assertIn("sparse-checkout: ci/github_sources.py", checkout)
+        self.assertNotIn("github_sources/", checkout)
+        self.assertIn("architecture: [amd64, arm64]", job)
+        self.assertIn("bazelisk-version: 1.29.0", job)
+        self.assertIn("disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}", job)
+        self.assertIn('cache-version: "8.5.1"', job)
+        self.assertNotIn("Prepare checksum-pinned Bazelisk", selected)
+        self.assertLess(job.index("bazel-contrib/setup-bazel@"),
+                        job.index("Prepare checksum-pinned Bazel rule archives"))
+        self.assertLess(job.index("Prepare checksum-pinned Bazel rule archives"),
+                        job.index("Build source outputs and execute native tests"))
+        reader = selected["Prepare checksum-pinned Bazel rule archives"]
+        self.assertNotIn("if:", reader)
+        self.assertNotIn("continue-on-error", reader)
+        self.assertIn('options+=("--distdir=$PWD/.cache/bazel-distdir")', job)
+        self.assertIn("if: always() && steps.rule_archives.outcome == 'success'",
+                      selected["Validate public download receipts"])
+        upload = selected["Upload public download receipts"]
+        self.assertIn("if: always() && steps.download_receipts.outcome == 'success'", upload)
+        self.assertIn("name: libteam-downloads-${{ matrix.architecture }}-${{ matrix.distribution }}", upload)
+        self.assertIn("path: libteam-download-receipts/rule-sources.json", upload)
+        self.assertNotIn("path: artifacts", upload)
+        native = selected["Upload source outputs and validation evidence"]
+        self.assertIn("name: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}", native)
+        self.assertIn("path: artifacts\n", native)
+        self.assertNotIn("download-receipts", native)
+
+    def test_libteam_receipt_gate_rejects_missing_malformed_or_private_evidence(self):
+        script = shell(steps(native_job("libteam"))["Validate public download receipts"]).splitlines()
+        code = "\n".join(script[1:-1])
+        previous = Path.cwd()
+        for value in (None, b'{"files": [], "sources": []}',
+                      b'{"authorization": "private-sentinel"}', b'{"malformed":'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                receipt = directory / "libteam-download-receipts/rule-sources.json"
+                receipt.parent.mkdir(parents=True)
+                if value is not None:
+                    receipt.write_bytes(value)
+                captured = io.StringIO()
+                try:
+                    os.chdir(directory)
+                    with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured), \
+                            mock.patch.object(subprocess, "Popen", side_effect=AssertionError("process denied")), \
+                            mock.patch.object(socket.socket, "connect", side_effect=AssertionError("network denied")):
+                        if value == b'{"files": [], "sources": []}':
+                            exec(compile(code, "<actual-libteam-receipt-step>", "exec"), {})
+                        else:
+                            error = FileNotFoundError if value is None else ValueError
+                            with self.assertRaises(error):
+                                exec(compile(code, "<actual-libteam-receipt-step>", "exec"), {})
+                    self.assertEqual(captured.getvalue(), "")
+                finally:
+                    os.chdir(previous)
 
     def test_bootstrap_failure_never_exposes_partial_binary(self):
         reader = r'''
@@ -139,7 +210,8 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
             options = dict(zip(sys.argv[1:][::2], sys.argv[1:][1::2]))
             assert set(options) == {'--manifest', '--distdir', '--repository-cache',
                                     '--cache-dir', '--receipt', '--github-token-env'}
-            assert options['--manifest'].endswith('/sonic-buildimage-rule-inputs.json')
+            assert options['--manifest'] == 'tools/bazel/ci/sonic-buildimage-rule-inputs.json'
+            assert Path(options['--manifest']).is_file()
             assert options['--github-token-env'] == 'GITHUB_TOKEN'
             assert os.environ['GITHUB_TOKEN'] == 'fixture-token'
             repository = Path(os.environ['HOME']) / '.cache/bazel-repo'
@@ -157,7 +229,7 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
             receipt.parent.mkdir(parents=True)
             receipt.write_text(json.dumps({'origin': 'repository-cache'}))
         '''
-        for family, output in FAMILIES.items():
+        for family, output in dict(FAMILIES, libteam="libteam").items():
             job = native_job(family)
             script = shell(steps(job)["Prepare checksum-pinned Bazel rule archives"])
             for code in (23, 0):
@@ -169,6 +241,8 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
                         distdir = runner / "pigz-distdir"
                     elif family == "sysmgr":
                         distdir = runner / "sysmgr-github-inputs/distdir"
+                    elif family == "libteam":
+                        distdir = directory / ".cache/bazel-distdir"
                     else:
                         distdir = directory / "artifacts/source-downloads"
                     distdir.mkdir(parents=True)
@@ -182,11 +256,13 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
                     startup = runner / "sysmgr-github-inputs/downloads.bazelrc"
                     startup.parent.mkdir(parents=True, exist_ok=True)
                     startup.write_text("common --distdir=" + str(distdir) + "\n")
+                    receipt = ("libteam-download-receipts/rule-sources.json"
+                               if family == "libteam" else f"artifacts/{output}/rule-sources.json")
                     result = subprocess.run(
                         ["/bin/bash", "-e", "-o", "pipefail", "-c", script], cwd=directory,
                         env={"PATH": str(commands), "HOME": str(directory), "PWD": str(directory),
                              "RUNNER_TEMP": str(runner), "GITHUB_TOKEN": "fixture-token",
-                             "EXPECTED_RECEIPT": f"artifacts/{output}/rule-sources.json",
+                             "EXPECTED_RECEIPT": receipt,
                              "EXPECTED_DISTDIR": str(distdir), "READER_EXIT": str(code)},
                         capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, code, result.stdout + result.stderr)

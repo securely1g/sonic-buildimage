@@ -43,7 +43,6 @@ jobs:
           sparse-checkout: |
             ci/github_sources.py
             ci/github_sources/bazelisk-1.29.0-linux-amd64.json
-            ci/github_sources/sonic-buildimage-rule-inputs.json
           persist-credentials: false
       - name: Prepare checksum-pinned Bazelisk
         env:
@@ -78,7 +77,7 @@ jobs:
           set -euo pipefail
           inputs=.bazel-inputs/github-reader/ci
           python3 -B "$inputs/github_sources.py" \
-            --manifest "$inputs/github_sources/sonic-buildimage-rule-inputs.json" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
             --distdir "$PWD/artifacts/source-downloads" \
             --repository-cache "$HOME/.cache/bazel-repo" \
             --cache-dir "$HOME/.cache/sonic-github-sources" \
