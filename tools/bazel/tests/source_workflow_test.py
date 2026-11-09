@@ -841,6 +841,23 @@ class RootLockFailureEvidenceTest(unittest.TestCase):
             self.assertIn(script[-1], ('PY', 'PYCODE'))
             yield '\n'.join(script[1:-1]), destination, summary
 
+    def image_snippets(self):
+        cases = (
+            ('orchagent_native', 'Review public Orchagent evidence', 'orchagent', 'orchagent_public'),
+            ('dash_ha_native', 'Prepare reviewed public evidence', 'dash-ha', 'dash_ha_public'),
+            ('sysmgr_native', 'Prepare reviewed Sysmgr public evidence', 'sysmgr', 'sysmgr_public'),
+            ('teamd_native', 'Prepare reviewed Teamd evidence', 'teamd', 'teamd_public'),
+        )
+        for job, name, folder, review in cases:
+            workflow = jobs()[job]
+            step = steps(workflow)[name]
+            self.assertIn('if: always()', step)
+            self.assertIn("if: always() && steps." + review + ".outcome == 'success'", workflow)
+            script = shell(step).splitlines()
+            self.assertRegex(script[0], r"^python3 - <<'PY(?:CODE|ORCH)?'$")
+            self.assertIn(script[-1], ('PY', 'PYCODE', 'PYORCH'))
+            yield '\n'.join(script[1:-1]), 'artifacts/' + folder
+
     @staticmethod
     def lock(**extra):
         return {'lockFileVersion': 13, 'registryFileHashes': {}, 'moduleExtensions': {}, **extra}
@@ -872,6 +889,42 @@ class RootLockFailureEvidenceTest(unittest.TestCase):
         self.assertEqual(error, 'Root module lock is not safe to publish')
         self.assertEqual(output, '')
         self.assertFalse((workspace / destination / 'MODULE.bazel.lock').exists())
+
+    def test_image_evidence_survives_missing_artifact_directory(self):
+        for code, destination in self.image_snippets():
+            with self.subTest(destination=destination), tempfile.TemporaryDirectory() as temp:
+                workspace = Path(temp)
+                folder = workspace / destination
+                self.assertFalse(folder.exists())
+                self.assertEqual(self.execute(code, workspace), (None, ''))
+                self.assertEqual(json.loads((folder / 'build-summary.json').read_text()), {})
+                self.assertEqual(sorted(path.name for path in folder.iterdir()), ['build-summary.json'])
+
+    def test_image_evidence_preserves_safe_data_and_rejects_private_data(self):
+        from tools.bazel.ci.public_artifacts import PublicArtifactError
+        for code, destination in self.image_snippets():
+            for private in (False, True):
+                with self.subTest(destination=destination, private=private), tempfile.TemporaryDirectory() as temp:
+                    workspace = Path(temp)
+                    folder = workspace / destination
+                    folder.mkdir(parents=True)
+                    value = {'authorization': 'private-sentinel'} if private else {'files': [], 'status': 'verified'}
+                    original = (json.dumps(value) + '\n').encode()
+                    (folder / 'rule-sources.json').write_bytes(original)
+                    if private:
+                        with self.assertRaises(PublicArtifactError):
+                            self.execute(code, workspace)
+                        self.assertFalse((folder / 'build-summary.json').exists())
+                        self.assertFalse((folder / 'public-receipt.json').exists())
+                    else:
+                        receipt = {'status': 'failed', 'architecture': 'amd64', 'argv': ['private-sentinel']}
+                        (folder / 'build-receipt.json').write_text(json.dumps(receipt))
+                        self.assertEqual(self.execute(code, workspace), (None, ''))
+                        self.assertEqual(json.loads((folder / 'build-summary.json').read_text()), {})
+                        self.assertEqual(json.loads((folder / 'public-receipt.json').read_text()),
+                                         {'status': 'failed', 'architecture': 'amd64'})
+                        self.assertEqual(json.loads((folder / 'build-receipt.json').read_text()), receipt)
+                    self.assertEqual((folder / 'rule-sources.json').read_bytes(), original)
 
     def test_missing_root_preserves_summaries_and_existing_safe_evidence(self):
         for code, destination, summary in self.snippets():
