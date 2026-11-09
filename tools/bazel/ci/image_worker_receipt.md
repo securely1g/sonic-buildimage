@@ -18,6 +18,18 @@ catalog as `registry_revision`, and original artifact ID as
 `source_ci_request`. Select one of the dedicated workers explicitly. The worker
 checks those identities before building and preserves its existing caches.
 
+The contracts pin the [source-manifest controller change](https://github.com/securely1g/sonic-buildimage/commit/944ea2bf52868928c550cd61becfc5f9d0b76250).
+Both its worker preparation and hosted source-input producer verify
+`tools/bazel/ci/sonic-buildimage-rule-inputs.json` against the exact SOURCE commit.
+The executable download reader remains pinned in CONTROL. Rule files stay in
+the worker cache or hosted temporary directory; the five-archive source handoff
+and its receipt remain unchanged. The controller implementation is reviewed
+separately from this checkout's legacy manual-worker workflow.
+
+A changed controller pin requires a fresh normal CI run and request. Existing
+requests keep their original controller and contract digest; retries reuse
+those requests without rewriting their provenance.
+
 Syncd and Gearbox run their existing build, contents/symbols, incremental and loaded-service
 phases. P4RT also runs its SDK preparation and complete owner test suite. The
 worker uploads a bounded JSON acceptance artifact after its private Docker
