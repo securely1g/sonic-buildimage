@@ -226,6 +226,7 @@ jobs:
         include:
           - name: AMD64
             architecture: amd64
+            bazelisk_version: ""
             machine: x86_64
             runner: ubuntu-24.04
             platform: x86_64_trixie
@@ -234,6 +235,7 @@ jobs:
             timeout: 300
           - name: ARM64
             architecture: arm64
+            bazelisk_version: "1.29.0"
             machine: aarch64
             runner: ubuntu-24.04-arm
             platform: aarch64_trixie
@@ -312,13 +314,46 @@ jobs:
           ref: 997796400cc3eefc1f0590b227cd9b74c2141424
           path: .bazel-inputs/github-reader
           sparse-checkout-cone-mode: false
-          sparse-checkout: ci/github_sources.py
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
           persist-credentials: false
+
+      - name: Prepare checksum-pinned Bazelisk
+        id: bazelisk_bootstrap
+        if: matrix.architecture == 'amd64'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/bazelisk-inputs/bazelisk-bootstrap.json \
+            --github-token-env GITHUB_TOKEN
+          python3 - <<'PYRECEIPT'
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, safe_json
+          safe_json(load_json(Path("artifacts/bazelisk-inputs/bazelisk-bootstrap.json").read_bytes()))
+          PYRECEIPT
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
+
+      - name: Retain verified Bazelisk input provenance
+        if: always() && matrix.architecture == 'amd64' && steps.bazelisk_bootstrap.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bazelisk-inputs-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: artifacts/bazelisk-inputs/bazelisk-bootstrap.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ${{ matrix.bazelisk_version }}
           bazelisk-cache: true
           repository-cache: true
           disk-cache: ${{ matrix.disk_cache }}
