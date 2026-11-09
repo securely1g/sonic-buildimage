@@ -1797,6 +1797,15 @@ jobs:
         id: dash_engine_public
         if: always() && steps.dash_engine_build.outcome != 'skipped'
         run: python3 -B tools/bazel/ci/dash_engine_public.py --artifacts artifacts/dash-engine
+      - name: Retain reviewed DASH incremental diagnostics
+        if: always() && steps.dash_engine_public.outcome == 'success' && hashFiles('artifacts/dash-engine/incremental.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dash-engine-incremental-amd64
+          path: artifacts/dash-engine/incremental.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
       - name: Retain DASH engine archives and source evidence
         if: always() && steps.dash_engine_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1820,16 +1829,6 @@ jobs:
             artifacts/dash-engine/MODULE.bazel.lock
             artifacts/dash-engine/module-graph.json
             artifacts/dash-engine/tests/test.xml
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
-
-      - name: Retain reviewed DASH incremental diagnostics
-        if: always() && steps.dash_engine_public.outcome == 'success' && hashFiles('artifacts/dash-engine/incremental.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dash-engine-incremental-amd64
-          path: artifacts/dash-engine/incremental.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
