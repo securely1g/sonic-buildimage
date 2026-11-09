@@ -261,6 +261,28 @@ class NativeFamilyJobsTest(unittest.TestCase):
 
 
 class BazeliskBootstrapTest(unittest.TestCase):
+    def test_checks_use_verified_common_mirrors_before_gitlab_fetch(self):
+        import ast
+        import hashlib
+        job = jobs()["checks"]
+        selected = steps(job)
+        script = shell(selected["Configure the verified source mirror"])
+        code = ast.parse("\n".join(script.splitlines()[1:-1]))
+        constants = {node.targets[0].id: node.value.value for node in code.body
+                     if isinstance(node, ast.Assign) and len(node.targets) == 1
+                     and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)}
+        self.assertEqual(constants["url"],
+                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
+                         "997796400cc3eefc1f0590b227cd9b74c2141424/ci/source_mirrors.cfg")
+        fixture = ROOT / "tools/bazel/tests/fixtures/source-mirrors-99779640.cfg"
+        self.assertEqual(constants["expected"], hashlib.sha256(fixture.read_bytes()).hexdigest())
+        self.assertIn("if hashlib.sha256(data).hexdigest() != expected:", script)
+        names = list(selected)
+        self.assertLess(names.index("Configure the verified source mirror"),
+                        names.index("Prepare checksum-pinned Bazel rule archives"))
+        self.assertLess(names.index("Prepare checksum-pinned Bazel rule archives"),
+                        names.index("Retain the verified GitLab source downloads"))
+
     propagated = ('orchagent', 'sflow', 'otel', 'dash_ha', 'sysmgr', 'dash_engine', 'teamd')
 
     def native_steps(self, family):
