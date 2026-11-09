@@ -52,9 +52,19 @@ the startup directory's owner to match its effective UID even when the process
 can write there. The helper requires GitHub Actions, the expected container home
 and a root job container. Directory descriptors prevent following symlinks, and
 mount checks exclude redirected startup paths and nested mounts. Regular files,
-hardlinks and repository/disk caches are not modified; failures stop the job.
+hardlinks and repository/disk caches are not modified by ownership repair;
+failures stop the job.
 No startup path override is exported. The shared wrapper still accepts explicit
 caller startup options for isolated cache-verification runs.
+
+The helper also verifies a batch Bazel startup without loading rc files. If
+Bazel reports a corrupt extracted installation, it validates the reported
+32-character hash directory under the default `install` tree, removes only that
+directory without following symlinks or crossing mounts, and retries startup
+once so Bazel re-extracts its embedded files. Other installation directories,
+output bases and repository/disk caches are retained. Other startup failures
+and a failed recovery preserve Bazel's exit code and stop the job; installation
+timestamps are never patched to bypass Bazel's validation.
 
 The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
 ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
