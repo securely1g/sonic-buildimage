@@ -8,6 +8,7 @@ on:
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/repair_bazel_startup.py
       - .github/workflows/bazel-eventd.yml
   push:
     branches: [master]
@@ -17,6 +18,7 @@ on:
       - tools/bazel/common.bazelrc
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/repair_bazel_startup.py
       - .github/workflows/bazel-eventd.yml
   workflow_dispatch:
 
@@ -59,12 +61,8 @@ jobs:
           cache-version: "8.5.1"
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
-      - name: Configure job-local Bazel startup directory
-        run: |
-          set -euo pipefail
-          printf 'BAZEL_OUTPUT_USER_ROOT=%s/bazel-output-%s-%s-%s-%s\n' \
-            "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
-            "$GITHUB_JOB" '${{ matrix.architecture }}' >> "$GITHUB_ENV"
+      - name: Restore default Bazel startup ownership
+        run: python3 tools/bazel/ci/repair_bazel_startup.py
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'
@@ -91,7 +89,7 @@ jobs:
           set -euo pipefail
           id
           printf 'HOME=%s\nRUNNER_TEMP=%s\n' "$HOME" "$RUNNER_TEMP"
-          printf 'BAZEL_OUTPUT_USER_ROOT=%s\n' "$BAZEL_OUTPUT_USER_ROOT"
+          printf 'Default Bazel startup directory=%s\n' "$HOME/.cache/bazel/_bazel_root"
           for path in / /github "$HOME" "$HOME/.cache" "$HOME/.cache/bazel" \
             "$HOME/.cache/bazel/_bazel_root" "$RUNNER_TEMP"; do
             if [[ -e "$path" || -L "$path" ]]; then

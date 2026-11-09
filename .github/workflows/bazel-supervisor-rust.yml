@@ -9,6 +9,7 @@ on:
       - tools/bazel/tests/runtime.bzl
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/repair_bazel_startup.py
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -19,6 +20,7 @@ on:
       - tools/bazel/tests/runtime.bzl
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/repair_bazel_startup.py
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -72,12 +74,8 @@ jobs:
 
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
-      - name: Configure job-local Bazel startup directory
-        run: |
-          set -euo pipefail
-          printf 'BAZEL_OUTPUT_USER_ROOT=%s/bazel-output-%s-%s-%s-%s\n' \
-            "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
-            "$GITHUB_JOB" '${{ matrix.arch }}' >> "$GITHUB_ENV"
+      - name: Restore default Bazel startup ownership
+        run: python3 tools/bazel/ci/repair_bazel_startup.py
       - name: Verify native architecture and clean dependency inputs
         env:
           EXPECTED_MACHINE: ${{ matrix.machine }}

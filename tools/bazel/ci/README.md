@@ -32,16 +32,17 @@ workspace, stays on its filesystem and skips symlinks and hardlinked files.
 It does not delete files or change shared-cache targets. Any repair failure
 stops the job before checkout.
 
-Base-image, event-services, Rust supervisor and OCI archive container jobs set
-`BAZEL_OUTPUT_USER_ROOT` to a job/architecture-specific directory beneath
-`RUNNER_TEMP`, including the run ID and attempt. A runtime step exports it via
-`GITHUB_ENV`: the `runner` context is unavailable in job-level `env`. The shared
-[`libteam_draft_bazel.sh`](libteam_draft_bazel.sh) wrapper passes this as a Bazel
-startup option. This avoids reusing a container-home startup directory owned by
-a different UID: Bazel requires that directory's owner to match its effective
-UID even when the process can write there. Repository and disk-cache paths are
-unchanged. Explicit caller startup options take precedence, preserving isolated
-cache-verification runs; jobs without this variable retain Bazel's defaults.
+Base-image, event-services, Rust supervisor and OCI archive container jobs keep
+Bazel's default `/github/home/.cache/bazel/_bazel_root` startup directory.
+After cache setup, [`repair_bazel_startup.py`](repair_bazel_startup.py) restores
+ownership of directories in that tree to the root container user. Bazel requires
+the startup directory's owner to match its effective UID even when the process
+can write there. The helper requires GitHub Actions, the expected container home
+and a root job container. Directory descriptors prevent following symlinks, and
+mount checks exclude redirected startup paths and nested mounts. Regular files,
+hardlinks and repository/disk caches are not modified; failures stop the job.
+No startup path override is exported. The shared wrapper still accepts explicit
+caller startup options for isolated cache-verification runs.
 
 The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
 ARM64 archive builds and VS builds only on pushes to `master`. Pull requests

@@ -51,8 +51,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 wrapper.chmod(0o755)
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", diagnostic["run"]],
-                    cwd=root, env=dict(os.environ, HOME=str(home), RUNNER_TEMP=str(root),
-                                       BAZEL_OUTPUT_USER_ROOT=str(root / "job startup")),
+                    cwd=root, env=dict(os.environ, HOME=str(home), RUNNER_TEMP=str(root)),
                     capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode, status, result.stdout + result.stderr)

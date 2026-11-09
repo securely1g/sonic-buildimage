@@ -23,75 +23,51 @@ JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
 
 
 class SetupBazelCacheTest(unittest.TestCase):
-    def test_container_jobs_use_distinct_startup_roots_and_keep_cache_handoff(self):
+    def test_container_jobs_repair_default_startup_state_and_keep_cache_handoff(self):
         jobs = [
             ("bazel-base-images.yml", "native", "architecture"),
             ("bazel-eventd.yml", "native", "architecture"),
             ("bazel-supervisor-rust.yml", "native", "arch"),
             ("bazel-oci.yml", "archive", "architecture"),
         ]
+        repair_helper = "tools/bazel/ci/repair_bazel_startup.py"
         for filename, name, architecture in jobs:
-            document = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
-            job = document["jobs"][name]
-            for entry in job["strategy"]["matrix"]["include"]:
-                with self.subTest(workflow=filename, architecture=entry[architecture]), \
-                        tempfile.TemporaryDirectory(prefix="bazel startup ") as temporary:
-                    self.check_startup_handoff(document, job, name, architecture, entry, Path(temporary))
-
-    def check_startup_handoff(self, document, job, name, architecture, entry, root):
-        self.assertIn("container", job)
-        for other_job in document["jobs"].values():
-            self.assertNotIn("runner.", str(other_job.get("env", {})))
-        self.assertNotIn("BAZEL_OUTPUT_USER_ROOT", job.get("env", {}))
-        env = self.prepare(root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n")
-        env.pop("BAZEL_OUTPUT_USER_ROOT", None)
-        env.update(GITHUB_ENV=str(root / "github-env"), GITHUB_RUN_ID="101",
-                   GITHUB_RUN_ATTEMPT="2", GITHUB_JOB=name)
-        handoff = next(step for step in job["steps"] if HELPER in step.get("run", ""))
-        subprocess.run(["bash", "-euc", handoff["run"]], cwd=root, env=env, check=True)
-        startup = next(step for step in job["steps"]
-                       if step.get("name") == "Configure job-local Bazel startup directory")
-        self.assertEqual(job["steps"].index(startup), job["steps"].index(handoff) + 1)
-        script = startup["run"].replace("${{ matrix." + architecture + " }}", entry[architecture])
-        subprocess.run(["bash", "-euc", script], cwd=root, env=env, check=True)
-        expected = str(root / ("bazel-output-101-2-" + name + "-" + entry[architecture]))
-        self.assertEqual((root / "github-env").read_text().splitlines(),
-                         ["BAZEL_OUTPUT_USER_ROOT=" + expected])
-        env["BAZEL_OUTPUT_USER_ROOT"] = expected
-        subprocess.run(["bash", WRAPPER, "info", "output_base"], cwd=root, env=env, check=True)
-        record = json.loads((root / "record.json").read_text())
-        self.assertEqual(record["argv"][0], "--output_user_root=" + env["BAZEL_OUTPUT_USER_ROOT"])
-        self.assertEqual(record["user"].splitlines(),
-                         ["build --disk_cache=/disk", "common --repository_cache=/repo"])
+            with self.subTest(workflow=filename), tempfile.TemporaryDirectory() as temporary:
+                document = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+                job = document["jobs"][name]
+                self.assertIn("container", job)
+                self.assertEqual(len(job["strategy"]["matrix"]["include"]), 2)
+                self.assertNotIn("BAZEL_OUTPUT_USER_ROOT", str(job))
+                self.assertNotIn("--output_user_root=", str(job))
+                handoff = next(step for step in job["steps"] if HELPER in step.get("run", ""))
+                repairs = [step for step in job["steps"] if repair_helper in step.get("run", "")]
+                self.assertEqual(len(repairs), 1)
+                self.assertEqual(repairs[0]["run"], "python3 " + repair_helper)
+                self.assertEqual(job["steps"].index(repairs[0]), job["steps"].index(handoff) + 1)
+                if filename not in ("bazel-base-images.yml", "bazel-oci.yml"):
+                    events = document.get("on", document.get(True))
+                    for event in ("pull_request", "push"):
+                        self.assertIn(repair_helper, events[event]["paths"])
+                root = Path(temporary)
+                env = self.prepare(root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n")
+                subprocess.run(["bash", "-euc", handoff["run"]], cwd=root, env=env, check=True)
+                subprocess.run(["bash", WRAPPER, "info", "output_base"], cwd=root, env=env, check=True)
+                record = json.loads((root / "record.json").read_text())
+                self.assertFalse(any(arg.startswith("--output_user_root=") for arg in record["argv"]))
+                self.assertEqual(record["user"].splitlines(),
+                                 ["build --disk_cache=/disk", "common --repository_cache=/repo"])
 
     def test_startup_root_preserves_defaults_and_explicit_overrides(self):
-        for configured in (None, "", "/job startup"):
-            with self.subTest(configured=configured), tempfile.TemporaryDirectory() as temporary:
+        for explicit in ([], ["--output_user_root=/isolated proof", "--batch", "--output_base=/proof"]):
+            with self.subTest(explicit=explicit), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 env = self.prepare(root, user="")
-                env.pop("BAZEL_OUTPUT_USER_ROOT", None)
-                if configured is not None:
-                    env["BAZEL_OUTPUT_USER_ROOT"] = configured
-                for explicit in ([], ["--output_user_root=/isolated proof", "--batch", "--output_base=/proof"]):
-                    command = ["bash", WRAPPER, *explicit, "info", "output_base"]
-                    subprocess.run(command, cwd=root, env=env, check=True)
-                    args = json.loads((root / "record.json").read_text())["argv"]
-                    expected = (["--output_user_root=" + configured] if configured else []) + explicit
-                    self.assertEqual(args[:len(expected)], expected)
-                    roots = [arg for arg in args if arg.startswith("--output_user_root=")]
-                    self.assertEqual(roots, ([expected[0]] if configured else []) +
-                                     (explicit[:1] if explicit else []))
-
-    def test_relative_startup_root_fails_explicitly_without_invoking_bazel(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            env = self.prepare(root, user="")
-            env["BAZEL_OUTPUT_USER_ROOT"] = "relative/path"
-            result = subprocess.run(["bash", WRAPPER, "info", "output_base"],
-                                    cwd=root, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("BAZEL_OUTPUT_USER_ROOT must be an absolute path.", result.stderr)
-            self.assertFalse((root / "record.json").exists())
+                command = ["bash", WRAPPER, *explicit, "info", "output_base"]
+                subprocess.run(command, cwd=root, env=env, check=True)
+                args = json.loads((root / "record.json").read_text())["argv"]
+                self.assertEqual(args[:len(explicit)], explicit)
+                roots = [arg for arg in args if arg.startswith("--output_user_root=")]
+                self.assertEqual(roots, explicit[:1])
 
     def prepare(self, root, home_text=None, user=None):
         home = root / "home"
