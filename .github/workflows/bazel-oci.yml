@@ -553,11 +553,14 @@ jobs:
           # Generic archive evidence has already been uploaded above. Keep it
           # outside the checkout while the source-only image fence runs.
           if [[ -d artifacts ]]; then
-            test ! -e "$RUNNER_TEMP/pre-sysmgr-artifacts"
-            mv artifacts "$RUNNER_TEMP/pre-sysmgr-artifacts"
+            umask 077
+            preserved="$(mktemp -d "$RUNNER_TEMP/pre-sysmgr-artifacts.XXXXXXXX")"
+            mv artifacts "$preserved/artifacts"
+            printf 'Completed archive evidence preserved at %s/artifacts\n' "$preserved"
           fi
 
       - name: Build Sysmgr runtime and debug images
+        id: sysmgr_build
         if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -574,7 +577,7 @@ jobs:
           python3 -B tools/bazel/ci/sysmgr_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sysmgr
       - name: Prepare reviewed public evidence
         id: sysmgr_public
-        if: always() && matrix.architecture == 'amd64'
+        if: always() && matrix.architecture == 'amd64' && (steps.sysmgr_build.outcome == 'success' || steps.sysmgr_build.outcome == 'failure')
         run: |
           python3 - <<'PYCODE'
           import json

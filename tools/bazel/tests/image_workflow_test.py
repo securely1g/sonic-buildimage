@@ -18,6 +18,75 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_archive_evidence_preservation_is_unique_and_keeps_previous_runs(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        preserve = next(
+            step for step in steps
+            if step.get("name") == "Preserve completed archive evidence before Sysmgr acceptance"
+        )
+        upload = next(step for step in steps if step.get("name") == "Upload public archive evidence")
+        build = next(step for step in steps if step.get("name") == "Build Sysmgr runtime and debug images")
+        self.assertLess(steps.index(upload), steps.index(preserve))
+        self.assertLess(steps.index(preserve), steps.index(build))
+        self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
+        with tempfile.TemporaryDirectory(prefix="archive evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            old = scratch / "pre-sysmgr-artifacts"
+            old.mkdir()
+            (old / "receipt").write_text("retained")
+            destinations = []
+            for index in range(2):
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "receipt").write_text(str(index))
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(artifacts.exists())
+                candidates = set(scratch.glob("pre-sysmgr-artifacts.*")) - set(destinations)
+                self.assertEqual(len(candidates), 1)
+                destination = candidates.pop()
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((destination / "artifacts/receipt").read_text(), str(index))
+                destinations.append(destination)
+            self.assertNotEqual(*destinations)
+            self.assertEqual((old / "receipt").read_text(), "retained")
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(set(scratch.glob("pre-sysmgr-artifacts.*")), set(destinations))
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "receipt").write_text("keep on failure")
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
+
+    def test_sysmgr_evidence_requires_a_build_attempt_but_retains_failure_evidence(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        build = next(step for step in steps if step.get("name") == "Build Sysmgr runtime and debug images")
+        public = next(step for step in steps if step.get("name") == "Prepare reviewed public evidence")
+        self.assertEqual(build["id"], "sysmgr_build")
+        self.assertEqual(
+            public["if"],
+            "always() && matrix.architecture == 'amd64' && "
+            "(steps.sysmgr_build.outcome == 'success' || steps.sysmgr_build.outcome == 'failure')",
+        )
+
     def test_base_image_runtime_uses_guarded_kernel_workspace_repair(self):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/bazel-base-images.yml").read_text()

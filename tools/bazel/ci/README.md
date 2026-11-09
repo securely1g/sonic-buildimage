@@ -18,6 +18,14 @@ also uses these persistent agents. It does not mount or delete host Android,
 disposable GitHub-hosted runners. Provision sufficient build storage and manage
 host Docker/cache retention outside the job without deleting active builds.
 
+AMD64 archive jobs upload generic public evidence before Sysmgr acceptance,
+then move the completed artifacts outside the checkout into a unique private
+`RUNNER_TEMP/pre-sysmgr-artifacts.*` directory. This keeps the source-only fence
+intact without colliding with or deleting prior jobs' evidence. The preserved
+path is logged; retained temporary evidence is subject to agent maintenance.
+Sysmgr public evidence is collected only after its build was attempted,
+including failed builds, not when an earlier step prevented it from running.
+
 The event-services container reports its identity, cache-directory permissions,
 UID/GID mappings and security context before probing Bazel startup. It creates
 and removes only a temporary directory in the cache parent, then checks
