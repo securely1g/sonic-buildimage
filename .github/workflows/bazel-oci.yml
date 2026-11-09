@@ -1336,12 +1336,11 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
-    runs-on: [self-hosted, linux, x64, sonic-slave-container]
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 720
-    # The four registered slots share lgh4. Only one full native build may
-    # consume its memory at a time; each worker still handles one job and exits.
+    # All four K3s slots share one node; run one full installer build at a time.
     concurrency:
-      group: sonic-slave-container-vs
+      group: sonic-slave-container-k3s-vs
       cancel-in-progress: false
     defaults:
       run:
@@ -1361,11 +1360,13 @@ jobs:
       SONIC_DOCKER_APT_RETRIES: "0"
       BAZEL_CONTAINER_ARGS: >-
         --jobs=4 --local_resources=memory=12288
-        --distdir=/bazel_cache/distdir/ape-1.0.1
-        --distdir=/bazel_cache/distdir/download_utils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
-        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
-        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+        --disk_cache= --repository_cache=
+        --distdir=/actions/bazel/distdir/ape-1.0.1
+        --distdir=/actions/bazel/distdir/download_utils-1.0.1
+        --distdir=/actions/bazel/distdir/rules_coreutils-1.0.1
+        --distdir=/actions/bazel/distdir/rules_gzip-1.0.0
+        --distdir=/actions/bazel/distdir/toolchain_utils-1.0.2
+        --distdir=/sonic/artifacts/vs/p4-source-inputs/sources
         --remote_upload_local_results=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     steps:
       - name: Checkout repository and pinned submodules
@@ -1373,6 +1374,16 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
+      - name: Check installer workspace capacity
+        run: |
+          python3 -B tools/bazel/ci/check_native_vs_storage.py \
+            --workspace "$PWD" --output artifacts/vs/workspace-capacity.json
+
+      - name: Verify the worker's remote Bazel cache
+        run: |
+          python3 -B tools/bazel/ci/configure_runner_cache.py \
+            --remote-only --jobs=4 --local-memory-mb=12288
 
       - name: Download verified source archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1402,24 +1413,25 @@ jobs:
             --directory artifacts/vs/p4-source-inputs/sources \
             --receipt artifacts/vs/p4-source-inputs-verified.json
 
-      - name: Configure persistent caches
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+      - name: Stage verified inputs in the disposable workspace
         run: |
-          python3 -B tools/bazel/ci/configure_runner_cache.py \
-            --jobs=4 --local-memory-mb=12288
+          # PI's system includes can exceed GCC's per-string argument limit.
+          # Keep the short compiler paths on the pod's large workspace volume.
+          install -d -m 0700 /actions/bazel/output-base
+          sudo -n mkdir /b
+          sudo -n mount --bind /actions/bazel/output-base /b
+          printf '\n%s\n' 'startup --output_base=/b' \
+            'build --experimental_ui_max_stdouterr_bytes=33554432' >> /sonic/.bazelrc.user
           python3 -B tools/bazel/ci/source_mirrors.py \
             --output "$PWD/artifacts/vs/source-mirrors.cfg"
           # /sonic shares this checkout; retain the private cache configuration.
           printf 'common --downloader_config=%s\n' "$PWD/artifacts/vs/source-mirrors.cfg" >> .bazelrc.user
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
-            --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json
+            --output /actions/bazel/distdir > artifacts/vs/source-download-receipt.json
 
       - name: Build sonic-vs.bin directly with slave.mk
         id: native_build
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
@@ -1437,8 +1449,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
 
       - name: Validate the installer and retained container pairs
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
