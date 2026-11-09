@@ -180,8 +180,23 @@ class NativeFamilyJobsTest(unittest.TestCase):
         workflow = jobs()
 
         def artifacts(job, action):
-            return [block for block in step_blocks(job)
-                    if "uses: actions/" + action + "-artifact@" in block]
+            blocks = [block for block in step_blocks(job)
+                      if "uses: actions/" + action + "-artifact@" in block]
+            diagnostics = [block for block in blocks
+                           if step_value(block, "name", 10) == "dash-engine-incremental-amd64"]
+            self.assertEqual(len(diagnostics), 1 if job == workflow["dash_engine_native"] and action == "upload" else 0)
+            for block in diagnostics:
+                self.assertIn("uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", block)
+                self.assertEqual(step_value(block, "if"),
+                                 "always() && steps.dash_engine_public.outcome == 'success' && "
+                                 "hashFiles('artifacts/dash-engine/incremental.json') != ''")
+                self.assertEqual(step_value(block, "path", 10), "artifacts/dash-engine/incremental.json")
+                self.assertEqual(step_value(block, "if-no-files-found", 10), "error")
+                self.assertEqual(step_value(block, "retention-days", 10), "14")
+                self.assertEqual(step_value(block, "compression-level", 10), "1")
+                self.assertLess(workflow["dash_engine_native"].index("id: dash_engine_public"),
+                                workflow["dash_engine_native"].index("name: dash-engine-incremental-amd64"))
+            return [block for block in blocks if block not in diagnostics]
 
         def split_uploads(family, kind):
             uploads = artifacts(workflow[family + "_" + kind], "upload")
@@ -203,21 +218,6 @@ class NativeFamilyJobsTest(unittest.TestCase):
                 self.assertEqual(step_value(block, "if-no-files-found", 10), "error")
                 self.assertEqual(step_value(block, "retention-days", 10), "14")
             uploads = [block for block in uploads if block not in contexts]
-            diagnostics = [block for block in uploads
-                           if step_value(block, "name", 10) == "dash-engine-incremental-amd64"]
-            self.assertEqual(len(diagnostics), 1 if (family, kind) == ("dash_engine", "native") else 0)
-            for block in diagnostics:
-                self.assertIn("uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", block)
-                self.assertEqual(step_value(block, "if"),
-                                 "always() && steps.dash_engine_public.outcome == 'success' && "
-                                 "hashFiles('artifacts/dash-engine/incremental.json') != ''")
-                self.assertEqual(step_value(block, "path", 10), "artifacts/dash-engine/incremental.json")
-                self.assertEqual(step_value(block, "if-no-files-found", 10), "error")
-                self.assertEqual(step_value(block, "retention-days", 10), "14")
-                self.assertEqual(step_value(block, "compression-level", 10), "1")
-                self.assertLess(workflow["dash_engine_native"].index("id: dash_engine_public"),
-                                workflow["dash_engine_native"].index("name: dash-engine-incremental-amd64"))
-            uploads = [block for block in uploads if block not in diagnostics]
             if family not in self.receipt_families:
                 return uploads
             flag = "env." + family.upper() + "_WORKER_RECEIPT"
@@ -546,7 +546,9 @@ PYRECEIPT
                 self.assertLess(names.index('Prepare the checksum-pinned pigz source archive'),
                                 names.index('Prepare checksum-pinned Bazel rule archives'))
                 upload = next(block for block in step_blocks(jobs()[family + '_native'])
-                              if 'uses: actions/upload-artifact@' in block)
+                              if 'uses: actions/upload-artifact@' in block
+                              and not (family == 'dash_engine' and
+                                       step_value(block, 'name', 10) == 'dash-engine-incremental-amd64'))
                 self.assertEqual(step_value(upload, 'if'),
                                  "always() && steps." + family + "_public.outcome == 'success'")
                 paths = step_value(upload, 'path', 10).splitlines()
