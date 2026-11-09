@@ -80,6 +80,33 @@ jobs:
           PYCFG
 
 
+      - name: Diagnose Bazel startup permissions
+        run: |
+          set -euo pipefail
+          id
+          printf 'HOME=%s\nRUNNER_TEMP=%s\n' "$HOME" "$RUNNER_TEMP"
+          for path in / /github "$HOME" "$HOME/.cache" "$HOME/.cache/bazel" \
+            "$HOME/.cache/bazel/_bazel_root" "$RUNNER_TEMP"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              stat -L -c '%A mode=%a owner=%u:%g path=%n' -- "$path"
+            else
+              printf 'Missing path: %s\n' "$path"
+            fi
+          done
+          for path in /proc/self/uid_map /proc/self/gid_map /proc/self/attr/current; do
+            printf '\n%s\n' "$path"
+            cat "$path"
+          done
+          grep -E '^(Uid|Gid|CapEff|NoNewPrivs|Seccomp):' /proc/self/status
+          awk -v home="$HOME" -v temp="$RUNNER_TEMP" \
+            '$5 == "/" || $5 == home || $5 == temp { print }' /proc/self/mountinfo
+          if ! probe="$(mktemp -d "$HOME/.cache/bazel/.write-probe.XXXXXX")"; then
+            echo 'Bazel cache-parent write probe failed; see permissions above.' >&2
+            exit 1
+          fi
+          rmdir -- "$probe"
+          echo 'Bazel cache-parent write probe passed.'
+          tools/bazel/ci/libteam_draft_bazel.sh info output_user_root
       - name: Audit, build and run all original suites with private Redis
         env:
           # Bazel records its client environment in retained build events.
