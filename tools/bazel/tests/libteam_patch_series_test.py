@@ -16,7 +16,7 @@ def make_series():
     return [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
 
 
-# Exact recipe from registry236, libteam1.31.0.sonic.1 at96f5d8e2.
+# Exact recipe from securely1g/sonic-bazel-registry#236 (libteam 1.31.0.sonic.1).
 # Update only together with the declared owner version and parity review.
 RECIPE = ROOT / "tools/bazel/tests/fixtures/libteam-owner-source.json"
 
@@ -30,6 +30,7 @@ class LibteamPatchSeriesTest(unittest.TestCase):
         self.assertEqual(bazel_patches(), make_series())
 
     def test_every_series_patch_exists(self):
+        expected = json.loads(RECIPE.with_name("libteam-owner-patch-bodies.json").read_text())
         for name in make_series():
             path = LIBTEAM / "patch" / name
             self.assertTrue(path.is_file(), name)
@@ -37,7 +38,6 @@ class LibteamPatchSeriesTest(unittest.TestCase):
             # The shared owner adds purpose/provenance headers. The applied
             # patch body must remain exactly Make's existing patch bytes.
             body = data[data.index(b"diff --git "):]
-            expected = json.loads(RECIPE.with_name("libteam-owner-patch-bodies.json").read_text())
             self.assertEqual(expected[name], hashlib.sha256(body).hexdigest(), name)
 
     def test_root_selects_the_shared_owner_without_local_override(self):
@@ -52,7 +52,8 @@ class LibteamPatchSeriesTest(unittest.TestCase):
                 selected.append(ast.literal_eval(keywords["version"]))
             if name.endswith("_override") and "module_name" in keywords:
                 self.assertNotEqual(ast.literal_eval(keywords["module_name"]), "libteam")
-        self.assertEqual(selected, ["1.31.0.sonic.1"])
+        expected_version = json.loads(RECIPE.read_text())["version"]
+        self.assertEqual(selected, [expected_version])
 
 
 if __name__ == "__main__":

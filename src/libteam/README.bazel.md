@@ -1,41 +1,42 @@
-# Native libteam source validation
+# Consume libteam from its shared owner
 
-`src/libteam` is a standalone Bazel module (`libteam`). The root
-`sonic-buildimage` module selects it with `local_path_override`, and the SWSS
-integration patch adds `bazel_dep(name = "libteam")`, so the root image, SWSS
-consumers and Make all build the same in-tree Debian 1.31-1 source and
-`patch/series`. Root targets are `@libteam//:<name>`; from `src/libteam`,
-`bazel build //:libteam_runtime` builds the component on its own (standalone
-builds use rules_gzip's default APE gzip toolchain from cosmo.zip; the root
-registers its reproducible `//tools/bazel/gzip:toolchain` instead).
+The image root uses `@libteam` version `1.31.0.sonic.1`. That registry module
+owns the pinned upstream 1.31 source, the existing 16 SONiC patches, native
+libraries and programs, runtime/debug TARs, development TAR, package metadata
+and native consumer test. `src/libteam/BUILD.bazel` only forwards compatibility
+labels used by existing image recipes and the pinned SWSS source patch.
 
-The `Bazel libteam and SWSS consumers` workflow builds libteam's runtime,
-development and matching debug TARs, producer metadata, `teamsyncd` and
-`tlm_teamd` on native AMD64 and ARM64 Trixie runners. It executes
-`@libteam//:consumer_test` with the declared runtime libraries. The SWSS
-integration patches select this source-built libteam and the per-library ZeroMQ
-interface; the Common patch applies to the current landed `f7fda40` source.
+The existing Make recipe, Debian control files and source patches are unchanged.
+These Bazel targets produce TARs and metadata, not DEBs. All three runtime
+packages remain available: `libteam5`, `libteamdctl0` and `libteam-utils`.
+The registry owner also exposes library-only metadata for SWSS's separate TARs.
 
-Dependencies resolve from the canonical `securely1g/sonic-bazel-registry`
-`main` catalog: `libnl3 3.7.0.sonic.7`, `sonic-build-infra
-0.0.25-34de7330abc72229dfc8dab88dec71b89c52aa88` and `rules_distroless
-0.9.4.sonic.15`. `tools/bazel/ci/libteam_draft_bazel.sh` is only a pass-through
-that loads `tools/bazel/common.bazelrc` with that canonical registry; it pins
-no registry snapshot or module version. For local validation run
-`tools/bazel/ci/libteam_draft_bazel.sh build @libteam//:libteam_runtime`.
+The image retains master's FIPS `0.0.4-ef423363e8fd50358f0aa2a8a20d3e08d4450a56`,
+infrastructure `0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568`, SWSS
+`252a506ae5a94e36a4e330b736a3781a9f7bcf9b` (with `tools/bazel/0001-sonic-swss-libteam.patch`
+until registered `sonic-swss` is selected) and Common
+`0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61`. Libnl3 `3.7.0.sonic.7` and
+Distroless `0.9.4.sonic.16` satisfy the shared libteam contract. Bazel's resolved
+graph must still be verified in CI; matching declarations are not runtime proof.
 
-CI retains checkout inputs, the generated resolution lock, build/test events,
-named outputs and SHA-256 checksums. New acceptance is AMD64-only; the existing
-ARM64 source job remains unchanged. On AMD64 CI also compiles the public C consumer
-against the installed SDK/pkg-config interface and verifies all five detached
-symbol pairs, including isolated positive/negative GDB source lookup. A config
-edit probe verifies that the declared input changes the utils TAR and restoring
-the exact source reproduces the original TAR. Its unchanged-input rebuild is a
-same-output-base determinism check, not a fresh-cache or remote-hit claim.
-These tests cover the component and its
-build consumers. They do not establish daemon business flows, a full image or
-successful inherited image workflows.
+## Validation
 
-The shared OCI workflow applies no PR- or branch-specific exclusions: the
-full-VS installer job and the DEB-generating kernel fixture suites run for this
-change as they do for any other pull request.
+The native workflow retains its AMD64/ARM64 matrix, 11 selected output targets,
+uncached owner consumer test and AMD64 installed-SDK/debug checks. The installed
+check verifies all five ELF/debug pairs, SONAME and SDK links, public headers,
+pkg-config flags and zero development-TAR timestamps. The shared owner's
+incremental probe performs baseline, no-op, config-edit and restoration builds
+using the same Bazel entry point, flags, caches and execution root. The consumer
+resolves the owner's script through its public source label and does not edit a
+second local configuration file.
+For pinned Bazel 8.5.1 with Bzlmod, the lookup reads `info output_base` and
+validates its `execroot/_main` directory before resolving the owner script. This
+avoids platform configuration during the path lookup while keeping the same
+wrapper and all build/query options; empty, malformed or missing roots fail.
+
+The native and OCI workflows use the [merged registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg)
+at `97cc5025` and verify the same SHA256 before running Bazel, while root `.bazelrc`
+keeps `tools/bazel/debian_mirrors.cfg` and canonical `sonic-bazel-registry/main`.
+Pure caller tests verify script resolution and flag forwarding. The native
+workflow retains generated module-resolution evidence for both architectures,
+plus installed-output and four-phase probe receipts for AMD64, in its artifacts.

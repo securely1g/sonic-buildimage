@@ -9,14 +9,10 @@ on:
       source_image:
         description: Dedicated source-image worker task
         type: choice
-        options: [none, swss-layer-hosted, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout]
+        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
-        type: string
-        default: ''
-      registry_revision:
-        description: Reviewed registry SHA for the hosted shared SWSS task
         type: string
         default: ''
       source_worker:
@@ -38,7 +34,7 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}-${{ inputs.registry_revision }}
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
   cancel-in-progress: true
 
 env:
@@ -47,7 +43,7 @@ env:
 jobs:
   source_image_inputs:
     name: Fetch pinned source-image downloads
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -87,7 +83,7 @@ jobs:
   source_image:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
-    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout"]'), inputs.source_image)
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image)
     runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
     timeout-minutes: 360
     permissions:
@@ -109,6 +105,13 @@ jobs:
       - name: Validate the fixed image selection
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py selection \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Verify Teamd kernel prerequisites without host changes
+        id: teamd_kernel
+        if: inputs.source_image == 'teamd'
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py kernel-preflight \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Checkout the exact reviewed source
@@ -168,7 +171,7 @@ jobs:
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Prepare declared artifacts and public evidence
         id: public_artifacts
-        if: always() && steps.prepare.outcome != 'skipped'
+        if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py publish \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
@@ -219,14 +222,26 @@ jobs:
           retention-days: 14
 
   archive:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none' || inputs.source_image == 'swss-layer-hosted'
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout }}
+    timeout-minutes: ${{ matrix.architecture == 'amd64' && 240 || 60 }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.source_image == 'swss-layer-hosted' && '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":240}]' || '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":240},{"name":"ARM64","architecture":"arm64","machine":"aarch64","runner":"ubuntu-24.04-arm","platform":"aarch64_trixie","disk_cache":"buildimage-gzip-arm64","timeout":60}]') }}
+        include:
+          - name: AMD64
+            architecture: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+            platform: x86_64_trixie
+            disk_cache: swss-layer-amd64
+          - name: ARM64
+            architecture: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+            platform: aarch64_trixie
+            disk_cache: buildimage-gzip-arm64
     container:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       volumes:
@@ -235,27 +250,13 @@ jobs:
         - /opt/ghc:/runner-unused/ghc
     env:
       # Shared CI entry point with the canonical registry; the full Make VS job is separate.
-      BAZEL: ${{ inputs.source_image == 'swss-layer-hosted' && 'tools/bazel/ci/review_bazel.sh' || format('{0}/tools/bazel/ci/libteam_draft_bazel.sh', github.workspace) }}
-      SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.source_image == 'swss-layer-hosted' && inputs.registry_revision || '' }}
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
     defaults:
       run:
         shell: bash
     steps:
-      - name: Validate the optional reviewed source and registry selection
-        if: inputs.source_image == 'swss-layer-hosted'
-        env:
-          SOURCE_REVISION: ${{ inputs.source_revision }}
-          REGISTRY_REVISION: ${{ inputs.registry_revision }}
-          SELECTED_ARCHITECTURE: amd64
-        run: |
-          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
-            [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
-            [[ "$SELECTED_ARCHITECTURE" == amd64 ]] || {
-              echo 'Select paired immutable source/registry SHAs and AMD64.' >&2
-              exit 2
-            }
       - name: Allocate source-build space on this disposable runner
-        if: inputs.source_image == 'swss-layer-hosted'
+        if: matrix.architecture == 'amd64'
         run: |
           test "$RUNNER_ENVIRONMENT" = github-hosted
           df -h / "$GITHUB_WORKSPACE"
@@ -270,11 +271,13 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 python3-yaml tar unzip zstd
+          for tool in bsdtar gdb readelf objcopy; do
+            command -v "$tool"
+          done
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_image == 'swss-layer-hosted' && inputs.source_revision || github.sha }}
           persist-credentials: false
 
       - name: Check native architecture and generated dependency state
@@ -285,8 +288,7 @@ jobs:
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
 
-      - name: Initialize the reviewed source's pinned gNOI dependency
-        if: inputs.source_image == 'swss-layer-hosted'
+      - name: Initialize Sysmgr's pinned gNOI source
         run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
@@ -296,17 +298,8 @@ jobs:
           repository-cache: true
           disk-cache: ${{ matrix.disk_cache }}
           cache-version: "8.5.1"
-
       - name: Preserve setup-bazel caches for source checks
-        env:
-          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
-        run: |
-          # A reviewed legacy checkout supplies its original cache helper.
-          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f tools/bazel/ci/preserve_setup_bazel_cache.py ]]; then
-            python3 -B tools/bazel/ci/lldp_draft_cache.py
-          else
-            python3 tools/bazel/ci/preserve_setup_bazel_cache.py
-          fi
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
 
       - name: Configure the verified source mirror
         run: |
@@ -405,7 +398,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'codex/swss-review-source-inputs' || github.head_ref == 'codex/swss-owner-image')) || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -564,6 +557,94 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Preserve completed archive evidence before Sysmgr acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          # Generic archive evidence has already been uploaded above. Keep it
+          # outside the checkout while the source-only image fence runs.
+          if [[ -d artifacts ]]; then
+            test ! -e "$RUNNER_TEMP/pre-sysmgr-artifacts"
+            mv artifacts "$RUNNER_TEMP/pre-sysmgr-artifacts"
+          fi
+
+      - name: Build Sysmgr runtime and debug images
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/sysmgr_image.py build --bazel "$BAZEL" --artifacts artifacts/sysmgr
+      - name: Validate Sysmgr image contents and cache reuse
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/sysmgr_image.py validate --artifacts artifacts/sysmgr
+          python3 -B tools/bazel/ci/sysmgr_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sysmgr
+      - name: Prepare reviewed public evidence
+        id: sysmgr_public
+        if: always() && matrix.architecture == 'amd64'
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/sysmgr')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names += [path.name for path in root.glob('*.validation.json')]
+          names += [path.name for path in root.glob('*.packages.json')]
+          for name in names:
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYCODE
+      - name: Retain Sysmgr image artifacts and evidence
+        if: always() && matrix.architecture == 'amd64' && steps.sysmgr_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sysmgr-images-amd64-${{ github.sha }}
+          path: |
+            artifacts/sysmgr/*.gz
+            artifacts/sysmgr/*.tar
+            artifacts/sysmgr/dbus-mock
+            artifacts/sysmgr/*.packages.json
+            artifacts/sysmgr/*.validation.json
+            artifacts/sysmgr/validation.json
+            artifacts/sysmgr/public-receipt.json
+            artifacts/sysmgr/runtime-apt.json
+            artifacts/sysmgr/debug-apt.json
+            artifacts/sysmgr/action-audit.json
+            artifacts/sysmgr/incremental.json
+            artifacts/sysmgr/build-summary.json
+            artifacts/sysmgr/module-graph.json
+            artifacts/sysmgr/*.status
+            artifacts/sysmgr/MODULE.bazel.lock
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Preserve completed Sysmgr evidence before SWSS layer acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          if [[ -d artifacts ]]; then
+            test ! -e "$RUNNER_TEMP/pre-swss-layer-artifacts"
+            mv artifacts "$RUNNER_TEMP/pre-swss-layer-artifacts"
+          fi
+
       - name: Build and inspect the shared runtime and symbols
         id: swss_layer_build
         if: matrix.architecture == 'amd64'
@@ -578,16 +659,10 @@ jobs:
         if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
-          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
         run: |
           set -euo pipefail
-          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f tools/bazel/ci/swss_image_rebuild.py ]]; then
-            targets=(//src/libteam:consumer_test //tools/bazel/tests:swss_common_rust_test
-                     @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
-          else
-            targets=(@libteam//:consumer_test @sonic_swss//crates/countersyncd:common_rust_test
-                     @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
-          fi
+          targets=(@libteam//:consumer_test @sonic_swss//crates/countersyncd:common_rust_test
+                   @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
@@ -601,13 +676,8 @@ jobs:
         if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
-          SOURCE_IMAGE: ${{ inputs.source_image || 'none' }}
         run: |
-          probe=tools/bazel/ci/swss_image_rebuild.py
-          if [[ "${SOURCE_IMAGE:-none}" == swss-layer-hosted && ! -f "$probe" ]]; then
-            probe=tools/bazel/ci/swss_rebuild.py
-          fi
-          python3 -B "$probe" --bazel "$BAZEL" \
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
             --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
             --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
             --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
@@ -674,7 +744,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_image == 'swss-layer-hosted' && inputs.source_revision || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -718,6 +787,35 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  sysmgr_runtime:
+    name: Load and run Sysmgr images (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sysmgr-images-amd64-${{ github.sha }}
+          path: artifacts/sysmgr
+      - name: Check installed Sysmgr startup and private Redis-to-D-Bus notifications
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 -B tools/bazel/ci/sysmgr_loaded.py --artifacts artifacts/sysmgr
+      - name: Retain installed Sysmgr evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sysmgr-installed-amd64-${{ github.sha }}
+          path: artifacts/sysmgr/*.runtime.json
+          if-no-files-found: error
+          retention-days: 14
+
+
+
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: OCI regression checks (AMD64)
@@ -731,7 +829,7 @@ jobs:
       # Reap any Bazel processes used for dependency resolution.
       options: --init
     env:
-      # Shared CI entry point with the canonical registry; the full Make VS job is separate.
+      # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
     defaults:
       run:
@@ -759,6 +857,8 @@ jobs:
       - name: Check hosted storage
         run: df -h "$GITHUB_WORKSPACE" "$HOME"
 
+      - name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -768,7 +868,6 @@ jobs:
           # This job resolves/downloads dependencies but executes no Bazel builds.
           disk-cache: false
           cache-version: "8.5.1"
-
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
 
@@ -795,7 +894,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'codex/swss-review-source-inputs' || github.head_ref == 'codex/swss-owner-image')) || (github.event_name == 'workflow_dispatch' && inputs.source_image == 'swss-layer-hosted') || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1285,13 +1384,15 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
-      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'codex/swss-review-source-inputs' || github.head_ref == 'codex/swss-owner-image')) &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
+      github.head_ref != 'codex/sysmgr-source-image' &&
+      github.head_ref != 'codex/teamd-source-worker' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.head_ref != 'codex/libteam-owner-consumer') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720

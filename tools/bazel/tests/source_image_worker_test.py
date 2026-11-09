@@ -25,6 +25,109 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def test_teamd_owned_dispatcher_branch_preserves_ci_scope(self):
+        workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
+        guards = re.findall(r'SOURCE_ONLY_NO_DEBS: \$\{\{ (.*?) \}\}', workflow)
+        self.assertEqual(len(guards), 2)
+        vs = workflow.split('\n  vs_container:\n', 1)[1].split('    if: >-\n', 1)[1].split('    runs-on:', 1)[0]
+        for event, branch, same_repo, image, skip, source_only, full_vs in (
+            ('pull_request', 'codex/teamd-source-worker', True, 'none', True, True, False),
+            ('pull_request', 'codex/teamd-source-worker', False, 'none', True, False, False),
+            ('pull_request', 'codex/source-image-worker-dispatch', True, 'none', True, True, False),
+            ('pull_request', 'ordinary', True, 'none', True, False, True),
+            ('pull_request', 'ordinary', False, 'none', True, False, False),
+            ('push', '', True, 'none', True, False, True),
+            ('workflow_dispatch', '', True, 'none', False, False, True),
+            ('workflow_dispatch', '', True, 'teamd', False, False, False),
+        ):
+            github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
+                ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
+                    head=SimpleNamespace(repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
+            inputs = SimpleNamespace(source_image=image, skip_vs=skip)
+            def evaluate(expression):
+                expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
+                return bool(eval(re.sub(r'!(?!=)', 'not ', expression), {'__builtins__': {}},
+                                 {'github': github, 'inputs': inputs}))
+            with self.subTest(event=event, branch=branch, same_repo=same_repo, image=image):
+                for guard in guards: self.assertEqual(evaluate(guard), source_only)
+                self.assertEqual(evaluate(vs), full_vs)
+
+    def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            modules, artifacts = root / 'modules', root / 'artifacts'
+            modules.mkdir(); artifacts.mkdir()
+            with patch.object(worker, 'run') as run, patch.object(worker, 'output') as output:
+                for name in ('team', 'team_mode_loadbalance'):
+                    with self.assertRaisesRegex(ValueError, 'preloaded kernel modules'):
+                        worker.prepare_teamd_kernel(artifacts, modules)
+                    receipt = json.loads((artifacts / 'worker-teamd-kernel.json').read_text())
+                    self.assertEqual(receipt['status'], 'failed')
+                    self.assertIn(name, receipt['missing_modules'])
+                    (modules / name).write_text('regular file is not a loaded module')
+                    with self.assertRaises(ValueError):
+                        worker.prepare_teamd_kernel(artifacts, modules)
+                    (modules / name).unlink(); (modules / name).mkdir()
+                worker.prepare_teamd_kernel(artifacts, modules)
+                receipt = json.loads((artifacts / 'worker-teamd-kernel.json').read_text())
+                self.assertEqual(receipt, {'status': 'passed', 'read_only': True,
+                    'required_modules': ['team', 'team_mode_loadbalance'], 'missing_modules': [],
+                    'preloaded_modules': ['team', 'team_mode_loadbalance']})
+                run.assert_not_called(); output.assert_not_called()
+
+    def test_teamd_missing_modules_precede_all_direct_preparation_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary)
+            gate = worker.prepare_teamd_kernel
+            with patch.object(worker, 'prepare_teamd_kernel',
+                              side_effect=lambda out: gate(out, artifacts / 'missing')) as checked, \
+                    patch.object(worker, 'measure') as measure, \
+                    patch.object(worker, 'prepare_validation_tools') as tools, \
+                    patch.object(worker, 'prepare_source_downloads') as downloads, \
+                    patch.object(worker, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'preloaded kernel modules'):
+                    worker.prepare(SimpleNamespace(image='teamd', workspace=Path('/source'), artifacts=artifacts))
+                checked.assert_called_once_with(artifacts)
+                for command in (measure, tools, downloads, run): command.assert_not_called()
+            worker.publish(SimpleNamespace(artifacts=artifacts, image='teamd'))
+            retained = json.loads((artifacts / 'public/worker-teamd-kernel.json').read_text())
+            self.assertEqual(retained['status'], 'failed')
+            self.assertEqual(retained['missing_modules'], ['team', 'team_mode_loadbalance'])
+
+    def test_teamd_workflow_checks_modules_before_checkout_download_or_setup(self):
+        workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
+        gate = workflow.index('- name: Verify Teamd kernel prerequisites without host changes')
+        end = workflow.index('- name: Checkout the exact reviewed source', gate)
+        step = workflow[gate:end]
+        self.assertIn("if: inputs.source_image == 'teamd'", step)
+        self.assertIn('source_image_worker.py kernel-preflight', step)
+        for name in ('Checkout the exact reviewed source', 'Reuse the existing source-download artifact',
+                     'Download the verified source archives', 'Prepare private Docker and persistent worker caches'):
+            self.assertLess(gate, workflow.index('- name: ' + name))
+        self.assertIn("inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'", workflow)
+
+    def test_publication_retains_the_actual_aggregate_loaded_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = Path(temporary)
+            receipt = {'status': 'passed', 'revision': 'a' * 40, 'architecture': 'amd64',
+                       'images': {'docker-teamd': {'status': 'passed'},
+                                  'docker-teamd-dbg': {'status': 'passed'}}}
+            source = artifacts / 'loaded-validation.json'
+            source.write_text(json.dumps(receipt, indent=2) + '\n')
+            worker.publish(SimpleNamespace(artifacts=artifacts, image='teamd'))
+            self.assertEqual((artifacts / 'public/loaded-validation.json').read_bytes(), source.read_bytes())
+
+    def test_teamd_fixed_driver_reuses_compatibility_wrapper_and_four_phases(self):
+        workspace, artifacts = Path('/source'), Path('/evidence')
+        self.assertEqual(worker.WRAPPERS['teamd'], 'libteam_draft_bazel.sh')
+        for phase in ('build', 'validate', 'incremental'):
+            expected = [sys.executable, '-B', '/source/tools/bazel/ci/teamd_image.py', phase,
+                        '--artifacts', str(artifacts)]
+            if phase != 'validate': expected += ['--bazel', '/source/tools/bazel/ci/libteam_draft_bazel.sh']
+            self.assertEqual(worker.phase_command('teamd', phase, workspace, artifacts), expected)
+        self.assertEqual(worker.phase_command('teamd', 'loaded', workspace, artifacts),
+                         [sys.executable, '-B', '/source/tools/bazel/ci/teamd_loaded.py', '--artifacts', str(artifacts)])
+
     def test_syncd_tap_requires_exact_device_and_private_namespace_proof(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
@@ -259,8 +362,8 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
-        choices = re.search(r"options: \[([^\]]+)\]", workflow).group(1).split(", ")
-        self.assertEqual(set(choices), set(worker.DRIVERS) | {"none", "preflight", "swss-layer-hosted"})
+        choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
+        self.assertEqual(set(choices), set(worker.DRIVERS))
         gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
         self.assertEqual(len(gates), 2)
         for gate in gates:

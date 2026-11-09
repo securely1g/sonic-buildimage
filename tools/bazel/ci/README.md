@@ -260,3 +260,22 @@ explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
 out of public artifacts. A failed job publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
+
+## Debian download mirrors
+
+The root `.bazelrc` selects [`debian_mirrors.cfg`](../debian_mirrors.cfg) for
+Bazel-managed dependency downloads, including image packages and published
+toolchain inputs. The pinned upstream Debian snapshot `20260727T143429Z` maps
+to the SONiC mirror snapshot `20260727T000818Z`; security snapshot
+`20260726T121236Z` maps to `20260727T000824Z`. Original upstream URLs remain
+fallback candidates. Existing image-lock mirror URLs are normalized to HTTPS,
+and their security snapshot `20260726T000750Z` maps to `20260727T000824Z`.
+Other snapshot timestamps retain their upstream location.
+
+The policy changes download locations, not generated locks, package versions
+or checksum verification. When advancing snapshot inputs, verify the matching
+mirror content before updating the mappings. Commands that ignore rc files
+must pass `--downloader_config` explicitly. The policy does not rewrite
+`apt-get` or arbitrary `curl` commands, and does not provide connectivity to the
+private remote cache/downloader. The mirror may redirect HTTPS requests to
+HTTP, so HTTPS source URLs alone do not guarantee end-to-end TLS.

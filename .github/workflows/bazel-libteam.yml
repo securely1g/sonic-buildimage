@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - src/libteam/**
+      - tools/bazel/0001-sonic-swss-libteam.patch
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
@@ -47,6 +48,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -77,8 +80,8 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
-          # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/2a849bbcaa254113a61ca0aeb972aeeccb8494f5
+          # Pin the merged registry inputs for reproducible native validation.
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a1334b9a9604733a2faf6cc96536d289da09e8d8
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -104,14 +107,14 @@ jobs:
               "$command" "${options[@]}" "$@"
           }
           targets=(
-            @libteam//:libteam_runtime
-            @libteam//:libteam_runtime.debug_symbols
-            @libteam//:libteamdctl_runtime
-            @libteam//:libteamdctl_runtime.debug_symbols
-            @libteam//:libteam_utils_runtime
-            @libteam//:libteam_utils_runtime.debug_symbols
-            @libteam//:libteam_dev
-            @libteam//:runtime_packages.json
+            //src/libteam:libteam_runtime
+            //src/libteam:libteam_runtime.debug_symbols
+            //src/libteam:libteamdctl_runtime
+            //src/libteam:libteamdctl_runtime.debug_symbols
+            //src/libteam:libteam_utils_runtime
+            //src/libteam:libteam_utils_runtime.debug_symbols
+            //src/libteam:libteam_dev
+            //src/libteam:runtime_packages.json
             @libnl3//:libnl-3-dev_files
             @sonic_swss//teamsyncd:teamsyncd
             @sonic_swss//tlm_teamd:tlm_teamd
@@ -125,11 +128,13 @@ jobs:
             sha256sum "$output" >> artifacts/SHA256SUMS
           done < artifacts/outputs.txt
           cp MODULE.bazel.lock artifacts/
+          # Selecting the compatibility alias builds the executable but does not
+          # run its test; select the source owner's test rule directly.
           run_bazel test --nocache_test_results --build_event_json_file="$PWD/artifacts/test-events.json" \
             @libteam//:consumer_test \
             2>&1 | tee artifacts/test.log
           if [[ "$CI_ARCHITECTURE" == amd64 ]]; then
-            output() { run_bazel cquery "@libteam//:$1" --output=files; }
+            output() { run_bazel cquery "//src/libteam:$1" --output=files; }
             python3 -B src/libteam/verify_runtime.py \
               --libteam "$(output libteam_runtime)" \
               --libteam-symbols "$(output libteam_runtime.debug_symbols)" \

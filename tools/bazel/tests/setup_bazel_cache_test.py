@@ -64,12 +64,8 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 handoff = handoff[0]
                 self.assertEqual(steps.index(handoff), steps.index(setup) + 1)
                 repository_only = setup["with"].get("disk-cache") is False
-                if filename == "bazel-oci.yml" and job_name == "archive":
-                    self.assertIn("python3 " + HELPER, handoff["run"])
-                    self.assertEqual(handoff["env"]["SOURCE_IMAGE"], "${{ inputs.source_image || 'none' }}")
-                else:
-                    self.assertEqual(handoff["run"].strip(), "python3 " + HELPER +
-                                     (" --repository-only" if repository_only else ""))
+                self.assertEqual(handoff["run"].strip(), "python3 " + HELPER +
+                                 (" --repository-only" if repository_only else ""))
                 self.assertTrue(setup["with"]["repository-cache"])
                 if filename not in ("bazel-base-images.yml", "bazel-oci.yml"):
                     events = document.get("on", document.get(True))
