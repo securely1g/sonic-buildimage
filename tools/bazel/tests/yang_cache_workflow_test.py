@@ -16,6 +16,23 @@ WORKFLOW = ROOT / ".github/workflows/bazel-yang-models.yml"
 
 
 class YangCacheWorkflowTest(unittest.TestCase):
+    def test_checkout_uses_guarded_kernel_workspace_repair(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        steps = workflow["jobs"]["package"]["steps"]
+        kernel = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text()
+        )
+        repair = next(
+            step for step in kernel["jobs"]["kernel-bundle"]["steps"]
+            if step.get("name") == "Restore workspace access before checkout"
+        )
+        self.assertEqual(steps[0], repair)
+        self.assertTrue(steps[1]["uses"].startswith("actions/checkout@"))
+        self.assertEqual(
+            steps[1]["with"]["ref"],
+            "${{ github.event.pull_request.head.sha || github.sha }}",
+        )
+
     def copy_helper(self, work):
         relative = "tools/bazel/ci/preserve_setup_bazel_cache.py"
         target = work / relative
