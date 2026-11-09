@@ -989,6 +989,119 @@ class KernelWorkflowTest(unittest.TestCase):
                       self.steps["Select verified DEBs and a public validation summary"])
         self.assertNotIn("sudo rm", self.workflow)
 
+    def test_scratch_allocation_is_unique_and_preserves_previous_state(self):
+        step = self.steps["Allocate fresh kernel scratch directory"]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            retained = root / "kernel-bundle-state"
+            retained.mkdir()
+            (retained / "receipt").write_text("retained")
+            environment = root / "github-env"
+            allocated = []
+            for _ in range(2):
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=temporary, GITHUB_ENV=str(environment)),
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                key, value = environment.read_text().splitlines()[-1].split("=", 1)
+                self.assertEqual(key, "KERNEL_RUN_TEMP")
+                scratch = Path(value)
+                self.assertEqual(scratch.parent, root)
+                self.assertRegex(scratch.name, r"^kernel-job\.[A-Za-z0-9]{8}$")
+                self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(list(scratch.iterdir()), [])
+                allocated.append(scratch)
+            self.assertNotEqual(*allocated)
+            self.assertEqual((retained / "receipt").read_text(), "retained")
+        for name, step in self.steps.items():
+            if name not in ("Restore workspace access before checkout",
+                            "Check available scratch space",
+                            "Allocate fresh kernel scratch directory"):
+                self.assertNotIn("$RUNNER_TEMP", step, name)
+        self.assertIn("path: ${{ env.KERNEL_RUN_TEMP }}/kernel-bundle-artifacts", self.workflow)
+
+    def test_scratch_cleanup_is_scoped_and_rejects_redirected_paths(self):
+        name = "Clean this job's kernel scratch directory"
+        step = self.steps[name]
+        self.assertIn(
+            "if: always() && steps.kernel_scratch.outcome == 'success' "
+            "&& (steps.kernel_cache_stop.outcome == 'success' "
+            "|| steps.kernel_cache_stop.outcome == 'skipped')", step
+        )
+        self.assertLess(self.workflow.index("- name: Retain verified DEBs"),
+                        self.workflow.index("- name: " + name))
+        self.assertLess(self.workflow.index("- name: Stop the disposable verification cache"),
+                        self.workflow.index("- name: " + name))
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        for scenario in ("cleanup", "symlink", "workspace", "workspace-parent", "file",
+                         "mount", "nested-mount", "outside", "wrong-name", "unallocated"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                scratch = root / "kernel-job.ABC12345"
+                scratch.mkdir()
+                workspace = root / "workspace"
+                workspace.mkdir()
+                shared = root / "shared-cache"
+                shared.mkdir()
+                retained = shared / "object"
+                retained.write_text("retained")
+                retained.chmod(0o444)
+                for name in ("kernel-bundle-state", "kernel-cache-hit", "kernel-unsupported",
+                             "kernel-cache-proof", "kernel-bundle-artifacts"):
+                    state = scratch / name
+                    state.mkdir()
+                    os.link(retained, state / "hardlink")
+                    (state / "cache-link").symlink_to(shared, target_is_directory=True)
+                    state.chmod(0o555)
+                old_state = scratch
+                if scenario in ("symlink", "file"):
+                    for state in old_state.iterdir():
+                        state.chmod(0o755)
+                    shutil.rmtree(old_state)
+                    if scenario == "symlink":
+                        old_state.symlink_to(shared, target_is_directory=True)
+                    else:
+                        old_state.write_text("unexpected file")
+                if scenario == "workspace":
+                    workspace = scratch
+                elif scenario == "workspace-parent":
+                    workspace = scratch / "kernel-bundle-state"
+                selected_scratch = scratch
+                if scenario == "wrong-name":
+                    selected_scratch = root
+                selected_script = script
+                if scenario in ("mount", "nested-mount"):
+                    mount = old_state if scenario == "mount" else old_state / "nested"
+                    mountinfo = root / "mountinfo"
+                    mountinfo.write_text(f"1 0 0:0 / {mount} rw - ext4 /dev/fixture rw\n")
+                    selected_script = script.replace(
+                        'Path("/proc/self/mountinfo")', f"Path({str(mountinfo)!r})"
+                    )
+                environment = root / "github-env"
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", selected_script],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(workspace if scenario == "outside" else root),
+                             KERNEL_RUN_TEMP="" if scenario == "unallocated" else str(selected_scratch),
+                             GITHUB_ENV=str(environment), GITHUB_WORKSPACE=str(workspace),
+                             PYTHONPATH=str(ROOT)),
+                )
+                self.assertEqual(result.returncode, 0 if scenario in ("cleanup", "unallocated") else 1,
+                                 result.stdout + result.stderr)
+                self.assertEqual(retained.read_text(), "retained")
+                self.assertEqual(retained.stat().st_mode & 0o777, 0o444)
+                if scenario == "cleanup":
+                    self.assertFalse(scratch.exists())
+                else:
+                    self.assertFalse(environment.exists())
+                    self.assertTrue(old_state.exists())
+                if scratch.is_dir() and not scratch.is_symlink():
+                    for state in scratch.iterdir():
+                        state.chmod(0o755)
+
     def test_workspace_repair_is_scoped_and_preserves_cache_links(self):
         name = "Restore workspace access before checkout"
         step = self.steps[name]
@@ -1114,7 +1227,7 @@ class KernelWorkflowTest(unittest.TestCase):
                             ["bash", "-e", "-o", "pipefail", "-c", script],
                             cwd=root, capture_output=True, text=True,
                             env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
-                                     RUNNER_TEMP=temporary, KERNEL_REMOTE_CACHE=endpoint,
+                                     KERNEL_RUN_TEMP=temporary, KERNEL_REMOTE_CACHE=endpoint,
                                      UPLOAD_KERNEL_CACHE=upload, CALLS=str(calls),
                                      BUILD_EXIT=str(exit_code)))
                         self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
@@ -1122,6 +1235,10 @@ class KernelWorkflowTest(unittest.TestCase):
                         self.assertEqual(argv[argv.index("--remote-cache") + 1], endpoint)
                         self.assertEqual("--upload-local-results" in argv, upload == "true")
                         self.assertEqual(argv[argv.index("--architecture") + 1], "arm64")
+                        self.assertEqual(
+                            argv[argv.index("--state-dir") + 1],
+                            str(root / "kernel-bundle-state"),
+                        )
 
 
 if __name__ == "__main__":

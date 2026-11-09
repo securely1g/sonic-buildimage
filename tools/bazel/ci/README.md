@@ -25,12 +25,24 @@ and removes only a temporary directory in the cache parent, then checks
 Failures stop the job with diagnostics; the probe does not change host
 permissions, relocate caches or delete retained build state.
 
-YANG host jobs restore checkout-directory access before `actions/checkout`,
-using the kernel workflow's guarded repair for artifacts left by container
-jobs. The repair requires passwordless `sudo`, validates the expected physical
-workspace, stays on its filesystem and skips symlinks and hardlinked files.
+YANG and base-image runtime host jobs restore checkout-directory access before
+`actions/checkout`, using the kernel workflow's guarded repair for artifacts
+left by container jobs. The repair requires passwordless `sudo`, validates the
+expected physical workspace, stays on its filesystem and skips symlinks and
+hardlinked files.
 It does not delete files or change shared-cache targets. Any repair failure
 stops the job before checkout.
+
+Kernel host jobs allocate a unique private `kernel-job.*` directory under
+`RUNNER_TEMP` and export it as `KERNEL_RUN_TEMP` for build state, optional
+cold-cache proof, logs and artifact collection. The producer still requires new
+state directories; previous jobs' scratch state is neither deleted nor reused.
+After artifact upload and cache-server shutdown, cleanup removes only this
+job's directory. It rejects workspace overlap, redirected paths and nested
+mounts, and preserves shared-cache symlink targets and hardlinked file metadata.
+Cleanup errors fail the job; a cache shutdown failure preserves its directory.
+Cancelled jobs may leave scratch state for periodic agent maintenance.
+Bazel's default startup location and kernel build settings are unchanged.
 
 Base-image, event-services, Rust supervisor and OCI archive container jobs keep
 Bazel's default `/github/home/.cache/bazel/_bazel_root` startup directory.

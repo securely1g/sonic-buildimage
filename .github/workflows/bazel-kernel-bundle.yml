@@ -96,21 +96,29 @@ jobs:
         run: |
           test "$(id -u)" -ne 0
           unshare --user --map-current-user --mount --pid --fork true
+      - name: Allocate fresh kernel scratch directory
+        id: kernel_scratch
+        run: |
+          set -euo pipefail
+          umask 077
+          scratch="$(mktemp -d "$RUNNER_TEMP/kernel-job.XXXXXXXX")"
+          printf 'KERNEL_RUN_TEMP=%s\n' "$scratch" >> "$GITHUB_ENV"
+          printf 'Kernel job scratch directory: %s\n' "$scratch"
       - name: Start a disposable cache for optional cold-build verification
         if: github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache
         run: |
           umask 077
-          mkdir -p "$RUNNER_TEMP/kernel-cache"
+          mkdir -p "$KERNEL_RUN_TEMP/kernel-cache"
           curl --fail --location --retry 3 \
             "https://github.com/buchgr/bazel-remote/releases/download/v2.6.4/bazel-remote-2.6.4-linux-${{ matrix.arch }}" \
-            --output "$RUNNER_TEMP/kernel-cache/bazel-remote"
-          printf '%s  %s\n' '${{ matrix.cache_sha256 }}' "$RUNNER_TEMP/kernel-cache/bazel-remote" | sha256sum -c -
-          chmod 700 "$RUNNER_TEMP/kernel-cache/bazel-remote"
+            --output "$KERNEL_RUN_TEMP/kernel-cache/bazel-remote"
+          printf '%s  %s\n' '${{ matrix.cache_sha256 }}' "$KERNEL_RUN_TEMP/kernel-cache/bazel-remote" | sha256sum -c -
+          chmod 700 "$KERNEL_RUN_TEMP/kernel-cache/bazel-remote"
           env -i RUNNER_TRACKING_ID="${RUNNER_TRACKING_ID:-}" \
-            "$RUNNER_TEMP/kernel-cache/bazel-remote" --dir="$RUNNER_TEMP/kernel-cache/objects" \
+            "$KERNEL_RUN_TEMP/kernel-cache/bazel-remote" --dir="$KERNEL_RUN_TEMP/kernel-cache/objects" \
             --max_size=8 --http_address=127.0.0.1:8080 --grpc_address=none \
-            > "$RUNNER_TEMP/kernel-cache/server.log" 2>&1 &
-          echo "$!" > "$RUNNER_TEMP/kernel-cache/server.pid"
+            > "$KERNEL_RUN_TEMP/kernel-cache/server.log" 2>&1 &
+          echo "$!" > "$KERNEL_RUN_TEMP/kernel-cache/server.pid"
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8080/status > /dev/null; then break; fi
             sleep 1
@@ -124,10 +132,10 @@ jobs:
             cache_args+=(--upload-local-results)
           fi
           if python3 -B tools/bazel/kernel/prepare.py ensure --architecture "${{ matrix.arch }}" \
-            --state-dir "$RUNNER_TEMP/kernel-bundle-state" \
+            --state-dir "$KERNEL_RUN_TEMP/kernel-bundle-state" \
             "${cache_args[@]}"; then
             test ! -e target/bazel-kernel-inputs
-            test ! -e "$RUNNER_TEMP/kernel-bundle-state/bundle"
+            test ! -e "$KERNEL_RUN_TEMP/kernel-bundle-state/bundle"
             echo 'Kernel DEBs verified in target/debs/trixie.'
           else
             status=$?
@@ -139,37 +147,38 @@ jobs:
         run: |
           umask 077
           python3 -B tools/bazel/kernel/prepare.py build --architecture "${{ matrix.arch }}" \
-            --state-dir "$RUNNER_TEMP/kernel-cache-hit"             --remote-cache "$KERNEL_REMOTE_CACHE"
+            --state-dir "$KERNEL_RUN_TEMP/kernel-cache-hit" \
+            --remote-cache "$KERNEL_REMOTE_CACHE"
           python3 -B src/sonic-linux-kernel/tools/bazel/verify_cache.py \
             --architecture "${{ matrix.arch }}" \
-            --cold "$RUNNER_TEMP/kernel-bundle-state/build" --hit "$RUNNER_TEMP/kernel-cache-hit/build" \
-            --artifacts "$RUNNER_TEMP/kernel-cache-proof"
+            --cold "$KERNEL_RUN_TEMP/kernel-bundle-state/build" --hit "$KERNEL_RUN_TEMP/kernel-cache-hit/build" \
+            --artifacts "$KERNEL_RUN_TEMP/kernel-cache-proof"
           echo 'Unprivileged linux-sandbox build and fresh-output remote cache hit verified.'
       - name: Reject an unsupported kernel configuration without replacing the DEBs
         run: |
           umask 077
-          sha256sum target/debs/trixie/*.deb > "$RUNNER_TEMP/kernel-before-rejection.sha256"
+          sha256sum target/debs/trixie/*.deb > "$KERNEL_RUN_TEMP/kernel-before-rejection.sha256"
           if python3 -B tools/bazel/kernel/prepare.py ensure --architecture "${{ matrix.arch }}" \
             --kernel-config SECURE_UPGRADE_MODE=unsupported \
-            --state-dir "$RUNNER_TEMP/kernel-unsupported" \
-            --remote-cache "$KERNEL_REMOTE_CACHE" > "$RUNNER_TEMP/kernel-unsupported.log" 2>&1; then
+            --state-dir "$KERNEL_RUN_TEMP/kernel-unsupported" \
+            --remote-cache "$KERNEL_REMOTE_CACHE" > "$KERNEL_RUN_TEMP/kernel-unsupported.log" 2>&1; then
             echo 'An unsupported kernel setting was silently accepted.'
             exit 1
           fi
-          cat "$RUNNER_TEMP/kernel-unsupported.log"
-          grep -F 'Unsupported kernel configuration' "$RUNNER_TEMP/kernel-unsupported.log"
-          if grep -Fq SONIC_KERNEL_COMPILATION_STARTED "$RUNNER_TEMP/kernel-unsupported.log"; then
+          cat "$KERNEL_RUN_TEMP/kernel-unsupported.log"
+          grep -F 'Unsupported kernel configuration' "$KERNEL_RUN_TEMP/kernel-unsupported.log"
+          if grep -Fq SONIC_KERNEL_COMPILATION_STARTED "$KERNEL_RUN_TEMP/kernel-unsupported.log"; then
             echo 'Unsupported settings reached kernel compilation.'
             exit 1
           fi
-          sha256sum --check "$RUNNER_TEMP/kernel-before-rejection.sha256"
+          sha256sum --check "$KERNEL_RUN_TEMP/kernel-before-rejection.sha256"
       - name: Repeat automatic preparation without rebuilding
         run: |
           umask 077
           python3 -B tools/bazel/kernel/prepare.py ensure --architecture "${{ matrix.arch }}" \
-            > "$RUNNER_TEMP/kernel-bundle-stage.log"
+            > "$KERNEL_RUN_TEMP/kernel-bundle-stage.log"
           python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["reused"] is True' \
-            "$RUNNER_TEMP/kernel-bundle-stage.log"
+            "$KERNEL_RUN_TEMP/kernel-bundle-stage.log"
           python3 -B tools/bazel/kernel/prepare.py verify --architecture "${{ matrix.arch }}" \
             --debs-directory target/debs/trixie
       - name: Consume the normal DEB directory through Make without rebuilding or copying
@@ -191,8 +200,8 @@ jobs:
         run: |
           umask 077
           python3 -B tools/bazel/ci/kernel_artifacts.py --architecture "${{ matrix.arch }}" \
-            --state-dir "$RUNNER_TEMP/${{ github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache && 'kernel-cache-hit' || 'kernel-bundle-state' }}" \
-            --output "$RUNNER_TEMP/kernel-bundle-artifacts"
+            --state-dir "$KERNEL_RUN_TEMP/${{ github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache && 'kernel-cache-hit' || 'kernel-bundle-state' }}" \
+            --output "$KERNEL_RUN_TEMP/kernel-bundle-artifacts"
       - name: Retain verified DEBs and the validation summary
         if: success() && steps.artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -200,10 +209,57 @@ jobs:
           name: kernel-source-packages-${{ matrix.arch }}
           retention-days: 7
           if-no-files-found: error
-          path: ${{ runner.temp }}/kernel-bundle-artifacts
+          path: ${{ env.KERNEL_RUN_TEMP }}/kernel-bundle-artifacts
       - name: Stop the disposable verification cache
+        id: kernel_cache_stop
         if: always() && github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache
         run: |
-          if [[ -f "$RUNNER_TEMP/kernel-cache/server.pid" ]]; then
-            kill "$(cat "$RUNNER_TEMP/kernel-cache/server.pid")"
+          if [[ -n "${KERNEL_RUN_TEMP:-}" && -f "$KERNEL_RUN_TEMP/kernel-cache/server.pid" ]]; then
+            pid="$(cat "$KERNEL_RUN_TEMP/kernel-cache/server.pid")"
+            kill "$pid"
+            for attempt in $(seq 1 30); do
+              if ! kill -0 "$pid" 2>/dev/null; then break; fi
+              sleep 1
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+              echo 'Verification cache did not stop; retaining its scratch directory.' >&2
+              exit 1
+            fi
           fi
+      - name: Clean this job's kernel scratch directory
+        if: always() && steps.kernel_scratch.outcome == 'success' && (steps.kernel_cache_stop.outcome == 'success' || steps.kernel_cache_stop.outcome == 'skipped')
+        run: |
+          set -euo pipefail
+          if [[ -z "${KERNEL_RUN_TEMP:-}" ]]; then
+            echo 'No kernel scratch directory was allocated.'
+            exit 0
+          fi
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          from tools.bazel.kernel.prepare import remove_build_tree, require
+
+          scratch = Path(os.environ["KERNEL_RUN_TEMP"])
+          require(scratch.is_absolute() and not scratch.is_symlink(),
+                  "refusing redirected kernel scratch directory")
+          require(re.fullmatch(r"kernel-job\.[A-Za-z0-9]{8}", scratch.name),
+                  "refusing unexpected kernel scratch directory name")
+          scratch = scratch.resolve()
+          require(scratch.parent == Path(os.environ["RUNNER_TEMP"]).resolve(strict=True),
+                  "kernel scratch directory must be directly under RUNNER_TEMP")
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+          require(scratch != workspace and scratch not in workspace.parents,
+                  "kernel scratch directory must not contain the workspace")
+          mounts = [
+              Path(re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), line.split()[4]))
+              for line in Path("/proc/self/mountinfo").read_text().splitlines()
+          ]
+          require(not any(mount == scratch or scratch in mount.parents for mount in mounts),
+                  "refusing mounted kernel scratch directory")
+          require(not scratch.exists() or scratch.is_dir(),
+                  "kernel scratch path must be a directory")
+          if scratch.exists():
+              print("Removing this job's kernel scratch directory: " + str(scratch), flush=True)
+              remove_build_tree(scratch)
+          PY
