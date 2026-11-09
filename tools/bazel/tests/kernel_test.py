@@ -1039,7 +1039,7 @@ class KernelWorkflowTest(unittest.TestCase):
         script = textwrap.dedent(step.split("        run: |\n", 1)[1])
         for scenario in ("absent", "existing", "wrong-owner", "symlink", "dangling-symlink", "file",
                          "parent-symlink", "parent-writable", "parent-owner", "other-disk",
-                         "wrong-path", "sudo-failure", "chown-failure", "mkdir-race"):
+                         "wrong-path", "root-user", "sudo-failure", "chown-failure", "mkdir-race"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 build = root / "build"
@@ -1049,6 +1049,16 @@ class KernelWorkflowTest(unittest.TestCase):
                 runner_temp.mkdir()
                 commands = root / "commands"
                 commands.mkdir()
+                uid, gid = "1001", "1002"
+                identity = commands / "id"
+                identity.write_text(
+                    "#!" + sys.executable + "\n"
+                    "import os, sys\n"
+                    "assert sys.argv[1:] in (['-u'], ['-g'])\n"
+                    "if sys.argv[1] == '-u':\n"
+                    "    print('0' if os.environ['SCENARIO'] == 'root-user' else os.environ['TEST_UID'])\n"
+                    "else: print(os.environ['TEST_GID'])\n")
+                identity.chmod(0o755)
                 calls = root / "sudo-calls.jsonl"
                 retained = root / "retained"
                 retained.mkdir()
@@ -1078,7 +1088,7 @@ class KernelWorkflowTest(unittest.TestCase):
                     "    sys.exit(subprocess.run(sys.argv[2:]).returncode)\n"
                     "assert sys.argv[2] == 'chown'\n"
                     "assert sys.argv[3:5] == ['--no-dereference', '--']\n"
-                    "assert sys.argv[5] == str(os.getuid()) + ':' + str(os.getgid())\n"
+                    "assert sys.argv[5] == os.environ['TEST_UID'] + ':' + os.environ['TEST_GID']\n"
                     "sys.exit(24 if scenario == 'chown-failure' else 0)\n")
                 sudo.chmod(0o755)
                 stat_command = commands / "stat"
@@ -1101,17 +1111,19 @@ class KernelWorkflowTest(unittest.TestCase):
                     env=dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
                              RUNNER_TEMP=str(runner_temp), KERNEL_RUN_TEMP=str(
                                  retained if scenario == "wrong-path" else scratch),
-                             CALLS=str(calls), SCENARIO=scenario))
+                             CALLS=str(calls), SCENARIO=scenario, TEST_UID=uid, TEST_GID=gid))
                 success = scenario in ("absent", "existing", "wrong-owner")
                 expected_exit = 0 if success else {"sudo-failure": 23, "chown-failure": 24}.get(scenario, 1)
                 self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
+                if scenario == "root-user":
+                    self.assertIn("unexpected user", result.stderr)
                 if scenario in ("absent", "chown-failure"):
                     self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
                     self.assertEqual(
                         [json.loads(line) for line in calls.read_text().splitlines()],
                         [["-n", "mkdir", "--mode=0700", "--", str(scratch)],
                          ["-n", "chown", "--no-dereference", "--",
-                          f"{os.getuid()}:{os.getgid()}", str(scratch)]])
+                          f"{uid}:{gid}", str(scratch)]])
                 elif scenario in ("sudo-failure", "mkdir-race"):
                     self.assertEqual(len(calls.read_text().splitlines()), 1)
                 else:
