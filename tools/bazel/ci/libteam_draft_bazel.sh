@@ -6,6 +6,13 @@ if [[ $# == 1 && "$1" == --version ]]; then
   exec bazel --version
 fi
 startup_options=()
+if [[ -n "${BAZEL_OUTPUT_USER_ROOT:-}" ]]; then
+  if [[ "$BAZEL_OUTPUT_USER_ROOT" != /* ]]; then
+    echo 'BAZEL_OUTPUT_USER_ROOT must be an absolute path.' >&2
+    exit 2
+  fi
+  startup_options+=(--output_user_root="$BAZEL_OUTPUT_USER_ROOT")
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --batch|--output_base=*|--output_user_root=*) startup_options+=("$1"); shift ;;

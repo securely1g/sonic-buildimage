@@ -12,6 +12,36 @@ their job containers where applicable, need network access to
 `grpc://172.16.0.4:9092`; public GitHub-hosted runners cannot reach that private
 endpoint.
 
+The [source base-image workflow](../../../.github/workflows/bazel-base-images.yml)
+also uses these persistent agents. It does not mount or delete host Android,
+.NET or GHC SDK directories to reclaim space; that cleanup was specific to
+disposable GitHub-hosted runners. Provision sufficient build storage and manage
+host Docker/cache retention outside the job without deleting active builds.
+
+The event-services container reports its identity, cache-directory permissions,
+UID/GID mappings and security context before probing Bazel startup. It creates
+and removes only a temporary directory in the cache parent, then checks
+`bazel info output_base` through the same wrapper used by the build.
+Failures stop the job with diagnostics; the probe does not change host
+permissions, relocate caches or delete retained build state.
+
+YANG host jobs restore checkout-directory access before `actions/checkout`,
+using the kernel workflow's guarded repair for artifacts left by container
+jobs. The repair requires passwordless `sudo`, validates the expected physical
+workspace, stays on its filesystem and skips symlinks and hardlinked files.
+It does not delete files or change shared-cache targets. Any repair failure
+stops the job before checkout.
+
+Base-image, event-services, Rust supervisor and OCI archive container jobs set
+`BAZEL_OUTPUT_USER_ROOT` to a job/architecture-specific directory beneath
+`runner.temp`, including the run ID and attempt. The shared
+[`libteam_draft_bazel.sh`](libteam_draft_bazel.sh) wrapper passes this as a Bazel
+startup option. This avoids reusing a container-home startup directory owned by
+a different UID: Bazel requires that directory's owner to match its effective
+UID even when the process can write there. Repository and disk-cache paths are
+unchanged. Explicit caller startup options take precedence, preserving isolated
+cache-verification runs; jobs without this variable retain Bazel's defaults.
+
 The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
 ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
 and manual runs remain read-only. The archive job overrides the default in its

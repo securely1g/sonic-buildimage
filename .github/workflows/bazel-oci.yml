@@ -244,6 +244,7 @@ jobs:
     env:
       # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      BAZEL_OUTPUT_USER_ROOT: ${{ runner.temp }}/bazel-output-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.architecture }}
     defaults:
       run:
         shell: bash

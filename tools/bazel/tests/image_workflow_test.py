@@ -12,10 +12,83 @@ import tempfile
 import textwrap
 import unittest
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_eventd_startup_diagnostics_probe_writes_and_preserve_bazel_failure(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-eventd.yml").read_text()
+        )
+        steps = workflow["jobs"]["native"]["steps"]
+        diagnostic = next(
+            step for step in steps
+            if step.get("name") == "Diagnose Bazel startup permissions"
+        )
+        build = next(
+            step for step in steps
+            if step.get("name") == "Audit, build and run all original suites with private Redis"
+        )
+        self.assertLess(steps.index(diagnostic), steps.index(build))
+        for status in (0, 36):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                home = root / "home"
+                cache = home / ".cache/bazel"
+                cache.mkdir(parents=True)
+                retained = cache / "retained-cache"
+                retained.write_text("keep")
+                wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
+                wrapper.parent.mkdir(parents=True)
+                wrapper.write_text(
+                    "#!/bin/bash\n"
+                    'test "$*" = "info output_base" || exit 99\n'
+                    'echo "fixture Bazel startup probe"\n'
+                    f"exit {status}\n"
+                )
+                wrapper.chmod(0o755)
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", diagnostic["run"]],
+                    cwd=root, env=dict(os.environ, HOME=str(home), RUNNER_TEMP=str(root),
+                                       BAZEL_OUTPUT_USER_ROOT=str(root / "job startup")),
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                self.assertIn("Bazel cache-parent write probe passed.", result.stdout)
+                self.assertIn("fixture Bazel startup probe", result.stdout)
+                self.assertIn(str(cache), result.stdout)
+                self.assertEqual(list(cache.iterdir()), [retained])
+                self.assertEqual(retained.read_text(), "keep")
+
+    def test_self_hosted_base_images_do_not_delete_host_sdks(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-base-images.yml").read_text()
+        )
+        expected = {
+            "amd64": ["self-hosted", "linux", "bazel-x64"],
+            "arm64": ["self-hosted", "linux", "bazel-arm64"],
+        }
+        for name in ("native", "runtime"):
+            with self.subTest(job=name):
+                job = workflow["jobs"][name]
+                runners = job["strategy"]["matrix"]["include"]
+                self.assertEqual(len(runners), 2)
+                self.assertEqual(
+                    {entry["architecture"]: entry["runner"] for entry in runners},
+                    expected,
+                )
+                self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
+        native = workflow["jobs"]["native"]
+        self.assertFalse(native["container"].get("volumes"))
+        self.assertNotIn(
+            "Allocate source-build space on this disposable runner",
+            [step.get("name") for step in native["steps"]],
+        )
+        for step in native["steps"]:
+            self.assertNotIn("/runner-unused/", step.get("run", ""))
+
     def test_native_package_workflows_use_cache_reachable_runners(self):
         expected = {
             "amd64": "self-hosted, linux, bazel-x64",
