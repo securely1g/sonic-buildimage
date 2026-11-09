@@ -728,7 +728,7 @@ def validate_images(directory):
     return validate(directory)
 
 
-def incremental_actions(execution, events, log, *, no_op=False, evidence=None):
+def incremental_actions(execution, events, log, *, no_op=False, packaging_only=False, evidence=None):
     """Distinguish proven cache materialization from actual image/source work."""
     result = cache_reuse.collect(execution, events, OWNER + IMAGES[0] + ".gz", allow_empty=True,
                                  include_action_summary=no_op)
@@ -743,6 +743,10 @@ def incremental_actions(execution, events, log, *, no_op=False, evidence=None):
             executed[mnemonic] = executed.get(mnemonic, 0) + action["count"]
     check.require(not any(key.startswith(("Cpp", "Rustc", "GoCompile", "GoLink")) for key in executed),
                   "image-only probe unexpectedly compiled source owners: " + repr(executed))
+    # Preserve baseline diagnostics; startup edit/restore may only repackage.
+    if packaging_only:
+        check.require("CcConfigureMakeRule" not in executed,
+                      "image-only probe unexpectedly compiled foreign source owners: " + repr(executed))
     if no_op:
         check.require(result["executed_count"] == 0, "no-op build executed actions: " + repr(executed))
         # Compare this build's process summary with its validated spawn records.
@@ -819,6 +823,7 @@ def incremental(args, directory):
         result.check_returncode()
         cache_evidence[name] = {}
         actions[name], _ = incremental_actions(execution, events, log_path, no_op=name == "no-op",
+                                               packaging_only=name in ("launcher-source-edit", "restored"),
                                                evidence=cache_evidence[name])
     evidence = {"status": "running", "timings_seconds": timings, "executed_actions": actions,
                 "spawn_cache_evidence": cache_evidence,

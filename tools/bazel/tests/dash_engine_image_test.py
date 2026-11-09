@@ -265,6 +265,85 @@ class DashEngineImageTest(unittest.TestCase):
                 execution.write_text(json.dumps({'mnemonic': mnemonic, 'runner': 'processwrapper-sandbox', 'cacheHit': False}))
                 with self.assertRaises(ValueError): driver.incremental_actions(execution, events, log)
 
+
+    def test_packaging_probes_distinguish_foreign_rebuild_from_cache_materialization(self):
+        # Execute the real probe controller and log reader. A simulated foreign
+        # build leaves every owner TAR byte unchanged; matching payload hashes
+        # must not conceal native execution during a startup-only probe.
+        for probe in ('launcher-source-edit', 'restored'):
+            for cache_hit in (False, True):
+                with self.subTest(probe=probe, cache_hit=cache_hit), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    directory = root / 'artifacts'; directory.mkdir()
+                    source = root / 'platform/vs/docker-dash-engine/start.sh'
+                    source.parent.mkdir(parents=True)
+                    source.write_bytes(b'#!/bin/sh\nexit 0\n'); source.chmod(0o755)
+                    saved = source.read_bytes()
+                    revision = {'revision': 'a' * 40, 'tested_revision_parents': []}
+                    names = ('engine.source.tar', 'base.source.tar', *driver.FOREIGN_PAYLOADS)
+                    owners = {name: root / name for name in names}
+                    for path in owners.values():
+                        with tarfile.open(path, 'w'):
+                            pass
+                    owner_hashes = {name: driver.check.sha(path) for name, path in owners.items()}
+                    for name in driver.FOREIGN_PAYLOADS:
+                        (directory / name).write_bytes(owners[name].read_bytes())
+                    archives = {name: root / (name + '.gz') for name in driver.IMAGES}
+                    def archive_bytes(name):
+                        return name.encode() + b'\n' + source.read_bytes()
+                    for name, path in archives.items(): path.write_bytes(archive_bytes(name))
+                    (directory / 'build.execution.json').write_text('')
+                    (directory / 'build-receipt.json').write_text(json.dumps({
+                        **revision, 'status': 'built',
+                        'artifacts': {name + '.gz': {'sha256': driver.check.sha(path)} for name, path in archives.items()},
+                        'layouts': {name: name for name in driver.IMAGES},
+                        'foreign_diagnostics': foreign_summary(),
+                    }))
+                    outputs = {driver.TARGETS[name]: name for name in names}
+                    outputs.update({driver.OWNER + name + '.gz': name + '.gz' for name in driver.IMAGES})
+                    outputs[driver.BASE] = 'base-layout'
+                    phases = []
+                    def run(argv, **kwargs):
+                        execution = Path(next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--execution_log_json_file=')))
+                        phase = execution.name.removeprefix('incremental-').removesuffix('.execution.json')
+                        phases.append(phase)
+                        records = []
+                        if phase == probe:
+                            record = foreign_record()
+                            record.update(cacheHit=cache_hit, runner='disk cache hit' if cache_hit else 'processwrapper-sandbox')
+                            records.append(record)
+                        execution.write_text('\n'.join(json.dumps(record) for record in records))
+                        events = Path(next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--build_event_json_file=')))
+                        events.write_text('\n'.join(json.dumps(event) for event in successful_build_events(
+                            processes=len(records), runners={record['runner']: 1 for record in records})) + '\n')
+                        kwargs['stdout'].write('INFO: 0 processes.\n')
+                        for name, path in archives.items(): path.write_bytes(archive_bytes(name))
+                        return subprocess.CompletedProcess(argv, 0)
+                    def layout(path, platform):
+                        digest = 'base' if path.name == 'base-layout' else hashlib.sha256(source.read_bytes()).hexdigest()
+                        return SimpleNamespace(descriptor={'digest': digest})
+                    with ExitStack() as stack:
+                        stack.enter_context(mock.patch.object(driver, 'ROOT', root))
+                        stack.enter_context(mock.patch.object(driver, 'clean_source'))
+                        stack.enter_context(mock.patch.object(driver, 'source_identity', return_value=revision))
+                        stack.enter_context(mock.patch.object(driver.build, 'execution_root', return_value=root))
+                        stack.enter_context(mock.patch.object(driver.subprocess, 'check_output', side_effect=lambda argv, **kw: outputs[argv[-1]] + '\n'))
+                        stack.enter_context(mock.patch.object(driver.subprocess, 'run', side_effect=run))
+                        stack.enter_context(mock.patch.object(driver.oci_layout, 'validate_layout', side_effect=layout))
+                        if cache_hit:
+                            driver.incremental(SimpleNamespace(bazel='must-not-run'), directory)
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'image-only probe unexpectedly compiled foreign source owners'):
+                                driver.incremental(SimpleNamespace(bazel='must-not-run'), directory)
+                    self.assertEqual(phases, ['baseline', 'no-op', 'launcher-source-edit', 'restored'])
+                    self.assertEqual(source.read_bytes(), saved)
+                    self.assertEqual(source.stat().st_mode & 0o777, 0o755)
+                    self.assertEqual({name: driver.check.sha(path) for name, path in owners.items()}, owner_hashes)
+                    result = json.loads((directory / 'incremental.json').read_text())
+                    self.assertEqual(result['status'], 'passed' if cache_hit else 'failed')
+                    self.assertEqual(result['spawn_cache_evidence'][probe]['executed_count'], 0 if cache_hit else 1)
+                    self.assertEqual(result['spawn_cache_evidence'][probe]['cache_hit_count'], 1 if cache_hit else 0)
+
     def test_noop_requires_matching_structured_cache_and_runner_metrics(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
