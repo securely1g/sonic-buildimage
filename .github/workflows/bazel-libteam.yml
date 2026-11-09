@@ -9,6 +9,7 @@ on:
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/sonic-buildimage-rule-inputs.json
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/resolution.py
@@ -48,6 +49,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 997796400cc3eefc1f0590b227cd9b74c2141424
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: ci/github_sources.py
+          persist-credentials: false
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -55,6 +65,20 @@ jobs:
           repository-cache: true
           disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Prepare checksum-pinned Bazel rule archives
+        id: rule_archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
+            --distdir "$PWD/.cache/bazel-distdir" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt libteam-download-receipts/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
       - name: Configure the verified source mirror
         run: |
           python3 - <<'PYCFG'
@@ -206,6 +230,24 @@ jobs:
           (directory / "resolution.json").write_text(json.dumps(evidence, indent=2) + "\n")
           PYRESOLUTION
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
+      - name: Validate public download receipts
+        id: download_receipts
+        if: always() && steps.rule_archives.outcome == 'success'
+        run: |
+          python3 - <<'PYRECEIPTS'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json
+          safe_json(json.loads(Path('libteam-download-receipts/rule-sources.json').read_text()))
+          PYRECEIPTS
+      - name: Upload public download receipts
+        if: always() && steps.download_receipts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libteam-downloads-${{ matrix.architecture }}-${{ matrix.distribution }}
+          path: libteam-download-receipts/rule-sources.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload source outputs and validation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
