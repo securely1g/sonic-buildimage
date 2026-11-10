@@ -45,6 +45,8 @@ py_test(
         "--library=libteam.tar=$(rootpath //dockers/docker-orchagent:ci_libteam)",
         "--library=libteamdctl.tar=$(rootpath //dockers/docker-orchagent:ci_libteamdctl)",
         "--dependencies=$(rootpath //dockers/docker-orchagent:ci_rdeps)",
+        "--source-layer-excludes=$(rootpath //tools/bazel/dpkg:dpkg_excludes.txt)",
+        "--source-layer-includes=$(rootpath //tools/bazel/dpkg:oci_includes.txt)",
         "--config=$(rootpath //dockers/docker-orchagent:ci_config)",
         "--debug-symbols=$(rootpath //dockers/docker-orchagent:ci_debug_symbols)",
         "--source-file=dist/BUILD.bazel=$(rootpath @swss_install_contract//:dist-BUILD.bazel.txt)",
@@ -69,6 +71,8 @@ py_test(
         "//dockers/docker-orchagent:ci_rdeps",
         "//dockers/docker-orchagent:ci_swss",
         "//dockers/docker-orchagent:package_policy",
+        "//tools/bazel/dpkg:dpkg_excludes.txt",
+        "//tools/bazel/dpkg:oci_includes.txt",
         "@sonic_build_infra//toolchains/binutils:objcopy",
         "@sonic_build_infra//toolchains/binutils:readelf",
         "@sonic_swss//cfgmgr:lua_files",
@@ -88,6 +92,7 @@ py_test(
     ],
     deps = [
         "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:container_validation",
         "//tools/bazel/oci:package_contract_lib",
     ],
 )

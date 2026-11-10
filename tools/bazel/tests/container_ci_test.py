@@ -525,6 +525,11 @@ class SourceLayerAliasTest(unittest.TestCase):
         (self.root / "cfgmgr/vs.lua").write_bytes(b"return {}\n")
         (self.root / "debian/swss.install").write_text("")
         self.runtime = {"usr/share/swss/vs.lua": b"return {}\n"}
+        self.libraries = {}
+        self.excludes = self.root / "excludes"
+        self.includes = self.root / "includes"
+        self.excludes.write_text("usr/share/doc/*\n")
+        self.includes.write_text("usr/share/doc/*/copyright\n")
         self.policy = {
             "architecture": "amd64", "libraries": {}, "required_debug_paths": [], "config_paths": {},
             "install_inventory": {
@@ -560,8 +565,34 @@ class SourceLayerAliasTest(unittest.TestCase):
                 self.archive("runtime.tar", self.runtime),
                 self.archive("dependencies.tar", dict(self.runtime, **overlay)),
                 self.archive("config.tar", {}), self.archive("symbols.tar", {}),
-                {}, self.root, self.policy, readelf="readelf", objcopy="objcopy",
+                self.libraries, self.root, self.policy,
+                source_layer_excludes=self.excludes, source_layer_includes=self.includes,
+                readelf="readelf", objcopy="objcopy",
             )
+
+    def test_installed_library_obeys_oci_document_filters(self):
+        library = "usr/lib/libexample.so.1"
+        copyright_file = "usr/share/doc/libexample/copyright"
+        changelog = "usr/share/doc/libexample/changelog.Debian.gz"
+        elf = b"\x7fELF\x02\x01" + bytes(10) + b"\x03\x00\x3e\x00"
+        retained = {library: elf, copyright_file: b"license"}
+        raw = {**retained, changelog: b"changelog"}
+        self.libraries["libexample.tar"] = self.archive("libexample.tar", raw)
+        self.policy["libraries"]["libexample.tar"] = {
+            "architecture": "amd64", "runtime_path": library, "soname_links": {}, "exclusive_pattern": "*/libexample.so*",
+        }
+        self.verify(retained)
+        for installed, message in (
+            (raw, "filtered library path is present"),
+            ({library: elf}, "changes source library bytes or modes"),
+            ({**retained, copyright_file: b"changed"}, "changes source library bytes or modes"),
+            ({**retained, library: elf + b"changed"}, "changes source library bytes or modes"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                self.verify(installed)
+        self.excludes.write_text("usr/share/doc/*\n" + library + "\n")
+        with self.assertRaisesRegex(ValueError, "OCI filter removes a source ELF"):
+            self.verify({copyright_file: b"license"})
 
     def test_normalized_runtime_paths_preserve_the_base(self):
         self.verify({"run/redis/sonic-db/database_config.json": b"{}\n"})
