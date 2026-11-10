@@ -202,7 +202,7 @@ def main():
     parser.add_argument('phase',choices=('build','validate','incremental'))
     parser.add_argument('--artifacts',type=Path,required=True)
     parser.add_argument('--bazel',default='bazel')
-    parser.add_argument('--image-version',default='bazel-snmp-ci')
+    parser.add_argument('--image-version',default='bazel-ci')
     args=parser.parse_args(); directory=args.artifacts.resolve(); directory.mkdir(parents=True,exist_ok=True)
     if args.phase == 'build': build_images(args,directory)
     elif args.phase == 'validate': validate_images(directory)
