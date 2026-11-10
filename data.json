@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-10T21:15:28.490887Z",
+  "generated_at": "2026-11-10T21:23:37.875916Z",
   "pull_requests": [
     {
       "base_sha": "963d7459843d2c6256b5f59b0a68e474d6802144",
@@ -1067,7 +1067,7 @@
       "number": 75,
       "state": "open",
       "title": "Assemble VS ONIE installers with Bazel",
-      "updated_at": "2026-11-10T12:38:59Z",
+      "updated_at": "2026-11-10T21:16:03Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/75"
     },
     {
@@ -1925,6 +1925,423 @@
   ],
   "repository": "securely1g/sonic-buildimage",
   "runs": [
+    {
+      "attempt": 1,
+      "branch": "codex/vs-k3s-prerequisite-inspection",
+      "completed_at": "2026-11-10T21:22:00Z",
+      "conclusion": "failure",
+      "event": "workflow_dispatch",
+      "jobs": [
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:22:00Z",
+          "conclusion": "failure",
+          "duration_seconds": 79.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137478891,
+          "kind": "other",
+          "name": "VS runtime qualification (K3s)",
+          "phases": {
+            "build": null,
+            "other": 52.0,
+            "setup": 22.0,
+            "upload": null,
+            "validation": 1.0
+          },
+          "started_at": "2026-11-10T21:20:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-11-10T21:20:44Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-10T21:20:42Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:20:44Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Set up runner",
+              "number": 2,
+              "phase": "setup",
+              "started_at": "2026-11-10T21:20:44Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:20:44Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Require separate runtime scope and fresh paths",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-11-10T21:20:44Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:20:53Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
+              "name": "Checkout the immutable runtime controller",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-10T21:20:44Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:21:04Z",
+              "conclusion": "success",
+              "duration_seconds": 11.0,
+              "name": "Checkout the published native stop implementation",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-11-10T21:20:53Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:21:05Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Check controller identity and pure runtime policy tests",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-11-10T21:21:04Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:21:55Z",
+              "conclusion": "failure",
+              "duration_seconds": 50.0,
+              "name": "Qualify sandbox, running container and published native stop",
+              "number": 7,
+              "phase": "other",
+              "started_at": "2026-11-10T21:21:05Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:21:57Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Retain this worker capability result",
+              "number": 8,
+              "phase": "other",
+              "started_at": "2026-11-10T21:21:55Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:21:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Checkout the published native stop implementation",
+              "number": 15,
+              "phase": "other",
+              "started_at": "2026-11-10T21:21:57Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:21:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Checkout the immutable runtime controller",
+              "number": 16,
+              "phase": "other",
+              "started_at": "2026-11-10T21:21:57Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-10T21:21:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 17,
+              "phase": "other",
+              "started_at": "2026-11-10T21:21:57Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137478891"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137479949,
+          "kind": "other",
+          "name": "Registry native (${{ inputs.registry_consumer }}, AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:39Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137479949"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137480481,
+          "kind": "other",
+          "name": "OCI regression checks (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:39Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137480481"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137480716,
+          "kind": "make-vs",
+          "name": "Make VS with Bazel SWSS (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:39Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137480716"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137480793,
+          "kind": "make-vs",
+          "name": "VS installer in SONiC slave (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:39Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137480793"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137480984,
+          "kind": "other",
+          "name": "Source image (${{ inputs.source_image }})",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:39Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137480984"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137535751,
+          "kind": "other",
+          "name": "Source worker preflight (${{ matrix.worker }})",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:45Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137535751"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137547999,
+          "kind": "other",
+          "name": "VS prerequisite observation (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:46Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137547999"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137548616,
+          "kind": "other",
+          "name": "Existing VS cache metadata (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:46Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137548616"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137551885,
+          "kind": "container",
+          "name": "Container archive (${{ matrix.name }})",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:47Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137551885"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137557433,
+          "kind": "other",
+          "name": "Fetch pinned source-image downloads",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:47Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137557433"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137561187,
+          "kind": "other",
+          "name": "Worker provisioner identity",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:48Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137561187"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-10T21:20:39Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130137563680,
+          "kind": "other",
+          "name": "Existing VS cache payload observation (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-10T21:20:48Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/job/130137563680"
+        }
+      ],
+      "pr_association": "none",
+      "pr_association_note": null,
+      "pr_numbers": [],
+      "run_id": 42904108046,
+      "source_sha": "70c1269315f17d767eae830dccfc400c86b37d48",
+      "started_at": "2026-11-10T21:20:37Z",
+      "status": "completed",
+      "updated_at": "2026-11-10T21:22:01Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/42904108046/attempts/1",
+      "workflow_name": "Bazel OCI",
+      "workflow_path": ".github/workflows/bazel-oci.yml"
+    },
     {
       "attempt": 1,
       "branch": "codex/vs-k3s-prerequisite-inspection",
@@ -3056,11 +3473,11 @@
           "kind": "container",
           "name": "Container archive (AMD64)",
           "phases": {
-            "build": 603.0,
-            "other": 71.0,
-            "setup": 217.0,
+            "build": 864.0,
+            "other": 111.0,
+            "setup": 220.0,
             "upload": 3.0,
-            "validation": 874.0
+            "validation": 1182.0
           },
           "started_at": "2026-11-10T20:42:03Z",
           "status": "in_progress",
@@ -3336,64 +3753,64 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-10T21:15:44Z",
+              "conclusion": "success",
+              "duration_seconds": 250.0,
               "name": "Check cached no-op and source edit through the image",
               "number": 28,
               "phase": "validation",
               "started_at": "2026-11-10T21:11:34Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-10T21:15:47Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
               "name": "Prepare shared SWSS image evidence",
               "number": 29,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-10T21:15:44Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-10T21:16:18Z",
+              "conclusion": "success",
+              "duration_seconds": 31.0,
               "name": "Retain reviewed artifacts and receipts",
               "number": 30,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-10T21:15:47Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-10T21:16:27Z",
+              "conclusion": "success",
+              "duration_seconds": 9.0,
               "name": "Preserve completed SWSS layer evidence before Orchagent acceptance",
               "number": 31,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-10T21:16:18Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-10T21:20:48Z",
+              "conclusion": "success",
+              "duration_seconds": 261.0,
               "name": "Build Orchagent variants from source owners",
               "number": 32,
               "phase": "build",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-10T21:16:27Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-10T21:21:46Z",
+              "conclusion": "success",
+              "duration_seconds": 58.0,
               "name": "Validate installed Orchagent sources and Scapy wheel",
               "number": 33,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-10T21:20:48Z",
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -3402,8 +3819,8 @@
               "name": "Validate Orchagent owner packages and original Scapy tests",
               "number": 34,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-10T21:21:46Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
