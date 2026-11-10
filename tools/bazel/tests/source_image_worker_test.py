@@ -951,7 +951,9 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertNotIn("if", step)  # GitHub's implicit success() gate.
         self.assertEqual(workflow["jobs"]["source_image"]["timeout-minutes"], 360)
         self.assertEqual(workflow["jobs"]["source_image"]["runs-on"],
-                         ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
+                         "${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && "
+                         "fromJSON('[\"sonic-slave-container-k3s\"]') || "
+                         "fromJSON(format('[\"sonic-slave-container-dpool\",\"{0}\"]', inputs.source_worker)) }}")
 
     def test_p4rt_owner_setup_verifies_gitlink_and_separate_cache_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
