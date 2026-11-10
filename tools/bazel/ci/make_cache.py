@@ -109,8 +109,10 @@ def preflight(architecture):
     environment.pop("BAZEL_REMOTE_AUTH", None)
     def docker(arguments, **kwargs):
         return command(["docker", *arguments], env=environment, preflight_diagnostics=True, **kwargs)
-    tag_digest = digest(docker(["buildx", "imagetools", "inspect", tag,
-                               "--format", "{{.Manifest.Digest}}"]).strip())
+    # Some Buildx versions render .Manifest.Digest as a human-readable report.
+    descriptor = json.loads(docker(["buildx", "imagetools", "inspect", tag,
+                                    "--format", "{{json .Manifest}}"]))
+    tag_digest = digest(descriptor["digest"])
     reference = SLAVE_REPOSITORY + "@" + tag_digest
     manifest = json.loads(docker(["buildx", "imagetools", "inspect", "--raw", reference]))
     selected = native_manifest(manifest, architecture)
