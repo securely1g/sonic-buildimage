@@ -1,8 +1,11 @@
 """Pure/mocked planner checks and a toy Make grouped-target check; no DEBs."""
 import argparse
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -16,6 +19,52 @@ spec.loader.exec_module(plan)
 
 
 class ReusePlanTests(unittest.TestCase):
+    def test_preparation_policies_reach_host_hook_before_any_assembly(self):
+        # Only this toy hook runs remotely: no project/package recipe or DEB.
+        identity = {"BUILD_NUMBER": "1", "BUILD_TIMESTAMP": "20261110.0",
+                    "SOURCE_DATE_EPOCH": "1794268800", "BUILD_HOSTNAME": "fixture ' host",
+                    "SONIC_IMAGE_VERSION": "bazel-ci"}
+        original = dict(identity)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stdout = io.StringIO()
+            argv = ["vs_reuse_plan.py", "environment", "--workspace", str(root),
+                    "--manifest", str(root / "unused-fixture.json"),
+                    "--manifest-sha256", "a" * 64, "--merge", "b" * 40]
+            with mock.patch.object(plan.sys, "argv", argv), \
+                 mock.patch.object(plan, "inputs", return_value=(root, {"build_environment": identity})), \
+                 contextlib.redirect_stdout(stdout):
+                plan.main()
+            exports = stdout.getvalue()
+            self.assertEqual(identity, original)
+            (root / "Makefile").write_text(
+                "ifneq ($(SONIC_DEB_BUILD_POLICY),reuse-only)\n$(error preparation policy missing)\nendif\n"
+                "ifneq ($(SONIC_BAZEL_KERNEL_PREPARE),verify)\n$(error kernel policy missing)\nendif\n"
+                ".PHONY: all\nall: hook-output\n"
+                "hook-output: hook-source\n"
+                "\t@printf checked > hook-policy-checked; "
+                "case \"$(SONIC_DEB_BUILD_POLICY)\" in reuse-only) exit 23;; esac; "
+                "printf forbidden > generation-sentinel\n")
+            (root / "hook-source").write_text("original prerequisite")
+            for state in ("missing", "stale"):
+                with self.subTest(state=state):
+                    if state == "stale":
+                        (root / "hook-output").write_text("existing original fixture")
+                        os.utime(root / "hook-output", (1, 1))
+                        os.utime(root / "hook-source", (2, 2))
+                    result = subprocess.run(
+                        ["bash", "-eu", "-c", exports +
+                         "exec make --no-builtin-rules --no-builtin-variables -f Makefile all\n"],
+                        cwd=root, text=True, capture_output=True, timeout=10,
+                        env={**os.environ, "SONIC_DEB_BUILD_POLICY": "build", "SONIC_BAZEL_KERNEL_PREPARE": "ensure",
+                             "MAKEFLAGS": "", "MFLAGS": "", "GNUMAKEFLAGS": "", "MAKEFILES": "", "MAKEOVERRIDES": ""})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual((root / "hook-policy-checked").read_text(), "checked")
+                    (root / "hook-policy-checked").unlink()
+                    self.assertFalse((root / "generation-sentinel").exists())
+                    if state == "stale":
+                        self.assertEqual((root / "hook-output").read_text(), "existing original fixture")
+
     def test_original_provenance_without_hash_is_preserved(self):
         original_request = b'{"image":"gearbox","request_attempt":1}\n'
         provenance = {"artifact": {"id": 123}, "origin": {"id": 456}}

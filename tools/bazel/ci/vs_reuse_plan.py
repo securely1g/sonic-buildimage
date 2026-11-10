@@ -334,7 +334,12 @@ def main():
     if args.mode in {"metadata", "plan"} and (args.producer_workspace is None or args.registry_workspace is None):
         parser.error("metadata/plan require separate original producer and registry workspaces")
     if args.mode == "environment":
-        for key, value in inputs(args)[1]["build_environment"].items():
+        environment = dict(inputs(args)[1]["build_environment"])
+        # Preparation runs host-hook Make before the assembly argv exists.
+        # Export the same policies early without changing original image identity.
+        environment.update(item.split("=", 1) for item in FLAGS
+                           if item.startswith(("SONIC_DEB_BUILD_POLICY=", "SONIC_BAZEL_KERNEL_PREPARE=")))
+        for key, value in environment.items():
             print("export " + key + "=" + shlex.quote(value))
         return
     if args.mode == "metadata":
