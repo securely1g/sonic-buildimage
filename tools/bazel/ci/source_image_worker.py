@@ -852,6 +852,7 @@ def prepare(args):
         env["USE_BAZEL_VERSION"] = "8.5.1"
     (artifacts / "worker-private.json").write_text(json.dumps(state, indent=2) + "\n")
     run(["sudo", "-n", sys.executable, str(ROOT / "tools/bazel/ci/prepare_nested_docker.py")])
+    capture_docker_mount(args, "before")
     with (artifacts / "dockerd.log").open("w") as log:
         subprocess.Popen(["sudo", "-n", "/usr/bin/env", "-i", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root",
                           shutil.which("dockerd"), "--config-file=" + str(daemon_config),
@@ -873,6 +874,7 @@ def prepare(args):
         time.sleep(1)
     else:
         raise ValueError("Private Docker did not become ready")
+    capture_docker_mount(args, "ready")
     receipt = {"schema": 1, "status": "prepared", "worker": runner, "architecture": "amd64", "distribution": "trixie",
                "source_revision": args.revision, "dispatcher_revision": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
                "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "persistent_worker_local",
@@ -1006,6 +1008,501 @@ def publish(args):
     (destination / "build-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 
+def docker_mount_scope(args, state):
+    root, pidfile = Path(state["docker_root"]), Path(state["pidfile"])
+    temporary = temporary_directory()
+    run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    runner = os.environ.get("RUNNER_NAME", "")
+    require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) and
+            worker_matches_pool(runner, selected_worker_pool()), "Missing owned Docker run/worker identity")
+    require(root.parent == temporary and temporary.is_relative_to("/actions/_work") and
+            root.name == f"source-image-docker-{run_id}-{attempt}", "Unexpected proved Docker root")
+    environment = state["environment"]
+    endpoint, client = environment.get("DOCKER_HOST", ""), Path(environment.get("DOCKER_CONFIG", ""))
+    require(endpoint.startswith("unix:///") and client.is_absolute() and client.is_relative_to(temporary) and
+            client.resolve() == client, "Expected exact private Docker endpoint/configuration")
+    return {"root": str(root), "pidfile": str(pidfile), "endpoint": endpoint, "client": str(client),
+            "run": run_id, "attempt": attempt, "worker": runner,
+            "image": args.image, "revision": args.revision, "workspace": str(args.workspace)}
+
+
+def run_docker_mount_action(args, state, action):
+    require(action in ("before", "ready", "inventory", "stop", "cleanup"), "Unknown private Docker mount action")
+    scope = docker_mount_scope(args, state)
+    return run(["sudo", "-n", sys.executable, "-c", docker_owned_mount_script(), action,
+                state["docker_root"], state["pidfile"], json.dumps(scope, sort_keys=True)],
+               timeout=120 if action == "cleanup" else (70 if action == "stop" else 25))
+
+
+def capture_docker_mount(args, stage):
+    require(stage in ("before", "ready"), "Unknown private Docker capture stage")
+    state = state_for(args)
+    require("docker_mount_protocol" not in state, "Do not replay a completed Docker mount capture")
+    run_docker_mount_action(args, state, stage)
+    if stage == "ready":
+        state["docker_mount_protocol"] = 1
+        (args.artifacts / "worker-private.json").write_text(json.dumps(state, indent=2) + "\n")
+
+
+def stop_with_mount_proof(args, state):
+    docker_mount_scope(args, state)
+    pidfile = Path(state["pidfile"])
+    if not pidfile.exists():
+        require(not Path(state["docker_root"]).exists(), "Daemon left data without a PID; retain it for diagnosis")
+        return
+    inventory_failure = None
+    try:
+        run_docker_mount_action(args, state, "inventory")
+    except BaseException as error:
+        inventory_failure = error
+    # A failed inventory never bypasses generation proof or skips an owned stop attempt.
+    try:
+        run_docker_mount_action(args, state, "stop")
+    except BaseException as stop_error:
+        if inventory_failure is not None:
+            raise stop_error from inventory_failure
+        raise
+    if inventory_failure is not None:
+        raise inventory_failure
+    run_docker_mount_action(args, state, "cleanup")
+    pidfile.unlink(missing_ok=True)
+
+
+
+def stop_selected(args):
+    if not (args.artifacts / "worker-private.json").exists():
+        return stop(args)
+    state = state_for(args)
+    if "docker_mount_protocol" not in state:
+        return stop(args)
+    require(type(state["docker_mount_protocol"]) is int and state["docker_mount_protocol"] == 1,
+            "Unknown Docker mount protocol; retain state")
+    return stop_with_mount_proof(args, state)
+
+
+def docker_owned_mount_script():
+    return r'''import grp, hashlib, json, os, re, resource, shutil, signal, stat, subprocess, sys, time
+from pathlib import Path
+
+CAP = 65536
+
+def require(value, reason):
+    if not value:
+        raise ValueError(reason)
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        require(key not in result, 'Duplicate private mount proof field')
+        result[key] = value
+    return result
+
+def decode(data):
+    return json.loads(data, object_pairs_hook=pairs,
+                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError('Nonfinite proof')))
+
+def directory(path):
+    value = path.lstat()
+    require(stat.S_ISDIR(value.st_mode) and path.resolve() == path, 'Private mount directory identity')
+    return {'device': value.st_dev, 'inode': value.st_ino, 'uid': value.st_uid,
+            'gid': value.st_gid, 'mode': stat.S_IMODE(value.st_mode)}
+
+def namespace():
+    value = os.stat('/proc/self/ns/mnt')
+    return [value.st_dev, value.st_ino]
+
+def read_record(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        before = os.fstat(fd)
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and
+                stat.S_IMODE(before.st_mode) == 0o444 and 0 < before.st_size <= CAP,
+                'Private mount proof must be a bounded root-owned immutable file')
+        data = os.read(fd, CAP + 1)
+        after = os.fstat(fd)
+        require(len(data) == before.st_size and
+                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),
+                'Private mount proof changed')
+        return decode(data), hashlib.sha256(data).hexdigest()
+    finally:
+        os.close(fd)
+
+def write_record(path, value):
+    data = (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
+    require(len(data) <= CAP, 'Private mount proof size')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        with os.fdopen(fd, 'wb', closefd=False) as stream:
+            stream.write(data)
+            stream.flush()
+        os.fchmod(fd, 0o444)
+    finally:
+        os.close(fd)
+
+def unescape(value):
+    return re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), value)
+
+def parse_mounts(data):
+    require(len(data) <= 1024 * 1024, 'Mount table exceeds bound')
+    rows = []
+    for line in data.splitlines():
+        left, right = line.split(' - ', 1)
+        fields, trailing = left.split(), right.split()
+        require(len(fields) >= 6 and len(trailing) >= 3 and
+                re.fullmatch(r'[0-9]+:[0-9]+', fields[2]), 'Invalid mount row')
+        root, point = unescape(fields[3]), unescape(fields[4])
+        require(all(value.startswith('/') and '..' not in Path(value).parts for value in (root, point)),
+                'Invalid mount path')
+        rows.append({'id': int(fields[0]), 'parent': int(fields[1]), 'device': fields[2],
+                     'root': root, 'point': point, 'options': fields[5], 'optional': fields[6:],
+                     'filesystem': trailing[0], 'source': unescape(trailing[1]), 'super': trailing[2:]})
+    require(len(rows) <= 4096 and len({row['id'] for row in rows}) == len(rows), 'Mount table identity/bound')
+    return rows
+
+def mounts():
+    with open('/proc/self/mountinfo', 'r', encoding='utf-8') as stream:
+        return parse_mounts(stream.read(1024 * 1024 + 1))
+
+def below(rows, root):
+    return [row for row in rows if Path(row['point']).is_relative_to(root)]
+
+def covering(rows, root):
+    choices = [row for row in rows if root.is_relative_to(Path(row['point']))]
+    require(choices, 'Missing backing mount')
+    depth = max(len(Path(row['point']).parts) for row in choices)
+    choices = [row for row in choices if len(Path(row['point']).parts) == depth]
+    require(len(choices) == 1, 'Ambiguous backing mount')
+    return choices[0]
+
+def self_bind(before, row, root):
+    parent = before['covering']
+    expected_root = str(Path(parent['root']) / root.relative_to(Path(parent['point'])))
+    require(row['point'] == str(root) and row['parent'] == parent['id'] and
+            row['id'] not in before['mount_ids'] and row['device'] == parent['device'] and
+            row['filesystem'] == parent['filesystem'] and row['source'] == parent['source'] and
+            row['root'] == expected_root and row['filesystem'] in ('ext4', 'xfs'),
+            'Root mount is not the captured new self-bind')
+    require(not any(item.startswith(('shared:', 'master:')) for item in parent['optional']) and
+            len(row['optional']) == 1 and re.fullmatch(r'shared:[0-9]+', row['optional'][0]),
+            'Unexpected root mount propagation')
+
+def tools_ready():
+    for name in ('/usr/bin/docker', '/usr/bin/umount'):
+        value = Path(name).lstat()
+        require(stat.S_ISREG(value.st_mode) and value.st_uid == 0 and
+                not value.st_mode & 0o022 and os.access(name, os.X_OK),
+                'Required fixed Docker/umount executable is unavailable')
+    require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'),
+            'Owned daemon signaling requires pidfd support')
+
+def process_start(pid):
+    require(type(pid) is int and pid > 1, 'Invalid owned process ID')
+    with (Path('/proc') / str(pid) / 'stat').open('r') as stream:
+        raw = stream.read(4097)
+    require(len(raw) <= 4096, 'Owned process stat exceeds bound')
+    return int(raw.rsplit(') ', 1)[1].split()[19])
+
+def process_identity(pid):
+    start = process_start(pid)
+    mount_ns = (Path('/proc') / str(pid) / 'ns/mnt').stat()
+    require(process_start(pid) == start, 'Process changed while reading namespace')
+    return {'pid': pid, 'start_ticks': start,
+            'namespace': [mount_ns.st_dev, mount_ns.st_ino]}
+
+def child_ids(parent):
+    # Enumerate only tasks of this already proved process, never global /proc.
+    identifiers = set()
+    count = 0
+    with os.scandir('/proc/' + str(parent['pid']) + '/task') as tasks:
+        for task in tasks:
+            count += 1
+            require(count <= 512 and task.name.isdecimal(), 'Owned task enumeration bound')
+            with open(task.path + '/children', 'r') as stream:
+                data = stream.read(4097)
+            require(len(data) <= 4096, 'Owned child list exceeds bound')
+            for raw in data.split():
+                require(raw.isdecimal() and int(raw) > 1, 'Invalid owned child ID')
+                identifiers.add(int(raw))
+                require(len(identifiers) <= 128, 'Owned child count exceeds bound')
+    require(process_identity(parent['pid']) == parent, 'Parent generation changed during child capture')
+    return sorted(identifiers)
+
+def descendants(parent):
+    found = {}
+    pending = [(parent, 0)]
+    deadline = time.monotonic() + 5
+    while pending:
+        current, depth = pending.pop()
+        require(depth <= 8 and time.monotonic() < deadline, 'Owned descendant traversal bound')
+        for pid in child_ids(current):
+            require(pid != parent['pid'] and pid not in found and len(found) < 128,
+                    'Owned descendant identity/count differs')
+            value = process_identity(pid)
+            found[pid] = value
+            pending.append((value, depth + 1))
+    require(process_identity(parent['pid']) == parent, 'Daemon changed during descendant capture')
+    return [found[key] for key in sorted(found)]
+
+def merge_descendants(records, additions):
+    for value in additions:
+        pid = value['pid']
+        require(pid not in records or records[pid] == value, 'Owned descendant generation changed')
+        records[pid] = value
+        require(len(records) <= 128, 'Owned descendant count exceeds bound')
+
+def require_closed(records):
+    require(all(not (Path('/proc') / str(value['pid'])).exists() for value in records),
+            'Observed owned process still exists; retain data')
+
+def daemon(pidfile, root, expected=None):
+    raw = pidfile.read_text().strip()
+    require(raw.isdecimal() and int(raw) > 1, 'Invalid owned daemon PID')
+    path = Path('/proc') / raw
+    require((path / 'comm').read_text().strip() == 'dockerd' and
+            ('--data-root=' + str(root)).encode() in (path / 'cmdline').read_bytes().split(b'\0'),
+            'Daemon identity changed')
+    result = process_identity(int(raw))
+    require(result['namespace'] == namespace() and (expected is None or result == expected),
+            'Daemon generation or mount namespace changed')
+    return result
+
+
+def load_proof(root, scope):
+    before, before_hash = read_record(root.with_name(root.name + '.mount-before.json'))
+    ready, ready_hash = read_record(root.with_name(root.name + '.mount-ready.json'))
+    require(before['schema'] == ready['schema'] == 1 and before['scope'] == ready['scope'] == scope and
+            before['root_absent'] is True and ready['directory']['uid'] == 0 and
+            ready['before_sha256'] == before_hash and before['namespace'] == ready['namespace'] == namespace() and
+            before['parent'] == ready['parent'] == directory(root.parent) and
+            ready['directory'] == directory(root), 'Owned mount proof identity changed')
+    if ready['root_mount'] is not None:
+        self_bind(before, ready['root_mount'], root)
+    return before, ready, ready_hash
+
+def capture(stage, root, pidfile, scope):
+    rows = mounts()
+    if stage == 'before':
+        tools_ready()
+        require(not os.path.lexists(root) and not below(rows, root), 'Docker root must be absent before launch')
+        value = {'schema': 1, 'scope': scope, 'namespace': namespace(), 'parent': directory(root.parent),
+                 'covering': covering(rows, root), 'mount_ids': [row['id'] for row in rows], 'root_absent': True}
+        write_record(root.with_name(root.name + '.mount-before.json'), value)
+        return
+    before, digest = read_record(root.with_name(root.name + '.mount-before.json'))
+    require(before['schema'] == 1 and before['scope'] == scope and before['root_absent'] is True and
+            before['namespace'] == namespace() and before['parent'] == directory(root.parent),
+            'Startup mount context changed')
+    parent = next((row for row in rows if row['id'] == before['covering']['id']), None)
+    require(parent == before['covering'], 'Backing mount changed during startup')
+    found = below(rows, root)
+    require(len(found) <= 1 and (not found or found[0]['point'] == str(root)),
+            'Unexpected descendant mounts at readiness')
+    if found:
+        self_bind(before, found[0], root)
+    current = directory(root)
+    require(current['uid'] == 0 and f"{os.major(current['device'])}:{os.minor(current['device'])}" == parent['device'],
+            'Docker root storage/owner differs')
+    value = {'schema': 1, 'scope': scope, 'before_sha256': digest, 'namespace': namespace(),
+             'parent': directory(root.parent), 'directory': current, 'root_mount': found[0] if found else None,
+             'daemon': daemon(pidfile, root)}
+    value['descendants'] = descendants(value['daemon'])
+    daemon(pidfile, root, value['daemon'])
+    write_record(root.with_name(root.name + '.mount-ready.json'), value)
+
+def file_limit():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (CAP, CAP))
+
+def empty_inventory(value, root):
+    require(isinstance(value, dict) and set(value) == {'root', 'containers', 'running', 'paused', 'stopped'} and
+            value['root'] == str(root) and all(type(value[key]) is int and value[key] == 0
+            for key in ('containers', 'running', 'paused', 'stopped')), 'Owned daemon inventory is not empty')
+
+def inventory(root, pidfile, scope):
+    before, ready, ready_hash = load_proof(root, scope)
+    current = daemon(pidfile, root, ready['daemon'])
+    observed = descendants(current)
+    endpoint, client = scope['endpoint'], scope['client']
+    require(endpoint.startswith('unix:///') and client.startswith('/'), 'Private Docker endpoint/config required')
+    environment = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/home/admin',
+                   'DOCKER_HOST': endpoint, 'DOCKER_CONFIG': client, 'LC_ALL': 'C'}
+    fmt = '{"root":{{json .DockerRootDir}},"containers":{{.Containers}},"running":{{.ContainersRunning}},"paused":{{.ContainersPaused}},"stopped":{{.ContainersStopped}}}'
+    stdout = root.with_name(root.name + '.empty-inventory.stdout')
+    stderr = root.with_name(root.name + '.empty-inventory.stderr')
+    with stdout.open('xb') as out, stderr.open('xb') as err:
+        result = subprocess.run(['/usr/bin/docker', 'info', '--format', fmt], env=environment,
+                                user=1000, group=1000, extra_groups=[grp.getgrnam('docker').gr_gid],
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                timeout=10, preexec_fn=file_limit, close_fds=True)
+    data, errors = stdout.read_bytes(), stderr.read_bytes()
+    require(result.returncode == 0 and len(data) <= CAP and len(errors) <= CAP, 'Private Docker inventory failed')
+    value = decode(data)
+    empty_inventory(value, root)
+    daemon(pidfile, root, current)
+    write_record(root.with_name(root.name + '.empty-inventory.json'),
+                 {'schema': 1, 'scope': scope, 'ready_sha256': ready_hash, 'daemon': current, 'descendants': observed,
+                  'monotonic': time.monotonic(), 'inventory': value,
+                  'stdout_sha256': hashlib.sha256(data).hexdigest(), 'stderr_sha256': hashlib.sha256(errors).hexdigest()})
+
+def stop_daemon(root, pidfile, scope):
+    before, ready, ready_hash = load_proof(root, scope)
+    current = daemon(pidfile, root, ready['daemon'])
+    # Open a kernel handle, then re-prove the generation before signaling it.
+    handle = os.pidfd_open(current['pid'], 0)
+    try:
+        daemon(pidfile, root, current)
+        observed = {}
+        merge_descendants(observed, ready['descendants'])
+        capture_failure = None
+        try:
+            inventory_path = root.with_name(root.name + '.empty-inventory.json')
+            if os.path.lexists(inventory_path):
+                value, unused = read_record(inventory_path)
+                require(value['schema'] == 1 and value['scope'] == scope and
+                        value['ready_sha256'] == ready_hash and value['daemon'] == current,
+                        'Inventory process observation differs')
+                merge_descendants(observed, value['descendants'])
+            merge_descendants(observed, descendants(current))
+        except Exception as error:
+            capture_failure = error
+        daemon(pidfile, root, current)
+        signal.pidfd_send_signal(handle, signal.SIGTERM, None, 0)
+        deadline = time.monotonic() + 60
+        while (Path('/proc') / str(current['pid'])).exists():
+            try:
+                require(process_start(current['pid']) == current['start_ticks'], 'Daemon generation changed during stop')
+            except FileNotFoundError:
+                require(not (Path('/proc') / str(current['pid'])).exists(), 'Uncertain daemon state during stop')
+                break
+            require(time.monotonic() < deadline, 'Private Docker has not stopped; retain its data')
+            time.sleep(0.5)
+        while any((Path('/proc') / str(value['pid'])).exists() for value in observed.values()):
+            for value in observed.values():
+                if (Path('/proc') / str(value['pid'])).exists():
+                    try:
+                        require(process_start(value['pid']) == value['start_ticks'], 'Owned descendant identity changed during stop')
+                    except FileNotFoundError:
+                        require(not (Path('/proc') / str(value['pid'])).exists(), 'Uncertain descendant state during stop')
+            require(time.monotonic() < deadline, 'Owned Docker descendants have not stopped; retain data')
+            time.sleep(0.5)
+        if capture_failure is not None:
+            raise capture_failure
+        records = [observed[key] for key in sorted(observed)]
+        require_closed([current] + records)
+        write_record(root.with_name(root.name + '.owned-process-closure.json'),
+                     {'schema': 1, 'scope': scope, 'ready_sha256': ready_hash, 'daemon': current,
+                      'descendants': records, 'monotonic': time.monotonic(),
+                      'status': 'OBSERVED_OWNED_PROCESSES_CLOSED'})
+    finally:
+        os.close(handle)
+
+
+def diagnostic(rows, root):
+    records = []
+    for row in rows:
+        relative = Path(row['point']).relative_to(root)
+        records.append({'mount_id': row['id'], 'parent_id': row['parent'],
+                        'filesystem': row['filesystem'] if row['filesystem'] in ('overlay', 'ext4', 'xfs', 'tmpfs', 'proc', 'sysfs', 'cgroup2') else 'other',
+                        'location': 'root' if not relative.parts else (relative.parts[0] if relative.parts[0] in ('overlay2', 'containers', 'containerd', 'volumes', 'image', 'buildkit') else 'other'),
+                        'relative_depth': len(relative.parts),
+                        'relative_path_sha256': hashlib.sha256(os.fsencode(str(relative))).hexdigest()})
+    print(json.dumps({'status': 'failed', 'phase': 'private_docker_mount_teardown', 'wait_limit_seconds': 30,
+                      'mount_count': len(records), 'reported_mounts': records[:16], 'truncated': len(records) > 16},
+                     sort_keys=True), file=sys.stderr)
+
+def normal_unmount(root, before, ready):
+    parentfd = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        value = os.fstat(parentfd)
+        require((value.st_dev, value.st_ino) == (before['parent']['device'], before['parent']['inode']),
+                'Parent changed before normal unmount')
+        rows = mounts()
+        require(directory(root.parent) == before['parent'] and directory(root) == ready['directory'] and
+                next((row for row in rows if row['id'] == before['covering']['id']), None) == before['covering'] and
+                below(rows, root) == [ready['root_mount']], 'Mount changed before normal unmount')
+        write_record(root.with_name(root.name + '.normal-unmount-attempt.json'),
+                     {'schema': 1, 'status': 'NORMAL_UNMOUNT_ATTEMPT', 'scope': ready['scope'],
+                      'namespace': namespace(), 'daemon': ready['daemon'],
+                      'directory': ready['directory'], 'root_mount': ready['root_mount']})
+        target = '/proc/self/fd/' + str(parentfd) + '/' + root.name
+        result = subprocess.run(['/usr/bin/umount', '--no-canonicalize', '--internal-only', '--no-mtab', '--', target],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=10, pass_fds=(parentfd,), close_fds=True)
+        require(result.returncode == 0, 'Normal owned-root unmount failed; retain data')
+    finally:
+        os.close(parentfd)
+
+def cleanup(root, pidfile, scope):
+    before, ready, ready_hash = load_proof(root, scope)
+    empty, unused = read_record(root.with_name(root.name + '.empty-inventory.json'))
+    require(empty['schema'] == 1 and empty['scope'] == scope and empty['ready_sha256'] == ready_hash and
+            empty['daemon'] == ready['daemon'] and 0 <= time.monotonic() - empty['monotonic'] <= 90,
+            'Fresh owned empty-container evidence required')
+    empty_inventory(empty['inventory'], root)
+    closed, unused = read_record(root.with_name(root.name + '.owned-process-closure.json'))
+    require(closed['schema'] == 1 and closed['scope'] == scope and closed['ready_sha256'] == ready_hash and
+            closed['daemon'] == ready['daemon'] and closed['status'] == 'OBSERVED_OWNED_PROCESSES_CLOSED' and
+            empty['monotonic'] <= closed['monotonic'] <= empty['monotonic'] + 90,
+            'Owned process closure proof differs')
+    require_closed([ready['daemon']] + closed['descendants'])
+    require(pidfile.read_text().strip() == str(ready['daemon']['pid']) and
+            not (Path('/proc') / str(ready['daemon']['pid'])).exists(), 'Owned daemon has not exited')
+    deadline = time.monotonic() + 30
+    while True:
+        rows = mounts()
+        require(next((row for row in rows if row['id'] == before['covering']['id']), None) == before['covering'],
+                'Backing mount changed before cleanup')
+        found = below(rows, root)
+        roots = [row for row in found if row['point'] == str(root)]
+        descendants = [row for row in found if row['point'] != str(root)]
+        if roots and roots != [ready['root_mount']]:
+            diagnostic(found, root)
+            raise ValueError('Unexpected root mount; retain data')
+        if not descendants:
+            break
+        if time.monotonic() >= deadline:
+            diagnostic(found, root)
+            raise ValueError('Private Docker still has a mounted child; retain data')
+        time.sleep(0.5)
+    try:
+        if roots:
+            normal_unmount(root, before, ready)
+        rows = mounts()
+        require(not below(rows, root) and
+                next((row for row in rows if row['id'] == before['covering']['id']), None) == before['covering'],
+                'Mount remains or backing changed after normal unmount; retain data')
+        require(directory(root.parent) == before['parent'] and directory(root) == ready['directory'],
+                'Private data identity changed before deletion')
+    except BaseException:
+        diagnostic(below(mounts(), root), root)
+        raise
+    shutil.rmtree(root)
+
+def main():
+    require(os.getuid() == 0 and len(sys.argv) == 5, 'Expected elevated fixed mount action')
+    os.umask(0o077)
+    action, root, pidfile, scope = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), decode(sys.argv[4])
+    require(action in ('before', 'ready', 'inventory', 'stop', 'cleanup') and root.is_absolute() and
+            root.parent.is_relative_to('/actions/_work') and root.parent.resolve() == root.parent and
+            re.fullmatch(r'source-image-docker-[1-9][0-9]*-[1-9][0-9]*', root.name) and
+            scope['root'] == str(root) and scope['pidfile'] == str(pidfile), 'Unexpected owned mount scope')
+    if action in ('before', 'ready'):
+        capture(action, root, pidfile, scope)
+    elif action == 'inventory':
+        inventory(root, pidfile, scope)
+    elif action == 'stop':
+        stop_daemon(root, pidfile, scope)
+    else:
+        cleanup(root, pidfile, scope)
+
+if __name__ == '__main__':
+    main()
+'''
+
+
+
+
+
 def docker_cleanup_script():
     """Bound mount teardown before removing only the stopped private daemon's data."""
     return r'''import hashlib, json, os, pathlib, re, shutil, sys, time
@@ -1083,7 +1580,7 @@ def stop(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded", "publish", "stop", "prepare-mirrors", "scan-mirrors", "cleanup-mirrors"))
+    parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded", "publish", "stop", "capture-docker-mount-before", "capture-docker-mount-ready", "prepare-mirrors", "scan-mirrors", "cleanup-mirrors"))
     parser.add_argument("--image", required=True, choices=DRIVERS)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
@@ -1110,7 +1607,9 @@ def main():
     elif args.phase == "publish":
         publish(args)
     elif args.phase == "stop":
-        stop(args)
+        stop_selected(args)
+    elif args.phase in ("capture-docker-mount-before", "capture-docker-mount-ready"):
+        capture_docker_mount(args, args.phase.rsplit("-", 1)[1])
     else:
         execute_phase(args)
 

@@ -1536,5 +1536,373 @@ class PrivateDockerMountTeardownTest(unittest.TestCase):
                     self.assertTrue(root.is_dir())
 
 
+class ProvedDockerRootMountTest(unittest.TestCase):
+    def program(self):
+        namespace = {"__name__": "owned_mount_fixture"}
+        exec(compile(worker.docker_owned_mount_script(), "owned-mount-fixture", "exec"), namespace)
+        return namespace
+
+    def fixture(self, directory):
+        root = Path(directory) / "source-image-docker-123-1"
+        root.mkdir()
+        pidfile = Path(directory) / "daemon.pid"
+        pidfile.write_text("123\n")
+        functions = self.program()
+        parent = {"id": 10, "parent": 1, "device": "8:1", "root": "/actions",
+                  "point": directory, "options": "rw", "optional": [],
+                  "filesystem": "ext4", "source": "/dev/fixture", "super": ["rw"]}
+        mounted = dict(parent, id=11, parent=10, root="/actions/" + root.name,
+                       point=str(root), optional=["shared:99"])
+        before = {"covering": parent, "mount_ids": [10], "parent": functions["directory"](root.parent)}
+        ready = {"scope": {}, "root_mount": mounted, "directory": functions["directory"](root), "daemon": {"pid": 123}}
+        inventory = {"schema": 1, "scope": {}, "ready_sha256": "ready", "daemon": ready["daemon"],
+                     "monotonic": 100, "inventory": {"root": str(root), "containers": 0,
+                     "running": 0, "paused": 0, "stopped": 0}}
+        return functions, root, pidfile, parent, mounted, before, ready, inventory
+
+    def cleanup_case(self, fixture, rows, *, times=(100, 100), returncode=0, alive_children=()):
+        functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+        original_exists = Path.exists
+        def exists(path):
+            return (False if str(path) == "/proc/123" else True if str(path) in {"/proc/" + str(pid) for pid in alive_children} else original_exists(path))
+        with patch.dict(functions, {"load_proof": lambda *args: (before, ready, "ready"),
+                                    "read_record": lambda path: ({"schema": 1, "scope": {}, "ready_sha256": "ready",
+                                        "daemon": ready["daemon"], "descendants": ready.get("descendants", []),
+                                        "monotonic": 100, "status": "OBSERVED_OWNED_PROCESSES_CLOSED"}, "closed")
+                                        if path.name.endswith(".owned-process-closure.json") else (inventory, "inventory"),
+                                    "namespace": lambda: [1, 2]}), \
+             patch.dict(functions, {"mounts": unittest.mock.Mock(side_effect=rows)}), \
+             patch.object(functions["time"], "monotonic", side_effect=times), \
+             patch.object(functions["time"], "sleep") as sleep, \
+             patch.object(Path, "exists", exists), \
+             patch.object(functions["subprocess"], "run", return_value=SimpleNamespace(returncode=returncode)) as command, \
+             patch.object(functions["shutil"], "rmtree") as remove, \
+             patch("sys.stderr", new_callable=io.StringIO) as diagnostic:
+            error = None
+            try:
+                functions["cleanup"](root, pidfile, {})
+            except (ValueError, OSError) as caught:
+                error = caught
+            return error, command, remove, sleep, diagnostic.getvalue()
+
+    def test_proves_only_new_same_backing_root_self_bind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions, root, pidfile, parent, mounted, before, ready, inventory = self.fixture(directory)
+            functions["self_bind"](before, mounted, root)
+            for changes in ({"id": 10}, {"parent": 99}, {"device": "8:2"},
+                            {"root": "/different"}, {"source": "/dev/other"},
+                            {"point": str(root / "child")}, {"optional": ["master:99"]}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    functions["self_bind"](before, dict(mounted, **changes), root)
+            changed = dict(before, covering=dict(parent, optional=["shared:5"]))
+            with self.assertRaises(ValueError):
+                functions["self_bind"](changed, mounted, root)
+
+    def test_mount_parser_decodes_paths_and_rejects_duplicate_identity(self):
+        functions = self.program()
+        value = "11 10 8:1 /actions/a\\040b /tmp/a\\040b rw shared:99 - ext4 /dev/fixture rw\n"
+        rows = functions["parse_mounts"](value)
+        self.assertEqual((rows[0]["root"], rows[0]["point"]), ("/actions/a b", "/tmp/a b"))
+        for data in (value + value, "invalid\n", "1 0 8:1 / /tmp/../other rw - ext4 fixture rw\n"):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                functions["parse_mounts"](data)
+
+    def test_existing_root_cannot_receive_fresh_before_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions, root, pidfile, parent, mounted, before, ready, inventory = self.fixture(directory)
+            with patch.dict(functions, {"mounts": lambda: [parent], "write_record": unittest.mock.Mock(), "tools_ready": lambda: None}):
+                with self.assertRaises(ValueError):
+                    functions["capture"]("before", root, pidfile, {})
+                functions["write_record"].assert_not_called()
+
+    def test_nonempty_or_wrong_endpoint_root_inventory_is_rejected(self):
+        functions = self.program()
+        root = Path("/actions/_work/root")
+        valid = {"root": str(root), "containers": 0, "running": 0, "paused": 0, "stopped": 0}
+        functions["empty_inventory"](valid, root)
+        for changes in ({"root": "/other"}, {"containers": 1}, {"running": 1},
+                        {"paused": 1}, {"stopped": 1}, {"containers": False}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                functions["empty_inventory"](dict(valid, **changes), root)
+
+    def test_delayed_descendant_then_one_normal_fd_anchored_unmount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            child = dict(mounted, id=12, parent=11, point=str(root / "overlay2/layer/merged"))
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted, child], [parent, mounted], [parent, mounted], [parent]],
+                times=(100, 100, 100))
+            self.assertIsNone(error)
+            sleep.assert_called_once_with(0.5)
+            command.assert_called_once()
+            argv = command.call_args.args[0]
+            self.assertEqual(argv[:-1], ["/usr/bin/umount", "--no-canonicalize", "--internal-only", "--no-mtab", "--"])
+            self.assertRegex(argv[-1], r"^/proc/self/fd/[0-9]+/source-image-docker-123-1$")
+            self.assertEqual(command.call_args.kwargs["timeout"], 10)
+            self.assertEqual(len(command.call_args.kwargs["pass_fds"]), 1)
+            remove.assert_called_once_with(root)
+            self.assertEqual(diagnostic, "")
+
+    def test_busy_normal_unmount_preserves_data_without_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted], [parent, mounted], [parent, mounted]], returncode=32)
+            self.assertIsInstance(error, ValueError)
+            command.assert_called_once()
+            remove.assert_not_called()
+            self.assertTrue(root.is_dir())
+            self.assertEqual(json.loads(diagnostic)["reported_mounts"][0]["location"], "root")
+
+    def test_prior_normal_unmount_attempt_refuses_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            record = root.with_name(root.name + ".normal-unmount-attempt.json")
+            functions["write_record"](record, {"status": "previous-attempt"})
+            original = record.read_bytes()
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted], [parent, mounted], [parent, mounted]])
+            self.assertIsInstance(error, FileExistsError)
+            command.assert_not_called()
+            remove.assert_not_called()
+            self.assertEqual(record.read_bytes(), original)
+            self.assertTrue(root.is_dir())
+
+    def test_persistent_descendants_or_changed_root_never_unmount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            child = dict(mounted, id=12, parent=11, point=str(root / "containers/private/merged"))
+            for rows, times in (([parent, mounted, child], (100, 100, 130)),
+                                ([parent, dict(mounted, id=99)], (100, 100))):
+                with self.subTest(rows=rows):
+                    error, command, remove, sleep, diagnostic = self.cleanup_case(fixture, [rows], times=times)
+                    self.assertIsInstance(error, ValueError)
+                    command.assert_not_called()
+                    remove.assert_not_called()
+                    self.assertNotIn(str(root), diagnostic)
+                    self.assertNotIn("private", diagnostic.replace("private_docker_mount_teardown", ""))
+
+    def test_daemon_already_removed_its_root_mount_needs_no_unmount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            error, command, remove, sleep, diagnostic = self.cleanup_case(fixture, [[parent], [parent]])
+            self.assertIsNone(error)
+            command.assert_not_called()
+            remove.assert_called_once_with(root)
+
+    def test_stale_empty_inventory_never_unmounts_or_deletes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            fixture[-1]["monotonic"] = 0
+            error, command, remove, sleep, diagnostic = self.cleanup_case(fixture, [], times=(100,))
+            self.assertIsInstance(error, ValueError)
+            command.assert_not_called()
+            remove.assert_not_called()
+
+    def test_proof_symlink_and_nonroot_record_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions = self.program()
+            original = Path(directory) / "proof.json"
+            original.write_text("{}\n")
+            original.chmod(0o444)
+            linked = Path(directory) / "link.json"
+            linked.symlink_to(original)
+            with self.assertRaises(OSError):
+                functions["read_record"](linked)
+            if os.getuid() != 0:
+                with self.assertRaises(ValueError):
+                    functions["read_record"](original)
+
+    def test_legacy_state_dispatch_remains_unchanged_and_unknown_protocol_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(artifacts=Path(directory))
+            (args.artifacts / "worker-private.json").write_text("{}\n")
+            with patch.object(worker, "state_for", return_value={}), patch.object(worker, "stop") as legacy, \
+                 patch.object(worker, "stop_with_mount_proof") as current:
+                worker.stop_selected(args)
+                legacy.assert_called_once_with(args)
+                current.assert_not_called()
+            with patch.object(worker, "state_for", return_value={"docker_mount_protocol": True}), \
+                 patch.object(worker, "stop") as legacy, patch.object(worker, "stop_with_mount_proof") as current:
+                with self.assertRaises(ValueError):
+                    worker.stop_selected(args)
+                legacy.assert_not_called()
+                current.assert_not_called()
+
+    def test_inventory_failure_still_stops_reproved_daemon_and_preserves_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            pidfile = Path(directory) / "daemon.pid"
+            pidfile.write_text("123\n")
+            state = {"docker_root": str(root), "pidfile": str(pidfile)}
+            calls = []
+            def action(args, state, mode):
+                calls.append(mode)
+                if mode == "inventory":
+                    raise ValueError("Inventory cannot be established")
+            with patch.object(worker, "docker_mount_scope", return_value={}), \
+                 patch.object(worker, "run_docker_mount_action", side_effect=action):
+                with self.assertRaisesRegex(ValueError, "Inventory cannot be established"):
+                    worker.stop_with_mount_proof(SimpleNamespace(), state)
+            self.assertEqual(calls, ["inventory", "stop"])
+            self.assertTrue(root.is_dir() and pidfile.exists())
+
+    def stop_case(self, *, mismatch=False, capture_error=False, persistent_child=False, disappearing_tasks=False):
+        functions = self.program()
+        current = {"pid": 123, "start_ticks": 40, "namespace": [1, 2]}
+        child = {"pid": 456, "start_ticks": 50, "namespace": [1, 2]}
+        ready = {"daemon": current, "descendants": [child]}
+        alive = {123: True, 456: not capture_error}
+        def exists(path):
+            return alive.get(int(path.name), False) if str(path).startswith("/proc/") else False
+        def signal_owned(handle, number, info, flags):
+            self.assertEqual((handle, number, info, flags), (99, functions["signal"].SIGTERM, None, 0))
+            alive[123] = bool(disappearing_tasks)
+        def sleep(seconds):
+            self.assertEqual(seconds, 0.5)
+            alive[123] = False
+            if not persistent_child:
+                alive[456] = False
+        functions.update({"load_proof": lambda *args: ({}, ready, "ready"),
+                          "daemon": unittest.mock.Mock(side_effect=ValueError("Daemon generation or mount namespace changed"))
+                            if mismatch else unittest.mock.Mock(return_value=current),
+                          "descendants": unittest.mock.Mock(side_effect=ValueError("Child capture failed"))
+                            if capture_error else (unittest.mock.Mock(side_effect=[[child], FileNotFoundError("task exited")])
+                            if disappearing_tasks else unittest.mock.Mock(return_value=[child])),
+                          "process_start": lambda pid: {123: 40, 456: 50}[pid],
+                          "write_record": unittest.mock.Mock()})
+        with patch.object(Path, "exists", exists), \
+             patch.object(functions["os"].path, "lexists", return_value=False), \
+             patch.object(functions["os"], "pidfd_open", return_value=99) as opened, \
+             patch.object(functions["os"], "close") as closed, \
+             patch.object(functions["signal"], "pidfd_send_signal", side_effect=signal_owned) as sent, \
+             patch.object(functions["time"], "monotonic", side_effect=[0, 60] if persistent_child else None,
+                          return_value=0), \
+             patch.object(functions["time"], "sleep", side_effect=sleep):
+            error = None
+            try:
+                functions["stop_daemon"](Path("/actions/_work/private"), Path("/actions/_work/pid"), {})
+            except ValueError as failure:
+                error = failure
+            if disappearing_tasks:
+                self.assertEqual(functions["descendants"].call_count, 1)
+            return error, opened, sent, closed, functions["write_record"]
+
+    def test_generation_or_namespace_failure_prevents_any_signal(self):
+        error, opened, sent, closed, record = self.stop_case(mismatch=True)
+        self.assertRegex(str(error), "generation or mount namespace")
+        opened.assert_not_called()
+        sent.assert_not_called()
+        closed.assert_not_called()
+        record.assert_not_called()
+
+    def test_proved_pidfd_stop_waits_for_observed_descendant(self):
+        error, opened, sent, closed, record = self.stop_case()
+        self.assertIsNone(error)
+        opened.assert_called_once_with(123, 0)
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        value = record.call_args.args[1]
+        self.assertEqual(value["status"], "OBSERVED_OWNED_PROCESSES_CLOSED")
+        self.assertEqual(value["descendants"][0]["pid"], 456)
+
+    def test_descendant_timeout_retains_data_and_never_records_closure(self):
+        error, opened, sent, closed, record = self.stop_case(persistent_child=True)
+        self.assertRegex(str(error), "descendants have not stopped")
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        record.assert_not_called()
+
+    def test_child_capture_failure_still_stops_proved_daemon_without_closure(self):
+        error, opened, sent, closed, record = self.stop_case(capture_error=True)
+        self.assertRegex(str(error), "Child capture failed")
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        record.assert_not_called()
+
+    def test_cleanup_refuses_live_captured_descendant_even_without_mounts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            fixture[-2]["descendants"] = [{"pid": 456}]
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [], times=(100,), alive_children=(456,))
+            self.assertRegex(str(error), "Observed owned process still exists")
+            command.assert_not_called()
+            remove.assert_not_called()
+
+    def test_fixed_tool_absence_prevents_startup_capture(self):
+        functions = self.program()
+        for missing in ("/usr/bin/docker", "/usr/bin/umount"):
+            def lstat(path):
+                if str(path) == missing:
+                    raise FileNotFoundError(missing)
+                return SimpleNamespace(st_mode=functions["stat"].S_IFREG | 0o755, st_uid=0)
+            with self.subTest(missing=missing), patch.object(Path, "lstat", lstat), \
+                 patch.object(functions["os"], "access", return_value=True), \
+                 patch.dict(functions, {"mounts": lambda: [], "write_record": unittest.mock.Mock()}):
+                with self.assertRaises(FileNotFoundError):
+                    functions["capture"]("before", Path("/actions/_work/root"), Path("/actions/_work/pid"), {})
+                functions["write_record"].assert_not_called()
+
+    def test_descendant_walk_stays_on_proved_tree_and_rejects_excess_depth(self):
+        functions = self.program()
+        identities = {pid: {"pid": pid, "start_ticks": pid, "namespace": [1, 2]}
+                      for pid in range(123, 134)}
+        seen = []
+        def children(value):
+            seen.append(value["pid"])
+            return [value["pid"] + 1] if value["pid"] < 133 else []
+        with patch.dict(functions, {"child_ids": children, "process_identity": lambda pid: identities[pid]}), \
+             patch.object(functions["time"], "monotonic", return_value=0):
+            with self.assertRaisesRegex(ValueError, "traversal bound"):
+                functions["descendants"](identities[123])
+        self.assertEqual(seen, list(range(123, 132)))
+
+    def test_same_pid_comm_and_root_cannot_mask_changed_generation_or_namespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            pidfile = Path(directory) / "pid"
+            pidfile.write_text("123\n")
+            expected = {"pid": 123, "start_ticks": 40, "namespace": [1, 2]}
+            original_text, original_bytes = Path.read_text, Path.read_bytes
+            def text(path, *args, **kwargs):
+                return "dockerd\n" if str(path) == "/proc/123/comm" else original_text(path, *args, **kwargs)
+            def data(path):
+                return ("dockerd\0--data-root=" + str(root) + "\0").encode() if str(path) == "/proc/123/cmdline" else original_bytes(path)
+            for actual in (dict(expected, start_ticks=41), dict(expected, namespace=[3, 4])):
+                functions = self.program()
+                functions.update({"load_proof": lambda *args: ({}, {"daemon": expected}, "ready"),
+                                  "process_identity": lambda pid: actual,
+                                  "namespace": lambda: actual["namespace"]})
+                with self.subTest(actual=actual), patch.object(Path, "read_text", text), \
+                     patch.object(Path, "read_bytes", data), \
+                     patch.object(functions["os"], "pidfd_open") as opened, \
+                     patch.object(functions["signal"], "pidfd_send_signal") as sent:
+                    with self.assertRaisesRegex(ValueError, "generation or mount namespace"):
+                        functions["stop_daemon"](root, pidfile, {})
+                    opened.assert_not_called()
+                    sent.assert_not_called()
+
+    def test_shutdown_waits_on_preterm_snapshot_without_reenumerating_exited_tasks(self):
+        error, opened, sent, closed, record = self.stop_case(disappearing_tasks=True)
+        self.assertIsNone(error)
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[1]["status"], "OBSERVED_OWNED_PROCESSES_CLOSED")
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
     unittest.main()
