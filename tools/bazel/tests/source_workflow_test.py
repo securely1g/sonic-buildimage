@@ -114,9 +114,9 @@ class SourceWorkflowTest(unittest.TestCase):
             if name == 'rm' or 'clean' in args or 'cleanall' in args:
                 raise SystemExit('Source validation must preserve existing build state')
             source_runner = name == 'python3' and 'tools/bazel/ci/container.py' in args
-            if os.environ.get('HOSTED_CHECKS') == '1':
+            if os.environ.get('OCI_CHECKS') == '1':
                 if source_runner or (name == 'bazel' and any(arg in ('build', 'test') for arg in args)):
-                    raise SystemExit('Hosted regression checks must not compile source packages')
+                    raise SystemExit('OCI regression checks must not compile source packages')
             if name == 'make' and 'sonic-slave-run' in args:
                 if int(os.environ.get('MAKE_EXIT', '0')):
                     raise SystemExit(int(os.environ['MAKE_EXIT']))
@@ -173,19 +173,23 @@ class SourceWorkflowTest(unittest.TestCase):
     def recorded(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
-    def test_hosted_regressions_gate_vs_without_source_compilation(self):
+    def test_oci_regressions_gate_vs_without_source_compilation(self):
         workflow_jobs = jobs()
         self.assertNotIn("source", workflow_jobs)
         self.assertNotIn("syncd-contracts", workflow_jobs)
         checks = workflow_jobs["checks"]
         self.assertIn("name: OCI regression checks (AMD64)", checks)
-        self.assertIn("runs-on: ubuntu-24.04", checks)
-        self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: (?:checks|\[checks\])$")
+        for job in ("checks", "source_image_inputs", "swss_layer_runtime", "sysmgr_runtime"):
+            with self.subTest(job=job):
+                self.assertIn("runs-on: [self-hosted, linux, bazel-x64]", workflow_jobs[job])
+        for job in ("vs", "vs_container"):
+            with self.subTest(job=job):
+                self.assertRegex(workflow_jobs[job], r"(?m)^    needs: (?:checks|\[checks\])$")
         for name, step in steps(checks).items():
             script = shell(step)
             if script is not None:
                 with self.subTest(step=name):
-                    result = self.execute(script, HOSTED_CHECKS="1")
+                    result = self.execute(script, OCI_CHECKS="1")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.recorded()
         self.assertTrue(any(call["name"] == "python3" and

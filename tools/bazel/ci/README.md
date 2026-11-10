@@ -161,7 +161,7 @@ package expectations remain in the owner declarations and tests.
 
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
-archive checks, lightweight hosted regressions and the full VS integration
+archive checks, lightweight regressions on `bazel-x64` and the full VS integration
 job. The active `vs_container` job builds inside a privileged SONiC slave,
 then runs shared SWSS/Syncd static image checks and Docker-load validation in
 that same worker. Build and validation share its Bazel server and caches.
@@ -177,9 +177,8 @@ and [`platform/vs/docker-syncd-vs/BUILD.bazel`](../../../platform/vs/docker-sync
 The shared runner accepts either package path; it does not require owners to
 live under `dockers/`.
 Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
-job after hosted regressions and dependency resolution pass. Fork PRs and
-manual `skip_vs=true` runs omit source-package/full-image validation; hosted
-success alone does not establish those results.
+job after OCI regression checks and dependency resolution pass. Fork PRs and
+manual `skip_vs=true` runs omit the full VS job.
 
 SWSS compilation, package contents and component tests are validated in the
 [SWSS source repository](https://github.com/securely1g/sonic-swss). Buildimage

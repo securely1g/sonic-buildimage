@@ -328,14 +328,13 @@ an immutable digest, runs outer Make's `configure` and
 `target/docker-config-engine-trixie.gz` recipes, and requires every executed
 Common C++ compile/link action to be a remote hit matching the producer's seed.
 
-The workflow probes Bazel's Linux sandbox as Make's non-root builder before and
-after host setup. On an AppArmor-restricted GitHub runner, it allows user
-namespaces only for this job's sandbox executable at
-`/sonic/artifacts/private/bazel-install/linux-sandbox`. It leaves the host-wide
-restriction unchanged and removes its own profile after the job. Compilation
-and linking still require the Linux sandbox. Upstream OCI directory-copy actions
-run locally because their rule explicitly disables sandboxing; this exception
-does not allow local Common compilation to pass the cache proof.
+The native jobs run on `bazel-x64` and `bazel-arm64`. The pinned
+`sonic-slave` builder must allow Make's non-root user to create the user and
+mount namespaces required by Bazel's Linux sandbox. The workflow probes
+those capabilities without changing the runner's AppArmor policy. Common
+compilation and linking still require the Linux sandbox. Upstream OCI
+directory-copy actions run locally because their rule explicitly disables
+sandboxing. The cache proof rejects locally executed Common compilation.
 
 The jobs compare all six Common runtime/debug TAR hashes, then load the actual
 Make-produced image and import its Common Python binding and shared library.

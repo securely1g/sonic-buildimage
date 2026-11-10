@@ -10,7 +10,7 @@ cache. The job validates the installer and the SWSS and Syncd runtime/debug
 image pairs before publishing them. Building this ONIE installer does not
 require KVM.
 
-GitHub-hosted Ubuntu runs the OCI regression checks and supplies verified
+The `bazel-x64` pool runs the OCI regression checks and supplies verified
 source inputs to the installer job. The separate AMD64 and ARM64 archive jobs
 run on the self-hosted `bazel-x64` and `bazel-arm64` pools. Fork PRs and manual
 runs with `skip_vs=true` skip the native installer.

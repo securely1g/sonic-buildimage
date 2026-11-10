@@ -59,6 +59,12 @@ def native_architecture(architecture, machine=None):
             "The cache proof requires a native " + architecture + " runner")
 
 
+def require_native_builder(architecture):
+    native_architecture(architecture)
+    require(ROOT == Path("/sonic") and Path("/.dockerenv").is_file(),
+            "Run inside the native sonic-slave through outer Make")
+
+
 def command(argv, *, log=None, helpers=None, env=None, preflight_diagnostics=False):
     """Keep raw command output private, including errors from Make and Bazel."""
     result = subprocess.run(argv, cwd=ROOT, env=env, text=True, capture_output=True)
@@ -253,7 +259,7 @@ def make_environment():
 
 def prepare(architecture, checkout):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
+    require(os.geteuid() != 0, "Outer Make requires a non-root runner user")
     helpers = common_helpers(checkout)
     seed, seed_hash = seed_receipt(architecture)
     helpers.check_actions(seed["phases"][0], remote=False)
@@ -299,7 +305,7 @@ def prepare(architecture, checkout):
 
 def build(architecture):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
+    require(os.geteuid() != 0, "Outer Make requires a non-root runner user")
     build_helpers.credentials.authorization()
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     private = ROOT / PRIVATE
@@ -332,16 +338,10 @@ def build(architecture):
 
 def sandbox_probe(architecture, phase):
     """Exercise the installed sandbox as Make's non-root builder before compilation."""
-    native_architecture(architecture)
-    require(ROOT == Path("/sonic") and Path("/.dockerenv").is_file() and os.geteuid() != 0,
-            "Probe must run as Make's non-root user inside sonic-slave")
+    require_native_builder(architecture)
+    require(os.geteuid() != 0, "Probe must run as Make's non-root user inside sonic-slave")
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     restriction_before = make_cache_sandbox.restriction_value()
-    host = {"installed": False, "restriction_before": restriction_before}
-    if phase == "after":
-        host = json.loads((ROOT / PUBLIC / "sandbox-host.json").read_text())
-        require(host["executable"] == str(INSTALL_BASE / "linux-sandbox"),
-                "Host sandbox policy has a different executable attachment")
     command(bazel_invocation(["version"]), log=ROOT / PRIVATE / "bazel-version.log", helpers=helpers)
     sandbox = INSTALL_BASE / "linux-sandbox"
     require(sandbox.is_file() and not sandbox.is_symlink(), "Bazel did not install the expected sandbox")
@@ -354,11 +354,11 @@ def sandbox_probe(architecture, phase):
                             cwd=ROOT, env={}, text=True, capture_output=True, timeout=30)
     (ROOT / PRIVATE / ("linux-sandbox-" + phase + ".log")).write_text(result.stdout + result.stderr)
     restriction = make_cache_sandbox.restriction_value()
-    require(restriction == host["restriction_before"], "Global namespace restriction changed before sandbox probe")
+    require(restriction == restriction_before, "Global namespace restriction changed during sandbox probe")
     receipt = {"passed": False, "phase": phase, "architecture": architecture, "builder_uid": os.geteuid(),
                "sandbox_path": str(sandbox), "sandbox_sha256": sha256(sandbox),
-               "host_profile_installed": host["installed"], "returncode": result.returncode,
-               "restriction_before": host["restriction_before"], "restriction_after": restriction,
+               "host_profile_installed": False, "returncode": result.returncode,
+               "restriction_before": restriction_before, "restriction_after": restriction,
                "global_policy_changed": False, "parent_namespaces": before}
     path = ROOT / PUBLIC / ("sandbox-probe-" + phase + ".json")
     if result.returncode:
@@ -366,27 +366,28 @@ def sandbox_probe(architecture, phase):
         # its bounded startup error, never Bazel action or build diagnostics.
         receipt["startup_error"] = result.stderr[-2000:]
         write_json(path, receipt)
-        if phase == "before":
-            return
         helpers.validate.print_safe_diagnostics(result.stderr)
-        raise ValueError("Non-root linux-sandbox probe failed after scoped AppArmor setup")
+        raise ValueError("The self-hosted runner must allow the non-root sonic-slave Linux sandbox")
     child = json.loads(result.stdout)
     receipt.update(profile=child["profile"], sandbox_profile=child["sandbox_profile"],
                    sandbox_namespaces=child["namespaces"], sandbox_uid=child["uid"])
     write_json(path, receipt)
     require(all(child["namespaces"][kind] != before[kind] for kind in before),
             "linux-sandbox did not create user and mount namespaces")
-    if host["installed"]:
-        require(child["sandbox_profile"] == host["profile"] + " (unconfined)",
-                "linux-sandbox did not enter the job's exact AppArmor profile")
     if phase == "after":
         baseline = json.loads((ROOT / PUBLIC / "sandbox-probe-before.json").read_text())
-        require(baseline["restriction_before"] == host["restriction_before"],
-                "Global namespace restriction changed between sandbox probes")
-        require(baseline["sandbox_sha256"] == receipt["sandbox_sha256"],
-                "The sandbox executable changed between probes")
+        verify_sandbox_baseline(baseline, receipt)
     receipt["passed"] = True
     write_json(path, receipt)
+
+
+def verify_sandbox_baseline(baseline, receipt):
+    require(baseline["passed"] and baseline["architecture"] == receipt["architecture"],
+            "Missing successful native sandbox baseline")
+    require(baseline["restriction_before"] == receipt["restriction_before"],
+            "Global namespace restriction changed between sandbox probes")
+    require(baseline["sandbox_sha256"] == receipt["sandbox_sha256"],
+            "The sandbox executable changed between probes")
 
 
 def compare_image_actions(seed, image):
@@ -414,9 +415,7 @@ def image_receipt(path, architecture):
 
 
 def inspect(architecture):
-    native_architecture(architecture)
-    require(ROOT == Path("/sonic") and Path("/.dockerenv").is_file(),
-            "Inspect must run inside the real sonic-slave through outer Make")
+    require_native_builder(architecture)
     build_helpers.credentials.authorization()
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     seed, seed_hash = seed_receipt(architecture)

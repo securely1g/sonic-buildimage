@@ -1,10 +1,13 @@
 """Reject false cache-hit evidence without substituting Make or Bazel."""
 
 import copy
+from contextlib import ExitStack
+import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci import make_cache
@@ -17,6 +20,49 @@ def action(name="common", *, hit=True):
 
 
 class MakeCacheTest(unittest.TestCase):
+    def test_self_hosted_builder_probes_succeed_without_host_policy_and_fail_on_denial(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            (root / make_cache.PRIVATE).mkdir(parents=True)
+            stack.enter_context(patch.multiple(make_cache, ROOT=root, INSTALL_BASE=root))
+            stack.enter_context(patch.object(make_cache, "require_native_builder"))
+            stack.enter_context(patch.object(make_cache.os, "geteuid", return_value=1000))
+            stack.enter_context(patch.object(make_cache, "command"))
+            stack.enter_context(patch.object(make_cache, "common_helpers"))
+            stack.enter_context(patch.object(make_cache.make_cache_sandbox, "restriction_value", return_value="1"))
+            child = {"uid": 1000, "profile": "unconfined", "sandbox_profile": "unconfined",
+                     "namespaces": {"user": "new-user", "mnt": "new-mount"}}
+            sandbox = root / "linux-sandbox"
+            sandbox.write_text("#!/bin/sh\n[ ! -f deny ] || exit 23\necho '" + json.dumps(child) + "'\n")
+            sandbox.chmod(0o755)
+
+            for phase in ("before", "after"):
+                with self.subTest(phase=phase):
+                    make_cache.sandbox_probe("arm64", phase)
+                    path = root / make_cache.PUBLIC / ("sandbox-probe-" + phase + ".json")
+                    receipt = json.loads(path.read_text())
+                    self.assertTrue(receipt["passed"])
+                    self.assertFalse(receipt["host_profile_installed"])
+                    self.assertEqual(receipt["restriction_before"], "1")
+                    self.assertEqual(receipt["restriction_after"], "1")
+            (root / "deny").touch()
+            for phase in ("before", "after"):
+                with self.subTest(denied=phase), self.assertRaisesRegex(ValueError, "Linux sandbox"):
+                    make_cache.sandbox_probe("arm64", phase)
+                path = root / make_cache.PUBLIC / ("sandbox-probe-" + phase + ".json")
+                receipt = json.loads(path.read_text())
+                self.assertFalse(receipt["passed"])
+                self.assertEqual(receipt["returncode"], 23)
+
+    def test_self_hosted_sandbox_baseline_requires_the_same_native_probe(self):
+        receipt = {"architecture": "arm64", "restriction_before": "1", "sandbox_sha256": "a" * 64}
+        baseline = {**receipt, "passed": True}
+        make_cache.verify_sandbox_baseline(baseline, receipt)
+        for field, value in (("passed", False), ("architecture", "amd64"),
+                             ("restriction_before", "0"), ("sandbox_sha256", "b" * 64)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                make_cache.verify_sandbox_baseline({**baseline, field: value}, receipt)
+
     def test_seed_may_have_extra_actions(self):
         make_cache.compare_image_actions(
             {"common_actions": [action(hit=False), action("extra", hit=False)]},
