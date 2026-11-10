@@ -277,3 +277,33 @@ explicit inputs; worker control is a separate reviewed revision.
 
 Dedicated source-image workers use the registry's Debian mirror configuration.
 Trusted dpool jobs can select the private archives. K3s uses public archives.
+
+## Direct shared-image worker profiles
+
+The AMD64 `base-config` and `swss-layer` choices use the selected source's
+existing combined build and inspection commands. They then run its incremental
+check and the installed-image checks from the normal workflows. They retain the
+worker's private Docker daemon, resource limits, persistent caches and no-DEB
+action audit; they do not use the service drivers' separate build/validate API.
+Leave `source_ci_request` empty so automatic pool selection uses the dedicated dpool.
+
+`base-config` selects both shared images, their runtime/debug TARs, and the seven
+existing config-engine acceptance tests: 14 declared outputs and 23 audit roots.
+Its incremental phase edits and restores the config-engine startup template;
+the loaded phase checks both image identities and the existing config-engine
+runtime probe. `swss-layer` selects 10 outputs and 12 image audit roots, then
+audits and runs the four existing consumer tests. Including their roots and the
+config-engine parent archive gives 17 distinct audit roots. Its existing Python
+edit/restoration check preserves compiled symbols and the parent image.
+
+Preparation requires each profile's existing drivers, probes and wrapper in
+the selected source checkout. The controller supplies only fixed command
+selection and the installed checks copied from those workflows. Source and
+catalog revisions remain explicit admission inputs; adding a profile does not
+establish acceptance of any selected graph.
+
+Full base/config validation files and installed-image policy remain unchanged
+for native and loaded checks. Their public copies omit only `config.Env` and
+the two policy `expected_config.Env` fields. Each projected copy records the
+original file's SHA256 and the omitted JSON paths. A projected public file is
+not the original validation file; all other public-data checks remain strict.
