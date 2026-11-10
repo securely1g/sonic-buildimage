@@ -13,10 +13,12 @@ their job containers where applicable, need network access to
 endpoint.
 
 The [source base-image workflow](../../../.github/workflows/bazel-base-images.yml)
-also uses these persistent agents. It does not mount or delete host Android,
-.NET or GHC SDK directories to reclaim space; that cleanup was specific to
-disposable GitHub-hosted runners. Provision sufficient build storage and manage
-host Docker/cache retention outside the job without deleting active builds.
+and [OCI archive jobs](../../../.github/workflows/bazel-oci.yml) use these
+persistent agents. Neither mounts or deletes host Android, .NET or GHC SDK
+directories to reclaim space, nor runs a GitHub-hosted-only cleanup guard; that
+cleanup was specific to disposable GitHub-hosted runners. Provision sufficient
+build storage and manage host Docker/cache retention outside the job without
+deleting active builds.
 
 AMD64 archive jobs upload generic public evidence before Sysmgr acceptance,
 then move the completed artifacts outside the checkout into a unique private

@@ -176,6 +176,30 @@ class VerificationWorkflowTest(unittest.TestCase):
         for step in native["steps"]:
             self.assertNotIn("/runner-unused/", step.get("run", ""))
 
+    def test_self_hosted_archives_do_not_mount_or_delete_host_sdks(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        )
+        archive = workflow["jobs"]["archive"]
+        self.assertEqual(archive["runs-on"], "${{ matrix.runner }}")
+        self.assertEqual(
+            {entry["architecture"]: entry["runner"]
+             for entry in archive["strategy"]["matrix"]["include"]},
+            {"amd64": ["self-hosted", "linux", "bazel-x64"],
+             "arm64": ["self-hosted", "linux", "bazel-arm64"]},
+        )
+        self.assertFalse(archive["container"].get("volumes"))
+        self.assertNotIn(
+            "Allocate source-build space on this disposable runner",
+            [step.get("name") for step in archive["steps"]],
+        )
+        for step in archive["steps"]:
+            script = step.get("run", "")
+            self.assertNotIn('test "$RUNNER_ENVIRONMENT" = github-hosted', script)
+            for path in ("/runner-unused/", "/usr/local/lib/android", "/usr/share/dotnet", "/opt/ghc"):
+                with self.subTest(step=step.get("name"), path=path):
+                    self.assertNotIn(path, script)
+
     def test_native_package_workflows_use_cache_reachable_runners(self):
         expected = {
             "amd64": "self-hosted, linux, bazel-x64",
