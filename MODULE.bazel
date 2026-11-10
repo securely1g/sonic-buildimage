@@ -257,31 +257,6 @@ single_version_override(
 
 bazel_dep(name = "sonic-fips", version = "0.0.6-18a778db501d455f8a1b6d1e3ef8e17121661177", repo_name = "sonic_fips")
 
-# Registry #289 supplies this PI .4 recipe until it lands on main.
-_PI_RECIPE = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/06e08b0db8737ba7677f84d8f9587f18e6ed721f/modules/p4lang-pi/0.1.3.sonic.4"
-_PI_OVERLAY = {
-    "BUILD.bazel": "sha256-9ONS+vsL9ViH8JL05+9ZSbIaXpbvP+JT8ojBPsLTIks=",
-    "MODULE.bazel": "sha256-+2/R2OO2PBJ/1V0+DIIlUMYJh5AoqiJYdqfWQML4tks=",
-    "bazel/runtime_test.py": "sha256-c8qTLTAYNzu1WgxdAv1eLnkFaB4/n/NedTthXiAdmB4=",
-    "bazel/sdk_test.cc": "sha256-8Xhj1/JvO/BymtyugoLpzUd1mg7iCcL5FQMia9xvqhY=",
-    "bazel/runtime.bzl": "sha256-lYcQjDWBbT9m1LilP3YGTXbml633irlcTPPBhDBXFw4=",
-    "bazel/BUILD.bazel": "sha256-zkbDmA+3IPUYYTLso577lu2ryRM4fAhQfz8tqNEi3qY=",
-    "bazel/configure.sh": "sha256-zfv3+8MiSdNcvsoOqDz0QJODPB8SN4Hv3Yyr1Wj/uEQ=",
-    "bazel/source.bzl": "sha256-L2gXKCvkq/aiAhjSlTgupXWqIArraPFuTpMaZIm7rz8=",
-    "bazel/pi.BUILD.bazel": "sha256-b6CL6Kn2sHQnWjt8SfC+5dFmsNdyS7eVFL+R2xbgA5k=",
-    "runtime_packages.md": "sha256-qAWXsYsO8tj5EjkQ+FkG+k1eZ/anv43cFJJHKv4F5b8=",
-    "bazel/cross-configure.patch": "sha256-lFPVqqpRu5qqCQCEhLeC+9+Z4Fo7FMYfWg/oEwz16qk=",
-}
-
-archive_override(
-    module_name = "p4lang-pi",
-    urls = ["https://github.com/securely1g/sonic-bazel-registry/releases/download/p4-source-inputs-20261021/p4lang-pi_0.1.3.orig.tar.gz"],
-    integrity = "sha256-m7K5fyyqdUi5zHmMNkO5cxXz2Pg3LTaJ3qXioi4YoJc=",
-    type = "tar.gz",
-    remote_file_urls = {name: [_PI_RECIPE + "/overlay/" + name] for name in _PI_OVERLAY},
-    remote_file_integrity = _PI_OVERLAY,
-)
-
 # Remove this draft recipe when registry #215 publishes the merged DASH source.
 archive_override(
     module_name = "sonic-dash",
