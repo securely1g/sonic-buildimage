@@ -193,7 +193,7 @@ class RuntimePolicyTest(unittest.TestCase):
             with mock.patch.object(runtime.subprocess, "Popen", return_value=child) as spawn, mock.patch.object(runtime.os, "killpg") as kill, self.assertRaises(subprocess.TimeoutExpired):
                 runtime.bounded(["sudo", "reviewed"], Path(directory), "root", 230, root_supervisor=True)
             self.assertTrue(child.stdin.closed)
-            self.assertEqual(child.wait.call_args_list, [mock.call(timeout=230), mock.call(timeout=65)])
+            self.assertEqual(child.wait.call_args_list, [mock.call(timeout=230), mock.call(timeout=135)])
             self.assertEqual(spawn.call_args.kwargs["stdin"], subprocess.PIPE)
             self.assertTrue(spawn.call_args.kwargs["close_fds"])
             kill.assert_not_called()
@@ -211,7 +211,7 @@ class RuntimePolicyTest(unittest.TestCase):
     def test_unreaped_root_is_explicit_not_inferred_from_pipe_closure(self):
         with tempfile.TemporaryDirectory() as directory:
             child = mock.Mock(stdin=io.BytesIO(), returncode=None)
-            child.wait.side_effect = subprocess.TimeoutExpired("root supervisor", 65)
+            child.wait.side_effect = subprocess.TimeoutExpired("root supervisor", 135)
             with mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime.os, "killpg") as kill, self.assertRaises(runtime.SupervisorUnclosed) as caught:
                 runtime.bounded(["sudo", "reviewed"], Path(directory), "root", 230, root_supervisor=True)
             self.assertFalse(runtime.safe_failure(caught.exception)["root_supervisor_reaped"])
@@ -306,6 +306,160 @@ class RuntimePolicyTest(unittest.TestCase):
             with mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime, "wait_group_gone", side_effect=[False, True]), mock.patch.object(runtime, "group_alive", return_value=True), mock.patch.object(runtime.os, "killpg") as kill, self.assertRaisesRegex(runtime.ProbeFailure, "surviving descendants"):
                 runtime.bounded(["reviewed-helper"], Path(directory), "helper", 10)
             kill.assert_called_once_with(250, runtime.signal.SIGTERM)
+
+
+class StoppedContainerTest(unittest.TestCase):
+    def setUp(self):
+        self.state = Path("/actions/_work/_temp/vs-runtime-" + "a" * 24)
+        self.name = "sonic-vs-stopped-" + "a" * 24
+        self.tag = "sonic-vs-stopped:" + "a" * 24
+        self.image = "sha256:" + "b" * 64
+        self.container = "c" * 64
+        self.calls = []
+
+    def inspected(self):
+        return {"Id": self.container, "Image": self.image, "Name": "/" + self.name,
+                "Config": {"Cmd": [runtime.NEVER_RUN]}, "HostConfig": {"NetworkMode": "default"},
+                "State": {"Status": "created", "Running": False, "Pid": 0,
+                          "StartedAt": "0001-01-01T00:00:00Z"}}
+
+    def operation(self, executable, arguments, environment, state, label, payload):
+        self.calls.append((arguments, label, payload))
+        return {"stopped-import": self.image.encode(), "stopped-create": self.container.encode(),
+                "stopped-inspect-before": json.dumps(self.inspected()).encode(),
+                "stopped-inspect-after": json.dumps(self.inspected()).encode(),
+                "stopped-archive": runtime.literal_rootfs(),
+                "stopped-remove-container": self.container.encode(), "stopped-remove-image": b"Deleted"}[label]
+
+    def test_fixture_is_only_a_deterministic_nonexecutable_literal(self):
+        payload = runtime.literal_rootfs()
+        self.assertEqual(payload, runtime.literal_rootfs())
+        self.assertLessEqual(len(payload), 16384)
+        with runtime.tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
+            entries = archive.getmembers()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].name, "probe.txt")
+            self.assertTrue(entries[0].isfile())
+            self.assertEqual(entries[0].mode, 0o444)
+            self.assertEqual((entries[0].mtime, entries[0].uid, entries[0].gid), (0, 0, 0))
+            self.assertEqual(archive.extractfile(entries[0]).read(), b"SONiC stopped-container archive probe\n")
+
+    def test_success_uses_default_create_no_start_and_removes_only_owned_objects(self):
+        with mock.patch.object(runtime, "docker_operation", side_effect=self.operation):
+            result = runtime.stopped_container("docker", {"DOCKER_HOST": "private"}, self.state)
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["owned_container_removed"] and result["owned_image_removed"])
+        self.assertFalse(result["ever_started_observed"] or result["container_start_requested"])
+        self.assertEqual(result["reported_network_mode"], "default")
+        self.assertEqual(self.calls[1][0], ["create", "--pull=never", "--name", self.name, self.image, runtime.NEVER_RUN])
+        self.assertEqual([x[1] for x in self.calls], list(runtime.STOPPED_LOGS))
+        self.assertEqual(self.calls[-2][0], ["rm", "--force", self.container])
+        self.assertEqual(self.calls[-1][0], ["image", "rm", "--force", self.image])
+        for args, unused, payload in self.calls:
+            self.assertNotIn(args[0], ["start", "run", "build", "pull", "exec", "network", "prune"])
+            self.assertFalse(any(x.startswith("--network") for x in args))
+
+    def test_wrong_identity_or_started_state_cannot_reach_archive(self):
+        for key, value in (("Id", "d" * 64), ("Image", "sha256:" + "d" * 64),
+                           ("Name", "/other"), ("State", {"Status": "running", "Running": True,
+                            "Pid": 19, "StartedAt": "2026-01-01T00:00:00Z"})):
+            self.calls = []
+            original = self.inspected()
+            original[key] = value
+            with self.subTest(key=key), mock.patch.object(self, "inspected", return_value=original), mock.patch.object(runtime, "docker_operation", side_effect=self.operation):
+                result = runtime.stopped_container("docker", {}, self.state)
+            self.assertEqual(result["status"], "failed")
+            self.assertNotIn("stopped-archive", [x[1] for x in self.calls])
+            self.assertTrue(result["owned_container_removed"] and result["owned_image_removed"])
+
+    def test_archive_rejects_wrong_bytes_paths_and_links_without_extraction(self):
+        for path, kind, data in (("probe.txt", runtime.tarfile.REGTYPE, b"wrong"),
+                                 ("../probe.txt", runtime.tarfile.REGTYPE, runtime.LITERAL),
+                                 ("probe.txt", runtime.tarfile.SYMTYPE, b"")):
+            output = io.BytesIO()
+            with runtime.tarfile.open(fileobj=output, mode="w") as archive:
+                entry = runtime.tarfile.TarInfo(path)
+                entry.type, entry.size, entry.linkname = kind, len(data), "/outside"
+                archive.addfile(entry, io.BytesIO(data))
+            with self.subTest(path=path, kind=kind), self.assertRaises(ValueError):
+                runtime.literal_archive(output.getvalue())
+
+    def test_interrupted_create_cleans_reserved_name_and_preserves_failure(self):
+        def operation(*args):
+            if args[4] == "stopped-create":
+                self.calls.append((args[1], args[4], args[5]))
+                raise subprocess.TimeoutExpired("private create", 10)
+            return self.operation(*args)
+        with mock.patch.object(runtime, "docker_operation", side_effect=operation):
+            result = runtime.stopped_container("docker", {}, self.state)
+        self.assertEqual(result["failure"], {"error_type": "TimeoutExpired", "timeout": 10})
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(self.calls[-2][0], ["rm", "--force", self.name])
+        self.assertEqual(self.calls[-1][0], ["image", "rm", "--force", self.image])
+
+    def test_interrupted_import_cleans_reserved_tag_without_container_operation(self):
+        def operation(*args):
+            if args[4] == "stopped-import":
+                raise KeyboardInterrupt()
+            return self.operation(*args)
+        with mock.patch.object(runtime, "docker_operation", side_effect=operation):
+            result = runtime.stopped_container("docker", {}, self.state)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure"]["error_type"], "KeyboardInterrupt")
+        self.assertIsNone(result["owned_container_removed"])
+        self.assertEqual(self.calls, [(["image", "rm", "--force", self.tag], "stopped-remove-image", None)])
+
+    def test_cleanup_failure_still_attempts_image_cleanup_and_cannot_pass(self):
+        def operation(*args):
+            if args[4] == "stopped-remove-container":
+                raise runtime.ProbeFailure("Owned container removal failed")
+            return self.operation(*args)
+        with mock.patch.object(runtime, "docker_operation", side_effect=operation):
+            result = runtime.stopped_container("docker", {}, self.state)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["owned_container_removed"])
+        self.assertTrue(result["owned_image_removed"])
+        self.assertEqual(result["cleanup_failures"][0]["operation"], "stopped-remove-container")
+
+    def test_archive_failure_and_second_inspection_started_state_remain_failures(self):
+        for failing_label in ("stopped-archive", "stopped-inspect-after"):
+            self.calls = []
+            def operation(*args):
+                if args[4] == failing_label:
+                    if failing_label == "stopped-archive":
+                        return b"not a TAR"
+                    observed = self.inspected()
+                    observed["State"]["StartedAt"] = "2026-01-01T00:00:00Z"
+                    return json.dumps(observed).encode()
+                return self.operation(*args)
+            with self.subTest(label=failing_label), mock.patch.object(runtime, "docker_operation", side_effect=operation):
+                result = runtime.stopped_container("docker", {}, self.state)
+            self.assertEqual(result["status"], "failed")
+            self.assertTrue(result["owned_container_removed"] and result["owned_image_removed"])
+            if failing_label == "stopped-inspect-after":
+                self.assertTrue(result["ever_started_observed"])
+
+    def test_client_is_nonroot_private_and_interruption_reaps_its_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child = mock.Mock(pid=501, returncode=None)
+            child.communicate.side_effect = KeyboardInterrupt()
+            env = {"DOCKER_HOST": "unix:///private", "DOCKER_CONFIG": "/private/client"}
+            with mock.patch.object(runtime.grp, "getgrnam", return_value=mock.Mock(gr_gid=999)), mock.patch.object(runtime.subprocess, "Popen", return_value=child) as spawn, mock.patch.object(runtime, "stop_owned_session") as stop, self.assertRaises(KeyboardInterrupt):
+                runtime.docker_operation("docker", ["import", "-", self.tag], env, Path(directory), "stopped-import", b"literal")
+            stop.assert_called_once_with(child)
+            self.assertEqual(spawn.call_args.kwargs["user"], 1000)
+            self.assertEqual(spawn.call_args.kwargs["group"], 1000)
+            self.assertEqual(spawn.call_args.kwargs["extra_groups"], [999])
+            self.assertEqual(spawn.call_args.kwargs["env"], env)
+            self.assertTrue(spawn.call_args.kwargs["start_new_session"] and spawn.call_args.kwargs["close_fds"])
+            child.communicate.assert_called_once_with(input=b"literal", timeout=10)
+
+    def test_client_failure_retains_safe_exit_status_without_tool_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child = mock.Mock(pid=502, returncode=7)
+            with mock.patch.object(runtime.grp, "getgrnam", return_value=mock.Mock(gr_gid=999)), mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime, "wait_group_gone", return_value=True), self.assertRaises(runtime.ProbeFailure) as caught:
+                runtime.docker_operation("docker", ["cp", "private", "-"], {}, Path(directory), "stopped-archive")
+            self.assertEqual(runtime.safe_failure(caught.exception), {"error_type": "ProbeFailure", "reason": "stopped-archive did not pass", "returncode": 7})
 
 
 if __name__ == "__main__":

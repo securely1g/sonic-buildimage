@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import grp
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -25,6 +27,12 @@ KERNEL_HELPER_SHA256 = "de63743c6c8bde35b8326fe48adaeb5783851504855a722aafe1875f
 NESTED_HELPER_SHA256 = "30994e9b75d4906373bbb789da66350417d1bb105828a2d3476b0a59cddf7ac0"
 PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 CAP = 2 * 1024 * 1024
+LITERAL = b"SONiC stopped-container archive probe\n"
+LITERAL_PATH = "probe.txt"
+NEVER_RUN = "/never-execute-vs-runtime-probe"
+STOPPED_LOGS = ("stopped-import", "stopped-create", "stopped-inspect-before",
+                "stopped-archive", "stopped-inspect-after", "stopped-remove-container",
+                "stopped-remove-image")
 
 
 class ProbeFailure(ValueError):
@@ -188,8 +196,10 @@ def diagnostics(state):
         "lifeline_not_pipe": (b"lifeline must be a pipe",),
     }
     records = []
-    for name in ("kernel-sandbox.stdout", "kernel-sandbox.stderr", "private-cgroup.stdout",
-                 "private-cgroup.stderr", "dockerd.log", "private-docker.stdout", "private-docker.stderr"):
+    names = ("kernel-sandbox.stdout", "kernel-sandbox.stderr", "private-cgroup.stdout",
+             "private-cgroup.stderr", "dockerd.log", "private-docker.stdout", "private-docker.stderr")
+    names += tuple(label + suffix for label in STOPPED_LOGS for suffix in (".stdout", ".stderr"))
+    for name in names:
         path = state / name
         try:
             if not path.is_file() or path.is_symlink():
@@ -224,7 +234,9 @@ def bounded(argv, state, label, seconds, environment=None, root_supervisor=False
                         # Only this parent holds the write end. Parent death also causes EOF.
                         child.stdin.close()
                         try:
-                            child.wait(timeout=65)
+                            # An interrupted client, two owned-object removals and
+                            # the daemon each retain their bounded cleanup budget.
+                            child.wait(timeout=135)
                         except subprocess.TimeoutExpired as error:
                             raise SupervisorUnclosed("Root supervisor did not reap after lifeline closure") from error
                     else:
@@ -305,6 +317,138 @@ def validate_daemon(observed, paths, owned_pid, pid_text):
     return observed["version"]
 
 
+def literal_rootfs():
+    """One nonexecutable file; no base image, command or project build."""
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        member = tarfile.TarInfo(LITERAL_PATH)
+        member.size, member.mode, member.mtime = len(LITERAL), 0o444, 0
+        member.uid = member.gid = 0
+        archive.addfile(member, io.BytesIO(LITERAL))
+    return output.getvalue()
+
+
+def docker_operation(executable, arguments, environment, state, label, payload=None):
+    """Bound each nonroot client and close its session before daemon cleanup."""
+    require(label in STOPPED_LOGS and (payload is None or len(payload) <= 16384),
+            "Unexpected stopped-container operation")
+    child = None
+    with (state / (label + ".stdout")).open("xb") as out, (state / (label + ".stderr")).open("xb") as err:
+        try:
+            with cleanup_window():
+                child = subprocess.Popen([executable, *arguments],
+                                         stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
+                                         stdout=out, stderr=err, env=environment, user=1000, group=1000,
+                                         extra_groups=[grp.getgrnam("docker").gr_gid],
+                                         start_new_session=True, close_fds=True)
+            child.communicate(input=payload, timeout=10)
+        except BaseException as failure:
+            if child is not None:
+                try:
+                    with cleanup_window():
+                        stop_owned_session(child)
+                except BaseException as cleanup_error:
+                    cleanup_error._probe_original_failure = safe_failure(failure)
+                    raise
+            raise
+    if not wait_group_gone(child.pid, 1):
+        with cleanup_window():
+            stop_owned_session(child)
+        raise ProbeFailure("Stopped-container client left surviving descendants")
+    if child.returncode != 0:
+        error = ProbeFailure(label + " did not pass")
+        error.returncode = child.returncode
+        raise error
+    require(all((state / (label + suffix)).stat().st_size <= CAP for suffix in (".stdout", ".stderr")),
+            "Oversized stopped-container response")
+    return (state / (label + ".stdout")).read_bytes()
+
+
+def stopped_identity(data, name, container, image, result):
+    observed = json.loads(data)
+    state = observed["State"]
+    started = state.get("Running") is not False or state.get("Pid") != 0 or state.get("StartedAt") != "0001-01-01T00:00:00Z"
+    result["ever_started_observed"] |= started
+    require(observed["Id"] == container and observed["Name"] == "/" + name
+            and observed["Image"] == image and observed["Config"]["Cmd"] == [NEVER_RUN],
+            "Stopped-container identity differs")
+    require(not started and state["Status"] == "created", "Probe container did not remain never started")
+    mode = observed["HostConfig"]["NetworkMode"]
+    require(isinstance(mode, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", mode),
+            "Unexpected default network mode")
+    result["reported_network_mode"] = mode
+
+
+def literal_archive(data):
+    require(len(data) <= 65536, "Oversized stopped-container archive")
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        members = archive.getmembers()
+        require(len(members) == 1 and members[0].name == LITERAL_PATH and members[0].isfile()
+                and members[0].size == len(LITERAL), "Unexpected stopped-container archive member")
+        stream = archive.extractfile(members[0])
+        require(stream is not None and stream.read(len(LITERAL) + 1) == LITERAL,
+                "Stopped-container literal differs")
+
+
+def stopped_container(executable, environment, state):
+    """Exercise only import/create/archive/remove on our fresh private daemon."""
+    require(re.fullmatch(r"vs-runtime-[0-9a-f]{24}", state.name), "Unexpected stopped-container scope")
+    scope = state.name.removeprefix("vs-runtime-")
+    name, tag = "sonic-vs-stopped-" + scope, "sonic-vs-stopped:" + scope
+    image, container = tag, name
+    imported = attempted_create = False
+    result = {"status": "failed", "container_start_requested": False, "ever_started_observed": False,
+              "default_network_requested": True, "network_workload_executed": False,
+              "owned_container_removed": None, "owned_image_removed": None}
+    def operation(arguments, label, payload=None):
+        return docker_operation(executable, arguments, environment, state, label, payload)
+    try:
+        payload = literal_rootfs()
+        result["literal_rootfs_sha256"] = hashlib.sha256(payload).hexdigest()
+        result["stage"] = "import"
+        imported = True  # Even an interrupted reply can follow a completed import.
+        value = operation(["import", "-", tag], "stopped-import", payload).decode().strip()
+        require(re.fullmatch(r"sha256:[0-9a-f]{64}", value), "Unexpected imported image identity")
+        image = value
+        result["image"] = image
+        result["stage"] = "create"
+        attempted_create = True  # Reserve our unique name before the possible side effect.
+        value = operation(["create", "--pull=never", "--name", name, image, NEVER_RUN], "stopped-create").decode().strip()
+        require(re.fullmatch(r"[0-9a-f]{64}", value), "Unexpected stopped-container identity")
+        container = value
+        result["container"] = container
+        result["stage"] = "inspect-before"
+        stopped_identity(operation(["inspect", "--format", "{{json .}}", container], "stopped-inspect-before"),
+                         name, container, image, result)
+        result["stage"] = "archive"
+        data = operation(["cp", container + ":/" + LITERAL_PATH, "-"], "stopped-archive")
+        literal_archive(data)
+        result["literal_sha256"] = hashlib.sha256(LITERAL).hexdigest()
+        result["stage"] = "inspect-after"
+        stopped_identity(operation(["inspect", "--format", "{{json .}}", container], "stopped-inspect-after"),
+                         name, container, image, result)
+        result["status"] = "passed"
+    except BaseException as error:
+        result["failure"] = safe_failure(error)
+    finally:
+        # Parent root supervisor still owns the daemon. Mask its alarm only for
+        # these bounded cleanup clients, then let its existing finally reap it.
+        with cleanup_window():
+            for attempted, arguments, label, key in (
+                (attempted_create, ["rm", "--force", container], "stopped-remove-container", "owned_container_removed"),
+                (imported, ["image", "rm", "--force", image], "stopped-remove-image", "owned_image_removed"),
+            ):
+                if attempted:
+                    try:
+                        operation(arguments, label)
+                        result[key] = True
+                    except BaseException as error:
+                        result[key] = False
+                        result["status"] = "failed"
+                        result.setdefault("cleanup_failures", []).append(dict(operation=label, **safe_failure(error)))
+    return result
+
+
 def private_daemon(paths):
     """Root supervisor owns exactly one foreground daemon and always waits for it."""
     require(os.geteuid() == 0 and Path("/.dockerenv").is_file(), "Private daemon requires its disposable slave")
@@ -369,6 +513,10 @@ def private_daemon(paths):
                 time.sleep(1)
             require(observed is not None, "Private Docker did not become ready")
             version = validate_daemon(observed, paths, child.pid, (execution / "dockerd.pid").read_text())
+            result["stage"] = "stopped-container"
+            result["stopped_container"] = stopped_container(docker, client_env, state)
+            result["container_workload_executed"] = result["stopped_container"]["ever_started_observed"]
+            require(result["stopped_container"]["status"] == "passed", "Stopped-container qualification or cleanup failed")
             result.update(status="passed", driver="overlay2", exact_private_root=True,
                           nonroot_client=True, server_version=version)
     except BaseException as error:
