@@ -164,7 +164,8 @@ alias(
 )
 
 # Match SWSS's link providers with the installed library TARs and generated
-# Debian controls. The source receipt lets APT retain these exact packages.
+# Debian controls. Keep the libteam_source_* target names while covering all
+# five runtime source library packages (libteam, sairedis, and protobuf).
 _SOURCE_PACKAGES = {
     "libteam5": "@libteam//:libteam_runtime",
     "libteamdctl0": "@libteam//:libteamdctl_runtime",
