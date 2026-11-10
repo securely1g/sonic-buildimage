@@ -763,8 +763,26 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
+          set -euo pipefail
+          owner_output="$RUNNER_TEMP/orchagent-owner-output"
+          owner_bazel="$RUNNER_TEMP/orchagent-owner-bazel.sh"
+          cleanup_owner_output() {
+            bazel "--output_base=$owner_output" shutdown >/dev/null 2>&1 || true
+            chmod -R u+w "$owner_output" 2>/dev/null || true
+            rm -rf "$owner_output" "$owner_bazel"
+          }
+          trap cleanup_owner_output EXIT
+          cat > "$owner_bazel" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ $# == 1 && "$1" == --version ]]; then
+            exec "$BAZEL" --version
+          fi
+          exec "$BAZEL" "--output_base=$RUNNER_TEMP/orchagent-owner-output" "$@"
+          SH
+          chmod +x "$owner_bazel"
           python3 -B tools/bazel/ci/container.py --container //dockers/docker-orchagent \
-            --artifacts artifacts/orchagent-owner --bazel "$BAZEL" --reuse-build \
+            --artifacts artifacts/orchagent-owner --bazel "$owner_bazel" --reuse-build \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--jobs=2 --bazel-arg=--local_resources=memory=8000
