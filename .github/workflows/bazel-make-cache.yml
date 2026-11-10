@@ -60,6 +60,7 @@ jobs:
           persist-credentials: false
       - run: |
           python3 -B -m unittest \
+            tools.bazel.tests.probe_remote_cache_test \
             tools.bazel.tests.remote_cache_test \
             tools.bazel.tests.make_cache_test \
             tools.bazel.tests.make_cache_sandbox_test \
@@ -89,15 +90,13 @@ jobs:
       - name: Prepare Make host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-venv jq dpkg-dev
+          sudo apt-get install -y --no-install-recommends python3-grpcio python3-venv jq dpkg-dev
           python3 -m venv "$RUNNER_TEMP/make-host-tools"
           "$RUNNER_TEMP/make-host-tools/bin/pip" install jinjanator==26.2.0
           echo "$RUNNER_TEMP/make-host-tools/bin" >> "$GITHUB_PATH"
-      - name: Verify cache access without exposing credentials
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
+      - name: Verify read access to the Bazel remote cache
         run: |
-          python3 -B tools/bazel/cache/credentials.py probe \
+          /usr/bin/python3 -B -m tools.bazel.ci.probe_remote_cache \
             --output artifacts/make-cache/cache-access.json
       - name: Pin and pull the native production builder
         run: python3 -B tools/bazel/ci/make_cache.py preflight --architecture '${{ matrix.architecture }}'
@@ -154,8 +153,6 @@ jobs:
         run: python3 -B tools/bazel/ci/make_cache.py prepare --architecture '${{ matrix.architecture }}'
       - name: Build the actual Make image with cache writes disabled
         if: ${{ !inputs.preflight_only }}
-        env:
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: python3 -B tools/bazel/ci/make_cache.py build --architecture '${{ matrix.architecture }}'
       - name: Run the seeded Common library and Python binding in the image
         if: ${{ !inputs.preflight_only }}

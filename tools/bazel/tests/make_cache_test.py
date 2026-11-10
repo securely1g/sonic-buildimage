@@ -4,6 +4,7 @@ import copy
 from contextlib import ExitStack
 import json
 from pathlib import Path
+import shlex
 import sys
 import tempfile
 import unittest
@@ -62,6 +63,35 @@ class MakeCacheTest(unittest.TestCase):
                              ("restriction_before", "0"), ("sandbox_sha256", "b" * 64)):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 make_cache.verify_sandbox_baseline({**baseline, field: value}, receipt)
+
+    def test_make_uses_the_private_cache_read_only_with_no_legacy_credential(self):
+        with patch.dict(make_cache.os.environ, {"BAZEL_REMOTE_AUTH": "retired-cache"}):
+            env = make_cache.make_environment()
+        self.assertNotIn("BAZEL_REMOTE_AUTH", env)
+        options = shlex.split(env["BAZEL_CONTAINER_ARGS"])
+        self.assertEqual(options, make_cache.container_options())
+        self.assertIn("--remote_cache=" + make_cache.PRIVATE_REMOTE_CACHE, options)
+        self.assertIn("--remote_executor=", options)
+        self.assertIn("--remote_accept_cached=true", options)
+        self.assertIn("--remote_upload_local_results=false", options)
+        self.assertIn("--disk_cache=", options)
+
+    def test_seed_receipt_must_name_the_same_remote_cache(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(make_cache, "ROOT", Path(directory)):
+            seed_dir = make_cache.ROOT / make_cache.PUBLIC / "seed"
+            seed_dir.mkdir(parents=True)
+            seed = {"passed": True, "mode": "make_seed", "architecture": "arm64", "yang": True,
+                    "phases": [{"phase": "seed"}], "common_revision": "1" * 40,
+                    "buildimage_revision": "2" * 40}
+            (seed_dir / "cross-repo.json").write_text(json.dumps(seed))
+            access = seed_dir / "cache-access.json"
+            for receipt in ({}, {"endpoint": "https://retired.example", "status": 200},
+                            {"endpoint": make_cache.PRIVATE_REMOTE_CACHE, "status": "UNAVAILABLE"}):
+                access.write_text(json.dumps(receipt))
+                with self.subTest(access=receipt), self.assertRaisesRegex(ValueError, "same Bazel remote cache"):
+                    make_cache.seed_receipt("arm64")
+            access.write_text(json.dumps({"endpoint": make_cache.PRIVATE_REMOTE_CACHE, "status": "OK"}))
+            self.assertEqual(make_cache.seed_receipt("arm64")[0], seed)
 
     def test_seed_may_have_extra_actions(self):
         make_cache.compare_image_actions(
