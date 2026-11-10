@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -59,6 +59,66 @@ env:
   BAZEL: bazel
 
 jobs:
+  vs_worker_inspection:
+    name: VS prerequisite observation (K3s)
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["vs-inspect","vs-tests"]'), inputs.source_image) && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    timeout-minutes: 10
+    concurrency:
+      group: sonic-slave-container-k3s-vs
+      cancel-in-progress: false
+    steps:
+      - name: Require fresh observation paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+        run: |
+          python3 - <<'PY_PATHS'
+          import os, re
+          from pathlib import Path
+          run, attempt, worker = (os.environ[k] for k in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', x) for x in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          name = f'vs-inspection-{run}-{attempt}-{worker}'
+          control = Path(os.environ['GITHUB_WORKSPACE']) / name
+          receipt = Path(os.environ['RUNNER_TEMP']) / (name + '.json')
+          if any(p.exists() or p.is_symlink() for p in (control, receipt)):
+              raise SystemExit('Preserve existing observation paths')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'worker={worker}\ncontrol={control.name}\nreceipt={receipt.name}\n')
+          PY_PATHS
+      - name: Checkout the selected observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+      - name: Test prerequisite policy without probing the worker
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+        run: |
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 -B -m unittest -v tools.bazel.tests.vs_worker_inspection_test
+
+      - name: Observe resources and VS prerequisites only
+        id: observe
+        if: inputs.source_image == 'vs-inspect'
+        env:
+          EXPECTED_WORKER: ${{ steps.paths.outputs.worker }}
+          CONTROL: ${{ steps.paths.outputs.control }}
+          RECEIPT: ${{ steps.paths.outputs.receipt }}
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$CONTROL/tools/bazel/ci/vs_worker_inspection.py" \
+            --worker "$EXPECTED_WORKER" --output "$RUNNER_TEMP/$RECEIPT"
+      - name: Retain the observation without claiming qualification
+        if: always() && (steps.observe.outcome == 'success' || steps.observe.outcome == 'failure')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-inspection-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ steps.paths.outputs.receipt }}
+          if-no-files-found: error
+          retention-days: 14
+
   registry_native:
     name: Registry native (${{ inputs.registry_consumer }}, AMD64)
     if: github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_image == 'registry-native' && contains(fromJSON('["common", "fips", "sairedis", "dash", "linkmgrd"]'), inputs.registry_consumer)

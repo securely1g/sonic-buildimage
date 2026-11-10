@@ -73,6 +73,23 @@ def worker_cache_root(pool="sonic-slave-container-dpool"):
     raise ValueError("Unknown source-worker pool")
 
 
+RESOURCE_TOOLS = ("bazel", "docker", "dockerd", "sudo", "git", "make", "readelf", "mountpoint", "findmnt", "unshare")
+
+
+def required_checks(pool):
+    """Required checks for this pinned resource schema, including the pool cache."""
+    if pool not in ("sonic-slave-container-dpool", "sonic-slave-container-k3s"):
+        raise ValueError("Unsupported worker pool")
+    names = {"worker_affinity", "build_user", "native_amd64", "trixie", "container", "slave_identity",
+             "private_cgroup_v2", "delegated_controllers", "bounded_build_resources", "private_docker",
+             "docker_group", "sudo", "user_mount_namespace", "workspace_mount", "workspace_storage",
+             "cache_mount", "cache_storage"}
+    names.update("tool_" + name for name in RESOURCE_TOOLS)
+    if pool == "sonic-slave-container-k3s":
+        names.add("cache_writable")
+    return frozenset(names)
+
+
 def measure(expected_worker, pool="sonic-slave-container-dpool"):
     checks, facts = {}, {}
     build_profile = None
@@ -118,7 +135,7 @@ def measure(expected_worker, pool="sonic-slave-container-dpool"):
         return True
 
     check("bounded_build_resources", resources)
-    for name in ("bazel", "docker", "dockerd", "sudo", "git", "make", "readelf", "mountpoint", "findmnt", "unshare"):
+    for name in RESOURCE_TOOLS:
         check("tool_" + name, lambda name=name: shutil.which(name) is not None)
     check("private_docker", lambda: not Path("/var/run/docker.sock").exists() and not any(
         os.environ.get(name) for name in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH")))
