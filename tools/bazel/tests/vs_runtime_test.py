@@ -254,10 +254,11 @@ class RuntimePolicyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             secret = "https://private.invalid/?token=secret-value /private/host/path"
-            (root / "dockerd.log").write_text("x" * 70000 + "failed to mount overlay: operation not permitted " + secret)
+            (root / "dockerd.log").write_text("x" * 70000 + "\nTraceback (most recent call last):\nPermissionError: [Errno 1] " + secret)
             records = runtime.diagnostics(root)
             self.assertEqual(records[0]["tail_bytes"], 65536)
-            self.assertEqual(records[0]["known_errors"], ["operation_not_permitted", "overlay_failure"])
+            self.assertEqual(records[0]["known_errors"], ["operation_not_permitted"])
+            self.assertEqual(records[0]["exception_facts"], [{"error_type": "PermissionError", "errno": 1}])
             serialized = json.dumps(records)
             self.assertNotIn("private.invalid", serialized)
             self.assertNotIn("secret-value", serialized)
@@ -978,6 +979,82 @@ class NativeCaptureLifecycleTest(unittest.TestCase):
         block = workflow.split("  vs_runtime_qualification:\n", 1)[1].split("\n  registry_native:", 1)[0]
         minutes = int(re.search(r"timeout-minutes: (\d+)", block).group(1))
         self.assertGreaterEqual(minutes * 60, 300 + runtime.ROOT_COMMAND_SECONDS + runtime.ROOT_CLEANUP_SECONDS + 120)
+
+
+class SafeTracebackDiagnosticTest(unittest.TestCase):
+    BEFORE = "native-capture-docker-mount-before.stderr"
+
+    def test_native_guard_and_known_numeric_frames_are_recorded_without_paths(self):
+        text = (b'Traceback (most recent call last):\n'
+                b'  File "/private/worker/source_image_worker.py", line 1200, in main\n'
+                b'  File "<string>", line 204, in capture\n'
+                b'  File "/private/unknown.py", line 88, in secret\n'
+                b'ValueError: Docker root must be absent before launch\n')
+        result = runtime.traceback_diagnostics(text, self.BEFORE)
+        self.assertEqual(result["source_frames"], [{"source": "native_worker", "line": 1200},
+                                                 {"source": "native_embedded_python", "line": 204}])
+        self.assertEqual(result["exception_facts"], [{"error_type": "ValueError"}])
+        self.assertEqual(result["authored_guard_reasons"], ["Docker root must be absent before launch"])
+        self.assertNotIn("/private/", json.dumps(result))
+        self.assertNotIn("unknown.py", json.dumps(result))
+
+    def test_called_process_error_repr_and_source_context_do_not_classify(self):
+        program = ('timeout = 10\nraise ValueError("Private Docker still has a mounted child")\n'
+                   'Traceback (most recent call last):\nValueError: Docker root must be absent before launch\n')
+        command = ["python3", "-c", program, "https://private.invalid/?token=secret-value"]
+        text = ('Traceback (most recent call last):\n'
+                '    raise ValueError("Docker root must be absent before launch")\n'
+                'subprocess.CalledProcessError: Command ' + repr(command) + ' returned non-zero exit status 1.\n').encode()
+        result = runtime.traceback_diagnostics(text, self.BEFORE)
+        for name in ("known_errors", "exception_facts", "authored_guard_reasons", "source_frames"):
+            self.assertEqual(result[name], [])
+        self.assertNotIn("secret-value", json.dumps(result))
+
+    def test_actual_inner_error_survives_outer_large_command_repr(self):
+        text = (b'Traceback (most recent call last):\n'
+                b'  File "<string>", line 55, in write_record\n'
+                b'PermissionError: [Errno 13] https://private.invalid/secret /private/path\n'
+                b'Traceback (most recent call last):\n'
+                b'subprocess.CalledProcessError: Command ' + b'x' * 30000 + b'timeout mounted child\n')
+        result = runtime.traceback_diagnostics(text, self.BEFORE)
+        self.assertEqual(result["exception_facts"], [{"error_type": "PermissionError", "errno": 13}])
+        self.assertEqual(result["known_errors"], ["permission_denied"])
+        self.assertEqual(result["source_frames"], [{"source": "native_embedded_python", "line": 55}])
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_guard_reason_requires_exact_stage_type_and_entire_message(self):
+        for stage, kind, reason in (
+                ("native-stop.stderr", "ValueError", "Docker root must be absent before launch"),
+                (self.BEFORE, "RuntimeError", "Docker root must be absent before launch"),
+                (self.BEFORE, "ValueError", "Docker root must be absent before launch /secret"),
+                (self.BEFORE, "ValueError", "Startup mount context changed")):
+            with self.subTest(stage=stage, kind=kind, reason=reason):
+                text = ('Traceback (most recent call last):\n' + kind + ': ' + reason + '\n').encode()
+                result = runtime.traceback_diagnostics(text, stage)
+                self.assertEqual(result["authored_guard_reasons"], [])
+                self.assertNotIn(reason, json.dumps(result))
+
+    def test_plain_keywords_and_truncated_first_line_cannot_become_tracebacks(self):
+        text = (b'Traceback (most recent call last):\nValueError: Docker root must be absent before launch\n'
+                b'Private Docker still has a mounted child timeout\n')
+        result = runtime.traceback_diagnostics(text, self.BEFORE, leading_fragment=True)
+        self.assertEqual(result["exception_facts"], [])
+        self.assertEqual(result["known_errors"], [])
+        self.assertEqual(result["authored_guard_reasons"], [])
+        no_banner = runtime.traceback_diagnostics(b'PermissionError: [Errno 13] /secret\n', self.BEFORE)
+        self.assertEqual(no_banner["exception_facts"], [])
+
+    def test_frame_records_are_bounded_deduplicated_and_unknown_names_are_opaque(self):
+        text = b'Traceback (most recent call last):\n'
+        for number in range(20):
+            text += ('  File "<string>", line ' + str(number + 1) + ', in capture\n').encode()
+        text += b'  File "<string>", line 1, in capture\nValueError: arbitrary secret text\n'
+        result = runtime.traceback_diagnostics(text, self.BEFORE)
+        self.assertEqual(len(result["source_frames"]), 12)
+        self.assertTrue(result["records_truncated"])
+        self.assertEqual(result["exception_facts"], [{"error_type": "ValueError"}])
+        self.assertEqual(result["authored_guard_reasons"], [])
+        self.assertNotIn("arbitrary", json.dumps(result))
 
 
 if __name__ == "__main__":

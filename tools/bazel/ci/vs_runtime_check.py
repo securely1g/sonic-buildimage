@@ -180,26 +180,84 @@ def safe_failure(error):
     return result
 
 
+def traceback_diagnostics(tail, stage_log, leading_fragment=False):
+    """Report only bounded traceback facts; command repr and free text are opaque."""
+    native_logs = ("native-capture-docker-mount-before.stderr",
+                   "native-capture-docker-mount-ready.stderr", "native-stop.stderr")
+    before_reasons = (
+        "Expected elevated fixed mount action", "Unexpected owned mount scope",
+        "Mount table identity/bound", "Mount table exceeds bound", "Invalid mount row",
+        "Invalid mount path", "Owned daemon signaling requires pidfd support",
+        "Required fixed Docker/umount executable is unavailable",
+        "Docker root must be absent before launch", "Private mount directory identity",
+        "Missing backing mount", "Ambiguous backing mount", "Private mount proof size",
+        "Duplicate private mount proof field",
+    )
+    types = ("AssertionError", "FileExistsError", "FileNotFoundError", "NotADirectoryError",
+             "PermissionError", "OSError", "ValueError", "KeyError", "TypeError",
+             "RuntimeError", "TimeoutError", "TimeoutExpired", "JSONDecodeError",
+             "UnicodeDecodeError", "IndexError", "AttributeError", "OverflowError")
+    errno_categories = {1: "operation_not_permitted", 13: "permission_denied",
+                        28: "no_space", 30: "read_only_filesystem", 98: "address_in_use",
+                        101: "network_unreachable", 111: "network_unreachable"}
+    result = {"exception_facts": [], "source_frames": [], "authored_guard_reasons": [],
+              "known_errors": [], "records_truncated": False}
+
+    def add(key, value):
+        if value not in result[key]:
+            if len(result[key]) < 12:
+                result[key].append(value)
+            else:
+                result["records_truncated"] = True
+
+    lines = tail.splitlines()
+    if leading_fragment and lines:
+        lines = lines[1:]
+    in_traceback = False
+    for line in lines:
+        if line == b"Traceback (most recent call last):":
+            in_traceback = True
+            continue
+        if not in_traceback:
+            continue
+        if stage_log in native_logs and len(line) <= 2048:
+            frame = re.fullmatch(
+                rb'  File "(<string>|[^"\r\n]*/source_image_worker\.py)", line ([1-9][0-9]{0,5})(?:, in (?:[A-Za-z_][A-Za-z0-9_]*|<module>))?', line)
+            if frame:
+                add("source_frames", {"source": "native_embedded_python" if frame[1] == b"<string>" else "native_worker",
+                                      "line": int(frame[2])})
+                continue
+        # Python source/caret context is indented; never interpret it as an exception.
+        if not line or line[:1] in (b" ", b"\t"):
+            continue
+        in_traceback = False
+        # Only the anchored class/errno prefix is inspected, even for a huge repr.
+        match = re.match(rb'(?:(?:builtins|subprocess|json\.decoder)\.)?([A-Za-z]+)(?::(?: |$)|$)', line[:128])
+        if not match:
+            continue
+        kind = match[1].decode("ascii")
+        if kind not in types:
+            continue  # Includes CalledProcessError: its command repr is not evidence.
+        fact = {"error_type": kind}
+        message = line[match.end():]
+        error_number = re.match(rb'\[Errno ([1-9][0-9]{0,3})\](?: |$)', message[:32])
+        if error_number:
+            number = int(error_number[1])
+            fact["errno"] = number
+            if number in errno_categories:
+                add("known_errors", errno_categories[number])
+        if kind in ("TimeoutError", "TimeoutExpired"):
+            add("known_errors", "timed_out")
+        add("exception_facts", fact)
+        if stage_log == "native-capture-docker-mount-before.stderr" and kind == "ValueError":
+            for reason in before_reasons:
+                if message == reason.encode("ascii"):
+                    add("authored_guard_reasons", reason)
+    return result
+
+
 def diagnostics(state):
-    """Publish fixed error classes and bounded-tail hashes, never raw tool text."""
-    patterns = {
-        "permission_denied": (b"permission denied",),
-        "operation_not_permitted": (b"operation not permitted",),
-        "no_space": (b"no space left",),
-        "read_only_filesystem": (b"read-only file system",),
-        "overlay_failure": (b"failed to mount overlay", b"error initializing graphdriver"),
-        "cgroup_failure": (b"failed to create cgroup", b"cgroup mountpoint does not exist"),
-        "address_in_use": (b"address already in use",),
-        "invalid_argument": (b"invalid argument", b"unknown flag", b"unknown option"),
-        "daemon_start_failure": (b"failed to start daemon",),
-        "network_unreachable": (b"network is unreachable", b"connection refused"),
-        "download_failure": (b"failed to download", b"error downloading"),
-        "certificate_failure": (b"certificate verify failed", b"certificate signed by unknown authority"),
-        "timed_out": (b"timed out", b"timeout"),
-        "namespace_failure": (b"unshare failed", b"failed to create user namespace"),
-        "lifeline_not_pipe": (b"lifeline must be a pipe",),
-        "owned_mounts_remaining": (b"private docker still has a mounted child",),
-    }
+    """Publish safe traceback facts and bounded-tail hashes, never raw tool text."""
     records = []
     names = ("kernel-sandbox.stdout", "kernel-sandbox.stderr", "private-cgroup.stdout",
              "private-cgroup.stderr", "dockerd.log", "private-docker.stdout", "private-docker.stderr")
@@ -213,10 +271,9 @@ def diagnostics(state):
             with path.open("rb") as stream:
                 stream.seek(max(0, size - 65536))
                 tail = stream.read(65536)
-            lower = tail.lower()
             records.append({"stage_log": name, "bytes": size, "tail_bytes": len(tail),
                             "tail_sha256": hashlib.sha256(tail).hexdigest(),
-                            "known_errors": [key for key, needles in patterns.items() if any(x in lower for x in needles)],
+                            **traceback_diagnostics(tail, name, leading_fragment=size > len(tail)),
                             "raw_text_published": False})
         except OSError as error:
             records.append({"stage_log": name, "read_error": safe_failure(error)})
