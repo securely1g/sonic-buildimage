@@ -90,7 +90,8 @@ jobs:
       - name: Prepare Make host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-grpcio python3-venv jq dpkg-dev
+          sudo apt-get install -y --no-remove --no-install-recommends docker-buildx dpkg-dev jq python3-grpcio python3-venv
+          docker buildx version
           python3 -m venv "$RUNNER_TEMP/make-host-tools"
           "$RUNNER_TEMP/make-host-tools/bin/pip" install jinjanator==26.2.0
           echo "$RUNNER_TEMP/make-host-tools/bin" >> "$GITHUB_PATH"
