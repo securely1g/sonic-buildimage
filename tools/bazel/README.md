@@ -484,3 +484,34 @@ acceptance claim for a new source/catalog selection. A new run must establish it
 actual test graph, image/debug, incremental and private loaded-service results.
 The added controller branch is prepared for a separately reviewed manual request;
 its local mock checks do not establish native or full VS acceptance.
+
+## Source-worker pool selection
+
+The manual Bazel OCI source worker retains the dedicated dpool route by default.
+For Syncd, Gearbox and P4RT, `source_worker_pool=sonic-slave-container-k3s` selects the
+shared K3s label. This route requires `source_ci_request`, the immutable original
+normal-CI request artifact. The controller checks the complete checked-in worker
+contract hash before admitting its pool, source, catalog and controller identities.
+The assigned GitHub job, runner ID, runner name, pool label and both dispatch actors
+are bound before any build. A pool hint in a downloaded artifact is not admission.
+
+K3s uses the existing two-action profile: a measured 6-CPU/20-GiB allocation with
+two Bazel jobs, two scheduler CPUs and a 3-GiB JVM heap. Startup requires the full
+measured profile, and each phase checks that it has not changed. Resource, private
+namespace, mount, tool, source, memory-event and original-receipt checks still apply.
+The existing 50-GiB preflight and 90-GiB native workspace gates remain independent.
+
+The K3s cache root is `/actions/_work/.source-image-cache`, outside the fresh
+checkout and temporary directories, on the authenticated `/actions` backing mount.
+The existing `source-images/<actual-runner>` layout separates workers and the
+existing per-image output bases. The preflight checks ownership, permissions,
+writability, filesystem and free space without clearing or migrating caches.
+Workspace and cache capacity on this same filesystem are not additive. Cache
+persistence across replacement runner pods is not established; reuse checks retain
+their within-job baseline/no-op/edit/restore scope. Dpool keeps `/bazel_cache`.
+
+Native K3s concurrency is keyed by image family and original request artifact ID,
+with `cancel-in-progress: false`. Distinct requests can use separate workers while
+duplicate requests remain serialized. Fresh run/attempt/actual-runner paths, the
+private daemon and cgroup checks isolate each build. K3s uses the existing pinned
+public-download fallback; it does not extend the private-mirror allowlist.

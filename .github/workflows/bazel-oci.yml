@@ -11,6 +11,15 @@ on:
         type: choice
         options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
+      source_ci_request:
+        description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
+        type: string
+        default: ''
+      source_worker_pool:
+        description: Native source-worker pool (K3s requires an authenticated normal-CI request)
+        type: choice
+        options: [sonic-slave-container-dpool, sonic-slave-container-k3s]
+        default: sonic-slave-container-dpool
       source_revision:
         description: Reviewed 40-character image source or fixed registry commit
         type: string
@@ -43,8 +52,8 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
-  cancel-in-progress: true
+  group: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && format('bazel-oci-k3s-{0}-{1}', github.run_id, github.run_attempt) || format('bazel-oci-{0}-{1}-{2}-{3}', github.event.pull_request.number || github.ref, github.sha, inputs.source_image || 'none', inputs.source_revision) }}
+  cancel-in-progress: ${{ inputs.source_worker_pool != 'sonic-slave-container-k3s' }}
 
 env:
   BAZEL: bazel
@@ -201,7 +210,10 @@ jobs:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
     if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "p4rt"]'), inputs.source_image)
-    runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
+    runs-on: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && fromJSON('["sonic-slave-container-k3s"]') || fromJSON(format('["sonic-slave-container-dpool","{0}"]', inputs.source_worker)) }}
+    concurrency:
+      group: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && format('sonic-source-image-k3s-{0}-{1}', inputs.source_image, inputs.source_ci_request) || format('source-image-native-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: false
     timeout-minutes: 360
     permissions:
       contents: read
@@ -211,44 +223,67 @@ jobs:
         shell: bash
     env:
       SOURCE_WORKER_CONFIGURED_MIRRORS: "1"
+      WORKER_POOL: ${{ inputs.source_worker_pool }}
       SELECTED_IMAGE: ${{ inputs.source_image }}
       SOURCE_REVISION: ${{ inputs.source_revision }}
       SOURCE_REGISTRY_REVISION: ${{ inputs.registry_revision }}
       SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
-      SOURCE_WORKER_CONTROL: source-image-control-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_worker }}
-      SOURCE_WORKER_SOURCE: source-image-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_worker }}
-      SOURCE_WORKER_SCRATCH: source-image-scratch-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_worker }}
     steps:
       - name: Require fresh native worker paths
+        id: worker_paths
         env:
           EXPECTED_WORKER: ${{ inputs.source_worker }}
+          ASSIGNED_WORKER: ${{ runner.name }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
         run: |
-          python3 - <<'PY'
+          python3 - <<'PYCODE'
           import os
           from pathlib import Path
           import re
           run_id, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
-          worker = os.environ["EXPECTED_WORKER"]
-          if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) or not re.fullmatch(r"sonic-slave-lgh114-[1-4]", worker) or os.environ["RUNNER_NAME"] != worker:
-              raise SystemExit("Unexpected native run or worker identity")
+          worker = os.environ["ASSIGNED_WORKER"]
+          pool = os.environ.get("WORKER_POOL", "sonic-slave-container-dpool")
+          if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) or os.environ["RUNNER_NAME"] != worker:
+              raise SystemExit("Unexpected native run or assigned worker identity")
+          if pool == "sonic-slave-container-dpool":
+              if not re.fullmatch(r"sonic-slave-lgh114-[1-4]", worker) or os.environ["EXPECTED_WORKER"] != worker:
+                  raise SystemExit("Unexpected dedicated worker identity")
+          elif pool == "sonic-slave-container-k3s":
+              if (not re.fullmatch(r"ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?", worker) or
+                      os.environ["SELECTED_IMAGE"] not in ("syncd", "gearbox", "p4rt") or
+                      not re.fullmatch(r"[1-9][0-9]*", os.environ.get("SOURCE_CI_REQUEST", "")) or
+                      os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch" or
+                      os.environ.get("GITHUB_REPOSITORY") != "securely1g/sonic-buildimage" or
+                      os.environ.get("GITHUB_ACTOR") != "securely1g" or
+                      os.environ.get("GITHUB_TRIGGERING_ACTOR") != "securely1g"):
+                  raise SystemExit("K3s native work requires a reviewed family and normal-CI request")
+          else:
+              raise SystemExit("Unknown source-worker pool")
+          paths = []
           for kind, root, variable in (("control", "GITHUB_WORKSPACE", "SOURCE_WORKER_CONTROL"), ("source", "GITHUB_WORKSPACE", "SOURCE_WORKER_SOURCE"), ("scratch", "RUNNER_TEMP", "SOURCE_WORKER_SCRATCH")):
               name = f"source-image-{kind}-{run_id}-{attempt}-{worker}"
-              path = Path(os.environ[root]) / os.environ[variable]
+              path = Path(os.environ[root]) / os.environ.get(variable, name)
               if path.name != name or path.parent != Path(os.environ[root]) or path.exists() or path.is_symlink():
                   raise SystemExit("Native worker paths must be fresh and bound to this run; preserve previous work")
-          PY
+              paths.append((kind, variable, name))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output, open(os.environ["GITHUB_ENV"], "a") as environment:
+              output.write("worker=" + worker + "\n")
+              for kind, variable, name in paths:
+                  output.write(kind + "=" + name + "\n")
+                  environment.write(variable + "=" + name + "\n")
+          PYCODE
       - name: Checkout reviewed dispatcher
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: ${{ env.SOURCE_WORKER_CONTROL }}
+          path: ${{ steps.worker_paths.outputs.control }}
           clean: false
           persist-credentials: false
       - name: Checkout the registry mirror configuration
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
-          path: ${{ env.SOURCE_WORKER_CONTROL }}/.source-mirror-registry
+          ref: c41c7baf15307ad1c8f94d5dca511ef952d28729
+          path: ${{ steps.worker_paths.outputs.control }}/.source-mirror-registry
           sparse-checkout: ci
           persist-credentials: false
       - name: Validate the fixed image selection
@@ -267,9 +302,41 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_revision }}
-          path: ${{ env.SOURCE_WORKER_SOURCE }}
+          path: ${{ steps.worker_paths.outputs.source }}
           clean: false
           persist-credentials: false
+      - name: Verify the normal CI request artifact provenance
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
+        id: source_ci_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_ARTIFACT: ${{ inputs.source_ci_request }}
+        run: |
+          cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
+          python3 -B -m tools.bazel.ci.image_worker_receipt worker-origin \
+            --image "$SELECTED_IMAGE" \
+            --artifact "$REQUEST_ARTIFACT" \
+            --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request"
+      - name: Download the immutable normal CI request
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.source_ci_request.outputs.request_artifact }}
+          run-id: ${{ steps.source_ci_request.outputs.request_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          merge-multiple: true
+          path: ${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/ci-request/payload
+      - name: Bind the exact normal CI merge before native work
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
+          python3 -B -m tools.bazel.ci.image_worker_receipt bind-worker \
+            --image "$SELECTED_IMAGE" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" \
+            --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request"
       - name: Verify the existing successful source-download producer
         if: inputs.source_inputs_run != ''
         env:
@@ -286,18 +353,18 @@ jobs:
           run-id: ${{ inputs.source_inputs_run }}
           github-token: ${{ github.token }}
           repository: securely1g/sonic-buildimage
-          path: ${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/source-image-inputs
+          path: ${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/source-image-inputs
       - name: Download the verified source archives
         if: inputs.source_inputs_run == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: source-image-inputs
-          path: ${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/source-image-inputs
+          path: ${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/source-image-inputs
       - name: Configure Debian downloads for the native worker
         id: prepare_mirrors
         env:
-          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_MIRROR_ROOT || '' }}
-          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare-mirrors \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
@@ -346,6 +413,12 @@ jobs:
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" loaded \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      - name: Stop only this job's private Docker daemon
+        if: always() && steps.prepare.outcome != 'skipped'
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" stop \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Prepare declared artifacts and public evidence
         id: public_artifacts
         if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
@@ -357,8 +430,8 @@ jobs:
         id: scan_mirrors
         if: always() && steps.public_artifacts.outcome == 'success'
         env:
-          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_MIRROR_ROOT || '' }}
-          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" scan-mirrors \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
@@ -368,16 +441,29 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: source-image-${{ inputs.source_image }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/artifacts/public/
+          path: ${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/artifacts/public/
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
-      - name: Stop only this job's private Docker daemon
-        if: always() && steps.prepare.outcome != 'skipped'
+      - name: Package the normal CI acceptance receipts
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
+        id: source_ci_acceptance
         run: |
-          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" stop \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
-            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+          cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
+          python3 -B -m tools.bazel.ci.image_worker_receipt bundle \
+            --image "$SELECTED_IMAGE" \
+            --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request" \
+            --public "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts/public" \
+            --output "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-acceptance"
+      - name: Upload the normal CI acceptance receipts
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.source_ci_acceptance.outputs.acceptance_name }}
+          path: ${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/ci-acceptance
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
       - name: Remove this worker's mirror configuration
         if: always() && steps.prepare_mirrors.outcome != 'skipped'
         run: |

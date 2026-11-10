@@ -20,7 +20,8 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
-from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
+from tools.bazel.ci.source_worker_preflight import (
+    POOLS, cpu_limit, measure, select_build_profile, worker_cache_root)
 from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
@@ -82,8 +83,16 @@ def require(value, message):
         raise ValueError(message)
 
 
+def selected_worker_pool():
+    pool = os.environ.get("WORKER_POOL", "sonic-slave-container-dpool")
+    require(pool in POOLS, "Unknown source-worker pool")
+    return pool
+
+
 def selection(image, revision):
     require(image in DRIVERS, "Unknown source image")
+    if selected_worker_pool() == "sonic-slave-container-k3s":
+        require(image in ("syncd", "gearbox", "p4rt"), "Image is not admitted to the K3s source-worker pool")
     require(re.fullmatch(r"[0-9a-f]{40}", revision), "Source revision must be a full lowercase Git SHA")
     catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
     require(not catalog or re.fullmatch(r"[0-9a-f]{40}", catalog),
@@ -613,7 +622,7 @@ def prepare_p4rt(workspace, cache, temporary, distdirs, mirror):
 def p4rt_context(args, state):
     context = state.get("p4rt_owner", {})
     owner = p4rt_owner_identity(args.workspace)
-    cache = Path("/bazel_cache/source-images") / os.environ.get("RUNNER_NAME", "") / "p4rt-owner"
+    cache = worker_cache_root(selected_worker_pool()) / "source-images" / os.environ.get("RUNNER_NAME", "") / "p4rt-owner"
     temporary = temporary_directory()
     require(context.get("source") == str(owner) and context.get("revision") == P4RT_OWNER and
             context.get("output_base") == str(cache / "output-base") and context.get("jobs") == 1 and
@@ -681,7 +690,7 @@ def temporary_directory():
 
 
 
-def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
+def configure_worker_mirrors(phase, artifacts, *, config=None, public=None, image=None):
     config = config or temporary_directory() / "source-image-mirrors.cfg"
     if phase == "cleanup-mirrors":
         config.unlink(missing_ok=True)
@@ -690,14 +699,49 @@ def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
     sys.path.insert(0, str(registry_ci))
     import private_mirrors
     roots = {key: os.environ.pop(key, "") for key, _ in private_mirrors.MIRROR_ROOTS}
-    redactor = private_mirrors.Redactor([root for root in roots.values() if root])
+    budget = None
+    if phase == "scan-mirrors" and image == "p4rt":
+        from mirror_privacy import TemporaryBudget
+        directory = artifacts / "mirror-scan-temporaries"
+        directory.mkdir(mode=0o700)
+        budget = TemporaryBudget(directory, maximum_bytes=32 * 1024 ** 3, minimum_free_bytes=16 * 1024 ** 3)
+    redactor = private_mirrors.Redactor([root for root in roots.values() if root],
+                                      **({"temporary_budget": budget} if budget else {}))
     redactor.mask_github()
     if phase == "scan-mirrors":
         public = public or artifacts / "public"
-        redactor.scrub_and_scan(public)
-        # Published image receipts bind their evidence and payloads by hash.
-        require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        try:
+            redactor.scrub_and_scan(public)
+            # Published image receipts bind their evidence and payloads by hash.
+            require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        finally:
+            if budget:
+                # Scalar diagnostics survive a failed scan; errors still fail the step.
+                print("Mirror scan temporary budget: " + json.dumps(budget.usage()), file=sys.stderr)
+        if budget:
+            usage = budget.usage()
+            require(all(type(value) is int and value >= 0 for value in usage.values()) and
+                    usage["live_bytes"] == usage["open_files"] == 0,
+                    "Scanner temporary files did not close cleanly")
+            measured = bool(redactor.patterns)
+            metrics = {"status": "passed" if measured else "not_run_no_private_patterns",
+                       "traversal_measured": measured,
+                       "maximum_bytes": usage["maximum_bytes"], "minimum_free_bytes": usage["minimum_free_bytes"]}
+            if measured:
+                metrics.update(peak_charged_temporary_bytes=usage["peak_bytes"],
+                               peak_open_files=usage["peak_open_files"], live_bytes=0, open_files=0)
+            path = public / "worker.json"
+            require(path.is_file() and not path.is_symlink(), "Missing regular worker receipt")
+            receipt = json.loads(path.read_text())
+            require(receipt.get("image") == "p4rt" and "mirror_scan" not in receipt,
+                    "Unexpected worker scan receipt")
+            receipt["mirror_scan"] = metrics
+            safe_json(receipt)
+            # Export copied this small JSON; the later CI bundle binds its final hash.
+            path.write_text(json.dumps(receipt, indent=2) + "\n")
         return
+    if selected_worker_pool() == "sonic-slave-container-k3s":
+        require(not any(roots.values()), "K3s source workers use only the existing public downloader")
     mirrors = private_mirrors.selected_mirrors(roots)
     if mirrors:
         require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
@@ -715,10 +759,14 @@ def prepare(args):
     workspace, artifacts = args.workspace, args.artifacts
     if args.image == "teamd":
         prepare_teamd_kernel(artifacts)
-    preflight = measure(os.environ.get("RUNNER_NAME", ""))
+    pool = selected_worker_pool()
+    preflight = measure(os.environ.get("RUNNER_NAME", ""), pool)
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
     profile = preflight["build_profile"]
+    if pool == "sonic-slave-container-k3s":
+        require(profile == select_build_profile(20 * 1024**3, 6),
+                "K3s worker limits differ from the measured two-action profile")
     require(os.getuid() == 1000 and os.getgid() == 1000, "Expected worker UID/GID1000")
     require(platform.machine() == "x86_64" and
             platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie", "Expected native AMD64 Debian Trixie")
@@ -738,7 +786,7 @@ def prepare(args):
     require(Path("/etc/ssl/certs/java/cacerts").is_file() and os.access("/etc/ssl/certs/java/cacerts", os.R_OK),
             "Missing readable system Java trust store")
     run(["sudo", "-n", "true"])
-    for mount in ("/actions", "/bazel_cache"):
+    for mount in (("/actions", "/bazel_cache") if pool == "sonic-slave-container-dpool" else ("/actions",)):
         run(["mountpoint", "-q", mount])
     require(output(["findmnt", "-n", "-o", "FSTYPE", "-T", "/actions"]) in ("ext4", "xfs"), "Docker storage requires ext4 or XFS")
     if args.image == "syncd":
@@ -757,7 +805,7 @@ def prepare(args):
     catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
-    cache = Path("/bazel_cache/source-images") / runner
+    cache = worker_cache_root(pool) / "source-images" / runner
     require(cache.resolve() == cache, "Cache path must not traverse symlinks")
     for name in ("repository", "disk", "bazelisk", args.image + "/output-base"):
         (cache / name).mkdir(parents=True, exist_ok=True)
@@ -1020,7 +1068,7 @@ def main():
     elif args.phase == "verify-input-run":
         verify_input_run(args)
     elif args.phase in ("prepare-mirrors", "scan-mirrors", "cleanup-mirrors"):
-        configure_worker_mirrors(args.phase, args.artifacts)
+        configure_worker_mirrors(args.phase, args.artifacts, image=args.image)
     elif args.phase == "prepare":
         prepare(args)
     elif args.phase == "publish":
