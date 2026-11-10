@@ -37,6 +37,17 @@ ifneq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(error SONIC_BAZEL_KERNEL_PREPARE=verify requires BUILD_WITH_BAZEL_WHEN_AVAILABLE=y)
 endif
 endif
+# The original metadata stays authoritative. These explicit inputs select a
+# separately reviewed compatibility context only for verification of old outputs.
+SONIC_BAZEL_KERNEL_CONTEXT_INPUTS := SONIC_BAZEL_KERNEL_PRODUCER_CONTEXT \
+        SONIC_BAZEL_KERNEL_PRODUCER_CONTEXT_SHA256 SONIC_BAZEL_KERNEL_PRODUCER_WORKSPACE \
+        SONIC_BAZEL_KERNEL_REGISTRY_WORKSPACE
+ifneq ($(strip $(foreach input,$(SONIC_BAZEL_KERNEL_CONTEXT_INPUTS),$($(input)))),)
+ifneq ($(SONIC_BAZEL_KERNEL_PREPARE),verify)
+$(error original producer context requires SONIC_BAZEL_KERNEL_PREPARE=verify)
+endif
+$(foreach input,$(SONIC_BAZEL_KERNEL_CONTEXT_INPUTS),$(if $(strip $($(input))),,$(error missing $(input))))
+endif
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 # One lazy prerequisite serves every transitive consumer, including direct
 # header/module requests. Bazel runs in the Linux sandbox as the slave user.
@@ -49,7 +60,11 @@ SONIC_BAZEL_KERNEL_CONFIG := CONFIGURED_ARCH CONFIGURED_PLATFORM BLDENV \
 bazel-kernel-ensure:
 	python3 -B tools/bazel/kernel/prepare.py $(SONIC_BAZEL_KERNEL_PREPARE) --debs-directory '$(subst ','"'"',$(DEBS_PATH))' \
 		$(foreach setting,$(SONIC_BAZEL_KERNEL_CONFIG),--kernel-config '$(setting)=$(subst ','"'"',$(if $(filter SECURE_UPGRADE_MODE,$(setting)),$(subst ",,$($(setting))),$($(setting))))') \
-		$(if $(filter ensure,$(SONIC_BAZEL_KERNEL_PREPARE)),$(if $(strip $(SONIC_BAZEL_CACHE_SOURCE)),--cache-directory /bazel_cache))
+		$(if $(filter ensure,$(SONIC_BAZEL_KERNEL_PREPARE)),$(if $(strip $(SONIC_BAZEL_CACHE_SOURCE)),--cache-directory /bazel_cache)) \
+		$(if $(strip $(SONIC_BAZEL_KERNEL_PRODUCER_CONTEXT)),--producer-context '$(subst ','"'"',$(SONIC_BAZEL_KERNEL_PRODUCER_CONTEXT))' \
+		--producer-context-sha256 '$(subst ','"'"',$(SONIC_BAZEL_KERNEL_PRODUCER_CONTEXT_SHA256))' \
+		--producer-workspace '$(subst ','"'"',$(SONIC_BAZEL_KERNEL_PRODUCER_WORKSPACE))' \
+		--registry-workspace '$(subst ','"'"',$(SONIC_BAZEL_KERNEL_REGISTRY_WORKSPACE))')
 else
 SONIC_MAKE_DEBS += $(LINUX_HEADERS_COMMON)
 endif
