@@ -1,5 +1,7 @@
 """Pure runtime-policy tests; mock every probe, daemon and privileged operation."""
+from contextlib import ExitStack
 import hashlib
+import re
 import io
 import stat
 import struct
@@ -197,7 +199,7 @@ class RuntimePolicyTest(unittest.TestCase):
             with mock.patch.object(runtime.subprocess, "Popen", return_value=child) as spawn, mock.patch.object(runtime.os, "killpg") as kill, self.assertRaises(subprocess.TimeoutExpired):
                 runtime.bounded(["sudo", "reviewed"], Path(directory), "root", 230, root_supervisor=True)
             self.assertTrue(child.stdin.closed)
-            self.assertEqual(child.wait.call_args_list, [mock.call(timeout=230), mock.call(timeout=360)])
+            self.assertEqual(child.wait.call_args_list, [mock.call(timeout=230), mock.call(timeout=420)])
             self.assertEqual(spawn.call_args.kwargs["stdin"], subprocess.PIPE)
             self.assertTrue(spawn.call_args.kwargs["close_fds"])
             kill.assert_not_called()
@@ -278,7 +280,7 @@ class RuntimePolicyTest(unittest.TestCase):
             self.assertIs(owned, child)
             events.append("stop")
             raise subprocess.TimeoutExpired("owned daemon", 30)
-        with mock.patch.object(runtime.os, "geteuid", return_value=0), mock.patch.object(runtime.Path, "is_file", return_value=True), mock.patch.object(runtime.inspection, "marker", return_value={"base_image": runtime.BASE_IMAGE, "manager_revision": runtime.MANAGER}), mock.patch.object(runtime, "no_links"), mock.patch.object(runtime, "native_stop_source", return_value=Path("native581")), mock.patch.object(runtime, "native_stop", side_effect=runtime.ProbeFailure("Native stop failed")), mock.patch.object(runtime, "native_mount_diagnostics", return_value=None), mock.patch.object(runtime, "checked_helper", return_value=Path("reviewed")), mock.patch.object(runtime.shutil, "which", return_value="reviewed"), mock.patch.object(runtime.os, "fstat", return_value=mock.Mock(st_mode=stat.S_IFIFO)), mock.patch.object(runtime.os, "set_blocking"), mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime.signal, "signal"), mock.patch.object(runtime.signal, "setitimer", side_effect=lambda timer, value, *rest: events.append(("timer", value))), mock.patch.object(runtime.time, "monotonic", return_value=10), mock.patch.object(runtime, "root_lifeline_tick"), mock.patch.object(runtime, "bounded"), mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime, "docker_information", side_effect=runtime.ProbeFailure("Caller lifeline closed")), mock.patch.object(runtime, "stop_owned_daemon", side_effect=stop), mock.patch.object(runtime, "diagnostics", return_value=[]):
+        with mock.patch.object(runtime.os, "geteuid", return_value=0), mock.patch.object(runtime.Path, "is_file", return_value=True), mock.patch.object(runtime.inspection, "marker", return_value={"base_image": runtime.BASE_IMAGE, "manager_revision": runtime.MANAGER}), mock.patch.object(runtime, "no_links"), mock.patch.object(runtime, "native_stop_source", return_value=Path("native-cleanup")), mock.patch.object(runtime, "native_capture", return_value={"status": "passed"}), mock.patch.object(runtime, "native_stop", side_effect=runtime.ProbeFailure("Native stop failed")), mock.patch.object(runtime, "native_mount_diagnostics", return_value=None), mock.patch.object(runtime, "checked_helper", return_value=Path("reviewed")), mock.patch.object(runtime.shutil, "which", return_value="reviewed"), mock.patch.object(runtime.os, "fstat", return_value=mock.Mock(st_mode=stat.S_IFIFO)), mock.patch.object(runtime.os, "set_blocking"), mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime.signal, "signal"), mock.patch.object(runtime.signal, "setitimer", side_effect=lambda timer, value, *rest: events.append(("timer", value))), mock.patch.object(runtime.time, "monotonic", return_value=10), mock.patch.object(runtime, "root_lifeline_tick"), mock.patch.object(runtime, "bounded"), mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime, "docker_information", side_effect=runtime.ProbeFailure("Caller lifeline closed")), mock.patch.object(runtime, "stop_owned_daemon", side_effect=stop), mock.patch.object(runtime, "diagnostics", return_value=[]):
             result = runtime.private_daemon({"state": state, "exec": execution, "docker_data": leaves["docker-data"],
                                              "identity": {"worker": "ks-fixture", "run": "123", "attempt": "1"}})
         self.assertEqual(result["failure"]["reason"], "Caller lifeline closed")
@@ -564,11 +566,11 @@ class RunningFixturePolicyTest(unittest.TestCase):
             self.assertEqual(archive.extractfile(files["usr/bin/sleep"]).read(), b"program")
             self.assertEqual(archive.extractfile(files["lib64/ld-linux-x86-64.so.2"]).read(), b"loader")
 
-    def test_root_source_is_separate_and_hash_pinned_to581(self):
-        self.assertEqual(runtime.NATIVE_CONTROLLER, "5819014fc3d46abbd6f92230ae0bc3cd612c1745")
+    def test_root_source_is_separate_and_hash_pinned_to_fe43(self):
+        self.assertEqual(runtime.NATIVE_CONTROLLER, "fe43e7a04cb1734c450091dae10fc555a296b1c0")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "controller"
-            native = root.with_name(root.name + "-native581")
+            native = root.with_name(root.name + "-native-cleanup")
             source = native / "tools/bazel/ci/source_image_worker.py"
             source.parent.mkdir(parents=True)
             source.write_bytes(b"source fixture")
@@ -597,11 +599,17 @@ class RunningFixturePolicyTest(unittest.TestCase):
                 state.mkdir()
                 execution.mkdir()
                 data = state / "source-image-docker-123-1"
+                paths = {"state": state, "exec": execution, "docker_data": data,
+                         "identity": {"worker": "ks-fixture", "run": "123", "attempt": "1"}}
+                with mock.patch.object(runtime.os, "chown"):
+                    runtime.native_control(paths, Path("/native-cleanup"))
+                private_path = state / "native-stop-control/worker-private.json"
+                private = json.loads(private_path.read_text())
+                private["docker_mount_protocol"] = 1  # Mock only the completed shared capture.
+                private_path.write_text(json.dumps(private))
                 data.mkdir()
                 pid = execution / "dockerd.pid"
                 pid.write_text("321\n")
-                paths = {"state": state, "exec": execution, "docker_data": data,
-                         "identity": {"worker": "ks-fixture", "run": "123", "attempt": "1"}}
                 child = mock.Mock(pid=321)
                 child.poll.return_value = 0
                 def execute(*args, **kwargs):
@@ -609,24 +617,26 @@ class RunningFixturePolicyTest(unittest.TestCase):
                         raise runtime.ProbeFailure("Private mount remains")
                     shutil.rmtree(data)
                     pid.unlink()
-                with mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime, "reap_owned_daemon"), \
+                with mock.patch.object(runtime, "reap_owned_daemon"), \
                      mock.patch.object(runtime, "bounded", side_effect=execute) as run:
                     if failed:
                         with self.assertRaises(runtime.ProbeFailure):
-                            runtime.native_stop(child, paths, Path("/native581"))
+                            runtime.native_stop(child, paths, Path("/native-cleanup"))
                     else:
-                        result = runtime.native_stop(child, paths, Path("/native581"))
+                        result = runtime.native_stop(child, paths, Path("/native-cleanup"))
                         self.assertEqual(result["controller"], runtime.NATIVE_CONTROLLER)
+                        self.assertTrue(result["prospective_mount_proof"])
                         self.assertFalse(result["native_request_or_receipt_created"])
                 args, kwargs = run.call_args
                 self.assertEqual(args[0][:4], [runtime.sys.executable, "-B",
-                                 "/native581/tools/bazel/ci/source_image_worker.py", "stop"])
+                                 "/native-cleanup/tools/bazel/ci/source_image_worker.py", "stop"])
                 self.assertIn(runtime.NATIVE_CONTROLLER, args[0])
-                self.assertEqual(args[3], 190)
+                self.assertEqual(args[3], 240)
                 self.assertEqual(args[4]["RUNNER_TEMP"], str(state))
                 self.assertEqual(args[4]["WORKER_POOL"], runtime.inspection.POOL)
                 self.assertTrue(kwargs["worker_user"])
                 self.assertEqual(data.exists(), failed)
+
 
 
 class RunningContainerTest(unittest.TestCase):
@@ -671,7 +681,24 @@ class RunningContainerTest(unittest.TestCase):
                      "--security-opt=no-new-privileges", "--pids-limit=8", "--memory=32m",
                      "--cpus=0.25", "--user=65534:65534"):
             self.assertIn(flag, create)
-        self.assertEqual(self.calls[4][0], ["stop", "--time", "5", self.container])
+        self.assertEqual(self.calls[4][0], ["stop", "--timeout", "5", self.container])
+        self.assertTrue(result["owned_container_removed"] and result["owned_image_removed"])
+
+    def test_unexpected_stop_stdout_fails_and_owned_cleanup_still_runs(self):
+        def operation(*args):
+            reply = self.operation(*args)
+            if args[4] == "running-stop":
+                return b"unexpected diagnostic\n" + reply
+            return reply
+        result = self.invoke(operation)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure"]["reason"], "Running fixture stop response differs")
+        self.assertTrue(result["running_observed"])
+        self.assertFalse(result["normal_stop_verified"])
+        self.assertNotIn("running-inspect-stopped", [row[1] for row in self.calls])
+        self.assertEqual(self.calls[4][0], ["stop", "--timeout", "5", self.container])
+        self.assertEqual([row[0] for row in self.calls[-2:]],
+                         [["rm", "--force", self.container], ["image", "rm", "--force", self.image]])
         self.assertTrue(result["owned_container_removed"] and result["owned_image_removed"])
 
     def test_wrong_network_or_unexpected_exit_cannot_pass(self):
@@ -762,6 +789,173 @@ class NativeStopDiagnosticsTest(unittest.TestCase):
                 (state / "native-stop.stderr").write_text(value)
                 self.assertIsNone(runtime.native_mount_diagnostics(state))
 
+
+
+class NativeCaptureLifecycleTest(unittest.TestCase):
+    def paths(self, directory):
+        state, execution = Path(directory) / "state", Path(directory) / "exec"
+        state.mkdir(mode=0o700)
+        return {"state": state, "exec": execution,
+                "docker_data": state / "source-image-docker-123-1",
+                "identity": {"worker": "ks-fixture", "run": "123", "attempt": "1"}}
+
+    def test_captures_share_real_endpoint_identity_and_pinned_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self.paths(directory)
+            private_path = paths["state"] / "native-stop-control/worker-private.json"
+            def execute(command, state, label, seconds, env, **kwargs):
+                self.assertEqual(seconds, 40)
+                self.assertEqual(command[:3], [runtime.sys.executable, "-B",
+                                 "/native-cleanup/tools/bazel/ci/source_image_worker.py"])
+                self.assertEqual(env["RUNNER_TEMP"], str(paths["state"]))
+                self.assertEqual(env["RUNNER_NAME"], "ks-fixture")
+                self.assertEqual(env["GITHUB_RUN_ID"], "123")
+                self.assertEqual(env["GITHUB_RUN_ATTEMPT"], "1")
+                self.assertEqual(env["WORKER_POOL"], runtime.inspection.POOL)
+                self.assertTrue(kwargs["worker_user"])
+                private = json.loads(private_path.read_text())
+                self.assertEqual(private["revision"], runtime.NATIVE_CONTROLLER)
+                self.assertEqual(private["workspace"], "/native-cleanup")
+                self.assertEqual(private["image"], "gearbox")
+                self.assertEqual(private["docker_root"], str(paths["docker_data"]))
+                self.assertEqual(private["pidfile"], str(paths["exec"] / "dockerd.pid"))
+                self.assertEqual(private["environment"], {
+                    "DOCKER_HOST": "unix://" + str(paths["exec"] / "docker.sock"),
+                    "DOCKER_CONFIG": str(paths["state"] / "client")})
+                if command[3] == "capture-docker-mount-before":
+                    self.assertFalse(paths["docker_data"].exists())
+                    self.assertNotIn("docker_mount_protocol", private)
+                else:
+                    self.assertEqual(command[3], "capture-docker-mount-ready")
+                    private["docker_mount_protocol"] = 1
+                    private_path.write_text(json.dumps(private))
+            with mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime, "bounded", side_effect=execute) as run:
+                before = runtime.native_capture("before", paths, Path("/native-cleanup"))
+                paths["docker_data"].mkdir()  # Mock daemon creation between the two captures.
+                ready = runtime.native_capture("ready", paths, Path("/native-cleanup"))
+            self.assertEqual([row.args[0][3] for row in run.call_args_list],
+                             ["capture-docker-mount-before", "capture-docker-mount-ready"])
+            self.assertEqual((before["phase"], ready["phase"]), ("before", "ready"))
+            self.assertFalse(before["native_request_or_receipt_created"] or ready["native_request_or_receipt_created"])
+
+    def test_missing_ready_protocol_cannot_claim_proved_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self.paths(directory)
+            with mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime, "bounded") as run:
+                runtime.native_capture("before", paths, Path("/native-cleanup"))
+                with self.assertRaises(ValueError):
+                    runtime.native_capture("ready", paths, Path("/native-cleanup"))
+                with self.assertRaises(ValueError):
+                    runtime.native_stop(mock.Mock(), paths, Path("/native-cleanup"))
+            self.assertEqual(run.call_count, 2)
+            self.assertNotIn("stop", [row.args[0][3] for row in run.call_args_list])
+
+    def test_preexisting_and_wrong_scope_roots_refuse_before_capture(self):
+        for mode in ("existing", "wrong-name", "wrong-parent"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                paths = self.paths(directory)
+                if mode == "existing":
+                    paths["docker_data"].mkdir()
+                elif mode == "wrong-name":
+                    paths["docker_data"] = paths["state"] / "unrelated"
+                else:
+                    paths["docker_data"] = Path(directory) / "source-image-docker-123-1"
+                with mock.patch.object(runtime, "bounded") as run, self.assertRaises(ValueError):
+                    runtime.native_capture("before", paths, Path("/native-cleanup"))
+                run.assert_not_called()
+                self.assertFalse((paths["state"] / "native-stop-control").exists())
+
+    def test_supervisor_capture_order_and_failure_preserve_owned_cleanup(self):
+        for failure in (None, "before", "ready"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                paths = self.paths(directory)
+                child = mock.Mock(pid=321, returncode=None)
+                child.poll.return_value = None
+                events = []
+                def capture(stage, *_):
+                    events.append(stage)
+                    if stage == "before":
+                        self.assertFalse(paths["docker_data"].exists())
+                    if stage == failure:
+                        raise runtime.ProbeFailure("Capture failed")
+                    return {"status": "passed"}
+                def spawn(*args, **kwargs):
+                    events.append("spawn")
+                    paths["docker_data"].mkdir()
+                    (paths["exec"] / "dockerd.pid").write_text("321\n")
+                    return child
+                def stopped(*_):
+                    events.append("stopped")
+                    return {"status": "passed", "ever_started_observed": False}
+                def running(*_):
+                    events.append("running")
+                    return {"status": "passed", "running_observed": True}
+                def native_stop(*_):
+                    events.append("native-stop")
+                    if failure:
+                        raise runtime.ProbeFailure("Missing ready proof")
+                    child.returncode = 0
+                    return {"status": "passed"}
+                def fallback(owned):
+                    self.assertIs(owned, child)
+                    events.append("fallback")
+                    child.returncode = 0
+                    return True
+                original_stat = Path.stat
+                def private_stat(path, *args, **kwargs):
+                    info = original_stat(path, *args, **kwargs)
+                    if path == paths["state"]:
+                        return SimpleNamespace(st_mode=info.st_mode, st_uid=1000, st_gid=1000)
+                    return info
+                with ExitStack() as stack:
+                    for patch in (
+                        mock.patch.object(runtime.os, "geteuid", return_value=0),
+                        mock.patch.object(runtime.Path, "stat", autospec=True, side_effect=private_stat),
+                        mock.patch.object(runtime.Path, "is_file", return_value=True),
+                        mock.patch.object(runtime.inspection, "marker", return_value={"base_image": runtime.BASE_IMAGE, "manager_revision": runtime.MANAGER}),
+                        mock.patch.object(runtime, "native_stop_source", return_value=Path("/native-cleanup")),
+                        mock.patch.object(runtime, "native_capture", side_effect=capture),
+                        mock.patch.object(runtime, "native_stop", side_effect=native_stop),
+                        mock.patch.object(runtime, "native_mount_diagnostics", return_value=None),
+                        mock.patch.object(runtime, "checked_helper", return_value=Path("/reviewed")),
+                        mock.patch.object(runtime.shutil, "which", return_value="reviewed"),
+                        mock.patch.object(runtime.os, "fstat", return_value=mock.Mock(st_mode=stat.S_IFIFO)),
+                        mock.patch.object(runtime.os, "set_blocking"),
+                        mock.patch.object(runtime.os, "chown"),
+                        mock.patch.object(runtime.signal, "signal"),
+                        mock.patch.object(runtime.signal, "setitimer"),
+                        mock.patch.object(runtime, "root_lifeline_tick"),
+                        mock.patch.object(runtime, "bounded"),
+                        mock.patch.object(runtime.subprocess, "Popen", side_effect=spawn),
+                        mock.patch.object(runtime, "docker_information", return_value={}),
+                        mock.patch.object(runtime, "validate_daemon", return_value="28.5.2"),
+                        mock.patch.object(runtime, "stopped_container", side_effect=stopped),
+                        mock.patch.object(runtime, "running_container", side_effect=running),
+                        mock.patch.object(runtime, "stop_owned_daemon", side_effect=fallback),
+                        mock.patch.object(runtime, "diagnostics", return_value=[]),
+                    ):
+                        stack.enter_context(patch)
+                    result = runtime.private_daemon(paths)
+                if failure == "before":
+                    self.assertEqual(events, ["before"])
+                    self.assertFalse(result["daemon_started"])
+                elif failure == "ready":
+                    self.assertEqual(events, ["before", "spawn", "ready", "native-stop", "fallback"])
+                    self.assertTrue(result["daemon_closed"])
+                else:
+                    self.assertEqual(events, ["before", "spawn", "ready", "stopped", "running", "native-stop"])
+                    self.assertTrue(result["daemon_closed"])
+                self.assertEqual(result["status"], "failed" if failure else "passed")
+
+    def test_cleanup_and_job_budgets_cover_nested_deadlines(self):
+        cleanup_bound = 20 + 2 * 31 + runtime.NATIVE_STOP_SECONDS + 20 + 35
+        self.assertGreaterEqual(runtime.ROOT_CLEANUP_SECONDS, cleanup_bound)
+        self.assertGreaterEqual(runtime.ROOT_BODY_SECONDS, 160 + 2 * runtime.NATIVE_CAPTURE_SECONDS)
+        self.assertGreaterEqual(runtime.ROOT_COMMAND_SECONDS, runtime.ROOT_BODY_SECONDS + cleanup_bound)
+        workflow = (runtime.ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        block = workflow.split("  vs_runtime_qualification:\n", 1)[1].split("\n  registry_native:", 1)[0]
+        minutes = int(re.search(r"timeout-minutes: (\d+)", block).group(1))
+        self.assertGreaterEqual(minutes * 60, 300 + runtime.ROOT_COMMAND_SECONDS + runtime.ROOT_CLEANUP_SECONDS + 120)
 
 
 if __name__ == "__main__":

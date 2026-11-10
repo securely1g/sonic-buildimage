@@ -203,7 +203,7 @@ def diagnostics(state):
     records = []
     names = ("kernel-sandbox.stdout", "kernel-sandbox.stderr", "private-cgroup.stdout",
              "private-cgroup.stderr", "dockerd.log", "private-docker.stdout", "private-docker.stderr")
-    names += tuple(label + suffix for label in STOPPED_LOGS + RUNNING_LOGS + ("native-stop", "fixture-program", "fixture-libc", "fixture-loader") for suffix in (".stdout", ".stderr"))
+    names += tuple(label + suffix for label in STOPPED_LOGS + RUNNING_LOGS + ("native-stop", "native-capture-docker-mount-before", "native-capture-docker-mount-ready", "fixture-program", "fixture-libc", "fixture-loader") for suffix in (".stdout", ".stderr"))
     for name in names:
         path = state / name
         try:
@@ -244,7 +244,7 @@ def bounded(argv, state, label, seconds, environment=None, root_supervisor=False
                         try:
                             # Interrupted fixture clients/removals, native stop (190s),
                             # and an owned-daemon fallback retain bounded cleanup.
-                            child.wait(timeout=360)
+                            child.wait(timeout=ROOT_CLEANUP_SECONDS)
                         except subprocess.TimeoutExpired as error:
                             raise SupervisorUnclosed("Root supervisor did not reap after lifeline closure") from error
                     else:
@@ -458,8 +458,13 @@ def stopped_container(executable, environment, state):
     return result
 
 
-NATIVE_CONTROLLER = "5819014fc3d46abbd6f92230ae0bc3cd612c1745"
-NATIVE_WORKER_SHA256 = "7f3d7862f866db0dcafb92800223e888bd39043e38e5be3ba417e3c29dcb7b79"
+NATIVE_CONTROLLER = "fe43e7a04cb1734c450091dae10fc555a296b1c0"
+NATIVE_WORKER_SHA256 = "8015a18a42f0ad475d71bf23f56f211a7ceeb69ab9d4e643bc68fa2c38387dc5"
+NATIVE_CAPTURE_SECONDS = 40
+NATIVE_STOP_SECONDS = 240
+ROOT_BODY_SECONDS = 240
+ROOT_CLEANUP_SECONDS = 420
+ROOT_COMMAND_SECONDS = 660
 ELF_FILE_CAP = 8 * 1024 * 1024
 ELF_TOTAL_CAP = 16 * 1024 * 1024
 INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
@@ -651,7 +656,7 @@ def running_container(executable, environment, state):
         running_identity(operation(["inspect", "--format", "{{json .}}", container], "running-inspect"),
                          name, container, image)
         result["running_observed"] = True
-        require(operation(["stop", "--time", "5", container], "running-stop").decode().strip() == container,
+        require(operation(["stop", "--timeout", "5", container], "running-stop").decode().strip() == container,
                 "Running fixture stop response differs")
         result["exit_code"] = running_identity(operation(["inspect", "--format", "{{json .}}", container], "running-inspect-stopped"),
                          name, container, image, stopped=True)
@@ -679,7 +684,7 @@ def running_container(executable, environment, state):
 
 
 def native_stop_source():
-    root = ROOT.with_name(ROOT.name + "-native581")
+    root = ROOT.with_name(ROOT.name + "-native-cleanup")
     no_links(root)
     require(root.is_dir(), "Missing separately pinned native controller")
     checked_helper(root / "tools/bazel/ci/source_image_worker.py", NATIVE_WORKER_SHA256)
@@ -744,35 +749,72 @@ def reap_owned_daemon(child):
         signal.signal(signal.SIGCHLD, previous)
 
 
-def native_stop(child, paths, source):
-    """Invoke the unchanged published CLI, using genuine private fixture state."""
-    state, execution, row = paths["state"], paths["exec"], paths["identity"]
+def native_control(paths, source):
+    """Create only the real private-daemon control state before its first capture."""
+    state, execution = paths["state"], paths["exec"]
+    row = paths["identity"]
+    require(paths["docker_data"].parent == state and paths["docker_data"].name ==
+            "source-image-docker-" + row["run"] + "-" + row["attempt"], "Native private root scope differs")
+    require(not paths["docker_data"].exists() and not paths["docker_data"].is_symlink(),
+            "Native capture requires an absent private data root")
     control = state / "native-stop-control"
     control.mkdir(mode=0o700)
     os.chown(control, 1000, 1000)
-    pidfile = execution / "dockerd.pid"
-    require(not pidfile.is_symlink() and pidfile.read_text().strip() == str(child.pid),
-            "Native stop PID does not identify our daemon")
-    pidfile.chmod(0o444)
     private = {"image": "gearbox", "revision": NATIVE_CONTROLLER, "workspace": str(source),
-               "pidfile": str(pidfile), "docker_root": str(paths["docker_data"]), "environment": {}}
+               "pidfile": str(execution / "dockerd.pid"), "docker_root": str(paths["docker_data"]),
+               "environment": {"DOCKER_HOST": "unix://" + str(execution / "docker.sock"),
+                               "DOCKER_CONFIG": str(state / "client")}}
     with (control / "worker-private.json").open("x") as stream:
         json.dump(private, stream, sort_keys=True)
     os.chown(control / "worker-private.json", 1000, 1000)
+
+
+def native_action(action, paths, source, seconds):
+    require(action in ("capture-docker-mount-before", "capture-docker-mount-ready", "stop"),
+            "Unknown native private-daemon action")
+    state, row = paths["state"], paths["identity"]
     env = {"PATH": PATH, "HOME": str(state / "client"), "PYTHONNOUSERSITE": "1",
            "PYTHONDONTWRITEBYTECODE": "1", "RUNNER_TEMP": str(state),
            "RUNNER_NAME": row["worker"], "WORKER_POOL": inspection.POOL,
            "GITHUB_RUN_ID": row["run"], "GITHUB_RUN_ATTEMPT": row["attempt"]}
     command = [sys.executable, "-B", str(source / "tools/bazel/ci/source_image_worker.py"),
-               "stop", "--image", "gearbox", "--revision", NATIVE_CONTROLLER,
-               "--workspace", str(source), "--artifacts", str(control)]
+               action, "--image", "gearbox", "--revision", NATIVE_CONTROLLER,
+               "--workspace", str(source), "--artifacts", str(state / "native-stop-control")]
+    bounded(command, state, "native-" + action, seconds, env, worker_user=True)
+
+
+def native_capture(stage, paths, source):
+    require(stage in ("before", "ready"), "Unknown native capture stage")
+    if stage == "before":
+        native_control(paths, source)
+    native_action("capture-docker-mount-" + stage, paths, source, NATIVE_CAPTURE_SECONDS)
+    if stage == "ready":
+        private = json.loads((paths["state"] / "native-stop-control/worker-private.json").read_text())
+        require(type(private.get("docker_mount_protocol")) is int and private["docker_mount_protocol"] == 1,
+                "Native ready capture did not establish its mount proof")
+    return {"status": "passed", "controller": NATIVE_CONTROLLER, "helper_sha256": NATIVE_WORKER_SHA256,
+            "phase": stage, "private_control_state_only": True, "native_request_or_receipt_created": False}
+
+
+def native_stop(child, paths, source):
+    """Use the pinned shared captures and published stop CLI for this real daemon."""
+    state, execution = paths["state"], paths["exec"]
+    private = json.loads((state / "native-stop-control/worker-private.json").read_text())
+    require(type(private.get("docker_mount_protocol")) is int and private["docker_mount_protocol"] == 1,
+            "Native stop requires the completed prospective mount proof")
+    pidfile = execution / "dockerd.pid"
+    require(not pidfile.is_symlink() and pidfile.read_text().strip() == str(child.pid),
+            "Native stop PID does not identify our daemon")
+    pidfile.chmod(0o444)
     with reap_owned_daemon(child):
-        bounded(command, state, "native-stop", 190, env, worker_user=True)
+        native_action("stop", paths, source, NATIVE_STOP_SECONDS)
     require(child.poll() == 0 and not paths["docker_data"].exists() and not pidfile.exists(),
             "Native stop did not close and remove only its private state")
     return {"status": "passed", "controller": NATIVE_CONTROLLER, "helper_sha256": NATIVE_WORKER_SHA256,
             "phase": "stop", "private_control_state_only": True, "native_request_or_receipt_created": False,
-            "daemon_reaped": True, "private_data_removed": True, "pidfile_removed": True}
+            "prospective_mount_proof": True, "daemon_reaped": True,
+            "private_data_removed": True, "pidfile_removed": True}
+
 
 
 def private_daemon(paths):
@@ -802,7 +844,7 @@ def private_daemon(paths):
         raise ProbeFailure("Private runtime probe interrupted")
     require(stat.S_ISFIFO(os.fstat(0).st_mode), "Root supervisor lifeline must be a pipe")
     os.set_blocking(0, False)
-    deadline = time.monotonic() + 160
+    deadline = time.monotonic() + ROOT_BODY_SECONDS
     previous = {s: signal.signal(s, interrupted) for s in (signal.SIGTERM, signal.SIGINT)}
     previous[signal.SIGALRM] = signal.signal(signal.SIGALRM, lambda signum, frame: root_lifeline_tick(deadline))
     signal.setitimer(signal.ITIMER_REAL, 1, 1)
@@ -812,11 +854,12 @@ def private_daemon(paths):
         bounded([sys.executable, "-I", "-S", "-B", str(helper)], state, "private-cgroup", 30)
         execution.mkdir(mode=0o700)
         os.chown(execution, 1000, 1000)
-        paths["docker_data"].mkdir(mode=0o711)
         (state / "client").mkdir(mode=0o700)
         os.chown(state / "client", 1000, 1000)
         with (state / "daemon.json").open("x") as stream:
             stream.write("{}\n")
+        result["stage"] = "native-capture-before"
+        result["native_capture_before"] = native_capture("before", paths, native)
         with (state / "dockerd.log").open("xb") as log:
             result["stage"] = "daemon-start"
             with cleanup_window():
@@ -841,6 +884,8 @@ def private_daemon(paths):
                 time.sleep(1)
             require(observed is not None, "Private Docker did not become ready")
             version = validate_daemon(observed, paths, child.pid, (execution / "dockerd.pid").read_text())
+            result["stage"] = "native-capture-ready"
+            result["native_capture_ready"] = native_capture("ready", paths, native)
             result["stage"] = "stopped-container"
             result["stopped_container"] = stopped_container(docker, client_env, state)
             result["container_workload_executed"] = result["stopped_container"]["ever_started_observed"]
@@ -912,7 +957,7 @@ def run_probe(worker, output):
         value["stage"] = "private-docker"
         data = bounded(["sudo", "-n", sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()),
                         "--docker-only", "--worker", worker, "--run", row["run"], "--attempt", row["attempt"],
-                        "--temporary", os.environ["RUNNER_TEMP"]], paths["state"], "private-docker", 460, root_supervisor=True)
+                        "--temporary", os.environ["RUNNER_TEMP"]], paths["state"], "private-docker", ROOT_COMMAND_SECONDS, root_supervisor=True)
         value["private_docker"] = json.loads(data)
         value["container_workload_executed"] = value["private_docker"]["container_workload_executed"]
         require(value["private_docker"]["status"] == "passed" and value["private_docker"]["daemon_started"] is True

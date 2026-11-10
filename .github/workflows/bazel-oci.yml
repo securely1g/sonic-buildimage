@@ -515,7 +515,7 @@ jobs:
     name: VS runtime qualification (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-runtime' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
-    timeout-minutes: 20
+    timeout-minutes: 30
     concurrency:
       group: sonic-slave-container-k3s-vs
       cancel-in-progress: false
@@ -539,7 +539,7 @@ jobs:
               raise SystemExit('Unexpected assigned runner identity')
           name = f'vs-runtime-control-{run}-{attempt}-{worker}'
           control = Path(os.environ['GITHUB_WORKSPACE']) / name
-          native = control.with_name(control.name + "-native581")
+          native = control.with_name(control.name + "-native-cleanup")
           receipt = Path(os.environ['RUNNER_TEMP']) / (name + '.json')
           if any(path.exists() or path.is_symlink() for path in (control, native, receipt)):
               raise SystemExit('Preserve existing runtime qualification paths')
@@ -556,7 +556,7 @@ jobs:
       - name: Checkout the published native stop implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 5819014fc3d46abbd6f92230ae0bc3cd612c1745
+          ref: fe43e7a04cb1734c450091dae10fc555a296b1c0
           path: ${{ steps.paths.outputs.native }}
           clean: false
           persist-credentials: false
@@ -572,10 +572,10 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$CONTROL"
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never rev-parse HEAD)" = "5819014fc3d46abbd6f92230ae0bc3cd612c1745"
+          test "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never rev-parse HEAD)" = "fe43e7a04cb1734c450091dae10fc555a296b1c0"
           test -z "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never status --porcelain --untracked-files=no)"
           python3 -B -m unittest -v tools.bazel.tests.vs_worker_inspection_test tools.bazel.tests.vs_runtime_test
-      - name: Qualify sandbox, running container and published native stop
+      - name: Qualify sandbox, running container and proved native cleanup
         id: runtime
         env:
           EXPECTED_WORKER: ${{ steps.paths.outputs.worker }}
