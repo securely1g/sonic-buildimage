@@ -734,7 +734,6 @@ jobs:
           set -euo pipefail
           rc_flags=(--nosystem_rc --nohome_rc --noworkspace_rc "--bazelrc=$PWD/tools/bazel/common.bazelrc")
           bazel "${rc_flags[@]}" shutdown >/dev/null 2>&1 || true
-          umask 077
           owner_output="$(mktemp -d "$RUNNER_TEMP/orchagent-owner-output.XXXXXXXX")"
           owner_bazel="$(mktemp "$RUNNER_TEMP/orchagent-owner-bazel.XXXXXXXX")"
           export OWNER_OUTPUT="$owner_output"
