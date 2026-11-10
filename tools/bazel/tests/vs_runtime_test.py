@@ -2,6 +2,9 @@
 import hashlib
 import io
 import stat
+import struct
+import shutil
+from types import SimpleNamespace
 import json
 from pathlib import Path
 import subprocess
@@ -106,7 +109,7 @@ class RuntimePolicyTest(unittest.TestCase):
         args = runtime.daemon_arguments("/usr/bin/dockerd", paths)
         self.assertEqual(args[args.index("--storage-driver") + 1], "overlay2")
         self.assertEqual(args[args.index("--host") + 1], "unix://" + str(paths["exec"] / "docker.sock"))
-        self.assertEqual(args[args.index("--data-root") + 1], str(paths["state"] / "docker-data"))
+        self.assertEqual(next(arg.removeprefix("--data-root=") for arg in args if arg.startswith("--data-root=")), str(paths["docker_data"]))
         self.assertNotIn("/var/run/docker.sock", args)
         self.assertNotIn("/actions/sonic-native-docker", args)
         self.assertTrue({"--bridge=none", "--iptables=false", "--ip6tables=false", "--ip-forward=false", "--ip-masq=false"} <= set(args))
@@ -114,8 +117,9 @@ class RuntimePolicyTest(unittest.TestCase):
         self.assertNotIn("--default-address-pool", args)
 
     def test_wrong_daemon_identity_root_driver_or_version_cannot_pass(self):
-        paths = {"state": Path("/actions/_work/_temp/private")}
-        original = {"root": str(paths["state"] / "docker-data"), "driver": "overlay2", "version": "28.0.1"}
+        paths = {"state": Path("/actions/_work/_temp/private"),
+                 "docker_data": Path("/actions/_work/_temp/private/source-image-docker-123-1")}
+        original = {"root": str(paths["docker_data"]), "driver": "overlay2", "version": "28.0.1"}
         self.assertEqual(runtime.validate_daemon(original, paths, 123, "123\n"), "28.0.1")
         for key, value in (("root", "/var/lib/docker"), ("driver", "vfs"), ("version", "private\npath")):
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -193,7 +197,7 @@ class RuntimePolicyTest(unittest.TestCase):
             with mock.patch.object(runtime.subprocess, "Popen", return_value=child) as spawn, mock.patch.object(runtime.os, "killpg") as kill, self.assertRaises(subprocess.TimeoutExpired):
                 runtime.bounded(["sudo", "reviewed"], Path(directory), "root", 230, root_supervisor=True)
             self.assertTrue(child.stdin.closed)
-            self.assertEqual(child.wait.call_args_list, [mock.call(timeout=230), mock.call(timeout=135)])
+            self.assertEqual(child.wait.call_args_list, [mock.call(timeout=230), mock.call(timeout=360)])
             self.assertEqual(spawn.call_args.kwargs["stdin"], subprocess.PIPE)
             self.assertTrue(spawn.call_args.kwargs["close_fds"])
             kill.assert_not_called()
@@ -262,7 +266,7 @@ class RuntimePolicyTest(unittest.TestCase):
     def test_cleanup_keeps_original_failure_and_disarms_before_reaping(self):
         state, execution = mock.MagicMock(), mock.MagicMock()
         state.stat.return_value = mock.Mock(st_mode=stat.S_IFDIR | 0o700, st_uid=1000, st_gid=1000)
-        leaves = {name: mock.MagicMock() for name in ("daemon.json", "docker-data", "client", "dockerd.log")}
+        leaves = {name: mock.MagicMock() for name in ("daemon.json", "docker-data", "client", "dockerd.log", "native-stop-control")}
         for leaf in leaves.values():
             leaf.exists.return_value = leaf.is_symlink.return_value = False
         state.__truediv__.side_effect = leaves.__getitem__
@@ -274,8 +278,9 @@ class RuntimePolicyTest(unittest.TestCase):
             self.assertIs(owned, child)
             events.append("stop")
             raise subprocess.TimeoutExpired("owned daemon", 30)
-        with mock.patch.object(runtime.os, "geteuid", return_value=0), mock.patch.object(runtime.Path, "is_file", return_value=True), mock.patch.object(runtime.inspection, "marker", return_value={"base_image": runtime.BASE_IMAGE, "manager_revision": runtime.MANAGER}), mock.patch.object(runtime, "no_links"), mock.patch.object(runtime, "checked_helper", return_value=Path("reviewed")), mock.patch.object(runtime.shutil, "which", return_value="reviewed"), mock.patch.object(runtime.os, "fstat", return_value=mock.Mock(st_mode=stat.S_IFIFO)), mock.patch.object(runtime.os, "set_blocking"), mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime.signal, "signal"), mock.patch.object(runtime.signal, "setitimer", side_effect=lambda timer, value, *rest: events.append(("timer", value))), mock.patch.object(runtime.time, "monotonic", return_value=10), mock.patch.object(runtime, "root_lifeline_tick"), mock.patch.object(runtime, "bounded"), mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime, "docker_information", side_effect=runtime.ProbeFailure("Caller lifeline closed")), mock.patch.object(runtime, "stop_owned_daemon", side_effect=stop), mock.patch.object(runtime, "diagnostics", return_value=[]):
-            result = runtime.private_daemon({"state": state, "exec": execution})
+        with mock.patch.object(runtime.os, "geteuid", return_value=0), mock.patch.object(runtime.Path, "is_file", return_value=True), mock.patch.object(runtime.inspection, "marker", return_value={"base_image": runtime.BASE_IMAGE, "manager_revision": runtime.MANAGER}), mock.patch.object(runtime, "no_links"), mock.patch.object(runtime, "native_stop_source", return_value=Path("native581")), mock.patch.object(runtime, "native_stop", side_effect=runtime.ProbeFailure("Native stop failed")), mock.patch.object(runtime, "native_mount_diagnostics", return_value=None), mock.patch.object(runtime, "checked_helper", return_value=Path("reviewed")), mock.patch.object(runtime.shutil, "which", return_value="reviewed"), mock.patch.object(runtime.os, "fstat", return_value=mock.Mock(st_mode=stat.S_IFIFO)), mock.patch.object(runtime.os, "set_blocking"), mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime.signal, "signal"), mock.patch.object(runtime.signal, "setitimer", side_effect=lambda timer, value, *rest: events.append(("timer", value))), mock.patch.object(runtime.time, "monotonic", return_value=10), mock.patch.object(runtime, "root_lifeline_tick"), mock.patch.object(runtime, "bounded"), mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime, "docker_information", side_effect=runtime.ProbeFailure("Caller lifeline closed")), mock.patch.object(runtime, "stop_owned_daemon", side_effect=stop), mock.patch.object(runtime, "diagnostics", return_value=[]):
+            result = runtime.private_daemon({"state": state, "exec": execution, "docker_data": leaves["docker-data"],
+                                             "identity": {"worker": "ks-fixture", "run": "123", "attempt": "1"}})
         self.assertEqual(result["failure"]["reason"], "Caller lifeline closed")
         self.assertEqual(result["cleanup_failure"]["error_type"], "TimeoutExpired")
         self.assertFalse(result["daemon_closed"])
@@ -460,6 +465,303 @@ class StoppedContainerTest(unittest.TestCase):
             with mock.patch.object(runtime.grp, "getgrnam", return_value=mock.Mock(gr_gid=999)), mock.patch.object(runtime.subprocess, "Popen", return_value=child), mock.patch.object(runtime, "wait_group_gone", return_value=True), self.assertRaises(runtime.ProbeFailure) as caught:
                 runtime.docker_operation("docker", ["cp", "private", "-"], {}, Path(directory), "stopped-archive")
             self.assertEqual(runtime.safe_failure(caught.exception), {"error_type": "ProbeFailure", "reason": "stopped-archive did not pass", "returncode": 7})
+
+
+def metadata_elf(interpreter=runtime.INTERPRETER):
+    """Nonexecuted metadata fixture, never a container payload."""
+    data = bytearray(512)
+    data[:16] = b"\x7fELF\x02\x01\x01" + b"\0" * 9
+    struct.pack_into("<HHIQQQIHHHHHH", data, 16, 3, 62, 1, 0x400180, 64, 0, 0,
+                     64, 56, 2 if interpreter else 1, 0, 0, 0)
+    struct.pack_into("<IIQQQQQQ", data, 64, 1, 5, 0, 0x400000, 0, 512, 512, 4096)
+    if interpreter:
+        raw = interpreter.encode() + b"\0"
+        data[256:256 + len(raw)] = raw
+        struct.pack_into("<IIQQQQQQ", data, 120, 3, 4, 256, 0, 0, len(raw), len(raw), 1)
+    return bytes(data)
+
+
+PROGRAM_DYNAMIC = b" 0x1 (NEEDED) Shared library: [libc.so.6]\n"
+LIBC_DYNAMIC = (b" 0x1 (NEEDED) Shared library: [ld-linux-x86-64.so.2]\n"
+                b" 0xe (SONAME) Library soname: [libc.so.6]\n")
+LOADER_DYNAMIC = b" 0xe (SONAME) Library soname: [ld-linux-x86-64.so.2]\n"
+
+
+class RunningFixturePolicyTest(unittest.TestCase):
+    def test_only_complete_amd64_glibc_loader_graph_is_accepted(self):
+        program = runtime.elf_identity(metadata_elf(), PROGRAM_DYNAMIC, "program")
+        self.assertEqual(program["needed"], ["libc.so.6"])
+        self.assertEqual(runtime.elf_identity(metadata_elf(), LIBC_DYNAMIC, "libc")["soname"], ["libc.so.6"])
+        self.assertEqual(runtime.elf_identity(metadata_elf(None), LOADER_DYNAMIC, "loader")["needed"], [])
+        for data in (b"not ELF", metadata_elf()[:100],
+                     metadata_elf()[:18] + b"\xb7\0" + metadata_elf()[20:],
+                     metadata_elf("/other/loader")):
+            with self.subTest(data=data[:20]), self.assertRaises(ValueError):
+                runtime.elf_identity(data, PROGRAM_DYNAMIC, "program")
+
+    def test_extra_or_indirect_dynamic_dependencies_are_rejected(self):
+        for suffix in (b" 0x1 (NEEDED) Shared library: [libextra.so]\n",
+                       b" 0x1d (RUNPATH) Library runpath: [/unreviewed]\n",
+                       b" 0x1 (NEEDED) unexpected syntax\n",
+                       b" 0x1 (FILTER) Filter library: [other]\n"):
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                runtime.elf_identity(metadata_elf(), PROGRAM_DYNAMIC + suffix, "program")
+        with self.assertRaises(ValueError):
+            runtime.elf_identity(metadata_elf(None), PROGRAM_DYNAMIC, "program")
+        with self.assertRaises(ValueError):
+            runtime.elf_identity(metadata_elf(None), LIBC_DYNAMIC, "loader")
+
+    def info(self, **changes):
+        values = dict(st_dev=1, st_ino=2, st_mode=stat.S_IFREG | 0o755, st_uid=0, st_gid=0,
+                      st_size=len(metadata_elf()), st_mtime_ns=3, st_ctime_ns=4)
+        return SimpleNamespace(**dict(values, **changes))
+
+    def test_installed_bytes_are_bounded_stable_and_inspected_through_the_held_fd(self):
+        data, info = metadata_elf(), self.info()
+        with mock.patch.object(runtime, "no_links"), mock.patch.object(runtime.os, "open", return_value=7), \
+             mock.patch.object(runtime.os, "close") as close, mock.patch.object(runtime.os, "fstat", return_value=info), \
+             mock.patch.object(runtime.Path, "lstat", return_value=info), \
+             mock.patch.object(runtime.os, "read", side_effect=[data, b""]), \
+             mock.patch.object(runtime, "bounded", return_value=PROGRAM_DYNAMIC) as readelf:
+            actual, record = runtime.read_system_elf("/usr/bin/sleep", "program", Path("/private"))
+        self.assertEqual(actual, data)
+        self.assertEqual(record["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(readelf.call_args.args[0], ["/usr/bin/readelf", "--wide", "--dynamic", "/proc/self/fd/7"])
+        self.assertEqual(readelf.call_args.kwargs["pass_fds"], (7,))
+        close.assert_called_once_with(7)
+
+    def test_nonregular_mutable_oversized_or_changed_fixture_is_refused(self):
+        for changes in ({"st_mode": stat.S_IFIFO | 0o600}, {"st_uid": 1000},
+                        {"st_mode": stat.S_IFREG | 0o777}, {"st_size": runtime.ELF_FILE_CAP + 1}):
+            with self.subTest(changes=changes), mock.patch.object(runtime, "no_links"), \
+                 mock.patch.object(runtime.os, "open", return_value=7), mock.patch.object(runtime.os, "close"), \
+                 mock.patch.object(runtime.os, "fstat", return_value=self.info(**changes)), \
+                 mock.patch.object(runtime.os, "read") as read, self.assertRaises(ValueError):
+                runtime.read_system_elf("/usr/bin/sleep", "program", Path("/private"))
+            read.assert_not_called()
+        with mock.patch.object(runtime, "no_links"), mock.patch.object(runtime.os, "open", return_value=7), \
+             mock.patch.object(runtime.os, "close"), mock.patch.object(runtime.os, "fstat",
+             side_effect=[self.info(), self.info(st_mtime_ns=8)]), \
+             mock.patch.object(runtime.os, "read", side_effect=[metadata_elf(), b""]), \
+             mock.patch.object(runtime, "bounded", return_value=PROGRAM_DYNAMIC), self.assertRaises(ValueError):
+            runtime.read_system_elf("/usr/bin/sleep", "program", Path("/private"))
+
+    def test_tar_preserves_only_captured_bytes_and_is_deterministic(self):
+        def read(source, role, state):
+            data = role.encode()
+            return data, {"sha256": hashlib.sha256(data).hexdigest(), "source_path": source, "bytes": len(data)}
+        with mock.patch.object(runtime, "read_system_elf", side_effect=read):
+            payload, proof = runtime.executable_rootfs(Path("/private"))
+            again, unused = runtime.executable_rootfs(Path("/private"))
+        self.assertEqual(payload, again)
+        self.assertFalse(proof["compiled"] or proof["downloaded"] or proof["package_generated"])
+        with runtime.tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
+            files = {member.name: member for member in archive if member.isfile()}
+            self.assertEqual(set(files), {"usr/bin/sleep", "lib/x86_64-linux-gnu/libc.so.6",
+                                         "lib64/ld-linux-x86-64.so.2", "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"})
+            for name, member in files.items():
+                self.assertEqual((member.mode, member.uid, member.gid, member.mtime), (0o555, 0, 0, 0))
+            self.assertEqual(archive.extractfile(files["usr/bin/sleep"]).read(), b"program")
+            self.assertEqual(archive.extractfile(files["lib64/ld-linux-x86-64.so.2"]).read(), b"loader")
+
+    def test_root_source_is_separate_and_hash_pinned_to581(self):
+        self.assertEqual(runtime.NATIVE_CONTROLLER, "5819014fc3d46abbd6f92230ae0bc3cd612c1745")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "controller"
+            native = root.with_name(root.name + "-native581")
+            source = native / "tools/bazel/ci/source_image_worker.py"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"source fixture")
+            with mock.patch.object(runtime, "ROOT", root), mock.patch.object(runtime, "NATIVE_WORKER_SHA256",
+                    hashlib.sha256(source.read_bytes()).hexdigest()):
+                self.assertEqual(runtime.native_stop_source(), native)
+                source.write_bytes(b"changed")
+                with self.assertRaises(ValueError):
+                    runtime.native_stop_source()
+
+    def test_owned_child_reaper_does_not_wait_for_unrelated_processes(self):
+        child, previous = mock.Mock(), object()
+        with mock.patch.object(runtime.signal, "getsignal", return_value=previous), \
+             mock.patch.object(runtime.signal, "signal") as set_signal:
+            with runtime.reap_owned_daemon(child):
+                handler = set_signal.call_args_list[0].args[1]
+                handler(runtime.signal.SIGCHLD, None)
+        self.assertEqual(child.poll.call_count, 3)
+        self.assertEqual(set_signal.call_args_list[-1], mock.call(runtime.signal.SIGCHLD, previous))
+
+    def test_exact_native_stop_receives_real_private_state_and_failure_is_not_success(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
+                state = Path(directory) / "state"
+                execution = Path(directory) / "exec"
+                state.mkdir()
+                execution.mkdir()
+                data = state / "source-image-docker-123-1"
+                data.mkdir()
+                pid = execution / "dockerd.pid"
+                pid.write_text("321\n")
+                paths = {"state": state, "exec": execution, "docker_data": data,
+                         "identity": {"worker": "ks-fixture", "run": "123", "attempt": "1"}}
+                child = mock.Mock(pid=321)
+                child.poll.return_value = 0
+                def execute(*args, **kwargs):
+                    if failed:
+                        raise runtime.ProbeFailure("Private mount remains")
+                    shutil.rmtree(data)
+                    pid.unlink()
+                with mock.patch.object(runtime.os, "chown"), mock.patch.object(runtime, "reap_owned_daemon"), \
+                     mock.patch.object(runtime, "bounded", side_effect=execute) as run:
+                    if failed:
+                        with self.assertRaises(runtime.ProbeFailure):
+                            runtime.native_stop(child, paths, Path("/native581"))
+                    else:
+                        result = runtime.native_stop(child, paths, Path("/native581"))
+                        self.assertEqual(result["controller"], runtime.NATIVE_CONTROLLER)
+                        self.assertFalse(result["native_request_or_receipt_created"])
+                args, kwargs = run.call_args
+                self.assertEqual(args[0][:4], [runtime.sys.executable, "-B",
+                                 "/native581/tools/bazel/ci/source_image_worker.py", "stop"])
+                self.assertIn(runtime.NATIVE_CONTROLLER, args[0])
+                self.assertEqual(args[3], 190)
+                self.assertEqual(args[4]["RUNNER_TEMP"], str(state))
+                self.assertEqual(args[4]["WORKER_POOL"], runtime.inspection.POOL)
+                self.assertTrue(kwargs["worker_user"])
+                self.assertEqual(data.exists(), failed)
+
+
+class RunningContainerTest(unittest.TestCase):
+    def setUp(self):
+        self.state = Path("/actions/_work/_temp/vs-runtime-" + "a" * 24)
+        self.name = "sonic-vs-running-" + "a" * 24
+        self.image, self.container = "sha256:" + "b" * 64, "c" * 64
+        self.calls = []
+
+    def inspected(self, stopped=False):
+        return {"Id": self.container, "Image": self.image, "Name": "/" + self.name,
+                "Config": {"Cmd": ["/usr/bin/sleep", "60"], "User": "65534:65534", "Env": ["LC_ALL=C"]},
+                "HostConfig": {"NetworkMode": "none", "ReadonlyRootfs": True, "Privileged": False, "Binds": None,
+                               "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges"], "PidsLimit": 8,
+                               "Memory": 32 * 1024**2, "NanoCpus": 250000000},
+                "State": {"Status": "exited" if stopped else "running", "Running": not stopped,
+                          "Pid": 0 if stopped else 123, "StartedAt": "2026-01-01T00:00:00Z",
+                          "FinishedAt": "2026-01-01T00:00:01Z" if stopped else "0001-01-01T00:00:00Z",
+                          "ExitCode": 143 if stopped else 0, "OOMKilled": False, "Dead": False,
+                          "Paused": False, "Restarting": False, "Error": ""}}
+
+    def operation(self, executable, arguments, environment, state, label, payload):
+        self.calls.append((arguments, label, payload))
+        return {"running-import": self.image.encode(), "running-create": self.container.encode(),
+                "running-start": self.container.encode(), "running-inspect": json.dumps(self.inspected()).encode(),
+                "running-stop": self.container.encode(),
+                "running-inspect-stopped": json.dumps(self.inspected(True)).encode(),
+                "running-remove-container": self.container.encode(), "running-remove-image": b"Deleted"}[label]
+
+    def invoke(self, operation=None):
+        with mock.patch.object(runtime, "executable_rootfs", return_value=(b"existing bytes", {"files": []})), \
+             mock.patch.object(runtime, "docker_operation", side_effect=operation or self.operation):
+            return runtime.running_container("docker", {"DOCKER_HOST": "private"}, self.state)
+
+    def test_real_running_then_normal_term_is_required_before_success(self):
+        result = self.invoke()
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["running_observed"] and result["normal_stop_verified"])
+        self.assertEqual([row[1] for row in self.calls], list(runtime.RUNNING_LOGS))
+        create = self.calls[1][0]
+        for flag in ("--pull=never", "--network=none", "--read-only", "--cap-drop=ALL",
+                     "--security-opt=no-new-privileges", "--pids-limit=8", "--memory=32m",
+                     "--cpus=0.25", "--user=65534:65534"):
+            self.assertIn(flag, create)
+        self.assertEqual(self.calls[4][0], ["stop", "--time", "5", self.container])
+        self.assertTrue(result["owned_container_removed"] and result["owned_image_removed"])
+
+    def test_wrong_network_or_unexpected_exit_cannot_pass(self):
+        for mode in ("network", "killed"):
+            def operation(*args):
+                if args[4] == ("running-inspect" if mode == "network" else "running-inspect-stopped"):
+                    row = self.inspected(mode == "killed")
+                    if mode == "network":
+                        row["HostConfig"]["NetworkMode"] = "host"
+                    else:
+                        row["State"]["ExitCode"] = 42
+                    return json.dumps(row).encode()
+                return self.operation(*args)
+            with self.subTest(mode=mode):
+                result = self.invoke(operation)
+                self.assertEqual(result["status"], "failed")
+                self.assertFalse(result["normal_stop_verified"])
+
+    def test_interrupted_create_cleans_only_reserved_name_and_owned_image(self):
+        def operation(*args):
+            if args[4] == "running-create":
+                raise KeyboardInterrupt()
+            return self.operation(*args)
+        result = self.invoke(operation)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(self.calls[-2][0], ["rm", "--force", self.name])
+        self.assertEqual(self.calls[-1][0], ["image", "rm", "--force", self.image])
+
+    def test_malformed_import_reply_cannot_select_an_unowned_cleanup_target(self):
+        def operation(*args):
+            if args[4] == "running-import":
+                return b"unrelated-image"
+            return self.operation(*args)
+        result = self.invoke(operation)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(self.calls, [(["image", "rm", "--force", self.name + ":fixture"],
+                                      "running-remove-image", None)])
+
+    def test_stop_failure_and_cleanup_failure_remain_failure(self):
+        def operation(*args):
+            if args[4] in ("running-stop", "running-remove-container"):
+                raise runtime.ProbeFailure("Owned operation failed")
+            return self.operation(*args)
+        result = self.invoke(operation)
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["running_observed"])
+        self.assertFalse(result["normal_stop_verified"] or result["owned_container_removed"])
+        self.assertTrue(result["owned_image_removed"])
+
+
+    def test_pid1_bounded_kill_is_recorded_without_graceful_or_oom_claim(self):
+        def operation(*args):
+            if args[4] == "running-inspect-stopped":
+                row = self.inspected(True)
+                row["State"]["ExitCode"] = 137
+                return json.dumps(row).encode()
+            return self.operation(*args)
+        result = self.invoke(operation)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["exit_code"], 137)
+        self.assertFalse(result["graceful_TERM_claimed"])
+        row = self.inspected(True)
+        row["State"]["OOMKilled"] = True
+        with self.assertRaises(ValueError):
+            runtime.running_identity(json.dumps(row).encode(), self.name, self.container, self.image, True)
+
+
+class NativeStopDiagnosticsTest(unittest.TestCase):
+    def test_only_the_closed_native_mount_schema_is_exposed(self):
+        row = {"status": "failed", "phase": "private_docker_mount_teardown", "wait_limit_seconds": 30,
+               "mount_count": 1, "truncated": False, "reported_mounts": [{"mount_id": 7, "parent_id": 3,
+               "filesystem": "overlay", "location": "overlay2", "relative_depth": 3,
+               "relative_path_sha256": "a" * 64}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "native-stop.stderr"
+            path.write_text("private tool stderr is not public\n" + json.dumps(row) + "\nAssertionError\n")
+            self.assertEqual(runtime.native_mount_diagnostics(Path(directory)), row)
+            row["reported_mounts"][0]["raw_path"] = "/private/not-public"
+            path.write_text(json.dumps(row))
+            self.assertIsNone(runtime.native_mount_diagnostics(Path(directory)))
+
+    def test_missing_malformed_duplicate_or_oversized_diagnostics_cannot_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            self.assertIsNone(runtime.native_mount_diagnostics(state))
+            for value in ('{malformed', '{"phase":"private_docker_mount_teardown","phase":"duplicate"}',
+                          'x' * (runtime.CAP + 1)):
+                (state / "native-stop.stderr").write_text(value)
+                self.assertIsNone(runtime.native_mount_diagnostics(state))
+
 
 
 if __name__ == "__main__":

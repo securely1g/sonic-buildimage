@@ -441,7 +441,7 @@ jobs:
     name: VS runtime qualification (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-runtime' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
-    timeout-minutes: 12
+    timeout-minutes: 20
     concurrency:
       group: sonic-slave-container-k3s-vs
       cancel-in-progress: false
@@ -465,11 +465,12 @@ jobs:
               raise SystemExit('Unexpected assigned runner identity')
           name = f'vs-runtime-control-{run}-{attempt}-{worker}'
           control = Path(os.environ['GITHUB_WORKSPACE']) / name
+          native = control.with_name(control.name + "-native581")
           receipt = Path(os.environ['RUNNER_TEMP']) / (name + '.json')
-          if any(path.exists() or path.is_symlink() for path in (control, receipt)):
+          if any(path.exists() or path.is_symlink() for path in (control, native, receipt)):
               raise SystemExit('Preserve existing runtime qualification paths')
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
-              output.write(f'worker={worker}\ncontrol={control.name}\nreceipt={receipt.name}\n')
+              output.write(f'worker={worker}\ncontrol={control.name}\nnative={native.name}\nreceipt={receipt.name}\n')
           PY_RUNTIME_PATHS
       - name: Checkout the immutable runtime controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -478,9 +479,17 @@ jobs:
           path: ${{ steps.paths.outputs.control }}
           clean: false
           persist-credentials: false
+      - name: Checkout the published native stop implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 5819014fc3d46abbd6f92230ae0bc3cd612c1745
+          path: ${{ steps.paths.outputs.native }}
+          clean: false
+          persist-credentials: false
       - name: Check controller identity and pure runtime policy tests
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
+          NATIVE: ${{ steps.paths.outputs.native }}
           GIT_NO_LAZY_FETCH: '1'
           GIT_NO_REPLACE_OBJECTS: '1'
           GIT_OPTIONAL_LOCKS: '0'
@@ -489,8 +498,10 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$CONTROL"
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never rev-parse HEAD)" = "5819014fc3d46abbd6f92230ae0bc3cd612c1745"
+          test -z "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never status --porcelain --untracked-files=no)"
           python3 -B -m unittest -v tools.bazel.tests.vs_worker_inspection_test tools.bazel.tests.vs_runtime_test
-      - name: Qualify pinned sandbox and isolated Docker startup
+      - name: Qualify sandbox, running container and published native stop
         id: runtime
         env:
           EXPECTED_WORKER: ${{ steps.paths.outputs.worker }}
