@@ -764,6 +764,7 @@ jobs:
               extra_flags=(--noexecution_log_sort)
               ;&
             test)
+              extra_flags+=(--experimental_build_event_upload_strategy=local)
               bazel "--output_base=$OWNER_OUTPUT" "$owner_jvm" \
                 --nosystem_rc --nohome_rc --noworkspace_rc \
                 "--bazelrc=$PWD/tools/bazel/common.bazelrc" shutdown >/dev/null 2>&1 || true

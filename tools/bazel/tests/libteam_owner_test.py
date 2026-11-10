@@ -188,11 +188,12 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
                                capture_output=True, text=True, check=True)
             recorded = [json.loads(line) for line in calls.read_text().splitlines()]
             self.assertEqual(recorded[0], ["--version"])
-            # query: no pre-shutdown, no --noexecution_log_sort
+            # query: no pre-shutdown, no build/test extra flags
             self.assertIn("query", recorded[1])
             self.assertEqual(recorded[1][:2], [f"--output_base={owner_output}", "--host_jvm_args=-Xmx6g"])
             self.assertNotIn("--noexecution_log_sort", recorded[1])
-            # build: pre-shutdown with matching startup flags + build with --noexecution_log_sort
+            self.assertNotIn("--experimental_build_event_upload_strategy=local", recorded[1])
+            # build: pre-shutdown with matching startup flags + build with --noexecution_log_sort and local BEP upload
             self.assertEqual(recorded[2][-1], "shutdown")
             self.assertEqual(recorded[2][0], f"--output_base={owner_output}")
             self.assertIn("--host_jvm_args=-Xmx6g", recorded[2])
@@ -201,14 +202,23 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
             self.assertEqual(build_call[:2], [f"--output_base={owner_output}", "--host_jvm_args=-Xmx6g"])
             self.assertLess(build_call.index("--host_jvm_args=-Xmx6g"), build_call.index("build"))
             self.assertIn("--noexecution_log_sort", build_call)
-            # cquery: no pre-shutdown, no --noexecution_log_sort
+            self.assertIn("--experimental_build_event_upload_strategy=local", build_call)
+            self.assertLess(build_call.index("build"), build_call.index("--noexecution_log_sort"))
+            self.assertLess(build_call.index("--noexecution_log_sort"),
+                            build_call.index("--experimental_build_event_upload_strategy=local"))
+            # cquery: no pre-shutdown, no build/test extra flags
             self.assertIn("cquery", recorded[4])
             self.assertNotIn("--noexecution_log_sort", recorded[4])
-            # test: pre-shutdown + test without --noexecution_log_sort
+            self.assertNotIn("--experimental_build_event_upload_strategy=local", recorded[4])
+            # test: pre-shutdown + test with local BEP upload and without --noexecution_log_sort
             self.assertEqual(recorded[5][-1], "shutdown")
             self.assertEqual(recorded[5][0], f"--output_base={owner_output}")
-            self.assertIn("test", recorded[6])
-            self.assertNotIn("--noexecution_log_sort", recorded[6])
+            test_call = recorded[6]
+            self.assertIn("test", test_call)
+            self.assertNotIn("--noexecution_log_sort", test_call)
+            self.assertIn("--experimental_build_event_upload_strategy=local", test_call)
+            self.assertLess(test_call.index("test"),
+                            test_call.index("--experimental_build_event_upload_strategy=local"))
 
 
 if __name__ == "__main__":
