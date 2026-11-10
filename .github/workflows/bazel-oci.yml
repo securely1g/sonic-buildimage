@@ -7,16 +7,21 @@ on:
   workflow_dispatch:
     inputs:
       source_image:
-        description: Optional reviewed sFlow hosted validation
+        description: Dedicated source-image worker task
         type: choice
-        options: [none, sflow-hosted]
+        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
         default: none
       source_revision:
-        description: Reviewed immutable source SHA for the sFlow task
+        description: Reviewed 40-character source commit for an image task
         type: string
         default: ''
-      registry_revision:
-        description: Reviewed immutable registry SHA for the sFlow task
+      source_worker:
+        description: Dedicated worker for an image pilot
+        type: choice
+        options: [sonic-slave-lgh114-1, sonic-slave-lgh114-2, sonic-slave-lgh114-3, sonic-slave-lgh114-4]
+        default: sonic-slave-lgh114-1
+      source_inputs_run:
+        description: Optional successful source-download run in this repository
         type: string
         default: ''
       skip_vs:
@@ -29,21 +34,214 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image }}-${{ inputs.source_revision }}-${{ inputs.registry_revision }}
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
   cancel-in-progress: true
 
 env:
   BAZEL: bazel
 
 jobs:
-  archive:
-    name: Container archive (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout }}
+  source_image_inputs:
+    name: Fetch pinned source-image downloads
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout reviewed source-download verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Bazel for repository downloads only
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: false
+          cache-version: "8.5.1"
+      - name: Retain the same verified GitLab sources used by the VS workflow
+        run: |
+          mkdir -p artifacts/source-image-inputs
+          bazel fetch --repo=@@ape+ --repo=@@download_utils+ \
+            --repo=@@rules_coreutils+ --repo=@@rules_gzip+ --repo=@@toolchain_utils+
+          bazel mod graph --output=json > artifacts/source-image-inputs/module-graph.json
+          python3 -B tools/bazel/gzip/source_archive.py \
+            --repository-cache "$(bazel info repository_cache)" \
+            --module-graph artifacts/source-image-inputs/module-graph.json \
+            --output artifacts/source-image-inputs > artifacts/source-image-inputs/receipt.json
+      - name: Upload verified source downloads
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-image-inputs
+          path: |
+            artifacts/source-image-inputs/*/src.tar.gz
+            artifacts/source-image-inputs/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  source_image:
+    needs: source_image_inputs
+    name: Source image (${{ inputs.source_image }})
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image)
+    runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SELECTED_IMAGE: ${{ inputs.source_image }}
+      SOURCE_REVISION: ${{ inputs.source_revision }}
+      SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+    steps:
+      - name: Checkout reviewed dispatcher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          persist-credentials: false
+      - name: Validate the fixed image selection
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py selection \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Verify Teamd kernel prerequisites without host changes
+        id: teamd_kernel
+        if: inputs.source_image == 'teamd'
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py kernel-preflight \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Checkout the exact reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: source
+          persist-credentials: false
+      - name: Verify the existing successful source-download producer
+        if: inputs.source_inputs_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py verify-input-run \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Reuse the existing source-download artifact
+        if: inputs.source_inputs_run != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bazel-repository-inputs
+          run-id: ${{ inputs.source_inputs_run }}
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          path: ${{ runner.temp }}/source-image-inputs
+      - name: Download the verified source archives
+        if: inputs.source_inputs_run == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-image-inputs
+          path: ${{ runner.temp }}/source-image-inputs
+      - name: Prepare private Docker and persistent worker caches
+        id: prepare
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py prepare \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Build source runtime and debug images
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py build \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Validate image contents and symbols
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py validate \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Verify incremental rebuild and restoration
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py incremental \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Validate the installed services in private containers
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py loaded \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Prepare declared artifacts and public evidence
+        id: public_artifacts
+        if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py publish \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+      - name: Upload source images and acceptance receipts
+        if: always() && steps.public_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-image-${{ inputs.source_image }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-image-artifacts/public/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Stop only this job's private Docker daemon
+        if: always() && steps.prepare.outcome != 'skipped'
+        run: |
+          python3 -B control/tools/bazel/ci/source_image_worker.py stop \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+
+  source_worker_preflight:
+    name: Source worker preflight (${{ matrix.worker }})
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'preflight'
+    runs-on: [sonic-slave-container-dpool, '${{ matrix.worker }}']
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.source_image == 'sflow-hosted' && '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":240}]' || '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":240},{"name":"ARM64","architecture":"arm64","machine":"aarch64","runner":"ubuntu-24.04-arm","platform":"aarch64_trixie","disk_cache":"buildimage-gzip-arm64","timeout":60}]') }}
+        worker: [sonic-slave-lgh114-1, sonic-slave-lgh114-2, sonic-slave-lgh114-3, sonic-slave-lgh114-4]
+    steps:
+      - name: Checkout dispatcher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Measure this worker's resources and namespace capabilities
+        env:
+          EXPECTED_WORKER: ${{ matrix.worker }}
+        run: |
+          python3 -B tools/bazel/ci/source_worker_preflight.py \
+            --worker "$EXPECTED_WORKER" --output artifacts/source-worker/preflight.json
+      - name: Retain measured resource evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-worker-${{ matrix.worker }}-${{ github.run_id }}
+          path: artifacts/source-worker/preflight.json
+          if-no-files-found: error
+          retention-days: 14
+
+  archive:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Container archive (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.architecture == 'amd64' && 240 || 60 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AMD64
+            architecture: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+            platform: x86_64_trixie
+            disk_cache: swss-layer-amd64
+          - name: ARM64
+            architecture: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+            platform: aarch64_trixie
+            disk_cache: buildimage-gzip-arm64
     container:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       volumes:
@@ -51,28 +249,15 @@ jobs:
         - /usr/share/dotnet:/runner-unused/dotnet
         - /opt/ghc:/runner-unused/ghc
     env:
-      # Draft catalog for root-module resolution; the full Make VS job is separate.
-      BAZEL: ${{ github.workspace }}/tools/bazel/ci/${{ inputs.source_image == 'sflow-hosted' && 'review_bazel.sh' || 'libteam_draft_bazel.sh' }}
-      SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.source_image == 'sflow-hosted' && inputs.registry_revision || '' }}
+      # Shared CI entry point with the canonical registry; the full Make VS job is separate.
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
     defaults:
       run:
         shell: bash
     steps:
-      - name: Validate the reviewed sFlow source selection
-        if: inputs.source_image == 'sflow-hosted'
-        env:
-          SOURCE_REVISION: ${{ inputs.source_revision }}
-          REGISTRY_REVISION: ${{ inputs.registry_revision }}
-        run: |
-          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
-            [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
-              echo 'Select paired immutable source and registry SHAs.' >&2
-              exit 2
-            }
       - name: Allocate source-build space on this disposable runner
-        if: inputs.source_image == 'sflow-hosted'
+        if: matrix.architecture == 'amd64'
         run: |
-          set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = github-hosted
           df -h / "$GITHUB_WORKSPACE"
           du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
@@ -81,21 +266,18 @@ jobs:
           find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
             -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           df -h / "$GITHUB_WORKSPACE"
-          available_bytes=$(df --output=avail --block-size=1 "$GITHUB_WORKSPACE" | tail -n 1)
-          (( available_bytes >= 45 * 1024 * 1024 * 1024 )) || {
-            echo 'Source image validation requires 45 GiB of free build space.' >&2
-            exit 1
-          }
       - name: Install execution tools
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 tar unzip zstd
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 python3-yaml tar unzip zstd
+          for tool in bsdtar gdb readelf objcopy; do
+            command -v "$tool"
+          done
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_image == 'sflow-hosted' && inputs.source_revision || github.sha }}
           persist-credentials: false
 
       - name: Check native architecture and generated dependency state
@@ -106,10 +288,8 @@ jobs:
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
 
-      - name: Initialize the reviewed source's pinned gNOI dependency
-        if: inputs.source_image == 'sflow-hosted'
-        run: |
-          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      - name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -118,20 +298,21 @@ jobs:
           repository-cache: true
           disk-cache: ${{ matrix.disk_cache }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
 
       - name: Configure the verified source mirror
-        if: inputs.source_image != 'sflow-hosted'
         run: |
           python3 - <<'PYCFG'
           import hashlib
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #186 changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          # Pin the transport fallback; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -140,26 +321,7 @@ jobs:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
 
-      - name: Preserve caches and verified transport for the reviewed source
-        if: inputs.source_image == 'sflow-hosted'
-        run: |
-          python3 -B tools/bazel/ci/lldp_draft_cache.py
-          python3 - <<'PYCFG'
-          import hashlib
-          import os
-          from pathlib import Path
-          from urllib.request import urlopen
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
-          with urlopen(url, timeout=60) as response:
-              data = response.read()
-          if hashlib.sha256(data).hexdigest() != expected:
-              raise SystemExit("Reviewed downloader configuration checksum mismatch")
-          config = Path(os.environ["RUNNER_TEMP"]) / "reviewed-sflow-downloads.cfg"
-          config.write_bytes(data)
-          with Path(".bazelrc.user").open("a") as rc:
-              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
-          PYCFG
+
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
           set -euo pipefail
@@ -236,15 +398,14 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'workflow_dispatch' && inputs.source_image == 'sflow-hosted') || github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/sflow-oci-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
-          # This review-helper PR is scoped to source/TAR builds only.
-          if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
+          if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
+            # This CI-only change does not authorize Debian package generation.
             for test in tools/bazel/tests/*_test.py; do
               case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py)
-                  echo "Skip DEB-generating kernel fixtures: $test" ;;
-                *) PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test")" ;;
+                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
+                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
               esac
             done
           else
@@ -351,6 +512,7 @@ jobs:
           python3 -B tools/bazel/ci/verify_agent_cache.py \
             --artifacts artifacts/archive/agent-cache \
             --bazel "$BAZEL" \
+            --bazel-arg=--experimental_downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg" \
             --repository-cache "$("$BAZEL" info repository_cache)" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
@@ -395,82 +557,12 @@ jobs:
           retention-days: 14
           compression-level: 1
 
-      - name: Build and inspect the shared runtime and symbols
-        if: matrix.architecture == 'amd64'
-        env:
-          BAZELISK_GITHUB_TOKEN: ""
-        run: |
-          python3 -B tools/bazel/tests/swss_layer_payload_test.py
-          python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
-      - name: Check cached no-op and source edit through the image
-        if: matrix.architecture == 'amd64'
-        env:
-          BAZELISK_GITHUB_TOKEN: ""
-        run: |
-          python3 -B "tools/bazel/ci/${{ inputs.source_image == 'sflow-hosted' && 'swss_rebuild.py' || 'swss_image_rebuild.py' }}" --bazel "$BAZEL" \
-            --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
-            --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
-            --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
-            --unchanged-target //dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz \
-            --output artifacts/swss-layer/rebuild
-          git diff --exit-code
-      - name: Prepare shared SWSS image evidence
-        id: swss_layer_public
-        if: always() && matrix.architecture == 'amd64'
-        run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
-          root = Path('artifacts/swss-layer')
-          if (root / 'receipt.json').exists():
-              receipt = json.loads((root / 'receipt.json').read_text())
-              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
-              safe_json(public)
-              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for name in ('validation.json', 'action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json'):
-              path = root / name
-              if path.exists():
-                  safe_json(json.loads(path.read_text()))
-          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
-              path = root / name
-              if path.exists():
-                  dependency_json(json.loads(path.read_text()), kind)
-          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
-                     for path in root.rglob('*events.json*')}
-          safe_json(summary)
-          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
-          PY
-      - name: Retain reviewed artifacts and receipts
-        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_public.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: swss-layer-amd64
-          path: |
-            artifacts/swss-layer/docker-swss-layer-trixie.gz
-            artifacts/swss-layer/source-runtime.tar
-            artifacts/swss-layer/source-debug.tar
-            artifacts/swss-layer/image-debug.tar
-            artifacts/swss-layer/public-receipt.json
-            artifacts/swss-layer/validation.json
-            artifacts/swss-layer/action-audit.json
-            artifacts/swss-layer/apt-selection.json
-            artifacts/swss-layer/packages.json
-            artifacts/swss-layer/build-summary.json
-            artifacts/swss-layer/rebuild/rebuild.json
-            artifacts/swss-layer/MODULE.bazel.lock
-            artifacts/swss-layer/module-graph.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
-
       - name: Build sFlow runtime and debug images from source owners
         if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.source_image == 'sflow-hosted' && inputs.registry_revision || 'f87ec1d97b0493d895e34733ea4aae92a90cf75d' }}
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
         if: matrix.architecture == 'amd64'
@@ -508,29 +600,6 @@ jobs:
       - name: Verify sFlow no-op, Python source edit and restored archives
         if: matrix.architecture == 'amd64'
         run: python3 -B tools/bazel/ci/sflow_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sflow
-      - name: Bind the completed sFlow artifacts to the reviewed source
-        if: inputs.source_image == 'sflow-hosted'
-        env:
-          SOURCE_REVISION: ${{ inputs.source_revision }}
-          REGISTRY_REVISION: ${{ inputs.registry_revision }}
-        run: |
-          python3 - <<'PYBIND'
-          import hashlib, json, os, subprocess
-          from pathlib import Path
-          expected = os.environ['SOURCE_REVISION']
-          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == expected
-          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True)
-          root = Path('artifacts/sflow')
-          for name, status in [('build-receipt.json', 'built'), ('validation.json', 'passed')]:
-              value = json.loads((root / name).read_text())
-              assert value['revision'] == expected and value['status'] == status
-              if name == 'build-receipt.json':
-                  assert value['invocation']['review_registry_revision'] == os.environ['REGISTRY_REVISION']
-          value = {'source_revision': expected, 'registry_revision': os.environ['REGISTRY_REVISION'],
-                   'control_revision': os.environ['GITHUB_SHA'],
-                   'loaded_driver_sha256': hashlib.sha256(Path('tools/bazel/ci/sflow_loaded.py').read_bytes()).hexdigest()}
-          (root / 'reviewed-selection.json').write_text(json.dumps(value, indent=2) + '\n')
-          PYBIND
       - name: Review public sFlow evidence
         id: sflow_public
         if: always() && matrix.architecture == 'amd64'
@@ -586,26 +655,194 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+
+      - name: Preserve completed archive evidence before Sysmgr acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          # Generic archive evidence has already been uploaded above. Keep it
+          # outside the checkout while the source-only image fence runs.
+          if [[ -d artifacts ]]; then
+            test ! -e "$RUNNER_TEMP/pre-sysmgr-artifacts"
+            mv artifacts "$RUNNER_TEMP/pre-sysmgr-artifacts"
+          fi
+
+      - name: Build Sysmgr runtime and debug images
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/sysmgr_image.py build --bazel "$BAZEL" --artifacts artifacts/sysmgr
+      - name: Validate Sysmgr image contents and cache reuse
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/sysmgr_image.py validate --artifacts artifacts/sysmgr
+          python3 -B tools/bazel/ci/sysmgr_image.py incremental --bazel "$BAZEL" --artifacts artifacts/sysmgr
+      - name: Prepare reviewed public evidence
+        id: sysmgr_public
+        if: always() && matrix.architecture == 'amd64'
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/sysmgr')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names += [path.name for path in root.glob('*.validation.json')]
+          names += [path.name for path in root.glob('*.packages.json')]
+          for name in names:
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYCODE
+      - name: Retain Sysmgr image artifacts and evidence
+        if: always() && matrix.architecture == 'amd64' && steps.sysmgr_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sysmgr-images-amd64-${{ github.sha }}
+          path: |
+            artifacts/sysmgr/*.gz
+            artifacts/sysmgr/*.tar
+            artifacts/sysmgr/dbus-mock
+            artifacts/sysmgr/*.packages.json
+            artifacts/sysmgr/*.validation.json
+            artifacts/sysmgr/validation.json
+            artifacts/sysmgr/public-receipt.json
+            artifacts/sysmgr/runtime-apt.json
+            artifacts/sysmgr/debug-apt.json
+            artifacts/sysmgr/action-audit.json
+            artifacts/sysmgr/incremental.json
+            artifacts/sysmgr/build-summary.json
+            artifacts/sysmgr/module-graph.json
+            artifacts/sysmgr/*.status
+            artifacts/sysmgr/MODULE.bazel.lock
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Preserve completed Sysmgr evidence before SWSS layer acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          if [[ -d artifacts ]]; then
+            test ! -e "$RUNNER_TEMP/pre-swss-layer-artifacts"
+            mv artifacts "$RUNNER_TEMP/pre-swss-layer-artifacts"
+          fi
+
+      - name: Build and inspect the shared runtime and symbols
+        id: swss_layer_build
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          mkdir -p artifacts/swss-layer
+          cp "$RUNNER_TEMP/sonic-source-mirrors.cfg" artifacts/swss-layer/downloader.cfg
+          python3 -B tools/bazel/tests/swss_layer_payload_test.py
+          python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
+      - name: Validate reviewed SWSS consumer contracts
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          set -euo pipefail
+          targets=(@libteam//:consumer_test @sonic_swss//crates/countersyncd:common_rust_test
+                   @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
+          python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
+            --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
+            --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
+            --output artifacts/swss-layer/consumer-action-audit.json "${targets[@]}"
+          "$BAZEL" test --platforms=@sonic_build_infra//platforms:x86_64_trixie \
+            --host_platform=@sonic_build_infra//platforms:x86_64_trixie \
+            --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
+            --nocache_test_results --test_output=all \
+            --build_event_json_file="$PWD/artifacts/swss-layer/consumer-events.jsonl" "${targets[@]}"
+      - name: Check cached no-op and source edit through the image
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
+            --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
+            --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
+            --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
+            --unchanged-target //dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz \
+            --output artifacts/swss-layer/rebuild
+          git diff --exit-code
+      - name: Prepare shared SWSS image evidence
+        id: swss_layer_public
+        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_build.outcome != 'skipped'
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/swss-layer')
+          if (root / 'receipt.json').exists():
+              receipt = json.loads((root / 'receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          for name in ('validation.json', 'action-audit.json', 'consumer-action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json'):
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PY
+      - name: Retain reviewed artifacts and receipts
+        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-layer-amd64
+          path: |
+            artifacts/swss-layer/docker-swss-layer-trixie.gz
+            artifacts/swss-layer/source-runtime.tar
+            artifacts/swss-layer/source-debug.tar
+            artifacts/swss-layer/image-debug.tar
+            artifacts/swss-layer/public-receipt.json
+            artifacts/swss-layer/validation.json
+            artifacts/swss-layer/action-audit.json
+            artifacts/swss-layer/consumer-action-audit.json
+            artifacts/swss-layer/downloader.cfg
+            artifacts/swss-layer/apt-selection.json
+            artifacts/swss-layer/packages.json
+            artifacts/swss-layer/build-summary.json
+            artifacts/swss-layer/rebuild/rebuild.json
+            artifacts/swss-layer/MODULE.bazel.lock
+            artifacts/swss-layer/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
   swss_layer_runtime:
     name: Load and run SWSS and sFlow images (AMD64)
     needs: archive
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Validate the reviewed sFlow source selection
-        if: inputs.source_image == 'sflow-hosted'
-        env:
-          SOURCE_REVISION: ${{ inputs.source_revision }}
-          REGISTRY_REVISION: ${{ inputs.registry_revision }}
-        run: |
-          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
-            [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
-              echo 'Select paired immutable source and registry SHAs.' >&2
-              exit 2
-            }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_image == 'sflow-hosted' && inputs.source_revision || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -653,26 +890,6 @@ jobs:
         with:
           name: sflow-source-amd64
           path: artifacts/sflow
-      - name: Verify the selected source against the downloaded sFlow evidence
-        if: inputs.source_image == 'sflow-hosted'
-        env:
-          SOURCE_REVISION: ${{ inputs.source_revision }}
-          REGISTRY_REVISION: ${{ inputs.registry_revision }}
-        run: |
-          python3 - <<'PYBIND'
-          import hashlib, json, os, subprocess
-          from pathlib import Path
-          root = Path('artifacts/sflow')
-          value = json.loads((root / 'reviewed-selection.json').read_text())
-          assert value['source_revision'] == os.environ['SOURCE_REVISION']
-          assert value['registry_revision'] == os.environ['REGISTRY_REVISION']
-          assert value['control_revision'] == os.environ['GITHUB_SHA']
-          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == value['source_revision']
-          assert hashlib.sha256(Path('tools/bazel/ci/sflow_loaded.py').read_bytes()).hexdigest() == value['loaded_driver_sha256']
-          for name, status in [('public-receipt.json', 'built'), ('validation.json', 'passed')]:
-              receipt = json.loads((root / name).read_text())
-              assert receipt['revision'] == value['source_revision'] and receipt['status'] == status
-          PYBIND
       - name: Exercise installed sFlow manager, mapper and exporter variants
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -687,8 +904,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  sysmgr_runtime:
+    name: Load and run Sysmgr images (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sysmgr-images-amd64-${{ github.sha }}
+          path: artifacts/sysmgr
+      - name: Check installed Sysmgr startup and private Redis-to-D-Bus notifications
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 -B tools/bazel/ci/sysmgr_loaded.py --artifacts artifacts/sysmgr
+      - name: Retain installed Sysmgr evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sysmgr-installed-amd64-${{ github.sha }}
+          path: artifacts/sysmgr/*.runtime.json
+          if-no-files-found: error
+          retention-days: 14
+
+
+
   checks:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image != 'sflow-hosted'
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: OCI regression checks (AMD64)
     runs-on: ubuntu-24.04
     outputs:
@@ -711,7 +957,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             autoconf automake binutils binutils-gold build-essential busybox ca-certificates curl \
-            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 redis-server squashfs-tools tar unzip zstd
+            gdb git j2cli jq libtool libxml2 make pigz pkg-config python3 python3-jinja2 python3-yaml redis-server squashfs-tools tar unzip zstd
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -728,6 +974,8 @@ jobs:
       - name: Check hosted storage
         run: df -h "$GITHUB_WORKSPACE" "$HOME"
 
+      - name: Initialize Sysmgr's pinned gNOI source
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
@@ -737,6 +985,8 @@ jobs:
           # This job resolves/downloads dependencies but executes no Bazel builds.
           disk-cache: false
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
 
       - name: Configure the verified source mirror
         run: |
@@ -745,11 +995,11 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          # Registry #186 changes only transport; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4f1b2b169066b4d12d94a5edee5b6e36e36b1370/ci/source_mirrors.cfg"
+          # Pin the transport fallback; Bazel still verifies BCR integrity.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          expected = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
@@ -758,17 +1008,17 @@ jobs:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
 
+
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'workflow_dispatch' && inputs.source_image == 'sflow-hosted') || github.event_name == 'pull_request' && (github.event.pull_request.number == 51 || github.event.pull_request.number == 61 || github.head_ref == 'codex/swss-layer-amd64' || github.head_ref == 'codex/sflow-oci-amd64' || github.head_ref == 'codex/review-registry-catalog') }}
+          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
-          # This review-helper PR is scoped to source/TAR builds only.
-          if [[ "$SOURCE_ONLY_NO_DEBS" == true ]]; then
+          if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
+            # This CI-only change does not authorize Debian package generation.
             for test in tools/bazel/tests/*_test.py; do
               case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py)
-                  echo "Skip DEB-generating kernel fixtures: $test" ;;
-                *) PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/tests -p "$(basename "$test")" ;;
+                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
+                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
               esac
             done
           else
@@ -779,6 +1029,7 @@ jobs:
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
+        id: repository_inputs
         run: |
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
@@ -795,6 +1046,35 @@ jobs:
             --module-graph artifacts/repository-inputs/module-graph.json \
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
+
+      - name: Prepare repository graph failure receipt
+        id: repository_graph_failure
+        if: always() && steps.repository_inputs.outcome == 'failure'
+        run: |
+          python3 - <<'PYDIAG'
+          import os
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, receipt_summary
+          failure = Path('artifacts/repository-inputs/module-graph-failure.json')
+          if failure.is_symlink() or (failure.exists() and not failure.is_file()):
+              raise ValueError('Unsafe graph failure receipt')
+          if failure.exists():
+              if failure.stat().st_size > 4096:
+                  raise ValueError('Oversized graph failure receipt')
+              receipt_summary(load_json(failure.read_bytes()), 'resolution')
+              with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+                  output.write('present=true\n')
+          PYDIAG
+
+      - name: Retain repository graph failure receipt
+        if: always() && steps.repository_graph_failure.outcome == 'success' && steps.repository_graph_failure.outputs.present == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repository-graph-failure-amd64
+          path: artifacts/repository-inputs/module-graph-failure.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |
@@ -1003,6 +1283,22 @@ jobs:
           set -o pipefail
           bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
 
+      - name: Verify installed base, SWSS and Syncd images
+        timeout-minutes: 20
+        run: |
+          # Make clears DOCKER_ROOT on entry; preserve the completed build's store.
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            DOCKER_ROOT="$PWD/fsroot.docker.verify-images" \
+            SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL --cgroupns=private" \
+            SONIC_RUN_CMDS="sudo python3 -B tools/bazel/ci/prepare_nested_docker.py && \
+              make -f slave.mk docker-start SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n && \
+              python3 -B tools/bazel/ci/validate_runtime.py \
+                --images-policy artifacts/vs/swss-installed-images-policy.json \
+                --images-policy artifacts/vs/syncd-installed-images-policy.json --target target \
+                --output artifacts/vs/installed-images.json" \
+            2>&1 | tee artifacts/vs/installed-images.log
+
       - name: Retain VS runtime and debug archive reuse evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1033,7 +1329,7 @@ jobs:
             --bazel "$BAZEL" --artifacts artifacts/swss \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
-            --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true "${ci_options[@]}"
+            "${ci_options[@]}"
           SH
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
             DOCKER_ROOT="$PWD/target/docker-source-validation" \
@@ -1174,19 +1470,16 @@ jobs:
           retention-days: 14
           compression-level: 1
 
-      - name: Retain installed Syncd and source dependency evidence
+      - name: Retain shared image validation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sonic-vs-syncd-installed-amd64
+          name: sonic-vs-image-validation-amd64
           path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/nested-docker-cgroups.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/action-audit.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/native-packages.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/images.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/source-base.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/static-validation.json
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-installed/installed-validation.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/swss-images/
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/syncd-p4-images/
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/*-installed-images-policy.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/installed-images.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -1207,14 +1500,17 @@ jobs:
   vs_container:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
-    # PRs #51/#61 and the SWSS source/OCI follow-ups exclude DEB generation.
     if: >-
-      !(github.event_name == 'workflow_dispatch' && inputs.source_image == 'sflow-hosted') && (
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      github.head_ref != 'codex/image-environment' &&
+      github.head_ref != 'codex/source-image-worker-dispatch' &&
+      github.head_ref != 'codex/sysmgr-source-image' &&
+      github.head_ref != 'codex/teamd-source-worker' &&
+      (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       github.event.pull_request.number != 51 && github.event.pull_request.number != 61 &&
-       github.head_ref != 'codex/swss-layer-amd64' && github.head_ref != 'codex/sflow-oci-amd64' && github.head_ref != 'codex/review-registry-catalog') ||
+       github.head_ref != 'codex/libteam-owner-consumer' &&
+       github.head_ref != 'codex/swss-owner-image') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
@@ -1336,6 +1632,19 @@ jobs:
           sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
             target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
 
+      - name: Verify installed base, SWSS and Syncd images
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/sonic-vs-slave.env"
+          cd /sonic
+          # Reuse the worker-private daemon prepared before the native build.
+          python3 -B tools/bazel/ci/validate_runtime.py \
+            --images-policy artifacts/vs/swss-installed-images-policy.json \
+            --images-policy artifacts/vs/syncd-installed-images-policy.json --target target \
+            --output artifacts/vs/installed-images.json \
+            2>&1 | tee artifacts/vs/installed-images.log
+
       - name: Publish the installer and matching container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1363,6 +1672,19 @@ jobs:
             artifacts/vs/*.sha256
             artifacts/vs/syncd-p4-images/validation.json
             MODULE.bazel.lock
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Retain shared image validation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-image-validation-amd64
+          path: |
+            artifacts/vs/swss-images/
+            artifacts/vs/syncd-p4-images/
+            artifacts/vs/*-installed-images-policy.json
+            artifacts/vs/installed-images.json
           if-no-files-found: warn
           retention-days: 14
 

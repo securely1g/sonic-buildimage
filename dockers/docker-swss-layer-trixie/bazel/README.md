@@ -6,19 +6,19 @@ TARs. Its public outputs are:
 
 | Target in this Docker package | Output |
 | --- | --- |
-| `:source_runtime` | Complete shared source runtime TAR, also used by Orchagent |
+| `:source_runtime` | Shared source runtime TAR added over config-engine, also used by Orchagent |
 | `:source_debug_symbols` | Matching symbols for that source TAR |
 | `:docker-swss-layer-trixie` | Native AMD64 OCI image |
 | `:docker-swss-layer-trixie.debug_symbols` | Matching source symbols through the entire parent chain |
 | `:docker-swss-layer-trixie.gz` | Reproducible Make-compatible archive tagged `docker-swss-layer-trixie:latest` |
 
-The source TAR combines SWSS's complete 30-program runtime, Common, SAI Redis,
-SAI metadata, DASH API, its shared Protobuf ABI, and SONiC's patched libteam and
+The source TAR combines SWSS's complete 30-program runtime, SAI Redis, SAI
+metadata, DASH API, its shared Protobuf ABI, and SONiC's patched libteam and
 libteamdctl. Their existing owners compile them once and supply matching symbols.
-Common is repeated with identical bytes so source-only Orchagent tests and the
-retained Make-base path can consume the same complete TAR without an OCI parent.
-The shared image inherits Common's Python binding, source libnl, configuration,
-database paths and accounts from config-engine. It adds no service account.
+Common is not repeated: the shared image inherits Common's libraries, Python
+binding, source libnl, configuration, database paths and accounts from
+config-engine, so each shared object ships exactly once. It adds no service
+account.
 
 Selected SWSS source, link arguments and ELF dependencies do not use libFIB;
 that decision is checked by the separate SWSS native-closure validation. FRR
@@ -33,8 +33,9 @@ packages and installs only missing external payloads. Orchagent no longer
 requests stock `libteam5` or `libteamdctl0`; it consumes the same source TAR.
 
 `runtime_package_metadata` preserves the parent's truthful installed package
-records and records the selected APT additions. It does not claim the source
-TARs were installed through dpkg, or fabricate SWSS/DASH package identities.
+records, records the selected APT additions, and records `libteam5` and
+`libteamdctl0` from libteam's recipe-derived identity because their files are
+installed in this layer. It does not fabricate SWSS/DASH package identities.
 Source file hashes, ELF dependencies and matching symbols are independently
 checked against the assembled OCI inventory and the loaded image.
 
@@ -52,10 +53,9 @@ make -f tools/bazel/prepare_manifests.mk \
 bazel build //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz
 ```
 
-While the prerequisite producer registrations remain unlanded, this Draft uses
-the same reviewed registry and `tools/bazel/ci/libteam_draft_bazel.sh` as the
-libteam/SWSS closure changes. Ordinary `.bazelrc` remains on canonical registry
-main; remove the temporary wrapper when the required registrations land.
+CI runs these builds through the shared entry point
+`tools/bazel/ci/libteam_draft_bazel.sh`, which loads `tools/bazel/common.bazelrc`
+with the canonical registry main, the same catalog ordinary `.bazelrc` uses.
 
 The [Bazel OCI workflow](../../../.github/workflows/bazel-oci.yml) builds this
 image in its AMD64 archive job, reusing checkout, execution tools, Bazel setup,

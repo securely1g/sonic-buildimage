@@ -162,13 +162,20 @@ their supported native AMD64 and ARM64 configurations separately.
 Full DASH Syncd image validation currently runs on native AMD64; native ARM64
 source-producer checks do not establish an ARM64 DASH image.
 
+The full VS workflow runs `//tools/bazel/tests:syncd_p4_images_test` against the
+actual runtime/debug OCI layouts, source TARs and exported Make archives. It
+retains the test log, XML and `validation.json`. The shared installed-image
+validator also Docker-loads both Syncd archives and checks inherited Common
+files, directory aliases, parent layers and matching copied debug symbols.
+These checks share their implementation with base and SWSS validation; they do
+not start Syncd or boot the installer.
+
 Installed-container validation is maintained separately in
 [PR #20](https://github.com/securely1g/sonic-buildimage/pull/20). It uses the
 exported runtime/debug images to resolve libraries, exercise CLI and startup
 behavior, check GDB symbol lookup, and compile a small P4 program with the
 installed driver before starting its local BMv2 listener. These probes are not
 part of the image build or the native archive tests.
-The full VS workflow retains the existing installer boot and login checks.
 Strict guest service validation is maintained separately in
 [PR #28](https://github.com/securely1g/sonic-buildimage/pull/28).
 

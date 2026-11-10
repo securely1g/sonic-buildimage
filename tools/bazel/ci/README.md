@@ -7,10 +7,12 @@ package expectations remain in the owner declarations and tests.
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
 archive checks, lightweight hosted regressions and the full VS integration
-job. SWSS and Syncd source-package checks run after Make in that VS job, using
-its checkout, Trixie builder, platform/feature flags and persistent Bazel action
-cache. The private builder output bases remain separate; cached outputs can
-be restored without recompiling the same source packages. Add checks for future
+job. The active `vs_container` job builds inside a privileged SONiC slave,
+then runs shared SWSS/Syncd static image checks and Docker-load validation in
+that same worker. Build and validation share its Bazel server and caches.
+The older `vs` job is disabled; its post-Make source-package suites and
+cache-action reports remain in that legacy path and are not run by the active
+job. Add checks for future
 OCI containers in this workflow, keeping their target lists and package contracts with each container.
 Keep checks that compile image inputs in the full build job so they can reuse
 its action outputs.
@@ -24,9 +26,10 @@ job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
 
-SWSS source builds and package tests run in the owning `sonic-swss` repository.
-Buildimage consumes those targets and validates the assembled OCI images,
-including installed runtime/debug payloads and image rebuild behavior.
+SWSS compilation, package contents and component tests are validated in the
+[SWSS source repository](https://github.com/securely1g/sonic-swss). Buildimage
+consumes those targets and validates the assembled OCI images, including their
+installed behavior and image-cache invalidation.
 
 The native VS Make build produces the runtime and debug archives together for
 each registered Bazel container, using the same builder and Bazel invocation
@@ -34,7 +37,15 @@ for each pair. The normal installer still selects runtime containers;
 `INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
 not add it to the installer.
 
-[`build_vs.sh`](build_vs.sh) runs one `make target/sonic-vs.bin` request
+The active **VS installer in SONiC slave (AMD64)** job prepares the private
+worker, builds `target/sonic-vs.bin` directly through `slave.mk`, and runs
+`verify_vs_oci.sh` before loading the resulting images with the shared
+`validate_runtime.py` validator. It checks the installer version and retains
+the runtime/debug archive identities across validation. The private Docker
+daemon belongs to this worker and is stopped after evidence publication.
+
+The retained legacy wrapper [`build_vs.sh`](build_vs.sh) runs one
+`make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
 The **Build the VS installer (.bin)** workflow step ends
 when Make finishes producing the ONIE installer and its runtime/debug archive pairs.
@@ -70,10 +81,11 @@ It requires native AMD64/Trixie VS with Bazel, FIPS and DASH enabled, without
 ASAN, Syncd RPC or cross/emulated execution, and checks that both runtime/debug
 container pairs select their Bazel producers.
 
-The verifier builds the two existing P4RT package prerequisites serially through
-`slave.mk`, then runs the Syncd P4 image/package checks and offline P4RT
-split-debug-symbol check in the same Trixie builder. It does not request Make
-container archives again or add a package definition. Bookworm builder cleanup
+The shared verifier resolves the config-engine archive and the two existing
+P4RT package prerequisites through Make, then runs the SWSS and Syncd image
+checks and offline P4RT split-debug-symbol check in the same Trixie builder.
+It does not request the Orchagent or Syncd Make archives again or add a package
+definition. The legacy wrapper's Bookworm builder cleanup
 is retained. The final pair check requires all four archives and their manifests
 to remain unchanged. Missing, changed or incompatible outputs fail validation;
 failures are not hidden by rebuilding an archive.
@@ -81,22 +93,29 @@ failures are not hidden by rebuilding an archive.
 The P4 image test still declares the native Syncd OCI images and Bazel archive
 outputs as inputs and compares them with the retained Make archives. Bazel may
 restore those inputs or rebuild them on a cache miss in the validation builder.
-The build and validation steps share persistent action/download caches; their
-private builder output bases are separate. Splitting the workflow steps does
-not remove this work or claim a speedup. SWSS and Syncd source-package checks
-continue in their existing later steps, and installed-container checks retain
-their coverage. They do not establish BIOS/UEFI VM boot success.
+The legacy build and validation steps share persistent action/download caches
+with separate private output bases; the active direct-slave job also retains
+its Bazel server. Splitting the workflow steps does not remove this work or
+claim a speedup. The active image checks do not replace the source-package
+suites retained in the disabled legacy job. Neither path's installer checks
+establish BIOS/UEFI VM boot success.
 
 Each container retains its owner's dependencies and Bazel options. Standalone
 archive requests and other configurations retain their existing rules.
 Validation stops on a failed prerequisite or check.
 
-[`verify_vs_oci.sh`](verify_vs_oci.sh) runs the uncached P4 image test and offline
+[`verify_vs_oci.sh`](verify_vs_oci.sh) runs the uncached SWSS and P4 image tests and offline
 split-debug package check before the validation builder exits. It preserves
+`artifacts/vs/swss-images/`, `swss-images.log`,
 `artifacts/vs/syncd-p4-images/`, `syncd-p4-images.log`,
 `p4rt-debug-verification.log` and `p4rt-debug-verification.json`. The archive
 checker retains `runtime-debug-pairs.json` and `orchagent-reuse.json`; these
 are validation receipts, not inputs needed to assemble the image.
+Each family's test logs, XML and static receipt are copied before switching
+Bazel configurations. The generated `*-installed-images-policy.json` files
+bind the Docker checks to those outputs; `installed-images.json` records the
+shared Docker-load result. The active workflow publishes these files in
+`sonic-vs-image-validation-amd64`.
 `runtime-debug-pairs-timing.json` (schema 2) records the revision and profile,
 P4 validation time, pair validation time and their total. It does not include
 the image build duration.
@@ -134,8 +153,8 @@ validate the resulting image and measure end-to-end time.
   the existing nonempty, ignored and untracked generated lock, records its
   initial hash, and retains the tested lock/graph afterward. It never deletes
   the lock, clears outputs or disables package/source checks. Use Make's exact
-  feature flags (currently `--//dockers/docker-orchagent:source_config_engine=true`
-  for FIPS SWSS, `--config=syncd-dash` for Syncd), both native platform flags,
+  feature flags (`--config=syncd-dash` for Syncd; SWSS always inherits the
+  source-built config-engine image), both native platform flags,
   and the same cache/download options. In this mode, the Git cleanliness check
   covers the declared Bazel inputs and their containing submodules, allowing
   unrelated legacy Make submodules to create their normal build patches.
@@ -241,3 +260,22 @@ explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
 out of public artifacts. A failed job publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
+
+## Debian download mirrors
+
+The root `.bazelrc` selects [`debian_mirrors.cfg`](../debian_mirrors.cfg) for
+Bazel-managed dependency downloads, including image packages and published
+toolchain inputs. The pinned upstream Debian snapshot `20260727T143429Z` maps
+to the SONiC mirror snapshot `20260727T000818Z`; security snapshot
+`20260726T121236Z` maps to `20260727T000824Z`. Original upstream URLs remain
+fallback candidates. Existing image-lock mirror URLs are normalized to HTTPS,
+and their security snapshot `20260726T000750Z` maps to `20260727T000824Z`.
+Other snapshot timestamps retain their upstream location.
+
+The policy changes download locations, not generated locks, package versions
+or checksum verification. When advancing snapshot inputs, verify the matching
+mirror content before updating the mappings. Commands that ignore rc files
+must pass `--downloader_config` explicitly. The policy does not rewrite
+`apt-get` or arbitrary `curl` commands, and does not provide connectivity to the
+private remote cache/downloader. The mirror may redirect HTTPS requests to
+HTTP, so HTTPS source URLs alone do not guarantee end-to-end TLS.

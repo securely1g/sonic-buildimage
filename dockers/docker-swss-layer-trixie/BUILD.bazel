@@ -16,21 +16,19 @@ manifest_labels(
     manifest = "//:target/bazel-manifests/docker-swss-layer-trixie/manifest.json",
 )
 
-# Keep this payload independent of the parent image. Orchagent's FIPS and
-# retained-Make-base paths and source-package tests consume the same owner TARs.
-# Common is deliberately repeated byte-for-byte where config-engine inherits it.
+# Source payload added over config-engine. Common (libswsscommon and its
+# configuration) is owned by the config-engine parent and is not repeated here.
 sonic_layer(
     name = "source_runtime",
     root_owned = True,
     tars = [
         "@sonic_swss//dist:swss_pkg",
-        "@sonic_swss_common//:libswsscommon_pkg",
         "@sonic_sairedis//lib:libsairedis_pkg",
         "@sonic_sairedis//meta:libsaimetadata_pkg",
         "@sonic_dash_api//:libdashapi_pkg",
         "@sonic_dash_api//:protobuf_runtime_pkg",
-        "//src/libteam:libteam_runtime",
-        "//src/libteam:libteamdctl_runtime",
+        "@libteam//:libteam_runtime",
+        "@libteam//:libteamdctl_runtime",
     ],
 )
 
@@ -68,15 +66,22 @@ sonic_layer(
 )
 
 # Preserve the parent's checked package records and add the selected external
-# APT packages. Source TARs remain source artifacts; do not invent dpkg records
-# for owners that do not export a package-identity contract.
+# APT packages. libteam5 and libteamdctl0 are recorded here, where their files
+# are installed, from libteam's recipe-derived package identity. Other source
+# TARs remain source artifacts without invented dpkg records.
 installed_packages(
     name = "installed_packages",
     apt_receipt = ":runtime_apt_selection",
     architecture = "amd64",
     base = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
     controls = [label + ":control" for label in APT_INPUTS["swss_layer_debian"]["amd64"].values()],
+    owner_metadata = ["@libteam//:library_runtime_packages.json"],
+    source_modules = {"libteam": "@image_source_modules//:libteam.MODULE.bazel"},
     source_spec = "//dockers/docker-swss-layer-trixie/bazel:source_paths.json",
+    sources = {
+        "libteam5": "@libteam//:libteam_runtime",
+        "libteamdctl0": "@libteam//:libteamdctl_runtime",
+    },
 )
 
 filegroup(

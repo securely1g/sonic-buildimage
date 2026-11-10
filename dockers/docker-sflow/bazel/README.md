@@ -43,15 +43,12 @@ tools/bazel/ci/libteam_draft_bazel.sh build //dockers/docker-sflow:docker-sflow.
   //dockers/docker-sflow:docker-sflow-dbg.gz
 ```
 
-The Draft review uses `tools/bazel/ci/review_bazel.sh` with the immutable complete
-catalog recorded by `libteam_draft_bazel.sh`. Ordinary `.bazelrc` keeps maintained
-SONiC main and Bazel Central Registry. The compatibility entry point delegates to
-the shared helper so inherited image jobs select the same catalog and preserve
-their local caches. The selected iproute2 `.5` preserves the full compiler
-flags through response files when the shared native dependency graph exceeds
-the operating system's per-argument limit ([registry #192](https://github.com/securely1g/sonic-bazel-registry/pull/192)).
-Remove the temporary catalog selection when prerequisites
-land; do not add a second SONiC registry endpoint.
+CI runs these builds through the shared entry point `tools/bazel/ci/libteam_draft_bazel.sh`,
+which resolves the hsflowd, sflowtool, libpsample and SWSS owner modules from
+canonical registry `main`, the same catalog ordinary `.bazelrc` uses. The selected
+iproute2 `.5` preserves the full compiler flags through response files when the
+shared native dependency graph exceeds the operating system's per-argument limit
+([registry #192](https://github.com/securely1g/sonic-bazel-registry/pull/192)).
 
 Make selects this producer only for native AMD64 VS/Trixie with FIPS enabled,
 ASAN disabled and the normal `dbg` suffix. Other profiles preserve their existing

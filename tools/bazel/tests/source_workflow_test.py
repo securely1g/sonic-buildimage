@@ -50,6 +50,7 @@ class SourceWorkflowTest(unittest.TestCase):
         self.commands.mkdir()
         (self.directory / "artifacts/vs").mkdir(parents=True)
         for name in (".bazelversion", "tools/bazel/build_helpers.py",
+                     "tools/bazel/cache/credentials.py",
                      "platform/vs/docker-syncd-vs/bazel/apt.lock.json",
                      "platform/vs/docker-syncd-vs/BUILD.bazel"):
             fixture = self.directory / name
@@ -185,8 +186,7 @@ class SourceWorkflowTest(unittest.TestCase):
                                             ("--artifacts", artifacts), ("--bazel", self.environment["BAZEL"])):
                             self.assertEqual(args[args.index(flag) + 1], value)
                         self.assertEqual("--bazel-arg=--config=syncd-dash" in args, dash)
-                        self.assertEqual("--bazel-arg=--//dockers/docker-orchagent:source_config_engine=true" in args,
-                                         not dash)
+                        self.assertFalse(any("source_config_engine" in arg for arg in args))
                         for option in ("--distdir=/bazel_cache/source downloads", "--remote_download_all",
                                        "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
                                        "--host_platform=@sonic_build_infra//platforms:x86_64_trixie",
