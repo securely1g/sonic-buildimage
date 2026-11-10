@@ -1027,7 +1027,7 @@ jobs:
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 7340f9b25dff81bdad9120231b578b66e754fd03
+          SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
           BAZELISK_GITHUB_TOKEN: ""
         run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
       - name: Validate installed Orchagent sources and Scapy wheel
@@ -1166,7 +1166,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 7340f9b25dff81bdad9120231b578b66e754fd03
+          SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
         run: python3 -B tools/bazel/ci/sflow_image.py build --bazel "$BAZEL" --artifacts artifacts/sflow
       - name: Validate sFlow installed payloads and matching symbols
         run: python3 -B tools/bazel/ci/sflow_image.py validate --artifacts artifacts/sflow
@@ -1312,7 +1312,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_BASE_SHA: ${{ steps.source_context.outputs.tested_base || github.event.pull_request.base.sha }}
-          SONIC_BAZEL_REGISTRY_REVISION: 7340f9b25dff81bdad9120231b578b66e754fd03
+          SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
         run: python3 -B tools/bazel/ci/otel_image.py build --bazel "$BAZEL" --artifacts artifacts/otel
       - name: Validate OTEL installed payloads and matching symbols
         run: python3 -B tools/bazel/ci/otel_image.py validate --artifacts artifacts/otel
@@ -4218,7 +4218,7 @@ jobs:
         shell: bash
     env:
       BAZEL: tools/bazel/ci/review_bazel.sh
-      SONIC_BAZEL_REGISTRY_REVISION: 7340f9b25dff81bdad9120231b578b66e754fd03
+      SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
