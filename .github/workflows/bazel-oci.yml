@@ -764,10 +764,17 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           set -euo pipefail
+          rc_flags=(--nosystem_rc --nohome_rc --noworkspace_rc "--bazelrc=$PWD/tools/bazel/common.bazelrc")
+          bazel "${rc_flags[@]}" shutdown >/dev/null 2>&1 || true
           owner_output="$RUNNER_TEMP/orchagent-owner-output"
           owner_bazel="$RUNNER_TEMP/orchagent-owner-bazel.sh"
+          owner_jvm="--host_jvm_args=-Xmx6g"
           cleanup_owner_output() {
-            bazel "--output_base=$owner_output" shutdown >/dev/null 2>&1 || true
+            local status=$?
+            if [[ $status -ne 0 && -f "$owner_output/server/jvm.out" ]]; then
+              cat "$owner_output/server/jvm.out" || true
+            fi
+            bazel "--output_base=$owner_output" "$owner_jvm" "${rc_flags[@]}" shutdown >/dev/null 2>&1 || true
             chmod -R u+w "$owner_output" 2>/dev/null || true
             rm -rf "$owner_output" "$owner_bazel"
           }
@@ -778,7 +785,22 @@ jobs:
           if [[ $# == 1 && "$1" == --version ]]; then
             exec "$BAZEL" --version
           fi
-          exec "$BAZEL" "--output_base=$RUNNER_TEMP/orchagent-owner-output" "$@"
+          owner_output="$RUNNER_TEMP/orchagent-owner-output"
+          owner_jvm="--host_jvm_args=-Xmx6g"
+          subcommand="$1"
+          shift
+          extra_flags=()
+          case "$subcommand" in
+            build)
+              extra_flags=(--noexecution_log_sort)
+              ;&
+            test)
+              bazel "--output_base=$owner_output" "$owner_jvm" \
+                --nosystem_rc --nohome_rc --noworkspace_rc \
+                "--bazelrc=$PWD/tools/bazel/common.bazelrc" shutdown >/dev/null 2>&1 || true
+              ;;
+          esac
+          exec "$BAZEL" "--output_base=$owner_output" "$owner_jvm" "$subcommand" "${extra_flags[@]}" "$@"
           SH
           chmod +x "$owner_bazel"
           python3 -B tools/bazel/ci/container.py --container //dockers/docker-orchagent \
