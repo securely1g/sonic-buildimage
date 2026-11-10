@@ -135,6 +135,93 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Capture the existing build-hooks package for source inspection
+        id: build_hooks_capture
+        env:
+          RECEIPT: ${{ steps.paths.outputs.receipt }}
+        run: |
+          python3 -I -S -B - <<'PY_BUILD_HOOKS_CAPTURE'
+          import hashlib, json, os, stat
+          from pathlib import Path
+
+          expected_sha = '68bd8a206d6539dc4e6db54e6ad9b8c1e06267b7318b4d956ce1ed91dea4d994'
+          expected_size = 12148
+          source = Path('/usr/local/share/buildinfo/sonic-build-hooks_1.0_all.deb')
+          receipt_path = Path(os.environ['RUNNER_TEMP']) / os.environ['RECEIPT']
+          receipt_bytes = receipt_path.read_bytes()
+          receipt = json.loads(receipt_bytes)
+          run, attempt, worker = os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'], os.environ['RUNNER_NAME']
+          assert (receipt['run'], receipt['attempt'], receipt['worker'], receipt['controller']) == (int(run), int(attempt), worker, os.environ['GITHUB_SHA'])
+          assert receipt['pool'] == 'sonic-slave-container-k3s'
+          observed = receipt['bootstrap_build_hooks_debs']['installed_buildinfo_copy']
+          assert observed['status'] == 'CURRENT_BYTES_OBSERVED_NOT_ADMITTED'
+          assert observed['base'] == str(source.parent) and observed['relative_path'] == source.name
+          assert observed['sha256'] == expected_sha and observed['observed_bytes'] == expected_size
+          descriptors, links = [], []
+          identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid)
+          signature = lambda value: identity(value) + (value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+          directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+          try:
+              directory = os.open('/', directory_flags)
+              descriptors.append(directory)
+              for component in source.parent.parts[1:]:
+                  named = os.stat(component, dir_fd=directory, follow_symlinks=False)
+                  assert stat.S_ISDIR(named.st_mode), 'Source parent must be a real directory'
+                  child = os.open(component, directory_flags, dir_fd=directory)
+                  descriptors.append(child)
+                  opened = os.fstat(child)
+                  assert identity(named) == identity(opened), 'Source parent changed before opening'
+                  links.append((directory, component, identity(opened)))
+                  directory = child
+              named = os.stat(source.name, dir_fd=directory, follow_symlinks=False)
+              assert stat.S_ISREG(named.st_mode) and named.st_size == expected_size
+              fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+              descriptors.append(fd)
+              before = os.fstat(fd)
+              assert signature(named) == signature(before)
+              chunks, remaining = [], expected_size + 1
+              while remaining:
+                  block = os.read(fd, remaining)
+                  if not block:
+                      break
+                  chunks.append(block)
+                  remaining -= len(block)
+              data = b''.join(chunks)
+              assert signature(before) == signature(os.fstat(fd)) == signature(os.stat(source.name, dir_fd=directory, follow_symlinks=False)), 'Source changed during read'
+              for parent, component, expected in links:
+                  assert identity(os.stat(component, dir_fd=parent, follow_symlinks=False)) == expected, 'Source parent binding changed'
+          finally:
+              for descriptor in reversed(descriptors):
+                  os.close(descriptor)
+          assert len(data) == expected_size and hashlib.sha256(data).hexdigest() == expected_sha
+          output = Path(os.environ['RUNNER_TEMP']) / f'vs-build-hooks-inspection-{run}-{attempt}-{worker}'
+          assert output.parent.resolve() == output.parent.absolute()
+          output.mkdir(mode=0o700)
+          package = output / source.name
+          with package.open('xb') as stream:
+              assert stream.write(data) == len(data)
+          package.chmod(0o400)
+          metadata = {'schema': 1, 'run': int(run), 'attempt': int(attempt), 'worker': worker,
+                      'controller': os.environ['GITHUB_SHA'], 'source': str(source),
+                      'sha256': expected_sha, 'bytes': expected_size,
+                      'observation_sha256': hashlib.sha256(receipt_bytes).hexdigest(),
+                      'marker': receipt['marker'], 'operation': 'copy_existing_package_for_source_inspection',
+                      'package_generation': False, 'package_installation': False,
+                      'source_compatibility': 'not_established', 'complete_VS_acceptance': False}
+          with (output / 'inspection.json').open('x') as stream:
+              json.dump(metadata, stream, indent=2, sort_keys=True)
+              stream.write('\n')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
+              stream.write(f'directory={output.name}\n')
+          PY_BUILD_HOOKS_CAPTURE
+      - name: Retain the existing build-hooks inspection input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-build-hooks-inspection-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ steps.build_hooks_capture.outputs.directory }}/
+          if-no-files-found: error
+          retention-days: 14
+
   vs_cache_inspection:
     name: Existing VS cache metadata (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-cache-inspect' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
