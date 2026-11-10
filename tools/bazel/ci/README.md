@@ -152,6 +152,11 @@ job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
 
+SWSS compilation, package contents and component tests are validated in the
+[SWSS source repository](https://github.com/securely1g/sonic-swss). Buildimage
+consumes those targets and validates the assembled OCI images, including their
+installed behavior and image-cache invalidation.
+
 The native VS Make build produces the runtime and debug archives together for
 each registered Bazel container, using the same builder and Bazel invocation
 for each pair. The normal installer still selects runtime containers;

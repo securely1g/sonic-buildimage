@@ -12,9 +12,8 @@ packages remain available: `libteam5`, `libteamdctl0` and `libteam-utils`.
 The registry owner also exposes library-only metadata for SWSS's separate TARs.
 
 The image retains master's FIPS `0.0.4-ef423363e8fd50358f0aa2a8a20d3e08d4450a56`,
-infrastructure `0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568`, SWSS
-`252a506ae5a94e36a4e330b736a3781a9f7bcf9b` (with `tools/bazel/0001-sonic-swss-libteam.patch`
-until registered `sonic-swss` is selected) and Common
+infrastructure `0.0.26-51c838da6ff57295fde6e0bc3807841cb31a8568`, registered SWSS
+`0.0.2-ee5a197adb6ae19c891a8844017d590969a10e4c` and Common
 `0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61`. Libnl3 `3.7.0.sonic.7` and
 Distroless `0.9.4.sonic.16` satisfy the shared libteam contract. Bazel's resolved
 graph must still be verified in CI; matching declarations are not runtime proof.
