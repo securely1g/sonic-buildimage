@@ -1434,5 +1434,107 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(json.loads((root / "public/loaded-validation.json").read_text()), receipt)
 
 
+class PrivateDockerMountTeardownTest(unittest.TestCase):
+    def cleanup_fixture(self, root, snapshots, clock):
+        """Exercise the exact elevated stdlib program with no process or mount action."""
+        reader = patch.object(Path, "read_text", side_effect=snapshots)
+        return reader, patch.object(worker.time, "monotonic", side_effect=clock)
+
+    def run_cleanup(self, root, snapshots, clock):
+        reader, timer = self.cleanup_fixture(root, snapshots, clock)
+        with reader as reads, timer, patch.object(worker.time, "sleep") as sleep, \
+                patch.object(worker.shutil, "rmtree") as remove, \
+                patch.object(sys, "argv", ["private-docker-cleanup", str(root)]), \
+                patch("sys.stderr", new_callable=io.StringIO) as diagnostic:
+            error = None
+            try:
+                exec(compile(worker.docker_cleanup_script(), "private-docker-cleanup", "exec"), {})
+            except (AssertionError, ValueError, IndexError) as caught:
+                error = caught
+            return error, reads, sleep, remove, diagnostic.getvalue()
+
+    def mount_row(self, root, relative="overlay2/layer/merged", number=100, filesystem="overlay"):
+        target = str(root / relative).replace("\\", "\\134").replace(" ", "\\040")
+        return f"{number} 1 0:42 / {target} rw - {filesystem} private-source rw,private-option\n"
+
+    def test_delayed_teardown_waits_before_removing_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(
+                root, [self.mount_row(root), ""], [0, 0])
+            self.assertIsNone(error)
+            self.assertEqual(reads.call_count, 2)
+            sleep.assert_called_once_with(0.5)
+            remove.assert_called_once_with(root)
+            self.assertEqual(diagnostic, "")
+
+    def test_persistent_mount_refuses_deletion_with_bounded_safe_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            relative = "volumes/private token/merged"
+            row = self.mount_row(root, relative)
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(root, [row, row], [0, 0, 30])
+            self.assertIsInstance(error, AssertionError)
+            self.assertIn("still has a mounted child", str(error))
+            self.assertEqual(reads.call_count, 2)
+            sleep.assert_called_once_with(0.5)
+            remove.assert_not_called()
+            value = json.loads(diagnostic)
+            self.assertEqual((value["phase"], value["wait_limit_seconds"], value["mount_count"]),
+                             ("private_docker_mount_teardown", 30, 1))
+            self.assertEqual(value["reported_mounts"][0], {
+                "mount_id": 100, "parent_id": 1, "filesystem": "overlay", "location": "volumes",
+                "relative_depth": 3, "relative_path_sha256": hashlib.sha256(relative.encode()).hexdigest()})
+            self.assertFalse(value["truncated"])
+            for private in (str(root), "private token", "private-source", "private-option"):
+                self.assertNotIn(private, diagnostic)
+            self.assertTrue(root.is_dir())
+
+    def test_timeout_diagnostics_limit_rows_and_unknown_filesystem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            rows = "".join(self.mount_row(root, "private-name/" + str(i), i + 100, "private-fstype")
+                           for i in range(20))
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(root, [rows], [0, 30])
+            self.assertIsInstance(error, AssertionError)
+            sleep.assert_not_called()
+            remove.assert_not_called()
+            value = json.loads(diagnostic)
+            self.assertEqual(value["mount_count"], 20)
+            self.assertEqual(len(value["reported_mounts"]), 16)
+            self.assertTrue(value["truncated"])
+            self.assertTrue(all(x["filesystem"] == x["location"] == "other" for x in value["reported_mounts"]))
+            self.assertNotIn("private-name", diagnostic)
+            self.assertNotIn("private-fstype", diagnostic)
+
+    def test_unrelated_prefix_mount_does_not_block_private_data_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            row = self.mount_row(root.with_name(root.name + "-other"))
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(root, [row], [0])
+            self.assertIsNone(error)
+            sleep.assert_not_called()
+            remove.assert_called_once_with(root)
+            self.assertEqual(diagnostic, "")
+
+    def test_symlink_or_unparseable_mount_state_never_deletes_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            link = Path(directory) / "linked-docker"
+            link.symlink_to(root, target_is_directory=True)
+            for selected, snapshots in ((link, []), (root, ["invalid\n"])):
+                with self.subTest(path=selected):
+                    error, reads, sleep, remove, diagnostic = self.run_cleanup(selected, snapshots, [0])
+                    self.assertIsNotNone(error)
+                    remove.assert_not_called()
+                    sleep.assert_not_called()
+                    self.assertTrue(root.is_dir())
+
+
 if __name__ == "__main__":
     unittest.main()

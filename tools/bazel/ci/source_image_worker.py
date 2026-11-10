@@ -1006,6 +1006,50 @@ def publish(args):
     (destination / "build-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 
+def docker_cleanup_script():
+    """Bound mount teardown before removing only the stopped private daemon's data."""
+    return r'''import hashlib, json, os, pathlib, re, shutil, sys, time
+root = pathlib.Path(sys.argv[1])
+assert not root.is_symlink() and root.parent.resolve() == root.parent
+
+def remaining_mounts():
+    found = []
+    for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():
+        fields = line.split()
+        mount = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4])
+        path = pathlib.Path(mount)
+        if not path.is_relative_to(root):
+            continue
+        relative = path.relative_to(root)
+        filesystem = fields[fields.index('-') + 1]
+        # No mount source, options, absolute paths, or arbitrary path components.
+        found.append({
+            'mount_id': int(fields[0]), 'parent_id': int(fields[1]),
+            'filesystem': filesystem if filesystem in ('overlay', 'ext4', 'xfs', 'tmpfs', 'proc', 'sysfs', 'cgroup2') else 'other',
+            'location': ('root' if not relative.parts else relative.parts[0]
+                         if relative.parts[0] in ('overlay2', 'containers', 'containerd', 'volumes', 'image', 'buildkit') else 'other'),
+            'relative_depth': len(relative.parts),
+            'relative_path_sha256': hashlib.sha256(os.fsencode(str(relative))).hexdigest(),
+        })
+    return found
+
+deadline = time.monotonic() + 30
+while True:
+    mounts = remaining_mounts()
+    if not mounts:
+        break
+    if time.monotonic() >= deadline:
+        print(json.dumps({'status': 'failed', 'phase': 'private_docker_mount_teardown',
+                          'wait_limit_seconds': 30, 'mount_count': len(mounts),
+                          'reported_mounts': mounts[:16], 'truncated': len(mounts) > 16},
+                         sort_keys=True), file=sys.stderr)
+        raise AssertionError('Private Docker still has a mounted child after bounded teardown wait; retain its data')
+    time.sleep(0.5)
+if root.exists():
+    shutil.rmtree(root)
+'''
+
+
 def stop(args):
     path = args.artifacts / "worker-private.json"
     if not path.exists():
@@ -1032,15 +1076,7 @@ def stop(args):
     require(root.parent == temporary and temporary.is_relative_to("/actions/_work")
             and re.fullmatch(r"source-image-docker-[0-9]+-[0-9]+", root.name), "Unexpected private Docker data path")
     # Delete only this stopped job's Docker data, never its persistent Bazel caches.
-    cleanup = """import os, pathlib, re, shutil, sys
-root = pathlib.Path(sys.argv[1])
-assert not root.is_symlink() and root.parent.resolve() == root.parent
-for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():
-    mount = re.sub(r'\\\\([0-7]{3})', lambda m: chr(int(m[1], 8)), line.split()[4])
-    assert not pathlib.Path(mount).is_relative_to(root), 'Private Docker still has a mounted child'
-if root.exists():
-    shutil.rmtree(root)
-"""
+    cleanup = docker_cleanup_script()
     run(["sudo", "-n", sys.executable, "-c", cleanup, str(root)], timeout=120)
     pidfile.unlink(missing_ok=True)
 
