@@ -20,8 +20,8 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.bazel import build_helpers
 from tools.bazel.ci import make_cache_sandbox
+from tools.bazel.ci.preserve_setup_bazel_cache import PRIVATE_REMOTE_CACHE
 
 ARCHITECTURES = {"amd64": "x86_64", "arm64": "aarch64"}
 SLAVE_REPOSITORY = "sonicdev-microsoft.azurecr.io/sonic-slave-trixie"
@@ -151,6 +151,9 @@ def common_helpers(checkout):
 
 def seed_receipt(architecture):
     path = ROOT / PUBLIC / "seed/cross-repo.json"
+    access = json.loads((path.parent / "cache-access.json").read_text())
+    require(access.get("endpoint") == PRIVATE_REMOTE_CACHE and access.get("status") == "OK",
+            "Common CI must verify and seed the same Bazel remote cache used by Make")
     seed = json.loads(path.read_text())
     require(seed.get("passed") is True and seed.get("mode") == "make_seed",
             "A successful Common CI make_seed receipt is required")
@@ -229,6 +232,8 @@ def container_options():
             "--strategy=CopyToDirectory=local",
             "--noincompatible_legacy_local_fallback", "--disk_cache=",
             "--repository_cache=" + str(CONTAINER_PRIVATE / "repository-cache"),
+            "--remote_cache=" + PRIVATE_REMOTE_CACHE, "--remote_executor=",
+            "--remote_accept_cached=true", "--remote_upload_local_results=false",
             "--remote_download_outputs=all", "--remote_cache_async=false",
             # Avoid sorting the full execution log in Bazel's heap at shutdown.
             "--execution_log_sort=false",
@@ -252,9 +257,12 @@ def make_command(architecture, builder, cache_root):
 
 
 def make_environment():
-    return dict(os.environ, BAZEL=str(CONTAINER_PRIVATE / "bazel-read"),
-                BAZEL_CONTAINER_ARGS=shlex.join(container_options()),
-                BAZEL_CONTAINER_CACHE_DIR="", BAZEL_SWSS_CACHE_DIR="")
+    environment = dict(os.environ, BAZEL=str(CONTAINER_PRIVATE / "bazel-read"),
+                       BAZEL_CONTAINER_ARGS=shlex.join(container_options()),
+                       BAZEL_CONTAINER_CACHE_DIR="", BAZEL_SWSS_CACHE_DIR="")
+    # The legacy credential opts ordinary Make builds into a different cache.
+    environment.pop("BAZEL_REMOTE_AUTH", None)
+    return environment
 
 
 def prepare(architecture, checkout):
@@ -292,7 +300,8 @@ def prepare(architecture, checkout):
                "seed_buildimage_revision": seed["buildimage_revision"],
                "common_revision": seed["common_revision"], "common_source_archive_sha256": source_hash,
                "seed_receipt_sha256": seed_hash, "builder": builder, "make_command": [*prefix, IMAGE],
-               "cache_writes": False, "disk_cache": False, "fresh_workspace": True,
+               "remote_cache": PRIVATE_REMOTE_CACHE, "cache_writes": False,
+               "disk_cache": False, "fresh_workspace": True,
                "fresh_output_base": True, "yang": True}
     write_json(ROOT / PUBLIC / "result.json", receipt)
     write_json(private / "make-plan.json", {"architecture": architecture, "make_prefix": prefix,
@@ -306,7 +315,6 @@ def prepare(architecture, checkout):
 def build(architecture):
     native_architecture(architecture)
     require(os.geteuid() != 0, "Outer Make requires a non-root runner user")
-    build_helpers.credentials.authorization()
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     private = ROOT / PRIVATE
     plan = json.loads((private / "make-plan.json").read_text())
@@ -416,7 +424,6 @@ def image_receipt(path, architecture):
 
 def inspect(architecture):
     require_native_builder(architecture)
-    build_helpers.credentials.authorization()
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     seed, seed_hash = seed_receipt(architecture)
     receipt_path = ROOT / PUBLIC / "result.json"
@@ -434,7 +441,7 @@ def inspect(architecture):
     compare_image_actions(seed["phases"][0], summary)
     image_log_hash = sha256(ACTION_LOG)
     platform_label = "@sonic_build_infra//platforms:" + helpers.MACHINES[architecture][1]
-    options = [*container_options(), *build_helpers.remote_cache_options(),
+    options = [*container_options(),
                "--platforms=" + platform_label, "--host_platform=" + platform_label]
     artifacts = {}
     outputs = {}
