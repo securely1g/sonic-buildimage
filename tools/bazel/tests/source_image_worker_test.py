@@ -590,22 +590,44 @@ class ImageWorkerTest(unittest.TestCase):
                     else: self.assertEqual((collision / "keep").read_text(), "retained")
 
     def test_worker_temporary_directory_is_bound_to_run_attempt_and_worker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _, temporary, environment = self.native_paths(root)
-            with patch.dict(os.environ, environment):
-                expected = temporary / environment["SOURCE_WORKER_SCRATCH"]
-                self.assertEqual(worker.temporary_directory(), expected)
-                self.assertFalse(expected.exists())
-                for changed in ("../scratch", "source-image-scratch-123-1-sonic-slave-lgh114-1",
-                                "source-image-scratch-123-2-sonic-slave-lgh114-2"):
-                    with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": changed}), self.assertRaises(ValueError):
+        for pool, runner in (("sonic-slave-container-dpool", "sonic-slave-lgh114-1"),
+                             ("sonic-slave-container-k3s", "ks-fixture-123")):
+            with self.subTest(pool=pool), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                _, temporary, environment = self.native_paths(root)
+                environment.update(WORKER_POOL=pool, RUNNER_NAME=runner,
+                    SOURCE_WORKER_SCRATCH=f"source-image-scratch-123-2-{runner}")
+                with patch.dict(os.environ, environment):
+                    expected = temporary / environment["SOURCE_WORKER_SCRATCH"]
+                    self.assertEqual(worker.temporary_directory(), expected)
+                    self.assertFalse(expected.exists())
+                    for changed in ("../scratch", f"source-image-scratch-123-1-{runner}",
+                                    "source-image-scratch-123-2-other-worker"):
+                        with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": changed}), self.assertRaises(ValueError):
+                            worker.temporary_directory()
+                    for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+                        for invalid in ("", "0", "01", "../2", "2\n"):
+                            with self.subTest(key=key, invalid=invalid), patch.dict(os.environ, {key: invalid}), \
+                                    self.assertRaises(ValueError):
+                                worker.temporary_directory()
+                    expected.symlink_to(root / "missing")
+                    with self.assertRaisesRegex(ValueError, "symlinks"):
                         worker.temporary_directory()
-                expected.symlink_to(root / "missing")
-                with self.assertRaisesRegex(ValueError, "symlinks"):
+                    with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": ""}):
+                        self.assertEqual(worker.temporary_directory(), temporary)
+
+    def test_worker_scratch_rejects_mismatched_and_unknown_pools(self):
+        for pool, runner in (("sonic-slave-container-dpool", "ks-fixture-123"),
+                             ("sonic-slave-container-k3s", "sonic-slave-lgh114-1"),
+                             ("unknown-pool", "ks-fixture-123"),
+                             ("sonic-slave-container-k3s", "ks-fixture/escape")):
+            with self.subTest(pool=pool, runner=runner), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                _, _, environment = self.native_paths(root)
+                environment.update(WORKER_POOL=pool, RUNNER_NAME=runner,
+                    SOURCE_WORKER_SCRATCH=f"source-image-scratch-123-2-{runner}")
+                with patch.dict(os.environ, environment), self.assertRaises(ValueError):
                     worker.temporary_directory()
-                with patch.dict(os.environ, {"SOURCE_WORKER_SCRATCH": ""}):
-                    self.assertEqual(worker.temporary_directory(), temporary)
 
     def test_optional_catalog_requires_an_immutable_source_pair(self):
         for catalog in ("", "b" * 40):

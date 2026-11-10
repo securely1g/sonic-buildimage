@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
 from tools.bazel.ci.source_worker_preflight import (
-    POOLS, cpu_limit, measure, select_build_profile, worker_cache_root)
+    POOLS, cpu_limit, measure, select_build_profile, worker_cache_root, worker_matches_pool)
 from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
@@ -584,7 +584,7 @@ def temporary_directory():
     run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
     runner = os.environ.get("RUNNER_NAME", "")
     require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) and
-            re.fullmatch(r"sonic-slave-lgh114-[1-4]", runner), "Invalid worker scratch identity")
+            worker_matches_pool(runner, selected_worker_pool()), "Invalid worker scratch identity")
     require(name == f"source-image-scratch-{run_id}-{attempt}-{runner}", "Worker scratch path differs from this run")
     path = root / name
     require(not path.is_symlink() and path.resolve() == path, "Worker scratch path must not traverse symlinks")
