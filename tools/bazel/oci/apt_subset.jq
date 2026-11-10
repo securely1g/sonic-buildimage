@@ -7,6 +7,6 @@
 | {
     version: $lock.version,
     sources: $lock.sources,
-    dependency_sets: {swss_layer_debian: {sets: {($view.architecture): $roots}}},
+    dependency_sets: {($subset): {sets: {($view.architecture): $roots}}},
     packages: ($view.packages | with_entries(.value = $lock.packages[.key]))
   }

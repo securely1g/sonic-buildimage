@@ -708,6 +708,118 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Preserve completed archive evidence before LLDP acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          if [[ -d artifacts ]]; then
+            preserved="$(mktemp -d "$RUNNER_TEMP/pre-lldp-artifacts.XXXXXXXX")"
+            mv artifacts "$preserved/artifacts"
+          fi
+
+      - name: Verify Make boundaries and shallow-checkout provenance
+        if: matrix.architecture == 'amd64'
+        run: |
+          python3 -B tools/bazel/tests/lldp_make_test.py
+          python3 -B tools/bazel/tests/lldp_identity_test.py
+      - name: Build LLDP runtime and debug images from source owners
+        id: lldp_build
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(uname -m)" = x86_64
+          test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
+          python3 -B tools/bazel/ci/lldp_image.py build --bazel "$BAZEL" --artifacts artifacts/lldp
+      - name: Validate LLDP image contents and source symbols
+        if: matrix.architecture == 'amd64'
+        run: python3 -B tools/bazel/ci/lldp_image.py validate --artifacts artifacts/lldp
+      - name: Check LLDP incremental rebuild and restored image digests
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/lldp_image.py incremental --bazel "$BAZEL" --artifacts artifacts/lldp
+          git diff --exit-code
+      - name: Prepare reviewed LLDP evidence
+        id: lldp_public
+        if: always() && matrix.architecture == 'amd64' && (steps.lldp_build.outcome == 'success' || steps.lldp_build.outcome == 'failure')
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/lldp')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'tested_revision_parents', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          names = ['validation.json', 'action-audit.json', 'incremental.json']
+          names += [path.name for path in root.glob('*.validation.json')]
+          names += [path.name for path in root.glob('*packages.json')]
+          for name in names:
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYCODE
+      - name: Retain images and reviewed build evidence
+        if: always() && steps.lldp_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lldp-image-amd64
+          path: |
+            artifacts/lldp/*.gz
+            artifacts/lldp/*.tar
+            artifacts/lldp/*.status
+            artifacts/lldp/*packages.json
+            artifacts/lldp/*.validation.json
+            artifacts/lldp/validation.json
+            artifacts/lldp/public-receipt.json
+            artifacts/lldp/action-audit.json
+            artifacts/lldp/incremental.json
+            artifacts/lldp/build-summary.json
+            artifacts/lldp/MODULE.bazel.lock
+            artifacts/lldp/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  lldp_runtime:
+    name: Run installed LLDP images (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: lldp-image-amd64
+          path: artifacts/lldp
+      - name: Query private LLDP neighbors through the installed DBSyncd service
+        run: python3 -B tools/bazel/ci/lldp_loaded.py --artifacts artifacts/lldp
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: lldp-runtime-amd64
+          path: |
+            artifacts/lldp/*.runtime.json
+            artifacts/lldp/loaded-validation.json
+          if-no-files-found: warn
+          retention-days: 14
+
   swss_layer_runtime:
     name: Load and run the shared SWSS image (AMD64)
     needs: archive

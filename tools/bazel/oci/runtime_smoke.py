@@ -274,9 +274,15 @@ def redis_fixture(config):
     socket_path = data['INSTANCES']['redis']['unix_socket_path']
     if Path(socket_path).resolve() != Path('/run/redis/redis.sock'):
         raise ValueError('Unexpected Redis socket path in installed database config')
+    tcp_port = config.get('tcp_port', 0)
+    if type(tcp_port) is not int or not 0 <= tcp_port <= 65535:
+        raise ValueError('Invalid private Redis TCP port')
+    if tcp_port and (data['INSTANCES']['redis']['hostname'] != '127.0.0.1' or
+                     tcp_port != data['INSTANCES']['redis']['port']):
+        raise ValueError('Private Redis TCP listener must match the loopback owner configuration')
     with tempfile.TemporaryDirectory(prefix='sonic-redis-smoke-') as name:
         directory = Path(name)
-        argv = [str(executable), '--port', '0', '--save', '', '--appendonly', 'no',
+        argv = [str(executable), '--port', str(tcp_port), '--bind', '127.0.0.1', '--save', '', '--appendonly', 'no',
                 '--unixsocket', socket_path, '--unixsocketperm', '700',
                 '--dir', str(directory), '--databases', '32']
         with (directory / 'redis.log').open('w+') as log:
@@ -291,6 +297,10 @@ def redis_fixture(config):
                             client.connect(socket_path)
                             client.sendall(b'*1\r\n$4\r\nPING\r\n')
                             ready = client.recv(64) == b'+PONG\r\n'
+                        if ready and tcp_port:
+                            with socket.create_connection(('127.0.0.1', tcp_port), timeout=0.2) as client:
+                                client.sendall(b'*1\r\n$4\r\nPING\r\n')
+                                ready = client.recv(64) == b'+PONG\r\n'
                         if ready:
                             break
                     except OSError:
@@ -300,7 +310,8 @@ def redis_fixture(config):
                     raise ValueError('Isolated Redis did not become ready: ' + log.read()[-4000:])
                 yield {'version': version['stdout'].strip(), 'sha256': config['sha256'],
                        'database_config_sha256': hashlib.sha256(database.read_bytes()).hexdigest(),
-                       'unix_socket': socket_path, 'tcp_disabled': True,
+                       'unix_socket': socket_path, 'tcp_disabled': tcp_port == 0,
+                       'tcp_port': tcp_port,
                        'scope': 'Explicit test helper, not an installed image component.'}
             finally:
                 if process.poll() is None:

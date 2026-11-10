@@ -2,6 +2,8 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
+exports_files(["apt_subset.jq"])
+
 py_library(
     name = "source_base_validation",
     srcs = ["source_base_validation.py"],
