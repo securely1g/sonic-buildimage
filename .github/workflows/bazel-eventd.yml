@@ -60,7 +60,7 @@ jobs:
           disk-cache: eventd-${{ matrix.architecture }}
           cache-version: "8.5.1"
       - name: Preserve setup-bazel caches for source checks
-        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
       - name: Restore default Bazel startup ownership
         run: python3 tools/bazel/ci/repair_bazel_startup.py
       - name: Configure the verified source mirror

@@ -89,7 +89,7 @@ jobs:
           repository-cache: true
           disk-cache: yang-models-${{ matrix.architecture }}
       - name: Preserve setup-bazel caches for the image-root query
-        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
       - name: Configure the verified source mirror
         shell: bash
         run: |

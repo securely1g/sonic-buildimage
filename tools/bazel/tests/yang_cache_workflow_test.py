@@ -90,7 +90,13 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
             env = dict(os.environ, HOME=str(home), PATH=str(binary) + os.pathsep + os.environ["PATH"], RECORD=str(record), BASH_ENV="/dev/null")
             subprocess.run(["bash", "-euc", setup], cwd=work, env=env, check=True)
             user = (work / ".bazelrc.user").read_text()
-            self.assertEqual(user.strip().splitlines(), ["build --disk_cache=/retained/disk", "common --repository_cache=/retained/repository"])
+            self.assertEqual(user.strip().splitlines(), [
+                "build --disk_cache=/retained/disk",
+                "common --repository_cache=/retained/repository",
+                "common --remote_cache=grpc://172.16.0.4:9092",
+                "common --experimental_remote_downloader=grpc://172.16.0.4:9092",
+                "common --experimental_remote_downloader_local_fallback",
+            ])
             subprocess.run(["bash", "-euc", "bash " + command], cwd=work, env=env, check=True)
             observed = json.loads(record.read_text())
             self.assertIn("--nohome_rc", observed["argv"])
@@ -100,6 +106,8 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
             selected_rc = "\n".join(observed["explicit_rc"])
             self.assertIn("common --repository_cache=/retained/repository", selected_rc)
             self.assertIn("build --disk_cache=/retained/disk", selected_rc)
+            self.assertIn("common --remote_cache=grpc://172.16.0.4:9092", selected_rc)
+            self.assertIn("common --experimental_remote_downloader=grpc://172.16.0.4:9092", selected_rc)
             self.assertNotIn("unrelated", selected_rc)
             self.assertFalse(any("unrelated" in arg for arg in observed["argv"]))
 

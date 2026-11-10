@@ -12,6 +12,33 @@ their job containers where applicable, need network access to
 `grpc://172.16.0.4:9092`; public GitHub-hosted runners cannot reach that private
 endpoint.
 
+Private remote services are not workspace defaults. Only the five
+cache-reachable archive, source-base, event-services, Rust-listener and YANG
+jobs opt in with:
+
+```sh
+python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
+```
+
+After validating setup-bazel's local cache settings, this appends the private
+gRPC action cache and remote downloader to the ignored `.bazelrc.user`, retaining
+existing disk/repository caches, source-mirror settings and upload overrides.
+The shared `common.bazelrc` imports that file, including for CI wrappers that
+ignore the root workspace rc. Without the flag, the helper copies only the
+selected local cache settings and never inherits remote settings from the home
+rc. Ordinary builds and hosted validation jobs therefore do not require access
+to the private cache; existing HTTPS-cache callers can retain their own policy.
+Self-hosted status alone does not enable the endpoint. Kernel jobs retain their
+explicit `--remote-cache` selection, including the disposable loopback cache
+used by cold-cache verification. Make/VS worker pools retain their existing
+authenticated cache configuration rather than inheriting the private endpoint.
+
+The remote downloader's local-fallback flag applies to repository downloads;
+it does not make an unreachable gRPC action cache safe for ordinary build
+actions. Keep both services out of default rc files. On opted-in jobs, a caller
+that intentionally disables or replaces the gRPC cache must also disable or
+replace its remote downloader.
+
 The [source base-image workflow](../../../.github/workflows/bazel-base-images.yml)
 and [OCI archive jobs](../../../.github/workflows/bazel-oci.yml) use these
 persistent agents. Neither mounts or deletes host Android, .NET or GHC SDK
