@@ -56,7 +56,11 @@ cache and changes no shared Make-cache logic. The tracked source pins are
 already covered by the P4 recipes' existing input-file hashing.
 
 The worker manager is maintained in
-[agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/codex/sonic-slave-wrk-mgr/sonic-slave-wrk-mgr).
+[agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/c650551885f8ad22cbc104082d1f1b6171e67eef/sonic-slave-wrk-mgr).
+The workflow selects the shared `sonic-slave-container` pool. The runner image
+must still match this landed commit: preparation compares its recorded manager
+revision with `EXPECTED_MANAGER_REVISION` and rejects a mismatch. The supervisor
+registers replacement workers with the shared label after each job.
 The native profile requires a privileged container, private PID/cgroup namespaces,
 bridge networking, and passwordless sudo for its UID 1000 build user. Each job
 starts its own Docker daemon; the host Docker socket is not mounted. The Actions

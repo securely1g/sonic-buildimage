@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -20,9 +21,121 @@ JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
         ("bazel-" + OWNER + ".yml", "native"), ("bazel-oci.yml", "archive"),
         ("bazel-oci.yml", "checks"), ("bazel-supervisor-rust.yml", "native"),
         ("bazel-yang-models.yml", "package")]
+PRIVATE_CACHE_JOBS = {
+    ("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
+    ("bazel-oci.yml", "archive"), ("bazel-supervisor-rust.yml", "native"),
+    ("bazel-yang-models.yml", "package"),
+}
+PRIVATE_CACHE_SETTINGS = [
+    "common --remote_cache=grpc://172.16.0.4:9092",
+    "common --experimental_remote_downloader=grpc://172.16.0.4:9092",
+    "common --experimental_remote_downloader_local_fallback",
+]
 
 
 class SetupBazelCacheTest(unittest.TestCase):
+    def test_workspace_defaults_do_not_enable_private_remote_services(self):
+        for relative in (".bazelrc", "tools/bazel/common.bazelrc", "tools/bazel/kernel/.bazelrc"):
+            with self.subTest(rc=relative):
+                contents = "\n".join(
+                    line.strip() for line in (ROOT / relative).read_text().splitlines()
+                    if not line.lstrip().startswith("#")
+                )
+                self.assertNotIn("172.16.0.4", contents)
+                self.assertNotRegex(
+                    contents,
+                    r"(?m)^(?:common|build|test|fetch) --(?:remote_cache|experimental_remote_downloader)(?:=|\s|$)",
+                )
+
+    def test_only_cache_reachable_jobs_opt_in_to_private_remote_services(self):
+        enabled = set()
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            document = yaml.safe_load(path.read_text())
+            for name, job in document.get("jobs", {}).items():
+                calls = [step["run"] for step in job.get("steps", [])
+                         if "--private-remote-cache" in step.get("run", "")]
+                if not calls:
+                    continue
+                with self.subTest(workflow=path.name, job=name):
+                    enabled.add((path.name, name))
+                    self.assertEqual(calls, ["python3 " + HELPER + " --private-remote-cache"])
+                    self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
+                    matrix = job["strategy"]["matrix"]["include"]
+                    self.assertEqual(len(matrix), 2)
+                    self.assertEqual({tuple(entry["runner"]) for entry in matrix}, {
+                        ("self-hosted", "linux", "bazel-x64"),
+                        ("self-hosted", "linux", "bazel-arm64"),
+                    })
+        self.assertEqual(enabled, PRIVATE_CACHE_JOBS)
+
+    def test_explicit_private_cache_preserves_local_caches_and_upload_policy(self):
+        for upload in ("true", "false"):
+            for repository_only in (False, True):
+                with self.subTest(upload=upload, repository_only=repository_only), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    prior = ("common --experimental_downloader_config=/verified/downloads.cfg\n"
+                             "build --remote_upload_local_results=" + upload)
+                    env = self.prepare(
+                        root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n", prior)
+                    command = ["python3", HELPER, "--private-remote-cache"]
+                    if repository_only:
+                        command.append("--repository-only")
+                    subprocess.run(command, cwd=root, env=env, check=True)
+                    expected = prior.splitlines()
+                    if not repository_only:
+                        expected.append("build --disk_cache=/disk")
+                    expected += ["common --repository_cache=/repo", *PRIVATE_CACHE_SETTINGS]
+                    self.assertEqual((root / ".bazelrc.user").read_text().splitlines(), expected)
+
+    def test_container_jobs_repair_default_startup_state_and_keep_cache_handoff(self):
+        jobs = [
+            ("bazel-base-images.yml", "native", "architecture"),
+            ("bazel-eventd.yml", "native", "architecture"),
+            ("bazel-supervisor-rust.yml", "native", "arch"),
+            ("bazel-oci.yml", "archive", "architecture"),
+        ]
+        repair_helper = "tools/bazel/ci/repair_bazel_startup.py"
+        for filename, name, architecture in jobs:
+            with self.subTest(workflow=filename), tempfile.TemporaryDirectory() as temporary:
+                document = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+                job = document["jobs"][name]
+                self.assertIn("container", job)
+                self.assertEqual(len(job["strategy"]["matrix"]["include"]), 2)
+                self.assertNotIn("BAZEL_OUTPUT_USER_ROOT", str(job))
+                self.assertNotIn("--output_user_root=", str(job))
+                handoff = next(step for step in job["steps"] if HELPER in step.get("run", ""))
+                repairs = [step for step in job["steps"] if repair_helper in step.get("run", "")]
+                self.assertEqual(len(repairs), 1)
+                self.assertEqual(repairs[0]["run"], "python3 " + repair_helper)
+                self.assertEqual(handoff["run"], "python3 " + HELPER + " --private-remote-cache")
+                self.assertEqual(job["steps"].index(repairs[0]), job["steps"].index(handoff) + 1)
+                if filename not in ("bazel-base-images.yml", "bazel-oci.yml"):
+                    events = document.get("on", document.get(True))
+                    for event in ("pull_request", "push"):
+                        self.assertIn(repair_helper, events[event]["paths"])
+                root = Path(temporary)
+                env = self.prepare(root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n")
+                subprocess.run(["bash", "-euc", handoff["run"]], cwd=root, env=env, check=True)
+                subprocess.run(["bash", WRAPPER, "info", "output_base"], cwd=root, env=env, check=True)
+                record = json.loads((root / "record.json").read_text())
+                self.assertFalse(any(arg.startswith("--output_user_root=") for arg in record["argv"]))
+                self.assertEqual(record["user"].splitlines(),
+                                 ["build --disk_cache=/disk", "common --repository_cache=/repo",
+                                  *PRIVATE_CACHE_SETTINGS])
+
+    def test_startup_root_preserves_defaults_and_explicit_overrides(self):
+        for explicit in ([], ["--output_user_root=/isolated proof", "--batch", "--output_base=/proof"]):
+            with self.subTest(explicit=explicit), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                env = self.prepare(root, user="")
+                command = ["bash", WRAPPER, *explicit, "info", "output_base"]
+                subprocess.run(command, cwd=root, env=env, check=True)
+                args = json.loads((root / "record.json").read_text())["argv"]
+                self.assertEqual(args[:len(explicit)], explicit)
+                roots = [arg for arg in args if arg.startswith("--output_user_root=")]
+                self.assertEqual(roots, explicit[:1])
+
     def prepare(self, root, home_text=None, user=None):
         home = root / "home"
         home.mkdir()
@@ -64,8 +177,10 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 handoff = handoff[0]
                 self.assertEqual(steps.index(handoff), steps.index(setup) + 1)
                 repository_only = setup["with"].get("disk-cache") is False
+                private_cache = (filename, job_name) in PRIVATE_CACHE_JOBS
                 self.assertEqual(handoff["run"].strip(), "python3 " + HELPER +
-                                 (" --repository-only" if repository_only else ""))
+                                 (" --repository-only" if repository_only else "") +
+                                 (" --private-remote-cache" if private_cache else ""))
                 self.assertTrue(setup["with"]["repository-cache"])
                 if filename not in ("bazel-base-images.yml", "bazel-oci.yml"):
                     events = document.get("on", document.get(True))
@@ -74,6 +189,8 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                             self.assertIn(HELPER, events[event]["paths"])
                 home = ("build --disk_cache=/retained/disk\n"
                         "common --repository_cache=/retained/repository\n"
+                        "common --remote_cache=grpc://unrelated.invalid\n"
+                        "common --experimental_remote_downloader=grpc://unrelated.invalid\n"
                         "common --registry=https://unrelated.invalid\n"
                         "common --experimental_downloader_config=/unrelated/home.cfg\n"
                         "startup --output_base=/unrelated/output\n")
@@ -97,11 +214,15 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 self.assertIn("common --repository_cache=/retained/repository\n", user)
                 self.assertEqual("build --disk_cache=/retained/disk\n" in user, not repository_only)
                 self.assertNotIn("unrelated", user)
+                for setting in PRIVATE_CACHE_SETTINGS:
+                    self.assertEqual(setting in user.splitlines(), private_cache)
                 # Existing fresh-root verifiers can still override these defaults.
                 override = ["bash", WRAPPER, "build", "--repository_cache=/private/repository",
-                            "--disk_cache=/private/disk", "//tools/bazel/tests:archive-fixture.gz"]
+                            "--disk_cache=/private/disk", "--remote_cache=",
+                            "--experimental_remote_downloader=",
+                            "//tools/bazel/tests:archive-fixture.gz"]
                 subprocess.run(override, cwd=root, env=env, check=True)
-                self.assertEqual(json.loads((root / "record.json").read_text())["argv"][-3:], override[-3:])
+                self.assertEqual(json.loads((root / "record.json").read_text())["argv"][-5:], override[-5:])
 
     def test_missing_duplicate_and_invalid_settings_leave_user_file_unchanged(self):
         cases = [None, "", "build --disk_cache=/disk\n",
@@ -115,7 +236,8 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 root = Path(temporary)
                 prior = "common --experimental_downloader_config=/verified/config\n"
                 env = self.prepare(root, settings, prior)
-                result = subprocess.run(["python3", HELPER], cwd=root, env=env, capture_output=True, text=True)
+                result = subprocess.run(["python3", HELPER, "--private-remote-cache"],
+                                        cwd=root, env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((root / ".bazelrc.user").read_text(), prior)
                 self.assertFalse((root / "record.json").exists())
@@ -129,32 +251,30 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 prefix = (prior or "") + ("\n" if prior and not prior.endswith("\n") else "")
                 self.assertEqual((root / ".bazelrc.user").read_text(), prefix + "common --repository_cache=/repo\n")
 
-    def test_existing_source_only_ci_selectors_run_this_regression(self):
+    def test_normal_ci_discovery_runs_this_regression(self):
+        """The normal workflow discovers cache tests alongside other helper tests."""
         document = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        count = 0
-        for job in document["jobs"].values():
-            steps = job.get("steps", [])
-            for index, step in enumerate(steps):
-                script = step.get("run", "")
-                if "for test in tools/bazel/tests/*_test.py; do" not in script:
-                    continue
-                count += 1
-                self.assertTrue(any("python3-yaml" in s.get("run", "") for s in steps[:index]))
-                loop = script[:script.index("\nfi") + 3]
-                with tempfile.TemporaryDirectory() as temporary:
-                    root = Path(temporary)
-                    tests = root / "tools/bazel/tests"
-                    tests.mkdir(parents=True)
-                    (tests / "setup_bazel_cache_test.py").write_text("")
-                    (tests / "kernel_test.py").write_text("")
-                    recorder = root / "python3"
-                    recorder.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
-                    recorder.chmod(0o755)
-                    result = subprocess.run(["bash", "-eu", "-c", loop], cwd=root,
-                                            env={"PATH": str(root) + ":/usr/bin:/bin", "SOURCE_ONLY_NO_DEBS": "true"},
-                                            check=True, capture_output=True, text=True)
-                    self.assertEqual(result.stdout.strip(), "-B tools/bazel/tests/setup_bazel_cache_test.py")
-        self.assertEqual(count, 2)
+        steps = document["jobs"]["checks"]["steps"]
+        commands = [(index, step, line) for index, step in enumerate(steps)
+                    for line in step.get("run", "").splitlines()
+                    if "-m unittest discover -s tools/bazel/tests" in line]
+        self.assertEqual(len(commands), 1)
+        index, step, command = commands[0]
+        self.assertNotIn("if", step)
+        self.assertTrue(any("python3-yaml" in s.get("run", "") for s in steps[:index]))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tests = root / "tools/bazel/tests"
+            tests.mkdir(parents=True)
+            names = ("setup_bazel_cache_test", "kernel_test")
+            for name in names:
+                (tests / (name + ".py")).write_text(
+                    "import unittest\nfrom pathlib import Path\n"
+                    "class DiscoveryProbe(unittest.TestCase):\n"
+                    "    def test_selected(self):\n"
+                    "        Path(" + repr(name + ".selected") + ").touch()\n")
+            subprocess.run(shlex.split(command), cwd=root, check=True, capture_output=True, text=True)
+            self.assertEqual(sorted(p.stem for p in root.glob("*.selected")), sorted(names))
 
 
 if __name__ == "__main__":

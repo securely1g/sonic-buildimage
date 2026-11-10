@@ -56,6 +56,8 @@ FILES = {
     "source": [
         ("swss-tar", "artifacts/swss/swss.tar", "binary"),
         ("protobuf-tar", "artifacts/swss/protobuf.tar", "binary"),
+        ("libteam-tar", "artifacts/swss/libteam.tar", "binary"),
+        ("libteamdctl-tar", "artifacts/swss/libteamdctl.tar", "binary"),
         ("runtime-dependencies", "artifacts/swss/rdeps.tar", "binary"),
         ("startup-files", "artifacts/swss/config.tar", "binary"),
         ("debug-symbols", "artifacts/swss/debug-symbols.tar", "binary"),
@@ -406,8 +408,17 @@ def graph_failure_summary(stdout, stderr, returncode):
     tail = tail[-limit:]
     if truncated:
         tail = tail.partition(b"\n")[2]
-    lines = [line for line in tail.decode("utf-8", errors="replace").splitlines()
-             if line.startswith(("ERROR:", "Error:"))]
+    lines = []
+    in_error = False
+    for line in tail.decode("utf-8", errors="replace").splitlines():
+        if line.startswith(("ERROR:", "Error:", "Error in download:")):
+            lines.append(line)
+            in_error = True
+        elif line.startswith(("WARNING:", "INFO:", "DEBUG:", "::", "##[")):
+            in_error = False
+        elif in_error and re.match(r"^\s*https?://\S+\s+(?:GET returned|HTTP[ /:])", line):
+            # Repository failures can put the causal HTTP status below a stack trace.
+            lines[-1] += " " + line
     signals, origins, codes = set(), set(), set()
     # Counts describe retained fatal lines only; summaries count lines, not extensions.
     counts = {"error_lines": len(lines), "unclassified_error_lines": 0, "extension_summaries": 0}

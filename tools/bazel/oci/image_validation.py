@@ -87,8 +87,14 @@ def apply_debug_tools_layer(path, files, *, alternatives=(), elf_machine=62):
     apply_layer(path, entries)
     approved = {}
     for replacement in alternatives:
-        old_link = {"kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0, "linkname": replacement["before"]}
-        new_link = dict(old_link, linkname=replacement["after"])
+        old_link = {
+            "kind": replacement.get("before_kind", "symlink"),
+            "mode": replacement.get("before_mode", 0o777),
+            "uid": 0,
+            "gid": 0,
+            "linkname": replacement["before"],
+        }
+        new_link = {"kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0, "linkname": replacement["after"]}
         for name in replacement["paths"]:
             require(files.get(name) == old_link and entries.get(name) == new_link,
                     "unexpected debug alternative: " + name)
@@ -164,6 +170,20 @@ def dpkg_filtered(files, filter_path):
 def assert_payload(expected, actual, description):
     differences = [name for name, item in expected.items() if actual.get(name) != item]
     require(not differences, description + " differs at: " + ", ".join(differences[:20]))
+
+
+def oci_filtered(files, excludes_path, includes_path):
+    """Apply the declared OCI filter lists, including its legal-notice exceptions."""
+    excludes, includes = (path.read_text().splitlines() for path in (excludes_path, includes_path))
+    require(excludes and includes and all(pattern for pattern in excludes + includes),
+            "OCI layer filtering requires nonempty exclude and include policies")
+
+    def matches(name, patterns):
+        return any(fnmatch.fnmatchcase(candidate, pattern)
+                   for candidate in (name, "./" + name) for pattern in patterns)
+
+    return {name: item for name, item in files.items()
+            if not matches(name, excludes) or matches(name, includes)}
 
 
 def expected_state(path):
@@ -259,13 +279,14 @@ def installed_images_policy(declarations, layouts, archives, architecture):
 
 def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                     runtime_manifest_path, debug_manifest_path, source_root, *, policy, source_contract_path=None,
-                    apt_lock_path=None, dpkg_filter_path=None, fixture=False,
+                    apt_lock_path=None, debug_apt_lock_path=None, dpkg_filter_path=None, fixture=False,
                     base_path=None, apt_layer=None, debug_tools_layer=None, runtime_links_layer=None,
                     runtime_apt_selection=None, debug_apt_selection=None, package_state_contract=None,
                     runtime_archive=None, debug_archive=None,
                     source_runtime_tar=None, source_debug_tar=None, source_receipt=None,
                     base_debug_symbols=None, base_debug_receipt=None, base_debug_package_manifest=None,
-                    runtime_payload_layers=(), debug_payload_layers=()):
+                    runtime_payload_layers=(), debug_payload_layers=(),
+                    source_layer_excludes=None, source_layer_includes=None):
     validate_policy(policy)
     expectations = policy.get("image_validation", {})
     native_expectations = policy.get("native", {})
@@ -290,6 +311,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                        runtime_archive, debug_archive, apt_lock_path)
     complete = all(value is not None for value in complete_inputs)
     require(complete or not any(value is not None for value in complete_inputs), "complete overlay validation inputs must be supplied together")
+    require(debug_apt_lock_path is None or complete, "debug APT lock requires complete overlay validation inputs")
     require(fixture or complete, "complete validation requires the base, APT layers/selections, package state contract, and archives")
     source_inputs = (source_runtime_tar, source_debug_tar, source_receipt)
     has_source = all(value is not None for value in source_inputs)
@@ -310,19 +332,38 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         source_provenance, expected_source_runtime, expected_source_debug = source_payloads(
             source_runtime_tar, source_debug_tar, source_receipt,
             contract_path=source_contract_path, fixture=fixture)
-    # Source-only owners compose already-validated native TARs directly. Their
-    # actual layers are declared inputs; receipt-backed owners retain the
-    # existing contract and may not substitute this alternative.
+    # Direct composition still needs the package receipt when APT retains
+    # source-built owners. Bind that checked subset before adding the other
+    # native/configuration layers, so composition cannot replace its bytes.
     direct_layers = bool(runtime_payload_layers or debug_payload_layers)
-    require(not direct_layers or (policy["retained_source"] == "none" and not has_source and
-            not native_expectations.get("require_source", False) and
-            runtime_payload_layers and debug_payload_layers),
+    source_retained = policy["retained_source"] == "source"
+    require(not direct_layers or (runtime_payload_layers and debug_payload_layers and (
+            (policy["retained_source"] == "none" and not has_source and
+             not native_expectations.get("require_source", False)) or
+            (source_retained and has_source))),
             "declared source layers cannot replace a required package receipt")
+    filter_inputs = (source_layer_excludes, source_layer_includes)
+    require(all(path is not None for path in filter_inputs) or all(path is None for path in filter_inputs),
+            "OCI source filter inputs must be supplied together")
+    require(not any(path is not None for path in filter_inputs) or (direct_layers and has_source),
+            "OCI source filtering requires direct receipted runtime layers")
     if direct_layers:
+        if has_source:
+            require(all(path is not None for path in filter_inputs),
+                    "direct receipted runtime requires its declared OCI filter policy")
+            filtered_runtime = oci_filtered(expected_source_runtime, *filter_inputs)
+            required = {name for record in source_contract["packages"] for name in record["required_paths"]}
+            required.update(name for name, item in expected_source_runtime.items() if "elf_machine" in item)
+            require(required <= filtered_runtime.keys(), "OCI filter removes a required source path or ELF")
+            expected_source_runtime = filtered_runtime
+        declared_runtime, declared_debug = {}, {}
         for path in runtime_payload_layers:
-            apply_layer(Path(path), expected_source_runtime)
+            apply_layer(Path(path), declared_runtime)
         for path in debug_payload_layers:
-            apply_layer(Path(path), expected_source_debug)
+            apply_layer(Path(path), declared_debug)
+        assert_payload(expected_source_runtime, declared_runtime, "declared layers change the receipted runtime payload")
+        assert_payload(expected_source_debug, declared_debug, "declared layers change the checked debug payload")
+        expected_source_runtime, expected_source_debug = declared_runtime, declared_debug
     runtime_layout = image(runtime_path, expected_platform=expected_platform)
     runtime_descriptor, runtime_manifest, runtime_config, runtime_layers = runtime_layout
     debug_layout = image(debug_path, expected_platform=expected_platform)
@@ -387,7 +428,9 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     for pair in (inherited_symbols_receipt or {}).get("pairs", []):
         require(runtime_files.get(pair["runtime_path"], {}).get("sha256") == pair["runtime_sha256"],
                 "imported base symbols use different runtime bytes")
-    assert_payload({name: item for name, item in expected_source_runtime.items() if item["kind"] != "directory"},
+    debug_replaced_state = {"var/lib/dpkg/status"} if direct_layers and "var/lib/dpkg/status" in expected_source_debug else set()
+    assert_payload({name: item for name, item in expected_source_runtime.items()
+                    if item["kind"] != "directory" and name not in debug_replaced_state},
                    debug_files, "debug image changes the source runtime payload")
     assert_payload(expected_runtime, runtime_files, "runtime package payload")
     assert_payload(expected_debug, debug_files, "debug package payload")
@@ -476,18 +519,20 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
         verify_directory_aliases(runtime_files)
         verify_directory_aliases(debug_files)
         lock_sha = sha(apt_lock_path)
+        debug_lock_sha = sha(debug_apt_lock_path) if debug_apt_lock_path is not None else lock_sha
         runtime_selection = json.loads(runtime_apt_selection.read_bytes())
         debug_selection = json.loads(debug_apt_selection.read_bytes())
-        for selection, variant, base_digest, make_sha in (
-            (runtime_selection, "runtime", base_descriptor["digest"], runtime_receipt["manifest_sha256"]),
-            (debug_selection, "debug", runtime_descriptor["digest"], debug_receipt["manifest_sha256"]),
+        for selection, variant, base_digest, make_sha, expected_lock_sha in (
+            (runtime_selection, "runtime", base_descriptor["digest"], runtime_receipt["manifest_sha256"], lock_sha),
+            (debug_selection, "debug", runtime_descriptor["digest"], debug_receipt["manifest_sha256"], debug_lock_sha),
         ):
-            selected_variant = selection.get("group") if direct_layers else selection.get("variant")
+            unretained = policy["retained_source"] == "none"
+            selected_variant = selection.get("group") if unretained else selection.get("variant")
             require(selection.get("schema") == 1 and selected_variant == variant and
-                    selection.get("base_manifest_digest") == base_digest and selection.get("apt_lock_sha256") == lock_sha and
+                    selection.get("base_manifest_digest") == base_digest and selection.get("apt_lock_sha256") == expected_lock_sha and
                     selection.get("make_manifest_sha256") == make_sha, variant + " APT selection identity differs")
             if direct_layers:
-                require(selection.get("image") == policy["image"] and
+                require((not unretained or selection.get("image") == policy["image"]) and
                         selection.get("dependency_check", {}).get("status") == "satisfied",
                         variant + " APT selection has the wrong image or unsatisfied dependencies")
             if has_source:
@@ -523,7 +568,7 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
                           "debug_alternative_links": [path for item in expectations.get("debug_alternatives", []) for path in item["paths"]],
                           "runtime_apt_selected": len(runtime_selection["selected"]),
                           "runtime_apt_skipped_base": len(runtime_selection["skipped_base"]),
-                          "runtime_apt_skipped_make": len(runtime_selection["skipped_retained" if direct_layers else "skipped_make"]),
+                          "runtime_apt_skipped_make": len(runtime_selection["skipped_retained" if unretained else "skipped_make"]),
                           "debug_apt_selected": len(debug_selection["selected"]),
                           "runtime_non_elf_base_changes": runtime_selection["changed_non_elf_base_paths"],
                           "debug_non_elf_base_changes": debug_selection["changed_non_elf_base_paths"]}
@@ -572,6 +617,7 @@ def main():
     parser.add_argument("--runtime-manifest", required=True, type=Path)
     parser.add_argument("--debug-manifest", required=True, type=Path)
     parser.add_argument("--source-root", type=Path, default=ROOT)
+    parser.add_argument("--debug-apt-lock", type=Path)
     parser.add_argument("--base", type=Path)
     parser.add_argument("--apt-layer", type=Path)
     parser.add_argument("--debug-tools-layer", type=Path)
@@ -594,6 +640,7 @@ def main():
         result = validate_images(args.runtime, args.debug, args.runtime_handoff, args.debug_handoff,
                                  args.runtime_manifest, args.debug_manifest, args.source_root, policy=read_policy(args.policy),
                                  source_contract_path=args.source_contract, apt_lock_path=args.apt_lock,
+                                 debug_apt_lock_path=args.debug_apt_lock,
                                  dpkg_filter_path=args.dpkg_filter_file, fixture=args.fixture,
                                  base_path=args.base, apt_layer=args.apt_layer, debug_tools_layer=args.debug_tools_layer,
                                  runtime_links_layer=args.runtime_links_layer,

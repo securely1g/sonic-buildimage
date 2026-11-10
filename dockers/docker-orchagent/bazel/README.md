@@ -58,14 +58,17 @@ configure packages, establish `Pre-Depends` installation ordering, or evaluate
 compatibility. Hash, path and library-collision errors still fail the build.
 
 The reviewed runtime roots remain in `orchagent_debian`; four unused Kerberos
-administration packages remain omitted. Debug roots are `gdb`, `gdbserver` and
-`strace` in `orchagent_debug_debian`, using the same dated Debian repositories.
+administration packages remain omitted. Debug selection projects the seven
+Orchagent debug roots (`gdb`, `gdbserver`, `strace`, `vim`, `sshpass`, and the
+FIPS OpenSSH client's `libedit2` and `libfido2-1` runtime libraries) from
+`sysmgr_debug_debian` via `@orchagent_debug_apt_inputs` and `:debug_lock_view`,
+omitting unused `openssh-server` dependencies such as `libwtmpdb0`.
 
-`apt.lock.json` is the canonical reviewed package record, including exact
-source identities and data/control hashes. Normal builds call
-`apt.import_lock(lock = "//dockers/docker-orchagent/bazel:apt.lock.json")`
-to import its runtime and debug dependency sets directly. No expanded MODULE
-fragment is checked in or regenerated beside the lock.
+`@sonic_build_infra//apt:apt.lock.json` is the canonical reviewed package
+record, including exact source identities and data/control hashes. Normal builds
+import this shared owner lock for `orchagent_debian` and derive `:debug_lock_view`
+directly from it. The same lock supplies the base and other container
+sets, so source packages and OCI images agree on their Debian inputs.
 
 Bazel generates the matching BUILD input labels automatically. The `apt_inputs`
 repository rule reads the same lock and writes `apt_inputs.bzl` in the generated
@@ -98,16 +101,14 @@ selects the shared command-line program. The owner suite checks the actual
 `:runtime_layer_policy` output used by the runtime layer.
 
 Orchagent has no Make-produced native DEB handoff: its component payloads come
-from source-owned Bazel targets. Its `retained_source = "none"` policy records
-that profile, with no retained-package manifest, feature requirements or debug
-replacements. Runtime selection reads the checked config-engine
-base; debug selection reads the completed Orchagent runtime and receives its
-`runtime_apt_selection` receipt as the declared `base_package_metadata` input.
-This carries the runtime APT packages and their requirements because archive
-assembly leaves the inherited dpkg database unchanged. The child checks that
-metadata against the actual dpkg baseline and validates the combined set again.
-Source-built payloads still rely on their owner contracts and runtime checks;
-this does not synthesize Debian metadata for them.
+from source-owned Bazel targets. Its `retained_source = "source"` policy binds
+runtime and debug APT selection to `:libteam_source_receipt` so source-built
+`libteam5` and `libteamdctl0` retain their owner TARs rather than distribution
+replacements. Runtime selection reads the checked config-engine base and writes
+the updated package inventory into `:installed_package_state`; debug selection
+reads the completed Orchagent runtime and receives `:runtime_package_metadata`
+as its declared `base_package_metadata` input, validating the combined runtime
+and debug set against the updated dpkg baseline.
 
 The `runtime_apt_selection` and `debug_apt_selection` targets expose receipts with
 the base digest, lock/policy hashes, selected and skipped packages, the validated
@@ -136,15 +137,16 @@ The package request recipe and policy remain handwritten inputs.
 
 To update packages in a separate clean checkout:
 
-1. Use `apt-resolve.MODULE.bazel` to resolve the intended runtime/debug roots
-   against the pinned Debian snapshot sources. Review the complete resulting
-   package identities, versions, dependencies and hashes in `apt.lock.json`.
+1. Update the Orchagent sets in `sonic-build-infra/apt/requests.json` and follow
+   that owner's APT refresh procedure. Review the resulting shared
+   `apt/apt.lock.json`, including package identities, versions, dependency edges
+   and hashes for every affected set.
 2. Keep reviewed extracted-content hashes only for unchanged source packages;
    validate and record data/control hashes for changed package inputs.
-3. Commit the reviewed lock with any changed package roots. Bazel imports its
-   packages and generates the BUILD mapping automatically; no MODULE export is
-   required. Run the owner tests and rebuild both images, checking the automatic
-   selection receipts and installed consumers.
+3. Publish the reviewed infrastructure update and select it in `MODULE.bazel`.
+   Bazel imports its packages and generates the BUILD mapping automatically.
+   Run the owner tests and rebuild both images, checking the selection receipts
+   and installed consumers.
 
 The selector checks dependency-version requirements without running package
 installation scripts. It does not update the inherited dpkg database or

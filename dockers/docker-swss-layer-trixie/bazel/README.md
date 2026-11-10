@@ -25,12 +25,13 @@ that decision is checked by the separate SWSS native-closure validation. FRR
 retains its own header and Make runtime-content prerequisite. libteam-utils
 belongs to teamd, not this shared layer.
 
-The external APT roots are only `iputils-ping`, `libjemalloc2` and
-`libyaml-cpp0.8`. The lock retains the exact already-reviewed Debian snapshot
-package identities and extracted-content hashes. Its ten candidates include
-their complete dependency closure; the standard selector retains actual parent
-packages and installs only missing external payloads. Orchagent no longer
-requests stock `libteam5` or `libteamdctl0`; it consumes the same source TAR.
+The root module selects `iputils-ping`, `libjemalloc2` and `libyaml-cpp0.8`
+from the production `orchagent_debian` collection in `sonic-build-infra`.
+The shared `apt_inputs` rule follows their locked dependency edges. The
+layer's generated lock view supplies the resulting ten AMD64 package records,
+including their archive, payload and control hashes, to the standard OCI
+selector. It retains packages already in the parent and installs only the
+missing payloads. Orchagent consumes the same source runtime TAR for libteam.
 
 `runtime_package_metadata` preserves the parent's truthful installed package
 records, records the selected APT additions, and records `libteam5` and
@@ -74,8 +75,7 @@ own integration tasks. The source/OCI-only CI scope does not run Make's full
 installer or any DEB-producing target. The Make bridge is registered here; full
 installer execution is not claimed by these focused checks.
 
-To refresh external packages, resolve `apt-resolve.MODULE.bazel` with Distroless
-against the pinned snapshot sources in the lock. Review the resulting identities
-and dependencies, preserve extracted-content hashes only for unchanged archives,
-and rerun the image/loader and no-op/edit checks. Never substitute distribution
-libteam packages for the owner outputs.
+To refresh these external packages, update the owning production APT lock in
+`sonic-build-infra`, select its published registration in the root module,
+and rerun the image, loader and no-op/edit checks. The three layer-specific
+roots remain in the root module's `swss_layer_apt_inputs` declaration.
