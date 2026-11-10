@@ -174,6 +174,104 @@ def inspect_object(directory, item, budget):
     return result
 
 
+WORKSPACE_DEBS = ('sonic-device-data_1.0-1_all.deb',
+                  'sonic-platform-vs_1.0_amd64.deb')
+
+
+def inspect_workspace_deb(workspace, filename, mounts, budget):
+    """Hash one exact existing path; retain descriptors and never follow links."""
+    require(filename in WORKSPACE_DEBS, 'Unexpected workspace filename')
+    path = PurePosixPath(workspace)
+    require(isinstance(workspace, str) and path.is_absolute() and str(path) == workspace
+            and 1 < len(path.parts) <= 32 and '..' not in path.parts
+            and len(workspace) <= 4096 and not any(c in workspace for c in '\x00\r\n'),
+            'Unexpected current workspace path')
+    relative = 'target/debs/trixie/' + filename
+    result = {'workspace': workspace, 'relative_path': relative,
+              'status': 'not_observed', 'contents_retained': False}
+    descriptors, links = [], []
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+    try:
+        budget.check()
+        directory = os.open('/', observation.DIRECTORY_FLAGS)
+        descriptors.append(directory)
+        workspace_parts = path.parts[1:]
+        for index, component in enumerate(workspace_parts + ('target', 'debs', 'trixie')):
+            budget.check()
+            named = os.stat(component, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISLNK(named.st_mode):
+                result['status'] = 'symlink_rejected'; return result
+            if not stat.S_ISDIR(named.st_mode):
+                result['status'] = 'non_directory'; return result
+            child = os.open(component, observation.DIRECTORY_FLAGS, dir_fd=directory)
+            descriptors.append(child)
+            opened = os.fstat(child)
+            require(identity(named) == identity(opened), 'Workspace path changed')
+            links.append((directory, component, identity(opened)))
+            directory = child
+            if index + 1 == len(workspace_parts):
+                result['workspace_metadata'] = observation.metadata(opened)
+                result['workspace_mount'] = observation.covering_mount(workspace, mounts)
+                require(result['workspace_mount']['device'] == result['workspace_metadata']['device'],
+                        'Workspace mount changed')
+        named = os.stat(filename, dir_fd=directory, follow_symlinks=False)
+        result['metadata'] = observation.metadata(named)
+        if stat.S_ISLNK(named.st_mode):
+            result['status'] = 'symlink_rejected'; return result
+        if not stat.S_ISREG(named.st_mode):
+            result['status'] = 'non_regular'; return result
+        if not 0 <= named.st_size <= MAX_ARCHIVE:
+            result['status'] = 'size_limit'; return result
+        budget.check()
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=directory)
+        descriptors.append(fd)
+        before = os.fstat(fd)
+        require(stable(named) == stable(before) and stat.S_ISREG(before.st_mode),
+                'Workspace file changed before reading')
+        result['mount'] = observation.covering_mount(workspace + '/' + relative, mounts)
+        require(result['mount']['device'] == result['metadata']['device'], 'File mount changed')
+        digest, count = hashlib.sha256(), 0
+        while count < before.st_size:
+            budget.check()
+            block = os.read(fd, min(CHUNK, before.st_size - count))
+            require(block, 'Workspace file shrank while hashing')
+            count += len(block); digest.update(block)
+        require(stable(before) == stable(os.fstat(fd)) ==
+                stable(os.stat(filename, dir_fd=directory, follow_symlinks=False)),
+                'Workspace file changed during observation')
+        for parent, component, expected in links:
+            budget.check()
+            require(identity(os.stat(component, dir_fd=parent, follow_symlinks=False)) == expected,
+                    'Workspace path binding changed during observation')
+        result.update(status='CURRENT_WORKSPACE_BYTES_OBSERVED_NOT_ADMITTED',
+                      sha256=digest.hexdigest(), observed_bytes=count)
+    except FileNotFoundError:
+        result['status'] = 'missing_at_this_exact_path'
+    except PermissionError:
+        result['status'] = 'permission_denied'
+    except (OSError, ValueError, TimeoutError) as error:
+        result['status'] = 'not_fully_observed'
+        result['error_type'] = type(error).__name__
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+    return result
+
+
+def inspect_workspace_debs(workspace, mounts, budget):
+    return {'workspace': workspace,
+            'paths': [inspect_workspace_deb(workspace, name, mounts, budget)
+                      for name in WORKSPACE_DEBS],
+            'scope': 'Only two exact paths in this assigned worker workspace; no directory scan',
+            'maximum_bytes_each': MAX_ARCHIVE,
+            'missing_is_global_absence': False,
+            'historical_producer_provenance': 'not_established',
+            'source_compatibility': 'not_established',
+            'package_format_validated': False,
+            'contents_copied_or_extracted': False}
+
+
 def manifest(path, expected_sha256):
     require(re.fullmatch(r'[0-9a-f]{64}', expected_sha256), 'Invalid selection hash')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -211,7 +309,9 @@ def collect(value, identity):
         with open('/proc/self/mountinfo', 'rb') as source:
             raw = source.read(2 * CHUNK + 1)
         require(len(raw) <= 2 * CHUNK, 'Mount metadata limit')
-        mount = observation.covering_mount(ROOT, observation.parse_mounts(raw.decode()))
+        mounts = observation.parse_mounts(raw.decode())
+        mount = observation.covering_mount(ROOT, mounts)
+        workspace = inspect_workspace_debs(os.environ['GITHUB_WORKSPACE'], mounts, budget)
         require(mount['device'] == observation.metadata(opened)['device'], 'Cache mount changed')
         results = [inspect_object(directory, item, budget) for item in value['objects']]
         require((opened.st_dev, opened.st_ino) == (os.fstat(directory).st_dev, os.fstat(directory).st_ino),
@@ -220,9 +320,10 @@ def collect(value, identity):
         os.close(directory)
     return {'schema': 1, 'status': 'CACHE_PAYLOAD_OBSERVATION_NOT_ADMISSION', **identity,
             'root': ROOT, 'mount': mount, 'objects': results,
+            'current_workspace_host_debs': workspace,
             'observed_objects': sum(r['status'] == 'CURRENT_BYTES_OBSERVED_NOT_ADMITTED' for r in results),
             'incomplete_objects': sum(r['status'] != 'CURRENT_BYTES_OBSERVED_NOT_ADMITTED' for r in results),
-            'scope': 'Only selected existing cache names; hashes and member metadata, no raw logs retained',
+            'scope': 'Only selected existing cache names and two exact current-workspace DEB paths; hashes and metadata, no raw logs or payload copies retained',
             'cache_writes': False, 'payloads_extracted': False, 'package_generation': False,
             'source_key_compatibility': 'not_established', 'complete_VS_acceptance': False}
 
