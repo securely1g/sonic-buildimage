@@ -121,7 +121,7 @@ jobs:
           import os, re
           from pathlib import Path
           revision = os.environ['SOURCE_REVISION']
-          if not re.fullmatch(r'[0-9a-f]{40}', revision) or revision != '89c87c62080595678966c9916d13856591543906':
+          if not re.fullmatch(r'[0-9a-f]{40}', revision) or revision != '7fd710f546704092c75fc5643f10413295c8a4f4':
               raise SystemExit('Inventory requires an immutable reviewed source commit')
           name = os.environ['CONTROL'] + '-source'
           source = Path(os.environ['GITHUB_WORKSPACE']) / name
@@ -152,7 +152,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$SOURCE"
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$SOURCE_REVISION"
-          test "$(git -c protocol.allow=never rev-parse HEAD^)" = 0c57c4845a633fa439caac6684c832cfbccea791
+          test "$(git -c protocol.allow=never rev-parse HEAD^)" = 89c87c62080595678966c9916d13856591543906
           python3 -B -m unittest -v tools.bazel.tests.kernel_reuse_context_test tools.bazel.tests.vs_input_inventory_test
       - name: Inventory configured final23 inputs without generation
         id: inventory
