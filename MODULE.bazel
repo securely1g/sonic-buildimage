@@ -24,7 +24,7 @@ bazel_dep(name = "sonic-dash", version = "0.0.2-5c9305403585a7ae54f86918219acb8e
 
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
-bazel_dep(name = "rules_cc", version = "0.2.22")
+bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # The patched release sorts above upstream 0.9.4 without a root override.
 bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.16")
@@ -37,7 +37,7 @@ bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
-bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.1")
+bazel_dep(name = "tar.bzl", version = "0.10.5-sonic.1")
 bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
@@ -62,7 +62,7 @@ bazel_dep(
 )
 bazel_dep(name = "sonic-swss", version = "0.0.2-ee5a197adb6ae19c891a8844017d590969a10e4c", repo_name = "sonic_swss")
 bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
-bazel_dep(name = "scapy", version = "2.6.1.sonic.1")
+bazel_dep(name = "scapy", version = "2.6.1.sonic.2")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -279,6 +279,7 @@ source_modules(
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
+        "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
         "@scapy//:MODULE.bazel": "scapy",
         "@libyang//:MODULE.bazel": "libyang",
@@ -351,7 +352,6 @@ local_path_override(
 )
 
 bazel_dep(name = "protobuf-legacy", version = "3.21.12.sonic.2", repo_name = "sonic_protobuf")
-bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 
 apt.import_lock(lock = "//dockers/docker-sysmgr/bazel:apt.lock.json")
 use_repo(apt, "sysmgr_debian", "sysmgr_debug_debian", "sysmgr_test_debian")

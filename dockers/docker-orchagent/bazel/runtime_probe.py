@@ -40,7 +40,8 @@ def main():
     inputs = {"architecture": "amd64", "elfs": [item for item in report["elfs"] if item["path"] in native],
               "debug_pairs": [item for item in report["source_debug_pairs"] if item["path"] in ("usr/bin/orchagent", "usr/bin/countersyncd", "usr/bin/ssh")],
               "policy": {"python_imports": ["swsscommon.swsscommon", "dash_api.utils", "scapy.all"],
-                         "commands": [{"argv": ["/usr/local/bin/scapy", "-h"], "output_pattern": "Usage"}]}}
+                         "commands": [{"argv": ["/usr/local/bin/scapy", "-h"], "output_pattern": "Usage"},
+                                      {"argv": ["/usr/bin/traceroute6", "-V"], "output_pattern": "rltraceroute6"}]}}
     if debug:
         inputs["policy"]["commands"] += [
             {"argv": ["/usr/bin/ssh", "-V"], "output_pattern": "OpenSSH"},

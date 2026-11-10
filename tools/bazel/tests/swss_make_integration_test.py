@@ -238,7 +238,7 @@ include tools/bazel/docker.mk
 
     def test_make_prerequisite_failures_stop_before_bazel(self):
         """Keep the previous SWSS archive when a required Make prerequisite is missing."""
-        (self.root / ".platform").unlink()
+        self.makefile = self.makefile.replace(".PHONY: .platform\n", "")
         result = self.run_make()
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.recorded_calls(), [])

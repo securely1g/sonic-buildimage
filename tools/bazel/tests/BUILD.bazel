@@ -1201,6 +1201,7 @@ _SWSS_IMAGE_INPUTS = {
     "debug_tools_layer": _SWSS_OWNER + ":debug_tools",
     "runtime_apt_selection": _SWSS_OWNER + ":runtime_apt_selection",
     "debug_apt_selection": _SWSS_OWNER + ":debug_apt_selection",
+    "package_state_contract": _SWSS_OWNER + "/bazel:package_state.json",
     "runtime_archive": _SWSS_OWNER + ":docker-orchagent.gz",
     "debug_archive": _SWSS_OWNER + ":docker-orchagent-dbg.gz",
     "base_symbols": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
@@ -1216,11 +1217,19 @@ _SWSS_IMAGE_INPUTS = {
 
 _SWSS_RUNTIME_LAYERS = [
     _SWSS_OWNER + ":rdeps",
+    _SWSS_OWNER + ":runtime_alternatives",
     _SWSS_OWNER + "/config:python_runtime",
     _SWSS_OWNER + "/config:files",
+    _SWSS_OWNER + ":installed_package_state",
 ]
 
-_SWSS_DEBUG_LAYERS = [_SWSS_OWNER + ":docker-orchagent.debug_symbols"]
+_SWSS_DEBUG_LAYERS = [
+    _SWSS_OWNER + ":docker-orchagent.debug_symbols",
+    _SWSS_OWNER + ":debug_client",
+    _SWSS_OWNER + ":debug_client_symbols",
+    _SWSS_OWNER + ":debug_accounts",
+    _SWSS_OWNER + ":debug_package_state",
+]
 
 py_test(
     name = "swss_images_test",

@@ -484,12 +484,14 @@ Make generator and Bazel label action with their own declarations.
 
 ## Source wheel and image acceptance
 
-The Scapy producer is `scapy@2.6.1.sonic.1` from registry PR #188. It preserves
+The Scapy producer is `scapy@2.6.1.sonic.2` on registry `main`. It preserves
 SONiC's selected upstream commit, both production patches, the exact
-`scapy-2.6.1.dev0-py3-none-any.whl` output and the upstream build backend.
-`config/BUILD.bazel` uses the existing standard wheel installer to add it.
-The source SWSS TAR is reused from the shared owner; Orchagent continues to
-extend config-engine, not the shared SWSS image.
+`scapy-2.6.1.dev0-py3-none-any.whl` output, TLS test stability backports and the
+upstream build backend. `config/BUILD.bazel` uses the existing standard wheel
+installer to add it. The source SWSS TAR is reused from the shared owner;
+Orchagent continues to extend config-engine, not the shared SWSS image, and
+records its runtime `installed_packages` state plus synthesized `ndisc6`
+`traceroute6` alternatives.
 
 The native FIPS debug profile also consumes the existing OpenSSH client TAR
 and matching symbols from `sonic-fips`, retains its `_ssh` group and ssh-agent
@@ -498,9 +500,9 @@ tools include gdb, gdbserver, strace, sshpass and full vim, matching Make.
 These debug additions do not enter the runtime variant.
 
 The existing OCI AMD64 job builds both variants and separately validates
-source payload bytes/modes, inherited files, matching debug symbols, the
-installed wheel and original owner test suites. Its installed-source edit
-probe requires both archives to change while preserving compiled symbols,
+source payload bytes/modes, native link closure, inherited files, matching debug
+symbols, the installed wheel and original owner test suites. Its installed-source
+edit probe requires both archives to change while preserving compiled symbols,
 the config-engine base and Scapy wheel; restoring the input restores digests.
 The existing runtime job loads those exact archives and exercises the real
 `tunnel_packet_handler.py` with source-built Scapy, a private Redis fixture
@@ -509,21 +511,13 @@ executing them. This does not test ASIC forwarding, live capture, complete
 supervisor startup, FIPS POST or a VS installer.
 
 Socat selects `1.8.0.2.sonic.6` from [registry #242](https://github.com/securely1g/sonic-bazel-registry/pull/242).
-The additive review catalog preserves every existing entry and adds the exact
-reviewed `.6` recipe. Its explicit `tar.xz` type accepts the content-addressed
-Debian patch archive URL while retaining the original source hashes. The `.3`
-to `.6` upgrade also includes the published compiler/debug prefix mapping and
-compiler-path normalization from `.4`, plus the `procan` namespace-string
-termination fix from `.5`. Features, tools, installed paths and runtime/debug
-TAR interfaces remain as declared, but ELF/build-ID/debug bytes and version
-receipts can change. Fresh native, resolved-graph and installed validation is
-required; earlier `.3` artifacts remain historical. Registry #242 and the
-additive catalog remain unlanded prerequisites.
+Its explicit `tar.xz` type accepts the content-addressed Debian patch archive
+URL while retaining the original source hashes. The `.3` to `.6` upgrade also
+includes the published compiler/debug prefix mapping and compiler-path
+normalization from `.4`, plus the `procan` namespace-string termination fix from
+`.5`.
 
-Draft validation uses one immutable combined review catalog through
-`tools/bazel/ci/review_bazel.sh`; normal `.bazelrc` remains on maintained main
-and BCR. Registry #188, #180, #181, #179, #177 and #186 and image PRs #136
-and #146 must land before removing the temporary review selection. The FIPS
-parent retains its selected source and known entropy/assembly-path
+Validation uses the maintained registry `main` and BCR through `.bazelrc`. The
+FIPS parent retains its selected source and known entropy/assembly-path
 reproducibility limitations; same-output-root restoration is not a fresh-root
 reproducibility claim.

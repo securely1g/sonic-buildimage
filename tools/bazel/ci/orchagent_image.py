@@ -25,8 +25,7 @@ IMAGES = ("docker-orchagent", "docker-orchagent-dbg")
 BASE = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie"
 OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=8000",
            "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
-           "--host_platform=@sonic_build_infra//platforms:x86_64_trixie",
-           "--//dockers/docker-orchagent:source_config_engine=true"]
+           "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
 TARGETS = {
     **{name + ".gz": OWNER + name + ".gz" for name in IMAGES},
     "scapy-2.6.1.dev0-py3-none-any.whl": "@scapy//:wheel",
@@ -37,6 +36,9 @@ TARGETS = {
     "source-debug.tar": OWNER + "rdeps_debug_symbols",
     "image-debug.tar": OWNER + "all_debug_symbols",
     "openssh.source.tar": "@sonic_fips//openssh:openssh_client_pkg",
+    "runtime.alternatives.tar": OWNER + "runtime_alternatives",
+    "runtime.status": OWNER + "installed_packages",
+    "runtime.packages.json": OWNER + "runtime_package_metadata",
     "debug.accounts.tar": OWNER + "debug_accounts",
     "debug.tools.tar": OWNER + "debug_tools",
     "debug.status": OWNER + "debug_installed_packages",
@@ -68,7 +70,7 @@ def build_images(args, directory):
     check.require(platform.machine() == "x86_64" and platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
                   "Orchagent source acceptance requires native AMD64/Trixie")
     receipt = {"status": "building", "architecture": "amd64", "commands": [], "revision": identity(directory),
-               "invocation": {"bazel": args.bazel, "review_registry_revision": os.environ.get("SONIC_BAZEL_REGISTRY_REVISION")}}
+               "invocation": {"bazel": args.bazel}}
     execute = partial(command_log.execute, cwd=ROOT)
     try:
         execute(["make", "-f", "tools/bazel/prepare_manifests.mk",
@@ -133,6 +135,7 @@ def validate_images(directory):
     parent = oci_layout.validate_layout(ROOT / receipt["base_layout"], "linux/amd64")
     inherited = base_images.installed_inventory(parent)
     configuration = {}
+    image_validation.apply_layer(directory / "runtime.alternatives.tar", configuration)
     image_validation.apply_layer(directory / "config.tar", configuration)
     image_validation.apply_layer(directory / "python.tar", configuration)
     client = check.payload(directory / "openssh.source.tar", require_root=False)
@@ -149,6 +152,13 @@ def validate_images(directory):
         for path, item in configuration.items():
             if item["kind"] != "directory":
                 check.require(all(files.get(path, {}).get(key) == value for key, value in item.items()), "image changed owner configuration: " + path)
+        check.require(files.get("usr/bin/traceroute6", {}).get("linkname") == "/etc/alternatives/traceroute6"
+                      and files.get("etc/alternatives/traceroute6", {}).get("linkname") == "/usr/bin/rltraceroute6"
+                      and files.get("usr/bin/rltraceroute6", {}).get("elf_machine") == 62
+                      and files.get("var/lib/dpkg/alternatives/traceroute6", {}).get("kind") == "file",
+                      "missing ndisc6 traceroute6 alternatives state")
+        check.require(files.get("usr/share/sonic/bazel/orchagent-packages.json", {}).get("sha256") == check.sha(directory / "runtime.packages.json"),
+                      "installed runtime package metadata differs")
         for path, item in inherited.items():
             if item["kind"] == "directory" or path in configuration or path == "var/lib/dpkg/status":
                 continue
@@ -166,6 +176,9 @@ def validate_images(directory):
                                    ("usr/share/sonic/bazel/orchagent-debug-packages.json", "debug.packages.json")):
                 check.require(files.get(path, {}).get("sha256") == check.sha(directory / artifact),
                               "installed debug package state differs: " + path)
+        else:
+            check.require(files.get("var/lib/dpkg/status", {}).get("sha256") == check.sha(directory / "runtime.status"),
+                          "installed runtime dpkg status differs")
         scapy = verify_scapy(files, directory / "scapy-2.6.1.dev0-py3-none-any.whl")
         config = layout.config.get("config", {})
         check.require(config.get("Entrypoint") == ["/usr/bin/docker-init.sh"], "Orchagent entrypoint changed")
@@ -182,7 +195,8 @@ def validate_images(directory):
     for path, item in runtime.items():
         if "elf_machine" in item:
             check.require(item["elf_machine"] == 62 and debug.get(path) == item, "debug changed runtime ELF: " + path)
-    reports = [json.loads((directory / name).read_text()) for name in ("base.packages.json", "config-engine.packages.json")]
+    reports = [json.loads((directory / name).read_text())
+               for name in ("base.packages.json", "config-engine.packages.json", "runtime.packages.json")]
     native = base_images.verify_source_files(debug, reports, 62)
     for path, item in source_native.items():
         if path in native:
@@ -233,7 +247,7 @@ def validate_images(directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("build", "validate"))
-    parser.add_argument("--bazel", default="tools/bazel/ci/libteam_draft_bazel.sh")
+    parser.add_argument("--bazel", default="bazel")
     parser.add_argument("--artifacts", required=True, type=Path)
     args = parser.parse_args()
     directory = args.artifacts.resolve()

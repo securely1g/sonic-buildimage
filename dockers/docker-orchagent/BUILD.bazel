@@ -60,10 +60,20 @@ _PACKAGE_POLICY = dict(
         "environment": {"DEBIAN_FRONTEND": "noninteractive"},
         "startup_files": {},
         "required_elf_paths": ["usr/bin/orchagent"],
-        "debug_alternatives": [],
+        "debug_alternatives": [{
+            "paths": ["etc/alternatives/" + name for name in [
+                "editor",
+                "ex",
+                "rview",
+                "vi",
+                "view",
+            ]],
+            "before": "/usr/bin/vim.tiny",
+            "after": "/usr/bin/vim.basic",
+        }],
         "runtime_tag": "docker-orchagent:latest",
         "debug_tag": "docker-orchagent-dbg:latest",
-        "package_state": False,
+        "package_state": True,
     },
     install_inventory = {
         "architecture": _APT_POLICY["architecture"],
@@ -169,6 +179,78 @@ debug_symbols_layer(
     image = ":rdeps",
 )
 
+# Synthesize ndisc6 postinst update-alternatives links and dpkg state for traceroute6.
+write_file(
+    name = "traceroute6_alternative_state",
+    out = "traceroute6.alternative",
+    content = [
+        "auto",
+        "/usr/bin/traceroute6",
+        "traceroute6.8.gz",
+        "/usr/share/man/man8/traceroute6.8.gz",
+        "",
+        "/usr/bin/rltraceroute6",
+        "110",
+        "/usr/share/man/man8/rltraceroute6.8.gz",
+        "",
+    ],
+    newline = "unix",
+)
+
+tar(
+    name = "runtime_alternatives",
+    srcs = [":traceroute6_alternative_state"],
+    mtree = [
+        "etc/alternatives/traceroute6 uid=0 gid=0 mode=0777 time=0 type=link link=/usr/bin/rltraceroute6",
+        "usr/bin/traceroute6 uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/traceroute6",
+        "var/lib/dpkg/alternatives/traceroute6 uid=0 gid=0 mode=0644 time=0 type=file content=$(location :traceroute6_alternative_state)",
+    ],
+)
+
+installed_packages(
+    name = "installed_packages",
+    apt_receipt = ":runtime_apt_selection",
+    architecture = "amd64",
+    base = ":config_engine_base_layout",
+    controls = [label + ":control" for label in APT_INPUTS["orchagent_debian"]["amd64"].values()],
+    owner_metadata = [
+        "@libteam//:library_runtime_packages.json",
+        "@sonic_sairedis//:library_runtime_packages.json",
+        "@sonic_protobuf//:runtime_packages.json",
+    ],
+    source_modules = {
+        "libteam": "@image_source_modules//:libteam.MODULE.bazel",
+        "sonic-sairedis": "@image_source_modules//:sonic-sairedis.MODULE.bazel",
+        "protobuf-legacy": "@image_source_modules//:protobuf-legacy.MODULE.bazel",
+    },
+    source_spec = "//dockers/docker-orchagent/bazel:source_paths.json",
+    sources = {
+        "libteam5": "@libteam//:libteam_runtime",
+        "libteamdctl0": "@libteam//:libteamdctl_runtime",
+        "libsairedis": "@sonic_sairedis//lib:libsairedis_pkg",
+        "libsaimetadata": "@sonic_sairedis//meta:libsaimetadata_pkg",
+        "libprotobuf32t64": "@@protobuf-legacy++_repo_rules+protobuf_source//:libprotobuf_pkg",
+    },
+)
+
+filegroup(
+    name = "runtime_package_metadata",
+    srcs = [":installed_packages"],
+    output_group = "metadata",
+)
+
+tar(
+    name = "installed_package_state",
+    srcs = [
+        ":installed_packages",
+        ":runtime_package_metadata",
+    ],
+    mtree = [
+        "var/lib/dpkg/status uid=0 gid=0 mode=0644 time=0 type=file content=$(location :installed_packages)",
+        "usr/share/sonic/bazel/orchagent-packages.json uid=0 gid=0 mode=0644 time=0 type=file content=$(location :runtime_package_metadata)",
+    ],
+)
+
 oci_image(
     name = "docker-orchagent",
     base = ":config_engine_base_layout",
@@ -179,8 +261,10 @@ oci_image(
     tars = [
         ":apt_deps",
         ":rdeps",
+        ":runtime_alternatives",
         "//dockers/docker-orchagent/config:python_runtime",
         "//dockers/docker-orchagent/config:files",
+        ":installed_package_state",
     ],
 )
 
@@ -318,7 +402,6 @@ test_suite(
     tests = [
         "//src/sonic-config-engine:sonic_cfggen_cli_test",
         "//tools/bazel/tests:apt_selection_test",
-        "//tools/bazel/tests:common_rust_runtime_test",
         "//tools/bazel/tests:containercfgd_full_test",
         "//tools/bazel/tests:containercfgd_wheel_test",
         "//tools/bazel/tests:manifest_labels_action_test",
@@ -340,13 +423,13 @@ test_suite(
         "//tools/bazel/tests:sonic_yang_mgmt_wheel_test",
         "//tools/bazel/tests:supervisor_python_full_test",
         "//tools/bazel/tests:supervisor_python_wheel_test",
-        "//tools/bazel/tests:swss_common_rust_test",
         "//tools/bazel/tests:swss_manifest_labels_test",
         "//tools/bazel/tests:swss_package_contract_test",
         "//tools/bazel/tests:swss_render_test",
         "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
         "@scapy//:upstream_test",
         "@scapy//:wheel_test",
+        "@sonic_swss//crates/countersyncd:common_rust_test",
     ],
 )
 

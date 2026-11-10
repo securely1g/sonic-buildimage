@@ -591,6 +591,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/sysmgr')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
@@ -693,6 +694,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/swss-layer')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'receipt.json').exists():
               receipt = json.loads((root / 'receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
@@ -737,13 +739,20 @@ jobs:
           compression-level: 1
 
 
+      - name: Preserve completed SWSS layer evidence before Orchagent acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          if [[ -d artifacts ]]; then
+            test ! -e "$RUNNER_TEMP/pre-orchagent-artifacts"
+            mv artifacts "$RUNNER_TEMP/pre-orchagent-artifacts"
+          fi
+
       - name: Build Orchagent variants from source owners
         id: orchagent_build
         if: matrix.architecture == 'amd64'
         env:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          SONIC_BAZEL_REGISTRY_REVISION: 99ea0d52c0e780b340ff210aaa055f6cc1a03289
           BAZELISK_GITHUB_TOKEN: ""
         run: python3 -B tools/bazel/ci/orchagent_image.py build --bazel "$BAZEL" --artifacts artifacts/orchagent
       - name: Validate installed Orchagent sources and Scapy wheel
@@ -756,17 +765,38 @@ jobs:
         run: |
           python3 -B tools/bazel/ci/container.py --container //dockers/docker-orchagent \
             --artifacts artifacts/orchagent-owner --bazel "$BAZEL" --reuse-build \
-            --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--jobs=2 --bazel-arg=--local_resources=memory=8000
+      - name: Verify SWSS native link closure and symbol lookups
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          set -euo pipefail
+          "$BAZEL" build //dockers/docker-orchagent:package_policy \
+            @sonic_swss//dist:swss_pkg @sonic_swss//dist:swss_pkg.debug_symbols
+          output() { "$BAZEL" cquery "$1" --output=files; }
+          runtime="$(output @sonic_swss//dist:swss_pkg)"
+          symbols="$(output @sonic_swss//dist:swss_pkg.debug_symbols)"
+          policy="$(output //dockers/docker-orchagent:package_policy)"
+          anchor="$(output @sonic_swss//fpmsyncd:bgp_eoiu_marker.py)"
+          execution_root="$(dirname "$(realpath bazel-out)")"
+          source="$(dirname "$(dirname "$(realpath "$execution_root/$anchor")")")"
+          graph="$(mktemp)"
+          trap 'rm -f "$graph"' EXIT
+          "$BAZEL" aquery --include_param_files --output=jsonproto \
+            'mnemonic("CppLink", deps(//dockers/docker-orchagent:rdeps))' > "$graph"
+          python3 -B tools/bazel/ci/swss_native_closure.py --source "$source" \
+            --runtime "$runtime" --symbols "$symbols" --policy "$policy" \
+            --link-graph "$graph" --output artifacts/orchagent/native-closure.json
+          git diff --exit-code
       - name: Verify source edit and restored Orchagent archives
         if: matrix.architecture == 'amd64'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
           python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
-            --bazel-arg=--//dockers/docker-orchagent:source_config_engine=true \
             --runtime-target //dockers/docker-orchagent:docker-orchagent.gz \
             --additional-runtime-target //dockers/docker-orchagent:docker-orchagent-dbg.gz \
             --additional-runtime-target //dockers/docker-orchagent:rdeps \
@@ -783,12 +813,13 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/orchagent')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
               safe_json(public)
               (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
-          for path in list(root.glob('*.validation.json')) + [root / name for name in ('validation.json', 'action-audit.json', 'runtime-apt.json', 'debug-apt.json', 'base.packages.json', 'config-engine.packages.json', 'rebuild/rebuild.json')]:
+          for path in list(root.glob('*.validation.json')) + [root / name for name in ('validation.json', 'native-closure.json', 'action-audit.json', 'runtime-apt.json', 'debug-apt.json', 'runtime.packages.json', 'debug.packages.json', 'base.packages.json', 'config-engine.packages.json', 'rebuild/rebuild.json')]:
               if path.exists():
                   safe_json(json.loads(path.read_text()))
           for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
@@ -810,6 +841,8 @@ jobs:
             artifacts/orchagent/*.gz
             artifacts/orchagent/*.tar
             artifacts/orchagent/*.whl
+            artifacts/orchagent/runtime.status
+            artifacts/orchagent/runtime.packages.json
             artifacts/orchagent/debug.status
             artifacts/orchagent/debug.packages.json
             artifacts/orchagent/runtime-apt.json
@@ -818,6 +851,7 @@ jobs:
             artifacts/orchagent/config-engine.packages.json
             artifacts/orchagent/*.validation.json
             artifacts/orchagent/validation.json
+            artifacts/orchagent/native-closure.json
             artifacts/orchagent/public-receipt.json
             artifacts/orchagent/action-audit.json
             artifacts/orchagent/build-summary.json

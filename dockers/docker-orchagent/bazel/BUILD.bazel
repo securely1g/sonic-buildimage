@@ -1,3 +1,11 @@
-package(default_visibility = ["//dockers/docker-orchagent:__pkg__"])
+package(default_visibility = [
+    "//dockers/docker-orchagent:__pkg__",
+    "//tools/bazel/tests:__pkg__",
+])
 
-exports_files(["apt.lock.json", "debug_source_paths.json"])
+exports_files([
+    "apt.lock.json",
+    "debug_source_paths.json",
+    "package_state.json",
+    "source_paths.json",
+])
