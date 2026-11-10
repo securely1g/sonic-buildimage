@@ -21,20 +21,28 @@ class VerificationWorkflowTest(unittest.TestCase):
     def test_archive_evidence_preservation_is_unique_and_keeps_previous_runs(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         steps = workflow["jobs"]["archive"]["steps"]
-        preserve = next(
-            step for step in steps
-            if step.get("name") == "Preserve completed archive evidence before Sysmgr acceptance"
+        names = [step.get("name") for step in steps]
+        stages = (
+            ("sysmgr", "Upload public archive evidence",
+             "Preserve completed archive evidence before Sysmgr acceptance",
+             "Build Sysmgr runtime and debug images"),
+            ("swss-layer", "Retain Sysmgr image artifacts and evidence",
+             "Preserve completed Sysmgr evidence before SWSS layer acceptance",
+             "Build and inspect the shared runtime and symbols"),
         )
-        upload = next(step for step in steps if step.get("name") == "Upload public archive evidence")
-        build = next(step for step in steps if step.get("name") == "Build Sysmgr runtime and debug images")
-        self.assertLess(steps.index(upload), steps.index(preserve))
-        self.assertLess(steps.index(preserve), steps.index(build))
+        for stage, upload, preserve, build in stages:
+            with self.subTest(stage=stage):
+                self.assertLess(names.index(upload), names.index(preserve))
+                self.assertLess(names.index(preserve), names.index(build))
+                self.check_evidence_preservation(steps[names.index(preserve)], stage)
+
+    def check_evidence_preservation(self, preserve, stage):
         self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
         with tempfile.TemporaryDirectory(prefix="archive evidence ") as temporary:
             root = Path(temporary)
             scratch = root / "scratch"
             scratch.mkdir()
-            old = scratch / "pre-sysmgr-artifacts"
+            old = scratch / f"pre-{stage}-artifacts"
             old.mkdir()
             (old / "receipt").write_text("retained")
             destinations = []
@@ -45,11 +53,11 @@ class VerificationWorkflowTest(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                     cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                    env=dict(os.environ, RUNNER_TEMP=str(scratch), **preserve.get("env", {})),
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(artifacts.exists())
-                candidates = set(scratch.glob("pre-sysmgr-artifacts.*")) - set(destinations)
+                candidates = set(scratch.glob(f"pre-{stage}-artifacts.*")) - set(destinations)
                 self.assertEqual(len(candidates), 1)
                 destination = candidates.pop()
                 self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
@@ -60,17 +68,17 @@ class VerificationWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                 cwd=root, capture_output=True, text=True,
-                env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                env=dict(os.environ, RUNNER_TEMP=str(scratch), **preserve.get("env", {})),
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(set(scratch.glob("pre-sysmgr-artifacts.*")), set(destinations))
+            self.assertEqual(set(scratch.glob(f"pre-{stage}-artifacts.*")), set(destinations))
             artifacts = root / "artifacts"
             artifacts.mkdir()
             (artifacts / "receipt").write_text("keep on failure")
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                 cwd=root, capture_output=True, text=True,
-                env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
+                env=dict(os.environ, RUNNER_TEMP=str(root / "missing"), **preserve.get("env", {})),
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
