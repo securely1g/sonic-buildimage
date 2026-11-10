@@ -1,5 +1,6 @@
 """Pure data and toy-Make tests; no SONiC build goal is executed."""
 from pathlib import Path
+import hashlib
 import subprocess
 import tempfile
 import unittest
@@ -156,6 +157,63 @@ class InventoryDataTest(unittest.TestCase):
         del rows["category", "SONIC_ONLINE_DEBS"]
         with self.assertRaises(ValueError):
             inventory.parse_rows("".join(f"{kind}\t{key}\t{value}\n" for (kind, key), value in rows.items()).encode())
+
+    def test_real_vs_parent_includes_preserve_declared_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "platform/vs").mkdir(parents=True)
+            (root / "platform/template").mkdir()
+            names = ["docker-syncd-trixie.mk", "docker-gbsyncd-trixie.mk"]
+            declared = ["platform/vs/../template/" + name for name in names]
+            for name in names:
+                (root / "platform/template" / name).write_text(name + "\n")
+            rows = self.rows()
+            rows["include", "files"] = " ".join(declared)
+            result = inventory.inventory(rows, root)
+            self.assertEqual(result["parsed_make_sources"], [
+                {"path": original, "normalized_path": "platform/template/" + name,
+                 "sha256": hashlib.sha256((name + "\n").encode()).hexdigest()}
+                for original, name in zip(declared, names)
+            ])
+            self.assertEqual(rows["include", "files"], " ".join(declared))
+
+    def test_nested_parent_components_remain_inside_workspace(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "a/b/c").mkdir(parents=True)
+            (root / "a/source.mk").write_text("retained")
+            self.assertEqual(inventory.safe_file(root, "a/b/c/../../source.mk"), root / "a/source.mk")
+
+    def test_parent_and_absolute_escapes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "workspace"
+            (root / "sub").mkdir(parents=True)
+            (base / "outside.mk").write_text("outside")
+            for name in ("../outside.mk", "sub/../../outside.mk", str(base / "outside.mk")):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    inventory.safe_file(root, name)
+
+    def test_symlink_before_parent_component_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "workspace"
+            (root / "inside").mkdir(parents=True)
+            (base / "outside").mkdir()
+            (root / "source.mk").write_text("inside")
+            for target in (root / "inside", base / "outside"):
+                (root / "link").symlink_to(target, target_is_directory=True)
+                with self.subTest(target=target), self.assertRaises(ValueError):
+                    inventory.safe_file(root, "link/../source.mk")
+                (root / "link").unlink()
+
+    def test_file_before_parent_component_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "file").write_text("not a directory")
+            (root / "source.mk").write_text("retained")
+            with self.assertRaises(ValueError):
+                inventory.safe_file(root, "file/../source.mk")
 
     def test_symlink_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

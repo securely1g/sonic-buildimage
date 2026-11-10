@@ -71,15 +71,21 @@ def parse_rows(raw: bytes) -> dict[tuple[str, str], str]:
 
 def safe_file(workspace: Path, relative: str) -> Path | None:
     path = PurePosixPath(relative)
-    require(not path.is_absolute() and ".." not in path.parts, "Path escapes workspace")
+    require(not path.is_absolute(), "Path escapes workspace")
     current = workspace
-    for part in path.parts:
+    for index, part in enumerate(path.parts):
+        if part == "..":
+            require(current != workspace, "Path escapes workspace")
+            current = current.parent
+            continue
         current = current / part
         try:
             mode = current.lstat().st_mode
         except FileNotFoundError:
             return None
         require(not stat.S_ISLNK(mode), "Symlink input is not admitted")
+        if index < len(path.parts) - 1:
+            require(stat.S_ISDIR(mode), "Inventory path component is not a directory")
     require(stat.S_ISREG(current.stat().st_mode), "Inventory input is not a regular file")
     return current
 
@@ -141,7 +147,7 @@ def inventory(rows: dict[tuple[str, str], str], workspace: Path) -> dict:
     for relative in words(rows.get(("include", "files"), "")):
         path = safe_file(workspace, relative)
         require(path is not None, "A parsed Make source is absent")
-        includes.append({"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        includes.append({"path": relative, "normalized_path": path.relative_to(workspace).as_posix(), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
     return {
         "schema": 1,
         "status": "CONFIGURED_INPUT_INVENTORY_NOT_ACCEPTANCE",
