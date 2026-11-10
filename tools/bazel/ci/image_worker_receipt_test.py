@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.bazel.ci import image_worker_receipt as receipt
+from tools.bazel.ci.image_worker_pool_test import WorkerPoolReceiptTest
 from tools.bazel.ci.p4rt_worker_receipt_test import metadata, pr_environment, pr_event, request
 
 
@@ -18,6 +19,20 @@ def syncd_request():
     value = request()
     value.pop('owner')
     return {**value, 'schema': 2, 'image': 'syncd'}
+
+
+def worker_job_inventory(value):
+    return {'total_count': 1, 'jobs': [{'id': 201, 'run_id': 789, 'run_attempt': 1,
+        'head_sha': value['controller'], 'name': 'Source image (' + receipt.image(value) + ')',
+        'status': 'in_progress', 'conclusion': None, 'runner_id': 31,
+        'runner_name': 'sonic-slave-lgh114-1',
+        'labels': ['sonic-slave-container-dpool', 'sonic-slave-lgh114-1']}]}
+
+
+def worker_environment(value):
+    return {'GITHUB_RUN_ID': '789', 'GITHUB_RUN_ATTEMPT': '1',
+            'GITHUB_ACTOR': 'securely1g', 'GITHUB_TRIGGERING_ACTOR': 'securely1g',
+            'WORKER_POOL': 'sonic-slave-container-dpool', 'RUNNER_NAME': 'sonic-slave-lgh114-1'}
 
 
 class ImageReceiptTest(unittest.TestCase):
@@ -65,19 +80,22 @@ class ImageReceiptTest(unittest.TestCase):
     def test_syncd_requires_its_job_all_four_phases_and_cleanup(self):
         _, artifact, run, jobs = metadata()
         value = self.image_request()
+        contract = {key: value[key] for key in ('image', 'controller', 'catalog')}
+        value['contract_sha256'] = receipt.sha(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode())
+        run['triggering_actor'] = {'login': 'securely1g'}
         artifact['name'] = receipt.acceptance_name(value)
         jobs[0]['name'] = 'Source image (' + self.selected + ')'
         jobs[0]['steps'] = [{'name': name, 'status': 'completed', 'conclusion': 'success'}
                             for name in receipt.required_steps(value)]
-        self.assertEqual(receipt.worker_metadata(value, artifact, run, jobs)['id'], 201)
+        self.assertEqual(receipt.worker_metadata(value, artifact, run, jobs, contract)['id'], 201)
         for step in receipt.required_steps(value):
             altered = copy.deepcopy(jobs)
             next(row for row in altered[0]['steps'] if row['name'] == step)['conclusion'] = 'skipped'
             with self.subTest(step=step), self.assertRaises(ValueError):
-                receipt.worker_metadata(value, artifact, run, altered)
+                receipt.worker_metadata(value, artifact, run, altered, contract)
         jobs[0]['name'] = 'Source image (p4rt)'
         with self.assertRaises(ValueError):
-            receipt.worker_metadata(value, artifact, run, jobs)
+            receipt.worker_metadata(value, artifact, run, jobs, contract)
 
     def test_syncd_checkout_binds_the_whole_merge_without_a_p4rt_gitlink(self):
         value = self.image_request()
@@ -106,13 +124,13 @@ class ImageReceiptTest(unittest.TestCase):
                 'artifact': {'id': 456, 'name': receipt.origin_name(123, self.selected)}} , public=False)
             args = SimpleNamespace(directory=root, workspace=root, image=self.selected)
             environment = {'SELECTED_IMAGE': self.selected, 'SOURCE_REVISION': value['merge'],
-                           'SOURCE_REGISTRY_REVISION': value['catalog'], 'GITHUB_SHA': value['controller']}
+                           'SOURCE_REGISTRY_REVISION': value['catalog'], 'GITHUB_SHA': value['controller'], **worker_environment(value)}
             pull = {'state': 'open', 'head': {'sha': value['head'], 'repo': {'full_name': receipt.REPOSITORY}},
                     'base': {'sha': value['base'], 'ref': 'main', 'repo': {'full_name': receipt.REPOSITORY}}}
             base_ref = {'ref': 'refs/heads/main', 'object': {'type': 'commit', 'sha': value['base']}}
             with patch.dict(os.environ, environment), patch.object(receipt, 'git',
                     side_effect=[value['merge'], value['tree'], 'parent ' + value['base'] + '\nparent ' + value['head'] + '\n\nMerge']), \
-                    patch.object(receipt, 'api', side_effect=[pull, base_ref]):
+                    patch.object(receipt, 'api', side_effect=[pull, base_ref, worker_job_inventory(value)]):
                 receipt.bind_worker(args)
             self.assertEqual(receipt.read(root / 'binding.json')['request'], value)
             with patch.dict(os.environ, {**environment, 'SELECTED_IMAGE': 'p4rt'}), \
@@ -142,7 +160,7 @@ class WorkerBaseRefTest(unittest.TestCase):
             'artifact': {'id': 456, 'name': receipt.origin_name(123)}}, public=False)
         self.args = SimpleNamespace(directory=self.root, workspace=self.root, image='p4rt')
         self.environment = {'SELECTED_IMAGE': 'p4rt', 'SOURCE_REVISION': self.value['merge'],
-            'SOURCE_REGISTRY_REVISION': self.value['catalog'], 'GITHUB_SHA': self.value['controller']}
+            'SOURCE_REGISTRY_REVISION': self.value['catalog'], 'GITHUB_SHA': self.value['controller'], **worker_environment(self.value)}
         self.git_answers = [self.value['merge'], self.value['tree'],
             'parent ' + self.value['base'] + '\nparent ' + self.value['head'] + '\n\nMerge']
         self.pull = {'state': 'open',
@@ -159,7 +177,7 @@ class WorkerBaseRefTest(unittest.TestCase):
 
     def bind(self):
         self.api.reset_mock()
-        self.api.side_effect = [self.pull, self.base_ref]
+        self.api.side_effect = [self.pull, self.base_ref, worker_job_inventory(self.value)]
         with patch.dict(os.environ, self.environment), \
                 patch.object(receipt, 'git', side_effect=self.git_answers):
             receipt.bind_worker(self.args)
@@ -167,7 +185,8 @@ class WorkerBaseRefTest(unittest.TestCase):
     def test_stale_snapshot_uses_exact_live_ref_and_keeps_original_request(self):
         self.bind()
         self.assertEqual([call.args for call in self.api.call_args_list], [
-            ('/pulls/159',), ('/git/ref/heads/codex%2Freview%2Bbase',)])
+            ('/pulls/159',), ('/git/ref/heads/codex%2Freview%2Bbase',),
+            ('/actions/runs/789/jobs?filter=latest&per_page=100',)])
         self.assertEqual(self.request_path.read_bytes(), self.original_bytes)
         binding = receipt.read(self.root / 'binding.json')
         self.assertEqual(binding['request'], self.value)
@@ -177,7 +196,7 @@ class WorkerBaseRefTest(unittest.TestCase):
         self.pull['base'].update(sha=self.value['base'], ref='another-base')
         self.base_ref['ref'] = 'refs/heads/another-base'
         self.bind()
-        self.assertEqual(self.api.call_args.args, ('/git/ref/heads/another-base',))
+        self.assertEqual(self.api.call_args_list[1].args, ('/git/ref/heads/another-base',))
 
     def test_missing_or_malformed_branch_fails_before_ref_lookup(self):
         for branch in (None, '', False, 12, [], {}, ' ', 'two words', 'base\nother', 'base\x00'):
