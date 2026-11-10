@@ -19,8 +19,13 @@ def request():
             'contract_sha256': '2' * 64}
 
 
+def worker_contract(value):
+    return {key: value[key] for key in ('owner', 'catalog', 'controller')}
+
+
 def metadata():
     req = request()
+    req['contract_sha256'] = receipt.sha(json.dumps(worker_contract(req), sort_keys=True, separators=(',', ':')).encode())
     artifact = {'id': 300, 'name': receipt.acceptance_name(req), 'expired': False,
                 'size_in_bytes': 4096, 'workflow_run': {'id': 200, 'head_sha': req['controller'],
                     'repository_id': 42, 'head_repository_id': 42}}
@@ -28,6 +33,7 @@ def metadata():
            'repository': {'full_name': receipt.REPOSITORY, 'id': 42},
            'head_repository': {'full_name': receipt.REPOSITORY}, 'path': receipt.WORKFLOW,
            'event': 'workflow_dispatch', 'actor': {'login': 'securely1g'},
+           'triggering_actor': {'login': 'securely1g'},
            'status': 'completed', 'conclusion': 'success'}
     job = {'id': 201, 'name': 'Source image (p4rt)', 'status': 'completed', 'conclusion': 'success',
            'run_id': 200, 'run_attempt': 1, 'head_sha': req['controller'],
@@ -104,14 +110,14 @@ class ReceiptTest(unittest.TestCase):
     def test_cross_run_acceptance_name_and_all_cleanup_are_required(self):
         req, artifact, run, jobs = metadata()
         with self.assertRaises(ValueError):
-            receipt.worker_metadata(req, {**artifact, 'name': receipt.acceptance_name({**req, 'normal_run': 999})}, run, jobs)
+            receipt.worker_metadata(req, {**artifact, 'name': receipt.acceptance_name({**req, 'normal_run': 999})}, run, jobs, worker_contract(req))
         for name in ("Stop only this job's private Docker daemon", 'Post Checkout the exact reviewed source',
                      'Post Checkout reviewed dispatcher', 'Complete job'):
             for conclusion in ('failure', 'skipped'):
                 changed = copy.deepcopy(jobs)
                 next(s for s in changed[0]['steps'] if s['name'] == name)['conclusion'] = conclusion
                 with self.subTest(name=name, conclusion=conclusion), self.assertRaises(ValueError):
-                    receipt.worker_metadata(req, artifact, run, changed)
+                    receipt.worker_metadata(req, artifact, run, changed, worker_contract(req))
 
     def test_attempt_cannot_move_backwards_or_use_boolean_identity(self):
         with self.assertRaises(ValueError):
@@ -154,17 +160,18 @@ class ReceiptTest(unittest.TestCase):
 
     def test_exact_successful_job_metadata_is_accepted(self):
         req, artifact, run, jobs = metadata()
-        self.assertEqual(receipt.worker_metadata(req, artifact, run, jobs)['id'], 201)
+        self.assertEqual(receipt.worker_metadata(req, artifact, run, jobs, worker_contract(req))['id'], 201)
 
     def test_wrong_actor_source_controller_repository_or_attempt_rejected(self):
-        for field in ('actor', 'head_sha', 'head_repository', 'event', 'run_attempt', 'conclusion'):
+        for field in ('actor', 'triggering_actor', 'head_sha', 'head_repository', 'event', 'run_attempt', 'conclusion'):
             req, artifact, run, jobs = metadata()
-            values = {'actor': {'login': 'someone'}, 'head_sha': '9' * 40,
+            values = {'actor': {'login': 'someone'}, 'triggering_actor': {'login': 'someone'},
+                      'head_sha': '9' * 40,
                       'head_repository': {'full_name': 'someone/fork'}, 'event': 'pull_request',
                       'run_attempt': 2, 'conclusion': 'failure'}
             run[field] = values[field]
             with self.subTest(field=field), self.assertRaises(ValueError):
-                receipt.worker_metadata(req, artifact, run, jobs)
+                receipt.worker_metadata(req, artifact, run, jobs, worker_contract(req))
 
     def test_partial_cleanup_missing_phase_unknown_failure_and_duplicate_job_rejected(self):
         for kind in ('cleanup', 'missing', 'unknown', 'duplicate', 'labels', 'busy'):
@@ -182,7 +189,7 @@ class ReceiptTest(unittest.TestCase):
             else:
                 jobs[0]['status'] = 'in_progress'
             with self.subTest(kind=kind), self.assertRaises(ValueError):
-                receipt.worker_metadata(req, artifact, run, jobs)
+                receipt.worker_metadata(req, artifact, run, jobs, worker_contract(req))
 
     def test_duplicate_expired_or_oversized_artifact_rejected(self):
         _, artifact, _, _ = metadata()
