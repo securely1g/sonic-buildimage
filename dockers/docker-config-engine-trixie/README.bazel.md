@@ -62,3 +62,19 @@ the workflow's pinned native Debian Trixie container. The first command prepares
 the normal Make manifests and audits its Bazel action graph. The new checks are
 AMD64-only; inherited ARM jobs remain unchanged. The VS installer job and the
 kernel DEB fixture suites in `bazel-oci.yml` run unchanged alongside these checks.
+
+### Validate a reviewed source and registry together
+
+The `Bazel source base images` workflow runs both native architectures for
+pull requests and pushes. To reproduce a reviewed pair, dispatch the workflow
+on its controller branch, choose `amd64`, and provide full commit IDs for
+both `source_revision` and `registry_revision`. Each commit must be reachable
+from a branch of its own repository. With both inputs blank the workflow
+validates its own revision against registry main.
+
+The build uses the selected source's base-image drivers and Bazel targets.
+The controller supplies the mirror configuration and selects one SONiC registry
+endpoint. The runtime job loads the resulting artifacts at that same source
+revision and checks the registry recorded by Bazel. The source-base artifact
+includes `review-selection.json` with the controller, source and registry
+commits for manual pairs.

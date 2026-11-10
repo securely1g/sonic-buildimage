@@ -153,20 +153,17 @@ class VerificationWorkflowTest(unittest.TestCase):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/bazel-base-images.yml").read_text()
         )
-        expected = {
-            "amd64": ["self-hosted", "linux", "bazel-x64"],
-            "arm64": ["self-hosted", "linux", "bazel-arm64"],
-        }
         for name in ("native", "runtime"):
             with self.subTest(job=name):
                 job = workflow["jobs"][name]
-                runners = job["strategy"]["matrix"]["include"]
-                self.assertEqual(len(runners), 2)
-                self.assertEqual(
-                    {entry["architecture"]: entry["runner"] for entry in runners},
-                    expected,
-                )
-                self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
+                matrix = job["strategy"]["matrix"]
+                self.assertEqual(matrix["architecture"], ["amd64", "arm64"])
+                self.assertEqual(matrix["selection"], ["${{ inputs.architecture || 'all' }}"])
+                self.assertEqual(matrix["exclude"], [{"architecture": "arm64", "selection": "amd64"}])
+                self.assertEqual(job["runs-on"], [
+                    "self-hosted", "linux",
+                    "${{ matrix.architecture == 'amd64' && 'bazel-x64' || 'bazel-arm64' }}",
+                ])
         native = workflow["jobs"]["native"]
         self.assertFalse(native["container"].get("volumes"))
         self.assertNotIn(

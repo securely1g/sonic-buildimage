@@ -59,6 +59,13 @@ class SetupBazelCacheTest(unittest.TestCase):
                 with self.subTest(workflow=path.name, job=name):
                     enabled.add((path.name, name))
                     self.assertEqual(calls, ["python3 " + HELPER + " --private-remote-cache"])
+                    if path.name == "bazel-base-images.yml":
+                        self.assertEqual(job["strategy"]["matrix"]["architecture"], ["amd64", "arm64"])
+                        self.assertEqual(job["runs-on"], [
+                            "self-hosted", "linux",
+                            "${{ matrix.architecture == 'amd64' && 'bazel-x64' || 'bazel-arm64' }}",
+                        ])
+                        continue
                     self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
                     matrix = job["strategy"]["matrix"]["include"]
                     self.assertEqual(len(matrix), 2)
@@ -101,7 +108,9 @@ class SetupBazelCacheTest(unittest.TestCase):
                 document = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
                 job = document["jobs"][name]
                 self.assertIn("container", job)
-                self.assertEqual(len(job["strategy"]["matrix"]["include"]), 2)
+                matrix = job["strategy"]["matrix"]
+                self.assertEqual(len(matrix["architecture"] if filename == "bazel-base-images.yml"
+                                     else matrix["include"]), 2)
                 self.assertNotIn("BAZEL_OUTPUT_USER_ROOT", str(job))
                 self.assertNotIn("--output_user_root=", str(job))
                 handoff = next(step for step in job["steps"] if HELPER in step.get("run", ""))
