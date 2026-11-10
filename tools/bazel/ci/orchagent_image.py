@@ -155,8 +155,11 @@ def validate_images(directory):
         check.require(files.get("usr/bin/traceroute6", {}).get("linkname") == "/etc/alternatives/traceroute6"
                       and files.get("etc/alternatives/traceroute6", {}).get("linkname") == "/usr/bin/rltraceroute6"
                       and files.get("usr/bin/rltraceroute6", {}).get("elf_machine") == 62
-                      and files.get("var/lib/dpkg/alternatives/traceroute6", {}).get("kind") == "file",
-                      "missing ndisc6 traceroute6 alternatives state")
+                      and files.get("var/lib/dpkg/alternatives/traceroute6", {}).get("kind") == "file"
+                      and files.get("var/lib/dpkg/alternatives/traceroute6", {}).get("size") == 148
+                      and files.get("var/lib/dpkg/alternatives/traceroute6", {}).get("sha256")
+                      == "3d9e0f58161329a1f8a511fe4b89e107d55785eb2db138f1d21d62d1fdec109a",
+                      "missing or malformed ndisc6 traceroute6 alternatives state")
         check.require(files.get("usr/share/sonic/bazel/orchagent-packages.json", {}).get("sha256") == check.sha(directory / "runtime.packages.json"),
                       "installed runtime package metadata differs")
         for path, item in inherited.items():

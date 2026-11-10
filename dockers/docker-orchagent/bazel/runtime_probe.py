@@ -41,7 +41,10 @@ def main():
               "debug_pairs": [item for item in report["source_debug_pairs"] if item["path"] in ("usr/bin/orchagent", "usr/bin/countersyncd", "usr/bin/ssh")],
               "policy": {"python_imports": ["swsscommon.swsscommon", "dash_api.utils", "scapy.all"],
                          "commands": [{"argv": ["/usr/local/bin/scapy", "-h"], "output_pattern": "Usage"},
-                                      {"argv": ["/usr/bin/traceroute6", "-V"], "output_pattern": "rltraceroute6"}]}}
+                                      {"argv": ["/usr/bin/traceroute6", "-V"],
+                                       "output_pattern": "TCP & UDP IPv6 traceroute tool"},
+                                      {"argv": ["/usr/bin/update-alternatives", "--query", "traceroute6"],
+                                       "output_pattern": "Value: /usr/bin/rltraceroute6"}]}}
     if debug:
         inputs["policy"]["commands"] += [
             {"argv": ["/usr/bin/ssh", "-V"], "output_pattern": "OpenSSH"},
