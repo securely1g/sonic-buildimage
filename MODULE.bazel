@@ -27,7 +27,6 @@ bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # Share APT lock metadata across dependency sets.
 bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.18")
-include("//tools/bazel:rules_distroless_override.MODULE.bazel")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -46,7 +45,7 @@ register_toolchains("//tools/bazel/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.28-58112470001b1c450fd9e859079e92c62c236242",
+    version = "0.0.28-9965823498ab54816de5addb6084638470dd04d7",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -257,43 +256,7 @@ single_version_override(
     version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.6-b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0", repo_name = "sonic_fips")
-
-# Draft validation of registry #287: reuse its exact source, patches and overlays.
-# Remove after #287 publishes .28, then verify normal main-registry resolution.
-archive_override(
-    module_name = "sonic-build-infra",
-    urls = [
-        "https://github.com/securely1g/sonic-build-infra/archive/58112470001b1c450fd9e859079e92c62c236242.tar.gz"
-    ],
-    integrity = "sha256-Kuq0CcHSuyvBYZdSAEc4XUJOpAKyQRj3VfZ7/ndG6KA=",
-    strip_prefix = "sonic-build-infra-58112470001b1c450fd9e859079e92c62c236242",
-    remote_patches = {
-        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/patches/0001-bump-version.patch": "sha256-M7p+jmmZqMk7jKVwAst8k58E2GPxZHtprw9WqFW3d9M=",
-        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/patches/0002-registry-cross-test-visibility.patch": "sha256-2+0NUZ9mcSHEHa+PIU3NVGG8uFBEgaA8LC9wDkg+GrY="
-    },
-    remote_patch_strip = 1,
-    remote_file_urls = {
-        "registry_ci/BUILD.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/BUILD.bazel"
-        ],
-        "registry_ci/kernel_tools_test.py": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/kernel_tools_test.py"
-        ],
-        "registry_ci/prefix_map.c": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/prefix_map.c"
-        ],
-        "registry_ci/prefix_map_test.py": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9b5fcb8ed4575d706987b2b31e36903dccb75ce2/modules/sonic-build-infra/0.0.28-58112470001b1c450fd9e859079e92c62c236242/overlay/registry_ci/prefix_map_test.py"
-        ]
-    },
-    remote_file_integrity = {
-        "registry_ci/BUILD.bazel": "sha256-caSrh4+9CA2qdHetNyAfD86mHFFodd9zGgYRFSeLvxc=",
-        "registry_ci/kernel_tools_test.py": "sha256-Sc7uPv4ZgJxcUx1YjULES+OsclNgC6sh7NMGP9H5fqQ=",
-        "registry_ci/prefix_map.c": "sha256-2fTAaKxgA4m3vf/VQwcRc63QjZgq0m/ZbrhPEtVNmzI=",
-        "registry_ci/prefix_map_test.py": "sha256-tL/W5IwYk52E4XKgWZ8alih011f2qfKX5u8UGtY35ec="
-    },
-)
+bazel_dep(name = "sonic-fips", version = "0.0.6-18a778db501d455f8a1b6d1e3ef8e17121661177", repo_name = "sonic_fips")
 
 # Draft validation: use PI .3's complete pinned registry recipe.
 # Remove after publication, then verify normal main-registry resolution.
@@ -354,98 +317,6 @@ archive_override(
     },
 )
 
-# Draft validation of registry #276: reuse the complete P4C .3 recipe.
-# Remove after publication, then verify normal main-registry resolution.
-archive_override(
-    module_name = "p4c",
-    urls = [
-        "https://codeload.github.com/p4lang/p4c/tar.gz/624c6be8076881e9af1e2f7d7691bc6c4416f4b1"
-    ],
-    integrity = "sha256-hnGpC27CUr3n9SL0tp+FLmsehx5w3444FfgtrPtuk5Q=",
-    strip_prefix = "p4c-624c6be8076881e9af1e2f7d7691bc6c4416f4b1",
-    type = "tar.gz",
-    remote_file_urls = {
-        "BUILD.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/BUILD.bazel"
-        ],
-        "MODULE.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/MODULE.bazel"
-        ],
-        "bazel/0001-native-protoc.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0001-native-protoc.patch"
-        ],
-        "bazel/0002-use-boost-1.83.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0002-use-boost-1.83.patch"
-        ],
-        "bazel/0003-fix-build-for-boost-1.83.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0003-fix-build-for-boost-1.83.patch"
-        ],
-        "bazel/0004-update-thrift-dependency.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0004-update-thrift-dependency.patch"
-        ],
-        "bazel/0005-remove-protobuf-from-debian-dependency.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0005-remove-protobuf-from-debian-dependency.patch"
-        ],
-        "bazel/0006-remove-scapy-from-debian-dependency.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0006-remove-scapy-from-debian-dependency.patch"
-        ],
-        "bazel/foreign.cmake": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/foreign.cmake"
-        ],
-        "bazel/p4c.BUILD.bazel": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/p4c.BUILD.bazel"
-        ],
-        "bazel/package_test.py": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/package_test.py"
-        ],
-        "bazel/python.py": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/python.py"
-        ],
-        "bazel/runtime.bzl": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/runtime.bzl"
-        ],
-        "bazel/source.bzl": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/source.bzl"
-        ],
-        "bazel/tool.bzl": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/tool.bzl"
-        ],
-        "runtime_packages.md": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/runtime_packages.md"
-        ],
-        "bazel/0007-cross-kernel-version.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0007-cross-kernel-version.patch"
-        ],
-        "bazel/codegen.bzl": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/codegen.bzl"
-        ],
-        "bazel/0008-execution-platform-ir-generator.patch": [
-            "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/9874b747656f79f06bab389bd036e408ec3e465d/modules/p4c/1.2.4.2.sonic.3/overlay/bazel/0008-execution-platform-ir-generator.patch"
-        ]
-    },
-    remote_file_integrity = {
-        "BUILD.bazel": "sha256-Ogui7jU6GIwuPZFRsxWarLejWoYdzgDo3w0XHbQIhx0=",
-        "MODULE.bazel": "sha256-oDn64ivFQt8a1hCSsW+3O0HaBbA5lVW9HIQtC9XXeIg=",
-        "bazel/0001-native-protoc.patch": "sha256-qlJafmRxKJxhJVnFMfRgE2gxeMzuRi1g5k/4vYCVFts=",
-        "bazel/0002-use-boost-1.83.patch": "sha256-S7mHEysJW4XvI+uW2xzQ7A/hz1iN1H+4+zvILwyOG3s=",
-        "bazel/0003-fix-build-for-boost-1.83.patch": "sha256-lIir3S1os2V47iAljZNqEOp0TSG18yiDsBmDDQu9obM=",
-        "bazel/0004-update-thrift-dependency.patch": "sha256-o1tKrVH4aQhq42whdit69M4IZNUpCRiEAlToyqsMmAQ=",
-        "bazel/0005-remove-protobuf-from-debian-dependency.patch": "sha256-YTZk6iagtgMuLRzm4fQvzCW9rzViB6YFbzetpBTHUoA=",
-        "bazel/0006-remove-scapy-from-debian-dependency.patch": "sha256-Wl0MCiaXaXZv5P/tlT5wGyPG40aUYfGIVE+iLo9FZU0=",
-        "bazel/foreign.cmake": "sha256-SKGIy2YCZqUoe+57OnScWX4VDzrazlvT7xiFdy2rcS8=",
-        "bazel/p4c.BUILD.bazel": "sha256-KDj8JELl4T86CGMyucT48Ow2qXZEYfQRE28y+Mr+lFg=",
-        "bazel/package_test.py": "sha256-rXroyBbKy3+QNMElI5vl7jxMqT9OPYs2rzH2eC5s14o=",
-        "bazel/python.py": "sha256-Q9tldxy5/kZLxbaivZ5I+Tc5hpkE1UtRD4SCwJZvWvw=",
-        "bazel/runtime.bzl": "sha256-I3E0JcwjIVvafvGzZ0gu3Ps6bqonqWeHMlfVPVBEuYQ=",
-        "bazel/source.bzl": "sha256-A1itwaCAU/O74W8mXyEDzQSFKKdoj4+bSvVjXDvFN5g=",
-        "bazel/tool.bzl": "sha256-SD0REg4lIZ0vGQzw5+4ERygD5fYcfwuk6uMBiUIVRzc=",
-        "runtime_packages.md": "sha256-pcAPU9KpYouH5brGxYGV6zaRxRhCDQwi74BBbjCBbs4=",
-        "bazel/0007-cross-kernel-version.patch": "sha256-Xu6NtFnfMd4uvPt2YwuxB/jTxHmKLhxG/N9iDbfs74s=",
-        "bazel/codegen.bzl": "sha256-Y4z6sg+ddjp3Jl0IybAohnuwhp5RgtRJI4sqXUC+fXc=",
-        "bazel/0008-execution-platform-ir-generator.patch": "sha256-E4HvZt501SjEidJDwE4YJhv0N3ligxGVkc9Fdyd8BLk="
-    },
-)
-
 # Draft validation of registry #215: transport DASH compiler/linker flags.
 # Remove after publication, then verify normal main-registry resolution.
 archive_override(
@@ -490,20 +361,6 @@ single_version_override(
 single_version_override(
     module_name = "sonic-sairedis",
     version = "0.0.4-ee19458a7d1b417317aaf34fe48969da7293d670",
-)
-
-# Draft validation of registry #284: use its exact FIPS source and version patch.
-# Source #21 fixes declared libedit discovery in the OpenSSH configure step.
-# Remove after #284 publishes .6, then retest normal main-registry resolution.
-archive_override(
-    module_name = "sonic-fips",
-    urls = ["https://github.com/securely1g/sonic-fips/archive/b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0.tar.gz"],
-    integrity = "sha256-65hivURPi+ngPAEq+w0n2C1p925bC6Vt3yn282PFBvA=",
-    strip_prefix = "sonic-fips-b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0",
-    remote_patches = {
-        "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/c485f287a7de364bc79e047427a0b3e985d9c941/modules/sonic-fips/0.0.6-b7a5b1903d0a6bf11fd5283bd6eaba0c15b899f0/patches/0001-module-version.patch": "sha256-Od7/2bE0HRgKD9bZRvYCO31XNFEe8kuvJZiNVmM72E8=",
-    },
-    remote_patch_strip = 1,
 )
 
 # Preserve Syncd's Vim debug roots independently of the shared Vim-nox set.
