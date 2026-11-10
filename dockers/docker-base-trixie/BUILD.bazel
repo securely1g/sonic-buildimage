@@ -46,7 +46,7 @@ oci_image(
         name = "debian_runtime_" + arch,
         base = ":debian_base",
         dependency_set = "base_debian",
-        lock = "//dockers/docker-base-trixie/bazel:apt.lock.json",
+        lock = "@sonic_build_infra//apt:apt.lock.json",
         packages = APT_INPUTS["base_debian"][arch],
         policy = {
             "schema": 1,

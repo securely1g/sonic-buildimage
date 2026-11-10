@@ -42,7 +42,7 @@ apt_layer(
     base = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
     dependency_set = "swss_layer_debian",
     lock = "//dockers/docker-swss-layer-trixie/bazel:apt.lock.json",
-    packages = APT_INPUTS["swss_layer_debian"]["amd64"],
+    packages = APT_INPUTS["orchagent_debian"]["amd64"],
     policy = {
         "schema": 1,
         "image": "docker-swss-layer-trixie",
@@ -74,7 +74,7 @@ installed_packages(
     apt_receipt = ":runtime_apt_selection",
     architecture = "amd64",
     base = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
-    controls = [label + ":control" for label in APT_INPUTS["swss_layer_debian"]["amd64"].values()],
+    controls = [label + ":control" for label in APT_INPUTS["orchagent_debian"]["amd64"].values()],
     owner_metadata = ["@libteam//:library_runtime_packages.json"],
     source_modules = {"libteam": "@image_source_modules//:libteam.MODULE.bazel"},
     source_spec = "//dockers/docker-swss-layer-trixie/bazel:source_paths.json",

@@ -1,5 +1,6 @@
 """Execute source-validation workflow shells without compiling source packages."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -96,7 +97,6 @@ class SourceWorkflowTest(unittest.TestCase):
         (self.directory / "artifacts/vs").mkdir(parents=True)
         for name in (".bazelversion", "tools/bazel/build_helpers.py",
                      "tools/bazel/cache/credentials.py",
-                     "platform/vs/docker-syncd-vs/bazel/apt.lock.json",
                      "platform/vs/docker-syncd-vs/BUILD.bazel"):
             fixture = self.directory / name
             fixture.parent.mkdir(parents=True, exist_ok=True)
@@ -135,6 +135,11 @@ class SourceWorkflowTest(unittest.TestCase):
                     ['bash', '-e', '-o', 'pipefail', '-c', values['SONIC_RUN_CMDS']],
                     env=environment).returncode)
             if source_runner:
+                if (os.environ.get('SOURCE_EXIT', '0') == '0' and
+                        args[args.index('--container') + 1] == '//platform/vs/docker-syncd-vs'):
+                    artifacts = Path(args[args.index('--artifacts') + 1])
+                    artifacts.mkdir(parents=True, exist_ok=True)
+                    (artifacts / 'apt.lock.json').write_text(json.dumps({'shared_lock': True}) + chr(10))
                 raise SystemExit(int(os.environ.get('SOURCE_EXIT', '0')))
             if name == 'python3' and args[:1] == ['tools/bazel/build_helpers.py']:
                 raise SystemExit(subprocess.run([sys.executable, *args]).returncode)
@@ -214,6 +219,11 @@ class SourceWorkflowTest(unittest.TestCase):
                     self.assertEqual(result.returncode, source_exit or make_exit,
                                      result.stdout + result.stderr)
                     self.assertEqual(lock.read_text(), "already-resolved Make build\n")
+                    if dash and not source_exit and not make_exit:
+                        exported_lock = self.directory / "artifacts/syncd-vs/bazel/apt.lock.json"
+                        fingerprint = self.directory / "artifacts/syncd-vs/input-locks.sha256"
+                        self.assertIn(hashlib.sha256(exported_lock.read_bytes()).hexdigest() +
+                                      "  artifacts/syncd-vs/bazel/apt.lock.json", fingerprint.read_text())
                     calls = self.recorded()
                     make = [call for call in calls if call["name"] == "make"]
                     self.assertEqual(len(make), 1)

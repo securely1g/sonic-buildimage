@@ -42,7 +42,11 @@ py_test(
         "--policy=$(rootpath //dockers/docker-orchagent:package_policy)",
         "--runtime=$(rootpath //dockers/docker-orchagent:ci_swss)",
         "--library=protobuf.tar=$(rootpath //dockers/docker-orchagent:ci_protobuf)",
+        "--library=libteam.tar=$(rootpath //dockers/docker-orchagent:ci_libteam)",
+        "--library=libteamdctl.tar=$(rootpath //dockers/docker-orchagent:ci_libteamdctl)",
         "--dependencies=$(rootpath //dockers/docker-orchagent:ci_rdeps)",
+        "--source-layer-excludes=$(rootpath //tools/bazel/dpkg:dpkg_excludes.txt)",
+        "--source-layer-includes=$(rootpath //tools/bazel/dpkg:oci_includes.txt)",
         "--config=$(rootpath //dockers/docker-orchagent:ci_config)",
         "--debug-symbols=$(rootpath //dockers/docker-orchagent:ci_debug_symbols)",
         "--source-file=dist/BUILD.bazel=$(rootpath @swss_install_contract//:dist-BUILD.bazel.txt)",
@@ -61,10 +65,14 @@ py_test(
     data = [
         "//dockers/docker-orchagent:ci_config",
         "//dockers/docker-orchagent:ci_debug_symbols",
+        "//dockers/docker-orchagent:ci_libteam",
+        "//dockers/docker-orchagent:ci_libteamdctl",
         "//dockers/docker-orchagent:ci_protobuf",
         "//dockers/docker-orchagent:ci_rdeps",
         "//dockers/docker-orchagent:ci_swss",
         "//dockers/docker-orchagent:package_policy",
+        "//tools/bazel/dpkg:dpkg_excludes.txt",
+        "//tools/bazel/dpkg:oci_includes.txt",
         "@sonic_build_infra//toolchains/binutils:objcopy",
         "@sonic_build_infra//toolchains/binutils:readelf",
         "@sonic_swss//cfgmgr:lua_files",
@@ -84,6 +92,7 @@ py_test(
     ],
     deps = [
         "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/oci:container_validation",
         "//tools/bazel/oci:package_contract_lib",
     ],
 )
@@ -687,7 +696,8 @@ py_test(
     args = [
         "$(rootpath @orchagent_apt_inputs//:apt_inputs.bzl)",
         "$(rootpath //dockers/docker-orchagent:runtime_layer_policy)",
-        "$(rootpath //dockers/docker-orchagent/bazel:apt.lock.json)",
+        "$(rootpath @sonic_build_infra//apt:apt.lock.json)",
+        "$(rootpath //platform/vs/docker-syncd-vs:Dockerfile.j2)",
         "$(rootpath @orchagent_debian//arping/amd64:deb)",
         "$(rootpath @orchagent_debian//arping/amd64:control)",
         "$(rootpath @orchagent_debug_debian//gdbserver/amd64:deb)",
@@ -695,7 +705,8 @@ py_test(
     ],
     data = [
         "//dockers/docker-orchagent:runtime_layer_policy",
-        "//dockers/docker-orchagent/bazel:apt.lock.json",
+        "//platform/vs/docker-syncd-vs:Dockerfile.j2",
+        "@sonic_build_infra//apt:apt.lock.json",
         "@orchagent_apt_inputs//:apt_inputs.bzl",
         "@orchagent_debian//arping/amd64:control",
         "@orchagent_debian//arping/amd64:deb",
@@ -978,14 +989,21 @@ py_test(
     name = "oci_license_filter_test",
     srcs = ["integration/oci_license_filter_test.py"],
     args = [
+        "$(rootpath :oci_license_fixture_tar)",
+        "$(rootpath //tools/bazel/dpkg:dpkg_excludes.txt)",
+        "$(rootpath //tools/bazel/dpkg:oci_includes.txt)",
         "$(rootpath :oci_license_filtered)",
         "$(rootpath :oci_license_refiltered)",
     ],
     data = [
+        ":oci_license_fixture_tar",
+        "//tools/bazel/dpkg:dpkg_excludes.txt",
+        "//tools/bazel/dpkg:oci_includes.txt",
         ":oci_license_filtered",
         ":oci_license_refiltered",
     ],
     main = "integration/oci_license_filter_test.py",
+    deps = ["//tools/bazel/oci:container_validation"],
 )
 
 # Keep the compatibility build label; the owner test already provides its
@@ -1131,7 +1149,7 @@ _SYNCD_P4_IMAGE_INPUTS = {
     "runtime_manifest_path": "//:target/bazel-manifests/docker-syncd-vs/manifest.json",
     "debug_manifest_path": "//:target/bazel-manifests/docker-syncd-vs-dbg/manifest.json",
     "source_contract_path": _SYNCD_OWNER + ":source_contract",
-    "apt_lock_path": _SYNCD_OWNER + "/bazel:apt.lock.json",
+    "apt_lock_path": "@sonic_build_infra//apt:apt.lock.json",
     "dpkg_filter_path": "//dockers/docker-base-trixie:dpkg_01_drop",
     "base_path": _SYNCD_OWNER + ":config_engine_base_layout",
     "apt_layer": _SYNCD_OWNER + ":apt_deps",
@@ -1186,8 +1204,8 @@ py_test(
     deps = ["//tools/bazel/oci:source_contract_lib"],
 )
 
-# The source-only owner has no Make package receipt. The common image validator
-# instead binds its exact declared native/configuration TARs to the final OCI.
+# The owner composes native/configuration TARs directly and retains libteam's
+# generated package receipt for APT ownership. Validate both against the OCI.
 _SWSS_OWNER = "//dockers/docker-orchagent"
 
 _SWSS_IMAGE_INPUTS = {
@@ -1195,7 +1213,7 @@ _SWSS_IMAGE_INPUTS = {
     "debug_path": _SWSS_OWNER + ":docker-orchagent-dbg",
     "runtime_manifest_path": "//:target/bazel-manifests/docker-orchagent/manifest.json",
     "debug_manifest_path": "//:target/bazel-manifests/docker-orchagent-dbg/manifest.json",
-    "apt_lock_path": _SWSS_OWNER + "/bazel:apt.lock.json",
+    "apt_lock_path": "@sonic_build_infra//apt:apt.lock.json",
     "base_path": _SWSS_OWNER + ":config_engine_base_layout",
     "apt_layer": _SWSS_OWNER + ":apt_deps",
     "debug_tools_layer": _SWSS_OWNER + ":debug_tools",
@@ -1203,6 +1221,12 @@ _SWSS_IMAGE_INPUTS = {
     "debug_apt_selection": _SWSS_OWNER + ":debug_apt_selection",
     "runtime_archive": _SWSS_OWNER + ":docker-orchagent.gz",
     "debug_archive": _SWSS_OWNER + ":docker-orchagent-dbg.gz",
+    "source_contract_path": _SWSS_OWNER + ":libteam_source_contract",
+    "source_runtime_tar": _SWSS_OWNER + ":libteam_source_runtime.tar",
+    "source_debug_tar": _SWSS_OWNER + ":docker-orchagent.debug_symbols",
+    "source_receipt": _SWSS_OWNER + ":libteam_source_receipt",
+    "source_layer_excludes": "//tools/bazel/dpkg:dpkg_excludes.txt",
+    "source_layer_includes": "//tools/bazel/dpkg:oci_includes.txt",
     "base_symbols": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
     "base_metadata": "//dockers/docker-base-trixie:runtime_package_metadata",
     "config_metadata": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
@@ -1229,7 +1253,7 @@ py_test(
     args = ["--" + name.replace("_", "-") + "=$(rootpath " + label + ")" for name, label in _SWSS_IMAGE_INPUTS.items()] +
            ["--runtime-payload-layer=$(rootpath " + label + ")" for label in _SWSS_RUNTIME_LAYERS] +
            ["--debug-payload-layer=$(rootpath " + label + ")" for label in _SWSS_DEBUG_LAYERS],
-    data = _SWSS_IMAGE_INPUTS.values() + _SWSS_RUNTIME_LAYERS + _SWSS_DEBUG_LAYERS,
+    data = depset(_SWSS_IMAGE_INPUTS.values() + _SWSS_RUNTIME_LAYERS + _SWSS_DEBUG_LAYERS).to_list(),
     main = "integration/oci_images_test.py",
     tags = ["manual"],
     target_compatible_with = [

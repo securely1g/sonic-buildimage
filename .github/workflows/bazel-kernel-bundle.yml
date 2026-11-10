@@ -31,8 +31,7 @@ jobs:
           - arch: arm64
             runner: [self-hosted, linux, bazel-arm64]
             cache_sha256: 295e54fd58841211b00fb204cafc13affc6a13d8946a4520c0ecdce22626ef93
-    # Keep the integration check scoped to the requested kernel PR.
-    if: github.event_name != 'pull_request' || github.event.pull_request.number == 6 || github.event.pull_request.number == 198
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     env:

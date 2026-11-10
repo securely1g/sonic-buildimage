@@ -295,26 +295,12 @@ jobs:
       - name: Restore default Bazel startup ownership
         run: python3 tools/bazel/ci/repair_bazel_startup.py
 
-      - name: Configure the verified source mirror
+      - name: Configure shared source download mirrors
         run: |
-          python3 - <<'PYCFG'
-          import hashlib
-          import os
-          from pathlib import Path
-          from urllib.request import urlopen
-          # Pin the transport fallback; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-          with urlopen(url, timeout=60) as response:
-              data = response.read()
-          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
-          if hashlib.sha256(data).hexdigest() != expected:
-              raise SystemExit("Source mirror configuration checksum mismatch")
-          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
-          with Path(".bazelrc.user").open("a") as rc:
-              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
-          PYCFG
-
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
 
       - name: Check Make OCI bases and reproducible Docker archives
         run: |
@@ -391,20 +377,8 @@ jobs:
           sha256sum artifacts/archive/archive-fixture.* > artifacts/archive/archive-sha256.txt
 
       - name: Check shared Make rules with unrelated container targets
-        env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
-          if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
-            # This CI-only change does not authorize Debian package generation.
-            for test in tools/bazel/tests/*_test.py; do
-              case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
-                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
-              esac
-            done
-          else
-            python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
-          fi
+          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B tools/bazel/ci/verify_make_archive.py \
             --artifacts artifacts/archive/make-export \
             --bazel "$BAZEL" \
@@ -588,6 +562,7 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
           root = Path('artifacts/sysmgr')
+          root.mkdir(parents=True, exist_ok=True)
           if (root / 'build-receipt.json').exists():
               receipt = json.loads((root / 'build-receipt.json').read_text())
               public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
@@ -868,42 +843,16 @@ jobs:
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
 
-      - name: Configure the verified source mirror
+      - name: Configure shared source download mirrors
         run: |
-          python3 - <<'PYCFG'
-          import hashlib
-          import os
-          from pathlib import Path
-          from urllib.request import urlopen
-          # Pin the transport fallback; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-          with urlopen(url, timeout=60) as response:
-              data = response.read()
-          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
-          if hashlib.sha256(data).hexdigest() != expected:
-              raise SystemExit("Source mirror configuration checksum mismatch")
-          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
-          with Path(".bazelrc.user").open("a") as rc:
-              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
-          PYCFG
-
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
 
       - name: Check Make handoff and archive validation
-        env:
-          SOURCE_ONLY_NO_DEBS: ${{ github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' || github.head_ref == 'codex/sysmgr-source-image' || (github.event_name == 'pull_request' && github.head_ref == 'codex/teamd-source-worker' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
-          if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
-            # This CI-only change does not authorize Debian package generation.
-            for test in tools/bazel/tests/*_test.py; do
-              case "$test" in
-                */kernel_test.py|*/kernel_artifacts_test.py|*/kernel_sbom_test.py) ;;
-                *) PYTHONPATH="$PWD" python3 -B "$test" ;;
-              esac
-            done
-          else
-            python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
-          fi
+          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
@@ -1249,8 +1198,6 @@ jobs:
         run: |
           mkdir -p artifacts/syncd-vs
           git rev-parse HEAD > artifacts/syncd-vs/revision.txt
-          sha256sum platform/vs/docker-syncd-vs/bazel/apt.lock.json \
-            platform/vs/docker-syncd-vs/BUILD.bazel > artifacts/syncd-vs/input-locks.sha256
           cat > artifacts/vs/check-syncd-source.sh <<'SH'
           set -euo pipefail
           option_lines=$(python3 tools/bazel/build_helpers.py options \
@@ -1276,6 +1223,8 @@ jobs:
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL -e BAZEL=$BAZEL -e BAZEL_CONTAINER_ARGS" \
             SONIC_RUN_CMDS="bash artifacts/vs/check-syncd-source.sh" \
             2>&1 | tee artifacts/vs/syncd-source-validation.log
+          sha256sum artifacts/syncd-vs/bazel/apt.lock.json \
+            platform/vs/docker-syncd-vs/BUILD.bazel > artifacts/syncd-vs/input-locks.sha256
 
       - name: Prepare Syncd source artifact list
         id: syncd_artifacts
@@ -1382,16 +1331,10 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
-      github.head_ref != 'codex/image-environment' &&
-      github.head_ref != 'codex/source-image-worker-dispatch' &&
-      github.head_ref != 'codex/sysmgr-source-image' &&
-      github.head_ref != 'codex/teamd-source-worker' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       github.head_ref != 'codex/libteam-owner-consumer' &&
-       github.head_ref != 'codex/swss-owner-image') ||
+       github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
@@ -1404,7 +1347,7 @@ jobs:
       run:
         shell: bash
     env:
-      EXPECTED_MANAGER_REVISION: 549469bac66bc9fad6bafcc8a39b946b5527dd40
+      EXPECTED_MANAGER_REVISION: c650551885f8ad22cbc104082d1f1b6171e67eef
       SONIC_BUILD_GIT_NAME: Guohan Lu
       SONIC_BUILD_GIT_EMAIL: securely1g@gmail.com
       PREFER_DEBIAN_REPO: "y"
@@ -1465,6 +1408,10 @@ jobs:
         run: |
           python3 -B tools/bazel/ci/configure_runner_cache.py \
             --jobs=4 --local-memory-mb=12288
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$PWD/artifacts/vs/source-mirrors.cfg"
+          # /sonic shares this checkout; retain the private cache configuration.
+          printf 'common --downloader_config=%s\n' "$PWD/artifacts/vs/source-mirrors.cfg" >> .bazelrc.user
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
             --output /bazel_cache/distdir > artifacts/vs/source-download-receipt.json
@@ -1526,6 +1473,14 @@ jobs:
             --images-policy artifacts/vs/syncd-installed-images-policy.json --target target \
             --output artifacts/vs/installed-images.json \
             2>&1 | tee artifacts/vs/installed-images.log
+          # The SWSS linker permits indirect shared-library symbols. Resolve
+          # every relocation in the installed image, including Common's libnl symbols.
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --env LD_BIND_NOW=1 --entrypoint /usr/bin/ldd \
+            docker-orchagent:latest -r /usr/bin/tlm_teamd 2>&1 | tee artifacts/vs/tlm-teamd-linkage.txt
+          if grep -Eq 'not found|undefined symbol|symbol lookup error' artifacts/vs/tlm-teamd-linkage.txt; then
+            exit 1
+          fi
 
       - name: Publish the installer and matching container archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

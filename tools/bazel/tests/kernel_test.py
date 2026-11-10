@@ -4,7 +4,7 @@
 import base64
 import copy
 import concurrent.futures
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
@@ -323,6 +323,33 @@ class KernelBundleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different kernel tools module"):
             kernel.inspect_resolution(workdir, consumer, self.state, kernel.DEFAULT_REGISTRY,
                                       fetch=lambda url: metadata[url])
+
+    def test_stored_graph_failure_reports_primary_command_without_fetching(self):
+        """Keep a post-build graph failure visible through the kernel's direct inspection path."""
+        workdir, consumer = self.root / "resolution", self.root / "consumer"
+        consumer.mkdir()
+        self.resolution_files(workdir, consumer)
+        primary = "ERROR: downloading https://private.invalid/package?token=fixture: HTTP 503\n"
+        (workdir / "module-graph.stderr").write_text(primary)
+        (workdir / "module-graph.exit-code").write_text("2\n")
+        before = {path: path.read_bytes() for path in [
+            workdir / "module-graph.json", workdir / "module-graph.stderr",
+            workdir / "module-graph.exit-code", consumer / "MODULE.bazel.lock",
+        ]}
+        console = io.StringIO()
+
+        def unexpected_fetch(url):
+            self.fail("A rejected module graph must not fetch package metadata")
+
+        with redirect_stderr(console), \
+                self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
+            kernel.inspect_resolution(workdir, consumer, self.state, kernel.DEFAULT_REGISTRY,
+                                      fetch=unexpected_fetch)
+        diagnostic = json.loads(console.getvalue())
+        self.assertEqual(diagnostic["returncode"], 2)
+        self.assertEqual(diagnostic["http_statuses"], [503])
+        self.assertNotIn("private.invalid", console.getvalue())
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
 
     def test_cli_managed_trust_reaches_plan_with_explicit_override(self):
         managed = self.root / "managed-cacerts"
@@ -971,6 +998,11 @@ class KernelWorkflowTest(unittest.TestCase):
             r"^      - name: ([^\n]+)\n(.*?)(?=^      - |\Z)",
             self.workflow, re.MULTILINE | re.DOTALL))
 
+    def test_self_hosted_kernel_ci_accepts_all_same_repository_prs(self):
+        self.assertEqual(re.findall(r"^    if: (.+)$", self.workflow, re.MULTILINE), [
+            "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
+        ])
+
     def test_shared_cache_defaults_and_optional_cold_proof(self):
         self.assertIn("runner: [self-hosted, linux, bazel-x64]", self.workflow)
         self.assertIn("runner: [self-hosted, linux, bazel-arm64]", self.workflow)
@@ -1044,6 +1076,7 @@ class KernelWorkflowTest(unittest.TestCase):
                 root = Path(temporary)
                 build = root / "build"
                 build.mkdir()
+                build.chmod(0o755)
                 scratch = build / "k"
                 runner_temp = root / "temp"
                 runner_temp.mkdir()

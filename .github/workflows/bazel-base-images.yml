@@ -32,11 +32,20 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Check space for source image validation
+        run: |
+          set -euo pipefail
+          df -h /github/home
+          available_bytes=$(df --output=avail --block-size=1 /github/home | tail -n 1)
+          (( available_bytes >= 45 * 1024 * 1024 * 1024 )) || {
+            echo 'Source image validation requires 45 GiB of free build space.' >&2
+            exit 1
+          }
       - name: Install execution and verification tools
         run: |
           apt-get update
           # SymCrypt's scoped LLVM linker needs libxml2 on the execution host.
-          apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git j2cli jq libarchive-tools libxml2 python3
+          apt-get install -y --no-install-recommends binutils build-essential ca-certificates file gdb git j2cli jq libarchive-tools libxml2 pkg-config python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -53,26 +62,12 @@ jobs:
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
       - name: Restore default Bazel startup ownership
         run: python3 tools/bazel/ci/repair_bazel_startup.py
-      - name: Configure the verified source mirror
+      - name: Configure shared source download mirrors
         run: |
-          python3 - <<'PYCFG'
-          import hashlib
-          import os
-          from pathlib import Path
-          from urllib.request import urlopen
-          # Pin the transport fallback; Bazel still verifies BCR integrity.
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-          with urlopen(url, timeout=60) as response:
-              data = response.read()
-          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
-          if hashlib.sha256(data).hexdigest() != expected:
-              raise SystemExit("Source mirror configuration checksum mismatch")
-          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
-          with Path(".bazelrc.user").open("a") as rc:
-              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
-          PYCFG
-
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
 
       - name: Check clean dependency inputs
         run: |
@@ -86,9 +81,22 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/base-images
           cp tools/bazel/ci/libteam_draft_bazel.sh artifacts/base-images/registry-input.txt
+          acceptance=()
+          if [[ '${{ matrix.architecture }}' == amd64 ]]; then
+            acceptance+=(--config-engine-acceptance)
+          fi
           python3 -B tools/bazel/ci/base_images.py \
             --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
-            --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images
+            --architecture '${{ matrix.architecture }}' --artifacts artifacts/base-images "${acceptance[@]}"
+          git diff --exit-code
+      - name: Verify config-engine no-op and template rebuilds
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/config_engine_rebuild.py \
+            --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" \
+            --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
       - name: Retain images, symbols and build evidence
         if: always()

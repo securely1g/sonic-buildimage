@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -250,32 +251,30 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 prefix = (prior or "") + ("\n" if prior and not prior.endswith("\n") else "")
                 self.assertEqual((root / ".bazelrc.user").read_text(), prefix + "common --repository_cache=/repo\n")
 
-    def test_existing_source_only_ci_selectors_run_this_regression(self):
+    def test_normal_ci_discovery_runs_this_regression(self):
+        """The normal workflow discovers cache tests alongside other helper tests."""
         document = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        count = 0
-        for job in document["jobs"].values():
-            steps = job.get("steps", [])
-            for index, step in enumerate(steps):
-                script = step.get("run", "")
-                if "for test in tools/bazel/tests/*_test.py; do" not in script:
-                    continue
-                count += 1
-                self.assertTrue(any("python3-yaml" in s.get("run", "") for s in steps[:index]))
-                loop = script[:script.index("\nfi") + 3]
-                with tempfile.TemporaryDirectory() as temporary:
-                    root = Path(temporary)
-                    tests = root / "tools/bazel/tests"
-                    tests.mkdir(parents=True)
-                    (tests / "setup_bazel_cache_test.py").write_text("")
-                    (tests / "kernel_test.py").write_text("")
-                    recorder = root / "python3"
-                    recorder.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
-                    recorder.chmod(0o755)
-                    result = subprocess.run(["bash", "-eu", "-c", loop], cwd=root,
-                                            env={"PATH": str(root) + ":/usr/bin:/bin", "SOURCE_ONLY_NO_DEBS": "true"},
-                                            check=True, capture_output=True, text=True)
-                    self.assertEqual(result.stdout.strip(), "-B tools/bazel/tests/setup_bazel_cache_test.py")
-        self.assertEqual(count, 2)
+        steps = document["jobs"]["checks"]["steps"]
+        commands = [(index, step, line) for index, step in enumerate(steps)
+                    for line in step.get("run", "").splitlines()
+                    if "-m unittest discover -s tools/bazel/tests" in line]
+        self.assertEqual(len(commands), 1)
+        index, step, command = commands[0]
+        self.assertNotIn("if", step)
+        self.assertTrue(any("python3-yaml" in s.get("run", "") for s in steps[:index]))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tests = root / "tools/bazel/tests"
+            tests.mkdir(parents=True)
+            names = ("setup_bazel_cache_test", "kernel_test")
+            for name in names:
+                (tests / (name + ".py")).write_text(
+                    "import unittest\nfrom pathlib import Path\n"
+                    "class DiscoveryProbe(unittest.TestCase):\n"
+                    "    def test_selected(self):\n"
+                    "        Path(" + repr(name + ".selected") + ").touch()\n")
+            subprocess.run(shlex.split(command), cwd=root, check=True, capture_output=True, text=True)
+            self.assertEqual(sorted(p.stem for p in root.glob("*.selected")), sorted(names))
 
 
 if __name__ == "__main__":

@@ -65,6 +65,30 @@ def inspect_graph(stdout, stderr, returncode):
     return result
 
 
+def inspect_graph_with_diagnostics(stdout, stderr, returncode, *, failure_receipt=None):
+    """Retain the validation failure and expose only its public diagnostic fields."""
+    try:
+        return inspect_graph(stdout, stderr, returncode)
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        # Keep the original strict validation error and its traceback. Only a
+        # fixed-value projection is eligible for public evidence or the job log.
+        try:
+            try:
+                from tools.bazel.ci.public_artifacts import graph_failure_summary
+            except ImportError:
+                # Single-file kernel fixtures omit the optional artifact projector.
+                print(f"Bazel mod graph returned {returncode}", file=sys.stderr)
+            else:
+                summary = json.dumps(graph_failure_summary(stdout, stderr, returncode),
+                                     sort_keys=True) + "\n"
+                if failure_receipt is not None:
+                    failure_receipt.write_text(summary)
+                print(summary, end="", file=sys.stderr)
+        except Exception:
+            pass  # Best-effort diagnostics must never replace the graph failure.
+        raise
+
+
 def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=None):
     """Retain module provenance without changing the tested extension lock."""
     lock = workspace / "MODULE.bazel.lock"
@@ -78,21 +102,8 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     (directory / "module-graph.stderr").write_text(result.stderr)
     (directory / "module-graph-inspection.json").write_text(
         json.dumps({"argv": command, "returncode": result.returncode}, indent=2) + "\n")
-    try:
-        inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
-    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
-        # Keep the original strict validation error and its traceback. Only a
-        # fixed-value projection is eligible for public evidence or the job log.
-        try:
-            from tools.bazel.ci.public_artifacts import graph_failure_summary
-
-            summary = json.dumps(graph_failure_summary(result.stdout, result.stderr, result.returncode),
-                                 sort_keys=True) + "\n"
-            failure_receipt.write_text(summary)
-            print(summary, end="", file=sys.stderr)
-        except Exception:
-            pass  # Best-effort diagnostics must never replace the graph failure.
-        raise
+    inspection = inspect_graph_with_diagnostics(result.stdout, result.stderr, result.returncode,
+                                                failure_receipt=failure_receipt)
     inspection["argv"] = command
     (directory / "module-graph-inspection.json").write_text(json.dumps(inspection, indent=2) + "\n")
     if lock.read_bytes() != tested_lock:

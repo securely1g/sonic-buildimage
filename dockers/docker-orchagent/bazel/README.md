@@ -58,11 +58,11 @@ The reviewed runtime roots remain in `orchagent_debian`; four unused Kerberos
 administration packages remain omitted. Debug roots are `gdb`, `gdbserver` and
 `strace` in `orchagent_debug_debian`, using the same dated Debian repositories.
 
-`apt.lock.json` is the canonical reviewed package record, including exact
-source identities and data/control hashes. Normal builds call
-`apt.import_lock(lock = "//dockers/docker-orchagent/bazel:apt.lock.json")`
-to import its runtime and debug dependency sets directly. No expanded MODULE
-fragment is checked in or regenerated beside the lock.
+`@sonic_build_infra//apt:apt.lock.json` is the canonical reviewed package
+record, including exact source identities and data/control hashes. Normal builds
+import this shared owner lock and select `orchagent_debian` and
+`orchagent_debug_debian`. The same lock supplies the base and other container
+sets, so source packages and OCI images agree on their Debian inputs.
 
 Bazel generates the matching BUILD input labels automatically. The `apt_inputs`
 repository rule reads the same lock and writes `apt_inputs.bzl` in the generated
@@ -133,15 +133,16 @@ The package request recipe and policy remain handwritten inputs.
 
 To update packages in a separate clean checkout:
 
-1. Use `apt-resolve.MODULE.bazel` to resolve the intended runtime/debug roots
-   against the pinned Debian snapshot sources. Review the complete resulting
-   package identities, versions, dependencies and hashes in `apt.lock.json`.
+1. Update the Orchagent sets in `sonic-build-infra/apt/requests.json` and follow
+   that owner's APT refresh procedure. Review the resulting shared
+   `apt/apt.lock.json`, including package identities, versions, dependency edges
+   and hashes for every affected set.
 2. Keep reviewed extracted-content hashes only for unchanged source packages;
    validate and record data/control hashes for changed package inputs.
-3. Commit the reviewed lock with any changed package roots. Bazel imports its
-   packages and generates the BUILD mapping automatically; no MODULE export is
-   required. Run the owner tests and rebuild both images, checking the automatic
-   selection receipts and installed consumers.
+3. Publish the reviewed infrastructure update and select it in `MODULE.bazel`.
+   Bazel imports its packages and generates the BUILD mapping automatically.
+   Run the owner tests and rebuild both images, checking the selection receipts
+   and installed consumers.
 
 The selector checks dependency-version requirements without running package
 installation scripts. It does not update the inherited dpkg database or

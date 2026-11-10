@@ -75,8 +75,9 @@ the Dockerfile-aligned mapping in `../BUILD.bazel`, and update the corresponding
 installed-content expectations in `tools/bazel/ci/sysmgr_image.py`. CI compares
 the installed configuration with the original files and generated text.
 
-The `refresh/` module uses the public Distroless APT extension to refresh the
-locked external dependencies. Preserve the snapshot URLs and review changes
-to `apt.lock.json`, the selected runtime closure and package metadata together.
+Sysmgr uses `@sonic_build_infra//apt:apt.lock.json` for its runtime, debug and
+test package sets. Refresh those sets through `sonic-build-infra/apt/requests.json`
+and the infrastructure owner's APT workflow. Preserve the snapshot URLs and
+review the shared lock, selected runtime closure and package metadata together.
 Keep the complete review catalog pinned until the source and registry
 prerequisites land; do not substitute local sibling producer overrides.

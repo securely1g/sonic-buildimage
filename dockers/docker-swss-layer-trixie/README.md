@@ -14,7 +14,9 @@ owner targets. The Make source checkout, recipes and patch series are unchanged.
 | Infrastructure / Distroless | Infrastructure25 / Distroless15 | Infrastructure26 / Distroless16, matching the owner interfaces |
 | Common Rust test | Image wrapper around the old source binary | The source owner's real runtime test; Rust-listener wrappers use Common's declared `patchelf` argument |
 
-Both local and CI builds resolve modules from canonical registry `main`. The hosted archive, regression and source workflows fetch the [merged registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg) at `97cc5025`, verify all 9,730 bytes against SHA256 `ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720`, and pass that file to Bazel for public downloads.
+Local and CI builds resolve modules from registry `main`. The hosted workflows use
+the same checksum-verified [source mirror policy](../../tools/bazel/ci/source_mirrors.py)
+as the installer, with the repository's Debian mirrors first.
 
 Socat uses `1.8.0.2.sonic.6` from [registry PR242](https://github.com/securely1g/sonic-bazel-registry/pull/242),
 with the same upstream 1.8.0.2 and Debian

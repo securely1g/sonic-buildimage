@@ -10,6 +10,7 @@ on:
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
+      - tools/bazel/ci/source_mirrors.py
       - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
@@ -21,6 +22,7 @@ on:
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
+      - tools/bazel/ci/source_mirrors.py
       - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
@@ -56,7 +58,7 @@ jobs:
       - name: Install native verification tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git python3
+          apt-get install -y --no-install-recommends binutils build-essential ca-certificates file gdb git pkg-config python3
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,24 +92,13 @@ jobs:
           test ! -e MODULE.bazel.lock
           test -z "$(git ls-files -- MODULE.bazel.lock)"
 
-      - name: Configure the verified source mirror
-        shell: bash
+      - name: Configure shared source download mirrors
         run: |
-          python3 - <<'PYCFG'
-          import hashlib
-          import os
-          from pathlib import Path
-          from urllib.request import urlopen
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-          with urlopen(url, timeout=60) as response:
-              data = response.read()
-          if hashlib.sha256(data).hexdigest() != "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720":
-              raise SystemExit("Source mirror configuration checksum mismatch")
-          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
-          with Path(".bazelrc.user").open("a") as rc:
-              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
-          PYCFG
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
+
       - name: Audit and test source runtime and debug packages
         env:
           MACHINE: ${{ matrix.machine }}
