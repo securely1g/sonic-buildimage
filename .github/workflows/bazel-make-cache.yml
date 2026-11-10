@@ -21,8 +21,40 @@ permissions:
 jobs:
   checks:
     name: Make cache regression tests
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, bazel-x64]
     steps:
+      - &restore-workspace
+        name: Restore workspace access before checkout
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY##*/}"
+          pipeline_workspace="${RUNNER_WORKSPACE%/}"
+          expected="$pipeline_workspace/$repository"
+          if [[ "$GITHUB_WORKSPACE" != "$expected" ]]; then
+            printf 'Refusing permission repair: expected workspace %s, got %s.\n' \
+              "$expected" "$GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          if [[ ! -e "$expected" && ! -L "$expected" ]]; then
+            echo 'No existing workspace to repair.'
+            exit 0
+          fi
+          work_root="$(realpath -e -- "$pipeline_workspace/..")"
+          physical_workspace="$work_root/$repository/$repository"
+          if [[ ! -d "$expected" || "$(realpath -e -- "$expected")" != "$physical_workspace" ]]; then
+            echo 'Refusing permission repair on a redirected workspace.' >&2
+            exit 1
+          fi
+          expected="$physical_workspace"
+          owner="$(id -u):$(id -g)"
+          sudo -n find -P "$expected" -xdev -type d \
+            -exec chown --no-dereference -- "$owner" {} +
+          sudo -n find -P "$expected" -xdev -type d \
+            -exec chmod u+rwx -- {} +
+          sudo -n find -P "$expected" -xdev -type f -links 1 \
+            -exec chown --no-dereference -- "$owner" {} +
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -45,25 +77,22 @@ jobs:
       matrix:
         include:
           - architecture: amd64
-            runner: ubuntu-24.04
+            runner: [self-hosted, linux, bazel-x64]
           - architecture: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, linux, bazel-arm64]
     runs-on: ${{ matrix.runner }}
     steps:
+      - *restore-workspace
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Prepare space and Make host tools
+      - name: Prepare Make host tools
         run: |
-          # These unused SDKs belong to this disposable GitHub-hosted runner.
-          df -h . /var/lib/docker
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-venv jq dpkg-dev apparmor
+          sudo apt-get install -y --no-install-recommends python3-venv jq dpkg-dev
           python3 -m venv "$RUNNER_TEMP/make-host-tools"
           "$RUNNER_TEMP/make-host-tools/bin/pip" install jinjanator==26.2.0
           echo "$RUNNER_TEMP/make-host-tools/bin" >> "$GITHUB_PATH"
-          df -h . /var/lib/docker
       - name: Verify cache access without exposing credentials
         env:
           BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
@@ -120,16 +149,9 @@ jobs:
           ref: ${{ steps.seed.outputs.revision }}
           path: artifacts/private/common-checkout
           persist-credentials: false
-      - name: Prepare fresh sources and probe the sandbox before host changes
+      - name: Prepare fresh sources and verify the builder sandbox
         if: ${{ !inputs.preflight_only }}
         run: python3 -B tools/bazel/ci/make_cache.py prepare --architecture '${{ matrix.architecture }}'
-      - name: Allow namespaces only for this job's Bazel sandbox
-        if: ${{ !inputs.preflight_only }}
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            python3 tools/bazel/ci/make_cache_sandbox.py install \
-              --job "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.architecture }}" \
-              --receipt artifacts/make-cache/sandbox-host.json
       - name: Build the actual Make image with cache writes disabled
         if: ${{ !inputs.preflight_only }}
         env:
@@ -174,13 +196,6 @@ jobs:
           (directory / 'runtime.json').write_text(json.dumps(result, indent=2) + '\n')
           print('Installed Common library and Python binding match the CI seed')
           PY
-      - name: Remove only this job's sandbox permission
-        if: ${{ always() && !inputs.preflight_only }}
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            python3 tools/bazel/ci/make_cache_sandbox.py remove \
-              --job "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.architecture }}" \
-              --receipt artifacts/make-cache/sandbox-host.json
       - name: Retain sanitized cache and image evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
