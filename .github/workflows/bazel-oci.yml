@@ -111,7 +111,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$CONTROL"
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
-          python3 -B -m unittest -v tools.bazel.tests.vs_cache_inspection_test tools.bazel.tests.vs_cache_payloads_test
+          python3 -B -m unittest -v tools.bazel.tests.vs_cache_inspection_test tools.bazel.tests.vs_cache_payloads_test tools.bazel.tests.vs_worker_inspection_test tools.bazel.tests.vs_reuse_plan_test
       - name: Observe selected cache archives without extraction or restore
         id: observe
         env:
@@ -212,7 +212,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 10
     concurrency:
-      group: sonic-slave-container-k3s-vs
+      group: ${{ inputs.source_image == 'vs-tests' && format('sonic-slave-container-k3s-vs-tests-{0}-{1}', github.run_id, github.run_attempt) || 'sonic-slave-container-k3s-vs' }}
       cancel-in-progress: false
     steps:
       - name: Require fresh observation paths
