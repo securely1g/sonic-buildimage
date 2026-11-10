@@ -171,6 +171,14 @@ jobs:
           cd "$GITHUB_WORKSPACE/$CONTROL"
           python3 -B -m unittest -v tools.bazel.tests.vs_worker_inspection_test
 
+      - name: Test final23 reuse planner without assembly
+        if: inputs.source_image == 'vs-tests'
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+        run: |
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 -B -m unittest -v tools.bazel.tests.vs_reuse_plan_test
+
       - name: Observe resources and VS prerequisites only
         id: observe
         if: contains(fromJSON('["vs-inspect","vs-inputs"]'), inputs.source_image)
