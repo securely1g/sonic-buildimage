@@ -137,7 +137,8 @@ def run_build(args, phase, checkout, cache, output_base):
                "--output_base=" + visible_output,
                "--output_user_root=" + visible_user,
                "build", *args.bazel_arg, *options,
-               "--remote_cache=", "--remote_executor=", "--lockfile_mode=update",
+               "--remote_cache=", "--remote_executor=", "--experimental_remote_downloader=",
+               "--lockfile_mode=update",
                "--execution_log_json_file=" + visible_evidence + "/execution.json",
                "--build_event_json_file=" + visible_evidence + "/events.jsonl", TARGET]
     if in_container:
@@ -157,9 +158,12 @@ def run_build(args, phase, checkout, cache, output_base):
     with (evidence / "build.log").open("w") as log:
         result = subprocess.run(command, cwd=checkout, stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
-        print(f"{phase} build failed (exit {result.returncode}); last log lines:", file=sys.stderr)
+        print(f"{phase} build failed with exit code {result.returncode}; last log lines:",
+              file=sys.stderr, flush=True)
         print_failure_tail(evidence / "build.log")
-        raise RuntimeError(f"{phase} build failed; see {evidence / 'build.log'}")
+        sys.stderr.flush()
+        raise RuntimeError(
+            f"{phase} build failed with exit code {result.returncode}; see {evidence / 'build.log'}")
     actions = action_evidence(evidence / "execution.json")
     output = archive_output(evidence / "events.jsonl")
     if in_container:

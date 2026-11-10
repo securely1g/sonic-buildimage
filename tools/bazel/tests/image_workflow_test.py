@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -11,10 +12,211 @@ import tempfile
 import textwrap
 import unittest
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_archive_evidence_preservation_is_unique_and_keeps_previous_runs(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        preserve = next(
+            step for step in steps
+            if step.get("name") == "Preserve completed archive evidence before Sysmgr acceptance"
+        )
+        upload = next(step for step in steps if step.get("name") == "Upload public archive evidence")
+        build = next(step for step in steps if step.get("name") == "Build Sysmgr runtime and debug images")
+        self.assertLess(steps.index(upload), steps.index(preserve))
+        self.assertLess(steps.index(preserve), steps.index(build))
+        self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
+        with tempfile.TemporaryDirectory(prefix="archive evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            old = scratch / "pre-sysmgr-artifacts"
+            old.mkdir()
+            (old / "receipt").write_text("retained")
+            destinations = []
+            for index in range(2):
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "receipt").write_text(str(index))
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(artifacts.exists())
+                candidates = set(scratch.glob("pre-sysmgr-artifacts.*")) - set(destinations)
+                self.assertEqual(len(candidates), 1)
+                destination = candidates.pop()
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((destination / "artifacts/receipt").read_text(), str(index))
+                destinations.append(destination)
+            self.assertNotEqual(*destinations)
+            self.assertEqual((old / "receipt").read_text(), "retained")
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(set(scratch.glob("pre-sysmgr-artifacts.*")), set(destinations))
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "receipt").write_text("keep on failure")
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
+
+    def test_sysmgr_evidence_requires_a_build_attempt_but_retains_failure_evidence(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        build = next(step for step in steps if step.get("name") == "Build Sysmgr runtime and debug images")
+        public = next(step for step in steps if step.get("name") == "Prepare reviewed public evidence")
+        self.assertEqual(build["id"], "sysmgr_build")
+        self.assertEqual(
+            public["if"],
+            "always() && matrix.architecture == 'amd64' && "
+            "(steps.sysmgr_build.outcome == 'success' || steps.sysmgr_build.outcome == 'failure')",
+        )
+
+    def test_base_image_runtime_uses_guarded_kernel_workspace_repair(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-base-images.yml").read_text()
+        )
+        kernel = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text()
+        )
+        repair = next(
+            step for step in kernel["jobs"]["kernel-bundle"]["steps"]
+            if step.get("name") == "Restore workspace access before checkout"
+        )
+        runtime = workflow["jobs"]["runtime"]
+        self.assertNotIn("container", runtime)
+        self.assertEqual(runtime["steps"][0], repair)
+        self.assertTrue(runtime["steps"][1]["uses"].startswith("actions/checkout@"))
+        self.assertTrue(
+            runtime["steps"][2]["uses"].startswith("actions/download-artifact@")
+        )
+
+    def test_eventd_startup_diagnostics_probe_writes_and_preserve_bazel_failure(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-eventd.yml").read_text()
+        )
+        steps = workflow["jobs"]["native"]["steps"]
+        diagnostic = next(
+            step for step in steps
+            if step.get("name") == "Diagnose Bazel startup permissions"
+        )
+        build = next(
+            step for step in steps
+            if step.get("name") == "Audit, build and run all original suites with private Redis"
+        )
+        self.assertLess(steps.index(diagnostic), steps.index(build))
+        for status in (0, 36):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                home = root / "home"
+                cache = home / ".cache/bazel"
+                cache.mkdir(parents=True)
+                retained = cache / "retained-cache"
+                retained.write_text("keep")
+                wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
+                wrapper.parent.mkdir(parents=True)
+                wrapper.write_text(
+                    "#!/bin/bash\n"
+                    'test "$*" = "info output_base" || exit 99\n'
+                    'echo "fixture Bazel startup probe"\n'
+                    f"exit {status}\n"
+                )
+                wrapper.chmod(0o755)
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", diagnostic["run"]],
+                    cwd=root, env=dict(os.environ, HOME=str(home), RUNNER_TEMP=str(root)),
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                self.assertIn("Bazel cache-parent write probe passed.", result.stdout)
+                self.assertIn("fixture Bazel startup probe", result.stdout)
+                self.assertIn(str(cache), result.stdout)
+                self.assertEqual(list(cache.iterdir()), [retained])
+                self.assertEqual(retained.read_text(), "keep")
+
+    def test_self_hosted_base_images_do_not_delete_host_sdks(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-base-images.yml").read_text()
+        )
+        expected = {
+            "amd64": ["self-hosted", "linux", "bazel-x64"],
+            "arm64": ["self-hosted", "linux", "bazel-arm64"],
+        }
+        for name in ("native", "runtime"):
+            with self.subTest(job=name):
+                job = workflow["jobs"][name]
+                runners = job["strategy"]["matrix"]["include"]
+                self.assertEqual(len(runners), 2)
+                self.assertEqual(
+                    {entry["architecture"]: entry["runner"] for entry in runners},
+                    expected,
+                )
+                self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
+        native = workflow["jobs"]["native"]
+        self.assertFalse(native["container"].get("volumes"))
+        self.assertNotIn(
+            "Allocate source-build space on this disposable runner",
+            [step.get("name") for step in native["steps"]],
+        )
+        for step in native["steps"]:
+            self.assertNotIn("/runner-unused/", step.get("run", ""))
+
+    def test_self_hosted_archives_do_not_mount_or_delete_host_sdks(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        )
+        archive = workflow["jobs"]["archive"]
+        self.assertEqual(archive["runs-on"], "${{ matrix.runner }}")
+        self.assertEqual(
+            {entry["architecture"]: entry["runner"]
+             for entry in archive["strategy"]["matrix"]["include"]},
+            {"amd64": ["self-hosted", "linux", "bazel-x64"],
+             "arm64": ["self-hosted", "linux", "bazel-arm64"]},
+        )
+        self.assertFalse(archive["container"].get("volumes"))
+        self.assertNotIn(
+            "Allocate source-build space on this disposable runner",
+            [step.get("name") for step in archive["steps"]],
+        )
+        for step in archive["steps"]:
+            script = step.get("run", "")
+            self.assertNotIn('test "$RUNNER_ENVIRONMENT" = github-hosted', script)
+            for path in ("/runner-unused/", "/usr/local/lib/android", "/usr/share/dotnet", "/opt/ghc"):
+                with self.subTest(step=step.get("name"), path=path):
+                    self.assertNotIn(path, script)
+
+    def test_native_package_workflows_use_cache_reachable_runners(self):
+        expected = {
+            "amd64": "self-hosted, linux, bazel-x64",
+            "arm64": "self-hosted, linux, bazel-arm64",
+        }
+        for name in ("bazel-eventd.yml", "bazel-supervisor-rust.yml", "bazel-yang-models.yml"):
+            with self.subTest(workflow=name):
+                workflow = (ROOT / ".github/workflows" / name).read_text()
+                runners = re.findall(
+                    r"^          - (?:architecture|arch): (\S+)\n"
+                    r"            runner: \[([^\n]+)\]$",
+                    workflow, re.MULTILINE,
+                )
+                self.assertEqual(len(runners), 2)
+                self.assertEqual({arch.lower(): labels for arch, labels in runners}, expected)
+                self.assertIn("runs-on: ${{ matrix.runner }}", workflow)
+
     def test_static_checks_match_make_configs_and_stop_publication_on_failure(self):
         verifier = (ROOT / "tools/bazel/ci/verify_vs_oci.sh").read_text()
         script = "set -euo pipefail\n" + verifier[verifier.index("# Match the archive recipes"):].split(

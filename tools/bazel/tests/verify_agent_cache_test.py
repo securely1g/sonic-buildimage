@@ -3,6 +3,8 @@
 import contextlib
 import io
 import json
+from argparse import Namespace
+from contextlib import redirect_stderr
 from pathlib import Path
 import sys
 import tempfile
@@ -21,6 +23,52 @@ class CacheEvidenceTest(unittest.TestCase):
     def evidence(self, hit, runner, digest):
         return {"actions": {name: {"cache_hit": hit, "runner": runner} for name in ACTIONS},
                 "archive_sha256": digest}
+
+    def test_isolated_build_disables_remote_cache_executor_and_downloader(self):
+        for image in (None, "bazel-test-image"):
+            with self.subTest(image=image), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                args = Namespace(
+                    artifacts=root, docker_image=image, bazel="bazel",
+                    bazel_startup_arg=[], docker_arg=[], repository_cache=None,
+                    bazel_arg=["--remote_cache=grpc://cache:9092",
+                               "--experimental_remote_downloader=grpc://cache:9092"])
+                with mock.patch("tools.bazel.ci.verify_agent_cache.subprocess.run",
+                                return_value=mock.Mock(returncode=1)) as run:
+                    with redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError, "cold build failed"):
+                        run_build(args, "cold", root, root / "cache", root / "output")
+                command = run.call_args.args[0]
+                for flag in ("--remote_cache=", "--remote_executor=",
+                             "--experimental_remote_downloader="):
+                    self.assertIn(flag, command)
+                    self.assertFalse(any(value.startswith(flag) and value != flag
+                                         for value in command[command.index(flag) + 1:]))
+                self.assertIn("--disk_cache=" + ("/bazel_cache" if image else str(root / "cache"))
+                              + "/disk_cache", command)
+
+    def test_build_failure_prints_retained_bazel_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bazel = root / "bazel"
+            bazel.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' 'fixture build stdout'\n"
+                "printf '%s\\n' 'fixture build stderr' >&2\n"
+                "exit 37\n")
+            bazel.chmod(0o755)
+            args = Namespace(
+                artifacts=root, docker_image=None, bazel=str(bazel),
+                bazel_startup_arg=[], bazel_arg=[], repository_cache=None)
+            diagnostics = io.StringIO()
+            with redirect_stderr(diagnostics):
+                with self.assertRaisesRegex(RuntimeError, "cold build failed with exit code 37"):
+                    run_build(args, "cold", root, root / "cache", root / "output")
+            retained = (root / "cold/build.log").read_text()
+            self.assertEqual(retained, "fixture build stdout\nfixture build stderr\n")
+            for line in retained.splitlines():
+                self.assertIn("  " + line, diagnostics.getvalue())
+            self.assertIn("cold build failed with exit code 37", diagnostics.getvalue())
+            self.assertTrue((root / "cold/command.json").is_file())
 
     def test_valid_disk_hits_and_source_invalidation(self):
         """Accept cold misses, unchanged disk hits and changed-source misses in receipts."""
@@ -90,7 +138,7 @@ class CacheEvidenceTest(unittest.TestCase):
             output = io.StringIO()
             with mock.patch("tools.bazel.ci.verify_agent_cache.subprocess.run", side_effect=fail) as process:
                 with contextlib.redirect_stderr(output):
-                    with self.assertRaisesRegex(RuntimeError, "warm build failed; see .*build.log"):
+                    with self.assertRaisesRegex(RuntimeError, "warm build failed with exit code 37; see .*build.log"):
                         run_build(args, "warm", root, root / "cache", root / "output")
             process.assert_called_once()
             self.assertEqual((artifacts / "warm/build.log").read_text(), text)
@@ -99,7 +147,7 @@ class CacheEvidenceTest(unittest.TestCase):
     def test_build_failure_prints_real_error_without_replacing_failure(self):
         text = "ERROR: /__w/sonic/BUILD:7:1: fixture action failed: missing input\n"
         output = self.failed_build(text)
-        self.assertIn("warm build failed (exit 37)", output)
+        self.assertIn("warm build failed with exit code 37", output)
         self.assertIn("fixture action failed: missing input", output)
         self.assertNotIn("/__w/", output)
 

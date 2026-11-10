@@ -1,5 +1,160 @@
 # Shared Bazel CI helpers
 
+## Remote cache uploads
+
+The [native event services](../../../.github/workflows/bazel-eventd.yml),
+[Rust listener](../../../.github/workflows/bazel-supervisor-rust.yml), and
+[YANG model distribution](../../../.github/workflows/bazel-yang-models.yml) jobs
+use `[self-hosted, linux, bazel-x64]` for AMD64 and
+`[self-hosted, linux, bazel-arm64]` for ARM64, matching the cache-reachable agent
+pools used by the archive, base-image, and kernel jobs. The agents, including
+their job containers where applicable, need network access to
+`grpc://172.16.0.4:9092`; public GitHub-hosted runners cannot reach that private
+endpoint.
+
+Private remote services are not workspace defaults. Only the five
+cache-reachable archive, source-base, event-services, Rust-listener and YANG
+jobs opt in with:
+
+```sh
+python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
+```
+
+After validating setup-bazel's local cache settings, this appends the private
+gRPC action cache and remote downloader to the ignored `.bazelrc.user`, retaining
+existing disk/repository caches, source-mirror settings and upload overrides.
+The shared `common.bazelrc` imports that file, including for CI wrappers that
+ignore the root workspace rc. Without the flag, the helper copies only the
+selected local cache settings and never inherits remote settings from the home
+rc. Ordinary builds and hosted validation jobs therefore do not require access
+to the private cache; existing HTTPS-cache callers can retain their own policy.
+Self-hosted status alone does not enable the endpoint. Kernel jobs retain their
+explicit `--remote-cache` selection, including the disposable loopback cache
+used by cold-cache verification. Make/VS worker pools retain their existing
+authenticated cache configuration rather than inheriting the private endpoint.
+
+The remote downloader's local-fallback flag applies to repository downloads;
+it does not make an unreachable gRPC action cache safe for ordinary build
+actions. Keep both services out of default rc files. On opted-in jobs, a caller
+that intentionally disables or replaces the gRPC cache must also disable or
+replace its remote downloader.
+
+The [source base-image workflow](../../../.github/workflows/bazel-base-images.yml)
+and [OCI archive jobs](../../../.github/workflows/bazel-oci.yml) use these
+persistent agents. Neither mounts or deletes host Android, .NET or GHC SDK
+directories to reclaim space, nor runs a GitHub-hosted-only cleanup guard; that
+cleanup was specific to disposable GitHub-hosted runners. Provision sufficient
+build storage and manage host Docker/cache retention outside the job without
+deleting active builds.
+
+AMD64 archive jobs upload generic public evidence before Sysmgr acceptance,
+then move the completed artifacts outside the checkout into a unique private
+`RUNNER_TEMP/pre-sysmgr-artifacts.*` directory. This keeps the source-only fence
+intact without colliding with or deleting prior jobs' evidence. The preserved
+path is logged; retained temporary evidence is subject to agent maintenance.
+Sysmgr public evidence is collected only after its build was attempted,
+including failed builds, not when an earlier step prevented it from running.
+
+The event-services container reports its identity, cache-directory permissions,
+UID/GID mappings and security context before probing Bazel startup. It creates
+and removes only a temporary directory in the cache parent, then checks
+`bazel info output_base` through the same wrapper used by the build.
+Failures stop the job with diagnostics; the probe does not change host
+permissions, relocate caches or delete retained build state.
+
+YANG and base-image runtime host jobs restore checkout-directory access before
+`actions/checkout`, using the kernel workflow's guarded repair for artifacts
+left by container jobs. The repair requires passwordless `sudo`, validates the
+expected physical workspace, stays on its filesystem and skips symlinks and
+hardlinked files.
+It does not delete files or change shared-cache targets. Any repair failure
+stops the job before checkout.
+
+Kernel host jobs retain the master's fixed directory names under the short
+`KERNEL_RUN_TEMP=/mnt/build/k` root; GitHub's `RUNNER_TEMP` is unchanged. Before
+building, [`kernel_scratch.py`](kernel_scratch.py) checks the Speakup path budget,
+including the longest header, encoded path bytes and a ten-digit sandbox ID.
+The workflow first provisions a missing `/mnt/build/k` using noninteractive sudo.
+It requires the physical `/mnt` and `/mnt/build` parents to be root-owned and
+not group/world-writable, and checks that the build disk is the same filesystem
+as the runner's temp storage. An exclusive `mkdir` creates only the absent `k`
+with mode 0700, then `chown --no-dereference` assigns that new directory to the
+runner's numeric UID/GID. Existing directories are never chmodded or chowned;
+the unprivileged preparation step validates their ownership and runner identity.
+Symlinks and non-directory roots are rejected. The agent needs passwordless sudo
+permission for these two provisioning commands; failures stop the job. Parent
+permissions are unchanged, and no repository Python or kernel build runs under
+sudo. There is no fallback to a smaller boot disk.
+
+A retained `.runner-owner` identity binds the root to the runner name and physical
+runner temp directory. A second agent cannot reuse that root: provision a separate
+short root for it and keep one active job per runner work/temp directory. This is
+an operational guard, not isolation from hostile jobs running as the same user.
+After preparing the root and before checking its 45 GiB free-space requirement,
+cleanup removes only the allowlisted kernel build/verification state, disposable
+cache, artifacts and logs. The producer still requires new state directories;
+stale state is deleted, not reused. The same cleanup runs after artifact upload
+and cache-server shutdown, retaining the root and its runner identity.
+It validates all targets before deleting any, rejects workspace overlap,
+redirected paths and nested mounts, and preserves shared-cache symlink targets
+and hardlinked file metadata. An existing live cache PID blocks cleanup rather
+than killing a possibly unrelated process. Cleanup errors fail the job; a cache
+shutdown failure preserves state. Cancelled jobs can leave state for the next job's cleanup;
+old `kernel-job.*` directories still require periodic agent maintenance.
+Bazel's default startup location, cache policy and kernel build settings are
+unchanged. Compared with the observed 36-byte runner temp prefix, the short root
+saves 24 bytes. The longest Speakup input is 238 bytes with the observed sandbox
+ID, or 245 bytes with the reserved ten-digit ID, below its 255-byte limit.
+
+Base-image, event-services, Rust supervisor and OCI archive container jobs keep
+Bazel's default `/github/home/.cache/bazel/_bazel_root` startup directory.
+After cache setup, [`repair_bazel_startup.py`](repair_bazel_startup.py) restores
+ownership of directories in that tree to the root container user. Bazel requires
+the startup directory's owner to match its effective UID even when the process
+can write there. The helper requires GitHub Actions, the expected container home
+and a root job container. Directory descriptors prevent following symlinks, and
+mount checks exclude redirected startup paths and nested mounts. Regular files,
+hardlinks and repository/disk caches are not modified by ownership repair;
+failures stop the job.
+No startup path override is exported. The shared wrapper still accepts explicit
+caller startup options for isolated cache-verification runs.
+
+The helper also verifies a batch Bazel startup without loading rc files. If
+Bazel reports a corrupt extracted installation, it validates the reported
+32-character hash directory under the default `install` tree, removes only that
+directory without following symlinks or crossing mounts, and retries startup
+once so Bazel re-extracts its embedded files. Other installation directories,
+output bases and repository/disk caches are retained. Other startup failures
+and a failed recovery preserve Bazel's exit code and stop the job; installation
+timestamps are never patched to bypass Bazel's validation.
+
+The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
+ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
+and manual runs remain read-only. The archive job overrides the default in its
+ignored `.bazelrc.user`, which the shared Bazel configuration imports without
+modifying tracked files. The active `vs_container` job and the disabled legacy
+`vs` job forward the same policy through `BAZEL_CONTAINER_ARGS`. The specialized
+upstream source-image and VS slave worker pools retain their existing selectors.
+
+The agents and builder containers must be able to reach the remote cache, and
+the server must authorize writes. Enforce writer permissions on the server:
+the workflow flag is not an authorization boundary for pull-request code.
+Enabling uploads does not guarantee backfilling results already present in
+local caches.
+
+The fresh-checkout disk-cache verifier explicitly disables the remote cache,
+remote executor, and remote downloader for its isolated builds. This keeps remote
+hits from masking disk-cache misses and avoids enabling the remote downloader
+without the gRPC cache it requires. Normal workflow builds retain their configured
+remote services.
+
+If an isolated build fails, the verifier prints its retained Bazel build log
+and exit code to the CI console before raising the failure. The local
+`agent-cache/<phase>/build.log` remains available on the runner; raw logs are
+not added to public failure artifacts.
+
+## Shared helpers
+
 These helpers validate buildimage artifacts and preserve build evidence. The
 shared container runner discovers the selected owner's Bazel CI targets;
 package expectations remain in the owner declarations and tests.
