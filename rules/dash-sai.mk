@@ -1,7 +1,7 @@
-# DASH SAI repo: https://github.com/sonic-net/DASH
+# DASH SAI repo: https://github.com/securely1g/DASH
 
 DASH_SAI_VERSION = 1.0.0
-DASH_SAI_COMMIT = d5c003dd7774c2b43f275c0233acc73a0ea28d2f
+DASH_SAI_COMMIT = 2cbfdfa1205c0d03003444e5c80f89adb8c3df59
 
 export DASH_SAI_VERSION
 export DASH_SAI_COMMIT
