@@ -99,6 +99,40 @@ jobs:
         run: |
           /usr/bin/python3 -B -m tools.bazel.ci.probe_remote_cache \
             --output artifacts/make-cache/cache-access.json
+      - name: Start Docker on the runner build disk
+        id: builder_docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch=$(realpath -e -- "$RUNNER_TEMP")
+          if [[ $(stat -c %d "$scratch") == "$(stat -c %d /)" ]]; then
+            echo 'The builder image requires the separate runner build disk.' >&2
+            exit 1
+          fi
+          df -h / "$scratch"
+          state=$(mktemp -d "$scratch/make-cache-docker.XXXXXXXX")
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          mkdir "$state"/{docker,containerd,socket,make}
+          workspace=$(pwd -P)
+          docker run --detach --privileged --cidfile "$state/container.id" \
+            --mount "type=bind,src=$state/docker,dst=/var/lib/docker" \
+            --mount "type=bind,src=$state/containerd,dst=/var/lib/containerd" \
+            --mount "type=bind,src=$state/socket,dst=/run/make-cache" \
+            --mount "type=bind,src=$workspace,dst=$workspace" \
+            --mount "type=bind,src=$state/make,dst=$state/make" \
+            docker:28.5.2-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac \
+            dockerd --host=unix:///run/make-cache/docker.sock --group="$(id -g)"
+          endpoint="unix://$state/socket/docker.sock"
+          for attempt in {1..30}; do
+            if docker --host "$endpoint" info --format '{{.DockerRootDir}}' 2>/dev/null; then
+              echo "DOCKER_HOST=$endpoint" >> "$GITHUB_ENV"
+              echo "MAKE_CACHE_SCRATCH=$state/make" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs --tail 40 "$(cat "$state/container.id")"
+          exit 1
       - name: Pin and pull the native production builder
         run: python3 -B tools/bazel/ci/make_cache.py preflight --architecture '${{ matrix.architecture }}'
       - name: Verify the Common seed run
@@ -194,6 +228,19 @@ jobs:
           (directory / 'runtime.json').write_text(json.dumps(result, indent=2) + '\n')
           print('Installed Common library and Python binding match the CI seed')
           PY
+      - name: Remove the job's Docker container and image store
+        if: always() && steps.builder_docker.outputs.state != ''
+        env:
+          STATE: ${{ steps.builder_docker.outputs.state }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ $(dirname -- "$STATE") == "$(realpath -e -- "$RUNNER_TEMP")" &&
+             $(basename -- "$STATE") == make-cache-docker.* && ! -L "$STATE" ]]
+          if [[ -s "$STATE/container.id" ]]; then
+            docker --host unix:///var/run/docker.sock rm --force --volumes "$(cat "$STATE/container.id")"
+          fi
+          sudo -n rm -rf --one-file-system -- "$STATE"
       - name: Retain sanitized cache and image evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

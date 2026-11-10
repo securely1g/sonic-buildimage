@@ -31,8 +31,10 @@ to the private cache; existing HTTPS-cache callers can retain their own policy.
 Self-hosted status alone does not enable the endpoint. Kernel jobs retain their
 explicit `--remote-cache` selection, including the disposable loopback cache
 used by cold-cache verification. The manual Make cache preflight checks this
-same private cache on the native Bazel pools. The dedicated VS installer
-worker uses its own cache configuration.
+same private cache on the native Bazel pools. It pulls the production builder
+with a job-specific Docker daemon whose image layers live on the runner build
+disk. A full Make run uses the same daemon and pinned image. The dedicated VS
+installer worker uses its own cache configuration.
 
 The remote downloader's local-fallback flag applies to repository downloads;
 it does not make an unreachable gRPC action cache safe for ordinary build

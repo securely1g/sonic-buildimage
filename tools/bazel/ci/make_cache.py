@@ -282,7 +282,8 @@ def prepare(architecture, checkout):
     local_image = json.loads(command(["docker", "image", "inspect",
                                      builder["local_image"] + ":" + builder["local_tag"]]))[0]
     require(local_image["Id"] == builder["image_id"], "Pinned local builder changed after preflight")
-    cache_root = Path(os.environ["RUNNER_TEMP"]) / "make-common-cache"
+    scratch = os.environ.get("MAKE_CACHE_SCRATCH") or os.environ["RUNNER_TEMP"]
+    cache_root = Path(scratch) / "make-common-cache"
     require(not cache_root.exists(), "The Make proof requires fresh job cache directories")
     for name in ("dpkg", "versions", "bazel"):
         (cache_root / name).mkdir(parents=True)
