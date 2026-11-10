@@ -176,18 +176,23 @@ def inspect_object(directory, item, budget):
 
 WORKSPACE_DEBS = ('sonic-device-data_1.0-1_all.deb',
                   'sonic-platform-vs_1.0_amd64.deb')
+BUILD_HOOKS_DEB = 'sonic-build-hooks_1.0_all.deb'
+BUILD_HOOKS_WORKSPACE_PATH = 'src/sonic-build-hooks/buildinfo/' + BUILD_HOOKS_DEB
+BUILD_HOOKS_INSTALLED_BASE = '/usr/local/share/buildinfo'
 
 
-def inspect_workspace_deb(workspace, filename, mounts, budget):
+def _inspect_declared_deb(base, relative, mounts, budget):
     """Hash one exact existing path; retain descriptors and never follow links."""
-    require(filename in WORKSPACE_DEBS, 'Unexpected workspace filename')
-    path = PurePosixPath(workspace)
-    require(isinstance(workspace, str) and path.is_absolute() and str(path) == workspace
+    require(relative in tuple('target/debs/trixie/' + name for name in WORKSPACE_DEBS)
+            + (BUILD_HOOKS_WORKSPACE_PATH, BUILD_HOOKS_DEB), 'Unexpected package path')
+    relative_path = PurePosixPath(relative)
+    filename = relative_path.name
+    path = PurePosixPath(base)
+    require(isinstance(base, str) and path.is_absolute() and str(path) == base
             and 1 < len(path.parts) <= 32 and '..' not in path.parts
-            and len(workspace) <= 4096 and not any(c in workspace for c in '\x00\r\n'),
-            'Unexpected current workspace path')
-    relative = 'target/debs/trixie/' + filename
-    result = {'workspace': workspace, 'relative_path': relative,
+            and len(base) <= 4096 and not any(c in base for c in '\x00\r\n'),
+            'Unexpected current base path')
+    result = {'base': base, 'relative_path': relative,
               'status': 'not_observed', 'contents_retained': False}
     descriptors, links = [], []
     identity = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
@@ -195,8 +200,8 @@ def inspect_workspace_deb(workspace, filename, mounts, budget):
         budget.check()
         directory = os.open('/', observation.DIRECTORY_FLAGS)
         descriptors.append(directory)
-        workspace_parts = path.parts[1:]
-        for index, component in enumerate(workspace_parts + ('target', 'debs', 'trixie')):
+        base_parts = path.parts[1:]
+        for index, component in enumerate(base_parts + relative_path.parts[:-1]):
             budget.check()
             named = os.stat(component, dir_fd=directory, follow_symlinks=False)
             if stat.S_ISLNK(named.st_mode):
@@ -206,14 +211,14 @@ def inspect_workspace_deb(workspace, filename, mounts, budget):
             child = os.open(component, observation.DIRECTORY_FLAGS, dir_fd=directory)
             descriptors.append(child)
             opened = os.fstat(child)
-            require(identity(named) == identity(opened), 'Workspace path changed')
+            require(identity(named) == identity(opened), 'Base directory path changed')
             links.append((directory, component, identity(opened)))
             directory = child
-            if index + 1 == len(workspace_parts):
-                result['workspace_metadata'] = observation.metadata(opened)
-                result['workspace_mount'] = observation.covering_mount(workspace, mounts)
-                require(result['workspace_mount']['device'] == result['workspace_metadata']['device'],
-                        'Workspace mount changed')
+            if index + 1 == len(base_parts):
+                result['base_metadata'] = observation.metadata(opened)
+                result['base_mount'] = observation.covering_mount(base, mounts)
+                require(result['base_mount']['device'] == result['base_metadata']['device'],
+                        'Base directory mount changed')
         named = os.stat(filename, dir_fd=directory, follow_symlinks=False)
         result['metadata'] = observation.metadata(named)
         if stat.S_ISLNK(named.st_mode):
@@ -228,23 +233,23 @@ def inspect_workspace_deb(workspace, filename, mounts, budget):
         descriptors.append(fd)
         before = os.fstat(fd)
         require(stable(named) == stable(before) and stat.S_ISREG(before.st_mode),
-                'Workspace file changed before reading')
-        result['mount'] = observation.covering_mount(workspace + '/' + relative, mounts)
+                'Base directory file changed before reading')
+        result['mount'] = observation.covering_mount(base + '/' + relative, mounts)
         require(result['mount']['device'] == result['metadata']['device'], 'File mount changed')
         digest, count = hashlib.sha256(), 0
         while count < before.st_size:
             budget.check()
             block = os.read(fd, min(CHUNK, before.st_size - count))
-            require(block, 'Workspace file shrank while hashing')
+            require(block, 'Base directory file shrank while hashing')
             count += len(block); digest.update(block)
         require(stable(before) == stable(os.fstat(fd)) ==
                 stable(os.stat(filename, dir_fd=directory, follow_symlinks=False)),
-                'Workspace file changed during observation')
+                'Base directory file changed during observation')
         for parent, component, expected in links:
             budget.check()
             require(identity(os.stat(component, dir_fd=parent, follow_symlinks=False)) == expected,
-                    'Workspace path binding changed during observation')
-        result.update(status='CURRENT_WORKSPACE_BYTES_OBSERVED_NOT_ADMITTED',
+                    'Base directory path binding changed during observation')
+        result.update(status='CURRENT_BYTES_OBSERVED_NOT_ADMITTED',
                       sha256=digest.hexdigest(), observed_bytes=count)
     except FileNotFoundError:
         result['status'] = 'missing_at_this_exact_path'
@@ -257,6 +262,31 @@ def inspect_workspace_deb(workspace, filename, mounts, budget):
         for fd in reversed(descriptors):
             os.close(fd)
     return result
+
+
+def inspect_workspace_deb(workspace, filename, mounts, budget):
+    require(filename in WORKSPACE_DEBS, 'Unexpected workspace filename')
+    result = _inspect_declared_deb(workspace, 'target/debs/trixie/' + filename, mounts, budget)
+    for suffix in ('', '_metadata', '_mount'):
+        if 'base' + suffix in result:
+            result['workspace' + suffix] = result.pop('base' + suffix)
+    if result['status'] == 'CURRENT_BYTES_OBSERVED_NOT_ADMITTED':
+        result['status'] = 'CURRENT_WORKSPACE_BYTES_OBSERVED_NOT_ADMITTED'
+    return result
+
+
+def inspect_build_hook_debs(workspace, mounts, budget):
+    return {'workspace_copy': _inspect_declared_deb(
+                workspace, BUILD_HOOKS_WORKSPACE_PATH, mounts, budget),
+            'installed_buildinfo_copy': _inspect_declared_deb(
+                BUILD_HOOKS_INSTALLED_BASE, BUILD_HOOKS_DEB, mounts, budget),
+            'scope': 'Two exact build-hooks package paths on this assigned worker; no directory scan',
+            'maximum_bytes_each': MAX_ARCHIVE,
+            'missing_is_global_absence': False,
+            'historical_producer_provenance': 'not_established',
+            'source_compatibility': 'not_established',
+            'package_format_validated': False,
+            'contents_copied_or_extracted': False}
 
 
 def inspect_workspace_debs(workspace, mounts, budget):
@@ -312,6 +342,7 @@ def collect(value, identity):
         mounts = observation.parse_mounts(raw.decode())
         mount = observation.covering_mount(ROOT, mounts)
         workspace = inspect_workspace_debs(os.environ['GITHUB_WORKSPACE'], mounts, budget)
+        hooks = inspect_build_hook_debs(os.environ['GITHUB_WORKSPACE'], mounts, budget)
         require(mount['device'] == observation.metadata(opened)['device'], 'Cache mount changed')
         results = [inspect_object(directory, item, budget) for item in value['objects']]
         require((opened.st_dev, opened.st_ino) == (os.fstat(directory).st_dev, os.fstat(directory).st_ino),
@@ -321,9 +352,10 @@ def collect(value, identity):
     return {'schema': 1, 'status': 'CACHE_PAYLOAD_OBSERVATION_NOT_ADMISSION', **identity,
             'root': ROOT, 'mount': mount, 'objects': results,
             'current_workspace_host_debs': workspace,
+            'bootstrap_build_hooks_debs': hooks,
             'observed_objects': sum(r['status'] == 'CURRENT_BYTES_OBSERVED_NOT_ADMITTED' for r in results),
             'incomplete_objects': sum(r['status'] != 'CURRENT_BYTES_OBSERVED_NOT_ADMITTED' for r in results),
-            'scope': 'Only selected existing cache names and two exact current-workspace DEB paths; hashes and metadata, no raw logs or payload copies retained',
+            'scope': 'Only selected existing cache names, two current-workspace host DEB paths and two build-hooks package paths; hashes and metadata, no raw logs or payload copies retained',
             'cache_writes': False, 'payloads_extracted': False, 'package_generation': False,
             'source_key_compatibility': 'not_established', 'complete_VS_acceptance': False}
 

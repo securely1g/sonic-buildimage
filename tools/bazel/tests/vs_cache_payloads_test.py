@@ -232,5 +232,63 @@ class WorkspaceHostDebTests(unittest.TestCase):
                 self.assertNotIn('sha256', result)
 
 
+class BootstrapBuildHooksTests(unittest.TestCase):
+    def fixture(self, root):
+        workspace = root / 'workspace'
+        installed = root / 'installed'
+        source = workspace / payloads.BUILD_HOOKS_WORKSPACE_PATH
+        destination = installed / payloads.BUILD_HOOKS_DEB
+        for path, data in ((source, b'workspace literal fixture'),
+                           (destination, b'installed literal fixture')):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(data)
+        device = root.stat().st_dev
+        mounts = [{'mountpoint': '/', 'device': f'{os.major(device)}:{os.minor(device)}'}]
+        return workspace, installed, source, destination, mounts
+
+    def test_distinguishes_existing_copies_without_extracting_or_changing_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, installed, source, destination, mounts = self.fixture(Path(temporary))
+            originals = [(path, path.read_bytes(), payloads.stable(path.stat()))
+                         for path in (source, destination)]
+            with mock.patch.object(payloads, 'BUILD_HOOKS_INSTALLED_BASE', str(installed)), \
+                 mock.patch.object(payloads.os, 'scandir', side_effect=AssertionError('No scan')):
+                result = payloads.inspect_build_hook_debs(str(workspace), mounts, payloads.Budget())
+            for key, (path, data, metadata) in zip(
+                    ('workspace_copy', 'installed_buildinfo_copy'), originals):
+                record = result[key]
+                self.assertEqual(record['status'], 'CURRENT_BYTES_OBSERVED_NOT_ADMITTED')
+                self.assertEqual(Path(record['base']) / record['relative_path'], path)
+                self.assertEqual(record['sha256'], hashlib.sha256(data).hexdigest())
+                self.assertNotIn(data.decode(), json.dumps(result))
+                self.assertEqual(path.read_bytes(), data)
+                self.assertEqual(payloads.stable(path.stat()), metadata)
+            self.assertFalse(result['package_format_validated'])
+            self.assertFalse(result['contents_copied_or_extracted'])
+            self.assertEqual(result['source_compatibility'], 'not_established')
+
+    def test_missing_workspace_copy_and_installed_parent_symlink_do_not_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace, installed, source, destination, mounts = self.fixture(root)
+            source.unlink()
+            saved = root / 'saved'; installed.rename(saved); installed.symlink_to(saved)
+            with mock.patch.object(payloads, 'BUILD_HOOKS_INSTALLED_BASE', str(installed)), \
+                 mock.patch.object(payloads.os, 'read', side_effect=AssertionError('No read')):
+                result = payloads.inspect_build_hook_debs(str(workspace), mounts, payloads.Budget())
+            self.assertEqual(result['workspace_copy']['status'], 'missing_at_this_exact_path')
+            self.assertEqual(result['installed_buildinfo_copy']['status'], 'symlink_rejected')
+            self.assertFalse(result['missing_is_global_absence'])
+            self.assertTrue(all('sha256' not in result[key]
+                                for key in ('workspace_copy', 'installed_buildinfo_copy')))
+
+    def test_undeclared_relative_paths_are_rejected_before_open(self):
+        with mock.patch.object(payloads.os, 'open', side_effect=AssertionError('No open')):
+            for path in ('../' + payloads.BUILD_HOOKS_DEB, '/etc/passwd',
+                         'src/sonic-build-hooks/' + payloads.BUILD_HOOKS_DEB):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    payloads._inspect_declared_deb('/workspace', path, [], payloads.Budget())
+
+
 if __name__ == '__main__':
     unittest.main()
