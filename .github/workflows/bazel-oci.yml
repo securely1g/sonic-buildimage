@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -59,6 +59,82 @@ env:
   BAZEL: bazel
 
 jobs:
+  vs_cache_payload_observation:
+    name: Existing VS cache payload observation (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-cache-payloads' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    timeout-minutes: 10
+    concurrency:
+      group: vs-cache-payload-observation-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require separate cache payload scope and fresh paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+        run: |
+          python3 - <<'PY_CACHE_PATHS'
+          import os, re
+          from pathlib import Path
+          if any(os.environ.get(name) for name in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')):
+              raise SystemExit('Cache payload observation does not accept a native source request')
+          run, attempt, worker = (os.environ[k] for k in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', x) for x in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected assigned runner identity')
+          name = f'vs-cache-payload-control-{run}-{attempt}-{worker}'
+          control = Path(os.environ['GITHUB_WORKSPACE']) / name
+          receipt = Path(os.environ['RUNNER_TEMP']) / (name + '.json')
+          if any(path.exists() or path.is_symlink() for path in (control, receipt)):
+              raise SystemExit('Preserve existing cache payload observation paths')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'worker={worker}\ncontrol={control.name}\nreceipt={receipt.name}\n')
+          PY_CACHE_PATHS
+      - name: Checkout the immutable cache payload observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+      - name: Check controller identity and pure cache observation tests
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+          GIT_NO_LAZY_FETCH: '1'
+          GIT_NO_REPLACE_OBJECTS: '1'
+          GIT_OPTIONAL_LOCKS: '0'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -B -m unittest -v tools.bazel.tests.vs_cache_inspection_test tools.bazel.tests.vs_cache_payloads_test
+      - name: Observe selected cache archives without extraction or restore
+        id: observe
+        env:
+          EXPECTED_WORKER: ${{ steps.paths.outputs.worker }}
+          CONTROL: ${{ steps.paths.outputs.control }}
+          RECEIPT: ${{ steps.paths.outputs.receipt }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 -B -m tools.bazel.ci.vs_cache_payloads \
+            --worker "$EXPECTED_WORKER" \
+            --selection tools/bazel/ci/vs_cache_payload_selection.json \
+            --selection-sha256 10694722750c97d60abd0892289c3a42c3479f3a2858a912983c4f6cb8c93388 \
+            --output "$RUNNER_TEMP/$RECEIPT"
+      - name: Retain this worker cache payload observation
+        if: always() && (steps.observe.outcome == 'success' || steps.observe.outcome == 'failure')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-cache-payloads-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ steps.paths.outputs.receipt }}
+          if-no-files-found: error
+          retention-days: 14
+
   vs_cache_inspection:
     name: Existing VS cache metadata (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-cache-inspect' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
