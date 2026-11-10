@@ -339,7 +339,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("build", "validate", "incremental"))
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--image-version", default="bazel-otel-ci")
+    parser.add_argument("--image-version", default="bazel-ci")
     parser.add_argument("--bazel", default="tools/bazel/ci/review_bazel.sh")
     args = parser.parse_args()
     directory = args.artifacts.resolve(); directory.mkdir(parents=True, exist_ok=True)
