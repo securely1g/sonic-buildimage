@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - src/libteam/**
-      - tools/bazel/0001-sonic-swss-libteam.patch
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
@@ -80,8 +79,8 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
-          # Pin the merged registry inputs for reproducible native validation.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/a1334b9a9604733a2faf6cc96536d289da09e8d8
+          # Use the canonical maintained registry.
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
         run: |
           set -euo pipefail
           mkdir -p artifacts

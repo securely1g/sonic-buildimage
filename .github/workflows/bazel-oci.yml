@@ -225,7 +225,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.architecture == 'amd64' && 180 || 60 }}
+    timeout-minutes: ${{ matrix.architecture == 'amd64' && 240 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -235,19 +235,37 @@ jobs:
             machine: x86_64
             runner: ubuntu-24.04
             platform: x86_64_trixie
+            disk_cache: swss-layer-amd64
           - name: ARM64
             architecture: arm64
             machine: aarch64
             runner: ubuntu-24.04-arm
             platform: aarch64_trixie
-    container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+            disk_cache: buildimage-gzip-arm64
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      volumes:
+        - /usr/local/lib/android:/runner-unused/android
+        - /usr/share/dotnet:/runner-unused/dotnet
+        - /opt/ghc:/runner-unused/ghc
     env:
-      # Draft catalog for root-module resolution; the full Make VS job is separate.
+      # Shared CI entry point with the canonical registry; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
     defaults:
       run:
         shell: bash
     steps:
+      - name: Allocate source-build space on this disposable runner
+        if: matrix.architecture == 'amd64'
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h / "$GITHUB_WORKSPACE"
+          du -sh /runner-unused/android /runner-unused/dotnet /runner-unused/ghc
+          # These host SDKs are not inputs to the pinned Trixie build. Preserve
+          # all Bazel caches, the workspace, retained outputs and execution tools.
+          find /runner-unused/android /runner-unused/dotnet /runner-unused/ghc \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          df -h / "$GITHUB_WORKSPACE"
       - name: Install execution tools
         run: |
           apt-get update
@@ -278,7 +296,7 @@ jobs:
           bazelisk-version: 1.29.0
           bazelisk-cache: true
           repository-cache: true
-          disk-cache: buildimage-gzip-${{ matrix.architecture }}
+          disk-cache: ${{ matrix.disk_cache }}
           cache-version: "8.5.1"
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
@@ -494,6 +512,7 @@ jobs:
           python3 -B tools/bazel/ci/verify_agent_cache.py \
             --artifacts artifacts/archive/agent-cache \
             --bazel "$BAZEL" \
+            --bazel-arg=--experimental_downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg" \
             --repository-cache "$("$BAZEL" info repository_cache)" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
@@ -617,6 +636,156 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+      - name: Preserve completed Sysmgr evidence before SWSS layer acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          if [[ -d artifacts ]]; then
+            test ! -e "$RUNNER_TEMP/pre-swss-layer-artifacts"
+            mv artifacts "$RUNNER_TEMP/pre-swss-layer-artifacts"
+          fi
+
+      - name: Build and inspect the shared runtime and symbols
+        id: swss_layer_build
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          mkdir -p artifacts/swss-layer
+          cp "$RUNNER_TEMP/sonic-source-mirrors.cfg" artifacts/swss-layer/downloader.cfg
+          python3 -B tools/bazel/tests/swss_layer_payload_test.py
+          python3 -B tools/bazel/ci/swss_layer.py --bazel "$BAZEL" --artifacts artifacts/swss-layer
+      - name: Validate reviewed SWSS consumer contracts
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          set -euo pipefail
+          targets=(@libteam//:consumer_test @sonic_swss//crates/countersyncd:common_rust_test
+                   @sonic_swss//bazel:protobuf_runtime_test //tools/bazel/tests:swss_package_contract_test)
+          python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
+            --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
+            --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
+            --output artifacts/swss-layer/consumer-action-audit.json "${targets[@]}"
+          "$BAZEL" test --platforms=@sonic_build_infra//platforms:x86_64_trixie \
+            --host_platform=@sonic_build_infra//platforms:x86_64_trixie \
+            --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000 \
+            --nocache_test_results --test_output=all \
+            --build_event_json_file="$PWD/artifacts/swss-layer/consumer-events.jsonl" "${targets[@]}"
+      - name: Check cached no-op and source edit through the image
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/swss_image_rebuild.py --bazel "$BAZEL" \
+            --runtime-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.gz \
+            --symbols-target //dockers/docker-swss-layer-trixie:docker-swss-layer-trixie.debug_symbols \
+            --additional-runtime-target //dockers/docker-swss-layer-trixie:source_runtime \
+            --unchanged-target //dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz \
+            --output artifacts/swss-layer/rebuild
+          git diff --exit-code
+      - name: Prepare shared SWSS image evidence
+        id: swss_layer_public
+        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_build.outcome != 'skipped'
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/swss-layer')
+          if (root / 'receipt.json').exists():
+              receipt = json.loads((root / 'receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          for name in ('validation.json', 'action-audit.json', 'consumer-action-audit.json', 'apt-selection.json', 'packages.json', 'rebuild/rebuild.json'):
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PY
+      - name: Retain reviewed artifacts and receipts
+        if: always() && matrix.architecture == 'amd64' && steps.swss_layer_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-layer-amd64
+          path: |
+            artifacts/swss-layer/docker-swss-layer-trixie.gz
+            artifacts/swss-layer/source-runtime.tar
+            artifacts/swss-layer/source-debug.tar
+            artifacts/swss-layer/image-debug.tar
+            artifacts/swss-layer/public-receipt.json
+            artifacts/swss-layer/validation.json
+            artifacts/swss-layer/action-audit.json
+            artifacts/swss-layer/consumer-action-audit.json
+            artifacts/swss-layer/downloader.cfg
+            artifacts/swss-layer/apt-selection.json
+            artifacts/swss-layer/packages.json
+            artifacts/swss-layer/build-summary.json
+            artifacts/swss-layer/rebuild/rebuild.json
+            artifacts/swss-layer/MODULE.bazel.lock
+            artifacts/swss-layer/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  swss_layer_runtime:
+    name: Load and run the shared SWSS image (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: swss-layer-amd64
+          path: artifacts/swss-layer
+      - name: Verify and load this run's archive
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
+          root = Path('artifacts/swss-layer')
+          receipt = json.loads((root / 'public-receipt.json').read_text())
+          assert receipt['status'] == 'passed' and receipt['architecture'] == 'amd64'
+          assert receipt['revision'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          name = 'docker-swss-layer-trixie.gz'
+          assert hashlib.sha256((root / name).read_bytes()).hexdigest() == receipt['artifacts'][name]['sha256']
+          report = json.loads((root / 'validation.json').read_text())
+          actual, config, _ = load_archive(root / name, report['archive']['tag'], report['config_digest'])
+          verify_loaded_image(actual, config, report['config_digest'])
+          assert actual['Architecture'] == report['architecture'] == 'amd64'
+          assert actual['RootFS']['Layers'] == report['rootfs']['diff_ids']
+          PY
+      - name: Verify installed source hashes and complete loader closure
+        run: |
+          set -o pipefail
+          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+            --read-only --pids-limit=128 --memory=4g --cpus=2 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
+            --mount "type=bind,src=$PWD/tools/bazel/oci/swss_layer_runtime.py,dst=/probe/swss_layer_runtime.py,readonly" \
+            --mount "type=bind,src=$PWD/tools/bazel/oci/runtime_smoke.py,dst=/probe/runtime_smoke.py,readonly" \
+            --mount "type=bind,src=$PWD/artifacts/swss-layer/validation.json,dst=/probe/validation.json,readonly" \
+            --entrypoint /usr/bin/python3 docker-swss-layer-trixie:latest \
+            -B /probe/swss_layer_runtime.py /probe/validation.json | tee artifacts/swss-layer/runtime-smoke.json
+      - name: Retain installed-image evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swss-layer-runtime-amd64
+          path: artifacts/swss-layer/runtime-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
 
   sysmgr_runtime:
     name: Load and run Sysmgr images (AMD64)
@@ -743,6 +912,7 @@ jobs:
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
 
       - name: Retain the verified GitLab source downloads
+        id: repository_inputs
         run: |
           mkdir -p artifacts/repository-inputs
           test "$("$BAZEL" --version)" = "bazel $(cat .bazelversion)"
@@ -759,6 +929,35 @@ jobs:
             --module-graph artifacts/repository-inputs/module-graph.json \
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
+
+      - name: Prepare repository graph failure receipt
+        id: repository_graph_failure
+        if: always() && steps.repository_inputs.outcome == 'failure'
+        run: |
+          python3 - <<'PYDIAG'
+          import os
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, receipt_summary
+          failure = Path('artifacts/repository-inputs/module-graph-failure.json')
+          if failure.is_symlink() or (failure.exists() and not failure.is_file()):
+              raise ValueError('Unsafe graph failure receipt')
+          if failure.exists():
+              if failure.stat().st_size > 4096:
+                  raise ValueError('Oversized graph failure receipt')
+              receipt_summary(load_json(failure.read_bytes()), 'resolution')
+              with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+                  output.write('present=true\n')
+          PYDIAG
+
+      - name: Retain repository graph failure receipt
+        if: always() && steps.repository_graph_failure.outcome == 'success' && steps.repository_graph_failure.outputs.present == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repository-graph-failure-amd64
+          path: artifacts/repository-inputs/module-graph-failure.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
 
       - name: Retain the native Redis test helper for installed-image checks
         run: |
@@ -1193,7 +1392,8 @@ jobs:
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       github.head_ref != 'codex/libteam-owner-consumer') ||
+       github.head_ref != 'codex/libteam-owner-consumer' &&
+       github.head_ref != 'codex/swss-owner-image') ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, x64, sonic-slave-container]
     timeout-minutes: 720
