@@ -1897,6 +1897,32 @@ class ProvedDockerRootMountTest(unittest.TestCase):
         record.assert_called_once()
         self.assertEqual(record.call_args.args[1]["status"], "OBSERVED_OWNED_PROCESSES_CLOSED")
 
+    def test_exit_proof_allows_removed_pidfile_but_not_dangling_or_changed_file(self):
+        for condition in ("removed", "dangling", "changed"):
+            with self.subTest(condition=condition), tempfile.TemporaryDirectory() as directory:
+                fixture = self.fixture(directory)
+                functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+                if condition == "changed":
+                    pidfile.write_text("456\n")
+                else:
+                    pidfile.unlink()
+                    if condition == "dangling":
+                        pidfile.symlink_to(Path(directory) / "missing")
+                rows = [[parent, mounted], [parent, mounted], [parent]] if condition == "removed" else []
+                error, command, remove, sleep, diagnostic = self.cleanup_case(
+                    fixture, rows, times=(100, 100) if condition == "removed" else (100,))
+                if condition == "removed":
+                    self.assertIsNone(error)
+                    command.assert_called_once()
+                    remove.assert_called_once_with(root)
+                    self.assertFalse(os.path.lexists(pidfile))
+                else:
+                    self.assertIsNotNone(error)
+                    command.assert_not_called()
+                    remove.assert_not_called()
+                    self.assertTrue(os.path.lexists(pidfile))
+
+
 
 
 

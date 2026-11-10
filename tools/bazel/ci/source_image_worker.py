@@ -1445,8 +1445,9 @@ def cleanup(root, pidfile, scope):
             empty['monotonic'] <= closed['monotonic'] <= empty['monotonic'] + 90,
             'Owned process closure proof differs')
     require_closed([ready['daemon']] + closed['descendants'])
-    require(pidfile.read_text().strip() == str(ready['daemon']['pid']) and
-            not (Path('/proc') / str(ready['daemon']['pid'])).exists(), 'Owned daemon has not exited')
+    if os.path.lexists(pidfile):
+        require(pidfile.read_text().strip() == str(ready['daemon']['pid']), 'Private daemon PID file differs')
+    require(not (Path('/proc') / str(ready['daemon']['pid'])).exists(), 'Owned daemon has not exited')
     deadline = time.monotonic() + 30
     while True:
         rows = mounts()
