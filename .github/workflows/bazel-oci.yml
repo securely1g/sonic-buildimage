@@ -527,12 +527,13 @@ jobs:
 
       - name: Preserve completed archive evidence before Sysmgr acceptance
         if: matrix.architecture == 'amd64'
-        run: |
-          # Generic archive evidence has already been uploaded above. Keep it
-          # outside the checkout while the source-only image fence runs.
+        env:
+          NEXT_STAGE: sysmgr
+        run: &preserve_archive_evidence |
+          # Preserve the uploaded evidence outside the checkout for the next source build.
           if [[ -d artifacts ]]; then
             umask 077
-            preserved="$(mktemp -d "$RUNNER_TEMP/pre-sysmgr-artifacts.XXXXXXXX")"
+            preserved="$(mktemp -d "$RUNNER_TEMP/pre-${NEXT_STAGE}-artifacts.XXXXXXXX")"
             mv artifacts "$preserved/artifacts"
             printf 'Completed archive evidence preserved at %s/artifacts\n' "$preserved"
           fi
@@ -611,11 +612,9 @@ jobs:
 
       - name: Preserve completed Sysmgr evidence before SWSS layer acceptance
         if: matrix.architecture == 'amd64'
-        run: |
-          if [[ -d artifacts ]]; then
-            test ! -e "$RUNNER_TEMP/pre-swss-layer-artifacts"
-            mv artifacts "$RUNNER_TEMP/pre-swss-layer-artifacts"
-          fi
+        env:
+          NEXT_STAGE: swss-layer
+        run: *preserve_archive_evidence
 
       - name: Build and inspect the shared runtime and symbols
         id: swss_layer_build
