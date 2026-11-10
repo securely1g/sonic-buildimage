@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -61,7 +61,7 @@ env:
 jobs:
   vs_worker_inspection:
     name: VS prerequisite observation (K3s)
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["vs-inspect","vs-tests"]'), inputs.source_image) && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["vs-inspect","vs-tests","vs-inputs"]'), inputs.source_image) && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 10
     concurrency:
@@ -102,7 +102,7 @@ jobs:
 
       - name: Observe resources and VS prerequisites only
         id: observe
-        if: inputs.source_image == 'vs-inspect'
+        if: contains(fromJSON('["vs-inspect","vs-inputs"]'), inputs.source_image)
         env:
           EXPECTED_WORKER: ${{ steps.paths.outputs.worker }}
           CONTROL: ${{ steps.paths.outputs.control }}
@@ -110,6 +110,81 @@ jobs:
         run: |
           python3 -B "$GITHUB_WORKSPACE/$CONTROL/tools/bazel/ci/vs_worker_inspection.py" \
             --worker "$EXPECTED_WORKER" --output "$RUNNER_TEMP/$RECEIPT"
+      - name: Require the reviewed inventory source and fresh paths
+        id: inventory_paths
+        if: inputs.source_image == 'vs-inputs'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          CONTROL: ${{ steps.paths.outputs.control }}
+        run: |
+          python3 - <<'PY_INVENTORY_PATHS'
+          import os, re
+          from pathlib import Path
+          revision = os.environ['SOURCE_REVISION']
+          if not re.fullmatch(r'[0-9a-f]{40}', revision) or revision != '89c87c62080595678966c9916d13856591543906':
+              raise SystemExit('Inventory requires an immutable reviewed source commit')
+          name = os.environ['CONTROL'] + '-source'
+          source = Path(os.environ['GITHUB_WORKSPACE']) / name
+          if source.exists() or source.is_symlink():
+              raise SystemExit('Preserve existing inventory source workspace')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'source={name}\n')
+          PY_INVENTORY_PATHS
+      - name: Checkout the observed inventory companion
+        if: inputs.source_image == 'vs-inputs'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: ${{ steps.inventory_paths.outputs.source }}
+          clean: false
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Check inventory source identity and pure metadata tests
+        if: inputs.source_image == 'vs-inputs'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          SOURCE: ${{ steps.inventory_paths.outputs.source }}
+          GIT_NO_LAZY_FETCH: '1'
+          GIT_NO_REPLACE_OBJECTS: '1'
+          GIT_OPTIONAL_LOCKS: '0'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$SOURCE"
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$SOURCE_REVISION"
+          test "$(git -c protocol.allow=never rev-parse HEAD^)" = 0c57c4845a633fa439caac6684c832cfbccea791
+          python3 -B -m unittest -v tools.bazel.tests.kernel_reuse_context_test tools.bazel.tests.vs_input_inventory_test
+      - name: Inventory configured final23 inputs without generation
+        id: inventory
+        if: inputs.source_image == 'vs-inputs'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          SOURCE: ${{ steps.inventory_paths.outputs.source }}
+          GIT_NO_LAZY_FETCH: '1'
+          GIT_NO_REPLACE_OBJECTS: '1'
+          GIT_OPTIONAL_LOCKS: '0'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$SOURCE"
+          test ! -e target && test ! -L target
+          mkdir target
+          env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS -u MAKEFILES \
+            make --no-builtin-rules --no-print-directory -f slave.mk \
+              SONIC_VS_INPUT_INVENTORY=y SONIC_DEB_BUILD_POLICY=reuse-only \
+              SONIC_BAZEL_KERNEL_PREPARE=verify SONIC_BAZEL_VS_ARCHIVE_PROFILE=final23 \
+              BUILD_WITH_BAZEL_WHEN_AVAILABLE=y PLATFORM=vs CONFIGURED_ARCH=amd64 \
+              BLDENV=trixie INCLUDE_FIPS=y INCLUDE_VS_DASH_SAI=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
+              VS_INPUT_SOURCE_REVISION="$SOURCE_REVISION" vs-input-inventory
+          test -z "$(git -c protocol.allow=never status --porcelain --untracked-files=no)"
+      - name: Retain configured input inventory
+        if: always() && steps.inventory.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-input-inventory-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.inventory_paths.outputs.source }}/target/vs-input-inventory.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain the observation without claiming qualification
         if: always() && (steps.observe.outcome == 'success' || steps.observe.outcome == 'failure')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
