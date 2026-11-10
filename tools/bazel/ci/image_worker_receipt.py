@@ -239,7 +239,9 @@ def checkout_request(workspace, contract, *, event, run, attempt):
         'controller': contract['controller'],
         'contract_sha256': sha(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode())}
     request.update({'owner': contract['owner']} if selected == 'p4rt' else {'image': selected})
-    return validate_request(request)
+    validate_request(request)
+    reviewed_worker_pool(request, contract)
+    return request
 
 
 def same_checkout(original, current):
@@ -271,8 +273,85 @@ def normal_origin(args):
         output(new_request='false', request_artifact=existing['id'], request_run=current['normal_run'])
 
 
-def worker_metadata(request, artifact, run, jobs):
+def reviewed_worker_pool(request, contract):
+    """Choose policy only from the entire checked-in, request-bound contract."""
     validate_request(request)
+    require(sha(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode()) == request['contract_sha256']
+            and contract['controller'] == request['controller'] and image(contract) == image(request)
+            and contract.get('owner') == request.get('owner') and contract['catalog'] == request['catalog'],
+            'Reviewed source contract differs')
+    pool = contract.get('worker_pool', 'sonic-slave-container-dpool')
+    require(type(pool) is str and pool in ('sonic-slave-container-dpool', 'sonic-slave-container-k3s'),
+            'Unsupported reviewed worker pool')
+    return pool
+
+
+def assigned_worker_job(request, pool, jobs, *, run, attempt, completed):
+    """Bind the pool policy to GitHub's actual assigned job, never artifact hints."""
+    number(run)
+    number(attempt)
+    selected = [j for j in jobs if j['name'] == 'Source image (' + image(request) + ')']
+    require(len(selected) == 1, 'Ambiguous source-image job')
+    job = selected[0]
+    require(job['run_id'] == run and job['run_attempt'] == attempt and
+            job['head_sha'] == request['controller'] and
+            job['status'] == ('completed' if completed else 'in_progress') and
+            (job['conclusion'] == 'success' if completed else job['conclusion'] is None),
+            'Worker job identity or state differs')
+    number(job['id'])
+    number(job['runner_id'])
+    name, labels = job['runner_name'], job['labels']
+    require(type(name) is str and type(labels) is list and all(type(v) is str for v in labels),
+            'Invalid assigned worker identity')
+    if pool == 'sonic-slave-container-dpool':
+        require(re.fullmatch('sonic-slave-lgh114-[1-4]', name) and pool in labels and name in labels,
+                'Worker identity differs')
+    elif pool == 'sonic-slave-container-k3s':
+        require(re.fullmatch('ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', name) and pool in labels,
+                'Worker identity differs')
+    else:
+        require(False, 'Unsupported reviewed worker pool')
+    return job
+
+
+def verify_k3s_preflight(preflight, job):
+    """Verify the pinned K3s cache layout and measured, assigned worker identity."""
+    facts, checks = preflight['facts'], preflight['checks']
+    require(facts['pool'] == 'sonic-slave-container-k3s' and facts['worker'] == job['runner_name'] and
+            all(checks.get(k) is True for k in ('cache_mount', 'cache_storage', 'cache_writable')),
+            'K3s assigned worker or cache checks differ')
+    root, storage = facts['cache_root'], facts['cache_storage']
+    expected = {'namespace': 'actions_work_source_images',
+                'worker_directory': 'source-images/' + job['runner_name'],
+                'backing_mount': 'actions', 'shared_with_workspace': True,
+                'lifetime': 'current_worker_mount', 'cross_pod_reuse': 'not_established',
+                'uid': 1000, 'gid': 1000, 'mode': '0o700', 'writable': True, 'write_probe_closed': True}
+    require(set(root) == set(expected) | {'work_root_uid', 'work_root_gid', 'work_root_mode'} and
+            all(type(root[k]) is type(v) and root[k] == v for k, v in expected.items()) and
+            all(type(root[k]) is int and root[k] >= 0 for k in ('work_root_uid', 'work_root_gid')) and
+            type(root['work_root_mode']) is str and re.fullmatch('0o[0-7]{3,4}', root['work_root_mode']),
+            'K3s private cache directory differs')
+    require(set(storage) == {'filesystem', 'free_bytes', 'backing_mount', 'shared_with_workspace'} and
+            storage['filesystem'] in ('ext4', 'xfs') and storage['backing_mount'] == 'actions' and
+            storage['shared_with_workspace'] is True and type(storage['free_bytes']) is int and
+            storage['free_bytes'] >= 50 * 1024**3, 'K3s cache storage admission differs')
+
+
+def verify_worker_profile(worker, preflight, job, pool):
+    profile = worker['build_profile']
+    require(profile == preflight['build_profile'] and profile['jobs'] == profile['cpu'] == 2 and
+            profile['jvm_heap_gib'] == 3 and profile['scheduler_memory_mb'] == 8000 and
+            profile['loaded_container_memory_gib'] == 4 and
+            preflight['facts']['memory_limit_bytes'] == 20 * 1024**3 and
+            preflight['facts']['cpu_limit'] == (6 if pool == 'sonic-slave-container-k3s' else 4),
+            'Reviewed resource profile changed')
+    if pool == 'sonic-slave-container-k3s':
+        verify_k3s_preflight(preflight, job)
+    return profile
+
+
+def worker_metadata(request, artifact, run, jobs, contract):
+    pool = reviewed_worker_pool(request, contract)
     require(artifact['name'] == acceptance_name(request) and artifact['expired'] is False and
             0 < artifact['size_in_bytes'] <= TOTAL_LIMIT, 'Unexpected worker artifact')
     require(run['id'] == artifact['workflow_run']['id'] and run['head_sha'] == request['controller'] and
@@ -281,19 +360,12 @@ def worker_metadata(request, artifact, run, jobs):
             run['head_repository']['full_name'] == REPOSITORY and
             artifact['workflow_run']['repository_id'] == artifact['workflow_run']['head_repository_id'] == run['repository']['id'] and
             run['event'] == 'workflow_dispatch' and run['actor']['login'] == 'securely1g' and
+            run['triggering_actor']['login'] == 'securely1g' and
             run['status'] == 'completed' and run['conclusion'] == 'success', 'Untrusted or incomplete worker run')
     number(run['run_attempt'])
     require(all(j['status'] == 'completed' and j['conclusion'] in ('success', 'skipped') for j in jobs),
             'Worker lifecycle is incomplete or adverse')
-    selected = [j for j in jobs if j['name'] == 'Source image (' + image(request) + ')']
-    require(len(selected) == 1, 'Ambiguous source-image job')
-    job = selected[0]
-    require(job['conclusion'] == 'success' and job['run_attempt'] == run['run_attempt'] and
-            job['head_sha'] == request['controller'] and job['run_id'] == run['id'] and
-            re.fullmatch('sonic-slave-lgh114-[1-4]', job['runner_name']) and
-            'sonic-slave-container-dpool' in job['labels'] and job['runner_name'] in job['labels'],
-            'Worker identity differs')
-    number(job['runner_id'])
+    job = assigned_worker_job(request, pool, jobs, run=run['id'], attempt=run['run_attempt'], completed=True)
     steps = job['steps']
     require(all(s['status'] == 'completed' and s['conclusion'] in ('success', 'skipped') for s in steps),
             'Incomplete worker cleanup or phase')
@@ -305,7 +377,8 @@ def worker_metadata(request, artifact, run, jobs):
 
 def discover(args):
     original = read(args.directory / 'request.json')
-    current = checkout_request(args.workspace, read(args.contract),
+    contract = read(args.contract)
+    current = checkout_request(args.workspace, contract,
         event=json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text()),
         run=int(os.environ['GITHUB_RUN_ID']), attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
     same_checkout(original, current)
@@ -318,7 +391,7 @@ def discover(args):
     artifact = unique_artifact(rows, name)
     run = api('/actions/runs/' + str(artifact['workflow_run']['id']))
     jobs = inventory(api('/actions/runs/' + str(run['id']) + '/jobs?filter=latest&per_page=100'), 'jobs')
-    job = worker_metadata(original, artifact, run, jobs)
+    job = worker_metadata(original, artifact, run, jobs, contract)
     write(args.directory / 'provenance.json', {'artifact': artifact, 'run': run, 'job': job,
                                              'jobs': jobs, 'origin': origin}, public=False)
     output(artifact=artifact['id'], worker_run=run['id'])
@@ -359,13 +432,19 @@ def bind_worker(args):
             commit_parents(args.workspace, 'HEAD') == [request['base'], request['head']],
             'Worker checkout differs from original normal CI merge')
     contract = read(args.workspace / ('tools/bazel/ci/' + image(request) + '_worker_contract.json'))
-    require(sha(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode()) == request['contract_sha256']
-            and image(contract) == image(request) and contract.get('owner') == request.get('owner') and contract['catalog'] == request['catalog']
-            and contract['controller'] == request['controller'], 'Reviewed source contract differs')
+    pool = reviewed_worker_pool(request, contract)
+    require(os.environ.get('WORKER_POOL', 'sonic-slave-container-dpool') == pool,
+            'Dispatched pool differs from reviewed source contract')
+    require(os.environ['GITHUB_ACTOR'] == os.environ['GITHUB_TRIGGERING_ACTOR'] == 'securely1g',
+            'Untrusted worker dispatch actor')
     pull = api('/pulls/' + str(request['pr']))
     require(pull['state'] == 'open' and pull['head']['sha'] == request['head'] and pull['base']['sha'] == request['base']
             and pull['head']['repo']['full_name'] == pull['base']['repo']['full_name'] == REPOSITORY,
             'PR head/base changed before worker admission')
+    worker_run, worker_attempt = int(os.environ['GITHUB_RUN_ID']), int(os.environ['GITHUB_RUN_ATTEMPT'])
+    jobs = inventory(api('/actions/runs/' + str(number(worker_run)) + '/jobs?filter=latest&per_page=100'), 'jobs')
+    job = assigned_worker_job(request, pool, jobs, run=worker_run, attempt=worker_attempt, completed=False)
+    require(job['runner_name'] == os.environ['RUNNER_NAME'], 'Assigned worker differs from executing runner')
     write(args.directory / 'binding.json', {'request': request, 'request_artifact': origin['artifact']['id'],
                                            'request_sha256': sha((args.directory / 'payload' / 'request.json').read_bytes())})
 
@@ -403,9 +482,9 @@ def bundle(args):
 def verify_evidence(directory, request, provenance, contract):
     """Pure JSON verification; callers separately establish the normal checkout."""
     require(__debug__, 'Receipt verification requires Python assertions enabled')
-    validate_request(request)
+    pool = reviewed_worker_pool(request, contract)
     require(directory.is_dir() and not directory.is_symlink(), 'Unsafe acceptance directory')
-    job = worker_metadata(request, provenance['artifact'], provenance['run'], provenance['jobs'])
+    job = worker_metadata(request, provenance['artifact'], provenance['run'], provenance['jobs'], contract)
     origin = provenance['origin']
     require(not origin['expired'] and origin['name'] == origin_name(request['normal_run'], image(request)) and
             origin['workflow_run']['id'] == request['normal_run'] and
@@ -418,10 +497,6 @@ def verify_evidence(directory, request, provenance, contract):
             binding['worker_run'] == provenance['run']['id'] and
             binding['worker_attempt'] == provenance['run']['run_attempt'], 'CI receipt binding differs')
     require(binding['request_sha256'] == provenance['request_sha256'], 'Original request bytes changed')
-    require(sha(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode()) == request['contract_sha256']
-            and contract['controller'] == request['controller'] and image(contract) == image(request)
-            and contract.get('owner') == request.get('owner')
-            and contract['catalog'] == request['catalog'], 'Reviewed contract changed')
     rows = binding['files']
     require(type(rows) is dict and public_json_names(request) - {'worker-input-run.json'} <= rows.keys() <= public_json_names(request),
             'Invalid selected JSON inventory')
@@ -447,12 +522,7 @@ def verify_evidence(directory, request, provenance, contract):
             all(v is True for v in preflight['checks'].values()) and
             preflight['image_build_executed'] is False and preflight['deb_generation_executed'] is False,
             'Worker preflight did not pass')
-    profile = worker['build_profile']
-    require(profile == preflight['build_profile'] and profile['jobs'] == profile['cpu'] == 2 and
-            profile['jvm_heap_gib'] == 3 and profile['scheduler_memory_mb'] == 8000 and
-            profile['loaded_container_memory_gib'] == 4 and
-            preflight['facts']['memory_limit_bytes'] == 20 * 1024**3 and
-            preflight['facts']['cpu_limit'] == 4, 'Reviewed resource profile changed')
+    profile = verify_worker_profile(worker, preflight, job, pool)
     owner_profile = {'revision': request.get('owner'), 'bazel': '6.4.0', 'jobs': 1, 'jvm_heap_gib': 2,
                      'scheduler_memory_mb': 4096, 'cache_mode': 'separate_persistent_worker_local'}
     if image(request) == 'p4rt':

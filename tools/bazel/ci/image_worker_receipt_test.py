@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.bazel.ci import image_worker_receipt as receipt
+from tools.bazel.ci.image_worker_pool_test import WorkerPoolReceiptTest
 from tools.bazel.ci.p4rt_worker_receipt_test import metadata, request
 
 
@@ -16,6 +17,20 @@ def syncd_request():
     value = request()
     value.pop('owner')
     return {**value, 'schema': 2, 'image': 'syncd'}
+
+
+def worker_job_inventory(value):
+    return {'total_count': 1, 'jobs': [{'id': 201, 'run_id': 789, 'run_attempt': 1,
+        'head_sha': value['controller'], 'name': 'Source image (' + receipt.image(value) + ')',
+        'status': 'in_progress', 'conclusion': None, 'runner_id': 31,
+        'runner_name': 'sonic-slave-lgh114-1',
+        'labels': ['sonic-slave-container-dpool', 'sonic-slave-lgh114-1']}]}
+
+
+def worker_environment(value):
+    return {'GITHUB_RUN_ID': '789', 'GITHUB_RUN_ATTEMPT': '1',
+            'GITHUB_ACTOR': 'securely1g', 'GITHUB_TRIGGERING_ACTOR': 'securely1g',
+            'WORKER_POOL': 'sonic-slave-container-dpool', 'RUNNER_NAME': 'sonic-slave-lgh114-1'}
 
 
 class ImageReceiptTest(unittest.TestCase):
@@ -63,19 +78,22 @@ class ImageReceiptTest(unittest.TestCase):
     def test_syncd_requires_its_job_all_four_phases_and_cleanup(self):
         _, artifact, run, jobs = metadata()
         value = self.image_request()
+        contract = {key: value[key] for key in ('image', 'controller', 'catalog')}
+        value['contract_sha256'] = receipt.sha(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode())
+        run['triggering_actor'] = {'login': 'securely1g'}
         artifact['name'] = receipt.acceptance_name(value)
         jobs[0]['name'] = 'Source image (' + self.selected + ')'
         jobs[0]['steps'] = [{'name': name, 'status': 'completed', 'conclusion': 'success'}
                             for name in receipt.required_steps(value)]
-        self.assertEqual(receipt.worker_metadata(value, artifact, run, jobs)['id'], 201)
+        self.assertEqual(receipt.worker_metadata(value, artifact, run, jobs, contract)['id'], 201)
         for step in receipt.required_steps(value):
             altered = copy.deepcopy(jobs)
             next(row for row in altered[0]['steps'] if row['name'] == step)['conclusion'] = 'skipped'
             with self.subTest(step=step), self.assertRaises(ValueError):
-                receipt.worker_metadata(value, artifact, run, altered)
+                receipt.worker_metadata(value, artifact, run, altered, contract)
         jobs[0]['name'] = 'Source image (p4rt)'
         with self.assertRaises(ValueError):
-            receipt.worker_metadata(value, artifact, run, jobs)
+            receipt.worker_metadata(value, artifact, run, jobs, contract)
 
     def test_syncd_checkout_binds_the_whole_merge_without_a_p4rt_gitlink(self):
         value = self.image_request()
@@ -104,12 +122,12 @@ class ImageReceiptTest(unittest.TestCase):
                 'artifact': {'id': 456, 'name': receipt.origin_name(123, self.selected)}} , public=False)
             args = SimpleNamespace(directory=root, workspace=root, image=self.selected)
             environment = {'SELECTED_IMAGE': self.selected, 'SOURCE_REVISION': value['merge'],
-                           'SOURCE_REGISTRY_REVISION': value['catalog'], 'GITHUB_SHA': value['controller']}
+                           'SOURCE_REGISTRY_REVISION': value['catalog'], 'GITHUB_SHA': value['controller'], **worker_environment(value)}
             pull = {'state': 'open', 'head': {'sha': value['head'], 'repo': {'full_name': receipt.REPOSITORY}},
                     'base': {'sha': value['base'], 'repo': {'full_name': receipt.REPOSITORY}}}
             with patch.dict(os.environ, environment), patch.object(receipt, 'git',
                     side_effect=[value['merge'], value['tree'], 'parent ' + value['base'] + '\nparent ' + value['head'] + '\n\nMerge']), \
-                    patch.object(receipt, 'api', return_value=pull):
+                    patch.object(receipt, 'api', side_effect=[pull, worker_job_inventory(value)]):
                 receipt.bind_worker(args)
             self.assertEqual(receipt.read(root / 'binding.json')['request'], value)
             with patch.dict(os.environ, {**environment, 'SELECTED_IMAGE': 'p4rt'}), \
