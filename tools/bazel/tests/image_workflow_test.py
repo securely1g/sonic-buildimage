@@ -146,6 +146,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                     env=dict(os.environ, RUNNER_TEMP=str(directory)),
                 )
 
+            destinations = []
             for value in ("first", "second"):
                 artifacts = root / "artifacts"
                 artifacts.mkdir()
@@ -153,12 +154,20 @@ class VerificationWorkflowTest(unittest.TestCase):
                 result = run()
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(artifacts.exists())
+                candidates = set(scratch.glob("pre-swss-layer-artifacts.*")) - set(destinations)
+                self.assertEqual(len(candidates), 1)
+                destination = candidates.pop()
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((destination / "artifacts/receipt").read_text(), value)
+                destinations.append(destination)
+            self.assertNotEqual(*destinations)
             receipts = {p: p.read_text() for p in scratch.rglob("receipt")}
             self.assertCountEqual(receipts.values(), ["previous", "first", "second"])
             self.assertEqual((old / "receipt").read_text(), "previous")
             result = run()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual({p: p.read_text() for p in scratch.rglob("receipt")}, receipts)
+            self.assertEqual(set(scratch.glob("pre-swss-layer-artifacts.*")), set(destinations))
             artifacts.mkdir()
             (artifacts / "receipt").write_text("keep on failure")
             result = run(root / "missing")
