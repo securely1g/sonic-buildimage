@@ -8,6 +8,7 @@ import math
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import sys
 import tempfile
 from urllib.parse import parse_qsl, urlsplit
 
@@ -32,6 +33,15 @@ DIAGNOSTIC_KEYS = {
     "commandline", "optionsparsed", "structuredcommandline",
     "unstructuredcommandline", "workingdirectory", "workspacedirectory",
 }
+# Public diagnostics expose fixed guard codes, never rejected data or exception text.
+PUBLIC_FILE_REJECTION_REASONS = frozenset({
+    "oversized-json", "invalid-dependency-json", "invalid-module-lock",
+    "unknown-module-lock-field", "invalid-module-graph", "unknown-module-graph-field",
+    "duplicate-json-key", "invalid-json-number", "invalid-json-key", "invalid-json-value",
+    "nonempty-recorded-environment", "diagnostic-json-field", "credential-json-field",
+    "control-character", "credential-pattern", "local-path", "url-credentials",
+    "sensitive-url-query", "changed-public-file",
+})
 STATUSES = {
     "PASSED", "FLAKY", "TIMEOUT", "FAILED", "INCOMPLETE", "REMOTE_FAILURE",
     "FAILED_TO_BUILD", "BLAZE_HALTED_BEFORE_TESTING", "NO_STATUS",
@@ -547,8 +557,16 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             continue
         try:
             if file_kind in {"lock", "graph", "cache"}:
-                maximum = (128 if file_kind == "lock" else 64) * 1024 * 1024
-                require(path.stat().st_size <= maximum, "oversized-json")
+                maximum = (160 if file_kind == "lock" else 64) * 1024 * 1024
+                size = path.stat().st_size
+                if size > maximum:
+                    # Only fixed input names and numeric sizes may reach the log.
+                    try:
+                        print(json.dumps({"input": logical, "bytes": size,
+                                          "limit_bytes": maximum}), file=sys.stderr)
+                    except OSError:
+                        pass  # A failed diagnostic must not replace the rejection.
+                require(size <= maximum, "oversized-json")
                 dependency_json(load_json(path.read_bytes()), file_kind)
             elif file_kind != "binary":
                 require(path.stat().st_size <= 16 * 1024 * 1024, "oversized-text")
@@ -567,6 +585,11 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns), "changed-public-file")
             selected[logical] = {"sha256": file_digest, "bytes": after.st_size}
             paths.append(str(path.resolve().relative_to(upload_root)))
+        except PublicArtifactError as error:
+            reason = error.args[0] if len(error.args) == 1 else None
+            blocked.append({"input": logical, "reason": reason
+                            if type(reason) is str and reason in PUBLIC_FILE_REJECTION_REASONS
+                            else "unsafe-public-file"})
         except (OSError, ValueError, TypeError, RecursionError):
             blocked.append({"input": logical, "reason": "unsafe-public-file"})
 

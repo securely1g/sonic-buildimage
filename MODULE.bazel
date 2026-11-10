@@ -90,7 +90,7 @@ bazel_dep(
 # repair selected when another module requests the unpatched stable release.
 single_version_override(
     module_name = "rules_go",
-    version = "0.64.1-sonic.1",
+    version = "0.65.0.sonic.1",
 )
 
 single_version_override(
@@ -295,6 +295,9 @@ source_modules = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "so
 source_modules(
     name = "image_source_modules",
     modules = {
+        "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
+        "@sonic_mgmt_common//:MODULE.bazel": "sonic-mgmt-common",
+        "@sonic_gnmi//:MODULE.bazel": "sonic-gnmi",
         "@libteam//:MODULE.bazel": "libteam",
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
@@ -460,6 +463,40 @@ go_patches.module_override(
     patch_strip = 1,
     patches = ["@sonic_gnmi//patches/bazel:0008-pam-build.patch"],
     path = "github.com/msteinert/pam",
+)
+
+single_version_override(
+    module_name = "sonic-mgmt-common",
+    version = "1.0.1-05f83dcab8fe2e1a0e0fc37ac172b289d6968e2b",
+)
+
+# Framework shares the root gNMI Go selection and public generator identities.
+# Its registration follows the standard non-root go.mod dependency mechanism;
+# the reviewed registry entry supplies that wiring.
+bazel_dep(name = "sonic-mgmt-framework", version = "1.0.0-f8860f4bef7396b4f8354a4cbd9a66131c851f1f", repo_name = "sonic_mgmt_framework")
+
+# The old pre-flag.Parse glog diagnostic patch does not apply to glog1.2.4.
+# Preserve the shared root's current glog API and all other SONiC Go patches.
+pip.parse(
+    hub_name = "image_framework_pip",
+    python_version = "3.13",
+    requirements_lock = "@sonic_mgmt_framework//:requirements_lock.txt",
+)
+use_repo(pip, "image_framework_pip")
+
+use_repo(apt, "framework_cli_target_debian")
+
+apt_inputs(
+    name = "framework_runtime_apt_inputs",
+    architecture = "amd64",
+    dependency_set = "framework_cli_target_debian",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    root_packages = [
+        "libcjson1",
+        "libcurl4t64",
+        "libpython3.13",
+        "libxml2",
+    ],
 )
 
 # Pinned comparison tool; no image or package build is scheduled by this include.
