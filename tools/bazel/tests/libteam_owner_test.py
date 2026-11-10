@@ -169,11 +169,18 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
                 "    print('bazel 8.5.1')\n"
             )
             recorder.chmod(0o755)
-            owner_bazel = root / "orchagent-owner-bazel.sh"
+            owner_output = root / "orchagent-owner-output.abc12345"
+            owner_output.mkdir()
+            owner_bazel = root / "orchagent-owner-bazel.abc12345"
             owner_bazel.write_text(heredoc + "\n")
             owner_bazel.chmod(0o755)
-            env = dict(os.environ, PATH=str(root) + ":/usr/bin:/bin",
-                       CALLS=str(calls), BAZEL=str(wrapper), RUNNER_TEMP=str(root))
+            base_env = {k: v for k, v in os.environ.items() if k != "OWNER_OUTPUT"}
+            base_env.update(PATH=str(root) + ":/usr/bin:/bin",
+                            CALLS=str(calls), BAZEL=str(wrapper), RUNNER_TEMP=str(root))
+            missing = subprocess.run(["bash", str(owner_bazel), "query", "//..."],
+                                     cwd=ROOT, env=base_env, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            env = dict(base_env, OWNER_OUTPUT=str(owner_output))
             for args in (["--version"], ["query", "//..."], ["build", "//dockers/docker-orchagent:ci_artifacts"],
                          ["cquery", "//dockers/docker-orchagent:ci_artifacts"],
                          ["test", "//dockers/docker-orchagent:ci_tests"]):
@@ -183,14 +190,15 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
             self.assertEqual(recorded[0], ["--version"])
             # query: no pre-shutdown, no --noexecution_log_sort
             self.assertIn("query", recorded[1])
-            self.assertEqual(recorded[1][:2], [f"--output_base={root / 'orchagent-owner-output'}", "--host_jvm_args=-Xmx6g"])
+            self.assertEqual(recorded[1][:2], [f"--output_base={owner_output}", "--host_jvm_args=-Xmx6g"])
             self.assertNotIn("--noexecution_log_sort", recorded[1])
             # build: pre-shutdown with matching startup flags + build with --noexecution_log_sort
             self.assertEqual(recorded[2][-1], "shutdown")
+            self.assertEqual(recorded[2][0], f"--output_base={owner_output}")
             self.assertIn("--host_jvm_args=-Xmx6g", recorded[2])
             self.assertIn("--nohome_rc", recorded[2])
             build_call = recorded[3]
-            self.assertEqual(build_call[:2], [f"--output_base={root / 'orchagent-owner-output'}", "--host_jvm_args=-Xmx6g"])
+            self.assertEqual(build_call[:2], [f"--output_base={owner_output}", "--host_jvm_args=-Xmx6g"])
             self.assertLess(build_call.index("--host_jvm_args=-Xmx6g"), build_call.index("build"))
             self.assertIn("--noexecution_log_sort", build_call)
             # cquery: no pre-shutdown, no --noexecution_log_sort
@@ -198,6 +206,7 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
             self.assertNotIn("--noexecution_log_sort", recorded[4])
             # test: pre-shutdown + test without --noexecution_log_sort
             self.assertEqual(recorded[5][-1], "shutdown")
+            self.assertEqual(recorded[5][0], f"--output_base={owner_output}")
             self.assertIn("test", recorded[6])
             self.assertNotIn("--noexecution_log_sort", recorded[6])
 

@@ -47,10 +47,12 @@ cleanup was specific to disposable GitHub-hosted runners. Provision sufficient
 build storage and manage host Docker/cache retention outside the job without
 deleting active builds.
 
-AMD64 archive jobs upload generic evidence before Sysmgr acceptance and Sysmgr
-evidence before SWSS layer acceptance. Each step preserves its completed
-artifacts outside the checkout in a unique private directory under
-`RUNNER_TEMP`, prefixed with `pre-sysmgr-artifacts.` or `pre-swss-layer-artifacts.`. This keeps the source-only fence
+AMD64 archive jobs upload generic evidence before Sysmgr acceptance, Sysmgr
+evidence before SWSS layer acceptance, and SWSS layer evidence before Orchagent
+acceptance. Each step preserves its completed artifacts outside the checkout in
+a unique private directory under `RUNNER_TEMP`, prefixed with
+`pre-sysmgr-artifacts.`, `pre-swss-layer-artifacts.`, or
+`pre-orchagent-artifacts.`. This keeps the source-only fence
 intact without colliding with or deleting prior jobs' evidence. The preserved
 path is logged; retained temporary evidence is subject to agent maintenance.
 Sysmgr public evidence is collected only after its build was attempted,

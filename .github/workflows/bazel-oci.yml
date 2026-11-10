@@ -711,11 +711,9 @@ jobs:
 
       - name: Preserve completed SWSS layer evidence before Orchagent acceptance
         if: matrix.architecture == 'amd64'
-        run: |
-          if [[ -d artifacts ]]; then
-            test ! -e "$RUNNER_TEMP/pre-orchagent-artifacts"
-            mv artifacts "$RUNNER_TEMP/pre-orchagent-artifacts"
-          fi
+        env:
+          NEXT_STAGE: orchagent
+        run: *preserve_archive_evidence
 
       - name: Build Orchagent variants from source owners
         id: orchagent_build
@@ -736,17 +734,19 @@ jobs:
           set -euo pipefail
           rc_flags=(--nosystem_rc --nohome_rc --noworkspace_rc "--bazelrc=$PWD/tools/bazel/common.bazelrc")
           bazel "${rc_flags[@]}" shutdown >/dev/null 2>&1 || true
-          owner_output="$RUNNER_TEMP/orchagent-owner-output"
-          owner_bazel="$RUNNER_TEMP/orchagent-owner-bazel.sh"
+          umask 077
+          owner_output="$(mktemp -d "$RUNNER_TEMP/orchagent-owner-output.XXXXXXXX")"
+          owner_bazel="$(mktemp "$RUNNER_TEMP/orchagent-owner-bazel.XXXXXXXX")"
+          export OWNER_OUTPUT="$owner_output"
           owner_jvm="--host_jvm_args=-Xmx6g"
           cleanup_owner_output() {
             local status=$?
-            if [[ $status -ne 0 && -f "$owner_output/server/jvm.out" ]]; then
-              cat "$owner_output/server/jvm.out" || true
+            if [[ $status -ne 0 && -f "$OWNER_OUTPUT/server/jvm.out" ]]; then
+              cat "$OWNER_OUTPUT/server/jvm.out" || true
             fi
-            bazel "--output_base=$owner_output" "$owner_jvm" "${rc_flags[@]}" shutdown >/dev/null 2>&1 || true
-            chmod -R u+w "$owner_output" 2>/dev/null || true
-            rm -rf "$owner_output" "$owner_bazel"
+            bazel "--output_base=$OWNER_OUTPUT" "$owner_jvm" "${rc_flags[@]}" shutdown >/dev/null 2>&1 || true
+            chmod -R u+w "$OWNER_OUTPUT" 2>/dev/null || true
+            rm -rf "$OWNER_OUTPUT" "$owner_bazel"
           }
           trap cleanup_owner_output EXIT
           cat > "$owner_bazel" <<'SH'
@@ -755,7 +755,7 @@ jobs:
           if [[ $# == 1 && "$1" == --version ]]; then
             exec "$BAZEL" --version
           fi
-          owner_output="$RUNNER_TEMP/orchagent-owner-output"
+          : "${OWNER_OUTPUT:?expected OWNER_OUTPUT}"
           owner_jvm="--host_jvm_args=-Xmx6g"
           subcommand="$1"
           shift
@@ -765,12 +765,12 @@ jobs:
               extra_flags=(--noexecution_log_sort)
               ;&
             test)
-              bazel "--output_base=$owner_output" "$owner_jvm" \
+              bazel "--output_base=$OWNER_OUTPUT" "$owner_jvm" \
                 --nosystem_rc --nohome_rc --noworkspace_rc \
                 "--bazelrc=$PWD/tools/bazel/common.bazelrc" shutdown >/dev/null 2>&1 || true
               ;;
           esac
-          exec "$BAZEL" "--output_base=$owner_output" "$owner_jvm" "$subcommand" "${extra_flags[@]}" "$@"
+          exec "$BAZEL" "--output_base=$OWNER_OUTPUT" "$owner_jvm" "$subcommand" "${extra_flags[@]}" "$@"
           SH
           chmod +x "$owner_bazel"
           python3 -B tools/bazel/ci/container.py --container //dockers/docker-orchagent \

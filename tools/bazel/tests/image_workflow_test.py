@@ -29,6 +29,9 @@ class VerificationWorkflowTest(unittest.TestCase):
             ("swss-layer", "Retain Sysmgr image artifacts and evidence",
              "Preserve completed Sysmgr evidence before SWSS layer acceptance",
              "Build and inspect the shared runtime and symbols"),
+            ("orchagent", "Retain reviewed artifacts and receipts",
+             "Preserve completed SWSS layer evidence before Orchagent acceptance",
+             "Build Orchagent variants from source owners"),
         )
         for stage, upload, preserve, build in stages:
             with self.subTest(stage=stage):
