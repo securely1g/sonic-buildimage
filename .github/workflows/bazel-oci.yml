@@ -316,7 +316,8 @@ jobs:
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
+          debian_mirrors = Path("tools/bazel/debian_mirrors.cfg").read_bytes()
+          config.write_bytes(debian_mirrors + b"\n" + data)
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
@@ -886,7 +887,8 @@ jobs:
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
-          config.write_bytes(data)
+          debian_mirrors = Path("tools/bazel/debian_mirrors.cfg").read_bytes()
+          config.write_bytes(debian_mirrors + b"\n" + data)
           with Path(".bazelrc.user").open("a") as rc:
               rc.write("common --experimental_downloader_config=" + str(config) + "\n")
           PYCFG
@@ -1388,6 +1390,7 @@ jobs:
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       github.head_ref != 'codex/sysmgr-source-image' &&
       github.head_ref != 'codex/teamd-source-worker' &&
+      github.head_ref != 'codex/archive-verified-mirrors' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&

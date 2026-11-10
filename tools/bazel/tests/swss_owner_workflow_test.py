@@ -20,6 +20,8 @@ CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/
 JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
         ("bazel-supervisor-rust.yml", "native"), ("bazel-yang-models.yml", "package"),
         ("bazel-oci.yml", "archive"), ("bazel-oci.yml", "checks")]
+COMBINED_CONFIG_JOBS = {("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
+                        ("bazel-oci.yml", "archive"), ("bazel-oci.yml", "checks")}
 
 
 def calls(path, function):
@@ -48,6 +50,7 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
             self.assertFalse((root / "public-receipt.json").exists())
 
     def test_bootstrap_verifies_config_before_appending_to_existing_caches(self):
+        debian = (ROOT / "tools/bazel/debian_mirrors.cfg").read_bytes()
         for filename, job in JOBS:
             data = (ROOT / "tools/bazel/tests/fixtures/source-mirrors-97cc5025.cfg").read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), CONFIG_SHA)
@@ -58,6 +61,9 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
             for corrupt in (False, True):
                 with self.subTest(filename=filename, job=job, corrupt=corrupt), tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
+                    local_debian = root / "tools/bazel/debian_mirrors.cfg"
+                    local_debian.parent.mkdir(parents=True)
+                    local_debian.write_bytes(debian)
                     before = "common --repository_cache=/retained/repository\nbuild --disk_cache=/retained/disk\n"
                     (root / ".bazelrc.user").write_text(before)
                     with contextlib.chdir(root), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}):
@@ -69,11 +75,13 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
                                 exec(compile(code, filename, "exec"), {})
                         fetch.assert_called_once_with(CONFIG_URL, timeout=60)
                     selected = root / "sonic-source-mirrors.cfg"
+                    self.assertEqual(local_debian.read_bytes(), debian)
                     self.assertEqual(selected.exists(), not corrupt)
                     self.assertEqual((root / ".bazelrc.user").read_text(), before + (
                         "" if corrupt else "common --experimental_downloader_config=" + str(selected) + "\n"))
                     if not corrupt:
-                        self.assertEqual(selected.read_bytes(), data)
+                        expected = debian + b"\n" + data if (filename, job) in COMBINED_CONFIG_JOBS else data
+                        self.assertEqual(selected.read_bytes(), expected)
 
     def test_real_wrapper_selects_complete_catalog_and_respects_private_cache_overrides(self):
         with tempfile.TemporaryDirectory() as temporary:
