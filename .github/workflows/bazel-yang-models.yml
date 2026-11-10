@@ -9,6 +9,8 @@ on:
       - 'tools/bazel/ci/bazel_commands.py'
       - 'tools/bazel/ci/libteam_draft_bazel.sh'
       - 'tools/bazel/ci/preserve_setup_bazel_cache.py'
+      - 'tools/bazel/ci/source_mirrors.py'
+      - 'tools/bazel/debian_mirrors.cfg'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
   push:
@@ -20,6 +22,8 @@ on:
       - 'tools/bazel/ci/bazel_commands.py'
       - 'tools/bazel/ci/libteam_draft_bazel.sh'
       - 'tools/bazel/ci/preserve_setup_bazel_cache.py'
+      - 'tools/bazel/ci/source_mirrors.py'
+      - 'tools/bazel/debian_mirrors.cfg'
       - 'src/sonic-yang-models/**'
       - '.github/workflows/bazel-yang-models.yml'
   workflow_dispatch:
@@ -57,6 +61,13 @@ jobs:
           disk-cache: yang-models-${{ matrix.architecture }}
       - name: Preserve setup-bazel caches for the image-root query
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+      - name: Configure shared source download mirrors
+        run: |
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
+
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash
@@ -68,7 +79,7 @@ jobs:
           registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
-          # The standalone module stays canonical; the image root needs libteam's Draft entries.
+          # The standalone module and image root use the same maintained registry.
           (cd ../.. && tools/bazel/ci/libteam_draft_bazel.sh cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt

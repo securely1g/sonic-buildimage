@@ -12,14 +12,9 @@ These Bazel targets produce TARs and metadata, not DEBs. All three runtime
 packages remain available: `libteam5`, `libteamdctl0` and `libteam-utils`.
 The registry owner also exposes library-only metadata for SWSS's separate TARs.
 
-The registered SWSS source `88d9cc2bcda39b0ebac16c95de9601e62021e3eb` still needs
-`tools/bazel/0001-sonic-swss-libteam.patch` until equivalent libteam integration
-lands in that source owner. The patch replaces stock libteam APT inputs with
-`@libteam` library providers and `@libteam//:library_runtime_packages.json`, so
-the installed library TARs and control-generated metadata have the same owner.
-The root [MODULE.bazel](../../MODULE.bazel) records the selected dependency
-versions and exact recipe overrides. Bazel's resolved graph must still be
-verified in CI; matching declarations are not runtime proof.
+The registered SWSS module links against the same libteam targets that supply
+the image runtime TARs. The [root module](../../MODULE.bazel) selects the
+registered SWSS and libteam versions.
 
 ## Validation
 

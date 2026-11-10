@@ -326,7 +326,7 @@ class KernelBundleTest(unittest.TestCase):
         workdir, consumer = self.root / "resolution", self.root / "consumer"
         consumer.mkdir()
         self.resolution_files(workdir, consumer)
-        primary = "ERROR: interpreter checksum download failed: HTTP 503\n"
+        primary = "ERROR: downloading https://private.invalid/package?token=fixture: HTTP 503\n"
         (workdir / "module-graph.stderr").write_text(primary)
         (workdir / "module-graph.exit-code").write_text("2\n")
         before = {path: path.read_bytes() for path in [
@@ -342,8 +342,10 @@ class KernelBundleTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
             kernel.inspect_resolution(workdir, consumer, self.state, kernel.DEFAULT_REGISTRY,
                                       fetch=unexpected_fetch)
-        self.assertIn("Bazel mod graph returned 2", console.getvalue())
-        self.assertIn(primary, console.getvalue())
+        diagnostic = json.loads(console.getvalue())
+        self.assertEqual(diagnostic["returncode"], 2)
+        self.assertEqual(diagnostic["http_statuses"], [503])
+        self.assertNotIn("private.invalid", console.getvalue())
         self.assertEqual(before, {path: path.read_bytes() for path in before})
 
     def test_cli_managed_trust_reaches_plan_with_explicit_override(self):

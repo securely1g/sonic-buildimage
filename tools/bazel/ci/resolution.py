@@ -9,73 +9,7 @@ import subprocess
 import sys
 
 
-def _preview(text, limit):
-    """Keep the first and last diagnostics without dumping a large command log."""
-    data = text.encode("utf-8")
-    if len(data) <= limit:
-        return text
-    half = limit // 2
-    return (data[:half].decode("utf-8", errors="ignore") +
-            f"\n... {len(data) - limit} bytes omitted ...\n" +
-            data[-half:].decode("utf-8", errors="ignore"))
-
-
-def _stderr_preview(text, limit=8192):
-    """Keep the first fatal diagnostic and both ends within the byte budget."""
-    data = text.encode("utf-8")
-    if len(data) <= limit:
-        return text
-    error = re.search(rb"(?m)^(?:ERROR:|Error\b)", data)
-    # Reserve space for omission markers as well as the retained log bytes.
-    half = (limit - 128) // 2
-    if error is None or error.start() >= len(data) - half:
-        return _preview(text, limit - 128)
-    edge = (limit - 256) // 4
-    middle = limit - 256 - 2 * edge
-    start = max(edge, error.start() - middle // 4)
-    end = min(len(data) - edge, start + middle)
-    regions = []
-    for first, last in ((0, edge), (start, end), (len(data) - edge, len(data))):
-        if regions and first <= regions[-1][1]:
-            regions[-1] = (regions[-1][0], max(last, regions[-1][1]))
-        else:
-            regions.append((first, last))
-    result, previous = [], 0
-    for first, last in regions:
-        if first > previous:
-            result.append(f"\n... {first - previous} bytes omitted ...\n")
-        result.append(data[first:last].decode("utf-8", errors="ignore"))
-        previous = last
-    return "".join(result)
-
-
-def _report_graph_result(stderr, returncode):
-    """Expose the primary process failure in the normal masked CI job log."""
-    print(f"Bazel mod graph returned {returncode}; "
-          f"stderr ({len(stderr.encode('utf-8'))} bytes):", file=sys.stderr)
-    print(_stderr_preview(stderr) or "(empty)", file=sys.stderr)
-
-
 def inspect_graph(stdout, stderr, returncode):
-    """Report bounded command diagnostics for every caller before rejecting evidence."""
-    if returncode:
-        _report_graph_result(stderr, returncode)
-    try:
-        return _inspect_graph(stdout, stderr, returncode)
-    except json.JSONDecodeError as error:
-        if not returncode:
-            _report_graph_result(stderr, returncode)
-        print(f"Invalid module graph stdout ({len(stdout.encode('utf-8'))} bytes):\n" +
-              (_preview(stdout, 2048) or "(empty)"), file=sys.stderr)
-        raise ValueError(f"Bazel module graph is not valid JSON (return code {returncode}); "
-                         "see the command diagnostics above and module-graph.stderr") from error
-    except Exception:
-        if not returncode:
-            _report_graph_result(stderr, returncode)
-        raise
-
-
-def _inspect_graph(stdout, stderr, returncode):
     """Validate the full graph, allowing complete known unused extension failures."""
     graph = json.loads(stdout)
     if graph.get("key") != "<root>" or not graph.get("root") or not graph.get("dependencies"):
@@ -131,10 +65,36 @@ def _inspect_graph(stdout, stderr, returncode):
     return result
 
 
+def inspect_graph_with_diagnostics(stdout, stderr, returncode, *, failure_receipt=None):
+    """Retain the validation failure and expose only its public diagnostic fields."""
+    try:
+        return inspect_graph(stdout, stderr, returncode)
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        # Keep the original strict validation error and its traceback. Only a
+        # fixed-value projection is eligible for public evidence or the job log.
+        try:
+            try:
+                from tools.bazel.ci.public_artifacts import graph_failure_summary
+            except ImportError:
+                # Single-file kernel fixtures omit the optional artifact projector.
+                print(f"Bazel mod graph returned {returncode}", file=sys.stderr)
+            else:
+                summary = json.dumps(graph_failure_summary(stdout, stderr, returncode),
+                                     sort_keys=True) + "\n"
+                if failure_receipt is not None:
+                    failure_receipt.write_text(summary)
+                print(summary, end="", file=sys.stderr)
+        except Exception:
+            pass  # Best-effort diagnostics must never replace the graph failure.
+        raise
+
+
 def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=None):
     """Retain module provenance without changing the tested extension lock."""
     lock = workspace / "MODULE.bazel.lock"
     tested_lock = lock.read_bytes()
+    failure_receipt = directory / "module-graph-failure.json"
+    failure_receipt.unlink(missing_ok=True)
     command = [*bazel, "mod", "graph", "--output=json", "--extension_info=hidden",
                "--lockfile_mode=off", "--color=no", "--curses=no", *options]
     result = subprocess.run(command, cwd=workspace, text=True, capture_output=True)
@@ -142,7 +102,8 @@ def collect(workspace, directory, *, bazel=("bazel",), options=(), source_files=
     (directory / "module-graph.stderr").write_text(result.stderr)
     (directory / "module-graph-inspection.json").write_text(
         json.dumps({"argv": command, "returncode": result.returncode}, indent=2) + "\n")
-    inspection = inspect_graph(result.stdout, result.stderr, result.returncode)
+    inspection = inspect_graph_with_diagnostics(result.stdout, result.stderr, result.returncode,
+                                                failure_receipt=failure_receipt)
     inspection["argv"] = command
     (directory / "module-graph-inspection.json").write_text(json.dumps(inspection, indent=2) + "\n")
     if lock.read_bytes() != tested_lock:

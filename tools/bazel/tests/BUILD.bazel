@@ -15,11 +15,10 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
-# SWSS supplies the declared native runtime with its public Rust test. Keep the
-# existing consumer label without running a second runtime wrapper around it.
-test_suite(
+# Preserve the old build label; CI executes the source owner's real test rule.
+alias(
     name = "swss_common_rust_test",
-    tests = ["@sonic_swss//crates/countersyncd:common_rust_test"],
+    actual = "@sonic_swss//crates/countersyncd:common_rust_test",
 )
 
 _OCI_OWNER_POLICIES = [
@@ -1002,11 +1001,11 @@ py_test(
     deps = ["//tools/bazel/oci:container_validation"],
 )
 
-# Preserve the former wrapper label for callers; the owner now declares the
-# shared-library runtime and executes the same Rust tests itself.
-test_suite(
+# Keep the compatibility build label; the owner test already provides its
+# declared Common runtime. CI selects the owner test rule directly.
+alias(
     name = "common_rust_runtime_test",
-    tests = ["@sonic_swss//crates/countersyncd:common_rust_test"],
+    actual = "@sonic_swss//crates/countersyncd:common_rust_test",
 )
 
 # Shared OCI regression fixtures exercise the same algorithms for both owners.

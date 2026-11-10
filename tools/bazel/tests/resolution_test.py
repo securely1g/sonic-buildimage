@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -45,74 +46,32 @@ class GraphInspectionTest(unittest.TestCase):
         self.assertEqual(receipt["module_count"], 3)
         self.assertEqual(console.getvalue(), "")
 
-    def test_direct_failure_reports_primary_result_before_validation(self):
-        """Stored graph callers must expose an unknown extension error before rejecting it."""
-        primary = "ERROR: interpreter checksum download failed: HTTP 503\n"
-        console = io.StringIO()
-        validate = resolution._inspect_graph
-
-        def check_before_validation(*args):
-            self.assertIn("Bazel mod graph returned 2", console.getvalue())
-            self.assertIn(primary, console.getvalue())
-            return validate(*args)
-
-        with contextlib.redirect_stderr(console), \
-                mock.patch.object(resolution, "_inspect_graph", side_effect=check_before_validation), \
-                self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
-            resolution.inspect_graph(GRAPH, primary, 2)
-        self.assertEqual(console.getvalue().count("Bazel mod graph returned"), 1)
-
-    def test_zero_exit_validation_failure_keeps_primary_context_and_exception(self):
-        """A zero process status must not hide diagnostics or accept an invalid graph."""
-        primary = "unexpected graph wrapper warning\n"
-        console = io.StringIO()
-        with contextlib.redirect_stderr(console), \
-                self.assertRaisesRegex(ValueError, "^Missing resolved module graph$"):
-            resolution.inspect_graph("{}", primary, 0)
-        self.assertIn("Bazel mod graph returned 0", console.getvalue())
-        self.assertIn(primary, console.getvalue())
-
-    def test_direct_malformed_json_reports_bounded_stdout(self):
-        """Direct stored-output callers get the same malformed-JSON context as collect."""
-        console = io.StringIO()
-        with contextlib.redirect_stderr(console), \
-                self.assertRaisesRegex(ValueError, "not valid JSON.*return code 0"):
-            resolution.inspect_graph("not JSON", "wrapper warning\n", 0)
-        self.assertIn("wrapper warning", console.getvalue())
-        self.assertIn("Invalid module graph stdout", console.getvalue())
-        self.assertIn("not JSON", console.getvalue())
-
-    def test_long_warnings_do_not_hide_the_first_fatal_download_error(self):
-        """Retain a middle HTTP failure and its URL without dumping long APT warnings."""
-        url = "https://example.test/python/20260303/SHA256SUMS"
-        warning = "WARNING: APT mirror contents download still pending\n" * 150
-        for fatal in ("ERROR: python_interpreters failed\n", "Error in download: "):
-            primary = ("initial context\n" + warning + fatal + url +
-                       " GET returned 503 Service Unavailable\n" + warning + "final context\n")
+    def test_stored_failures_report_only_the_process_status_and_classified_clues(self):
+        for graph, code, exception in ((GRAPH, 2, ValueError), ("{}", 0, ValueError),
+                                       ("not JSON", 0, json.JSONDecodeError)):
             console = io.StringIO()
+            primary = "ERROR: download https://private.invalid/file?token=fixture HTTP 503\n"
+            with self.subTest(graph=graph, code=code), contextlib.redirect_stderr(console), \
+                    self.assertRaises(exception):
+                resolution.inspect_graph_with_diagnostics(graph, primary, code)
+            diagnostic = json.loads(console.getvalue())
+            self.assertEqual(diagnostic["returncode"], code)
+            self.assertEqual(diagnostic["http_statuses"], [503])
+            self.assertNotIn("private.invalid", console.getvalue())
+
+    def test_long_graph_warnings_preserve_the_classified_download_error(self):
+        warning = "WARNING: APT avertissement: accès différé\n"
+        cause = "https://private.invalid/python/SHA256SUMS GET returned 503 Service Unavailable\n"
+        for fatal in ("ERROR: interpreter extension failed\n" + "frame\n" * 100,
+                      "Error in download: "):
+            console = io.StringIO()
+            stderr = warning * 100 + fatal + cause + warning * 1000
             with self.subTest(fatal=fatal), contextlib.redirect_stderr(console), \
                     self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
-                resolution.inspect_graph(GRAPH, primary, 2)
-            self.assertLessEqual(len(resolution._stderr_preview(primary).encode()), 8192)
-            self.assertLess(len(console.getvalue().encode()), 8500)
-            for marker in ("initial context", "final context", url, "503 Service Unavailable", "bytes omitted"):
-                self.assertIn(marker, console.getvalue())
-
-    def test_fatal_header_near_head_cutoff_keeps_its_following_cause(self):
-        """A visible ERROR header must not hide the causal URL just beyond the head window."""
-        url = "https://example.test/python/SHA256SUMS"
-        for prefix_size, warning in ((0, "APT warning\n"), (3900, "APT warning\n"),
-                                     (3900, "APT avertissement: accès différé\n")):
-            prefix = (warning * 500)[:prefix_size]
-            primary = (prefix + "\nERROR: interpreter extension failed\n" + "frame\n" * 100 +
-                       url + " GET returned 503 Service Unavailable\n" +
-                       warning * 2000 + "final context\n")
-            with self.subTest(prefix_size=prefix_size, warning=warning):
-                preview = resolution._stderr_preview(primary)
-                self.assertLessEqual(len(preview.encode()), 8192)
-                for marker in ("ERROR: interpreter extension failed", url,
-                               "503 Service Unavailable", "final context"):
-                    self.assertIn(marker, preview)
+                resolution.inspect_graph_with_diagnostics(GRAPH, stderr, 2)
+            self.assertEqual(json.loads(console.getvalue())["http_statuses"], [503])
+            self.assertLess(len(console.getvalue()), 1024)
+            self.assertNotIn("private.invalid", console.getvalue())
 
     def test_known_unused_extensions_are_recorded(self):
         """Retain known failures without calling their extension inspection complete."""
@@ -187,79 +146,118 @@ class GraphInspectionTest(unittest.TestCase):
         self.assertEqual(resolution.inspect_graph(json.dumps(graph), ERRORS, 2)["module_count"], 3)
 
 
-class CollectionDiagnosticsTest(unittest.TestCase):
-    """Preserve the real subprocess error when graph output cannot be inspected."""
+class GraphFailureCollectionTest(unittest.TestCase):
+    """The real collector retains safe clues without replacing strict failures."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
-        self.lock = self.root / "MODULE.bazel.lock"
-        self.lock.write_text('{"registryFileHashes": {}}\n')
-        self.output = self.root / "evidence"
-        self.output.mkdir()
+        self.workspace = Path(self.temporary.name)
+        self.directory = self.workspace / "evidence"
+        self.directory.mkdir()
+        (self.workspace / "MODULE.bazel.lock").write_text('{"generated":true}\n')
+        self.failure = self.directory / "module-graph-failure.json"
 
-    def command(self, stdout, stderr, returncode):
-        script = self.root / "graph.py"
-        script.write_text("import sys\n" +
-                          "sys.stdout.write(" + repr(stdout) + ")\n" +
-                          "sys.stderr.write(" + repr(stderr) + ")\n" +
-                          "sys.exit(" + str(returncode) + ")\n")
-        return (sys.executable, str(script))
+    def test_invalid_graph_keeps_original_exception_and_safe_status(self):
+        secret = "ghs_" + "x" * 36
+        stderr = ("ERROR: downloading https://snapshot.debian.org/private?token=" + secret +
+                  " to /home/runner/private: GET returned response code 504\n::error::" + secret)
+        original = json.JSONDecodeError("Expecting value", "", 0)
+        log = io.StringIO()
+        result = subprocess.CompletedProcess([], 2, "", stderr)
+        with mock.patch.object(resolution.subprocess, "run", return_value=result) as command, \
+                mock.patch.object(resolution, "inspect_graph", side_effect=original), \
+                mock.patch.object(resolution, "retain") as retain, contextlib.redirect_stderr(log):
+            with self.assertRaises(json.JSONDecodeError) as failed:
+                resolution.collect(self.workspace, self.directory, bazel=("wrapper",),
+                                   options=("--repository_cache=/private/cache",))
+        self.assertIs(failed.exception, original)
+        retain.assert_not_called()
+        self.assertEqual(command.call_args.args[0], ["wrapper", "mod", "graph", "--output=json",
+                         "--extension_info=hidden", "--lockfile_mode=off", "--color=no", "--curses=no",
+                         "--repository_cache=/private/cache"])
+        summary = json.loads(self.failure.read_text())
+        self.assertEqual(json.loads(log.getvalue()), summary)
+        self.assertEqual(summary["returncode"], 2)
+        self.assertEqual(summary["origins"], ["debian_snapshot"])
+        self.assertEqual(summary["http_statuses"], [504])
+        for private in (secret, "https://", "/home/", "token", "::error::", "wrapper", "/private"):
+            self.assertNotIn(private, log.getvalue() + self.failure.read_text())
+        self.assertEqual((self.directory / "module-graph.stderr").read_text(), stderr)
+        self.assertEqual((self.workspace / "MODULE.bazel.lock").read_text(), '{"generated":true}\n')
 
-    def test_empty_failed_graph_reports_primary_error_before_inspection(self):
-        """An empty graph must expose its download error and exit code, not just JSONDecodeError."""
-        primary = "ERROR: repository download failed: HTTP 504\n"
-        console = io.StringIO()
-        inspect = resolution._inspect_graph
+    def test_actual_parser_rejection_remains_failed_for_empty_and_unknown_errors(self):
+        for stdout, stderr, code, exception in (("", "", 2, json.JSONDecodeError),
+                                               (GRAPH, "ERROR: new failure\n", 2, ValueError)):
+            with self.subTest(stdout=stdout), mock.patch.object(resolution.subprocess, "run",
+                    return_value=subprocess.CompletedProcess([], code, stdout, stderr)), \
+                    mock.patch.object(resolution, "retain") as retain, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(exception):
+                    resolution.collect(self.workspace, self.directory)
+                retain.assert_not_called()
+                self.assertEqual(json.loads(self.failure.read_text())["status"], "failed")
 
-        def check_before_parse(*args):
-            self.assertIn("Bazel mod graph returned 17", console.getvalue())
-            self.assertIn(primary, console.getvalue())
-            return inspect(*args)
+    def test_success_and_known_unused_errors_remove_stale_failure_receipt(self):
+        for stderr, code in (("", 0), (ERRORS, 2)):
+            self.failure.write_text('{"stale":true}\n')
+            with self.subTest(code=code), mock.patch.object(resolution.subprocess, "run",
+                    return_value=subprocess.CompletedProcess([], code, GRAPH, stderr)), \
+                    mock.patch.object(resolution, "retain", return_value={}), contextlib.redirect_stderr(io.StringIO()) as log:
+                result = resolution.collect(self.workspace, self.directory)
+            self.assertTrue(result["inspection"]["module_graph_complete"])
+            self.assertFalse(self.failure.exists())
+            self.assertEqual(log.getvalue(), "")
 
-        before = self.lock.read_bytes()
-        with contextlib.redirect_stderr(console), \
-                mock.patch.object(resolution, "_inspect_graph", side_effect=check_before_parse), \
-                self.assertRaisesRegex(ValueError, "not valid JSON.*return code 17"):
-            resolution.collect(self.root, self.output, bazel=self.command("", primary, 17))
-        self.assertEqual((self.output / "module-graph.stderr").read_text(), primary)
-        self.assertEqual((self.output / "module-graph.json").read_text(), "")
-        receipt = json.loads((self.output / "module-graph-inspection.json").read_text())
-        self.assertEqual(receipt["returncode"], 17)
-        self.assertEqual(self.lock.read_bytes(), before)
+    def test_diagnostic_projection_or_write_failure_does_not_mask_original(self):
+        original = ValueError("original graph error")
+        for fault in ("projection", "write", "console"):
+            with self.subTest(fault=fault), mock.patch.object(resolution.subprocess, "run",
+                    return_value=subprocess.CompletedProcess([], 2, "", "")), \
+                    mock.patch.object(resolution, "inspect_graph", side_effect=original), \
+                    contextlib.ExitStack() as stack:
+                if fault == "projection":
+                    stack.enter_context(mock.patch("tools.bazel.ci.public_artifacts.graph_failure_summary",
+                                                   side_effect=ValueError("projection")))
+                elif fault == "write":
+                    real_write = Path.write_text
+                    def write(path, *args, **kwargs):
+                        if path == self.failure:
+                            raise OSError("disk full")
+                        return real_write(path, *args, **kwargs)
+                    stack.enter_context(mock.patch.object(Path, "write_text", write))
+                else:
+                    stack.enter_context(mock.patch("builtins.print", side_effect=OSError("closed output")))
+                with self.assertRaises(ValueError) as failed:
+                    resolution.collect(self.workspace, self.directory)
+                self.assertIs(failed.exception, original)
 
-    def test_large_diagnostics_are_bounded_but_complete_local_evidence_survives(self):
-        """Keep the causal beginning/end while avoiding huge stdout/stderr dumps in job logs."""
-        stderr = "first error\n" + "x" * 100000 + "\nlast error\n"
-        stdout = "not-json-start\n" + "y" * 100000 + "\nnot-json-end\n"
-        console = io.StringIO()
-        with contextlib.redirect_stderr(console), self.assertRaisesRegex(ValueError, "return code 33"):
-            resolution.collect(self.root, self.output, bazel=self.command(stdout, stderr, 33))
-        text = console.getvalue()
-        self.assertLess(len(text.encode()), 11000)
-        for marker in ("first error", "last error", "not-json-start", "not-json-end", "bytes omitted"):
-            self.assertIn(marker, text)
-        self.assertEqual((self.output / "module-graph.stderr").read_text(), stderr)
-        self.assertEqual((self.output / "module-graph.json").read_text(), stdout)
-
-    def test_zero_exit_with_invalid_json_is_still_rejected_with_diagnostics(self):
-        """A process success must not turn malformed graph output into accepted evidence."""
-        console = io.StringIO()
-        with contextlib.redirect_stderr(console), self.assertRaisesRegex(ValueError, "return code 0"):
-            resolution.collect(self.root, self.output,
-                               bazel=self.command("not JSON", "unexpected wrapper output\n", 0))
-        self.assertIn("unexpected wrapper output", console.getvalue())
-        self.assertIn("not JSON", console.getvalue())
-
-    def test_known_unused_extension_failure_keeps_existing_acceptance(self):
-        """Reporting a nonzero process result must not change the existing complete-graph policy."""
-        console = io.StringIO()
-        with contextlib.redirect_stderr(console), mock.patch.object(resolution, "retain", return_value={}):
-            result = resolution.collect(self.root, self.output, bazel=self.command(GRAPH, ERRORS, 2))
-        self.assertTrue(result["inspection"]["module_graph_complete"])
-        self.assertFalse(result["inspection"]["extension_inspection_complete"])
-        self.assertEqual(len(result["inspection"]["unused_extension_failures"]), 2)
+    def test_copied_parser_works_without_optional_artifact_helpers(self):
+        """Kernel fixtures import the copied parser without the tools package."""
+        copied = self.workspace / "resolution.py"
+        copied.write_text(Path(resolution.__file__).read_text())
+        code = '''
+import importlib.util, json, pathlib, subprocess
+from unittest import mock
+spec = importlib.util.spec_from_file_location("copied_resolution", "resolution.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+graph = json.dumps({"key":"<root>", "root":True, "dependencies":[{"key":"component@1"}]})
+assert module.inspect_graph(graph, "", 0)["module_graph_complete"]
+root = pathlib.Path.cwd()
+with mock.patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 2, "", "")):
+    try:
+        module.collect(root, root / "evidence")
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("Missing diagnostics must not hide the graph failure")
+assert not (root / "evidence/module-graph-failure.json").exists()
+'''
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code], cwd=self.workspace,
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class SourceScopeTest(unittest.TestCase):
