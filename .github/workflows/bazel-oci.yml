@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -59,6 +59,83 @@ env:
   BAZEL: bazel
 
 jobs:
+  vs_management_image_metadata:
+    name: Canonical management image metadata (hosted)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-mgmt-metadata' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    concurrency:
+      group: vs-management-image-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require a separate hosted metadata scope and fresh paths
+        id: paths
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 - <<'PY_METADATA_PATHS'
+          import os, re
+          from pathlib import Path
+          if any(os.environ.get(name) for name in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Management metadata does not accept a native source request')
+          run, attempt = (os.environ[name] for name in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', value) for value in (run, attempt)) or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
+              raise SystemExit('Unexpected hosted metadata identity')
+          control = Path(os.environ['GITHUB_WORKSPACE']) / f'management-metadata-control-{run}-{attempt}'
+          output = Path(os.environ['RUNNER_TEMP']) / f'management-image-metadata-{run}-{attempt}'
+          if any(os.path.lexists(path) for path in (control, output)):
+              raise SystemExit('Preserve existing metadata observation paths')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
+              stream.write(f'control={control.name}\noutput={output.name}\n')
+          PY_METADATA_PATHS
+      - name: Checkout the immutable metadata observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+      - name: Check controller identity and nine pure metadata fixtures
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+          GIT_NO_LAZY_FETCH: '1'
+          GIT_NO_REPLACE_OBJECTS: '1'
+          GIT_OPTIONAL_LOCKS: '0'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -B -m unittest -v tools.bazel.tests.vs_management_image_metadata_test
+      - name: Inspect one anonymous canonical tag manifest with upstream Buildx
+        id: observe
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+          OUTPUT: ${{ steps.paths.outputs.output }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 -B -m tools.bazel.ci.vs_management_image_metadata --output "$RUNNER_TEMP/$OUTPUT"
+      - name: Retain bounded upstream metadata and client identities
+        if: always() && (steps.observe.outcome == 'success' || steps.observe.outcome == 'failure')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: management-image-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/tool-identity.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/client-intent.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/result.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/observation.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/failure.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/stdout.data
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/stderr.data
+          if-no-files-found: error
+          retention-days: 14
+
   vs_native_cache_paths:
     name: Native cache directory observation (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-native-cache' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
