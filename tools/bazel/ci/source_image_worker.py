@@ -20,7 +20,8 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
-from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
+from tools.bazel.ci.source_worker_preflight import (
+    POOLS, cpu_limit, measure, select_build_profile, worker_cache_root)
 from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
@@ -76,8 +77,16 @@ def require(value, message):
         raise ValueError(message)
 
 
+def selected_worker_pool():
+    pool = os.environ.get("WORKER_POOL", "sonic-slave-container-dpool")
+    require(pool in POOLS, "Unknown source-worker pool")
+    return pool
+
+
 def selection(image, revision):
     require(image in DRIVERS, "Unknown source image")
+    if selected_worker_pool() == "sonic-slave-container-k3s":
+        require(image in ("syncd", "gearbox"), "Image is not admitted to the K3s source-worker pool")
     require(re.fullmatch(r"[0-9a-f]{40}", revision), "Source revision must be a full lowercase Git SHA")
     catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
     require(not catalog or re.fullmatch(r"[0-9a-f]{40}", catalog),
@@ -633,6 +642,8 @@ def configure_worker_mirrors(phase, artifacts, *, config=None, public=None, imag
             # Export copied this small JSON; the later CI bundle binds its final hash.
             path.write_text(json.dumps(receipt, indent=2) + "\n")
         return
+    if selected_worker_pool() == "sonic-slave-container-k3s":
+        require(not any(roots.values()), "K3s source workers use only the existing public downloader")
     mirrors = private_mirrors.selected_mirrors(roots)
     if mirrors:
         require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
@@ -650,10 +661,14 @@ def prepare(args):
     workspace, artifacts = args.workspace, args.artifacts
     if args.image == "teamd":
         prepare_teamd_kernel(artifacts)
-    preflight = measure(os.environ.get("RUNNER_NAME", ""))
+    pool = selected_worker_pool()
+    preflight = measure(os.environ.get("RUNNER_NAME", ""), pool)
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
     profile = preflight["build_profile"]
+    if pool == "sonic-slave-container-k3s":
+        require(profile == select_build_profile(20 * 1024**3, 6),
+                "K3s worker limits differ from the measured two-action profile")
     require(os.getuid() == 1000 and os.getgid() == 1000, "Expected worker UID/GID1000")
     require(platform.machine() == "x86_64" and
             platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie", "Expected native AMD64 Debian Trixie")
@@ -673,7 +688,7 @@ def prepare(args):
     require(Path("/etc/ssl/certs/java/cacerts").is_file() and os.access("/etc/ssl/certs/java/cacerts", os.R_OK),
             "Missing readable system Java trust store")
     run(["sudo", "-n", "true"])
-    for mount in ("/actions", "/bazel_cache"):
+    for mount in (("/actions", "/bazel_cache") if pool == "sonic-slave-container-dpool" else ("/actions",)):
         run(["mountpoint", "-q", mount])
     require(output(["findmnt", "-n", "-o", "FSTYPE", "-T", "/actions"]) in ("ext4", "xfs"), "Docker storage requires ext4 or XFS")
     if args.image == "syncd":
@@ -689,7 +704,7 @@ def prepare(args):
     catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
-    cache = Path("/bazel_cache/source-images") / runner
+    cache = worker_cache_root(pool) / "source-images" / runner
     require(cache.resolve() == cache, "Cache path must not traverse symlinks")
     for name in ("repository", "disk", "bazelisk", args.image + "/output-base"):
         (cache / name).mkdir(parents=True, exist_ok=True)

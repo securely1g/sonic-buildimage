@@ -461,6 +461,46 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertEqual(worker.phase_command('teamd', 'loaded', workspace, artifacts),
                          [sys.executable, '-B', '/source/tools/bazel/ci/teamd_loaded.py', '--artifacts', str(artifacts)])
 
+    def test_pool_selection_preserves_legacy_and_limits_k3s_images(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(worker.selected_worker_pool(), "sonic-slave-container-dpool")
+            worker.selection("sysmgr", "a" * 40)
+        with patch.dict(os.environ, {"WORKER_POOL": "sonic-slave-container-k3s"}, clear=True):
+            for image in ("syncd", "gearbox"):
+                worker.selection(image, "a" * 40)
+            with self.assertRaisesRegex(ValueError, "not admitted"):
+                worker.selection("sysmgr", "a" * 40)
+        with patch.dict(os.environ, {"WORKER_POOL": "unknown"}, clear=True), self.assertRaises(ValueError):
+            worker.selection("syncd", "a" * 40)
+
+    def test_pool_cache_root_is_fixed_and_preserves_dpool_layout(self):
+        self.assertEqual(worker.worker_cache_root(), Path("/bazel_cache"))
+        self.assertEqual(worker.worker_cache_root("sonic-slave-container-k3s"),
+                         Path("/actions/_work/.source-image-cache"))
+        with self.assertRaises(ValueError):
+            worker.worker_cache_root("/private/cache")
+
+    def test_k3s_workflow_binds_actual_assignment_and_request_concurrency(self):
+        job = self.native_job()
+        self.assertNotIn("SOURCE_WORKER_CONTROL", job["env"])
+        self.assertEqual(job["env"]["WORKER_POOL"], "${{ inputs.source_worker_pool }}")
+        self.assertIn("inputs.source_image, inputs.source_ci_request", job["concurrency"]["group"])
+        self.assertNotIn("sonic-slave-container-k3s-vs", job["concurrency"]["group"])
+        self.assertIs(job["concurrency"]["cancel-in-progress"], False)
+        steps = {step["name"]: step for step in job["steps"]}
+        first = steps["Require fresh native worker paths"]
+        self.assertEqual(first["env"]["ASSIGNED_WORKER"], "${{ runner.name }}")
+        self.assertIn("SOURCE_CI_REQUEST", first["run"])
+        for name in ("Configure Debian downloads for the native worker",
+                     "Scan staged source-image artifacts for private mirror locations"):
+            for value in steps[name]["env"].values():
+                self.assertIn("inputs.source_worker_pool != 'sonic-slave-container-k3s'", value)
+        names = [step["name"] for step in job["steps"]]
+        self.assertLess(names.index("Bind the exact normal CI merge before native work"),
+                        names.index("Prepare private Docker and persistent worker caches"))
+        self.assertLess(names.index("Stop only this job's private Docker daemon"),
+                        names.index("Prepare declared artifacts and public evidence"))
+
     def native_job(self):
         import yaml
         return yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["source_image"]
@@ -471,7 +511,10 @@ class ImageWorkerTest(unittest.TestCase):
         environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(temporary),
                        "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_NAME": "sonic-slave-lgh114-1",
                        "EXPECTED_WORKER": "sonic-slave-lgh114-1", "SELECTED_IMAGE": "dash-engine",
-                       "SOURCE_REVISION": "a" * 40}
+                       "SOURCE_REVISION": "a" * 40,
+                       "WORKER_POOL": "sonic-slave-container-dpool",
+                       "ASSIGNED_WORKER": "sonic-slave-lgh114-1",
+                       "GITHUB_OUTPUT": str(root / "github-output"), "GITHUB_ENV": str(root / "github-env")}
         for kind in ("CONTROL", "SOURCE", "SCRATCH"):
             environment["SOURCE_WORKER_" + kind] = "source-image-" + kind.lower() + "-123-2-sonic-slave-lgh114-1"
         return workspace, temporary, environment
@@ -496,7 +539,7 @@ class ImageWorkerTest(unittest.TestCase):
                               "with Path(os.environ['TRACE']).open('a') as out: out.write(json.dumps(sys.argv[1:])+'\\n')\n")
             trace = root / "trace.jsonl"; environment["TRACE"] = str(trace)
             for step in job["steps"][1:]:
-                if step.get("if") == "inputs.source_image == 'teamd'":
+                if step.get("if") == "inputs.source_image == 'teamd'" or "inputs.source_ci_request" in step.get("if", ""):
                     continue
                 if "run" in step:
                     subprocess.run(["bash", "-e", "-c", step["run"]], env=environment,
@@ -512,13 +555,13 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(path.read_text(), "retained")
         for name, variable in (("Checkout reviewed dispatcher", "SOURCE_WORKER_CONTROL"),
                                ("Checkout the exact reviewed source", "SOURCE_WORKER_SOURCE")):
-            self.assertEqual(steps[name]["with"]["path"], "${{ env." + variable + " }}")
+            self.assertEqual(steps[name]["with"]["path"], "${{ steps.worker_paths.outputs." + variable.removeprefix("SOURCE_WORKER_").lower() + " }}")
             self.assertIs(steps[name]["with"]["clean"], False)
             self.assertIs(steps[name]["with"]["persist-credentials"], False)
         for name in ("Reuse the existing source-download artifact", "Download the verified source archives"):
-            self.assertEqual(steps[name]["with"]["path"], "${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/source-image-inputs")
+            self.assertEqual(steps[name]["with"]["path"], "${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/source-image-inputs")
         self.assertEqual(steps["Upload source images and acceptance receipts"]["with"]["path"],
-                         "${{ runner.temp }}/${{ env.SOURCE_WORKER_SCRATCH }}/artifacts/public/")
+                         "${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/artifacts/public/")
 
     def test_native_path_gate_refuses_collisions_and_wrong_identities_without_deleting(self):
         guard = self.native_job()["steps"][0]["run"]
@@ -724,7 +767,7 @@ class ImageWorkerTest(unittest.TestCase):
             binary.write_text("#!" + sys.executable + "\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
             binary.chmod(0o755)
             launcher = root / "launcher"
-            for cpus, jobs, memory in ((2, 1, 4000), (4, 2, 8000)):
+            for cpus, jobs, memory in ((2, 1, 4000), (4, 2, 8000), (6, 2, 8000)):
                 with self.subTest(cpus=cpus):
                     profile = worker.select_build_profile(20 * 1024**3, cpus)
                     launcher.write_text(worker.launcher_text(str(binary), root / "output base", profile))
@@ -909,7 +952,10 @@ class ImageWorkerTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
         self.assertEqual(set(choices), set(worker.DRIVERS) | {"worker-provenance", "registry-native"})
-        gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
+        import yaml
+        jobs = yaml.safe_load(workflow)["jobs"]
+        gates = [re.search(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", jobs[name]["if"]).group(1)
+                 for name in ("source_image_inputs", "source_image")]
         self.assertEqual(len(gates), 2)
         for gate in gates:
             self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
@@ -943,8 +989,9 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(selected, ["source_image"])
                 self.assertTrue(condition(jobs["source_image_inputs"]["if"], mode=image))
                 self.assertFalse(condition(jobs["source_image"]["if"], mode=image))
-        self.assertEqual(jobs["source_image"]["runs-on"],
-                         ["sonic-slave-container-dpool", "${{ inputs.source_worker }}"])
+        self.assertIn("inputs.source_worker_pool == 'sonic-slave-container-k3s'", jobs["source_image"]["runs-on"])
+        self.assertIn('sonic-slave-container-dpool', jobs["source_image"]["runs-on"])
+        self.assertIn('inputs.source_worker', jobs["source_image"]["runs-on"])
         for image in ("snmp", "base", "config-engine", "swss-layer"):
             with self.subTest(unsupported=image), self.assertRaises(ValueError):
                 worker.selection(image, "a" * 40)
