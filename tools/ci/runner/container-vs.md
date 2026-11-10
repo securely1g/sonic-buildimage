@@ -121,11 +121,31 @@ index refresh errors, timeouts, and TLS, signature and hash checks stay enabled.
 This CI-only mitigation does not change rootfs or native-package APT behavior,
 repair a persistent transport failure, or force APT to refresh DNS.
 
-GitHub supplies `BAZEL_REMOTE_AUTH` only to cache/build steps. The installed
-credential helper sends it only to the configured cache origin. If the cache
-cannot be reached, the job records an explicit local-only fallback. Invalid
-credentials or authorization failures still fail setup. The cache receipt does
-not claim a remote cache hit merely because HTTPS connectivity succeeds.
+The worker manager configures the runner account's `.bazelrc` before GitHub
+registration. It owns the local cache paths, remote endpoint, authentication,
+and trust settings. Its eight-second connectivity check selects local caching
+for transport or TLS failures and HTTP 5xx responses. Invalid credentials,
+HTTP 401/403 responses, redirects, and other unexpected statuses fail setup.
+The manager publishes its schema 1 selection, bound to the current endpoint, at
+`/actions/bazel/cache-selection.json`. Both fixed Bazel launchers validate this
+selection for managed build commands. Fatal setup failures retain a sanitized
+failure status when it can be published. Availability changes after registration
+use Bazel's configured retries and cache error handling.
+A successful connectivity check does not establish a remote cache hit.
+
+The workflow supplies no cache credential and does not probe or rewrite the
+runner's cache settings. It appends only its jobs and memory limits. It then
+calls the image-owned `activate-root-bazel` CLI, which validates the root job
+contract and selects the fixed Bazel 8.5.1 compatibility launcher through
+`BAZEL` for subsequent root OCI build and validation steps. PINS continues
+using literal `bazel` from its own workspace and retains Bazelisk's 6.4.0
+selection. The isolated kernel launcher continues using its explicit local
+cache options.
+
+The workflow's `EXPECTED_MANAGER_REVISION` must identify the image revision
+that supplies both pre-registration cache configuration and the root activation
+CLI with its compatibility artifacts. `prepare_vs_slave.sh` checks this exact
+revision before the resource and activation step.
 
 The former `Make VS with Bazel SWSS (AMD64)` job is disabled in this workflow.
 After the new native build, CI verifies the installer container
