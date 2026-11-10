@@ -18,6 +18,9 @@ sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json
 
 WORKERS = tuple(f"sonic-slave-lgh114-{number}" for number in range(1, 5))
+POOLS = ("sonic-slave-container-dpool", "sonic-slave-container-k3s")
+# Public receipt/path syntax only; authoritative job metadata binds the pool.
+K3S_WORKER_PATTERN = r"ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?"
 MINIMUM_MEMORY_BYTES = 20 * 1024**3
 
 
@@ -54,7 +57,13 @@ def marker_identity(path):
     return {"base_image": value["base_image"]}
 
 
-def measure(expected_worker):
+def worker_matches_pool(worker, pool):
+    if pool == "sonic-slave-container-dpool":
+        return worker in WORKERS
+    return pool == "sonic-slave-container-k3s" and re.fullmatch(K3S_WORKER_PATTERN, worker) is not None
+
+
+def measure(expected_worker, pool="sonic-slave-container-dpool"):
     checks, facts = {}, {}
     build_profile = None
 
@@ -65,8 +74,10 @@ def measure(expected_worker):
             checks[name] = False
 
     actual = os.environ.get("RUNNER_NAME", "")
-    check("worker_affinity", lambda: actual == expected_worker and actual in WORKERS)
-    facts["worker"] = actual if actual in WORKERS else "unexpected"
+    check("worker_affinity", lambda: actual == expected_worker and worker_matches_pool(actual, pool))
+    facts["worker"] = actual if worker_matches_pool(actual, pool) else "unexpected"
+    if pool == "sonic-slave-container-k3s":
+        facts["pool"] = pool
     facts["uid"], facts["gid"] = os.getuid(), os.getgid()
     check("build_user", lambda: facts["uid"] == facts["gid"] == 1000)
     facts["machine"] = platform.machine()
@@ -124,10 +135,13 @@ def measure(expected_worker):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--worker", required=True, choices=WORKERS)
+    parser.add_argument("--pool", choices=POOLS, default="sonic-slave-container-dpool")
+    parser.add_argument("--worker", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    receipt = measure(args.worker)
+    if not worker_matches_pool(args.worker, args.pool):
+        parser.error("Worker name does not match the selected preflight pool")
+    receipt = measure(args.worker, args.pool)
     receipt["dispatcher_revision"] = subprocess.check_output(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     safe_json(receipt)

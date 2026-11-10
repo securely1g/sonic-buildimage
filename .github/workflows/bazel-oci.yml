@@ -34,6 +34,11 @@ on:
         type: choice
         options: [sonic-slave-lgh114-1, sonic-slave-lgh114-2, sonic-slave-lgh114-3, sonic-slave-lgh114-4]
         default: sonic-slave-lgh114-1
+      source_preflight_pool:
+        description: Worker pool for resource-only preflight (native source routes unchanged)
+        type: choice
+        options: [sonic-slave-container-dpool, sonic-slave-container-k3s]
+        default: sonic-slave-container-dpool
       source_inputs_run:
         description: Optional successful source-download run in this repository
         type: string
@@ -48,7 +53,9 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
+  # Keep K3s resource observations independent at workflow level; their job
+  # below shares the existing non-cancelling K3s VS concurrency group.
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}${{ inputs.source_image == 'preflight' && inputs.source_preflight_pool == 'sonic-slave-container-k3s' && format('-k3s-resource-{0}-{1}', github.run_id, github.run_attempt) || '' }}
   cancel-in-progress: true
 
 env:
@@ -479,26 +486,38 @@ jobs:
   source_worker_preflight:
     name: Source worker preflight (${{ matrix.worker }})
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'preflight'
-    runs-on: [sonic-slave-container-dpool, '${{ matrix.worker }}']
+    runs-on: ${{ inputs.source_preflight_pool == 'sonic-slave-container-k3s' && fromJSON('["self-hosted","linux","x64","sonic-slave-container-k3s"]') || fromJSON(format('["sonic-slave-container-dpool","{0}"]', matrix.worker)) }}
     timeout-minutes: 10
+    concurrency:
+      group: ${{ inputs.source_preflight_pool == 'sonic-slave-container-k3s' && 'sonic-slave-container-k3s-vs' || format('source-worker-preflight-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.worker) }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
-        worker: [sonic-slave-lgh114-1, sonic-slave-lgh114-2, sonic-slave-lgh114-3, sonic-slave-lgh114-4]
+        worker: ${{ fromJSON(inputs.source_preflight_pool == 'sonic-slave-container-k3s' && '["sonic-slave-container-k3s"]' || '["sonic-slave-lgh114-1","sonic-slave-lgh114-2","sonic-slave-lgh114-3","sonic-slave-lgh114-4"]') }}
     env:
-      PREFLIGHT_CONTROL: source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker }}
-      PREFLIGHT_RECEIPT: source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker }}.json
+      PREFLIGHT_POOL: ${{ inputs.source_preflight_pool || 'sonic-slave-container-dpool' }}
     steps:
       - name: Require fresh preflight paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ inputs.source_preflight_pool == 'sonic-slave-container-k3s' && runner.name || matrix.worker }}
+          PREFLIGHT_CONTROL: source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_preflight_pool == 'sonic-slave-container-k3s' && runner.name || matrix.worker }}
+          PREFLIGHT_RECEIPT: source-worker-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_preflight_pool == 'sonic-slave-container-k3s' && runner.name || matrix.worker }}.json
         run: |
           python3 - <<'PY'
           import os
           from pathlib import Path
           import re
           run_id, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
-          worker = os.environ["EXPECTED_WORKER"]
-          if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) or not re.fullmatch(r"sonic-slave-lgh114-[1-4]", worker):
-              raise SystemExit("Unexpected preflight run or worker identity")
+          worker, pool = os.environ["EXPECTED_WORKER"], os.environ["PREFLIGHT_POOL"]
+          # This bounds public path syntax; job metadata establishes pool identity.
+          worker_pattern = {"sonic-slave-container-dpool": r"sonic-slave-lgh114-[1-4]",
+                            "sonic-slave-container-k3s": r"ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?"}.get(pool)
+          if (not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt))
+                  or worker_pattern is None or not re.fullmatch(worker_pattern, worker)
+                  or worker != os.environ["RUNNER_NAME"]):
+              raise SystemExit("Unexpected preflight run, pool or worker identity")
           name = f"source-worker-preflight-{run_id}-{attempt}-{worker}"
           control = Path(os.environ["GITHUB_WORKSPACE"]) / os.environ["PREFLIGHT_CONTROL"]
           receipt = Path(os.environ["RUNNER_TEMP"]) / os.environ["PREFLIGHT_RECEIPT"]
@@ -506,28 +525,30 @@ jobs:
               raise SystemExit("Preflight paths do not match this run")
           if any(path.exists() or path.is_symlink() for path in (control, receipt)):
               raise SystemExit("Preflight paths already exist; preserve the previous work")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"worker={worker}\ncontrol={control.name}\nreceipt={receipt.name}\n")
           PY
-        env:
-          EXPECTED_WORKER: ${{ matrix.worker }}
       - name: Checkout dispatcher
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: ${{ env.PREFLIGHT_CONTROL }}
+          path: ${{ steps.paths.outputs.control }}
           clean: false
           persist-credentials: false
       - name: Measure this worker's resources and namespace capabilities
         id: measure
         env:
-          EXPECTED_WORKER: ${{ matrix.worker }}
+          EXPECTED_WORKER: ${{ steps.paths.outputs.worker }}
+          PREFLIGHT_CONTROL: ${{ steps.paths.outputs.control }}
+          PREFLIGHT_RECEIPT: ${{ steps.paths.outputs.receipt }}
         run: |
           python3 -B "$GITHUB_WORKSPACE/$PREFLIGHT_CONTROL/tools/bazel/ci/source_worker_preflight.py" \
-            --worker "$EXPECTED_WORKER" --output "$RUNNER_TEMP/$PREFLIGHT_RECEIPT"
+            --pool "$PREFLIGHT_POOL" --worker "$EXPECTED_WORKER" --output "$RUNNER_TEMP/$PREFLIGHT_RECEIPT"
       - name: Retain measured resource evidence
         if: always() && (steps.measure.outcome == 'success' || steps.measure.outcome == 'failure')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: source-worker-${{ matrix.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/${{ env.PREFLIGHT_RECEIPT }}
+          name: source-worker-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ steps.paths.outputs.receipt }}
           if-no-files-found: error
           retention-days: 14
 
