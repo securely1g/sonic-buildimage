@@ -283,15 +283,18 @@ def diagnostics(state):
 
 
 def bounded(argv, state, label, seconds, environment=None, root_supervisor=False,
-            pass_fds=(), worker_user=False):
+            pass_fds=(), worker_user=False, worker_umask=None):
     """Root owns its deadline/cleanup; the worker holds only a pipe lifeline."""
+    require(worker_umask is None or (worker_user is True and type(worker_umask) is int and
+            worker_umask == 0o022), "Different scoped worker umask")
     with (state / (label + ".stdout")).open("xb") as out, (state / (label + ".stderr")).open("xb") as err:
         with cleanup_window():
             child = subprocess.Popen(argv, stdin=subprocess.PIPE if root_supervisor else subprocess.DEVNULL,
                                      stdout=out, stderr=err, env=environment,
                                      start_new_session=True, close_fds=True, pass_fds=pass_fds,
                                      **({"user": 1000, "group": 1000,
-                                         "extra_groups": [grp.getgrnam("docker").gr_gid]} if worker_user else {}))
+                                         "extra_groups": [grp.getgrnam("docker").gr_gid]} if worker_user else {}),
+                                     **({"umask": worker_umask} if worker_umask is not None else {}))
         try:
             code = child.wait(timeout=seconds)
         except BaseException as failure:

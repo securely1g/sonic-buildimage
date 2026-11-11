@@ -212,6 +212,102 @@ def require_collection(record, row, fixed):
             "Original failed producer binding differs")
 
 
+def probe_view_record(fixed):
+    report = next(row for row in fixed["members_to_materialize"] if row["name"] == "validation.json")
+    require(report["role"] == "original_validation_report" and report["bytes"] <= 2 * 1024**2,
+            "Different public validation copy")
+    return {"schema": 1, "directory": "loaded-probe-inputs",
+            "validation_sha256": report["sha256"], "validation_bytes": report["bytes"],
+            "validation_mode": 0o644, "retained_input_mode": 0o600, "directory_mode": 0o700,
+            "private_input_links": len(fixed["members_to_materialize"]) - 1,
+            "owned_links_change_nlink_and_ctime": True, "original_bytes_and_modes_unchanged": True}
+
+
+def stage_probe_inputs(root, fixed, expires):
+    """Keep original evidence private; copy only the public JSON for its bind mount.
+
+    No file-stat snapshot survives materialize(). The 29 owned aliases change
+    nlink/ctime explicitly; their bytes/mode stay private and the original
+    validator rehashes all payload exports before loading either archive.
+    """
+    expected = probe_view_record(fixed)
+    os.mkdir(expected["directory"], 0o700, dir_fd=root)
+    original = active = None
+    def identity(info):
+        return intake.signature(info), info.st_size, info.st_mtime_ns
+    try:
+        original = os.open("loaded-inputs", intake.DIRECTORY_FLAGS, dir_fd=root)
+        active = os.open(expected["directory"], intake.DIRECTORY_FLAGS, dir_fd=root)
+        for row in sorted(fixed["members_to_materialize"], key=lambda item: item["name"]):
+            require(time.monotonic() < expires, "Probe-input staging deadline exceeded")
+            name = row["name"]
+            require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}", name), "Different probe input name")
+            before = os.stat(name, dir_fd=original, follow_symlinks=False)
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 1000 and
+                    stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1 and
+                    before.st_size == row["bytes"], "Original input ownership or unique inode differs")
+            if name == "validation.json":
+                with os.fdopen(os.open(name, READ_FLAGS, dir_fd=original), "rb") as source:
+                    require(stable_file(os.fstat(source.fileno())) == stable_file(before), "Original report changed")
+                    with os.fdopen(os.open(name, intake.FILE_FLAGS, 0o600, dir_fd=active), "wb") as output:
+                        intake.stream_exact(source, output, row["bytes"], row["sha256"], expires)
+                        source.seek(0)
+                        raw = source.read(2 * 1024**2 + 1)
+                        require(len(raw) == row["bytes"] and hashlib.sha256(raw).hexdigest() == row["sha256"],
+                                "Public validation copy differs")
+                        intake.public_artifacts.safe_json(intake.strict(raw))
+                        require(stable_file(before) == stable_file(os.fstat(source.fileno())) ==
+                                stable_file(os.stat(name, dir_fd=original, follow_symlinks=False)), "Original report changed during copy")
+                        output.flush()
+                        os.fsync(output.fileno())
+                        os.fchmod(output.fileno(), 0o644)
+                        copied = os.fstat(output.fileno())
+                        require(copied.st_nlink == 1 and not os.path.samestat(before, copied) and
+                                stable_file(copied) == stable_file(os.stat(name, dir_fd=active, follow_symlinks=False)),
+                                "Public validation copy path changed")
+            else:
+                os.link(name, name, src_dir_fd=original, dst_dir_fd=active, follow_symlinks=False)
+                retained = os.stat(name, dir_fd=original, follow_symlinks=False)
+                linked = os.stat(name, dir_fd=active, follow_symlinks=False)
+                require(identity(before) == identity(retained) and stable_file(retained) == stable_file(linked) and
+                        retained.st_nlink == linked.st_nlink == 2, "Owned input alias differs")
+        return expected
+    finally:
+        if active is not None:
+            os.close(active)
+        if original is not None:
+            os.close(original)
+
+
+def checked_probe_inputs(original, fixed):
+    expected = probe_view_record(fixed)
+    record = read_record(original.parent / "materialization.json")
+    require(record.get("probe_inputs") == expected, "Missing proved public validation copy")
+    active = original.parent / expected["directory"]
+    with intake.directory(original) as retained, intake.directory(active) as view:
+        directory_info = os.fstat(view)
+        require(directory_info.st_uid == directory_info.st_gid == 1000 and
+                stat.S_IMODE(directory_info.st_mode) == 0o700, "Probe directory ownership differs")
+        for name in fixed["fresh_report_names"]:
+            require(not os.path.lexists(active / name), "Preserve existing fresh probe report")
+        for row in fixed["members_to_materialize"]:
+            old = os.stat(row["name"], dir_fd=retained, follow_symlinks=False)
+            new = os.stat(row["name"], dir_fd=view, follow_symlinks=False)
+            require(stat.S_ISREG(old.st_mode) and stat.S_ISREG(new.st_mode) and
+                    old.st_uid == old.st_gid == new.st_uid == new.st_gid == 1000 and
+                    old.st_size == new.st_size == row["bytes"] and stat.S_IMODE(old.st_mode) == 0o600,
+                    "Probe input type or original private mode differs")
+            if row["name"] == "validation.json":
+                require(not os.path.samestat(old, new) and old.st_nlink == new.st_nlink == 1 and
+                        stat.S_IMODE(new.st_mode) == 0o644, "Public validation copy ownership differs")
+            else:
+                require(stable_file(old) == stable_file(new) and old.st_nlink == new.st_nlink == 2,
+                        "Private probe alias differs")
+    intake.public_artifacts.safe_json(read_record(active / "validation.json", 2 * 1024**2,
+                                                  expected["validation_sha256"]))
+    return active
+
+
 def materialize_checked(row, temporary):
     fixed = read_fixed()
     original_sources(fixed)
@@ -219,6 +315,7 @@ def materialize_checked(row, temporary):
     require_collection(read_record(directory / "summary.json"), row, fixed)
     with intake.directory(directory) as root:
         result = materialize(root, fixed, time.monotonic() + 900)
+        result["probe_inputs"] = stage_probe_inputs(root, fixed, time.monotonic() + 120)
         result["verification_job"] = row
         result["original_source"] = fixed["original_source"]
         result["fixed_input_sha256"] = INPUT_SHA256
@@ -287,6 +384,75 @@ def loaded_error_reason(raw):
     return None
 
 
+def loaded_probe_diagnostics(raw):
+    """Project only source-known patterns after the original installed-probe guard."""
+    require(type(raw) is bytes and len(raw) <= runtime.CAP, "Oversized loaded diagnostic")
+    lines = raw[:65536].decode("utf-8", "replace").splitlines()
+    result = {"schema": 1, "status": "unrecognized", "raw_text_published": False,
+              "truncated": len(raw) > 65536 or len(lines) > 512,
+              "image": None, "exceptions": [], "source_frames": [], "check_ids": []}
+    lines = lines[:512]
+    guards = {"ValueError: docker-sonic-p4rt installed probe failed:": "runtime",
+              "ValueError: docker-sonic-p4rt-dbg installed probe failed:": "debug"}
+    found = [(i, guards[line]) for i, line in enumerate(lines) if line in guards]
+    if len(found) != 1 or "Traceback (most recent call last):" not in lines[:found[0][0]]:
+        return result
+    index, result["image"] = found[0]
+    result["status"] = "source_known_probe_failure_patterns"
+    frames = {"runtime_probe.py": "original_runtime_probe", "runtime_smoke.py": "original_runtime_smoke",
+              "p4rt_runtime_package.py": "original_owner_runtime_helper"}
+    kinds = {"PermissionError", "FileNotFoundError", "OSError", "AssertionError", "ValueError", "RuntimeError",
+             "ImportError", "ModuleNotFoundError", "KeyError", "TypeError", "AttributeError", "TimeoutExpired"}
+    codes = {1, 2, 5, 8, 12, 13, 20, 21, 22, 28, 30, 36, 40, 95, 110, 111}
+    checks = {"PermissionError: [Errno 13] Permission denied: '/probe/validation.json'": "validation_json_read_denied",
+              "PermissionError: [Errno 13] Permission denied: '/probe/services/database_config.json'": "database_config_read_denied",
+              "AssertionError: unvalidated image": "unvalidated_image",
+              "AssertionError: inherited Redis database identities changed": "redis_identity_changed",
+              "AssertionError: a private service exited": "private_service_exited",
+              "AssertionError: timed out waiting for the installed service": "installed_service_wait_expired",
+              "AssertionError: P4Runtime requests disrupted the installed daemon": "installed_daemon_disrupted"}
+    prefixes = {"AssertionError: installed source differs: ": "installed_source_hash_differs",
+                "AssertionError: installed source metadata differs: ": "installed_source_metadata_differs",
+                "AssertionError: installed CLI differs: ": "installed_cli_differs",
+                "AssertionError: installed P4Runtime VERIFY failed: ": "p4runtime_verify_failed"}
+    traceback = False
+    for line in lines[index + 1:]:
+        if len(line) > 2048:
+            result["truncated"] = True
+            continue
+        if line == "Traceback (most recent call last):":
+            traceback = True
+            continue
+        if not traceback:
+            continue
+        match = re.fullmatch(r'  File "/probe/(runtime_probe[.]py|runtime_smoke[.]py|p4rt_runtime_package[.]py)", line ([1-9][0-9]{0,4}), in [A-Za-z_<>][A-Za-z0-9_<>]*', line)
+        if match:
+            frame = {"source": frames[match.group(1)], "line": int(match.group(2))}
+            if frame not in result["source_frames"]:
+                if len(result["source_frames"]) < 16:
+                    result["source_frames"].append(frame)
+                else:
+                    result["truncated"] = True
+        match = re.match(r'^(?:subprocess[.])?([A-Za-z]+):(?: \[Errno ([0-9]{1,3})\])?', line)
+        if match and match.group(1) in kinds:
+            code = int(match.group(2)) if match.group(2) is not None else None
+            fact = {"kind": match.group(1), "errno": code if code in codes else None}
+            if fact not in result["exceptions"]:
+                if len(result["exceptions"]) < 8:
+                    result["exceptions"].append(fact)
+                else:
+                    result["truncated"] = True
+        check = checks.get(line)
+        if check is None:
+            check = next((value for prefix, value in prefixes.items() if line.startswith(prefix)), None)
+        if check and check not in result["check_ids"]:
+            if len(result["check_ids"]) < 12:
+                result["check_ids"].append(check)
+            else:
+                result["truncated"] = True
+    return result
+
+
 def loaded_failure_evidence(state, error):
     result = {"status": "failed", "stage": "original-p4rt-loaded",
               "failure": runtime.safe_failure(error), "canonical_native_acceptance": False}
@@ -301,7 +467,8 @@ def loaded_failure_evidence(state, error):
                     stable_file(os.fstat(source.fileno())) == stable_file(path.lstat()),
                     "Owned loaded diagnostic changed")
         result["stderr"] = {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
-                            "authored_guard_reason": loaded_error_reason(raw)}
+                            "authored_guard_reason": loaded_error_reason(raw),
+                            "probe_failure": loaded_probe_diagnostics(raw)}
     except (OSError, ValueError):
         result["stderr"] = {"available_for_safe_projection": False}
     return result
@@ -312,7 +479,7 @@ def loaded_workload(docker, client_env, paths):
     fixed = read_fixed()
     row = paths["loaded_verification_job"]
     source, owner = original_sources(fixed)
-    active = checked_materialization(row, paths["state"].parent, fixed)
+    active = checked_probe_inputs(checked_materialization(row, paths["state"].parent, fixed), fixed)
     require(client_env["DOCKER_HOST"] == "unix://" + str(paths["exec"] / "docker.sock") and
             client_env["DOCKER_CONFIG"] == str(paths["state"] / "client"),
             "Loaded validator private endpoint differs")
@@ -329,7 +496,7 @@ def loaded_workload(docker, client_env, paths):
         runtime.bounded([sys.executable, "-B", str(source / "tools/bazel/ci/p4rt_loaded.py"),
                          "--directory", str(active), "--owner-source", str(owner)],
                         paths["state"], "original-p4rt-loaded", LOADED_COMMAND_SECONDS,
-                        environment, worker_user=True)
+                        environment, worker_user=True, worker_umask=0o022)
     except BaseException as error:
         return loaded_failure_evidence(paths["state"], error)
     with os.scandir(temporary) as entries:
@@ -355,7 +522,7 @@ def loaded_workload(docker, client_env, paths):
 def run_loaded(row, temporary):
     fixed = read_fixed()
     original_sources(fixed)
-    checked_materialization(row, temporary, fixed)
+    checked_probe_inputs(checked_materialization(row, temporary, fixed), fixed)
     paths = runtime.state_paths(row, temporary)
     runtime.no_links(paths["state"])
     require(not os.path.lexists(paths["state"]) and not os.path.lexists(paths["exec"]),
