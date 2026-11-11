@@ -9,10 +9,14 @@ on:
       source_image:
         description: Dedicated source-image worker task
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
+        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd, lldp]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
+        type: string
+        default: ''
+      registry_revision:
+        description: Reviewed 40-character registry commit required only for LLDP
         type: string
         default: ''
       source_worker:
@@ -34,7 +38,7 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
+  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}-${{ inputs.registry_revision }}
   cancel-in-progress: true
 
 env:
@@ -43,7 +47,7 @@ env:
 jobs:
   source_image_inputs:
     name: Fetch pinned source-image downloads
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd", "lldp"]'), inputs.source_image) && inputs.source_inputs_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -83,7 +87,7 @@ jobs:
   source_image:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
-    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image)
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd", "lldp"]'), inputs.source_image)
     runs-on: [sonic-slave-container-dpool, '${{ inputs.source_worker }}']
     timeout-minutes: 360
     permissions:
@@ -95,6 +99,7 @@ jobs:
     env:
       SELECTED_IMAGE: ${{ inputs.source_image }}
       SOURCE_REVISION: ${{ inputs.source_revision }}
+      REGISTRY_REVISION: ${{ inputs.registry_revision }}
       SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
     steps:
       - name: Checkout reviewed dispatcher
@@ -105,14 +110,14 @@ jobs:
       - name: Validate the fixed image selection
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py selection \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Verify Teamd kernel prerequisites without host changes
         id: teamd_kernel
         if: inputs.source_image == 'teamd'
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py kernel-preflight \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Checkout the exact reviewed source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,7 +131,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py verify-input-run \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Reuse the existing source-download artifact
         if: inputs.source_inputs_run != ''
@@ -147,34 +152,34 @@ jobs:
         id: prepare
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py prepare \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Build source runtime and debug images
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py build \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Validate image contents and symbols
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py validate \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Verify incremental rebuild and restoration
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py incremental \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Validate the installed services in private containers
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py loaded \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Prepare declared artifacts and public evidence
         id: public_artifacts
         if: always() && (steps.prepare.outcome != 'skipped' || (inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'))
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py publish \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
       - name: Upload source images and acceptance receipts
         if: always() && steps.public_artifacts.outcome == 'success'
@@ -189,7 +194,7 @@ jobs:
         if: always() && steps.prepare.outcome != 'skipped'
         run: |
           python3 -B control/tools/bazel/ci/source_image_worker.py stop \
-            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" --registry-revision "$REGISTRY_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
 
   source_worker_preflight:
@@ -743,6 +748,32 @@ jobs:
         run: |
           python3 -B tools/bazel/ci/lldp_image.py incremental --bazel "$BAZEL" --artifacts artifacts/lldp
           git diff --exit-code
+      - name: Prepare public LLDP failed graph evidence
+        id: lldp_graph_failure
+        if: always() && matrix.architecture == 'amd64' && steps.lldp_build.outcome == 'failure'
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import os
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import prepare_lldp_graph_failure
+          workspace = Path.cwd()
+          root = workspace / 'artifacts/lldp'
+          prepare_lldp_graph_failure(workspace, root, root / 'graph-failure', controller=workspace,
+              source_revision=os.environ['EXPECTED_REVISION'], controller_revision=os.environ['EXPECTED_REVISION'],
+              registry_endpoint='https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main',
+              bazel_entrypoint=os.environ['BAZEL'])
+          PYCODE
+      - name: Retain public LLDP failed graph evidence
+        if: always() && steps.lldp_build.outcome == 'failure' && steps.lldp_graph_failure.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lldp-module-graph-failure-amd64
+          path: artifacts/lldp/graph-failure/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
       - name: Prepare reviewed LLDP evidence
         id: lldp_public
         if: always() && matrix.architecture == 'amd64' && (steps.lldp_build.outcome == 'success' || steps.lldp_build.outcome == 'failure')

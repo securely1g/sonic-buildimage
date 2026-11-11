@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -19,11 +20,11 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import source_mirrors
-from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary, prepare_lldp_graph_failure
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
 
-DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "teamd": "teamd"}
+DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "teamd": "teamd", "lldp": "lldp"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -67,9 +68,13 @@ def require(value, message):
         raise ValueError(message)
 
 
-def selection(image, revision):
+def selection(image, revision, registry_revision=""):
     require(image in DRIVERS, "Unknown source image")
     require(re.fullmatch(r"[0-9a-f]{40}", revision), "Source revision must be a full lowercase Git SHA")
+    if image == "lldp":
+        require(re.fullmatch(r"[0-9a-f]{40}", registry_revision), "LLDP registry revision must be a full lowercase Git SHA")
+    else:
+        require(not registry_revision, "Registry revision is only supported for LLDP")
 
 
 def run(argv, **kwargs):
@@ -267,11 +272,52 @@ def launcher_text(binary, base, profile):
             "'--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts', *args])\n")
 
 
-def phase_command(image, phase, workspace, artifacts):
+def lldp_launcher_text(binary, rc, revision, workspace):
+    """Create a private LLDP entry point with one immutable registry selection."""
+    require(re.fullmatch(r"[0-9a-f]{40}", revision), "Invalid LLDP registry revision")
+    return ("#!/usr/bin/env python3\nimport os, sys\n" +
+            "binary = " + repr(str(binary)) + "\nrc = " + repr(str(rc)) + "\nworkspace = " + repr(str(workspace)) + "\nargs = sys.argv[1:]\n" +
+            "if os.path.realpath(os.getcwd()) != workspace:\n    raise SystemExit(2)\n" +
+            "if args == ['--version']:\n    os.execv(binary, [binary, *args])\n" +
+            "if not args or args[0] not in ('aquery', 'build', 'cquery', 'fetch', 'info', 'mod', 'query', 'test'):\n    raise SystemExit(2)\n" +
+            "if any(arg in ('--registry', '--override_module', '--override_repository') or arg.startswith(('--registry=', '--override_module=', '--override_repository=', '--bazelrc', '--ignore_all_rc_files')) or 'system_rc' in arg or 'home_rc' in arg or 'workspace_rc' in arg for arg in args[1:]):\n    raise SystemExit(2)\n" +
+            "os.execv(binary, [binary, '--nosystem_rc', '--nohome_rc', '--noworkspace_rc', '--bazelrc=' + rc, args[0], " +
+            repr("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/" + revision) +
+            ", '--registry=https://bcr.bazel.build', '--lockfile_mode=update', *args[1:]])\n")
+
+
+def lldp_rc_text(common, local):
+    require(common.is_file() and not common.is_symlink() and local.is_file() and not local.is_symlink(),
+            "LLDP rc inputs must be regular files")
+    lines = common.read_text().splitlines()
+    local_import = "try-import %workspace%/.bazelrc.user"
+    require(lines.count(local_import) == 1, "LLDP common rc local import changed")
+    lines.remove(local_import)
+    for line in lines:
+        tokens = shlex.split(line, comments=True)
+        require(not tokens or (tokens[0] not in ("import", "try-import") and
+                not any(token in ("--registry", "--override_module", "--override_repository") or
+                        token.startswith(("--registry=", "--override_module=", "--override_repository=")) for token in tokens)),
+                "LLDP common rc contains another registry, source override, or import")
+    return "\n".join(lines) + "\n" + local.read_text()
+
+
+def controller_revision():
+    revision = output(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
+    require(re.fullmatch(r"[0-9a-f]{40}", revision) and revision == os.environ.get("GITHUB_SHA"),
+            "Controller checkout differs from the workflow revision")
+    run(["git", "-C", str(ROOT), "diff", "--exit-code", "HEAD"])
+    return revision
+
+
+def phase_command(image, phase, workspace, artifacts, bazel_entrypoint=None):
     """Only the selected existing, fixed driver interfaces are executable."""
     require(image in DRIVERS and phase in ("build", "validate", "incremental", "loaded"), "Unknown driver phase")
     prefix = [sys.executable, "-B"]
     wrapper = str(workspace / "tools/bazel/ci" / WRAPPERS[image])
+    if image == "lldp":
+        require(bazel_entrypoint, "LLDP requires its prepared private entry point")
+        wrapper = str(bazel_entrypoint)
     if phase == "loaded":
         return prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_loaded.py"), "--artifacts", str(artifacts)]
     if phase == "incremental" and image == "orchagent":
@@ -324,11 +370,20 @@ def prepare(args):
         prepare_tap_fixture(artifacts)
     prepare_validation_tools(artifacts)
     source_check(workspace, args.revision)
-    for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
+    if args.image == "lldp":
+        generated = [workspace / "MODULE.bazel.lock"] + [artifacts / name for name in (
+            "build-receipt.json", "module-graph.json", "module-graph.stderr", "module-graph-inspection.json")]
+        require(all(not path.exists() and not path.is_symlink() for path in generated),
+                "LLDP preparation requires fresh generated evidence")
+    names = [f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py"]
+    if args.image != "lldp":
+        names += [WRAPPERS[args.image], "review_bazel.sh"]
+    for name in names:
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
-    catalog = catalog_for(args.image, workspace)
-    if args.image == "sysmgr":
+    catalog = args.registry_revision if args.image == "lldp" else catalog_for(args.image, workspace)
+    control = controller_revision() if args.image == "lldp" else output(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
+    if args.image in ("sysmgr", "lldp"):
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
     cache = Path("/bazel_cache/source-images") / runner
     require(cache.resolve() == cache, "Cache path must not traverse symlinks")
@@ -352,6 +407,16 @@ def prepare(args):
         "common --downloader_config=" + str(mirror),
         *["common --distdir=" + str(directory) for directory in distdirs],
     ]) + "\n")
+    lldp_entrypoint = None
+    if args.image == "lldp":
+        private_rc = temporary / "lldp-bazelrc"
+        private_rc.write_text(lldp_rc_text(workspace / "tools/bazel/common.bazelrc", rc))
+        private_launch = temporary / "lldp-bazel"
+        private_launch.write_text(lldp_launcher_text(launch, private_rc, catalog, workspace))
+        private_launch.chmod(0o755)
+        lldp_entrypoint = {"path": str(private_launch), "sha256": digest(private_launch),
+                           "rc": str(private_rc), "rc_sha256": digest(private_rc),
+                           "bazel_real": str(launch), "bazel_real_sha256": digest(launch)}
     run_key = os.environ.get("GITHUB_RUN_ID", "") + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "")
     require(re.fullmatch(r"[0-9]+-[0-9]+", run_key), "Missing workflow run identity")
     docker_root = temporary / ("source-image-docker-" + run_key)
@@ -366,6 +431,8 @@ def prepare(args):
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
              "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
+    if args.image == "lldp":
+        state.update(registry_revision=catalog, controller_revision=control, lldp_entrypoint=lldp_entrypoint)
     (artifacts / "worker-private.json").write_text(json.dumps(state, indent=2) + "\n")
     run(["sudo", "-n", sys.executable, str(ROOT / "tools/bazel/ci/prepare_nested_docker.py")])
     with (artifacts / "dockerd.log").open("w") as log:
@@ -390,18 +457,33 @@ def prepare(args):
     else:
         raise ValueError("Private Docker did not become ready")
     receipt = {"schema": 1, "status": "prepared", "worker": runner, "architecture": "amd64", "distribution": "trixie",
-               "source_revision": args.revision, "dispatcher_revision": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
+               "source_revision": args.revision, "dispatcher_revision": control,
                "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "persistent_worker_local",
                "build_profile": profile, "memory": memory_snapshot(),
                "docker_network": "none", "image": args.image}
+    if args.image == "lldp":
+        receipt["registry_revision"] = catalog
     safe_json(receipt)
     (artifacts / "worker.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
-def state_for(args):
+def state_for(args, *, check_entrypoint=True):
     state = json.loads((args.artifacts / "worker-private.json").read_text())
     require(state["image"] == args.image and state["revision"] == args.revision and state["workspace"] == str(args.workspace),
             "Worker preparation does not match this selection")
+    if args.image == "lldp":
+        require(state.get("registry_revision") == args.registry_revision and
+                state["environment"].get("SONIC_BAZEL_REGISTRY_REVISION") == args.registry_revision,
+                "LLDP worker selection changed")
+        if check_entrypoint:
+            require(state.get("controller_revision") == controller_revision(), "LLDP controller selection changed")
+            entry = state["lldp_entrypoint"]
+            require(state["environment"].get("BAZEL_REAL") == entry["bazel_real"], "LLDP private Bazel launcher changed")
+            temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+            for key, hash_key in (("path", "sha256"), ("rc", "rc_sha256"), ("bazel_real", "bazel_real_sha256")):
+                path = Path(entry[key])
+                require(path.parent == temporary and path.is_file() and not path.is_symlink() and
+                        digest(path) == entry[hash_key], "LLDP private entry point changed")
     return state
 
 
@@ -432,7 +514,8 @@ def execute_phase(args):
     monitor = threading.Thread(target=sample, daemon=True)
     monitor.start()
     try:
-        completed = subprocess.run(phase_command(args.image, args.phase, args.workspace, args.artifacts),
+        completed = subprocess.run(phase_command(args.image, args.phase, args.workspace, args.artifacts,
+                                   state.get("lldp_entrypoint", {}).get("path")),
                                    cwd=args.workspace, env={**os.environ, **state["environment"]})
     finally:
         finished.set()
@@ -444,6 +527,8 @@ def execute_phase(args):
                "source_revision": args.revision, "image": args.image, "elapsed_seconds": round(time.monotonic() - started, 3),
                "exit_code": completed.returncode, "memory_before": before, "memory_after": after,
                "build_profile": profile, "no_oom_events": memory_ok}
+    if args.image == "lldp":
+        receipt.update(registry_revision=args.registry_revision, controller_revision=state["controller_revision"])
     (args.artifacts / ("worker-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")
     require(completed.returncode == 0, "Image phase failed: " + args.phase)
     require(memory_ok, "Worker exhausted its memory during " + args.phase)
@@ -453,15 +538,40 @@ def publish(args):
     """Stage only declared payloads and checked public evidence, never private logs/env."""
     source, destination = args.artifacts, args.artifacts / "public"
     destination.mkdir(exist_ok=True)
+    if getattr(args, "image", None) == "lldp":
+        require(not (destination / "graph-failure").exists() and not (destination / "graph-failure").is_symlink(),
+                "Unverified LLDP graph failure bundle prevents publication")
     receipt_path = source / "build-receipt.json"
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
+        lldp_state = None
+        if getattr(args, "image", None) == "lldp":
+            lldp_state = state_for(args)
+            source_check(args.workspace, args.revision)
+            require(receipt.get("revision") == args.revision, "LLDP receipt differs from the selected source")
         if getattr(args, "image", None) in GNMI_PROFILES:
             require(receipt.get("dialout_enabled") is (GNMI_PROFILES[args.image] == "enabled"),
                     "gNMI receipt differs from the selected fixed dialout profile")
         public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "dialout_enabled", "artifacts") if k in receipt}
+        if lldp_state:
+            public["selection"] = {"source_revision": args.revision, "controller_revision": lldp_state["controller_revision"],
+                "registry_revision": args.registry_revision,
+                "registry_endpoint": "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/" + args.registry_revision,
+                "entrypoint_sha256": lldp_state["lldp_entrypoint"]["sha256"],
+                "rc_sha256": lldp_state["lldp_entrypoint"]["rc_sha256"],
+                "bazel_launcher_sha256": lldp_state["lldp_entrypoint"]["bazel_real_sha256"]}
         safe_json(public)
         (destination / "public-receipt.json").write_text(json.dumps(public, indent=2) + "\n")
+        if lldp_state and receipt.get("status") == "failed":
+            try:
+                prepare_lldp_graph_failure(args.workspace, source, destination / "graph-failure", controller=ROOT,
+                    source_revision=args.revision, controller_revision=lldp_state["controller_revision"],
+                    registry_endpoint=public["selection"]["registry_endpoint"],
+                    bazel_entrypoint=lldp_state["lldp_entrypoint"]["path"])
+            except (ValueError, OSError, subprocess.CalledProcessError):
+                require(not (destination / "graph-failure").exists() and not (destination / "graph-failure").is_symlink(),
+                        "Unverified LLDP graph failure bundle prevents publication")
+                print("LLDP failed graph evidence was not prepared.", file=sys.stderr)
         for name, item in receipt.get("artifacts", {}).items():
             require(Path(name).name == name and name not in (".", ".."), "Invalid artifact filename")
             path = source / name
@@ -506,7 +616,7 @@ def stop(args):
     path = args.artifacts / "worker-private.json"
     if not path.exists():
         return
-    state = state_for(args)
+    state = state_for(args, check_entrypoint=False)
     pidfile = Path(state["pidfile"])
     if not pidfile.exists():
         require(not Path(state["docker_root"]).exists(), "Daemon left data without a PID; retain it for diagnosis")
@@ -546,10 +656,11 @@ def main():
     parser.add_argument("phase", choices=("selection", "kernel-preflight", "verify-input-run", "prepare", "build", "validate", "incremental", "loaded", "publish", "stop"))
     parser.add_argument("--image", required=True, choices=DRIVERS)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--registry-revision", default="")
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
     args = parser.parse_args()
-    selection(args.image, args.revision)
+    selection(args.image, args.revision, args.registry_revision)
     input_run_id()
     args.workspace = args.workspace.resolve()
     args.artifacts = args.artifacts.resolve()

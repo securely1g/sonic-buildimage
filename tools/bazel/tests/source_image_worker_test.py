@@ -299,16 +299,20 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_only_known_images_and_full_commit_ids(self):
         for image in worker.DRIVERS:
-            worker.selection(image, "a" * 40)
+            worker.selection(image, "a" * 40, "b" * 40 if image == "lldp" else "")
         for image, revision in (("$(id)", "a" * 40), ("dash-ha", "master"), ("sflow", "a" * 39), ("sysmgr", "A" * 40)):
             with self.subTest(image=image, revision=revision), self.assertRaises(ValueError):
                 worker.selection(image, revision)
+        for image, catalog in (("lldp", ""), ("lldp", "main"), ("lldp", "B" * 40), ("teamd", "b" * 40)):
+            with self.subTest(image=image, catalog=catalog), self.assertRaises(ValueError):
+                worker.selection(image, "a" * 40, catalog)
 
     def test_fixed_interfaces_do_not_expand_into_owner_suites(self):
         root, artifacts = Path("/source"), Path("/evidence")
         for image in worker.DRIVERS:
             for phase in ("build", "validate", "incremental", "loaded"):
-                command = worker.phase_command(image, phase, root, artifacts)
+                command = worker.phase_command(image, phase, root, artifacts,
+                                               "/private/lldp-bazel" if image == "lldp" else None)
                 self.assertEqual(command[1], "-B")
                 self.assertTrue(command[2].startswith("/source/tools/bazel/ci/"))
                 self.assertFalse(any(value.endswith("/...") or ".deb" in value for value in command))
@@ -375,6 +379,91 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertEqual(len(gates), 2)
         for gate in gates:
             self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
+        self.assertEqual(workflow.count('--registry-revision "$REGISTRY_REVISION"'), 10)
+        self.assertIn('${{ inputs.source_revision }}-${{ inputs.registry_revision }}', workflow)
+        self.assertNotIn('codex/lldp-review-source-inputs', workflow)
+
+    def test_lldp_private_launcher_binds_workspace_registry_and_rc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "fake-bazel"
+            binary.write_text("#!" + sys.executable + "\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+            binary.chmod(0o755)
+            common, local = root / "common.bazelrc", root / ".bazelrc.user"
+            common.write_text("common --lockfile_mode=update\ntry-import %workspace%/.bazelrc.user\n")
+            local.write_text("common --repository_cache=/private/cache\n")
+            rc = root / "private.bazelrc"
+            rc.write_text(worker.lldp_rc_text(common, local))
+            self.assertNotIn("try-import", rc.read_text())
+            self.assertIn("--repository_cache=/private/cache", rc.read_text())
+            launch = root / "lldp-bazel"
+            launch.write_text(worker.lldp_launcher_text(binary, rc, "b" * 40, root))
+            command = [sys.executable, str(launch)]
+            argv = json.loads(subprocess.check_output(command + ["mod", "graph", "--lockfile_mode=off"], cwd=root, text=True))
+            self.assertIn("--bazelrc=" + str(rc), argv)
+            self.assertEqual([value for value in argv if value.startswith("--registry=")], [
+                "--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/" + "b" * 40,
+                "--registry=https://bcr.bazel.build"])
+            self.assertEqual(argv[-1], "--lockfile_mode=off")
+            self.assertLess(argv.index("--lockfile_mode=update"), argv.index("--lockfile_mode=off"))
+            for arguments in (["build", "--registry=other"], ["build", "--bazelrc=other"], ["--home_rc", "build"],
+                              ["build", "--override_module=fixture=/other"],
+                              ["build", "--override_repository", "fixture=/other"]):
+                self.assertEqual(subprocess.run(command + arguments, cwd=root, capture_output=True).returncode, 2)
+            self.assertEqual(subprocess.run(command + ["build"], cwd=root.parent, capture_output=True).returncode, 2)
+            for option in ("--registry=other", "--override_module fixture=/other", "--override_repository=fixture=/other"):
+                common.write_text("common " + option + "\ntry-import %workspace%/.bazelrc.user\n")
+                with self.assertRaises(ValueError): worker.lldp_rc_text(common, local)
+
+    def test_lldp_routes_source_drivers_through_private_entrypoint(self):
+        root, artifacts, private = Path("/source"), Path("/evidence"), "/private/lldp-bazel"
+        for phase in ("build", "validate", "incremental", "loaded"):
+            command = worker.phase_command("lldp", phase, root, artifacts, private)
+            self.assertIn("/source/tools/bazel/ci/lldp_" + ("loaded.py" if phase == "loaded" else "image.py"), command)
+            self.assertEqual(private in command, phase in ("build", "incremental"))
+        with self.assertRaises(ValueError): worker.phase_command("lldp", "build", root, artifacts)
+        source = inspect.getsource(worker.prepare)
+        self.assertIn('if args.image in ("sysmgr", "lldp"):', source)
+        self.assertIn('if args.image != "lldp":', source)
+
+    def test_lldp_state_rejects_changed_selection_and_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launch, rc = root / "lldp-bazel", root / "lldp-bazelrc"
+            launch.write_text("launcher\n"); rc.write_text("rc\n")
+            args = SimpleNamespace(image="lldp", revision="a" * 40, registry_revision="b" * 40,
+                                   workspace=Path("/source"), artifacts=root)
+            state = {"image": "lldp", "revision": args.revision, "registry_revision": args.registry_revision,
+                     "controller_revision": "c" * 40, "workspace": "/source",
+                     "environment": {"SONIC_BAZEL_REGISTRY_REVISION": args.registry_revision, "BAZEL_REAL": str(launch)},
+                     "lldp_entrypoint": {"path": str(launch), "sha256": worker.digest(launch),
+                                         "rc": str(rc), "rc_sha256": worker.digest(rc),
+                                         "bazel_real": str(launch), "bazel_real_sha256": worker.digest(launch)}}
+            path = root / "worker-private.json"
+            path.write_text(json.dumps(state))
+            with patch.dict(os.environ, {"RUNNER_TEMP": str(root)}), patch.object(worker, "controller_revision", return_value="c" * 40):
+                worker.state_for(args)
+                for field in ("registry_revision", "controller_revision"):
+                    changed = copy.deepcopy(state); changed[field] = "d" * 40; path.write_text(json.dumps(changed))
+                    with self.assertRaises(ValueError): worker.state_for(args)
+                path.write_text(json.dumps(state)); launch.write_text("changed\n")
+                with self.assertRaises(ValueError): worker.state_for(args)
+                worker.state_for(args, check_entrypoint=False)
+
+    def test_lldp_publication_rejects_an_existing_unverified_graph_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "public/graph-failure").mkdir(parents=True)
+            (root / "public/graph-failure/stale").write_text("unverified")
+            (root / "build-receipt.json").write_text(json.dumps({"status": "failed", "revision": "a" * 40}))
+            args = SimpleNamespace(image="lldp", revision="a" * 40, registry_revision="b" * 40,
+                                   workspace=Path("/source"), artifacts=root)
+            state = {"controller_revision": "c" * 40, "lldp_entrypoint": {
+                "path": "/private/lldp-bazel", "sha256": "d" * 64, "rc_sha256": "e" * 64,
+                "bazel_real_sha256": "f" * 64}}
+            with patch.object(worker, "state_for", return_value=state), patch.object(worker, "source_check"), \
+                    patch.object(worker, "prepare_lldp_graph_failure", side_effect=ValueError("fixture")):
+                with self.assertRaisesRegex(ValueError, "prevents publication"): worker.publish(args)
 
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
