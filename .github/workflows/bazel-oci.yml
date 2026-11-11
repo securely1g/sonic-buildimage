@@ -165,11 +165,11 @@ jobs:
       - name: Checkout the published native cache smoke
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 4bf648e812f28b05a2683c6cf7559470b0883d2a
+          ref: 28a95c10132507a21016c45a9fe1011e6d1a1303
           path: ${{ steps.paths.outputs.native }}
           clean: false
           persist-credentials: false
-      - name: Check both source identities and twenty pure cache fixtures
+      - name: Check both source identities and 25 pure cache fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           NATIVE: ${{ steps.paths.outputs.native }}
@@ -181,26 +181,26 @@ jobs:
           set -euo pipefail
           test "$(git -C "$GITHUB_WORKSPACE/$CONTROL" -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           cd "$GITHUB_WORKSPACE/$NATIVE"
-          test "$(git -c protocol.allow=never rev-parse HEAD)" = "4bf648e812f28b05a2683c6cf7559470b0883d2a"
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "28a95c10132507a21016c45a9fe1011e6d1a1303"
           test -z "$(git -c protocol.allow=never status --porcelain --untracked-files=no)"
           printf '%s  %s\n' \
-            679bda8f5a64ee00694968cc7f913ee694f792f0ad8094225a1da04b0be71237 tools/bazel/ci/remote_cache_smoke.py \
-            ad7bd9fff7ea82d9639bf62f64b8e9ef046e0c0d8847eb8b3635c18edcdbf2bf tools/bazel/tests/remote_cache_smoke_test.py \
-            6c491e3daf8cdbdcc64257703742763040d986ed5d69a89cdec5e3366263b26d tools/bazel/ci/source_image_worker.py \
-            9e44e83bccea514eaeea0a162d67295bb00d9be1cca764681b967380c7e0f5b0 tools/bazel/cache/credentials.py | sha256sum --check --status
+            9872045f13eb4ef741a366ac8700cd09de130802da2d0d7848a6f3562eee6900 tools/bazel/ci/remote_cache_smoke.py \
+            0bcc9b96a6adb60c8a326693808d8ffc487f996a7bfdfa5a761d4d1e48ee90ab tools/bazel/tests/remote_cache_smoke_test.py \
+            3d99a606731ed4078428bacece907d2d79f1ecbc0244cf6340187601a3ed32e6 tools/bazel/ci/source_image_worker.py \
+            eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db tools/bazel/ci/image_worker_receipt.py | sha256sum --check --status
           python3 -B -m unittest -v tools.bazel.tests.remote_cache_smoke_test
       - name: Qualify remote hits with fresh bases on Bazel 6.4.0 and 8.5.1
         id: smoke
         env:
           NATIVE: ${{ steps.paths.outputs.native }}
           RECEIPT: ${{ steps.paths.outputs.receipt }}
-          BAZEL_REMOTE_AUTH: ${{ secrets.BAZEL_REMOTE_AUTH }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$NATIVE"
           python3 -B -m tools.bazel.ci.remote_cache_smoke \
-            --native-revision 4bf648e812f28b05a2683c6cf7559470b0883d2a \
-            --worker-sha256 6c491e3daf8cdbdcc64257703742763040d986ed5d69a89cdec5e3366263b26d \
+            --native-revision 28a95c10132507a21016c45a9fe1011e6d1a1303 \
+            --worker-sha256 3d99a606731ed4078428bacece907d2d79f1ecbc0244cf6340187601a3ed32e6 \
+            --expected-managed-origin 'https://lgh115-oai-lgh-bazel-cache.devbox-4.gateway.internal.api.openai.org/' \
             --output "$RUNNER_TEMP/$RECEIPT"
       - name: Retain only the bounded public cache receipt
         if: always() && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure')
