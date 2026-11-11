@@ -165,11 +165,11 @@ jobs:
       - name: Checkout the published native cache smoke
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 652ae0098161707c29b04cc0b111d309172c666d
+          ref: 4bf648e812f28b05a2683c6cf7559470b0883d2a
           path: ${{ steps.paths.outputs.native }}
           clean: false
           persist-credentials: false
-      - name: Check both source identities and fifteen pure cache fixtures
+      - name: Check both source identities and twenty pure cache fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           NATIVE: ${{ steps.paths.outputs.native }}
@@ -181,11 +181,11 @@ jobs:
           set -euo pipefail
           test "$(git -C "$GITHUB_WORKSPACE/$CONTROL" -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           cd "$GITHUB_WORKSPACE/$NATIVE"
-          test "$(git -c protocol.allow=never rev-parse HEAD)" = "652ae0098161707c29b04cc0b111d309172c666d"
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "4bf648e812f28b05a2683c6cf7559470b0883d2a"
           test -z "$(git -c protocol.allow=never status --porcelain --untracked-files=no)"
           printf '%s  %s\n' \
-            45478e7a962fcc30add7bacfdca9b0be7bc9e5b5cf7b4a3b31116004aed57443 tools/bazel/ci/remote_cache_smoke.py \
-            06200d1d35768e29b398ed16d6c61ff9a81554a576242b1400687b51efeeb018 tools/bazel/tests/remote_cache_smoke_test.py \
+            679bda8f5a64ee00694968cc7f913ee694f792f0ad8094225a1da04b0be71237 tools/bazel/ci/remote_cache_smoke.py \
+            ad7bd9fff7ea82d9639bf62f64b8e9ef046e0c0d8847eb8b3635c18edcdbf2bf tools/bazel/tests/remote_cache_smoke_test.py \
             6c491e3daf8cdbdcc64257703742763040d986ed5d69a89cdec5e3366263b26d tools/bazel/ci/source_image_worker.py \
             9e44e83bccea514eaeea0a162d67295bb00d9be1cca764681b967380c7e0f5b0 tools/bazel/cache/credentials.py | sha256sum --check --status
           python3 -B -m unittest -v tools.bazel.tests.remote_cache_smoke_test
@@ -199,7 +199,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$NATIVE"
           python3 -B -m tools.bazel.ci.remote_cache_smoke \
-            --native-revision 652ae0098161707c29b04cc0b111d309172c666d \
+            --native-revision 4bf648e812f28b05a2683c6cf7559470b0883d2a \
             --worker-sha256 6c491e3daf8cdbdcc64257703742763040d986ed5d69a89cdec5e3366263b26d \
             --output "$RUNNER_TEMP/$RECEIPT"
       - name: Retain only the bounded public cache receipt
