@@ -1,5 +1,6 @@
 """Execute source-validation workflow shells without compiling source packages."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,51 @@ def shell(step):
     return match[1]
 
 
+class ArchiveCachePolicyTest(unittest.TestCase):
+    def test_vs_jobs_share_the_master_push_upload_policy(self):
+        workflow_jobs = jobs()
+        flag = ("--remote_upload_local_results=${{ github.event_name == 'push'"
+                " && github.ref == 'refs/heads/master' }}")
+        for name in ("vs", "vs_container"):
+            with self.subTest(job=name):
+                self.assertIn(flag, workflow_jobs[name])
+        self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
+        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container]",
+                      workflow_jobs["vs_container"])
+
+    def test_upload_override_preserves_checkout_cleanliness(self):
+        step = steps(jobs()["archive"])["Configure remote cache uploads"]
+        self.assertNotRegex(step, r"(?m)^\s+if:")
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/master'", step)
+        self.assertIn("try-import %workspace%/.bazelrc.user",
+                      (ROOT / "tools/bazel/common.bazelrc").read_text())
+        with tempfile.TemporaryDirectory(prefix="archive-cache-policy-") as directory:
+            root = Path(directory)
+            for name in (".bazelrc", ".gitignore"):
+                shutil_source = ROOT / name
+                (root / name).write_bytes(shutil_source.read_bytes())
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            subprocess.run(["git", "-C", directory, "add", ".bazelrc", ".gitignore"], check=True)
+            for upload in ("true", "false"):
+                with self.subTest(upload=upload):
+                    result = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", "-c", shell(step)],
+                        cwd=root, env=dict(os.environ, UPLOAD_CACHE=upload),
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual((root / ".bazelrc.user").read_text().splitlines()[-1],
+                                     "build --remote_upload_local_results=" + upload)
+                    self.assertEqual((root / ".bazelrc").read_bytes(),
+                                     (ROOT / ".bazelrc").read_bytes())
+                    subprocess.run(["git", "-C", directory, "diff", "--exit-code"], check=True)
+                    ignored = subprocess.check_output(
+                        ["git", "-C", directory, "check-ignore", ".bazelrc.user"], text=True)
+                    self.assertEqual(ignored.strip(), ".bazelrc.user")
+                    untracked = subprocess.check_output(
+                        ["git", "-C", directory, "ls-files", "--others", "--exclude-standard"], text=True)
+                    self.assertEqual(untracked, "")
+
+
 class SourceWorkflowTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="source-workflow-")
@@ -50,7 +96,7 @@ class SourceWorkflowTest(unittest.TestCase):
         self.commands.mkdir()
         (self.directory / "artifacts/vs").mkdir(parents=True)
         for name in (".bazelversion", "tools/bazel/build_helpers.py",
-                     "platform/vs/docker-syncd-vs/bazel/apt.lock.json",
+                     "tools/bazel/cache/credentials.py",
                      "platform/vs/docker-syncd-vs/BUILD.bazel"):
             fixture = self.directory / name
             fixture.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +135,11 @@ class SourceWorkflowTest(unittest.TestCase):
                     ['bash', '-e', '-o', 'pipefail', '-c', values['SONIC_RUN_CMDS']],
                     env=environment).returncode)
             if source_runner:
+                if (os.environ.get('SOURCE_EXIT', '0') == '0' and
+                        args[args.index('--container') + 1] == '//platform/vs/docker-syncd-vs'):
+                    artifacts = Path(args[args.index('--artifacts') + 1])
+                    artifacts.mkdir(parents=True, exist_ok=True)
+                    (artifacts / 'apt.lock.json').write_text(json.dumps({'shared_lock': True}) + chr(10))
                 raise SystemExit(int(os.environ.get('SOURCE_EXIT', '0')))
             if name == 'python3' and args[:1] == ['tools/bazel/build_helpers.py']:
                 raise SystemExit(subprocess.run([sys.executable, *args]).returncode)
@@ -168,6 +219,11 @@ class SourceWorkflowTest(unittest.TestCase):
                     self.assertEqual(result.returncode, source_exit or make_exit,
                                      result.stdout + result.stderr)
                     self.assertEqual(lock.read_text(), "already-resolved Make build\n")
+                    if dash and not source_exit and not make_exit:
+                        exported_lock = self.directory / "artifacts/syncd-vs/bazel/apt.lock.json"
+                        fingerprint = self.directory / "artifacts/syncd-vs/input-locks.sha256"
+                        self.assertIn(hashlib.sha256(exported_lock.read_bytes()).hexdigest() +
+                                      "  artifacts/syncd-vs/bazel/apt.lock.json", fingerprint.read_text())
                     calls = self.recorded()
                     make = [call for call in calls if call["name"] == "make"]
                     self.assertEqual(len(make), 1)
@@ -185,8 +241,7 @@ class SourceWorkflowTest(unittest.TestCase):
                                             ("--artifacts", artifacts), ("--bazel", self.environment["BAZEL"])):
                             self.assertEqual(args[args.index(flag) + 1], value)
                         self.assertEqual("--bazel-arg=--config=syncd-dash" in args, dash)
-                        self.assertEqual("--bazel-arg=--//dockers/docker-orchagent:source_config_engine=true" in args,
-                                         not dash)
+                        self.assertFalse(any("source_config_engine" in arg for arg in args))
                         for option in ("--distdir=/bazel_cache/source downloads", "--remote_download_all",
                                        "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
                                        "--host_platform=@sonic_build_infra//platforms:x86_64_trixie",

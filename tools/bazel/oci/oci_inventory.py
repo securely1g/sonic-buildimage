@@ -82,6 +82,12 @@ def apply_layer(path, files, *, checked_overlay=False, normalize_member=None):
                 whiteouts.append((str(pure.parent / pure.name[4:]), False))
                 continue
             item = metadata(normalized)
+            if normalized.issym():
+                # Ordinary Linux symlinks always have mode 0777 (symlink(7)),
+                # even when the TAR header stores 0000, as protobuf's source
+                # package does. Compare installed semantics; retain the link's
+                # owner and target and every other member's original mode.
+                item["mode"] = 0o777
             if member.isfile():
                 with archive.extractfile(member) as stream:
                     item.update(file_metadata(stream, name))
