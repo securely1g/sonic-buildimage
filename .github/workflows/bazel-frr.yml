@@ -8,7 +8,10 @@ on:
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
-      - tools/bazel/ci/frr_draft_bazel.sh
+      - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/source_mirrors.py
+      - tools/bazel/debian_mirrors.cfg
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/oci/runtime_smoke.py
       - .github/workflows/bazel-frr.yml
@@ -50,6 +53,13 @@ jobs:
           repository-cache: true
           disk-cache: frr-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+      - name: Configure shared source download mirrors
+        run: |
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
       - name: Build source outputs and execute native tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -58,8 +68,8 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
-          # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e0bf141cea82764b18d15d7d2c8516cbf3e99290
+          # Use the published dependencies from the maintained registry.
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -131,7 +141,7 @@ jobs:
             //src/sonic-frr:upstream_check \
             2>&1 | tee artifacts/memcheck.log
           python3 src/libraries/sonic-fib/verify_rebuild.py \
-            --bazel "$PWD/tools/bazel/ci/frr_draft_bazel.sh" \
+            --bazel "$PWD/tools/bazel/ci/libteam_draft_bazel.sh" \
             --output "$PWD/artifacts/libfib-rebuild"
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Preserve native test diagnostics

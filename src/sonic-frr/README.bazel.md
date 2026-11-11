@@ -41,8 +41,8 @@ current migration scope; the retained ARM64 and Bookworm target definitions are
 not current CI coverage. It runs the original FRR checks, including Valgrind,
 both sonic-fib tests, and the installed SDK/runtime and schema-invalidation
 checks documented in `../libraries/sonic-fib/README.bazel.md`. A failing upstream
-check remains a failing job. The full VS installer is outside this source-only
-PR's no-DEB scope and its skipped job is not image validation.
+check remains a failing job. Full VS installer acceptance remains separate from these native component
+results.
 
 `verify_runtime.py` checks the deployed FRR and SNMP ELF modes, architecture,
 build IDs, debug-link CRCs and matching DWARF. It preserves the owner debug
@@ -53,20 +53,21 @@ header but makes no libFIB API call, so the linker drops its unused shared
 library. The existing Make build and runtime metadata declarations are retained;
 a recipe dependency alone is not proof of an ELF loader dependency.
 
-While registry PRs #146–#150 are unmerged, the workflow uses the single frozen
-candidate registry `e0bf141cea82764b18d15d7d2c8516cbf3e99290`. Its
-`DRAFT_VALIDATION_INPUTS.json` records every composed prerequisite. The candidate
-selects infrastructure `0.0.25-17a1e555291c64be1a6ff008f33352bffc4f8e5c`,
-Distroless `.sonic.13`, libnl3 `.sonic.6`, libyang `.sonic.6` and Net-SNMP
-`5.9.3.sonic.1`. The infrastructure and libnl3 entries retain their published
-versions and source archives, with the reviewed native changes applied as registry
-patches. The default `.bazelrc` still uses maintained `main`.
+Native builds use the maintained registry `main`, including Net-SNMP
+`5.9.3.sonic.1`, libyang `3.12.2.sonic.6` and libnl3 `3.7.0.sonic.7`.
+The root selects infrastructure `0.0.30` from the checksum-pinned
+maintained-master archive `c8e5486d` (merged infra PR #97). It adds the libFIB
+collections missing from published `.29`. Other modules use canonical registry `main`; the old
+infrastructure override and frozen candidate catalog are removed. Replace the
+source override with registry PR #305's maintained-source registration after
+registration lands. The source and ordered
+SONiC patches remain unchanged. Installation targets retain
+`preserve_install_rpath = True` for FRR's private shared libraries.
 
-For local candidate validation, use the command and explicit platform flags in
-`.github/workflows/bazel-frr.yml`: its startup flags load `common.bazelrc`
-without also loading the default registry endpoint. Do not append the candidate
-to the default endpoint as a fallback. Replace the temporary CI endpoint with
-canonical `main` and verify landed source revisions before review readiness.
-The workflow retains checkout inputs, resolution lock, build/test events and
-named output files with SHA-256 checksums. These component results do not
-establish a complete SONiC image or the inherited image workflows' success.
+For local validation, use the commands and explicit platform flags in
+`.github/workflows/bazel-frr.yml`. The CI entry point
+`tools/bazel/ci/libteam_draft_bazel.sh` also uses canonical `main` and preserves
+explicit shared Bazel settings across fresh checkouts. The workflow retains
+checkout inputs, resolution lock, build/test events and named output files
+with SHA-256 checksums. Component results establish the tested source build;
+complete SONiC image, installer, boot and forwarding acceptance are separate.

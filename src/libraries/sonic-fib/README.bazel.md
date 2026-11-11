@@ -17,16 +17,15 @@ tested together. These targets produce TARs, not Debian packages.
 
 Current migration validation is native AMD64/Trixie. Existing other-platform
 definitions are retained; this scoped CI run does not validate them. The normal
-registry remains `main`. Until PR #51's registry prerequisites land, reproduce
-its reviewed candidate with the existing temporary wrapper:
+registry is maintained `main`. Use the shared CI entry point:
 
 ```sh
-tools/bazel/ci/frr_draft_bazel.sh build \
+tools/bazel/ci/libteam_draft_bazel.sh build \
   //src/libraries/sonic-fib:runtime \
   //src/libraries/sonic-fib:development \
   //src/libraries/sonic-fib:runtime.debug_symbols \
   //src/libraries/sonic-fib:runtime_packages.json
-tools/bazel/ci/frr_draft_bazel.sh test \
+tools/bazel/ci/libteam_draft_bazel.sh test \
   //src/libraries/sonic-fib:tests \
   //src/libraries/sonic-fib:public_c_api_test
 ```
