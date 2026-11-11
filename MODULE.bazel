@@ -53,17 +53,8 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.30",
+    version = "0.0.30-c8e5486df0147c5652d015bb5ddd49b6dce6b655",
     repo_name = "sonic_build_infra",
-)
-# infra #97 merged the libFIB collections missing from published .29.
-# Keep canonical registry main for every other module. Replace this pinned
-# source override with registry #305's version after registration lands.
-archive_override(
-    module_name = "sonic-build-infra",
-    urls = ["https://github.com/securely1g/sonic-build-infra/archive/c8e5486df0147c5652d015bb5ddd49b6dce6b655.tar.gz"],
-    integrity = "sha256-+/W4SaEnF0JSqF8gltvvYWk+moSvADnt1BKyz5lKCeY=",
-    strip_prefix = "sonic-build-infra-c8e5486df0147c5652d015bb5ddd49b6dce6b655",
 )
 bazel_dep(
     name = "sonic-dash-api",
