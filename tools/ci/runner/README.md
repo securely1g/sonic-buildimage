@@ -34,8 +34,10 @@ outputs are restored rather than recompiling the source packages. Test-only
 inputs and uncached tests may execute. SWSS TARs and Syncd package evidence
 retain their existing artifact names and validation requirements.
 
-Fork PRs and manual runs with `skip_vs=true` run only hosted checks, including
-the separate native AMD64/ARM64 archive jobs. They do not publish successful
+Manual `Bazel OCI` runs include `VS installer in SONiC slave (AMD64)` by
+default. Select `skip_vs=true` to run source and archive checks without the
+installer, including the separate native AMD64/ARM64 archive jobs. Fork PRs also
+omit the installer. Neither path publishes successful
 SWSS/Syncd source-package or full-image validation evidence.
 
 ## Legacy one-job runner helpers
