@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-11T16:24:30.883373Z",
+  "generated_at": "2026-11-11T16:30:31.167353Z",
   "pull_requests": [
     {
       "base_sha": "6ecd112d97a8778905e8aab9049b4365e3a3e934",
@@ -15424,8 +15424,8 @@
     {
       "attempt": 1,
       "branch": "vs-runner",
-      "completed_at": null,
-      "conclusion": null,
+      "completed_at": "2026-11-11T16:28:28Z",
+      "conclusion": "failure",
       "event": "pull_request",
       "jobs": [
         {
@@ -16495,23 +16495,23 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-11T16:28:28Z",
+          "conclusion": "failure",
+          "duration_seconds": 16463.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 130464421428,
           "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
-            "build": null,
-            "other": 0.0,
+            "build": 13731.0,
+            "other": 18.0,
             "setup": 2708.0,
-            "upload": null,
+            "upload": 2.0,
             "validation": 1.0
           },
           "started_at": "2026-11-11T11:54:05Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-11T11:54:08Z",
@@ -16604,94 +16604,104 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:28:06Z",
+              "conclusion": "failure",
+              "duration_seconds": 13731.0,
               "name": "Build sonic-vs.bin through the host Make wrapper",
               "number": 10,
               "phase": "build",
               "started_at": "2026-11-11T12:39:15Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-11T16:28:06Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Validate the installer and retained container pairs",
               "number": 11,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:06Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-11T16:28:06Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify installed base, SWSS and Syncd images",
               "number": 12,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:06Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-11T16:28:06Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 13,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:06Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:28:08Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Preserve build receipts",
               "number": 14,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:06Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:28:08Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Retain shared image validation evidence",
               "number": 15,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:08Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:28:08Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Remove only this job's build containers",
               "number": 16,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:08Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:28:26Z",
+              "conclusion": "success",
+              "duration_seconds": 18.0,
               "name": "Remove only this run's checkout",
               "number": 17,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:08Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:28:26Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository and pinned submodules",
               "number": 34,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:28:26Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T16:28:26Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 35,
+              "phase": "other",
+              "started_at": "2026-11-11T16:28:26Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43002808821/job/130464421428"
@@ -16933,8 +16943,8 @@
       "run_id": 43002808821,
       "source_sha": "b638f2be452b2b5f6c063a4eccc8cbc7c2e4db75",
       "started_at": "2026-11-11T10:20:37Z",
-      "status": "in_progress",
-      "updated_at": "2026-11-11T11:54:05Z",
+      "status": "completed",
+      "updated_at": "2026-11-11T16:28:29Z",
       "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43002808821/attempts/1",
       "workflow_name": "Bazel OCI",
       "workflow_path": ".github/workflows/bazel-oci.yml"
@@ -18468,23 +18478,23 @@
       "jobs": [
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
-          "image_build_elapsed_seconds": null,
+          "completed_at": "2026-11-11T16:30:05Z",
+          "conclusion": "failure",
+          "duration_seconds": 17598.0,
+          "image_build_elapsed_seconds": 17325.0,
           "image_build_seconds": null,
           "job_id": 130498233726,
           "kind": "make-vs",
           "name": "VS installer in SONiC slave (AMD64)",
           "phases": {
-            "build": null,
-            "other": 1.0,
+            "build": 17325.0,
+            "other": 6.0,
             "setup": 260.0,
-            "upload": null,
+            "upload": 3.0,
             "validation": 0.0
           },
           "started_at": "2026-11-11T11:36:47Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-11T11:36:50Z",
@@ -18605,84 +18615,94 @@
                 "status": "unavailable",
                 "version": 1
               },
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:29:54Z",
+              "conclusion": "failure",
+              "duration_seconds": 17325.0,
               "name": "Build sonic-vs.bin directly with slave.mk",
               "number": 12,
               "phase": "build",
               "started_at": "2026-11-11T11:41:09Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-11T16:29:54Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Validate the installer and retained container pairs",
               "number": 13,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:29:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-11T16:29:54Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Verify installed base, SWSS and Syncd images",
               "number": 14,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:29:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
+              "completed_at": "2026-11-11T16:29:54Z",
+              "conclusion": "skipped",
               "duration_seconds": null,
               "name": "Publish the installer and matching container archives",
               "number": 15,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:29:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:29:57Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
               "name": "Preserve build receipts",
               "number": 16,
               "phase": "upload",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:29:54Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:29:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Retain shared image validation evidence",
               "number": 17,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:29:57Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:29:57Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Stop this worker's private Docker daemon",
               "number": 18,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:29:57Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T16:30:02Z",
+              "conclusion": "success",
+              "duration_seconds": 5.0,
               "name": "Post Checkout repository and pinned submodules",
               "number": 36,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T16:29:57Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T16:30:02Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 37,
+              "phase": "other",
+              "started_at": "2026-11-11T16:30:02Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43000349162/job/130498233726"
