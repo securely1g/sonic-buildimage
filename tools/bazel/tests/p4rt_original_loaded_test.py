@@ -406,7 +406,7 @@ class ProbeInputPermissionsTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((self.original / "validation.json").stat().st_mode), 0o600)
 
     def test_non_public_json_is_refused_before_mode_change(self):
-        value = b'{"stderr":"private diagnostic"}\n'
+        value = b'{"argv":["private diagnostic"]}\n'
         (self.original / "validation.json").write_bytes(value)
         row = next(row for row in self.fixed["members_to_materialize"] if row["name"] == "validation.json")
         row.update(bytes=len(value), sha256=hashlib.sha256(value).hexdigest())
