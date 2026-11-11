@@ -1,6 +1,6 @@
 {
   "comparisons": [],
-  "generated_at": "2026-11-11T10:59:14.311320Z",
+  "generated_at": "2026-11-11T11:03:34.008741Z",
   "pull_requests": [
     {
       "base_sha": "6ecd112d97a8778905e8aab9049b4365e3a3e934",
@@ -863,7 +863,7 @@
       "number": 141,
       "state": "open",
       "title": "Build and validate native VS Eventd images with Bazel",
-      "updated_at": "2026-11-11T10:17:40Z",
+      "updated_at": "2026-11-11T10:59:24Z",
       "url": "https://github.com/securely1g/sonic-buildimage/pull/141"
     },
     {
@@ -1951,6 +1951,621 @@
   "runs": [
     {
       "attempt": 1,
+      "branch": "codex/vs-k3s-prerequisite-inspection",
+      "completed_at": "2026-11-11T11:01:51Z",
+      "conclusion": "failure",
+      "event": "workflow_dispatch",
+      "jobs": [
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:51Z",
+          "conclusion": "failure",
+          "duration_seconds": 24.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481766817,
+          "kind": "other",
+          "name": "Tiny remote cache qualification (K3s)",
+          "phases": {
+            "build": null,
+            "other": 3.0,
+            "setup": 17.0,
+            "upload": null,
+            "validation": 1.0
+          },
+          "started_at": "2026-11-11T11:01:27Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-11-11T11:01:29Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-11T11:01:28Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:30Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up runner",
+              "number": 2,
+              "phase": "setup",
+              "started_at": "2026-11-11T11:01:29Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:30Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Require separate remote cache scope and fresh paths",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:38Z",
+              "conclusion": "success",
+              "duration_seconds": 8.0,
+              "name": "Checkout the immutable cache observer",
+              "number": 4,
+              "phase": "setup",
+              "started_at": "2026-11-11T11:01:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:45Z",
+              "conclusion": "success",
+              "duration_seconds": 7.0,
+              "name": "Checkout the published native cache smoke",
+              "number": 5,
+              "phase": "setup",
+              "started_at": "2026-11-11T11:01:38Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:46Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Check both source identities and 25 pure cache fixtures",
+              "number": 6,
+              "phase": "validation",
+              "started_at": "2026-11-11T11:01:45Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:46Z",
+              "conclusion": "failure",
+              "duration_seconds": 0.0,
+              "name": "Qualify remote hits with fresh bases on Bazel 6.4.0 and 8.5.1",
+              "number": 7,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:46Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:48Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Retain only the bounded public cache receipt",
+              "number": 8,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:46Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:48Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Checkout the published native cache smoke",
+              "number": 15,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:48Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:48Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Checkout the immutable cache observer",
+              "number": 16,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:48Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:49Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Complete job",
+              "number": 17,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:48Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481766817"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481767997,
+          "kind": "other",
+          "name": "VS prerequisite observation (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481767997"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768491,
+          "kind": "other",
+          "name": "Existing VS cache payload observation (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768491"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768571,
+          "kind": "other",
+          "name": "Remote cache DNS diagnostic (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768571"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768655,
+          "kind": "other",
+          "name": "Canonical management image metadata (hosted)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768655"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768664,
+          "kind": "other",
+          "name": "Existing VS cache metadata (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768664"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768816,
+          "kind": "other",
+          "name": "Original ${{ (((inputs.source_image == 'vs-native-syncd-inventory') && 'Syncd') || ((inputs.source_image == 'vs-native-gearbox-inventory') && 'Gearbox') || 'P4RT') }} payload inventory (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768816"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768820,
+          "kind": "container",
+          "name": "Container archive (${{ matrix.name }})",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768820"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768831,
+          "kind": "other",
+          "name": "Worker provisioner identity",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768831"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768947,
+          "kind": "other",
+          "name": "Original P4RT loaded-only verification (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768947"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481768998,
+          "kind": "other",
+          "name": "Registry native (${{ inputs.registry_consumer }}, AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481768998"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481769089,
+          "kind": "make-vs",
+          "name": "Make VS with Bazel SWSS (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481769089"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481769241,
+          "kind": "other",
+          "name": "Remote cache configuration discovery (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481769241"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481769812,
+          "kind": "other",
+          "name": "Fetch pinned source-image downloads",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481769812"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481769993,
+          "kind": "other",
+          "name": "Source image (${{ inputs.source_image }})",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:25Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481769993"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481825398,
+          "kind": "make-vs",
+          "name": "VS installer in SONiC slave (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:32Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481825398"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481826413,
+          "kind": "other",
+          "name": "Original management image blobs (hosted)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:32Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481826413"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481826720,
+          "kind": "other",
+          "name": "OCI regression checks (AMD64)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:32Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481826720"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481826945,
+          "kind": "other",
+          "name": "Native cache directory observation (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:32Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481826945"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481830071,
+          "kind": "other",
+          "name": "Remote cache transport diagnostic (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:33Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481830071"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481847631,
+          "kind": "other",
+          "name": "Source worker preflight (${{ matrix.worker }})",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:35Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481847631"
+        },
+        {
+          "architecture": null,
+          "completed_at": "2026-11-11T11:01:25Z",
+          "conclusion": "skipped",
+          "duration_seconds": null,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481848280,
+          "kind": "other",
+          "name": "VS runtime qualification (K3s)",
+          "phases": {
+            "build": null,
+            "other": null,
+            "setup": null,
+            "upload": null,
+            "validation": null
+          },
+          "started_at": "2026-11-11T11:01:35Z",
+          "status": "completed",
+          "steps": [],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/job/130481848280"
+        }
+      ],
+      "pr_association": "none",
+      "pr_association_note": null,
+      "pr_numbers": [],
+      "run_id": 43008464156,
+      "source_sha": "1cd9870b06a5dac5ac2df8ce8f8cc5bea17df41e",
+      "started_at": "2026-11-11T11:01:23Z",
+      "status": "completed",
+      "updated_at": "2026-11-11T11:01:52Z",
+      "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43008464156/attempts/1",
+      "workflow_name": "Bazel OCI",
+      "workflow_path": ".github/workflows/bazel-oci.yml"
+    },
+    {
+      "attempt": 1,
       "branch": "codex/source-image-worker-p4rt-feature",
       "completed_at": null,
       "conclusion": null,
@@ -1968,10 +2583,10 @@
           "name": "Container archive (ARM64)",
           "phases": {
             "build": null,
-            "other": 6.0,
+            "other": 9.0,
             "setup": 34.0,
             "upload": null,
-            "validation": 173.0
+            "validation": 707.0
           },
           "started_at": "2026-11-11T10:50:45Z",
           "status": "in_progress",
@@ -2067,24 +2682,24 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:03:12Z",
+              "conclusion": "success",
+              "duration_seconds": 534.0,
               "name": "Test Python packages and check startup generation",
               "number": 10,
               "phase": "validation",
               "started_at": "2026-11-11T10:54:18Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:03:15Z",
+              "conclusion": "success",
+              "duration_seconds": 3.0,
               "name": "Retain wheels and required Python test evidence",
               "number": 11,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T11:03:12Z",
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -2093,8 +2708,8 @@
               "name": "Check local cache reuse across fresh checkouts",
               "number": 12,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T11:03:15Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
@@ -2171,10 +2786,10 @@
           "name": "Container archive (AMD64)",
           "phases": {
             "build": null,
-            "other": 5.0,
+            "other": 7.0,
             "setup": 36.0,
             "upload": null,
-            "validation": 165.0
+            "validation": 698.0
           },
           "started_at": "2026-11-11T10:50:42Z",
           "status": "in_progress",
@@ -2270,24 +2885,24 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:03:02Z",
+              "conclusion": "success",
+              "duration_seconds": 533.0,
               "name": "Test Python packages and check startup generation",
               "number": 10,
               "phase": "validation",
               "started_at": "2026-11-11T10:54:09Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:03:04Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
               "name": "Retain wheels and required Python test evidence",
               "number": 11,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T11:03:02Z",
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -2296,8 +2911,8 @@
               "name": "Check local cache reuse across fresh checkouts",
               "number": 12,
               "phase": "setup",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T11:03:04Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
@@ -3378,7 +3993,7 @@
           "kind": "container",
           "name": "Container archive (AMD64)",
           "phases": {
-            "build": null,
+            "build": 245.0,
             "other": 90.0,
             "setup": 193.0,
             "upload": 3.0,
@@ -3598,14 +4213,14 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:02:54Z",
+              "conclusion": "success",
+              "duration_seconds": 245.0,
               "name": "Build Sysmgr runtime and debug images",
               "number": 22,
               "phase": "build",
               "started_at": "2026-11-11T10:58:49Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
               "completed_at": null,
@@ -3614,8 +4229,8 @@
               "name": "Validate Sysmgr image contents and cache reuse",
               "number": 23,
               "phase": "validation",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T11:02:54Z",
+              "status": "in_progress"
             },
             {
               "completed_at": null,
@@ -5412,9 +6027,9 @@
         },
         {
           "architecture": "amd64",
-          "completed_at": null,
-          "conclusion": null,
-          "duration_seconds": null,
+          "completed_at": "2026-11-11T11:01:18Z",
+          "conclusion": "success",
+          "duration_seconds": 2438.0,
           "image_build_elapsed_seconds": null,
           "image_build_seconds": null,
           "job_id": 130462830000,
@@ -5422,13 +6037,13 @@
           "name": "Container archive (AMD64)",
           "phases": {
             "build": 458.0,
-            "other": 123.0,
+            "other": 647.0,
             "setup": 265.0,
             "upload": 2.0,
             "validation": 1056.0
           },
           "started_at": "2026-11-11T10:20:40Z",
-          "status": "in_progress",
+          "status": "completed",
           "steps": [
             {
               "completed_at": "2026-11-11T10:20:46Z",
@@ -5741,34 +6356,44 @@
               "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:01:11Z",
+              "conclusion": "success",
+              "duration_seconds": 523.0,
               "name": "Post Set up Bazel",
               "number": 60,
               "phase": "other",
               "started_at": "2026-11-11T10:52:28Z",
-              "status": "in_progress"
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:01:11Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
               "name": "Post Checkout repository",
               "number": 61,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T11:01:11Z",
+              "status": "completed"
             },
             {
-              "completed_at": null,
-              "conclusion": null,
-              "duration_seconds": null,
+              "completed_at": "2026-11-11T11:01:12Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
               "name": "Stop containers",
               "number": 62,
               "phase": "other",
-              "started_at": null,
-              "status": "pending"
+              "started_at": "2026-11-11T11:01:11Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:12Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 63,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:12Z",
+              "status": "completed"
             }
           ],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43002808821/job/130462830000"
@@ -6135,6 +6760,212 @@
           "status": "completed",
           "steps": [],
           "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43002808821/job/130464424410"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-11T11:02:33Z",
+          "conclusion": "success",
+          "duration_seconds": 72.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481715703,
+          "kind": "other",
+          "name": "Load and run Sysmgr images (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 26.0,
+            "setup": 1.0,
+            "upload": null,
+            "validation": 42.0
+          },
+          "started_at": "2026-11-11T11:01:21Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-11-11T11:01:23Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-11T11:01:22Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:30Z",
+              "conclusion": "success",
+              "duration_seconds": 7.0,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:23Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:30Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Bind the tested checkout identity",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:48Z",
+              "conclusion": "success",
+              "duration_seconds": 18.0,
+              "name": "Run actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+              "number": 4,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:30Z",
+              "conclusion": "success",
+              "duration_seconds": 42.0,
+              "name": "Check installed Sysmgr startup and private Redis-to-D-Bus notifications",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-11-11T11:01:48Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:31Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Retain installed Sysmgr evidence",
+              "number": 6,
+              "phase": "other",
+              "started_at": "2026-11-11T11:02:30Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:31Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 12,
+              "phase": "other",
+              "started_at": "2026-11-11T11:02:31Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:31Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 13,
+              "phase": "other",
+              "started_at": "2026-11-11T11:02:31Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43002808821/job/130481715703"
+        },
+        {
+          "architecture": "amd64",
+          "completed_at": "2026-11-11T11:02:13Z",
+          "conclusion": "success",
+          "duration_seconds": 52.0,
+          "image_build_elapsed_seconds": null,
+          "image_build_seconds": null,
+          "job_id": 130481715868,
+          "kind": "other",
+          "name": "Load and run the shared SWSS image (AMD64)",
+          "phases": {
+            "build": null,
+            "other": 37.0,
+            "setup": 1.0,
+            "upload": null,
+            "validation": 11.0
+          },
+          "started_at": "2026-11-11T11:01:21Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completed_at": "2026-11-11T11:01:23Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Set up job",
+              "number": 1,
+              "phase": "setup",
+              "started_at": "2026-11-11T11:01:22Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:29Z",
+              "conclusion": "success",
+              "duration_seconds": 6.0,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 2,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:23Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:01:58Z",
+              "conclusion": "success",
+              "duration_seconds": 29.0,
+              "name": "Run actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+              "number": 3,
+              "phase": "other",
+              "started_at": "2026-11-11T11:01:29Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:08Z",
+              "conclusion": "success",
+              "duration_seconds": 10.0,
+              "name": "Verify and load this run's archive",
+              "number": 4,
+              "phase": "validation",
+              "started_at": "2026-11-11T11:01:58Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:09Z",
+              "conclusion": "success",
+              "duration_seconds": 1.0,
+              "name": "Verify installed source hashes and complete loader closure",
+              "number": 5,
+              "phase": "validation",
+              "started_at": "2026-11-11T11:02:08Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:11Z",
+              "conclusion": "success",
+              "duration_seconds": 2.0,
+              "name": "Retain installed-image evidence",
+              "number": 6,
+              "phase": "other",
+              "started_at": "2026-11-11T11:02:09Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:11Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "number": 12,
+              "phase": "other",
+              "started_at": "2026-11-11T11:02:11Z",
+              "status": "completed"
+            },
+            {
+              "completed_at": "2026-11-11T11:02:11Z",
+              "conclusion": "success",
+              "duration_seconds": 0.0,
+              "name": "Complete job",
+              "number": 13,
+              "phase": "other",
+              "started_at": "2026-11-11T11:02:11Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/securely1g/sonic-buildimage/actions/runs/43002808821/job/130481715868"
         }
       ],
       "pr_association": "github",
