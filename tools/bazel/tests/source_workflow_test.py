@@ -179,6 +179,37 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                         text=True, capture_output=True)
                     self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
+    def test_checkout_cleanup_follows_uploads_and_requires_successful_container_cleanup(self):
+        job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
+        cleanup = job["steps"][-1]
+        containers = job["steps"][-2]
+        self.assertEqual(containers["id"], "vs_container_cleanup")
+        self.assertEqual(cleanup["name"], "Remove only this run's checkout")
+        self.assertIn("always() && steps.vs_container_cleanup.outcome == 'success'", cleanup["if"])
+        for upload in ("vs_receipts_upload", "vs_validation_upload", "vs_installer_upload"):
+            self.assertIn(f"steps.{upload}.outcome == 'success'", cleanup["if"])
+            self.assertTrue(any(step.get("id") == upload and "upload-artifact@" in step.get("uses", "")
+                                for step in job["steps"][:-2]))
+        self.assertIn("steps.vs_installer_upload.outcome == 'skipped'", cleanup["if"])
+        self.assertEqual(cleanup["working-directory"], "${{ github.workspace }}")
+        self.assertIn("cleanup_vs_workspace.py", cleanup["run"])
+        self.assertIn('--workspace "$GITHUB_WORKSPACE"', cleanup["run"])
+        self.assertIn('--run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"', cleanup["run"])
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            environment = dict(os.environ, GITHUB_WORKSPACE=str(directory),
+                               GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2")
+            for redirected in (False, True):
+                with self.subTest(redirected=redirected):
+                    checkout = directory / "vs-123-2"
+                    if redirected:
+                        checkout.symlink_to(directory, target_is_directory=True)
+                    result = subprocess.run(
+                        ["bash", "-c", cleanup["run"]], cwd=directory,
+                        env=environment, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 1 if redirected else 0,
+                                     result.stdout + result.stderr)
+
     def test_upload_override_preserves_checkout_cleanliness(self):
         step = steps(jobs()["archive"])["Configure remote cache uploads"]
         self.assertNotRegex(step, r"(?m)^\s+if:")

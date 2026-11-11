@@ -28,9 +28,21 @@ These are admission limits, not guaranteed maximum build sizes.
 Each run uses a distinct checkout and label-scoped builder cleanup. Persistent
 caches live in `vs-cache/bazel` and `vs-cache/packages` under the runner workspace,
 outside the run-specific checkout. Keep them writable by the runner user.
-Only the selected job's containers are removed; the host Docker daemon, other
-jobs' containers, caches and retained checkouts are not pruned. Operators must
-manage retained checkout/image storage when no builds use it.
+After artifact upload attempts, the job removes its labeled containers and then
+its own `vs-<run-id>-<attempt>` checkout, including per-run nested-Docker state.
+Checkout deletion requires noninteractive `sudo rm` for root-owned build output.
+It refuses symlinked checkouts, remaining host mounts, and references from any
+Docker container. If container cleanup or an artifact upload fails or is
+interrupted, checkout deletion is skipped so the remaining evidence is retained.
+An installer upload skipped because the build failed does not block cleanup
+after the always-run evidence uploads succeed.
+Missing cleanup tooling in a partial checkout also fails explicitly; inspect
+and clean that checkout manually after verifying it is unused.
+The host Docker daemon, other jobs' checkouts/containers, persistent caches,
+and reusable images/build layers are not pruned. Operators must still manage
+cache/image retention and leftovers from interrupted runners; cleanup cannot
+run after VM termination or a runner crash. This does not move Docker's data
+root or remove the free-space admission checks.
 
 The job explicitly passes `grpc://172.16.0.4:9092` as the Bazel action cache and
 remote downloader through `BAZEL_CONTAINER_ARGS`; verify connectivity inside

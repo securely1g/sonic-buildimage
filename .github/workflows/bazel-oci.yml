@@ -1501,6 +1501,7 @@ jobs:
             SONIC_RUN_CMDS='bash artifacts/vs/verify-installed-images.sh'
 
       - name: Publish the installer and matching container archives
+        id: vs_installer_upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-slave-amd64
@@ -1517,6 +1518,7 @@ jobs:
           compression-level: 0
 
       - name: Preserve build receipts
+        id: vs_receipts_upload
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1531,6 +1533,7 @@ jobs:
           retention-days: 14
 
       - name: Retain shared image validation evidence
+        id: vs_validation_upload
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1544,6 +1547,7 @@ jobs:
           retention-days: 14
 
       - name: Remove only this job's build containers
+        id: vs_container_cleanup
         if: always()
         working-directory: ${{ github.workspace }}
         run: |
@@ -1561,3 +1565,26 @@ jobs:
               printf 'Job container already removed: %s\n' "$container"
             fi
           done <<< "$containers"
+
+      - name: Remove only this run's checkout
+        if: >-
+          always() && steps.vs_container_cleanup.outcome == 'success' &&
+          steps.vs_receipts_upload.outcome == 'success' &&
+          steps.vs_validation_upload.outcome == 'success' &&
+          (steps.vs_installer_upload.outcome == 'success' ||
+           steps.vs_installer_upload.outcome == 'skipped')
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          checkout="$GITHUB_WORKSPACE/vs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if test -L "$checkout"; then
+            printf 'Refusing redirected VS checkout: %s\n' "$checkout" >&2
+            exit 1
+          fi
+          if test ! -e "$checkout"; then
+            printf 'No VS checkout to remove: %s\n' "$checkout"
+            exit 0
+          fi
+          python3 -B "$checkout/tools/bazel/ci/cleanup_vs_workspace.py" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
