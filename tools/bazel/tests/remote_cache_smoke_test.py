@@ -327,6 +327,69 @@ class RemoteCacheSmokeTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 smoke.check_credential_probe_receipt(root, path.name, endpoint, child_result(), {})
 
+    @staticmethod
+    def managed_configuration():
+        return {"provider": "host_managed_native_runtime", "endpoint": "https://cache.example.invalid/",
+                "host": "cache.example.invalid", "helper_sha256": "a" * 64}
+
+    def managed_receipt(self, access_probe="passed", stage="complete"):
+        return {"schema": 1, **self.managed_configuration(), "access_probe": access_probe, "stage": stage}
+
+    def test_managed_access_is_distinct_from_authentication(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name); record = self.managed_receipt()
+            (directory / "access.json").write_text(json.dumps(record))
+            receipt = {}
+            smoke.check_managed_cache_probe_receipt(directory, "access.json", self.managed_configuration(),
+                {"status": "CAPTURED"}, receipt)
+            self.assertEqual(receipt, {"managed_cache_probe": record})
+            self.assertNotIn("authenticated", json.dumps(receipt))
+
+    def test_managed_failure_keeps_owned_stage_before_child_status_guard(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            record = {**self.managed_receipt("failed", "host_configuration"), "error_type": "ValueError"}
+            (directory / "access.json").write_text(json.dumps(record)); receipt = {}
+            with self.assertRaises(smoke.ProbeFailure):
+                smoke.check_managed_cache_probe_receipt(directory, "access.json", self.managed_configuration(),
+                    {"status": "FAILED"}, receipt)
+            self.assertEqual(receipt, {"managed_cache_probe": record})
+
+    def test_managed_success_requires_both_helper_and_child_success(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            records = [(self.managed_receipt(), "FAILED"),
+                ({**self.managed_receipt("failed", "access"), "error_type": "ValueError"}, "CAPTURED")]
+            for record, status in records:
+                (directory / "access.json").write_text(json.dumps(record))
+                with self.subTest(status=status), self.assertRaises(smoke.ProbeFailure):
+                    smoke.check_managed_cache_probe_receipt(directory, "access.json", self.managed_configuration(),
+                        {"status": status}, {})
+
+    def test_managed_probe_refuses_untrusted_fields_and_bool_schema(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            for changes in ({"schema": True}, {"endpoint": "https://different.invalid/"},
+                    {"authenticated": True}, {"stderr": "private"}, {"stage": "arbitrary"},
+                    {"access_probe": "failed", "stage": "access", "error_type": "PrivateFailure"}):
+                record = {**self.managed_receipt(), **changes}
+                (directory / "access.json").write_text(json.dumps(record)); receipt = {}
+                with self.subTest(changes=changes), self.assertRaises(smoke.ProbeFailure):
+                    smoke.check_managed_cache_probe_receipt(directory, "access.json", self.managed_configuration(),
+                        {"status": "CAPTURED"}, receipt)
+                self.assertEqual(receipt, {})
+
+    def test_managed_probe_keeps_missing_and_duplicate_receipt_guards(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            with self.assertRaises(smoke.ProbeFailure):
+                smoke.check_managed_cache_probe_receipt(directory, "access.json", self.managed_configuration(),
+                    {"status": "CAPTURED"}, {})
+            (directory / "access.json").write_text('{"schema":1,"schema":1}')
+            with self.assertRaises(smoke.ProbeFailure):
+                smoke.check_managed_cache_probe_receipt(directory, "access.json", self.managed_configuration(),
+                    {"status": "CAPTURED"}, {})
+
 
 if __name__ == "__main__":
     unittest.main()

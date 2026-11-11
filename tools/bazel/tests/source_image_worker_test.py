@@ -2028,14 +2028,24 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
     def fixture(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
-            workspace = root / "source"
-            helper = workspace / "tools/bazel/cache/credentials.py"
-            helper.parent.mkdir(parents=True)
-            helper.write_bytes(b"# Fixture only: all process execution is mocked.\n".ljust(4492, b" "))
+            workspace = root / "source"; workspace.mkdir()
+            helper = root / "installed/cache_credentials.py"; helper.parent.mkdir()
+            helper.write_bytes(b"from _managed_owner_fixture import HOST_CREDENTIALS, settings, probe_access, imported\nimported()\n".ljust(7646, b" "))
             helper.chmod(0o755)
             scratch = root / "scratch"; scratch.mkdir()
-            stack.enter_context(patch.dict(worker.K3S_REMOTE_CACHE_POLICY,
-                {"credential_helper_sha256": worker.digest(helper)}))
+            stack.enter_context(patch.dict(worker.K3S_MANAGED_REMOTE_CACHE_POLICY,
+                {"credential_helper_path": str(helper), "credential_helper_sha256": worker.digest(helper)}))
+            original_lstat = Path.lstat
+            def root_owned(path, *args, **kwargs):
+                info = original_lstat(path, *args, **kwargs)
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_size=info.st_size) if path == helper else info
+            stack.enter_context(patch.object(Path, "lstat", root_owned))
+            owner = SimpleNamespace(HOST_CREDENTIALS=SimpleNamespace(is_file=lambda: True),
+                settings=lambda: {"endpoint": "https://managed-cache.invalid/", "host": "managed-cache.invalid"},
+                probe_access=unittest.mock.Mock(), imported=unittest.mock.Mock())
+            stack.enter_context(patch.dict(sys.modules, {"_managed_owner_fixture": owner}))
+            stack.enter_context(patch.object(os, "getuid", return_value=1000))
+            stack.enter_context(patch.object(os, "geteuid", return_value=1000))
             stack.enter_context(patch.dict(os.environ, {"BAZEL_REMOTE_AUTH": self.canary}, clear=True))
             yield root, workspace, helper, scratch
 
@@ -2070,14 +2080,16 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.prepare_work_directory("sonic-slave-container-dpool", "sonic-slave-lgh114-1", "p4rt"), cache)
             self.assertEqual(worker.owner_build_profile("sonic-slave-container-dpool"), worker.P4RT_OWNER_PROFILE)
 
-    def test_missing_auth_stops_before_probe_or_phase_execution(self):
+    def test_missing_managed_owner_stops_before_probe_or_phase_execution(self):
         with patch.dict(os.environ, {"WORKER_POOL": self.pool}, clear=True), ExitStack() as stack:
+            stack.enter_context(patch.dict(worker.K3S_MANAGED_REMOTE_CACHE_POLICY,
+                {"credential_helper_path": "/absent/native/cache_credentials.py"}))
             invoke = stack.enter_context(patch.object(worker, "run"))
-            with self.assertRaisesRegex(ValueError, "requires BAZEL_REMOTE_AUTH"):
+            with self.assertRaisesRegex(ValueError, "legacy fallback is disabled"):
                 worker.prepare_remote_cache(Path("/absent/source"), Path("/absent/state"))
             invoke.assert_not_called()
             measure = stack.enter_context(patch.object(worker, "measure"))
-            with self.assertRaisesRegex(ValueError, "requires BAZEL_REMOTE_AUTH"):
+            with self.assertRaisesRegex(ValueError, "legacy fallback is disabled"):
                 worker.prepare(SimpleNamespace(workspace=Path("/absent/source"),
                     artifacts=Path("/absent/state"), image="gearbox"))
             measure.assert_not_called()
@@ -2086,32 +2098,36 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
             memory = stack.enter_context(patch.object(worker, "memory_snapshot"))
             phase = stack.enter_context(patch.object(worker.subprocess, "run"))
             args = SimpleNamespace(workspace=Path("/absent/source"), revision="a" * 40, image="gearbox")
-            with self.assertRaisesRegex(ValueError, "requires BAZEL_REMOTE_AUTH"):
+            with self.assertRaisesRegex(ValueError, "legacy fallback is disabled"):
                 worker.execute_phase(args)
             memory.assert_not_called(); phase.assert_not_called()
 
-    def test_probe_uses_only_existing_helper_and_does_not_serialize_auth(self):
+    def test_probe_uses_only_installed_owner_and_does_not_serialize_auth(self):
         with self.fixture() as (_, workspace, helper, scratch):
             def complete(argv, **kwargs):
-                self.assertEqual(argv[:5], [sys.executable, "-B", str(helper), "probe", "--output"])
+                self.assertEqual(argv[:5], [sys.executable, "-I", "-S", "-B", "-c"])
+                self.assertEqual(argv[5], worker.managed_cache_owner_program())
+                configuration = json.loads(argv[6])
+                self.assertEqual(configuration["helper"], str(helper))
                 self.assertEqual(kwargs, {"timeout": 45, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
                 self.assertNotIn(self.canary, repr(argv))
-                Path(argv[5]).write_text(json.dumps({"endpoint": worker.K3S_REMOTE_CACHE_POLICY["endpoint"],
-                    "authenticated": True, "status": 200}))
+                Path(argv[-1]).write_text(json.dumps(self.access_receipt(configuration)))
             with patch.object(worker, "run", side_effect=complete) as invoke:
                 configuration = worker.prepare_remote_cache(workspace, scratch)
             invoke.assert_called_once()
-            worker.safe_json({"schema": 2, "cache_mode": "remote_only_run_attempt",
-                              "remote_cache": dict(worker.K3S_REMOTE_CACHE_POLICY)})
+            worker.safe_json({"schema": 3, "cache_mode": "remote_only_run_attempt", "remote_cache": {
+                **worker.K3S_MANAGED_REMOTE_CACHE_POLICY, "endpoint": configuration["endpoint"],
+                "host": configuration["host"], "credential_helper_path": "/opt/sonic-native-runtime/cache_credentials.py"}})
             profile = worker.select_build_profile(20 * 1024**3, 6)
             rendered = [json.dumps(configuration), (scratch / "remote-cache-access.json").read_text(),
                 worker.launcher_text("/tools/bazel", scratch / "root-output", profile, configuration),
                 worker.owner_launcher_text("/tools/bazel", scratch / "owner-output", scratch / "owner.rc", scratch, configuration),
-                json.dumps(worker.K3S_REMOTE_CACHE_POLICY)]
-            for text in rendered:
-                self.assertNotIn(self.canary, text)
-                self.assertNotIn("BAZEL_REMOTE_AUTH", text)
-                self.assertNotIn("--action_env", text)
+                json.dumps(worker.K3S_MANAGED_REMOTE_CACHE_POLICY)]
+            for value in rendered:
+                self.assertNotIn(self.canary, value)
+                self.assertNotIn("BAZEL_REMOTE_AUTH", value)
+                self.assertNotIn("--action_env", value)
+                self.assertNotIn("authenticated", value)
             with patch.object(worker, "run") as invoke, self.assertRaisesRegex(ValueError, "fresh"):
                 worker.prepare_remote_cache(workspace, scratch)
             invoke.assert_not_called()
@@ -2122,9 +2138,9 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "no local-cache fallback") as error:
                     worker.prepare_remote_cache(workspace, scratch)
                 self.assertNotIn(self.canary, str(error.exception))
-            valid = {"endpoint": worker.K3S_REMOTE_CACHE_POLICY["endpoint"], "authenticated": True, "status": 200}
-            for changes in ({"authenticated": False}, {"authenticated": 1}, {"status": "200"},
-                            {"endpoint": "https://different.invalid"}, {"unexpected": "field"}):
+            valid = self.access_receipt(worker.remote_cache_configuration(workspace))
+            for changes in ({"access_probe": "failed"}, {"access_probe": True}, {"stage": "access"},
+                            {"endpoint": "https://different.invalid"}, {"authenticated": True}):
                 receipt = scratch / "remote-cache-access.json"; receipt.unlink(missing_ok=True)
                 def complete(argv, **kwargs):
                     Path(argv[-1]).write_text(json.dumps({**valid, **changes}))
@@ -2160,8 +2176,10 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
                 for command in ("build", "test", "aquery", "cquery"):
                     with self.subTest(launcher=name, command=command):
                         argv = json.loads(subprocess.check_output([sys.executable, str(launch), command,
-                            "--remote_cache=", "--disk_cache=/old/local", "//:literal"], text=True))
-                        for prefix in ("--remote_cache=", "--credential_helper=", "--disk_cache="):
+                            "--remote_cache=", "--disk_cache=/old/local", "--repository_cache=/old/repository",
+                            "--remote_executor=grpc://different.invalid", "//:literal"], text=True))
+                        for prefix in ("--remote_cache=", "--credential_helper=", "--disk_cache=",
+                                       "--repository_cache=", "--remote_executor="):
                             self.assertEqual([arg for arg in argv if arg.startswith(prefix)][-1],
                                              next(arg for arg in expected if arg.startswith(prefix)))
                         self.assertNotIn(self.canary, json.dumps(argv))
@@ -2190,6 +2208,8 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
             context = worker.prepare_p4rt(workspace, cache, scratch, [cache / "distdir"], scratch / "mirrors", configuration)
             self.assertFalse((cache / "p4rt-owner/disk").exists())
             self.assertIn("build --disk_cache=\n", Path(context["rc"]).read_text())
+            self.assertIn("common --repository_cache=\n", Path(context["rc"]).read_text())
+            self.assertIn("common --distdir=" + str(cache / "distdir"), Path(context["rc"]).read_text())
             args = SimpleNamespace(workspace=workspace, artifacts=root, revision="a" * 40, phase="prepare-owner")
             self.assertEqual(worker.p4rt_context(args, {"p4rt_owner": context}), context)
             with patch.dict(os.environ, {"GITHUB_RUN_ATTEMPT": "2"}), self.assertRaisesRegex(ValueError, "context changed"):
@@ -2215,6 +2235,122 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
                        "github.actor == 'securely1g'", "github.triggering_actor == 'securely1g'",
                        "inputs.source_worker_pool == 'sonic-slave-container-k3s'", "secrets.BAZEL_REMOTE_AUTH || ''"):
             self.assertIn(clause, expression)
+
+    @staticmethod
+    def access_receipt(configuration):
+        return {"schema": 1, "provider": configuration["provider"], "endpoint": configuration["endpoint"],
+                "host": configuration["host"], "helper_sha256": configuration["helper_sha256"],
+                "access_probe": "passed", "stage": "complete"}
+
+    def owner_probe(self, root, workspace, scratch, owner):
+        configuration = worker.remote_cache_configuration(workspace)
+        receipt = scratch / "owned-probe.json"
+        previous_umask = os.umask(0o077)
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, {"BAZEL_REMOTE_AUTH": self.canary}, clear=True))
+                stack.enter_context(patch.object(sys, "argv", ["probe", json.dumps(configuration), str(receipt)]))
+                stack.enter_context(patch.object(os, "getuid", return_value=1000))
+                stack.enter_context(patch.object(os, "geteuid", return_value=1000))
+                stack.enter_context(patch.dict(sys.modules, {"_managed_owner_fixture": owner}))
+                with self.assertRaises(SystemExit) as stopped:
+                    exec(worker.managed_cache_owner_program(), {"__name__": "__main__"})
+            value = json.loads(receipt.read_text())
+            self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
+            self.assertNotIn(self.canary, receipt.read_text())
+            self.assertNotIn("authenticated", value)
+            return stopped.exception.code, value, owner.imported
+        finally:
+            os.umask(previous_umask)
+
+    def fake_owner(self, configuration):
+        return SimpleNamespace(HOST_CREDENTIALS=SimpleNamespace(is_file=unittest.mock.Mock(return_value=True)),
+            settings=unittest.mock.Mock(return_value={"endpoint": configuration["endpoint"], "host": configuration["host"]}),
+            probe_access=unittest.mock.Mock(), imported=unittest.mock.Mock())
+
+    def test_managed_settings_and_access_do_not_require_legacy_auth(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            with patch.dict(os.environ, {}, clear=True):
+                configuration = worker.remote_cache_configuration(workspace)
+            owner = self.fake_owner(configuration)
+            code, value, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 0)
+            worker.validate_managed_cache_probe(value, configuration)
+            imported.assert_called_once_with()
+            self.assertEqual(owner.settings.call_count, 2)
+            owner.probe_access.assert_called_once_with()
+
+    def test_owner_adapter_refuses_legacy_fallback_before_settings_or_http(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.HOST_CREDENTIALS.is_file.return_value = False
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"], value["error_type"]), (1, "host_configuration", "ValueError"))
+            owner.settings.assert_not_called(); owner.probe_access.assert_not_called()
+
+    def test_owner_adapter_refuses_different_settings_before_http_without_disclosure(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.settings.return_value = {"endpoint": "https://different.invalid/", "host": "different.invalid"}
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"]), (1, "settings"))
+            self.assertNotIn("different.invalid", json.dumps(value))
+            owner.probe_access.assert_not_called()
+
+    def test_owner_adapter_retains_safe_stage_only_on_access_failure(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.probe_access.side_effect = ValueError(self.canary)
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"], value["error_type"]), (1, "access", "ValueError"))
+            self.assertEqual(value["access_probe"], "failed")
+
+    def test_owner_adapter_refuses_settings_changed_after_probe(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.settings.side_effect = [owner.settings.return_value, {"endpoint": "https://changed.invalid/"}]
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"]), (1, "stable_settings"))
+            owner.probe_access.assert_called_once_with()
+            self.assertNotIn("changed.invalid", json.dumps(value))
+
+    def test_owner_adapter_rechecks_source_identity_before_import(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            configuration = worker.remote_cache_configuration(workspace)
+            helper.chmod(0o777)
+            with patch.object(worker, "remote_cache_configuration", return_value=configuration):
+                code, value, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"]), (1, "owner_identity"))
+            imported.assert_not_called(); owner.settings.assert_not_called(); owner.probe_access.assert_not_called()
+
+
+    def test_operator_public_settings_change_without_source_or_http_change(self):
+        with self.fixture() as (_root, workspace, _helper, _scratch):
+            owner = sys.modules["_managed_owner_fixture"]
+            first = worker.remote_cache_configuration(workspace)
+            owner.settings = unittest.mock.Mock(return_value={
+                "endpoint": "https://next-managed-cache.invalid/", "host": "next-managed-cache.invalid"})
+            second = worker.remote_cache_configuration(workspace)
+            self.assertEqual(second["endpoint"], "https://next-managed-cache.invalid/")
+            self.assertNotEqual(first["endpoint"], second["endpoint"])
+            self.assertEqual(first["helper_sha256"], second["helper_sha256"])
+            self.assertNotIn("endpoint", worker.K3S_MANAGED_REMOTE_CACHE_POLICY)
+            self.assertNotIn("host", worker.K3S_MANAGED_REMOTE_CACHE_POLICY)
+            owner.probe_access.assert_not_called()
+
+    def test_host_mode_disappearance_cannot_pass_even_with_same_public_origin(self):
+        with self.fixture() as (root, workspace, _helper, scratch):
+            configuration = worker.remote_cache_configuration(workspace)
+            owner = self.fake_owner(configuration)
+            owner.HOST_CREDENTIALS.is_file.side_effect = [True, False]
+            code, receipt, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["access_probe"], "failed")
+            self.assertEqual(receipt["stage"], "stable_settings")
+            self.assertEqual(receipt["error_type"], "ValueError")
+            owner.probe_access.assert_called_once_with()
+            owner.settings.assert_called_once_with()
 
 
 if __name__ == "__main__":

@@ -200,7 +200,7 @@ def build_arguments(version, log_path, cached, user_root):
     require(version in VERSIONS, "Unsupported Bazel version")
     return ["--output_user_root=" + str(user_root), "--batch", "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "build", TARGET,
             "--enable_bzlmod=false", *(["--enable_workspace=true"] if version == "8.5.1" else []),
-            "--remote_executor=", "--disk_cache=", "--remote_download_outputs=all",
+            "--remote_executor=", "--disk_cache=", "--repository_cache=", "--remote_download_outputs=all",
             "--remote_accept_cached=" + str(cached).lower(),
             "--remote_upload_local_results=" + str(not cached).lower(),
             "--execution_log_json_file=" + str(log_path), "--jobs=1",
@@ -356,11 +356,38 @@ def check_credential_probe_receipt(directory, output_name, endpoint, result, rec
     require(access["authenticated"] is True, "Credential probe did not pass")
 
 
+def check_managed_cache_probe_receipt(directory, output_name, configuration, result, receipt):
+    """Expose the verified owner's public access result without inferring authentication."""
+    try:
+        access = json_decoder().decode(read_under(directory, output_name, 4096).decode())
+    except FileNotFoundError:
+        require(result["status"] != "CAPTURED", "Managed cache probe receipt is missing")
+        raise ProbeFailure("Managed cache probe command failed") from None
+    fixed = {"schema": 1, "provider": configuration["provider"], "endpoint": configuration["endpoint"],
+             "host": configuration["host"], "helper_sha256": configuration["helper_sha256"]}
+    require(type(access) is dict and type(access.get("schema")) is int and
+            all(access.get(key) == value for key, value in fixed.items()), "Invalid managed cache probe identity")
+    if access.get("access_probe") == "passed":
+        require(access == {**fixed, "access_probe": "passed", "stage": "complete"},
+                "Invalid successful managed cache probe receipt")
+    else:
+        require(set(access) == set(fixed) | {"access_probe", "stage", "error_type"} and
+                access.get("access_probe") == "failed" and access.get("stage") in
+                ("owner_identity", "host_configuration", "settings", "access", "stable_settings") and
+                access.get("error_type") in ("ValueError", "OSError", "FileNotFoundError",
+                    "PermissionError", "TimeoutError", "ImportError", "OwnerFailure"),
+                "Invalid failed managed cache probe receipt")
+    receipt["managed_cache_probe"] = dict(access)
+    require(result["status"] == "CAPTURED", "Managed cache probe command failed")
+    require(access["access_probe"] == "passed", "Managed cache access probe did not pass")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--native-revision", required=True)
     parser.add_argument("--worker-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--expected-managed-origin", required=True)
     args = parser.parse_args()
     require(re.fullmatch(r"[0-9a-f]{40}", args.native_revision) and
             re.fullmatch(r"[0-9a-f]{64}", args.worker_sha256), "Invalid source binding")
@@ -373,12 +400,13 @@ def main():
     require(args.output.parent.resolve() == root.parent and not os.path.lexists(args.output),
             "Public receipt must be fresh in runner temp")
     old_umask = os.umask(0o077)
-    receipt = {"status": "FAILED_NOT_QUALIFIED", "identity": identity,
+    receipt = {"schema": 2, "status": "FAILED_NOT_QUALIFIED", "identity": identity,
                "native_revision": args.native_revision, "worker_sha256": args.worker_sha256,
                "scope": "TINY_COPY_REMOTE_CACHE_ONLY_NOT_NATIVE_BUILD_ACCEPTANCE", "versions": [], "commands": []}
     try:
-        receipt["stage"] = "credential_setup"
+        receipt["stage"] = "managed_cache_setup"
         configuration = worker.remote_cache_configuration(ROOT)
+        require(configuration["endpoint"] == args.expected_managed_origin, "Managed cache origin differs from this qualification binding")
         binary = shutil.which("bazel", path="/usr/local/bin:/usr/bin:/bin")
         require(binary is not None, "Bazel launcher is unavailable")
         executable = Path(binary).resolve()
@@ -390,17 +418,20 @@ def main():
         auth = root / "credential-probe"
         auth.mkdir(mode=0o700)
         auth_output = auth / "remote-cache-access.json"
-        env = version_environment(os.environ, root, VERSIONS[0])
-        receipt["stage"] = "credential_probe"
-        result = run_command(auth, [configuration["helper"], "probe", "--output", str(auth_output)],
+        managed_environment = dict(os.environ)
+        managed_environment.pop("BAZEL_REMOTE_AUTH", None)
+        env = version_environment(managed_environment, root, VERSIONS[0])
+        receipt["stage"] = "managed_cache_probe"
+        result = run_command(auth, worker.managed_cache_probe_command(configuration, auth_output),
                              env, cwd=ROOT, seconds=45,
-                             record=lambda value: receipt["commands"].append(dict(stage="credential_probe", **value)))
-        check_credential_probe_receipt(auth, auth_output.name, configuration["endpoint"], result, receipt)
+                             record=lambda value: receipt["commands"].append(dict(stage="managed_cache_probe", **value)))
+        check_managed_cache_probe_receipt(auth, auth_output.name, configuration, result, receipt)
         receipt["credential_helper_sha256"] = configuration["helper_sha256"]
-        receipt["authenticated_probe"] = True
+        receipt["access_probe"] = "passed"
+        receipt["cache_provider"] = configuration["provider"]
         for version in VERSIONS:
             nonce = "%s/%s/%s/%s" % (identity["run"], identity["attempt"], args.native_revision, version)
-            receipt["versions"].append(qualify_version(root / version, binary, version, configuration, os.environ, nonce,
+            receipt["versions"].append(qualify_version(root / version, binary, version, configuration, managed_environment, nonce,
                 progress=lambda stage: receipt.update(stage=version + "/" + stage),
                 record=lambda value: receipt["commands"].append(dict(stage=receipt["stage"], **value))))
         receipt["stage"] = "complete"

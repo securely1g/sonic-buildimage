@@ -23,7 +23,7 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import (
     POOLS, cpu_limit, measure, select_build_profile, worker_cache_root, worker_matches_pool)
 from tools.bazel.gzip.source_archive import SOURCES
-from tools.bazel.ci.image_worker_receipt import K3S_REMOTE_CACHE_POLICY
+from tools.bazel.ci.image_worker_receipt import K3S_REMOTE_CACHE_POLICY, K3S_MANAGED_REMOTE_CACHE_POLICY
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
@@ -574,20 +574,111 @@ def prepare_work_directory(pool, runner, image):
     return directory
 
 
-def require_remote_cache_auth():
-    require(bool(os.environ.get("BAZEL_REMOTE_AUTH")),
-            "K3s remote cache requires BAZEL_REMOTE_AUTH; local-only fallback is disabled")
+def managed_cache_helper():
+    helper = Path(K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_path"])
+    try:
+        info = helper.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022 and
+                info.st_size == 7646 and helper.resolve() == helper and os.access(helper, os.X_OK) and
+                digest(helper) == K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"],
+                "Managed remote-cache helper differs from the reviewed installed owner")
+    except OSError:
+        raise ValueError("Managed remote-cache helper unavailable; legacy fallback is disabled") from None
+    return helper
+
+
+def load_managed_cache_owner(helper):
+    # Execute the verified source bytes, never an installed bytecode cache.
+    import types
+    source = helper.read_bytes()
+    require(len(source) == 7646 and hashlib.sha256(source).hexdigest() ==
+            K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"], "Installed cache owner source changed")
+    owner = types.ModuleType("reviewed_native_cache_owner")
+    owner.__file__ = str(helper)
+    exec(compile(source, str(helper), "exec"), owner.__dict__)
+    return owner
 
 
 def remote_cache_configuration(workspace):
-    require_remote_cache_auth()
-    helper = workspace / "tools/bazel/cache/credentials.py"
+    # The installed owner selects public settings; this does not perform HTTP.
+    helper = managed_cache_helper()
+    policy = K3S_MANAGED_REMOTE_CACHE_POLICY
+    require(os.getuid() == os.geteuid() == 1000, "Managed cache settings require the worker UID")
+    owner = load_managed_cache_owner(helper)
+    try:
+        require(owner.HOST_CREDENTIALS.is_file(), "Host-managed cache configuration is required")
+        selected = owner.settings()
+        require(owner.HOST_CREDENTIALS.is_file(), "Host-managed cache configuration disappeared")
+    except (OSError, ValueError):
+        raise ValueError("Managed cache configuration unavailable; legacy fallback is disabled") from None
+    require(type(selected) is dict and set(selected) == {"endpoint", "host"}, "Invalid owner public settings")
+    return {"endpoint": selected["endpoint"], "host": selected["host"], "helper": str(helper),
+            "helper_sha256": policy["credential_helper_sha256"], "provider": policy["provider"]}
+
+
+def managed_cache_owner_program():
+    # The installed owner alone parses credentials and performs the HTTPS probe.
+    # Its source identity is checked again inside this isolated bounded child.
+    return r"""import hashlib, json, os, stat, sys, types
+from pathlib import Path
+os.umask(0o077)
+os.environ.pop('BAZEL_REMOTE_AUTH', None)
+configuration = json.loads(sys.argv[1])
+output = Path(sys.argv[2])
+value = {'schema': 1, 'provider': configuration['provider'],
+         'endpoint': configuration['endpoint'], 'host': configuration['host'],
+         'helper_sha256': configuration['helper_sha256'], 'access_probe': 'failed',
+         'stage': 'owner_identity'}
+try:
+    helper = Path(configuration['helper'])
     info = helper.lstat()
-    require(stat.S_ISREG(info.st_mode) and info.st_size == 4492 and helper.resolve() == helper and
-            os.access(helper, os.X_OK) and digest(helper) == K3S_REMOTE_CACHE_POLICY["credential_helper_sha256"],
-            "Remote-cache credential helper differs from the reviewed source")
-    return {"endpoint": K3S_REMOTE_CACHE_POLICY["endpoint"], "helper": str(helper),
-            "helper_sha256": K3S_REMOTE_CACHE_POLICY["credential_helper_sha256"]}
+    if (os.getuid() != 1000 or os.geteuid() != 1000 or
+            not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or
+            info.st_size != 7646 or helper.resolve() != helper or not os.access(helper, os.X_OK) or
+            hashlib.sha256(helper.read_bytes()).hexdigest() != configuration['helper_sha256']):
+        raise ValueError('Owner identity differs')
+    source = helper.read_bytes()
+    if len(source) != 7646 or hashlib.sha256(source).hexdigest() != configuration['helper_sha256']:
+        raise ValueError('Owner source changed')
+    owner = types.ModuleType('reviewed_native_cache_owner')
+    owner.__file__ = str(helper)
+    exec(compile(source, str(helper), 'exec'), owner.__dict__)
+    value['stage'] = 'host_configuration'
+    if not owner.HOST_CREDENTIALS.is_file():
+        raise ValueError('Host configuration required')
+    expected = {'endpoint': configuration['endpoint'], 'host': configuration['host']}
+    value['stage'] = 'settings'
+    if owner.settings() != expected:
+        raise ValueError('Public settings differ')
+    value['stage'] = 'access'
+    owner.probe_access()
+    value['stage'] = 'stable_settings'
+    if not owner.HOST_CREDENTIALS.is_file() or owner.settings() != expected:
+        raise ValueError('Host configuration or public settings changed')
+    value.update(stage='complete', access_probe='passed')
+except BaseException as error:
+    kind = type(error).__name__
+    value['error_type'] = kind if kind in ('ValueError', 'OSError', 'FileNotFoundError',
+        'PermissionError', 'TimeoutError', 'ImportError') else 'OwnerFailure'
+with output.open('x') as stream:
+    json.dump(value, stream, sort_keys=True)
+    stream.write('\n')
+raise SystemExit(0 if value['access_probe'] == 'passed' else 1)
+"""
+
+
+def managed_cache_probe_command(configuration, receipt):
+    remote_cache_options(configuration)
+    require(configuration.get("provider") == "host_managed_native_runtime", "Managed cache owner required")
+    return [sys.executable, "-I", "-S", "-B", "-c", managed_cache_owner_program(),
+            json.dumps(configuration, sort_keys=True), str(receipt)]
+
+
+def validate_managed_cache_probe(value, configuration):
+    require(type(value) is dict and type(value.get("schema")) is int and value == {"schema": 1, "provider": configuration["provider"],
+            "endpoint": configuration["endpoint"], "host": configuration["host"],
+            "helper_sha256": configuration["helper_sha256"], "access_probe": "passed", "stage": "complete"},
+            "Host-managed K3s remote-cache access probe did not pass")
 
 
 def prepare_remote_cache(workspace, directory):
@@ -595,19 +686,22 @@ def prepare_remote_cache(workspace, directory):
     receipt = directory / "remote-cache-access.json"
     require(not os.path.lexists(receipt), "Remote-cache probe output must be fresh")
     try:
-        run([sys.executable, "-B", configuration["helper"], "probe", "--output", str(receipt)],
+        run(managed_cache_probe_command(configuration, receipt),
             timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
-        raise ValueError("Authenticated K3s remote-cache probe failed; no local-cache fallback") from None
-    value = json.loads(receipt.read_text())
-    require(set(value) == {"endpoint", "authenticated", "status"} and
-            value["endpoint"] == configuration["endpoint"] and value["authenticated"] is True and
-            type(value["status"]) is int and value["status"] == 200,
-            "Authenticated K3s remote-cache probe did not pass")
+        raise ValueError("Host-managed K3s remote-cache access failed; no local-cache fallback") from None
+    require(receipt.stat().st_size <= 4096, "Managed cache probe receipt exceeds bound")
+    validate_managed_cache_probe(json.loads(receipt.read_text()), configuration)
     return configuration
 
 
 def remote_cache_options(configuration):
+    if configuration.get("provider") == "host_managed_native_runtime":
+        require(configuration == remote_cache_configuration(None), "Unexpected managed remote-cache configuration")
+        return ["--remote_cache=" + configuration["endpoint"],
+                "--credential_helper=" + configuration["host"] + "=" + configuration["helper"],
+                "--disk_cache=", "--repository_cache=", "--remote_executor="]
+    # Preserve the historical schema2 renderer; new K3s preparation never selects it.
     require(set(configuration) == {"endpoint", "helper", "helper_sha256"} and
             configuration["endpoint"] == K3S_REMOTE_CACHE_POLICY["endpoint"] and
             configuration["helper_sha256"] == K3S_REMOTE_CACHE_POLICY["credential_helper_sha256"] and
@@ -615,6 +709,7 @@ def remote_cache_options(configuration):
     host = K3S_REMOTE_CACHE_POLICY["endpoint"].removeprefix("https://")
     return ["--remote_cache=" + configuration["endpoint"],
             "--credential_helper=" + host + "=" + configuration["helper"], "--disk_cache="]
+
 
 
 def owner_build_profile(pool):
@@ -690,7 +785,7 @@ def prepare_p4rt(workspace, cache, temporary, distdirs, mirror, remote_cache=Non
     launch = temporary / "p4rt-owner-bazel"
     require(not rc.exists() and not launch.exists(), "P4RT owner launcher must be fresh")
     rc.write_text("\n".join([
-        "common --repository_cache=" + str(owner_cache / "repository"),
+        "common --repository_cache=" + ("" if remote_cache is not None else str(owner_cache / "repository")),
         "build --disk_cache=" + ("" if remote_cache is not None else str(owner_cache / "disk")),
         "build --local_ram_resources=4096",
         "common --experimental_downloader_config=" + str(mirror),
@@ -845,7 +940,7 @@ def prepare(args):
         prepare_teamd_kernel(artifacts)
     pool = selected_worker_pool()
     if pool == "sonic-slave-container-k3s":
-        require_remote_cache_auth()
+        managed_cache_helper()
     preflight = measure(os.environ.get("RUNNER_NAME", ""), pool)
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
@@ -913,7 +1008,7 @@ def prepare(args):
     rc.write_text("\n".join([
         ("# Remote action cache with fresh run-attempt working state; no Make package cache." if remote_cache is not None else
          "# Private persistent source-image worker caches; no Make package cache."),
-        "common --repository_cache=" + str(cache / "repository"),
+        "common --repository_cache=" + ("" if remote_cache is not None else str(cache / "repository")),
         "common --disk_cache=" + ("" if remote_cache is not None else str(cache / "disk")),
         "common --experimental_downloader_config=" + str(mirror),
         *["common --distdir=" + str(directory) for directory in distdirs],
@@ -962,13 +1057,13 @@ def prepare(args):
     else:
         raise ValueError("Private Docker did not become ready")
     capture_docker_mount(args, "ready")
-    receipt = {"schema": 2 if remote_cache is not None else 1, "status": "prepared", "worker": runner, "architecture": "amd64", "distribution": "trixie",
+    receipt = {"schema": 3 if remote_cache is not None else 1, "status": "prepared", "worker": runner, "architecture": "amd64", "distribution": "trixie",
                "source_revision": args.revision, "dispatcher_revision": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
                "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "remote_only_run_attempt" if remote_cache is not None else "persistent_worker_local",
                "build_profile": profile, "memory": memory_snapshot(),
                "docker_network": "none", "image": args.image}
     if remote_cache is not None:
-        receipt["remote_cache"] = dict(K3S_REMOTE_CACHE_POLICY)
+        receipt["remote_cache"] = dict(K3S_MANAGED_REMOTE_CACHE_POLICY, endpoint=remote_cache["endpoint"], host=remote_cache["host"])
     if args.image == "p4rt":
         receipt["owner_profile"] = owner_build_profile(pool)
     safe_json(receipt)

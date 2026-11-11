@@ -501,26 +501,27 @@ measured profile, and each phase checks that it has not changed. Resource, priva
 namespace, mount, tool, source, memory-event and original-receipt checks still apply.
 The existing 50-GiB preflight and 90-GiB native workspace gates remain independent.
 
-K3s requires the existing remote Bazel cache at
-`https://lgh-bazel-87263989.eastus.cloudapp.azure.com`. The authenticated manual
-workflow supplies `BAZEL_REMOTE_AUTH` only through the process environment. The
-existing origin-scoped [`credentials.py`](cache/credentials.py) helper supplies
-credentials to Bazel; a missing credential or failed authenticated probe stops
-preparation without a local-only fallback. Credential values are not written to
-launchers, rc files, action environments or public receipts.
+K3s uses the endpoint selected by the installed, source-verified
+`/opt/sonic-native-runtime/cache_credentials.py` owner. The owner reads its managed
+host configuration and supplies only public endpoint settings to launcher setup.
+Preparation refuses the owner's legacy fallback. The separate bounded access
+probe must pass before native work; access success does not by itself prove that
+an authentication header was needed. Credential values stay inside the existing
+owner interface and are not written to launchers, rc files, action environments
+or public receipts. K3s no longer requires the legacy `BAZEL_REMOTE_AUTH` setting.
 
-K3s disables the local action disk cache. Repository downloads, Bazelisk tools,
-per-image output bases and the separate P4RT owner output base use fresh
-`/actions/_work/.source-image-cache/source-images/<actual-runner>/run-<id>-<attempt>`
-working directories. This retains the authenticated `/actions` ownership,
-filesystem, writability and free-space checks without depending on persistent
-cache contents or adopting prior registrations' directories. Ephemeral space for
+Both Bazel launchers disable disk and repository caches and remote execution.
+Bazelisk tools, per-image output bases and the separate P4RT owner output base use
+fresh `/actions/_work/.source-image-cache/source-images/<actual-runner>/run-<id>-<attempt>`
+working directories. Preflight prepares this namespace on `/actions`; no existing
+cache contents or prior registration directory is adopted. Ephemeral space for
 compilation, downloads and image assembly is still required; capacities on the
 same filesystem are not additive. Dpool keeps its existing `/bazel_cache` route.
-The explicit K3s worker-record schema records remote-only policy while preserving
-historical schema-1 receipts. A separate short qualification must demonstrate a
-remote hit from a second fresh output base before long native work; mocked flags
-and a successful cache-access probe alone do not establish that result.
+Schema 3 records the selected public origin, verified managed owner and access
+result; historical schemas 1 and 2 retain their original meaning. A separate short
+qualification binds the observed origin for that invocation and must demonstrate
+a remote hit from a second fresh output base before long native work. Mocked
+flags, readable rc files and a successful access probe do not establish a hit.
 
 Native K3s concurrency is keyed by image family and original request artifact ID,
 with `cancel-in-progress: false`. Distinct requests can use separate workers while
