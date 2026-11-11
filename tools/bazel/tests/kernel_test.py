@@ -462,6 +462,7 @@ class KernelBundleTest(unittest.TestCase):
                              execute=Mock(side_effect=RuntimeError("stop before compilation")))
         rc = (state / "consumer/.bazelrc").read_text()
         self.assertIn("import " + str(cache_rc), rc.splitlines())
+        self.assertIn("try-import /run/sonic-native-apt/bazel-source.bazelrc", rc.splitlines())
         self.assertIn('flag_name: "repository_cache" set_value { flag_value: ""', rc)
         self.assertEqual((state / "consumer" / kernel.DOWNLOADER_CONFIG.name).read_bytes(),
                          (self.root / kernel.DOWNLOADER_CONFIG).read_bytes())

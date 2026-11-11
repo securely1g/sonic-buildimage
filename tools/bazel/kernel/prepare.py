@@ -681,6 +681,8 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
                   'flag_value: "" behavior: FINAL_VALUE_IGNORE_OVERRIDES } }')
         with (consumer / ".bazelrc").open("a") as rc:
             rc.write("\nimport " + shlex.quote(prepared["runner_cache_rc"]) + "\n")
+            # build.py also skips the system RC that configures Squid on native workers.
+            rc.write("try-import /run/sonic-native-apt/bazel-source.bazelrc\n")
             rc.write("startup --invocation_policy=" + shlex.quote(policy) + "\n")
     (state / "plan.json").write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n")
     if execute is None:
