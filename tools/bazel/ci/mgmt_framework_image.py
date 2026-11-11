@@ -109,8 +109,7 @@ def build_images(args, directory):
     check.require(platform.machine() == "x86_64" and
                   platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
                   "Framework image build requires native AMD64 Debian Trixie")
-    receipt = {"status": "building", "architecture": "amd64", "commands": [],
-               "review_registry_revision": os.environ.get("SONIC_BAZEL_REGISTRY_REVISION")}
+    receipt = {"status": "building", "architecture": "amd64", "commands": []}
     execute = partial(command_log.execute, cwd=ROOT)
     try:
         clean_source(directory)

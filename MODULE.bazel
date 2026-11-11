@@ -296,8 +296,6 @@ source_modules(
     name = "image_source_modules",
     modules = {
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
-        "@sonic_mgmt_common//:MODULE.bazel": "sonic-mgmt-common",
-        "@sonic_gnmi//:MODULE.bazel": "sonic-gnmi",
         "@libteam//:MODULE.bazel": "libteam",
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
@@ -473,7 +471,7 @@ single_version_override(
 # Framework shares the root gNMI Go selection and public generator identities.
 # Its registration follows the standard non-root go.mod dependency mechanism;
 # the reviewed registry entry supplies that wiring.
-bazel_dep(name = "sonic-mgmt-framework", version = "1.0.0-f8860f4bef7396b4f8354a4cbd9a66131c851f1f", repo_name = "sonic_mgmt_framework")
+bazel_dep(name = "sonic-mgmt-framework", version = "1.0.0-d48ffb1ebae56f6525f24e14d39562a0ba825daa", repo_name = "sonic_mgmt_framework")
 
 # The old pre-flag.Parse glog diagnostic patch does not apply to glog1.2.4.
 # Preserve the shared root's current glog API and all other SONiC Go patches.
