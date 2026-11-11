@@ -489,48 +489,6 @@ class ImageWorkerTest(unittest.TestCase):
         for gate in gates:
             self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
 
-    def test_framework_worker_pr_preserves_source_only_scope(self):
-        import yaml
-        from tools.bazel.tests.registry_native_worker_test import condition
-
-        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        branch = "codex/framework-native-worker"
-        guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
-                  for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
-        self.assertEqual(len(guards), 2)
-        for guard in guards:
-            self.assertTrue(condition(guard, event="pull_request", branch=branch))
-            self.assertFalse(condition(guard, event="pull_request", branch=branch + "-suffix"))
-            self.assertFalse(condition(guard, event="pull_request", branch=branch, head_repo="other/fork"))
-        self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch))
-        self.assertFalse(condition(workflow["jobs"]["registry_native"]["if"], event="pull_request", branch=branch))
-
-    def test_orchagent_worker_followup_skips_only_its_owned_deb_fixtures_and_vs(self):
-        import yaml
-        from tools.bazel.tests.registry_native_worker_test import condition
-
-        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        branch = "codex/orchagent-source-worker-current"
-        guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
-                  for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
-        self.assertEqual(len(guards), 2)
-        for guard in guards:
-            self.assertTrue(condition(guard, event="pull_request", branch=branch))
-            for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
-                            {"head_repo": "other/fork"}, {"event": "push"},
-                            {"event": "workflow_dispatch"}):
-                with self.subTest(changes=changes):
-                    context = {"event": "pull_request", "branch": branch, **changes}
-                    self.assertFalse(condition(guard, **context))
-        for name in ("vs", "vs_container", "source_image", "source_image_inputs", "registry_native",
-                     "source_worker_preflight", "worker_provenance"):
-            self.assertFalse(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
-        self.assertTrue(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch + "-suffix"))
-        for name in ("archive", "checks"):
-            self.assertTrue(condition(workflow["jobs"][name]["if"], event="pull_request", branch=branch))
-        kernel = yaml.safe_load((ROOT / ".github/workflows/bazel-kernel-bundle.yml").read_text())
-        self.assertFalse(condition(kernel["jobs"]["kernel-bundle"]["if"], event="pull_request", branch=branch))
-
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

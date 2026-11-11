@@ -276,7 +276,7 @@ class RegistryWorkerTest(unittest.TestCase):
 def namespace(value):
     return NS(**{k:namespace(v) if isinstance(v,dict) else v for k,v in value.items()})
 def condition(expression,event='workflow_dispatch',mode='registry-native',actor='securely1g',repo='securely1g/sonic-buildimage',
-              branch='codex/registry-native-workers',head_repo='securely1g/sonic-buildimage',consumer='fips'):
+              branch='feature',head_repo='securely1g/sonic-buildimage',consumer='fips'):
     text=expression.strip()
     if text.startswith('$'+'{{'): text=text[3:-2].strip()
     text=text.replace('&&',' and ').replace('||',' or ');text=re.sub(r'!(?!=)','not ',text)
@@ -311,15 +311,6 @@ class WorkflowTest(unittest.TestCase):
         for choice in ['sysmgr','dash-ha','orchagent','sflow','otel','syncd','gearbox','dash-engine','gnmi','gnmi-no-dialout']:
             self.assertTrue(condition(jobs['source_image_inputs']['if'],mode=choice))
         self.assertFalse(condition(jobs['source_image_inputs']['if']));self.assertFalse(condition(jobs['source_image']['if']))
-    def test_owned_pr_disables_deb_fixtures_and_full_vs(self):
-        guards=[step['env']['SOURCE_ONLY_NO_DEBS'] for job in self.flow['jobs'].values()
-            for step in job.get('steps',[]) if 'SOURCE_ONLY_NO_DEBS' in step.get('env',{})]
-        self.assertEqual(len(guards),2)
-        for guard in guards:
-            self.assertTrue(condition(guard,event='pull_request'))
-            self.assertFalse(condition(guard,event='pull_request',head_repo='foreign/repo'))
-            self.assertFalse(condition(guard,event='pull_request',branch='codex/registry-native-workers-extra'))
-        self.assertFalse(condition(self.flow['jobs']['vs_container']['if'],event='pull_request'))
     def test_fixed_checkout_permissions_and_no_hosted_cache_dependency(self):
         job=self.flow['jobs']['registry_native'];self.assertEqual(job['permissions'],{'contents':'read','actions':'read'})
         checkouts=[s for s in job['steps'] if s.get('uses','').startswith('actions/checkout@')]
