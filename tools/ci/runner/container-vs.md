@@ -56,9 +56,9 @@ the Make wrapper; it does not inherit `BAZEL_CONTAINER_ARGS`. Its upload policy
 also permits writes only for master pushes. See the
 [kernel cache interface](../../bazel/kernel/README.md#remote-cache-through-make).
 
-The shared lgh4 concurrency group is removed for this route. Only assign the
-`vs` label to independently provisioned, adequately sized VMs with one active
-runner each. Do not register several VS runners on one constrained host.
+The host job keeps the shared `sonic-slave-container-vs` queue. One installer
+runs at a time, and up to 100 can wait. Assign the `vs` label only to
+independently provisioned, adequately sized VMs with one active runner each.
 Workflow-level cancellation rules still apply. Run a full installer and its
 image-validation stages successfully before considering the migration verified.
 

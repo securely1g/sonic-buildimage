@@ -98,7 +98,11 @@ class ArchiveCachePolicyTest(unittest.TestCase):
 
     def test_host_installer_is_isolated_and_preserves_input_and_output_contracts(self):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
-        self.assertNotIn("concurrency", job)
+        self.assertEqual(job["concurrency"], {
+            "group": "sonic-slave-container-vs",
+            "cancel-in-progress": False,
+            "queue": "max",
+        })
         self.assertNotIn("container", job)
         self.assertNotIn("EXPECTED_MANAGER_REVISION", job["env"])
         self.assertEqual(job["env"]["BAZEL_REMOTE_AUTH"], "")
