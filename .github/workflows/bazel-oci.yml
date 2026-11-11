@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-native-inventory, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -2620,6 +2620,109 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vs-cache-dns-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ steps.paths.outputs.receipt }}
+          if-no-files-found: error
+          retention-days: 14
+
+  vs_cache_configuration:
+    name: Remote cache configuration discovery (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-cache-config' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    timeout-minutes: 5
+    concurrency:
+      group: vs-cache-config-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require separate configuration scope and fresh paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 - <<'PY_CACHE_SMOKE_PATHS'
+          import os, re
+          from pathlib import Path
+          if any(os.environ.get(name) for name in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Cache configuration diagnostic does not accept a native source request')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', value) for value in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected assigned runner identity')
+          name = f'vs-cache-config-control-{run}-{attempt}-{worker}'
+          control = Path(os.environ['GITHUB_WORKSPACE']) / name
+          native = control.with_name(control.name + '-native')
+          receipt = Path(os.environ['RUNNER_TEMP']) / (name + '.json')
+          private = Path(os.environ['RUNNER_TEMP']) / f'cache-configuration-{run}-{attempt}'
+          if any(os.path.lexists(path) for path in (control, native, receipt, private)):
+              raise SystemExit('Preserve existing configuration diagnostic paths')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'worker={worker}\ncontrol={control.name}\nnative={native.name}\nreceipt={receipt.name}\n')
+          PY_CACHE_SMOKE_PATHS
+      - name: Checkout the immutable configuration observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+      - name: Checkout the reviewed native identity and process driver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 4bf648e812f28b05a2683c6cf7559470b0883d2a
+          path: ${{ steps.paths.outputs.native }}
+          clean: false
+          persist-credentials: false
+      - name: Check source identities and 24 pure configuration fixtures
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+          NATIVE: ${{ steps.paths.outputs.native }}
+          GIT_NO_LAZY_FETCH: '1'
+          GIT_NO_REPLACE_OBJECTS: '1'
+          GIT_OPTIONAL_LOCKS: '0'
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/$CONTROL" -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          cd "$GITHUB_WORKSPACE/$NATIVE"
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "4bf648e812f28b05a2683c6cf7559470b0883d2a"
+          test -z "$(git -c protocol.allow=never status --porcelain --untracked-files=no)"
+          printf '%s  %s\n' \
+            679bda8f5a64ee00694968cc7f913ee694f792f0ad8094225a1da04b0be71237 tools/bazel/ci/remote_cache_smoke.py \
+            ad7bd9fff7ea82d9639bf62f64b8e9ef046e0c0d8847eb8b3635c18edcdbf2bf tools/bazel/tests/remote_cache_smoke_test.py \
+            6c491e3daf8cdbdcc64257703742763040d986ed5d69a89cdec5e3366263b26d tools/bazel/ci/source_image_worker.py \
+            9e44e83bccea514eaeea0a162d67295bb00d9be1cca764681b967380c7e0f5b0 tools/bazel/cache/credentials.py | sha256sum --check --status
+          printf '%s  %s\n' \
+            9ffde2a7a08e5cb86bf9d91a05c6b462537fe9586c0576ca912f6983e49d9e9f tools/bazel/ci/source_worker_preflight.py | sha256sum --check --status
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          printf '%s  %s\n' \
+            4fdf103fa9d4cca3279a6b8063789f995fd239267a57a3bc420c8ea454333a35 tools/bazel/ci/vs_cache_transport.py \
+            e98f0c8a48d55f8e722cd4e5bef9da1179f82edc87d348a78dae8112cb2bec5f tools/bazel/tests/vs_cache_transport_test.py | sha256sum --check --status
+          printf '%s  %s\n' \
+            b6482f26f057d1d822792f12ccb330083ef4e0804e2845d5e4595dff3cb54809 tools/bazel/ci/vs_cache_dns.py \
+            18c980acf16e36f286c4e0c62cf816a4a4bb647f0c1f622bb6cdaa597f6f40f7 tools/bazel/tests/vs_cache_dns_test.py | sha256sum --check --status
+          printf '%s  %s\n' \
+            8acb2f67ccc66e4731d247ac657a58e19fc887a2011e1f84a10ed245dbca4f01 tools/bazel/ci/vs_cache_configuration.py \
+            66f4a5f70236e75e16ecf4a72db8fb289d27d7a82ab61b361ea42fd87a01ac28 tools/bazel/tests/vs_cache_configuration_test.py | sha256sum --check --status
+          python3 -B -m unittest -v tools.bazel.tests.vs_cache_configuration_test
+      - name: Read only fixed cache URL candidates and literal rc or runtime endpoints
+        id: diagnostic
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+          NATIVE: ${{ steps.paths.outputs.native }}
+          RECEIPT: ${{ steps.paths.outputs.receipt }}
+        run: |
+          set -euo pipefail
+          python3 -I -S -B "$GITHUB_WORKSPACE/$CONTROL/tools/bazel/ci/vs_cache_configuration.py" \
+            --native-root "$GITHUB_WORKSPACE/$NATIVE" \
+            --output "$RUNNER_TEMP/$RECEIPT"
+      - name: Retain only sanitized configuration origins and provenance
+        if: always() && (steps.diagnostic.outcome == 'success' || steps.diagnostic.outcome == 'failure')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-cache-config-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ steps.paths.outputs.receipt }}
           if-no-files-found: error
           retention-days: 14
