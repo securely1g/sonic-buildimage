@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -2427,18 +2427,20 @@ jobs:
           retention-days: 14
 
   vs_native_payload_inventory:
-    name: Original P4RT payload inventory (K3s)
-    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-native-inventory' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    name: Original ${{ inputs.source_image == 'vs-native-syncd-inventory' && 'Syncd' || inputs.source_image == 'vs-native-gearbox-inventory' && 'Gearbox' || 'P4RT' }} payload inventory (K3s)
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["vs-native-inventory","vs-native-syncd-inventory","vs-native-gearbox-inventory"]'), inputs.source_image) && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    env:
+      NATIVE_INVENTORY_IMAGE: ${{ inputs.source_image == 'vs-native-syncd-inventory' && 'syncd' || inputs.source_image == 'vs-native-gearbox-inventory' && 'gearbox' || 'p4rt' }}
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 40
     permissions:
       contents: read
       actions: read
     concurrency:
-      group: native-original-p4rt-inventory-${{ github.run_id }}-${{ github.run_attempt }}
+      group: native-original-${{ inputs.source_image }}-inventory-${{ github.run_id }}-${{ github.run_attempt }}
       cancel-in-progress: false
     steps:
-      - name: Require the fixed original P4RT scope and fresh inspection paths
+      - name: Require one fixed original native scope and fresh inspection paths
         id: paths
         env:
           EXPECTED_WORKER: ${{ runner.name }}
@@ -2455,8 +2457,11 @@ jobs:
           run, attempt, worker = (os.environ[k] for k in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
           if not all(re.fullmatch(r'[1-9][0-9]*', x) for x in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
               raise SystemExit('Unexpected assigned runner identity')
-          control = Path(os.environ['GITHUB_WORKSPACE']) / f'native-p4rt-inventory-control-{run}-{attempt}-{worker}'
-          output = Path(os.environ['RUNNER_TEMP']) / f'native-original-p4rt-{run}-{attempt}'
+          family = os.environ['NATIVE_INVENTORY_IMAGE']
+          if family not in ('p4rt', 'syncd', 'gearbox'):
+              raise SystemExit('Unexpected fixed original native family')
+          control = Path(os.environ['GITHUB_WORKSPACE']) / f'native-{family}-inventory-control-{run}-{attempt}-{worker}'
+          output = Path(os.environ['RUNNER_TEMP']) / f'native-original-{family}-{run}-{attempt}'
           if any(path.exists() or path.is_symlink() for path in (control, output)):
               raise SystemExit('Preserve existing original inspection paths')
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
@@ -2469,7 +2474,7 @@ jobs:
           path: ${{ steps.paths.outputs.control }}
           clean: false
           persist-credentials: false
-      - name: Verify exact validator interfaces and 38 pure inspection fixtures
+      - name: Verify exact validator interfaces and 41 pure inspection fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           GIT_NO_LAZY_FETCH: '1'
@@ -2483,7 +2488,7 @@ jobs:
           python3 -B - <<'PY_SOURCE'
           import hashlib, json
           from pathlib import Path
-          expected = json.loads(r'''{"tools/bazel/ci/image_worker_receipt.py": "d9804dd85f4d8a10f8e2e844ffba3d3eb3dbc6ff6a292abc54fc650df3fe20f9", "tools/bazel/ci/native_payload_inventory.py": "d85bf169109e1eb464666e2cd2319e4cc29cee1ad716e3b0d79ec96f378c8d57", "tools/bazel/ci/native_payload_inventory_input.json": "09ad533fe596ca431dc1cabcffa27bfb6b804b0673e7fad5c8c12cf1859f9fce", "tools/bazel/ci/native_payload_recovery.py": "31656a93d825b8e1e4fbab3440ba06781e7efebc929e134e0073385b24c7dae1", "tools/bazel/ci/p4rt_receipt_semantics.py": "0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661", "tools/bazel/ci/p4rt_sdk_receipt_semantics.py": "d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9", "tools/bazel/ci/public_artifacts.py": "74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9", "tools/bazel/ci/syncd_receipt_semantics.py": "1cd86c9d2323077e7b37929c260e9cf12f0add35c7168da9a98d31e2a684e3b9", "tools/bazel/ci/vs_cache_inspection.py": "03beddcf6d73233988b6eef92c69dfdfcc70dbb6a10421edc4e921a9709c451c", "tools/bazel/tests/native_payload_inventory_test.py": "b33ed61533db5948374833e0b8e03c61f451f2a8640e8e15821b70dd626eed7f", "tools/bazel/tests/native_payload_recovery_test.py": "424bf0e9b3f40bbe3872db55c35f877af6ed4f8dea54ead269f5ab1aee59b919"}''')
+          expected = json.loads(r'''{"tools/bazel/ci/image_worker_receipt.py": "d9804dd85f4d8a10f8e2e844ffba3d3eb3dbc6ff6a292abc54fc650df3fe20f9", "tools/bazel/ci/native_payload_inventory.py": "377a8a99b3921090fe74ed0b3591c9b365f065694851180f96cab43a92b78e8c", "tools/bazel/ci/native_payload_inventory_gearbox_input.json": "665c8b74ed882793a2e892526bb0942cb254305729d2a519cca1e5f287e6dee2", "tools/bazel/ci/native_payload_inventory_input.json": "09ad533fe596ca431dc1cabcffa27bfb6b804b0673e7fad5c8c12cf1859f9fce", "tools/bazel/ci/native_payload_inventory_syncd_input.json": "b27977dd2498a294f903281279538a1936b3ebd1eafd8a526bf56e1deab762ad", "tools/bazel/ci/native_payload_recovery.py": "31656a93d825b8e1e4fbab3440ba06781e7efebc929e134e0073385b24c7dae1", "tools/bazel/ci/p4rt_receipt_semantics.py": "0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661", "tools/bazel/ci/p4rt_sdk_receipt_semantics.py": "d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9", "tools/bazel/ci/public_artifacts.py": "74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9", "tools/bazel/ci/syncd_receipt_semantics.py": "1cd86c9d2323077e7b37929c260e9cf12f0add35c7168da9a98d31e2a684e3b9", "tools/bazel/ci/vs_cache_inspection.py": "03beddcf6d73233988b6eef92c69dfdfcc70dbb6a10421edc4e921a9709c451c", "tools/bazel/tests/native_payload_inventory_test.py": "b694d0b0f83251910e1c6f8c7c668132a119834ac9e192dda289b467b93212af", "tools/bazel/tests/native_payload_recovery_test.py": "424bf0e9b3f40bbe3872db55c35f877af6ed4f8dea54ead269f5ab1aee59b919"}''')
           for name, digest in expected.items():
               if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
                   raise SystemExit('Original inspection source binding differs')
@@ -2491,7 +2496,7 @@ jobs:
           python3 -B -m unittest -v \
             tools.bazel.tests.native_payload_recovery_test \
             tools.bazel.tests.native_payload_inventory_test
-      - name: Stream and inventory the one original failed P4RT upload
+      - name: Stream and inventory the selected original failed native upload
         id: inspect
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
@@ -2504,7 +2509,7 @@ jobs:
         if: always() && (steps.inspect.outcome == 'success' || steps.inspect.outcome == 'failure')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: original-p4rt-payload-inventory-${{ github.run_id }}-${{ github.run_attempt }}
+          name: original-${{ env.NATIVE_INVENTORY_IMAGE }}-payload-inventory-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/${{ steps.paths.outputs.output }}/summary.json
             ${{ runner.temp }}/${{ steps.paths.outputs.output }}/admission.json

@@ -1,4 +1,4 @@
-"""Inventory one failed P4RT upload and retain bounded checked public JSON.
+"""Inventory one fixed original failed native upload and retain bounded checked public JSON.
 
 The workflow must run the pure admission fixtures and verify the pinned local
 module hashes before this module. API authentication is confined to api.github.com;
@@ -29,6 +29,12 @@ from tools.bazel.ci import public_artifacts
 from tools.bazel.ci import vs_cache_inspection as observation
 
 INPUT_SHA256 = "09ad533fe596ca431dc1cabcffa27bfb6b804b0673e7fad5c8c12cf1859f9fce"
+INPUTS = {
+    "p4rt": ("native_payload_inventory_input.json", INPUT_SHA256),
+    'gearbox': ('native_payload_inventory_gearbox_input.json', '665c8b74ed882793a2e892526bb0942cb254305729d2a519cca1e5f287e6dee2'),
+    'syncd': ('native_payload_inventory_syncd_input.json', 'b27977dd2498a294f903281279538a1936b3ebd1eafd8a526bf56e1deab762ad'),
+}
+
 API = "https://api.github.com/repos/securely1g/sonic-buildimage"
 CHUNK = 1024 * 1024
 METADATA_LIMIT = 2 * CHUNK
@@ -127,8 +133,10 @@ def write_bytes(root, name, raw, limit=METADATA_LIMIT):
         os.fsync(output.fileno())
 
 
-def read_input():
-    path = Path(__file__).with_name("native_payload_inventory_input.json")
+def read_input(family="p4rt"):
+    require(family in INPUTS, "Unexpected fixed native inspection family")
+    name, expected_sha256 = INPUTS[family]
+    path = Path(__file__).with_name(name)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     with os.fdopen(fd, "rb") as stream:
         before = os.fstat(stream.fileno())
@@ -138,7 +146,7 @@ def read_input():
         after = os.fstat(stream.fileno())
     require(signature(before) == signature(after) and before.st_mtime_ns == after.st_mtime_ns and
             before.st_ctime_ns == after.st_ctime_ns and len(raw) == before.st_size and
-            hashlib.sha256(raw).hexdigest() == INPUT_SHA256, "Inspection input changed")
+            hashlib.sha256(raw).hexdigest() == expected_sha256, "Inspection input changed")
     value = strict(raw)
     request = base64.b64decode(value["original_request_base64"], validate=True)
     contract = base64.b64decode(value["original_contract_base64"], validate=True)
@@ -148,9 +156,12 @@ def read_input():
     return value, request, strict(contract)
 
 
-def api_json(opener, token, suffix, root, name, calls):
-    require(suffix in ("/actions/runs/42860613563", "/actions/jobs/129985415221",
-                       "/actions/artifacts/13803477455"), "Unexpected metadata endpoint")
+def api_json(opener, token, suffix, root, name, calls, family="p4rt"):
+    require(family in INPUTS, "Unexpected fixed native inspection family")
+    case = recovery.CASES[family]
+    require(suffix in ("/actions/runs/" + str(case["run"]),
+                      "/actions/jobs/" + str(case["job"]),
+                      "/actions/artifacts/" + str(case["artifact"])), "Unexpected metadata endpoint")
     request = urllib.request.Request(API + suffix,
         headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"})
     calls.append(name)
@@ -314,23 +325,26 @@ def public_review(root, request_bytes, contract, run, job, artifact, observed, p
     return result
 
 
-def collect(root, context, fixed, request_bytes, contract, calls, progress):
+def collect(root, context, fixed, request_bytes, contract, calls, progress, family="p4rt"):
+    require(family in INPUTS, "Unexpected fixed native inspection family")
+    case = recovery.CASES[family]
+    require(fixed["artifact_id"] == case["artifact"], "Fixed artifact belongs to another family")
     token = os.environ.pop("GH_TOKEN", "")
     require(token and len(token) <= 65536 and "\r" not in token and "\n" not in token,
             "Missing workflow artifact credential")
     opener = urllib.request.build_opener(NoRedirect)
     progress["stage"] = "original_run_metadata"
-    run = api_json(opener, token, "/actions/runs/42860613563", root, "original-run", calls)
+    run = api_json(opener, token, "/actions/runs/" + str(case["run"]), root, "original-run", calls, family)
     progress["stage"] = "original_job_metadata"
-    job = api_json(opener, token, "/actions/jobs/129985415221", root, "original-job", calls)
+    job = api_json(opener, token, "/actions/jobs/" + str(case["job"]), root, "original-job", calls, family)
     progress["stage"] = "original_artifact_metadata"
-    artifact = api_json(opener, token, "/actions/artifacts/13803477455", root, "original-artifact", calls)
+    artifact = api_json(opener, token, "/actions/artifacts/" + str(case["artifact"]), root, "original-artifact", calls, family)
     progress["stage"] = "original_failed_upload_admission"
     admission = recovery.admit_original(request_bytes, contract, run, job, artifact)
     require(artifact["id"] == fixed["artifact_id"] and artifact["name"] == fixed["artifact_name"] and
             artifact["size_in_bytes"] == fixed["zip_bytes"] and
             artifact["digest"] == "sha256:" + fixed["zip_sha256"], "Logged original ZIP identity differs")
-    require(artifact["archive_download_url"] == API + "/actions/artifacts/13803477455/zip",
+    require(artifact["archive_download_url"] == API + "/actions/artifacts/" + str(case["artifact"]) + "/zip",
             "Different original ZIP endpoint")
     free = os.fstatvfs(root)
     free_bytes = free.f_bavail * free.f_frsize
@@ -396,7 +410,7 @@ def collect(root, context, fixed, request_bytes, contract, calls, progress):
     progress["stage"] = "original_public_semantics_inspection_only"
     semantic = public_review(root, request_bytes, contract, run, job, artifact, observed,
                              public, retained, admission)
-    return dict(context, schema=1, status="ORIGINAL_P4RT_ZIP_INVENTORY_ONLY",
+    return dict(context, schema=1, status="ORIGINAL_" + family.upper() + "_ZIP_INVENTORY_ONLY",
                 original_artifact=artifact["id"], original_run=run["id"], original_job=job["id"],
                 original_conclusion="failure", zip=zipped, hosting_hostname=host,
                 member_count=len(observed["members"]), original_ZIP_preserved=True,
@@ -420,19 +434,20 @@ def main():
     calls, result, code, progress = [], None, 1, {"stage": "credential_presence"}
     try:
         context = observation.identity(os.environ["RUNNER_NAME"], os.environ, observation.marker())
-        fixed, request, contract = read_input()
+        family = os.environ.get("NATIVE_INVENTORY_IMAGE", "p4rt")
+        fixed, request, contract = read_input(family)
         temporary = Path(os.environ["RUNNER_TEMP"])
         require(temporary.is_relative_to("/actions/_work") and
                 not temporary.is_relative_to("/actions/_work/.source-image-cache"),
                 "Unexpected ephemeral temporary directory")
-        name = "native-original-p4rt-" + str(context["run"]) + "-" + str(context["attempt"])
+        name = "native-original-" + family + "-" + str(context["run"]) + "-" + str(context["attempt"])
         with directory(temporary) as parent:
             os.mkdir(name, 0o700, dir_fd=parent)
             fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
             try:
                 initial = os.fstat(fd)
                 try:
-                    result = collect(fd, context, fixed, request, contract, calls, progress)
+                    result = collect(fd, context, fixed, request, contract, calls, progress, family)
                     require(signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) == signature(initial),
                             "Owned output directory changed")
                     code = 0
@@ -440,7 +455,7 @@ def main():
                     result = dict(context, schema=1, status="FAILED_NOT_QUALIFIED",
                                   error_type=type(error).__name__, stage=progress["stage"],
                                   canonical_native_acceptance=False,
-                                  original_artifact=13803477455, original_conclusion="failure")
+                                  original_artifact=fixed["artifact_id"], original_conclusion="failure")
                     if isinstance(error, urllib.error.HTTPError):
                         if type(error.code) is int and 100 <= error.code <= 599:
                             result["HTTP_status"] = error.code

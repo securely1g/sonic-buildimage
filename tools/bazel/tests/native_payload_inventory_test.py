@@ -266,6 +266,49 @@ class NativePayloadInventoryTest(unittest.TestCase):
                 inventory.inventory(io.BytesIO(body), artifact, float("inf"), {})
 
 
+    def test_fixed_original_inputs_preserve_each_family_request_and_contract(self):
+        self.assertEqual(set(inventory.INPUTS), {"p4rt", "syncd", "gearbox"})
+        for family in inventory.INPUTS:
+            with self.subTest(family=family):
+                fixed, raw, contract = inventory.read_input(family)
+                request, case = inventory.recovery.original_request(raw, contract)
+                self.assertEqual(inventory.recovery.worker.image(request), family)
+                self.assertEqual(fixed["original_run"], case["run"])
+                self.assertEqual(fixed["original_job"], case["job"])
+                self.assertEqual(fixed["artifact_id"], case["artifact"])
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), case["request_sha256"])
+
+    def test_fixed_family_metadata_requests_use_only_the_selected_original_ids(self):
+        class Response(io.BytesIO):
+            status = 200
+        for family, case in inventory.recovery.CASES.items():
+            for plural, key in (("runs", "run"), ("jobs", "job"), ("artifacts", "artifact")):
+                with self.subTest(family=family, kind=plural), contextlib.ExitStack() as stack:
+                    opener = mock.MagicMock()
+                    opener.open.return_value = Response(json.dumps({"id": case[key]}).encode())
+                    stack.enter_context(mock.patch.object(inventory, "write_bytes"))
+                    stack.enter_context(mock.patch.object(inventory, "write_json"))
+                    stack.enter_context(mock.patch.object(inventory, "time_budget", side_effect=lambda seconds: contextlib.nullcontext()))
+                    suffix = "/actions/" + plural + "/" + str(case[key])
+                    value = inventory.api_json(opener, "fixture-token", suffix, 0, "fixture", [], family)
+                    self.assertEqual(value, {"id": case[key]})
+                    request = opener.open.call_args.args[0]
+                    self.assertEqual(request.full_url, inventory.API + suffix)
+                    self.assertEqual(request.get_header("Authorization"), "Bearer fixture-token")
+
+    def test_unknown_or_cross_family_selection_is_rejected_before_io(self):
+        opener = mock.MagicMock()
+        with mock.patch.object(inventory.os, "open") as open_file:
+            with self.assertRaises(ValueError):
+                inventory.read_input("../arbitrary")
+            open_file.assert_not_called()
+        with self.assertRaises(ValueError):
+            inventory.api_json(opener, "fixture-token", "/actions/runs/42860613563", 0, "fixture", [], "syncd")
+        opener.open.assert_not_called()
+        with self.assertRaises(ValueError):
+            inventory.collect(0, {}, {"artifact_id": 13803477455}, b"unused", {}, [], {}, "gearbox")
+
+
 class TimerRestorationTest(unittest.TestCase):
     def test_expired_outer_timer_is_disabled_and_original_failure_preserved(self):
         for explicit in (False, True):
