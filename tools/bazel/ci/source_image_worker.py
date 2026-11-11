@@ -23,6 +23,7 @@ from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summ
 from tools.bazel.ci.source_worker_preflight import (
     POOLS, cpu_limit, measure, select_build_profile, worker_cache_root, worker_matches_pool)
 from tools.bazel.gzip.source_archive import SOURCES
+from tools.bazel.ci.image_worker_receipt import K3S_REMOTE_CACHE_POLICY
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
@@ -547,8 +548,84 @@ def memory_snapshot():
     return result
 
 
-def launcher_text(binary, base, profile):
-    flags = ["--remote_cache=", "--remote_download_regex=(^|.*/)tools/build_tools/kernel_runtime_(amd64|arm64)(/.*)?$",
+def worker_work_directory(pool, runner):
+    directory = worker_cache_root(pool) / "source-images" / runner
+    if pool == "sonic-slave-container-k3s":
+        require(worker_matches_pool(runner, pool), "Unexpected K3s worker identity")
+        identity = [os.environ.get(name, "") for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")]
+        require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in identity),
+                "K3s working state requires a run and attempt")
+        directory /= "run-" + "-".join(identity)
+    return directory
+
+
+def prepare_work_directory(pool, runner, image):
+    directory = worker_work_directory(pool, runner)
+    require(directory.resolve() == directory, "Cache path must not traverse symlinks")
+    if pool == "sonic-slave-container-k3s":
+        # Preflight proved this worker's parent on /actions. Never adopt old state.
+        require(directory.parent.is_dir(), "K3s working-state parent was not prepared")
+        directory.mkdir(mode=0o700)
+    names = ("repository", "bazelisk", image + "/output-base")
+    if pool != "sonic-slave-container-k3s":
+        names = ("repository", "disk", "bazelisk", image + "/output-base")
+    for name in names:
+        (directory / name).mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def require_remote_cache_auth():
+    require(bool(os.environ.get("BAZEL_REMOTE_AUTH")),
+            "K3s remote cache requires BAZEL_REMOTE_AUTH; local-only fallback is disabled")
+
+
+def remote_cache_configuration(workspace):
+    require_remote_cache_auth()
+    helper = workspace / "tools/bazel/cache/credentials.py"
+    info = helper.lstat()
+    require(stat.S_ISREG(info.st_mode) and info.st_size == 4492 and helper.resolve() == helper and
+            os.access(helper, os.X_OK) and digest(helper) == K3S_REMOTE_CACHE_POLICY["credential_helper_sha256"],
+            "Remote-cache credential helper differs from the reviewed source")
+    return {"endpoint": K3S_REMOTE_CACHE_POLICY["endpoint"], "helper": str(helper),
+            "helper_sha256": K3S_REMOTE_CACHE_POLICY["credential_helper_sha256"]}
+
+
+def prepare_remote_cache(workspace, directory):
+    configuration = remote_cache_configuration(workspace)
+    receipt = directory / "remote-cache-access.json"
+    require(not os.path.lexists(receipt), "Remote-cache probe output must be fresh")
+    try:
+        run([sys.executable, "-B", configuration["helper"], "probe", "--output", str(receipt)],
+            timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError("Authenticated K3s remote-cache probe failed; no local-cache fallback") from None
+    value = json.loads(receipt.read_text())
+    require(set(value) == {"endpoint", "authenticated", "status"} and
+            value["endpoint"] == configuration["endpoint"] and value["authenticated"] is True and
+            type(value["status"]) is int and value["status"] == 200,
+            "Authenticated K3s remote-cache probe did not pass")
+    return configuration
+
+
+def remote_cache_options(configuration):
+    require(set(configuration) == {"endpoint", "helper", "helper_sha256"} and
+            configuration["endpoint"] == K3S_REMOTE_CACHE_POLICY["endpoint"] and
+            configuration["helper_sha256"] == K3S_REMOTE_CACHE_POLICY["credential_helper_sha256"] and
+            Path(configuration["helper"]).is_absolute(), "Unexpected remote-cache configuration")
+    host = K3S_REMOTE_CACHE_POLICY["endpoint"].removeprefix("https://")
+    return ["--remote_cache=" + configuration["endpoint"],
+            "--credential_helper=" + host + "=" + configuration["helper"], "--disk_cache="]
+
+
+def owner_build_profile(pool):
+    profile = dict(P4RT_OWNER_PROFILE)
+    if pool == "sonic-slave-container-k3s":
+        profile["cache_mode"] = "separate_remote_only_run_attempt"
+    return profile
+
+
+def launcher_text(binary, base, profile, remote_cache=None):
+    flags = (remote_cache_options(remote_cache) if remote_cache is not None else ["--remote_cache="]) + ["--remote_download_regex=(^|.*/)tools/build_tools/kernel_runtime_(amd64|arm64)(/.*)?$",
              "--jobs=" + str(profile["jobs"]), "--local_resources=cpu=" + str(profile["cpu"]),
              "--local_resources=memory=" + str(profile["scheduler_memory_mb"])]
     return ("#!/usr/bin/env python3\nimport os, sys\n" +
@@ -575,19 +652,25 @@ def p4rt_owner_identity(workspace):
     return owner
 
 
-def owner_launcher_text(binary, base, rc, cache):
+def owner_launcher_text(binary, base, rc, cache, remote_cache=None):
     # Keep the WORKSPACE owner's Bazel6 options separate from the Bazel8 launcher.
+    extra, arguments = "", "*sys.argv[1:]"
+    if remote_cache is not None:
+        extra = ("args = sys.argv[1:]\n" +
+                 "if any(value in ('build', 'test', 'aquery', 'cquery') for value in args):\n" +
+                 "    args.extend(" + repr(remote_cache_options(remote_cache)) + ")\n")
+        arguments = "*args"
     return ("#!/usr/bin/env python3\nimport os, sys\n" +
             "os.environ['USE_BAZEL_VERSION'] = '6.4.0'\n" +
             "os.environ['BAZELISK_HOME'] = " + repr(str(cache / "bazelisk")) + "\n" +
-            "binary = " + repr(binary) + "\n" +
+            "binary = " + repr(binary) + "\n" + extra +
             "os.execv(binary, [binary, " + repr("--output_base=" + str(base)) + ", " +
             "'--host_jvm_args=-Xmx2g', " +
             "'--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts', " +
-            "'--nosystem_rc', '--nohome_rc', " + repr("--bazelrc=" + str(rc)) + ", *sys.argv[1:]])\n")
+            "'--nosystem_rc', '--nohome_rc', " + repr("--bazelrc=" + str(rc)) + ", " + arguments + "])\n")
 
 
-def prepare_p4rt(workspace, cache, temporary, distdirs, mirror):
+def prepare_p4rt(workspace, cache, temporary, distdirs, mirror, remote_cache=None):
     require((workspace / ".bazelversion").read_text().strip() == "8.5.1", "P4RT root must use Bazel 8.5.1")
     require(output(["git", "-C", str(workspace), "ls-tree", "HEAD", "--", P4RT_OWNER_PATH]) ==
             "160000 commit " + P4RT_OWNER + "\t" + P4RT_OWNER_PATH, "P4RT owner gitlink changed")
@@ -598,7 +681,8 @@ def prepare_p4rt(workspace, cache, temporary, distdirs, mirror):
     owner = p4rt_owner_identity(workspace)
     owner_cache = cache / "p4rt-owner"
     require(owner_cache.resolve() == owner_cache, "P4RT owner cache must not traverse symlinks")
-    for name in ("repository", "disk", "bazelisk", "output-base"):
+    names = ("repository", "bazelisk", "output-base") if remote_cache is not None else ("repository", "disk", "bazelisk", "output-base")
+    for name in names:
         path = owner_cache / name
         require(path.resolve() == path, "P4RT owner cache child must not traverse symlinks")
         path.mkdir(parents=True, exist_ok=True)
@@ -607,13 +691,13 @@ def prepare_p4rt(workspace, cache, temporary, distdirs, mirror):
     require(not rc.exists() and not launch.exists(), "P4RT owner launcher must be fresh")
     rc.write_text("\n".join([
         "common --repository_cache=" + str(owner_cache / "repository"),
-        "build --disk_cache=" + str(owner_cache / "disk"),
+        "build --disk_cache=" + ("" if remote_cache is not None else str(owner_cache / "disk")),
         "build --local_ram_resources=4096",
         "common --experimental_downloader_config=" + str(mirror),
         *["common --distdir=" + str(directory) for directory in distdirs],
     ]) + "\n")
     base = owner_cache / "output-base"
-    launch.write_text(owner_launcher_text(shutil.which("bazel"), base, rc, owner_cache))
+    launch.write_text(owner_launcher_text(shutil.which("bazel"), base, rc, owner_cache, remote_cache))
     launch.chmod(0o755)
     return {"source": str(owner), "revision": P4RT_OWNER, "bazel": str(launch), "bazel_sha256": digest(launch),
             "rc": str(rc), "rc_sha256": digest(rc), "output_base": str(base), "jobs": 1}
@@ -622,7 +706,7 @@ def prepare_p4rt(workspace, cache, temporary, distdirs, mirror):
 def p4rt_context(args, state):
     context = state.get("p4rt_owner", {})
     owner = p4rt_owner_identity(args.workspace)
-    cache = worker_cache_root(selected_worker_pool()) / "source-images" / os.environ.get("RUNNER_NAME", "") / "p4rt-owner"
+    cache = worker_work_directory(selected_worker_pool(), os.environ.get("RUNNER_NAME", "")) / "p4rt-owner"
     temporary = temporary_directory()
     require(context.get("source") == str(owner) and context.get("revision") == P4RT_OWNER and
             context.get("output_base") == str(cache / "output-base") and context.get("jobs") == 1 and
@@ -760,6 +844,8 @@ def prepare(args):
     if args.image == "teamd":
         prepare_teamd_kernel(artifacts)
     pool = selected_worker_pool()
+    if pool == "sonic-slave-container-k3s":
+        require_remote_cache_auth()
     preflight = measure(os.environ.get("RUNNER_NAME", ""), pool)
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
@@ -805,17 +891,15 @@ def prepare(args):
     catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
-    cache = worker_cache_root(pool) / "source-images" / runner
-    require(cache.resolve() == cache, "Cache path must not traverse symlinks")
-    for name in ("repository", "disk", "bazelisk", args.image + "/output-base"):
-        (cache / name).mkdir(parents=True, exist_ok=True)
+    cache = prepare_work_directory(pool, runner, args.image)
+    remote_cache = prepare_remote_cache(workspace, cache) if pool == "sonic-slave-container-k3s" else None
     temporary = temporary_directory()
     require(temporary.is_relative_to("/actions/_work"), "Expected a worker-private temporary directory")
     temporary.mkdir(parents=True, exist_ok=True)
     distdirs, download_receipt = prepare_source_downloads(temporary / "source-image-inputs", cache)
     (artifacts / "worker-source-downloads.json").write_text(json.dumps(download_receipt, indent=2) + "\n")
     launch = temporary / "source-image-bazel"
-    launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile))
+    launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile, remote_cache))
     launch.chmod(0o755)
     mirror = temporary / "source-image-mirrors.cfg"
     if os.environ.get("SOURCE_WORKER_CONFIGURED_MIRRORS") == "1":
@@ -827,9 +911,10 @@ def prepare(args):
     rc = workspace / ".bazelrc.user"
     require(not rc.exists(), "Expected a fresh source checkout without a local Bazel override")
     rc.write_text("\n".join([
-        "# Private persistent source-image worker caches; no Make package cache.",
+        ("# Remote action cache with fresh run-attempt working state; no Make package cache." if remote_cache is not None else
+         "# Private persistent source-image worker caches; no Make package cache."),
         "common --repository_cache=" + str(cache / "repository"),
-        "common --disk_cache=" + str(cache / "disk"),
+        "common --disk_cache=" + ("" if remote_cache is not None else str(cache / "disk")),
         "common --experimental_downloader_config=" + str(mirror),
         *["common --distdir=" + str(directory) for directory in distdirs],
     ]) + "\n")
@@ -847,8 +932,10 @@ def prepare(args):
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
              "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
+    if remote_cache is not None:
+        state["remote_cache"] = remote_cache
     if args.image == "p4rt":
-        state["p4rt_owner"] = prepare_p4rt(workspace, cache, temporary, distdirs, mirror)
+        state["p4rt_owner"] = prepare_p4rt(workspace, cache, temporary, distdirs, mirror, remote_cache)
         env["USE_BAZEL_VERSION"] = "8.5.1"
     (artifacts / "worker-private.json").write_text(json.dumps(state, indent=2) + "\n")
     run(["sudo", "-n", sys.executable, str(ROOT / "tools/bazel/ci/prepare_nested_docker.py")])
@@ -875,13 +962,15 @@ def prepare(args):
     else:
         raise ValueError("Private Docker did not become ready")
     capture_docker_mount(args, "ready")
-    receipt = {"schema": 1, "status": "prepared", "worker": runner, "architecture": "amd64", "distribution": "trixie",
+    receipt = {"schema": 2 if remote_cache is not None else 1, "status": "prepared", "worker": runner, "architecture": "amd64", "distribution": "trixie",
                "source_revision": args.revision, "dispatcher_revision": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"]),
-               "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "persistent_worker_local",
+               "review_catalog": catalog, "slave_image": marker_data["base_image"], "cache_mode": "remote_only_run_attempt" if remote_cache is not None else "persistent_worker_local",
                "build_profile": profile, "memory": memory_snapshot(),
                "docker_network": "none", "image": args.image}
+    if remote_cache is not None:
+        receipt["remote_cache"] = dict(K3S_REMOTE_CACHE_POLICY)
     if args.image == "p4rt":
-        receipt["owner_profile"] = P4RT_OWNER_PROFILE
+        receipt["owner_profile"] = owner_build_profile(pool)
     safe_json(receipt)
     (artifacts / "worker.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
@@ -905,6 +994,9 @@ def prepared_profile(state, memory):
 def execute_phase(args):
     state = state_for(args)
     source_check(args.workspace, args.revision)
+    if selected_worker_pool() == "sonic-slave-container-k3s":
+        require(state.get("remote_cache") == remote_cache_configuration(args.workspace),
+                "Prepared remote-cache configuration changed")
     owner = p4rt_context(args, state) if args.image == "p4rt" else None
     before = memory_snapshot()
     profile = prepared_profile(state, before)
@@ -946,7 +1038,7 @@ def execute_phase(args):
                "exit_code": completed.returncode, "memory_before": before, "memory_after": after,
                "build_profile": profile, "no_oom_events": memory_ok}
     if owner:
-        receipt["owner_profile"] = P4RT_OWNER_PROFILE
+        receipt["owner_profile"] = owner_build_profile(selected_worker_pool())
     (args.artifacts / ("worker-" + args.phase + ".json")).write_text(json.dumps(receipt, indent=2) + "\n")
     require(completed.returncode == 0, "Image phase failed: " + args.phase)
     require(memory_ok, "Worker exhausted its memory during " + args.phase)
@@ -1152,8 +1244,14 @@ def parse_mounts(data):
         require(len(fields) >= 6 and len(trailing) >= 3 and
                 re.fullmatch(r'[0-9]+:[0-9]+', fields[2]), 'Invalid mount row')
         root, point = unescape(fields[3]), unescape(fields[4])
-        require(all(value.startswith('/') and '..' not in Path(value).parts for value in (root, point)),
-                'Invalid mount path')
+        require(point.startswith('/') and not point.startswith('//') and
+                '..' not in Path(point).parts and str(Path(point)) == point,
+                'Invalid namespace mountpoint')
+        require(root.startswith('/'), 'Invalid filesystem mount root')
+        # cgroup_namespaces(7): field 4 may be /.. in a new cgroup namespace.
+        # This is filesystem-root metadata, never a path to traverse here.
+        require('..' not in Path(root).parts or trailing[0] in ('cgroup', 'cgroup2'),
+                'Parent components in non-cgroup mount root')
         rows.append({'id': int(fields[0]), 'parent': int(fields[1]), 'device': fields[2],
                      'root': root, 'point': point, 'options': fields[5], 'optional': fields[6:],
                      'filesystem': trailing[0], 'source': unescape(trailing[1]), 'super': trailing[2:]})
@@ -1167,16 +1265,25 @@ def mounts():
 def below(rows, root):
     return [row for row in rows if Path(row['point']).is_relative_to(root)]
 
+def canonical_mount_root(row):
+    value = row['root']
+    require(value.startswith('/') and not value.startswith('//') and
+            '..' not in Path(value).parts and str(Path(value)) == value,
+            'Selected mount root is not canonical')
+
 def covering(rows, root):
     choices = [row for row in rows if root.is_relative_to(Path(row['point']))]
     require(choices, 'Missing backing mount')
     depth = max(len(Path(row['point']).parts) for row in choices)
     choices = [row for row in choices if len(Path(row['point']).parts) == depth]
     require(len(choices) == 1, 'Ambiguous backing mount')
+    canonical_mount_root(choices[0])
     return choices[0]
 
 def self_bind(before, row, root):
     parent = before['covering']
+    canonical_mount_root(parent)
+    canonical_mount_root(row)
     expected_root = str(Path(parent['root']) / root.relative_to(Path(parent['point'])))
     require(row['point'] == str(root) and row['parent'] == parent['id'] and
             row['id'] not in before['mount_ids'] and row['device'] == parent['device'] and
@@ -1271,6 +1378,7 @@ def daemon(pidfile, root, expected=None):
 def load_proof(root, scope):
     before, before_hash = read_record(root.with_name(root.name + '.mount-before.json'))
     ready, ready_hash = read_record(root.with_name(root.name + '.mount-ready.json'))
+    canonical_mount_root(before['covering'])
     require(before['schema'] == ready['schema'] == 1 and before['scope'] == ready['scope'] == scope and
             before['root_absent'] is True and ready['directory']['uid'] == 0 and
             ready['before_sha256'] == before_hash and before['namespace'] == ready['namespace'] == namespace() and
@@ -1290,6 +1398,7 @@ def capture(stage, root, pidfile, scope):
         write_record(root.with_name(root.name + '.mount-before.json'), value)
         return
     before, digest = read_record(root.with_name(root.name + '.mount-before.json'))
+    canonical_mount_root(before['covering'])
     require(before['schema'] == 1 and before['scope'] == scope and before['root_absent'] is True and
             before['namespace'] == namespace() and before['parent'] == directory(root.parent),
             'Startup mount context changed')
@@ -1411,6 +1520,8 @@ def diagnostic(rows, root):
                      sort_keys=True), file=sys.stderr)
 
 def normal_unmount(root, before, ready):
+    canonical_mount_root(before['covering'])
+    canonical_mount_root(ready['root_mount'])
     parentfd = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         value = os.fstat(parentfd)

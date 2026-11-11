@@ -2,6 +2,7 @@
 """Check fixed image dispatch and public artifact boundaries."""
 
 import importlib.util
+from contextlib import ExitStack, contextmanager
 import copy
 import io
 import hashlib
@@ -1922,12 +1923,298 @@ class ProvedDockerRootMountTest(unittest.TestCase):
                     remove.assert_not_called()
                     self.assertTrue(os.path.lexists(pidfile))
 
+    def test_cgroup_parent_root_metadata_is_preserved_without_path_normalization(self):
+        functions = self.program()
+        for filesystem in ("cgroup", "cgroup2"):
+            for root in ("/..", "/../../ancestor"):
+                with self.subTest(filesystem=filesystem, root=root):
+                    text = f"20 10 0:32 {root} /sys/fs/cgroup rw - {filesystem} cgroup rw\n"
+                    row, = functions["parse_mounts"](text)
+                    self.assertEqual(row["root"], root)
+                    self.assertEqual(row["point"], "/sys/fs/cgroup")
+                    self.assertEqual(row["filesystem"], filesystem)
+
+    def test_namespace_mountpoints_remain_canonical_even_for_cgroup_metadata(self):
+        functions = self.program()
+        for point in ("relative-private", "/tmp/../private", "/sys/./fs/cgroup", "//sys/fs/cgroup"):
+            with self.subTest(point=point):
+                with self.assertRaisesRegex(ValueError, "^Invalid namespace mountpoint$") as caught:
+                    functions["parse_mounts"](f"20 10 0:32 /.. {point} rw - cgroup2 cgroup rw\n")
+                self.assertNotIn(point, str(caught.exception))
+
+    def test_only_absolute_cgroup_metadata_gets_parent_component_exception(self):
+        functions = self.program()
+        for filesystem in ("ext4", "xfs", "overlay", "tmpfs", "unknown"):
+            with self.subTest(filesystem=filesystem), self.assertRaisesRegex(
+                    ValueError, "^Parent components in non-cgroup mount root$"):
+                functions["parse_mounts"](f"20 10 0:32 /../private /tmp/point rw - {filesystem} fixture rw\n")
+        for filesystem in ("cgroup", "cgroup2", "ext4"):
+            with self.subTest(filesystem=filesystem), self.assertRaisesRegex(
+                    ValueError, "^Invalid filesystem mount root$"):
+                functions["parse_mounts"](f"20 10 0:32 ../private /tmp/point rw - {filesystem} fixture rw\n")
+
+    def test_cgroup_root_metadata_cannot_be_selected_as_backing_mount(self):
+        functions = self.program()
+        root = Path("/actions/_work/source-image-docker-123-1")
+        rows = functions["parse_mounts"](
+            "10 1 8:1 /actions /actions/_work rw - ext4 fixture rw\n"
+            "20 1 0:32 /.. /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
+        self.assertEqual(functions["covering"](rows, root), rows[0])
+        self.assertEqual(functions["below"](rows, root), [])
+        for value in (dict(rows[1], point="/actions/_work"),
+                      dict(rows[0], root="/actions/./nested"), dict(rows[0], root="//actions")):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    ValueError, "^Selected mount root is not canonical$"):
+                functions["covering"]([value], root)
+
+    def test_noncanonical_backing_or_owned_root_cannot_enter_self_bind_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions, root, pidfile, parent, mounted, before, ready, inventory = self.fixture(directory)
+            for old, current in ((dict(before, covering=dict(parent, root="/..")), mounted),
+                                 (before, dict(mounted, root="/actions/../private")),
+                                 (before, dict(mounted, root="//actions/private"))):
+                with self.subTest(old=old, current=current), self.assertRaisesRegex(
+                        ValueError, "^Selected mount root is not canonical$"):
+                    functions["self_bind"](old, current, root)
+
+    def test_loaded_proof_and_unmount_refuse_noncanonical_selected_root(self):
+        functions = self.program()
+        root = Path("/actions/_work/source-image-docker-123-1")
+        before = {"covering": {"root": "/.."}}
+        ready = {"root_mount": {"root": "/actions/private"}}
+        with patch.dict(functions, {"read_record": unittest.mock.Mock(side_effect=[(before, "b"), (ready, "r")])}):
+            with self.assertRaisesRegex(ValueError, "^Selected mount root is not canonical$"):
+                functions["load_proof"](root, {})
+        for old, current in ((before, ready),
+                             ({"covering": {"root": "/actions"}}, {"root_mount": {"root": "/.."}})):
+            with self.subTest(old=old, current=current), patch.object(functions["os"], "open") as opened:
+                with self.assertRaisesRegex(ValueError, "^Selected mount root is not canonical$"):
+                    functions["normal_unmount"](root, old, current)
+                opened.assert_not_called()
+
+    def test_parent_relative_cgroup_child_still_blocks_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            child, = functions["parse_mounts"](
+                f"12 11 0:32 /.. {root}/cgroup rw - cgroup2 cgroup rw\n")
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted, child]], times=(100, 100, 130))
+            self.assertRegex(str(error), "Private Docker still has a mounted child")
+            command.assert_not_called()
+            remove.assert_not_called()
+            record = json.loads(diagnostic)
+            self.assertEqual(record["mount_count"], 2)
+            self.assertEqual(record["reported_mounts"][1]["filesystem"], "cgroup2")
+            self.assertNotIn(str(root), diagnostic)
+            self.assertNotIn("/..", diagnostic)
 
 
 
 
 
 
+
+
+
+
+
+class RemoteOnlyWorkerTest(unittest.TestCase):
+    pool = "sonic-slave-container-k3s"
+    runner = "ks-e6fb1976-715102e6996d-0-" + "a" * 32
+    canary = "Basic Zml4dHVyZTpub3QtYS1jcmVkZW50aWFs"
+
+    @contextmanager
+    def fixture(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            workspace = root / "source"
+            helper = workspace / "tools/bazel/cache/credentials.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_bytes(b"# Fixture only: all process execution is mocked.\n".ljust(4492, b" "))
+            helper.chmod(0o755)
+            scratch = root / "scratch"; scratch.mkdir()
+            stack.enter_context(patch.dict(worker.K3S_REMOTE_CACHE_POLICY,
+                {"credential_helper_sha256": worker.digest(helper)}))
+            stack.enter_context(patch.dict(os.environ, {"BAZEL_REMOTE_AUTH": self.canary}, clear=True))
+            yield root, workspace, helper, scratch
+
+    def test_run_attempt_work_is_fresh_and_never_adopts_previous_caches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "source-images" / self.runner; parent.mkdir(parents=True)
+            old = parent / "disk/keep"; old.parent.mkdir(); old.write_text("previous registration output")
+            with patch.object(worker, "worker_cache_root", return_value=root), patch.dict(os.environ,
+                    {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=True):
+                first = worker.prepare_work_directory(self.pool, self.runner, "gearbox")
+                self.assertEqual(first, parent / "run-123-1")
+                self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o700)
+                self.assertEqual({p.name for p in first.iterdir()}, {"repository", "bazelisk", "gearbox"})
+                with self.assertRaises(FileExistsError):
+                    worker.prepare_work_directory(self.pool, self.runner, "gearbox")
+                with patch.dict(os.environ, {"GITHUB_RUN_ATTEMPT": "2"}):
+                    second = worker.prepare_work_directory(self.pool, self.runner, "gearbox")
+                self.assertNotEqual(first, second)
+                for run in ("", "0", "../123"):
+                    with patch.dict(os.environ, {"GITHUB_RUN_ID": run}), self.assertRaises(ValueError):
+                        worker.worker_work_directory(self.pool, self.runner)
+            self.assertEqual(old.read_text(), "previous registration output")
+
+    def test_dpool_keeps_its_cache_layout_without_remote_auth(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            root = Path(directory)
+            with patch.object(worker, "worker_cache_root", return_value=root):
+                cache = worker.prepare_work_directory("sonic-slave-container-dpool", "sonic-slave-lgh114-1", "p4rt")
+                self.assertEqual(cache, root / "source-images/sonic-slave-lgh114-1")
+                self.assertEqual({p.name for p in cache.iterdir()}, {"repository", "disk", "bazelisk", "p4rt"})
+                self.assertEqual(worker.prepare_work_directory("sonic-slave-container-dpool", "sonic-slave-lgh114-1", "p4rt"), cache)
+            self.assertEqual(worker.owner_build_profile("sonic-slave-container-dpool"), worker.P4RT_OWNER_PROFILE)
+
+    def test_missing_auth_stops_before_probe_or_phase_execution(self):
+        with patch.dict(os.environ, {"WORKER_POOL": self.pool}, clear=True), ExitStack() as stack:
+            invoke = stack.enter_context(patch.object(worker, "run"))
+            with self.assertRaisesRegex(ValueError, "requires BAZEL_REMOTE_AUTH"):
+                worker.prepare_remote_cache(Path("/absent/source"), Path("/absent/state"))
+            invoke.assert_not_called()
+            measure = stack.enter_context(patch.object(worker, "measure"))
+            with self.assertRaisesRegex(ValueError, "requires BAZEL_REMOTE_AUTH"):
+                worker.prepare(SimpleNamespace(workspace=Path("/absent/source"),
+                    artifacts=Path("/absent/state"), image="gearbox"))
+            measure.assert_not_called()
+            stack.enter_context(patch.object(worker, "state_for", return_value={"remote_cache": {}}))
+            stack.enter_context(patch.object(worker, "source_check"))
+            memory = stack.enter_context(patch.object(worker, "memory_snapshot"))
+            phase = stack.enter_context(patch.object(worker.subprocess, "run"))
+            args = SimpleNamespace(workspace=Path("/absent/source"), revision="a" * 40, image="gearbox")
+            with self.assertRaisesRegex(ValueError, "requires BAZEL_REMOTE_AUTH"):
+                worker.execute_phase(args)
+            memory.assert_not_called(); phase.assert_not_called()
+
+    def test_probe_uses_only_existing_helper_and_does_not_serialize_auth(self):
+        with self.fixture() as (_, workspace, helper, scratch):
+            def complete(argv, **kwargs):
+                self.assertEqual(argv[:5], [sys.executable, "-B", str(helper), "probe", "--output"])
+                self.assertEqual(kwargs, {"timeout": 45, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
+                self.assertNotIn(self.canary, repr(argv))
+                Path(argv[5]).write_text(json.dumps({"endpoint": worker.K3S_REMOTE_CACHE_POLICY["endpoint"],
+                    "authenticated": True, "status": 200}))
+            with patch.object(worker, "run", side_effect=complete) as invoke:
+                configuration = worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_called_once()
+            worker.safe_json({"schema": 2, "cache_mode": "remote_only_run_attempt",
+                              "remote_cache": dict(worker.K3S_REMOTE_CACHE_POLICY)})
+            profile = worker.select_build_profile(20 * 1024**3, 6)
+            rendered = [json.dumps(configuration), (scratch / "remote-cache-access.json").read_text(),
+                worker.launcher_text("/tools/bazel", scratch / "root-output", profile, configuration),
+                worker.owner_launcher_text("/tools/bazel", scratch / "owner-output", scratch / "owner.rc", scratch, configuration),
+                json.dumps(worker.K3S_REMOTE_CACHE_POLICY)]
+            for text in rendered:
+                self.assertNotIn(self.canary, text)
+                self.assertNotIn("BAZEL_REMOTE_AUTH", text)
+                self.assertNotIn("--action_env", text)
+            with patch.object(worker, "run") as invoke, self.assertRaisesRegex(ValueError, "fresh"):
+                worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_not_called()
+
+    def test_probe_failure_and_unexpected_receipt_never_fall_back(self):
+        with self.fixture() as (_, workspace, _, scratch):
+            with patch.object(worker, "run", side_effect=subprocess.CalledProcessError(1, ["probe"])):
+                with self.assertRaisesRegex(ValueError, "no local-cache fallback") as error:
+                    worker.prepare_remote_cache(workspace, scratch)
+                self.assertNotIn(self.canary, str(error.exception))
+            valid = {"endpoint": worker.K3S_REMOTE_CACHE_POLICY["endpoint"], "authenticated": True, "status": 200}
+            for changes in ({"authenticated": False}, {"authenticated": 1}, {"status": "200"},
+                            {"endpoint": "https://different.invalid"}, {"unexpected": "field"}):
+                receipt = scratch / "remote-cache-access.json"; receipt.unlink(missing_ok=True)
+                def complete(argv, **kwargs):
+                    Path(argv[-1]).write_text(json.dumps({**valid, **changes}))
+                with self.subTest(changes=changes), patch.object(worker, "run", side_effect=complete):
+                    with self.assertRaisesRegex(ValueError, "did not pass"):
+                        worker.prepare_remote_cache(workspace, scratch)
+
+    def test_changed_or_linked_credential_helper_is_rejected_before_execution(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            original = helper.read_bytes(); helper.write_bytes(original + b"# changed\n")
+            with patch.object(worker, "run") as invoke, self.assertRaisesRegex(ValueError, "helper differs"):
+                worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_not_called()
+            helper.unlink(); target = root / "other-helper"; target.write_bytes(original); target.chmod(0o755)
+            helper.symlink_to(target)
+            with patch.object(worker, "run") as invoke, self.assertRaisesRegex(ValueError, "helper differs"):
+                worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_not_called()
+
+    def test_both_launchers_override_local_or_unscoped_caller_cache_flags(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            configuration = worker.remote_cache_configuration(workspace)
+            binary = root / "bazel"
+            binary.write_text("#!" + sys.executable + "\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+            binary.chmod(0o755)
+            root_text = worker.launcher_text(str(binary), scratch / "root-output",
+                worker.select_build_profile(20 * 1024**3, 6), configuration)
+            owner_text = worker.owner_launcher_text(str(binary), scratch / "owner-output",
+                scratch / "owner.rc", scratch, configuration)
+            expected = worker.remote_cache_options(configuration)
+            for name, text in (("root", root_text), ("owner", owner_text)):
+                launch = root / (name + "-launcher"); launch.write_text(text)
+                for command in ("build", "test", "aquery", "cquery"):
+                    with self.subTest(launcher=name, command=command):
+                        argv = json.loads(subprocess.check_output([sys.executable, str(launch), command,
+                            "--remote_cache=", "--disk_cache=/old/local", "//:literal"], text=True))
+                        for prefix in ("--remote_cache=", "--credential_helper=", "--disk_cache="):
+                            self.assertEqual([arg for arg in argv if arg.startswith(prefix)][-1],
+                                             next(arg for arg in expected if arg.startswith(prefix)))
+                        self.assertNotIn(self.canary, json.dumps(argv))
+                shutdown = json.loads(subprocess.check_output([sys.executable, str(launch), "shutdown"], text=True))
+                self.assertFalse(any(arg.startswith("--remote_cache=") for arg in shutdown))
+
+    def test_p4rt_context_remains_bound_to_this_run_attempt_and_owner_config(self):
+        with self.fixture() as (root, workspace, _, scratch), ExitStack() as stack:
+            (workspace / ".bazelversion").write_text("8.5.1\n")
+            owner = workspace / worker.P4RT_OWNER_PATH; owner.mkdir(parents=True)
+            cache_root = root / "cache"; parent = cache_root / "source-images" / self.runner; parent.mkdir(parents=True)
+            stack.enter_context(patch.dict(os.environ, {"WORKER_POOL": self.pool, "RUNNER_NAME": self.runner,
+                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}))
+            stack.enter_context(patch.object(worker, "worker_cache_root", return_value=cache_root))
+            stack.enter_context(patch.object(worker, "temporary_directory", return_value=scratch))
+            stack.enter_context(patch.object(worker, "p4rt_owner_identity", return_value=owner))
+            def output(argv):
+                if "ls-tree" in argv: return "160000 commit " + worker.P4RT_OWNER + "\t" + worker.P4RT_OWNER_PATH
+                if "config" in argv: return "https://github.com/securely1g/sonic-pins.git"
+                raise AssertionError(argv)
+            stack.enter_context(patch.object(worker, "output", side_effect=output))
+            stack.enter_context(patch.object(worker, "run"))
+            stack.enter_context(patch.object(worker.shutil, "which", return_value="/tools/bazel"))
+            cache = worker.prepare_work_directory(self.pool, self.runner, "p4rt")
+            configuration = worker.remote_cache_configuration(workspace)
+            context = worker.prepare_p4rt(workspace, cache, scratch, [cache / "distdir"], scratch / "mirrors", configuration)
+            self.assertFalse((cache / "p4rt-owner/disk").exists())
+            self.assertIn("build --disk_cache=\n", Path(context["rc"]).read_text())
+            args = SimpleNamespace(workspace=workspace, artifacts=root, revision="a" * 40, phase="prepare-owner")
+            self.assertEqual(worker.p4rt_context(args, {"p4rt_owner": context}), context)
+            with patch.dict(os.environ, {"GITHUB_RUN_ATTEMPT": "2"}), self.assertRaisesRegex(ValueError, "context changed"):
+                worker.p4rt_context(args, {"p4rt_owner": context})
+            self.assertEqual(worker.owner_build_profile(self.pool)["cache_mode"], "separate_remote_only_run_attempt")
+            self.assertEqual(worker.P4RT_OWNER_PROFILE["cache_mode"], "separate_persistent_worker_local")
+
+    def test_changed_prepared_remote_policy_stops_before_phase_execution(self):
+        with self.fixture() as (_, workspace, _, _), ExitStack() as stack:
+            configuration = worker.remote_cache_configuration(workspace)
+            configuration["endpoint"] = "https://different.invalid"
+            stack.enter_context(patch.dict(os.environ, {"WORKER_POOL": self.pool}))
+            stack.enter_context(patch.object(worker, "state_for", return_value={"remote_cache": configuration}))
+            stack.enter_context(patch.object(worker, "source_check"))
+            phase = stack.enter_context(patch.object(worker.subprocess, "run"))
+            with self.assertRaisesRegex(ValueError, "configuration changed"):
+                worker.execute_phase(SimpleNamespace(workspace=workspace, revision="a" * 40, image="gearbox"))
+            phase.assert_not_called()
+
+    def test_remote_auth_workflow_scope_keeps_both_actor_and_pool_guards(self):
+        expression = ImageWorkerTest().native_job()["env"]["BAZEL_REMOTE_AUTH"]
+        for clause in ("github.event_name == 'workflow_dispatch'", "github.repository == 'securely1g/sonic-buildimage'",
+                       "github.actor == 'securely1g'", "github.triggering_actor == 'securely1g'",
+                       "inputs.source_worker_pool == 'sonic-slave-container-k3s'", "secrets.BAZEL_REMOTE_AUTH || ''"):
+            self.assertIn(clause, expression)
 
 
 if __name__ == "__main__":

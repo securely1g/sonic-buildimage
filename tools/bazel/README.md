@@ -501,14 +501,26 @@ measured profile, and each phase checks that it has not changed. Resource, priva
 namespace, mount, tool, source, memory-event and original-receipt checks still apply.
 The existing 50-GiB preflight and 90-GiB native workspace gates remain independent.
 
-The K3s cache root is `/actions/_work/.source-image-cache`, outside the fresh
-checkout and temporary directories, on the authenticated `/actions` backing mount.
-The existing `source-images/<actual-runner>` layout separates workers and the
-existing per-image output bases. The preflight checks ownership, permissions,
-writability, filesystem and free space without clearing or migrating caches.
-Workspace and cache capacity on this same filesystem are not additive. Cache
-persistence across replacement runner pods is not established; reuse checks retain
-their within-job baseline/no-op/edit/restore scope. Dpool keeps `/bazel_cache`.
+K3s requires the existing remote Bazel cache at
+`https://lgh-bazel-87263989.eastus.cloudapp.azure.com`. The authenticated manual
+workflow supplies `BAZEL_REMOTE_AUTH` only through the process environment. The
+existing origin-scoped [`credentials.py`](cache/credentials.py) helper supplies
+credentials to Bazel; a missing credential or failed authenticated probe stops
+preparation without a local-only fallback. Credential values are not written to
+launchers, rc files, action environments or public receipts.
+
+K3s disables the local action disk cache. Repository downloads, Bazelisk tools,
+per-image output bases and the separate P4RT owner output base use fresh
+`/actions/_work/.source-image-cache/source-images/<actual-runner>/run-<id>-<attempt>`
+working directories. This retains the authenticated `/actions` ownership,
+filesystem, writability and free-space checks without depending on persistent
+cache contents or adopting prior registrations' directories. Ephemeral space for
+compilation, downloads and image assembly is still required; capacities on the
+same filesystem are not additive. Dpool keeps its existing `/bazel_cache` route.
+The explicit K3s worker-record schema records remote-only policy while preserving
+historical schema-1 receipts. A separate short qualification must demonstrate a
+remote hit from a second fresh output base before long native work; mocked flags
+and a successful cache-access probe alone do not establish that result.
 
 Native K3s concurrency is keyed by image family and original request artifact ID,
 with `cancel-in-progress: false`. Distinct requests can use separate workers while

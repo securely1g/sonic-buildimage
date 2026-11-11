@@ -228,6 +228,7 @@ jobs:
       SOURCE_REVISION: ${{ inputs.source_revision }}
       SOURCE_REGISTRY_REVISION: ${{ inputs.registry_revision }}
       SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+      BAZEL_REMOTE_AUTH: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && secrets.BAZEL_REMOTE_AUTH || '' }}
     steps:
       - name: Require fresh native worker paths
         id: worker_paths
@@ -369,6 +370,8 @@ jobs:
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare-mirrors \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      # Keep the historical step identity required by original receipt validation.
+      # K3s uses the remote action cache and fresh run-attempt working space.
       - name: Prepare private Docker and persistent worker caches
         id: prepare
         run: |

@@ -470,5 +470,47 @@ class SourceContextTest(unittest.TestCase):
         self.assertEqual(receipt.read(args.directory / 'request.json'), old)
 
 
+
+
+class RemoteOnlyReceiptTest(unittest.TestCase):
+    def remote_worker(self):
+        return {"schema": 2, "cache_mode": "remote_only_run_attempt",
+                "remote_cache": copy.deepcopy(receipt.K3S_REMOTE_CACHE_POLICY)}
+
+    def test_remote_variant_is_explicit_and_k3s_only(self):
+        value = self.remote_worker()
+        self.assertEqual(receipt.verify_worker_cache(value, "sonic-slave-container-k3s"),
+                         "separate_remote_only_run_attempt")
+        with self.assertRaisesRegex(ValueError, "Remote-only"):
+            receipt.verify_worker_cache(value, "sonic-slave-container-dpool")
+
+    def test_legacy_worker_and_owner_modes_are_preserved(self):
+        for pool in ("sonic-slave-container-dpool", "sonic-slave-container-k3s"):
+            for value in ({"schema": 1, "cache_mode": "persistent_worker_local"},
+                          {"cache_mode": "persistent_worker_local"}):
+                original = copy.deepcopy(value)
+                self.assertEqual(receipt.verify_worker_cache(value, pool), "separate_persistent_worker_local")
+                self.assertEqual(value, original)
+
+    def test_new_remote_policy_rejects_changed_origin_helper_probe_or_local_state(self):
+        for key, changed in (("endpoint", "https://different.invalid"), ("credential_helper_sha256", "0" * 64),
+                             ("authenticated_probe", "failed"), ("action_disk_cache", "enabled"),
+                             ("working_state", "persistent"), ("extra", "value")):
+            value = self.remote_worker(); value["remote_cache"][key] = changed
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "Remote-only"):
+                receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+        for changes in ({"schema": 3}, {"schema": True}, {"cache_mode": "persistent_worker_local"},
+                        {"remote_cache": None}):
+            value = {**self.remote_worker(), **changes}
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+
+    def test_old_schema_cannot_claim_the_new_policy_or_mode(self):
+        for value in ({"schema": 1, "cache_mode": "remote_only_run_attempt"},
+                      {**self.remote_worker(), "schema": 1, "cache_mode": "persistent_worker_local"}):
+            with self.assertRaisesRegex(ValueError, "Historical"):
+                receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+
+
 if __name__ == '__main__':
     unittest.main()
