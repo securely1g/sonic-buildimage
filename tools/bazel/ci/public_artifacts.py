@@ -5,9 +5,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import tempfile
 from urllib.parse import parse_qsl, urlsplit
 
@@ -475,6 +477,79 @@ def graph_failure_summary(stdout, stderr, returncode):
                             "stderr_tail_truncated": truncated, "signals": sorted(signals),
                             "origins": sorted(origins), "http_statuses": sorted(codes),
                             "diagnostic_counts": counts}, "resolution")
+
+
+def prepare_lldp_graph_failure(workspace, directory, destination, *, controller,
+                               source_revision, controller_revision, registry_endpoint,
+                               bazel_entrypoint):
+    """Publish checked LLDP graph inputs and fixed diagnostics after a failed build."""
+    workspace, directory, controller = map(Path, (workspace, directory, controller))
+    destination, bazel_entrypoint = Path(destination), Path(bazel_entrypoint)
+    require(directory.is_dir() and not directory.is_symlink() and directory.resolve() == directory,
+            "unsafe-lldp-diagnostic-root")
+    prefix = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
+    require(REVISION.fullmatch(source_revision) and REVISION.fullmatch(controller_revision), "invalid-lldp-selection")
+    require(registry_endpoint.startswith(prefix), "invalid-lldp-registry")
+    catalog = registry_endpoint[len(prefix):]
+    require(catalog == "main" or REVISION.fullmatch(catalog), "invalid-lldp-registry")
+    for checkout, revision in ((workspace, source_revision), (controller, controller_revision)):
+        actual = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+        require(actual == revision, "lldp-checkout-mismatch")
+        subprocess.run(["git", "-C", str(checkout), "diff", "--exit-code", "--ignore-submodules=none", "HEAD"],
+                       check=True, stdout=subprocess.DEVNULL)
+    if catalog == "main":
+        require(bazel_entrypoint == workspace / "tools/bazel/ci/libteam_draft_bazel.sh",
+                "invalid-lldp-canonical-entrypoint")
+        wrapper = bazel_entrypoint.read_text()
+        require(not bazel_entrypoint.is_symlink() and wrapper.count("--registry=") == 2 and
+                "--registry=" + registry_endpoint + " \\\n" in wrapper and
+                "--registry=https://bcr.bazel.build" in wrapper, "invalid-lldp-canonical-registry")
+
+    def capture(path, root, maximum):
+        require(path.resolve().is_relative_to(root.resolve()), "unsafe-lldp-diagnostic-input")
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_size <= maximum, "unsafe-lldp-diagnostic-input")
+            value = stream.read(maximum + 1)
+            require(len(value) == info.st_size and len(value) <= maximum, "unsafe-lldp-diagnostic-input")
+            return value
+
+    graph = capture(directory / "module-graph.json", directory, 64 * 1024 * 1024)
+    inspection = load_json(capture(directory / "module-graph-inspection.json", directory, 64 * 1024 * 1024))
+    stderr = capture(directory / "module-graph.stderr", directory, 64 * 1024 * 1024)
+    lock = capture(workspace / "MODULE.bazel.lock", workspace, 128 * 1024 * 1024)
+    receipt = load_json(capture(directory / "build-receipt.json", directory, 64 * 1024 * 1024))
+    require(isinstance(receipt, dict) and receipt.get("status") == "failed" and receipt.get("revision") == source_revision,
+            "lldp-failed-receipt-mismatch")
+    expected = [str(bazel_entrypoint), "mod", "graph", "--output=json", "--extension_info=hidden",
+                "--lockfile_mode=off", "--color=no", "--curses=no"]
+    require(isinstance(inspection, dict) and {"argv", "returncode"} <= set(inspection) and inspection["argv"] == expected,
+            "lldp-graph-inspection-mismatch")
+    dependency_json(load_json(graph), "graph")
+    dependency_json(load_json(lock), "lock")
+    selection = {"source_revision": source_revision, "controller_revision": controller_revision,
+                 "registry_endpoint": registry_endpoint}
+    if catalog != "main":
+        selection["registry_revision"] = catalog
+    summary = {"schema": 1, "selection": selection,
+               "diagnostic": graph_failure_summary(graph.decode("utf-8"), stderr.decode("utf-8", errors="replace"), inspection["returncode"]),
+               # A failed inspection raises before resolution.collect checks its in-memory lock snapshot.
+               "lock_capture": "post_failure",
+               "captures": {name: {"sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)}
+                            for name, value in (("module_graph", graph), ("module_lock", lock), ("stderr", stderr))}}
+    safe_json(summary)
+    require(destination.resolve().is_relative_to(directory.resolve()) and not destination.is_symlink(),
+            "unsafe-lldp-diagnostic-output")
+    require(not destination.exists() and destination.parent.resolve() == destination.parent,
+            "existing-lldp-diagnostic-output")
+    with tempfile.TemporaryDirectory(prefix="lldp-graph-", dir=directory) as temporary:
+        staging = Path(temporary) / "graph-failure"
+        staging.mkdir()
+        (staging / "module-graph.json").write_bytes(graph)
+        (staging / "MODULE.bazel.lock").write_bytes(lock)
+        (staging / "inspection-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        require(not destination.exists() and not destination.is_symlink(), "existing-lldp-diagnostic-output")
+        staging.rename(destination)
 
 
 def source_validation_summary(value, kind, identity):
