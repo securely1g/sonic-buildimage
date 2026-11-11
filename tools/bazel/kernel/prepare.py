@@ -28,7 +28,7 @@ PROVENANCE = "kernel-provenance.json"
 TARGET = "@sonic_linux_kernel//:kernel_packages"
 DEBS_DIRECTORY = Path("target/debs/trixie")
 KERNEL_PATH = Path("src/sonic-linux-kernel")
-DOWNLOADER_CONFIG = Path("tools/bazel/debian-pool.cfg")
+DOWNLOADER_CONFIG = Path("tools/bazel/debian_mirrors.cfg")
 REGISTRY_PREFIX = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
 DEFAULT_REGISTRY = REGISTRY_PREFIX + "main"
 WATCHED = [
@@ -443,7 +443,7 @@ def inspect_resolution(workdir, consumer, source, registry, *, fetch=None):
     stderr = (workdir / "module-graph.stderr").read_text()
     status = int(regular(workdir / "module-graph.exit-code").read_text())
     graph_text = graph_path.read_text()
-    inspection = resolution.inspect_graph(graph_text, stderr, status)
+    inspection = resolution.inspect_graph_with_diagnostics(graph_text, stderr, status)
     keys = set()
 
     def visit(node):
@@ -664,9 +664,6 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
     consumer = state / "consumer"
     shutil.copytree(workspace / "tools/bazel/kernel", consumer)
     shutil.copyfile(regular(workspace / DOWNLOADER_CONFIG), consumer / DOWNLOADER_CONFIG.name)
-    # Share the download policy without importing the image root's build flags.
-    with (consumer / ".bazelrc").open("a") as rc:
-        rc.write("\ncommon --experimental_downloader_config=" + DOWNLOADER_CONFIG.name + "\n")
     require(configure_registry(consumer) == prepared["registry"], "kernel registry selection changed")
     (state / "plan.json").write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n")
     if execute is None:

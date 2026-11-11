@@ -18,7 +18,7 @@ package(default_visibility = ["//visibility:public"])
 
 _BASE = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie"
 
-_LOCK = "//dockers/docker-sysmgr/bazel:apt.lock.json"
+_LOCK = "@sonic_build_infra//apt:apt.lock.json"
 
 _COMPATIBLE = [
     "@platforms//cpu:x86_64",
@@ -141,7 +141,7 @@ installed_packages(
     source_spec = "//dockers/docker-sysmgr/bazel:source_paths.json",
     sources = {
         "sysmgr": "@sonic_sysmgr//:sysmgr_pkg",
-        "libprotobuf32t64": "@@protobuf-legacy++_repo_rules+protobuf_source//:libprotobuf_pkg",
+        "libprotobuf32t64": "@sonic_protobuf//:libprotobuf_pkg",
     },
 )
 

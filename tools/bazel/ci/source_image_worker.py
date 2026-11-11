@@ -18,6 +18,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.bazel.ci import source_mirrors
 from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
 from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
 from tools.bazel.gzip.source_archive import SOURCES
@@ -32,8 +33,6 @@ WRAPPERS["dash-engine"] = "review_bazel.sh"
 WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6974c594c5403db3f2ad2abbc850068114f4479d/ci/source_mirrors.cfg"
-MIRROR_SHA = "8a61da28325afa7c488843f98a59ba5c7eccb71a2a0300657a58510105692b18"
 SNAPSHOT_FALLBACKS = {
     "pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u4_amd64.deb": "d63097e4bb174c04bfc29e38e6270b43c2db9c0b",
     "pool/main/p/python3.13/libpython3.13_3.13.5-2+deb13u4_amd64.deb": "a817f92905b030fcbca7d433db7dc4dcccf91c3d",
@@ -43,7 +42,7 @@ SNAPSHOT_FALLBACKS = {
 
 
 def mirror_configuration(original):
-    require(hashlib.sha256(original).hexdigest() == MIRROR_SHA, "Source mirror configuration checksum mismatch")
+    source_mirrors.verify(original)
     # BCR gawk@5.3.2 retains SHA256 f8c3486509de705192138b00ef2c00bbbdd0e84c30d5c07d23fc73a9dc4cc9cc.
     # The official Bazel mirror was independently verified to contain these exact bytes.
     destination = "https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz"
@@ -59,11 +58,8 @@ def mirror_configuration(original):
         expression = re.escape(original_url)
         lines.extend(["rewrite " + expression + " https://snapshot.debian.org/file/" + identifier,
                       "rewrite " + expression + " https://" + original_url])
-    # This private configuration replaces the shared rc default. Retain its
-    # Debian rules as well, with existing source-specific alternatives first.
-    # Policy belongs to this control checkout; the reviewed source may predate it.
     return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
-                       "\n".join(lines) + "\n").encode() + (ROOT / "tools/bazel/debian-pool.cfg").read_bytes()
+                       "\n".join(lines) + "\n").encode()
 
 
 def require(value, message):
@@ -279,7 +275,7 @@ def phase_command(image, phase, workspace, artifacts):
     if phase == "loaded":
         return prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_loaded.py"), "--artifacts", str(artifacts)]
     if phase == "incremental" and image == "orchagent":
-        return prefix + [str(workspace / "tools/bazel/ci/swss_rebuild.py"), "--bazel", wrapper,
+        return prefix + [str(workspace / "tools/bazel/ci/swss_image_rebuild.py"), "--bazel", wrapper,
                          "--bazel-arg=--//dockers/docker-orchagent:source_config_engine=true",
                          "--runtime-target", "//dockers/docker-orchagent:docker-orchagent.gz",
                          "--additional-runtime-target", "//dockers/docker-orchagent:docker-orchagent-dbg.gz",
@@ -346,16 +342,14 @@ def prepare(args):
     launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile))
     launch.chmod(0o755)
     mirror = temporary / "source-image-mirrors.cfg"
-    with urllib.request.urlopen(MIRROR_URL, timeout=60) as response:
-        mirror_bytes = response.read()
-    mirror.write_bytes(mirror_configuration(mirror_bytes))
+    mirror.write_bytes(mirror_configuration(source_mirrors.download()))
     rc = workspace / ".bazelrc.user"
     require(not rc.exists(), "Expected a fresh source checkout without a local Bazel override")
     rc.write_text("\n".join([
         "# Private persistent source-image worker caches; no Make package cache.",
         "common --repository_cache=" + str(cache / "repository"),
         "common --disk_cache=" + str(cache / "disk"),
-        "common --experimental_downloader_config=" + str(mirror),
+        "common --downloader_config=" + str(mirror),
         *["common --distdir=" + str(directory) for directory in distdirs],
     ]) + "\n")
     run_key = os.environ.get("GITHUB_RUN_ID", "") + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "")

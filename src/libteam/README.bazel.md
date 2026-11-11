@@ -1,51 +1,42 @@
-# Native libteam source validation
+# Consume libteam from its shared owner
 
-The `Bazel libteam and SWSS consumers` workflow builds libteam's runtime,
-development and matching debug TARs, producer metadata, `teamsyncd` and
-`tlm_teamd` on native AMD64 and ARM64 Trixie runners. It executes
-`//src/libteam:consumer_test` with the declared runtime libraries. The SWSS
-integration patches select this source-built libteam and the per-library ZeroMQ
-interface; the Common patch applies to the landed `a045092` source.
+The image root uses `@libteam` version `1.31.0.sonic.1`. That registry module
+owns the pinned upstream 1.31 source, the existing 16 SONiC patches, native
+libraries and programs, runtime/debug TARs, development TAR, package metadata
+and native consumer test. `src/libteam/BUILD.bazel` only forwards compatibility
+labels used by existing image recipes. SWSS uses the owner's public providers
+directly.
 
-Local builds and CI use the root `.bazelrc`: the maintained SONiC registry
-`main` followed by BCR. Infrastructure
-`0.0.25-3ee15ec9b4d99d7f8eae3e324cead79b203b451e` supplies the published native
-library interfaces; `rules_distroless@0.9.4.sonic.15` exports the pinned Debian
-headers and libraries, and `libnl3@3.7.0.sonic.7` provides the native libnl
-interfaces and SDK. The root selects the libnl recipe's supported `rules_cc`
-`0.2.22` and `tar.bzl` `0.10.5.sonic.1` versions consistently.
+The existing Make recipe, Debian control files and source patches are unchanged.
+These Bazel targets produce TARs and metadata, not DEBs. All three runtime
+packages remain available: `libteam5`, `libteamdctl0` and `libteam-utils`.
+The registry owner also exposes library-only metadata for SWSS's separate TARs.
 
-Initialize the root workspace's pinned gNOI submodule before local validation:
+The registered SWSS module links against the same libteam targets that supply
+the image runtime TARs. The [root module](../../MODULE.bazel) selects the
+registered SWSS and libteam versions.
 
-```sh
-git submodule update --init -- src/sonic-sysmgr/gnoi
-bazel build //src/libteam:libteam_runtime //src/libteam:libteam_dev
-bazel test //src/libteam:consumer_test
-```
+## Validation
 
-These commands default to AMD64 Trixie. Native ARM64 callers pass both
-`--platforms=@sonic_build_infra//platforms:aarch64_trixie` and
-`--host_platform=@sonic_build_infra//platforms:aarch64_trixie`.
+The native workflow retains its AMD64/ARM64 matrix, 11 selected output targets,
+uncached owner consumer test and installed-SDK/debug checks on both architectures.
+The installed check verifies all five ELF/debug pairs, SONAME and SDK links, public headers,
+pkg-config flags and zero development-TAR timestamps. The shared owner's
+incremental probe performs baseline, no-op, config-edit and restoration builds
+using the same Bazel entry point, flags, caches and execution root. The consumer
+resolves the owner's script through its public source label and does not edit a
+second local configuration file.
+For pinned Bazel 8.5.1 with Bzlmod, the lookup reads `info output_base` and
+validates its `execroot/_main` directory before resolving the owner script. This
+avoids platform configuration during the path lookup while keeping the same
+wrapper and all build/query options; empty, malformed or missing roots fail.
 
-CI retains checkout inputs, the generated resolution lock, build/test events,
-named outputs and SHA-256 checksums. On both native architectures CI also
-compiles the public C consumer against the installed SDK/pkg-config interface
-and verifies all five detached
-symbol pairs, including isolated positive/negative GDB source lookup. The
-development TAR sets every member's timestamp to zero using the standard mtree
-time default. Generated pkg-config files and the compressed changelog therefore
-cannot add build-time timestamps. Installed SDK validation rejects nonzero
-timestamps, including PAX overrides; run
-`python3 tools/bazel/tests/libteam_sdk_timestamp_test.py` for its regression tests.
-A config
-edit probe verifies that the declared input changes the utils TAR and restoring
-the exact source reproduces the original TAR. Its unchanged-input rebuild is a
-same-output-base determinism check, not a fresh-cache or remote-hit claim.
-These tests cover the component and its build consumers. They do not establish
-daemon business flows, a full image or
-successful inherited image workflows.
-
-The normal hosted regression suite includes the existing kernel package
-fixtures. Full-VS jobs follow the repository's normal event and fork policies;
-there are no branch- or PR-specific exclusions for libteam. Source-package
-validation does not by itself establish a successful installer or guest boot.
+The native and OCI workflows use `tools/bazel/ci/source_mirrors.py` to verify the
+[shared registry configuration](https://github.com/securely1g/sonic-bazel-registry/blob/9697f3db62fc58a7a70b0d876abe0a849133a00d/ci/source_mirrors.cfg)
+and preserve local Debian mirrors ahead of its source fallbacks. This includes
+the verified pigz release without changing source checksums. Root `.bazelrc`
+keeps `tools/bazel/debian_mirrors.cfg` and canonical `sonic-bazel-registry/main`.
+Pure caller tests verify script resolution and flag forwarding. The native
+workflow retains generated module-resolution evidence for both architectures,
+plus installed-output and four-phase probe receipts for both architectures,
+in its artifacts.

@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - src/libteam/**
-      - tools/bazel/0001-sonic-swss-libteam.patch
-      - tools/bazel/0001-sonic-swss-common-zmq.patch
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
+      - tools/bazel/BUILD.bazel
       - tools/bazel/ci/artifact_validation.py
+      - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/source_mirrors.py
       - tools/bazel/oci/runtime_smoke.py
       - .github/workflows/bazel-libteam.yml
   workflow_dispatch:
@@ -55,6 +57,17 @@ jobs:
           repository-cache: true
           disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+      - name: Fetch the verified shared downloader configuration
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/libteam-source-mirrors.cfg"
+          python3 -B tools/bazel/ci/source_mirrors.py --output "$config"
+          mkdir -p artifacts
+          cp "$config" artifacts/source-mirrors.cfg
+          python3 -B -c 'from tools.bazel.ci.source_mirrors import URL; print(URL)' > artifacts/source-mirrors-url.txt
+          sha256sum artifacts/source-mirrors.cfg > artifacts/source-mirrors.sha256
       - name: Build source outputs and execute native tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -63,6 +76,8 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
+          # Use the canonical maintained registry.
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -71,10 +86,11 @@ jobs:
           printf '%s\n' "$(uname -m)" "$(dpkg --print-architecture)" > artifacts/architecture.txt
           git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD > artifacts/checkout-sha.txt
           git -c safe.directory="$GITHUB_WORKSPACE" cat-file -p HEAD > artifacts/checkout.txt
-          printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" "$CI_ARCHITECTURE" "$CI_DISTRIBUTION" > artifacts/inputs.txt
-          cp .bazelrc artifacts/root.bazelrc
-          cp tools/bazel/common.bazelrc artifacts/common.bazelrc
+          printf '%s\n' "$CI_HEAD_SHA" "$CI_BASE_SHA" "$CI_ARCHITECTURE" "$CI_DISTRIBUTION" "$SONIC_BAZEL_REGISTRY" > artifacts/inputs.txt
           options=(
+            "--registry=$SONIC_BAZEL_REGISTRY"
+            --registry=https://bcr.bazel.build
+            "--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg"
             "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
             "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
             --jobs=2
@@ -82,7 +98,9 @@ jobs:
           run_bazel() {
             local command="$1"
             shift
-            bazel "$command" "${options[@]}" "$@"
+            bazel --nosystem_rc --nohome_rc --noworkspace_rc \
+              --bazelrc="$PWD/tools/bazel/common.bazelrc" \
+              "$command" "${options[@]}" "$@"
           }
           targets=(
             //src/libteam:libteam_runtime
@@ -106,8 +124,10 @@ jobs:
             sha256sum "$output" >> artifacts/SHA256SUMS
           done < artifacts/outputs.txt
           cp MODULE.bazel.lock artifacts/
+          # Selecting the compatibility alias builds the executable but does not
+          # run its test; select the source owner's test rule directly.
           run_bazel test --nocache_test_results --build_event_json_file="$PWD/artifacts/test-events.json" \
-            //src/libteam:consumer_test \
+            @libteam//:consumer_test \
             2>&1 | tee artifacts/test.log
           output() { run_bazel cquery "//src/libteam:$1" --output=files; }
           python3 -B src/libteam/verify_runtime.py \
@@ -120,10 +140,39 @@ jobs:
             --development "$(output libteam_dev)" \
             --dependency-development "$(run_bazel cquery @libnl3//:libnl-3-dev_files --output=files)" \
             --output artifacts/installed-runtime.json
-          python3 -B src/libteam/verify_rebuild.py \
-            --bazel bazel \
+          # Resolve the selected owner's probe in this same Bazel execution
+          # root; cquery's external/ path is not relative to the Git checkout.
+          probe_bazel="$PWD/tools/bazel/ci/libteam_draft_bazel.sh"
+          probe_flags=(
+            "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
+            "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
+            "--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg"
+          )
+          # Bazel 8.5.1 Bzlmod uses the standard output_base/execroot/_main.
+          # Unlike info execution_root, output_base needs no platform configuration.
+          output_base="$("$probe_bazel" info "${probe_flags[@]}" output_base)"
+          if [[ "$output_base" != /* || "$output_base" == *$'\n'* ]]; then
+            printf 'Invalid Bazel output base: %s\n' "$output_base" >&2
+            exit 1
+          fi
+          execution_root="$output_base/execroot/_main"
+          if [[ ! -d "$execution_root" ]]; then
+            printf 'Missing Bazel 8.5.1 Bzlmod execution root: %s\n' "$execution_root" >&2
+            exit 1
+          fi
+          probe_file="$("$probe_bazel" cquery "${probe_flags[@]}" @libteam//:bazel/verify_rebuild.py --output=files)"
+          test -n "$probe_file"
+          [[ "$probe_file" != *$'\n'* ]]
+          case "$probe_file" in
+            /*) owner_probe="$probe_file" ;;
+            *) owner_probe="$execution_root/$probe_file" ;;
+          esac
+          test -f "$owner_probe"
+          python3 -B "$owner_probe" \
+            --bazel "$probe_bazel" \
             --bazel-arg="--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie" \
             --bazel-arg="--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}" \
+            --bazel-arg="--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg" \
             --output artifacts/rebuild
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload source outputs and validation evidence
