@@ -6,6 +6,7 @@ py_library(
     name = "source_base_validation",
     srcs = ["source_base_validation.py"],
     deps = [
+        ":container_validation",
         ":oci_inventory",
         ":oci_layout",
         "//tools/bazel/ci:artifact_validation",
@@ -190,4 +191,10 @@ py_binary(
     name = "source_contract",
     srcs = ["source_contract.py"],
     deps = [":source_contract_lib"],
+)
+
+py_binary(
+    name = "installed_images_policy",
+    srcs = ["installed_images_policy.py"],
+    deps = [":container_validation"],
 )

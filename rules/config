@@ -161,6 +161,11 @@ ENABLE_FRR_SNMP_AGENT ?= y
 SONIC_DPKG_CACHE_METHOD ?= none
 SONIC_DPKG_CACHE_SOURCE ?= /var/cache/sonic/artifacts
 
+# Prefer verified Debian source archives for Monit and rasdaemon when requested.
+# Keep their existing Git source selection by default.
+PREFER_DEBIAN_REPO ?= n
+export PREFER_DEBIAN_REPO
+
 # Build eligible containers and kernel packages with Bazel. Container owners
 # register SONIC_BAZEL_DOCKER_IMAGES and SONIC_BAZEL_DBG_DOCKER_IMAGES; the
 # kernel rule enables native Trixie VS with its default unsigned configuration.
