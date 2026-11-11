@@ -590,7 +590,7 @@ class RunningFixturePolicyTest(unittest.TestCase):
             self.assertEqual(archive.extractfile(files["lib64/ld-linux-x86-64.so.2"]).read(), b"loader")
 
     def test_root_source_is_separate_and_hash_pinned_to_fe43(self):
-        self.assertEqual(runtime.NATIVE_CONTROLLER, "fe43e7a04cb1734c450091dae10fc555a296b1c0")
+        self.assertEqual(runtime.NATIVE_CONTROLLER, "ba575106ea25c3a5f14a428b0326b6a3c891b5ef")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "controller"
             native = root.with_name(root.name + "-native-cleanup")
@@ -997,6 +997,17 @@ class SafeTracebackDiagnosticTest(unittest.TestCase):
         self.assertEqual(result["authored_guard_reasons"], ["Docker root must be absent before launch"])
         self.assertNotIn("/private/", json.dumps(result))
         self.assertNotIn("unknown.py", json.dumps(result))
+
+    def test_new_mount_guards_require_exact_before_stage_errors(self):
+        for reason in ("Invalid namespace mountpoint", "Invalid filesystem mount root",
+                       "Parent components in non-cgroup mount root", "Selected mount root is not canonical"):
+            for stage, suffix in ((self.BEFORE, ""), (self.BEFORE, " /private/path"), ("native-stop.stderr", "")):
+                with self.subTest(reason=reason, stage=stage, suffix=suffix):
+                    text = ("Traceback (most recent call last):\nValueError: " + reason + suffix + "\n").encode()
+                    result = runtime.traceback_diagnostics(text, stage)
+                    expected = [reason] if stage == self.BEFORE and not suffix else []
+                    self.assertEqual(result["authored_guard_reasons"], expected)
+                    self.assertNotIn("/private/path", json.dumps(result))
 
     def test_called_process_error_repr_and_source_context_do_not_classify(self):
         program = ('timeout = 10\nraise ValueError("Private Docker still has a mounted child")\n'

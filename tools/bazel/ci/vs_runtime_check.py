@@ -187,7 +187,9 @@ def traceback_diagnostics(tail, stage_log, leading_fragment=False):
     before_reasons = (
         "Expected elevated fixed mount action", "Unexpected owned mount scope",
         "Mount table identity/bound", "Mount table exceeds bound", "Invalid mount row",
-        "Invalid mount path", "Owned daemon signaling requires pidfd support",
+        "Invalid mount path", "Invalid namespace mountpoint", "Invalid filesystem mount root",
+        "Parent components in non-cgroup mount root", "Selected mount root is not canonical",
+        "Owned daemon signaling requires pidfd support",
         "Required fixed Docker/umount executable is unavailable",
         "Docker root must be absent before launch", "Private mount directory identity",
         "Missing backing mount", "Ambiguous backing mount", "Private mount proof size",
@@ -515,8 +517,8 @@ def stopped_container(executable, environment, state):
     return result
 
 
-NATIVE_CONTROLLER = "fe43e7a04cb1734c450091dae10fc555a296b1c0"
-NATIVE_WORKER_SHA256 = "8015a18a42f0ad475d71bf23f56f211a7ceeb69ab9d4e643bc68fa2c38387dc5"
+NATIVE_CONTROLLER = "ba575106ea25c3a5f14a428b0326b6a3c891b5ef"
+NATIVE_WORKER_SHA256 = "6c491e3daf8cdbdcc64257703742763040d986ed5d69a89cdec5e3366263b26d"
 NATIVE_CAPTURE_SECONDS = 40
 NATIVE_STOP_SECONDS = 240
 ROOT_BODY_SECONDS = 240

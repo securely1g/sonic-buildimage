@@ -637,7 +637,7 @@ jobs:
       - name: Checkout the published native stop implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: fe43e7a04cb1734c450091dae10fc555a296b1c0
+          ref: ba575106ea25c3a5f14a428b0326b6a3c891b5ef
           path: ${{ steps.paths.outputs.native }}
           clean: false
           persist-credentials: false
@@ -653,7 +653,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$CONTROL"
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never rev-parse HEAD)" = "fe43e7a04cb1734c450091dae10fc555a296b1c0"
+          test "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never rev-parse HEAD)" = "ba575106ea25c3a5f14a428b0326b6a3c891b5ef"
           test -z "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never status --porcelain --untracked-files=no)"
           python3 -B -m unittest -v tools.bazel.tests.vs_worker_inspection_test tools.bazel.tests.vs_runtime_test
       - name: Qualify sandbox, running container and proved native cleanup
