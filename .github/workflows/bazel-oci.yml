@@ -1423,6 +1423,7 @@ jobs:
           printf '\n%s\n' 'startup --output_base=/b' \
             'build --experimental_ui_max_stdouterr_bytes=33554432' >> /sonic/.bazelrc.user
           python3 -B tools/bazel/ci/source_mirrors.py \
+            --prefer-debian-snapshot \
             --output "$PWD/artifacts/vs/source-mirrors.cfg"
           # /sonic shares this checkout; retain the private cache configuration.
           printf 'common --downloader_config=%s\n' "$PWD/artifacts/vs/source-mirrors.cfg" >> .bazelrc.user

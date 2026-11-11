@@ -451,6 +451,10 @@ BCR `pigz@2.8.bcr.2` archive comes from the registry release, with MacPorts as a
 fallback; Bazel still checks the original SHA256 and applies the BCR patches.
 There is no separate pigz download or pigz distdir.
 
+The native K3s installer tries the locked `snapshot.debian.org` URL first for
+timestamped Debian and Debian security inputs. The SONiC and registry mirrors
+remain available if that snapshot cannot serve the requested bytes.
+
 On native K3s workers, Dockerfile `RUN` steps inherit the job's managed APT
 route for `deb.debian.org` when that route is enabled. BuildKit mounts the APT
 configuration and its public CA for each step. The native preparation receipt
