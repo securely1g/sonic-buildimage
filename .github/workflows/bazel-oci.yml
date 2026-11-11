@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-remote-cache, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -59,6 +59,65 @@ env:
   BAZEL: bazel
 
 jobs:
+  vs_management_image_blobs:
+    name: Original management image blobs (hosted)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-mgmt-blobs' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check blob integrity and bounded client fixtures
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -B -m unittest -v \
+            tools.bazel.tests.vs_management_image_metadata_test \
+            tools.bazel.tests.vs_management_image_blobs_test
+      - name: Download the upstream rules_oci regctl pin
+        env:
+          BLOB_TOOLS: ${{ runner.temp }}/management-blob-tools-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$BLOB_TOOLS"
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/bin/curl --disable --fail --show-error --silent --location \
+            --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 --max-filesize 134217728 \
+            --output "$BLOB_TOOLS/regctl" \
+            'https://github.com/regclient/regclient/releases/download/v0.8.0/regctl-linux-amd64'
+          printf '%s  %s\n' '2276edee5a1e5cb89bb4e448e5d023564acd6d84a5419cc92ff262d85dfb8e9a' "$BLOB_TOOLS/regctl" | sha256sum --check --status
+          chmod 700 "$BLOB_TOOLS/regctl"
+      - name: Capture the original config and selected COPY layer
+        id: blobs
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          BLOB_TOOLS: ${{ runner.temp }}/management-blob-tools-${{ github.run_id }}-${{ github.run_attempt }}
+          BLOB_OUTPUT: ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 -B tools/bazel/ci/vs_management_image_blobs.py \
+            --regctl "$BLOB_TOOLS/regctl" --output "$BLOB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && (steps.blobs.outcome == 'success' || steps.blobs.outcome == 'failure')
+        with:
+          name: vs-management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/tool-identity.json
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/config/plan.json
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/config/result.json
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/config/stdout.data
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/layer/plan.json
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/layer/result.json
+            ${{ runner.temp }}/management-image-blobs-${{ github.run_id }}-${{ github.run_attempt }}/layer/stdout.data
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+
   vs_remote_cache_smoke:
     name: Tiny remote cache qualification (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-remote-cache' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'

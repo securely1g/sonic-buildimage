@@ -110,11 +110,14 @@ def client_context(directory, inherited):
     return argv, env
 
 
-def observe_client(directory, argv, env):
+def observe_client(directory, argv, env, *, stdout_cap=None, seconds=30):
     # The process/stream/deadline/descendant lifecycle below is retained from the
     # reviewed anonymous upstream client donor. No retry is performed here.
     D = directory
-    plan = {"stdout_cap": STDOUT_CAP, "stderr_cap": STDERR_CAP}
+    cap = STDOUT_CAP if stdout_cap is None else stdout_cap
+    if type(cap) is not int or not 0 < cap <= 32 * 1024 * 1024 or type(seconds) is not int or not 0 < seconds <= 120:
+        raise ValueError("Upstream client observation bounds differ")
+    plan = {"stdout_cap": cap, "stderr_cap": STDERR_CAP}
     def save(name, value):
         write_json(D / name, value)
     proc=None;sel=selectors.DefaultSelector();buffers={'stdout':bytearray(),'stderr':bytearray()};reason=None;signals=[];started=time.monotonic()
@@ -126,7 +129,7 @@ def observe_client(directory, argv, env):
     def deferred(signum,frame):
      if pending_signal[0] is None:pending_signal[0]=signum
     try:
-     signal.alarm(60)
+     signal.alarm(seconds + 30)
      previous={sig:signal.getsignal(sig) for sig in handled}
      try:
       for sig in handled:signal.signal(sig,deferred)
@@ -136,7 +139,7 @@ def observe_client(directory, argv, env):
      if pending_signal[0] is not None:raise InterruptedError('Interrupted during retained client creation')
      for key,stream in [('stdout',proc.stdout),('stderr',proc.stderr)]:
       os.set_blocking(stream.fileno(),False);sel.register(stream,selectors.EVENT_READ,key)
-     deadline=started+30
+     deadline=started+seconds
      while sel.get_map():
       if time.monotonic()>=deadline:reason='CLIENT_DEADLINE';break
       for key,_ in sel.select(min(.25,max(0,deadline-time.monotonic()))):
