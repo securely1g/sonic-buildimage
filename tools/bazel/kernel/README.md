@@ -134,6 +134,30 @@ A changed source/tool/configuration input can rebuild the entire kernel. A
 cache hit reuses the source-built package outputs and skips kernel compilation.
 This does not claim per-object caching or independent cold byte reproducibility.
 
+### Remote cache through Make
+
+The kernel's isolated Bazel invocation does not inherit `BAZEL_CONTAINER_ARGS`
+or the root workspace's remote-cache settings. Select its endpoint explicitly:
+
+```sh
+make target/sonic-vs.bin BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+  SONIC_BAZEL_KERNEL_REMOTE_CACHE=grpc://172.16.0.4:9092
+```
+
+The endpoint defaults to empty, leaving ordinary builds local-only. With an
+endpoint selected, remote access is read-only unless
+`SONIC_BAZEL_KERNEL_REMOTE_UPLOAD=y` is also set. Uploads without an endpoint
+and upload values other than `y` or `n` fail. Do not put credentials in the URL.
+The host Make wrapper forwards both settings into the slave for normal builds
+and direct `Makefile.work` entry points. The existing local cache mount remains
+independent and can be used alongside the remote cache.
+
+The VS installer CI job selects the private gRPC endpoint explicitly. PR/manual
+runs use read-only access; only pushes to master enable uploads. A configured
+endpoint does not guarantee a cache hit: the kernel action inputs must match.
+The retained kernel plan records `remote_cache` and `upload_local_results`;
+the launcher invocation records the effective remote policy.
+
 ## Package contract
 
 The normal DEB directory contains these five kernel DEBs and two metadata

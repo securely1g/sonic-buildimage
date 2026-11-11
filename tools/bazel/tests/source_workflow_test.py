@@ -102,6 +102,10 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertNotIn("container", job)
         self.assertNotIn("EXPECTED_MANAGER_REVISION", job["env"])
         self.assertEqual(job["env"]["BAZEL_REMOTE_AUTH"], "")
+        self.assertEqual(job["env"]["SONIC_BAZEL_KERNEL_REMOTE_CACHE"], "grpc://172.16.0.4:9092")
+        self.assertEqual(
+            job["env"]["SONIC_BAZEL_KERNEL_REMOTE_UPLOAD"],
+            "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}")
         for flag in (
             "--remote_cache=grpc://172.16.0.4:9092",
             "--experimental_remote_downloader=grpc://172.16.0.4:9092",

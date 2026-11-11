@@ -1350,6 +1350,8 @@ jobs:
       BAZEL: bazel
       # Use the explicitly selected gRPC service, not the legacy HTTPS override.
       BAZEL_REMOTE_AUTH: ""
+      SONIC_BAZEL_KERNEL_REMOTE_CACHE: grpc://172.16.0.4:9092
+      SONIC_BAZEL_KERNEL_REMOTE_UPLOAD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}
       DEFAULT_CONTAINER_REGISTRY: ""
       SONIC_CONFIG_USE_DOCKER_CACHE: "y"
       SONIC_DPKG_CACHE_METHOD: rwcache

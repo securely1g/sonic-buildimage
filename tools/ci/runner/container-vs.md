@@ -50,6 +50,11 @@ the Make builder as well as on the host. PR/manual builds remain read-only,
 while master pushes enable uploads. The legacy HTTPS authentication override
 is disabled for this job so it cannot replace the gRPC cache while leaving the
 gRPC-only downloader enabled. Repository-wide defaults remain unchanged.
+The isolated kernel build separately receives
+`SONIC_BAZEL_KERNEL_REMOTE_CACHE` and `SONIC_BAZEL_KERNEL_REMOTE_UPLOAD` through
+the Make wrapper; it does not inherit `BAZEL_CONTAINER_ARGS`. Its upload policy
+also permits writes only for master pushes. See the
+[kernel cache interface](../../bazel/kernel/README.md#remote-cache-through-make).
 
 The shared lgh4 concurrency group is removed for this route. Only assign the
 `vs` label to independently provisioned, adequately sized VMs with one active
