@@ -287,7 +287,8 @@ def review_public_upload(data, contract, run, job, artifact, inventory, public, 
         if logical in public:
             require(rows[path]['bytes'] == len(public[logical]) and
                     rows[path]['sha256'] == digest(public[logical]), 'Original public JSON bytes differ')
-            worker.safe_json(worker.load_json(public[logical].decode('utf-8')))
+            worker.validate_public_evidence(
+                worker.load_json(public[logical].decode('utf-8')), logical, request)
     receipt = worker.load_json(public['public-receipt.json'].decode('utf-8'))
     require(set(receipt['artifacts']) == set(contract['outputs']), 'Declared native outputs differ')
     for logical, declared in receipt['artifacts'].items():

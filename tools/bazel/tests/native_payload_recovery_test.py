@@ -101,6 +101,8 @@ class RecoveryInventoryTest(unittest.TestCase):
         args = self.fixture()
         contract, artifact = args[1], args[4]
         public = {n: b'{}' for n in recovery.worker.public_json_names(json.loads(REQUEST))}
+        public['policy.json'] = json.dumps({'image_validation': {
+            'environment': {'DEBIAN_FRONTEND': 'noninteractive'}}}, sort_keys=True).encode()
         payloads = {n: public.get(n, ('synthetic payload ' + n).encode()) for n in contract['outputs']}
         declared = {n: {'bytes': len(v), 'sha256': recovery.digest(v)} for n, v in payloads.items()}
         public['public-receipt.json'] = json.dumps({'artifacts': declared}, sort_keys=True).encode()

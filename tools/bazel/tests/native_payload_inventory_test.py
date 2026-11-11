@@ -170,7 +170,8 @@ class NativePayloadInventoryTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(inventory, "api_json", side_effect=[
                 {"id": 42860613563}, {"id": 129985415221}, artifact]))
             stack.enter_context(mock.patch.object(inventory.recovery, "admit_original", return_value={
-                "status": "ORIGINAL_FAILURE_ADMITTED_FOR_INSPECTION_ONLY"}))
+                "status": "ORIGINAL_FAILURE_ADMITTED_FOR_INSPECTION_ONLY",
+                "original_request": {"image": "p4rt"}}))
             stack.enter_context(mock.patch.object(inventory.os, "fstatvfs", return_value=SimpleNamespace(
                 f_bavail=inventory.SPACE_RESERVE + 100000, f_frsize=1)))
             stack.enter_context(mock.patch.object(inventory, "time_budget", side_effect=lambda seconds: contextlib.nullcontext()))

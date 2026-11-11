@@ -121,10 +121,10 @@ def write(path, value, *, public=True):
         stream.write(json.dumps(value, sort_keys=True, indent=2) + '\n')
 
 
-def read_evidence(path, request):
-    value = read(path, public=False)
+def validate_public_evidence(value, name, request):
+    """Apply the canonical evidence safety view without changing original bytes."""
     checked = value
-    if image(request) in ('syncd', 'gearbox') and Path(path).name == 'policy.json':
+    if image(request) in ('syncd', 'gearbox') and Path(name).name == 'policy.json':
         # The producer preserves these original bytes. Permit its one checked-in
         # image constant only in the safety view, retaining the original digest.
         checked = copy.deepcopy(value)
@@ -132,6 +132,10 @@ def read_evidence(path, request):
                 {'DEBIAN_FRONTEND': 'noninteractive'}, 'Unexpected public image environment')
     safe_json(checked)
     return value
+
+
+def read_evidence(path, request):
+    return validate_public_evidence(read(path, public=False), path, request)
 
 
 def git(workspace, *args):

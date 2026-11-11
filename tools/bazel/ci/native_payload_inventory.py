@@ -204,7 +204,7 @@ def stream_exact(source, output, size, digest, expires):
     return {"bytes": count, "sha256": hashed.hexdigest()}
 
 
-def selected_public_json(archive, members, rows, expires):
+def selected_public_json(archive, members, rows, expires, request=None):
     """The original publisher writes direct children of the uploaded public/ root.
 
     This maps exact ZIP-root paths, never basename matches at an unknown prefix.
@@ -234,6 +234,10 @@ def selected_public_json(archive, members, rows, expires):
             kind = "lock" if name == "MODULE.bazel.lock" else "graph"
             public_artifacts.dependency_json(value, kind)
             validator = "dependency_json:" + kind
+        elif name == "policy.json":
+            require(request is not None, "Original policy requires its admitted request")
+            recovery.worker.validate_public_evidence(value, name, request)
+            validator = "worker.validate_public_evidence"
         else:
             public_artifacts.safe_json(value)
             validator = "safe_json"
@@ -242,7 +246,7 @@ def selected_public_json(archive, members, rows, expires):
     return selected
 
 
-def inventory(stream, artifact, expires, public=None):
+def inventory(stream, artifact, expires, public=None, request=None):
     """Standard ZIP parsing, complete streamed CRC/hash checks, no member output."""
     rows, names, regular, total = [], set(), set(), 0
     with zipfile.ZipFile(stream) as archive:
@@ -284,7 +288,7 @@ def inventory(stream, artifact, expires, public=None):
                          "encrypted": False})
         if public is not None:
             require(type(public) is dict and not public, "Public evidence destination must be empty")
-            public.update(selected_public_json(archive, members, rows, expires))
+            public.update(selected_public_json(archive, members, rows, expires, request))
     for name in names:
         parts = name.split("/")
         require(all("/".join(parts[:index]) not in regular for index in range(1, len(parts))),
@@ -383,7 +387,8 @@ def collect(root, context, fixed, request_bytes, contract, calls, progress, fami
         progress["stage"] = "original_zip_crc_and_hash_inventory"
         public = {}
         with time_budget(900), os.fdopen(os.dup(fd), "rb") as source:
-            observed = inventory(source, artifact, time.monotonic() + 900, public)
+            observed = inventory(source, artifact, time.monotonic() + 900, public,
+                                 request=admission["original_request"])
         after = os.fstat(fd)
         named = os.stat("original.zip", dir_fd=root, follow_symlinks=False)
         require(signature(before) == signature(after) == signature(named) and
