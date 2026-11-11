@@ -2469,7 +2469,7 @@ jobs:
           path: ${{ steps.paths.outputs.control }}
           clean: false
           persist-credentials: false
-      - name: Verify exact validator interfaces and 35 pure inspection fixtures
+      - name: Verify exact validator interfaces and 38 pure inspection fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           GIT_NO_LAZY_FETCH: '1'
@@ -2483,7 +2483,7 @@ jobs:
           python3 -B - <<'PY_SOURCE'
           import hashlib, json
           from pathlib import Path
-          expected = json.loads(r'''{"tools/bazel/ci/image_worker_receipt.py": "d9804dd85f4d8a10f8e2e844ffba3d3eb3dbc6ff6a292abc54fc650df3fe20f9", "tools/bazel/ci/native_payload_inventory.py": "e688d4033f41218fa1824fe5bfaaa7e9bb1d53ced7c955a30b659b5daa634df6", "tools/bazel/ci/native_payload_inventory_input.json": "09ad533fe596ca431dc1cabcffa27bfb6b804b0673e7fad5c8c12cf1859f9fce", "tools/bazel/ci/native_payload_recovery.py": "31656a93d825b8e1e4fbab3440ba06781e7efebc929e134e0073385b24c7dae1", "tools/bazel/ci/p4rt_receipt_semantics.py": "0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661", "tools/bazel/ci/p4rt_sdk_receipt_semantics.py": "d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9", "tools/bazel/ci/public_artifacts.py": "74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9", "tools/bazel/ci/syncd_receipt_semantics.py": "1cd86c9d2323077e7b37929c260e9cf12f0add35c7168da9a98d31e2a684e3b9", "tools/bazel/ci/vs_cache_inspection.py": "03beddcf6d73233988b6eef92c69dfdfcc70dbb6a10421edc4e921a9709c451c", "tools/bazel/tests/native_payload_inventory_test.py": "e5939735ce1aceeee3e4eba565eccf85018bdd7f891f35dccdfb93739c1e2745", "tools/bazel/tests/native_payload_recovery_test.py": "424bf0e9b3f40bbe3872db55c35f877af6ed4f8dea54ead269f5ab1aee59b919"}''')
+          expected = json.loads(r'''{"tools/bazel/ci/image_worker_receipt.py": "d9804dd85f4d8a10f8e2e844ffba3d3eb3dbc6ff6a292abc54fc650df3fe20f9", "tools/bazel/ci/native_payload_inventory.py": "d85bf169109e1eb464666e2cd2319e4cc29cee1ad716e3b0d79ec96f378c8d57", "tools/bazel/ci/native_payload_inventory_input.json": "09ad533fe596ca431dc1cabcffa27bfb6b804b0673e7fad5c8c12cf1859f9fce", "tools/bazel/ci/native_payload_recovery.py": "31656a93d825b8e1e4fbab3440ba06781e7efebc929e134e0073385b24c7dae1", "tools/bazel/ci/p4rt_receipt_semantics.py": "0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661", "tools/bazel/ci/p4rt_sdk_receipt_semantics.py": "d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9", "tools/bazel/ci/public_artifacts.py": "74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9", "tools/bazel/ci/syncd_receipt_semantics.py": "1cd86c9d2323077e7b37929c260e9cf12f0add35c7168da9a98d31e2a684e3b9", "tools/bazel/ci/vs_cache_inspection.py": "03beddcf6d73233988b6eef92c69dfdfcc70dbb6a10421edc4e921a9709c451c", "tools/bazel/tests/native_payload_inventory_test.py": "b33ed61533db5948374833e0b8e03c61f451f2a8640e8e15821b70dd626eed7f", "tools/bazel/tests/native_payload_recovery_test.py": "424bf0e9b3f40bbe3872db55c35f877af6ed4f8dea54ead269f5ab1aee59b919"}''')
           for name, digest in expected.items():
               if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
                   raise SystemExit('Original inspection source binding differs')

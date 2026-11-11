@@ -34,8 +34,10 @@ CHUNK = 1024 * 1024
 METADATA_LIMIT = 2 * CHUNK
 INVENTORY_LIMIT = 8 * CHUNK
 SPACE_RESERVE = 8 * 1024**3
-PUBLIC_MEMBER_BYTES = 2 * CHUNK
-PUBLIC_TOTAL_BYTES = 16 * CHUNK
+# Original artifact 13803477455 has a 35,747,928-byte MODULE.bazel.lock.
+# Retention caps are separate from the unchanged canonical receipt limits.
+PUBLIC_MEMBER_BYTES = 64 * CHUNK
+PUBLIC_TOTAL_BYTES = 64 * CHUNK
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 require = recovery.require

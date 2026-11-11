@@ -228,6 +228,44 @@ class NativePayloadInventoryTest(unittest.TestCase):
 
 
 
+    def test_public_json_exact_retention_boundaries_and_one_byte_overflow(self):
+        lock = b'{"lockFileVersion":3,"registryFileHashes":{},"moduleExtensions":{}}'
+        body, artifact = self.zipped([("MODULE.bazel.lock", lock), ("receipt.json", b"{}")])
+        with mock.patch.object(inventory, "PUBLIC_MEMBER_BYTES", len(lock)), \
+             mock.patch.object(inventory, "PUBLIC_TOTAL_BYTES", len(lock) + 2):
+            public = {}
+            inventory.inventory(io.BytesIO(body), artifact, float("inf"), public)
+            self.assertEqual(public["MODULE.bazel.lock"]["raw"], lock)
+            self.assertEqual(public["receipt.json"]["raw"], b"{}")
+        for name, limit in (("PUBLIC_MEMBER_BYTES", len(lock) - 1),
+                            ("PUBLIC_TOTAL_BYTES", len(lock) + 1)):
+            with self.subTest(bound=name), mock.patch.object(inventory, name, limit):
+                with self.assertRaisesRegex(ValueError, "Original public JSON retention bound exceeded"):
+                    inventory.inventory(io.BytesIO(body), artifact, float("inf"), {})
+
+    def test_original_lock_above_old_retention_cap_roundtrips_unchanged(self):
+        lock = (b'{"lockFileVersion":3,"registryFileHashes":{},"moduleExtensions":{},'
+                b'"facts":{"fixture":"' + b"x" * (2 * 1024**2) + b'"}}')
+        body, artifact = self.zipped([("MODULE.bazel.lock", lock), ("receipt.json", b"{}")])
+        public = {}
+        result = inventory.inventory(io.BytesIO(body), artifact, float("inf"), public)
+        self.assertTrue(result["all_members_crc_verified"])
+        self.assertEqual(public["MODULE.bazel.lock"]["raw"], lock)
+        self.assertEqual(public["MODULE.bazel.lock"]["sha256"], hashlib.sha256(lock).hexdigest())
+        self.assertEqual(public["MODULE.bazel.lock"]["validator"], "dependency_json:lock")
+        self.assertEqual(public["receipt.json"]["raw"], b"{}")
+
+    def test_large_lock_keeps_schema_duplicate_key_and_safety_refusals(self):
+        prefix = (b'{"lockFileVersion":3,"registryFileHashes":{},"moduleExtensions":{},'
+                  b'"facts":{"fixture":"' + b"x" * (2 * 1024**2) + b'"}')
+        for suffix in (b',"unknown":{}}', b',"facts":{}}', b',"facts":{"token":"fixture-secret"}}'):
+            # A credential field is also checked without relying on duplicate-key rejection.
+            lock = prefix + suffix if b'token' not in suffix else prefix.replace(b'"fixture":', b'"token":') + b'}'
+            body, artifact = self.zipped([("MODULE.bazel.lock", lock)])
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                inventory.inventory(io.BytesIO(body), artifact, float("inf"), {})
+
+
 class TimerRestorationTest(unittest.TestCase):
     def test_expired_outer_timer_is_disabled_and_original_failure_preserved(self):
         for explicit in (False, True):
