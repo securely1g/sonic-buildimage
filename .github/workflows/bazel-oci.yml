@@ -270,6 +270,7 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python3 -B tools/bazel/ci/checkout_identity.py \
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
@@ -285,7 +286,6 @@ jobs:
       - name: Check native architecture and generated dependency state
         run: |
           test "$(uname -m)" = "${{ matrix.machine }}"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test ! -e MODULE.bazel.lock
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
