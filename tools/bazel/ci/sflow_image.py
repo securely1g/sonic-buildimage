@@ -328,7 +328,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("build", "validate", "incremental"))
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--bazel", default="tools/bazel/ci/libteam_draft_bazel.sh")
+    parser.add_argument("--bazel", default="bazel")
     args = parser.parse_args()
     directory = args.artifacts.resolve(); directory.mkdir(parents=True, exist_ok=True)
     if args.phase == "build": build_images(args, directory)

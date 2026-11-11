@@ -39,13 +39,14 @@ make -f tools/bazel/prepare_manifests.mk \
   BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs \
   CONFIGURED_ARCH=amd64 INCLUDE_FIPS=y ENABLE_ASAN=n DBG_IMAGE_MARK=dbg \
   DOCKERS_PATH=dockers
-tools/bazel/ci/libteam_draft_bazel.sh build //dockers/docker-sflow:docker-sflow.gz \
+bazel build //dockers/docker-sflow:docker-sflow.gz \
   //dockers/docker-sflow:docker-sflow-dbg.gz
 ```
 
-CI runs these builds through the shared entry point `tools/bazel/ci/libteam_draft_bazel.sh`,
-which resolves the hsflowd, sflowtool, libpsample and SWSS owner modules from
-canonical registry `main`, the same catalog ordinary `.bazelrc` uses. The selected
+`tools/bazel/ci/sflow_image.py` defaults `--bazel` to `bazel` (using `.bazelrc`,
+which resolves the `hsflowd`, `sflowtool`, `libpsample`, `sonic-build-infra` and
+SWSS owner modules from canonical registry `main`), while CI workflows pass
+`--bazel "$BAZEL"` explicitly. The selected
 iproute2 `.5` preserves the full compiler flags through response files when the
 shared native dependency graph exceeds the operating system's per-argument limit
 ([registry #192](https://github.com/securely1g/sonic-bazel-registry/pull/192)).
@@ -72,9 +73,11 @@ modules and utilities omitted from the legacy Docker debug stanza. Inherited
 SWSS/Common symbols come from the parent's complete source graph; this path
 does not copy the legacy stanza's unrelated `DOCKER_TEAMD` assignment.
 
-To refresh external packages, resolve `refresh/MODULE.bazel` against its pinned
-Debian snapshots, then run `refresh/export_lock.py`. Review the resulting lock
-and rerun selection, loaded-image and source-edit checks. Keep generated
-`MODULE.bazel.lock` as validation evidence, outside Git. Exact no-op/restoration
-hashes and cross-root reproducibility are separate claims; inherited base ELF
-reproducibility limitations must remain visible in the review evidence.
+sFlow uses `@sonic_build_infra//apt:apt.lock.json` (`sflow_debian` plus the shared
+`sysmgr_debug_debian` and `sysmgr_test_debian` sets). Refresh those sets
+through `sonic-build-infra/apt/requests.json` and the infrastructure owner's
+APT workflow, keeping the snapshot URLs intact, then rerun selection,
+loaded-image and source-edit checks. Keep generated `MODULE.bazel.lock` as
+validation evidence, outside Git. Exact no-op/restoration hashes and cross-root
+reproducibility are separate claims; inherited base ELF reproducibility
+limitations must remain visible in the review evidence.

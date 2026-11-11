@@ -17,7 +17,7 @@ package(default_visibility = ["//visibility:public"])
 
 _BASE = "//dockers/docker-swss-layer-trixie:docker-swss-layer-trixie"
 
-_LOCK = "//dockers/docker-sflow/bazel:apt.lock.json"
+_LOCK = "@sonic_build_infra//apt:apt.lock.json"
 
 _COMPATIBLE = [
     "@platforms//cpu:x86_64",
@@ -181,9 +181,9 @@ debug_symbols_layer(
 apt_layer(
     name = "debian_debug",
     base = ":docker-sflow",
-    dependency_set = "sflow_debug_debian",
+    dependency_set = "sysmgr_debug_debian",
     lock = _LOCK,
-    packages = APT_INPUTS["sflow_debug_debian"]["amd64"],
+    packages = APT_INPUTS["sysmgr_debug_debian"]["amd64"],
     policy = _POLICY,
     variant = "debug",
 )
@@ -236,7 +236,7 @@ installed_packages(
     apt_receipt = ":debug_apt_selection",
     architecture = "amd64",
     base = ":docker-sflow",
-    controls = [label + ":control" for label in APT_INPUTS["sflow_debug_debian"]["amd64"].values()],
+    controls = [label + ":control" for label in APT_INPUTS["sysmgr_debug_debian"]["amd64"].values()],
     owner_metadata = ["@sonic_fips//:runtime_packages.json"],
     source_modules = {"sonic-fips": "@image_source_modules//:sonic-fips.MODULE.bazel"},
     source_spec = "//dockers/docker-sflow/bazel:debug_source_paths.json",
@@ -299,5 +299,5 @@ sonic_layer(
 flatten(
     name = "test_redis",
     testonly = True,
-    tars = ["@sflow_test_debian//redis-server"],
+    tars = ["@sysmgr_test_debian//redis-server"],
 )
