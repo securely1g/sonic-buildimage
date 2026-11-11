@@ -355,23 +355,38 @@ class VerificationWorkflowTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         legacy, active = workflow.split("\n  vs_container:\n", 1)
         self.assertIn("if: ${{ false }}", legacy.split("\n  vs:\n", 1)[1])
-        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container]", active)
+        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]", active)
         names = [line.split(": ", 1)[1] for line in active.splitlines()
                  if line.startswith("      - name: ")]
         self.assertLess(names.index("Validate the installer and retained container pairs"),
                         names.index("Verify installed base, SWSS and Syncd images"))
         self.assertLess(names.index("Verify installed base, SWSS and Syncd images"),
                         names.index("Publish the installer and matching container archives"))
-        self.assertIn("bash tools/bazel/ci/verify_vs_oci.sh make -f slave.mk", active)
+        self.assertIn("bash tools/bazel/ci/validate_vs.sh", active)
         installed = active.split("      - name: Verify installed base, SWSS and Syncd images\n", 1)[1].split(
             "\n      - ", 1)[0]
         script = textwrap.dedent(installed.split("        run: |\n", 1)[1])
-        self.assertNotIn("sonic-slave-run", script)
-        self.assertNotIn("dockerd", script)
+        self.assertIn("sonic-slave-run", script)
+        self.assertIn("SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n", script)
+        self.assertIn('--cgroupns=private', script)
         with tempfile.TemporaryDirectory(prefix="active-image-validation-") as temporary:
             directory = Path(temporary)
             (directory / "artifacts/vs").mkdir(parents=True)
-            (directory / "sonic-vs-slave.env").write_text("export DOCKER_HOST=unix:///worker-private.sock\n")
+            make = directory / "make"
+            make.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''\
+                import os, subprocess, sys
+                args = sys.argv[1:]
+                if "sonic-slave-run" in args:
+                    command = next(arg.split("=", 1)[1] for arg in args
+                                   if arg.startswith("SONIC_RUN_CMDS="))
+                    environment = dict(os.environ, DOCKER_HOST="unix:///worker-private.sock")
+                    sys.exit(subprocess.run(["bash", "-c", command], env=environment).returncode)
+                assert "docker-start" in args, args
+                '''))
+            make.chmod(0o755)
+            sudo = directory / "sudo"
+            sudo.write_text("#!/bin/sh\nexit 0\n")
+            sudo.chmod(0o755)
             python = directory / "python3"
             python.write_text(f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
                               "Path('docker-call.json').write_text(json.dumps({'args': sys.argv[1:], "
@@ -398,8 +413,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 sys.exit(int(os.environ['DOCKER_EXIT']))
                 '''))
             docker.chmod(0o755)
-            # Bind the workflow's /sonic location to this test checkout.
-            shell = 'cd() { test "$1" = /sonic; builtin cd "$TEST_WORKSPACE"; }\n' + script
+            shell = script
             cases = (
                 ("resolved", 0, 0, "libnl-3.so.200 => /usr/lib/libnl-3.so.200\n", 0),
                 ("probe failed", 19, 0, "", 19),
@@ -418,6 +432,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell], cwd=directory,
                         env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
                                  RUNNER_TEMP=str(directory), TEST_WORKSPACE=str(directory),
+                                 SONIC_CI_CONTAINER_LABEL="fixture-vs",
                                  PROBE_EXIT=str(probe_exit), DOCKER_EXIT=str(docker_exit),
                                  EXPECTED_DOCKER_ARGUMENTS=json.dumps(docker_arguments), LINKAGE_OUTPUT=output),
                         capture_output=True, text=True)

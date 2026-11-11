@@ -1,7 +1,54 @@
 # Build the VS installer in a SONiC slave runner
 
-The `VS installer in SONiC slave (AMD64)` job in `bazel-oci.yml` runs the
-Actions worker inside the Trixie build container. It uses the
+## Dedicated host-agent route
+
+The active `vs_container` workflow job now selects
+`[self-hosted, linux, bazel-x64, vs]`. The Actions runner stays on the host;
+the normal Make wrapper creates the SONiC build containers. It does not need
+the external worker manager, image marker, or the container-runner UID/layout
+described in the legacy profile below.
+
+Provision one non-root runner per dedicated AMD64 VM with Docker/buildx access,
+Git, Make, Python 3, wget, `j2`, a readable system CA bundle, and host legacy
+IPv4 NAT support (`iptable_nat`). The runner's file-creation mask must be 0022.
+Allow the nested Docker and Bazel sandbox capabilities required by the existing
+Make builder, including applicable host AppArmor rules; do not globally disable
+host protections. The kernel sandbox is exercised in the Trixie builder before
+the installer starts.
+
+Run `python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD"
+--build-target sonic-vs.bin` from the checkout as the runner user. This retains
+the CPU architecture, process umask, Ghostscript policy, legacy NAT, workspace
+mount, Docker/buildx, memory, disk-budget and template checks without requiring
+the legacy `sonic-vs-runner.service` or a `/data` installation. At least 10 GiB
+memory must be available; allow headroom beyond that threshold. The workspace
+and Docker store each need 100 GiB free, or 200 GiB if on the same filesystem.
+These are admission limits, not guaranteed maximum build sizes.
+
+Each run uses a distinct checkout and label-scoped builder cleanup. Persistent
+caches live in `vs-cache/bazel` and `vs-cache/packages` under the runner workspace,
+outside the run-specific checkout. Keep them writable by the runner user.
+Only the selected job's containers are removed; the host Docker daemon, other
+jobs' containers, caches and retained checkouts are not pruned. Operators must
+manage retained checkout/image storage when no builds use it.
+
+The job explicitly passes `grpc://172.16.0.4:9092` as the Bazel action cache and
+remote downloader through `BAZEL_CONTAINER_ARGS`; verify connectivity inside
+the Make builder as well as on the host. PR/manual builds remain read-only,
+while master pushes enable uploads. The legacy HTTPS authentication override
+is disabled for this job so it cannot replace the gRPC cache while leaving the
+gRPC-only downloader enabled. Repository-wide defaults remain unchanged.
+
+The shared lgh4 concurrency group is removed for this route. Only assign the
+`vs` label to independently provisioned, adequately sized VMs with one active
+runner each. Do not register several VS runners on one constrained host.
+Workflow-level cancellation rules still apply. Run a full installer and its
+image-validation stages successfully before considering the migration verified.
+
+## Legacy container-runner profile
+
+The previous `VS installer in SONiC slave (AMD64)` job ran the
+Actions worker inside the Trixie build container. It used the
 `sonic-slave-container` runner label and invokes the native build directly:
 
 ```bash

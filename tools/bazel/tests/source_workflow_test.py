@@ -10,6 +10,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -51,8 +52,91 @@ class ArchiveCachePolicyTest(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertIn(flag, workflow_jobs[name])
         self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
-        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container]",
+        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]",
                       workflow_jobs["vs_container"])
+
+    def test_host_installer_is_isolated_and_preserves_input_and_output_contracts(self):
+        job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
+        self.assertNotIn("concurrency", job)
+        self.assertNotIn("container", job)
+        self.assertNotIn("EXPECTED_MANAGER_REVISION", job["env"])
+        self.assertEqual(job["env"]["BAZEL_REMOTE_AUTH"], "")
+        for flag in (
+            "--remote_cache=grpc://172.16.0.4:9092",
+            "--experimental_remote_downloader=grpc://172.16.0.4:9092",
+            "--experimental_remote_downloader_local_fallback",
+        ):
+            self.assertIn(flag, job["env"]["BAZEL_CONTAINER_ARGS"])
+        checkout = job["steps"][0]["with"]
+        directory = "vs-${{ github.run_id }}-${{ github.run_attempt }}"
+        self.assertEqual(checkout["path"], directory)
+        self.assertTrue(checkout["submodules"])
+        self.assertEqual(job["defaults"]["run"]["working-directory"], directory)
+        selected = {step.get("name"): step for step in job["steps"]}
+        self.assertIn("--host-agent", selected["Check host-agent build prerequisites"]["run"])
+        self.assertIn("--build-target sonic-vs.bin",
+                      selected["Check host-agent build prerequisites"]["run"])
+        scripts = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertNotIn("prepare_vs_slave.sh", scripts)
+        self.assertNotIn("sonic-vs-slave.env", scripts)
+        self.assertIn("bash tools/bazel/ci/build_vs.sh", scripts)
+        self.assertIn("bash tools/bazel/ci/validate_vs.sh", scripts)
+        self.assertIn("--expected-commit-id", scripts)
+        self.assertIn("verify-installed-images.sh", scripts)
+        self.assertIn("LD_BIND_NOW=1", scripts)
+        self.assertIn('label=$SONIC_CI_CONTAINER_LABEL', scripts)
+        self.assertNotIn("docker system prune", scripts)
+        self.assertIn("P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources",
+                      job["env"]["SONIC_BUILD_VARS"])
+        self.assertIn("--manifest src/p4lang/source-inputs.json",
+                      selected["Verify P4 source bytes before native Make"]["run"])
+        for step in job["steps"]:
+            if "download-artifact@" in step.get("uses", ""):
+                self.assertTrue(step["with"]["path"].startswith(directory + "/"))
+            if "upload-artifact@" in step.get("uses", ""):
+                for path in step["with"]["path"].splitlines():
+                    self.assertTrue(path.startswith(directory + "/"), path)
+        installer_paths = selected["Publish the installer and matching container archives"]["with"]["path"]
+        for output in ("sonic-vs.bin", "sonic-vs.bin.dockers", "docker-orchagent.gz",
+                       "docker-orchagent-dbg.gz", "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
+            self.assertIn("/target/" + output, installer_paths)
+
+    def test_host_cleanup_is_scoped_and_handles_already_removed_containers(self):
+        job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
+        cleanup = next(step for step in job["steps"]
+                       if step.get("name") == "Remove only this job's build containers")
+        self.assertEqual(cleanup["working-directory"], "${{ github.workspace }}")
+        self.assertEqual(cleanup["if"], "always()")
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            docker = directory / "docker"
+            docker.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''\
+                import os, sys
+                args = sys.argv[1:]
+                if args[0] == "ps":
+                    assert "label=fixture-vs" in args, args
+                    if os.environ["CASE"] == "daemon-error":
+                        sys.exit(17)
+                    if "id=fixture-container" in args:
+                        if os.environ["CASE"] == "remove-error":
+                            print("fixture-container")
+                    elif os.environ["CASE"] != "empty":
+                        print("fixture-container")
+                else:
+                    assert args == ["rm", "--force", "fixture-container"], args
+                    if os.environ["CASE"] in ("remove-error", "already-removed"):
+                        sys.exit(1)
+                '''))
+            docker.chmod(0o755)
+            for case, expected in (("empty", 0), ("removed", 0), ("already-removed", 0),
+                                   ("remove-error", 1), ("daemon-error", 17)):
+                with self.subTest(case=case):
+                    result = subprocess.run(
+                        ["bash", "-c", cleanup["run"]], cwd=directory,
+                        env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                                 SONIC_CI_CONTAINER_LABEL="fixture-vs", CASE=case),
+                        text=True, capture_output=True)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
     def test_upload_override_preserves_checkout_cleanliness(self):
         step = steps(jobs()["archive"])["Configure remote cache uploads"]
