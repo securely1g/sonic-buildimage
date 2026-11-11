@@ -217,5 +217,159 @@ class CacheConfigurationTest(unittest.TestCase):
                 self.assertEqual(smoke.run_command.call_args.kwargs["seconds"], 45)
 
 
+class FirstHopConfigurationTest(unittest.TestCase):
+    def entries(self, values, home=Path("/home/runner")):
+        return [("runner_home_bazelrc", home / ".bazelrc", "import", value) for value in values]
+
+    def test_relative_first_hop_keeps_only_origin_and_hashes(self):
+        body = b'common --remote_cache=https://user:secret@cache.example/private?token=secret#fragment\n'
+        with mock.patch.object(config.transport, "read_under", return_value=body) as read:
+            value = config.first_hop_rc(self.entries(["cache.bazelrc"]), Path("/home/runner"))
+        read.assert_called_once_with(Path("/"), "home/runner/cache.bazelrc", config.RC_LIMIT)
+        self.assertEqual(value["rows"][0]["options"], [{"status": "origin", "origin": "https://cache.example"}])
+        self.assertEqual(value["rows"][0]["bytes"], len(body))
+        self.assertNotIn("secret", json.dumps(value))
+        self.assertNotIn("cache.bazelrc", json.dumps(value))
+
+    def test_outside_roots_expansion_and_non_rc_targets_are_not_read(self):
+        values = ["../private.bazelrc", "/tmp/private.bazelrc", "%workspace%/x.bazelrc", "$HOME/x.bazelrc",
+                  "~/.bazelrc", "/etc/passwd", "/opt/sonic-runner/token.py", "a/*.bazelrc", "a\\b.bazelrc", None]
+        with mock.patch.object(config.transport, "read_under") as read:
+            result = config.first_hop_rc(self.entries(values), Path("/home/runner"))
+        read.assert_not_called()
+        self.assertTrue(all(row["status"] == "uninterpreted" for row in result["rows"]))
+        self.assertFalse(result["complete_first_hop_observation"])
+
+    def test_four_reads_and_duplicate_do_not_follow_a_fifth(self):
+        values = ["a.bazelrc", "a.bazelrc", "b.bazelrc", "c.bazelrc", "d.bazelrc", "e.bazelrc"]
+        with mock.patch.object(config.transport, "read_under", return_value=b"common --remote_cache=https://cache\n") as read:
+            result = config.first_hop_rc(self.entries(values), Path("/home/runner"))
+        self.assertEqual(read.call_count, 4)
+        self.assertEqual(result["read_attempts"], 4)
+        self.assertEqual([row["status"] for row in result["rows"]], ["read", "already_seen", "read", "read", "read", "read_limit"])
+
+    def test_nested_and_seed_cycle_imports_never_recurse(self):
+        values = [".bazelrc", "a.bazelrc"]
+        body = b"import /etc/bazel/next.bazelrc\ncommon --remote_cache=https://cache\n"
+        with mock.patch.object(config.transport, "read_under", return_value=body) as read:
+            result = config.first_hop_rc(self.entries(values), Path("/home/runner"))
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(result["rows"][0]["status"], "already_seen")
+        self.assertTrue(result["rows"][1]["import_directives_ignored"])
+        self.assertFalse(result["recursive_imports_followed"])
+
+    def test_first_hop_symlink_and_ancestor_symlink_refuse(self):
+        with tempfile.TemporaryDirectory() as name:
+            home = Path(name)
+            (home / "real").mkdir()
+            (home / "real/x.bazelrc").write_bytes(b"common --remote_cache=https://cache\n")
+            (home / "link.bazelrc").symlink_to(home / "real/x.bazelrc")
+            (home / "parent").symlink_to(home / "real", target_is_directory=True)
+            result = config.first_hop_rc(self.entries(["link.bazelrc", "parent/x.bazelrc"], home), home)
+            self.assertEqual([row["status"] for row in result["rows"]], ["refused", "refused"])
+
+    def test_first_hop_fifo_directory_and_oversize_refuse(self):
+        with tempfile.TemporaryDirectory() as name:
+            home = Path(name)
+            os.mkfifo(home / "fifo.bazelrc")
+            (home / "directory.bazelrc").mkdir()
+            (home / "large.bazelrc").write_bytes(b"x" * (config.RC_LIMIT + 1))
+            result = config.first_hop_rc(self.entries(["fifo.bazelrc", "directory.bazelrc", "large.bazelrc"], home), home)
+            self.assertEqual([row["status"] for row in result["rows"]], ["refused"] * 3)
+
+    def test_failed_seed_parse_does_not_emit_partial_imports(self):
+        for body in (b'import /opt/sonic-runner/cache.bazelrc\ncommon "unterminated',
+                     b'import /opt/sonic-runner/cache.bazelrc\n' * (config.MAX_IMPORTS_PER_SEED + 1)):
+            selected = []
+            with mock.patch.object(config.transport, "read_under", return_value=body):
+                row = config.read_rc("system_bazelrc", Path("/etc/bazel.bazelrc"), selected)
+            self.assertEqual(row["status"], "refused")
+            self.assertEqual(selected, [])
+
+    def test_conditional_literals_are_candidates_without_execution(self):
+        body = b'raise RuntimeError("must not execute")\nif flag:\n ENDPOINT="https://user:secret@one/private?q=secret"\nelse:\n ENDPOINT="https://two"\nTOKEN="https://never-retain"\n'
+        row = config.runtime_source_metadata(body)
+        self.assertEqual(row["endpoint_assignments"], 2)
+        self.assertFalse(row["existing_unique_shape_recognized"])
+        self.assertEqual([item["candidate"]["origin"] for item in row["literal_candidates"]], ["https://one", "https://two"])
+        self.assertFalse(row["effective_configuration_determined"])
+        self.assertNotIn("secret", json.dumps(row))
+        self.assertNotIn("never-retain", json.dumps(row))
+
+    def test_calls_and_fstrings_report_only_fixed_ast_kinds(self):
+        for body, kind in ((b'ENDPOINT=lookup("https://never-retain")\n', "Call"),
+                           (b'HOST="never-retain"\nENDPOINT=f"https://{HOST}"\n', "JoinedStr"),
+                           (b'ENDPOINT=private.VALUE\n', "Attribute")):
+            row = config.runtime_source_metadata(body)
+            self.assertEqual(row["expression_kinds"], [kind])
+            self.assertEqual(row["literal_candidates"], [])
+            self.assertNotIn("never-retain", json.dumps(row))
+
+    def test_known_host_shape_keeps_existing_recognizer(self):
+        body = b'HOST="cache.example"\nENDPOINT="https://"+HOST\n'
+        row = config.runtime_source_metadata(body)
+        self.assertTrue(row["existing_unique_shape_recognized"])
+        self.assertEqual(row["literal_candidates"], [{"provenance": "existing_unique_literal_shape", "candidate": {"status": "origin", "origin": "https://cache.example"}}])
+        self.assertEqual(config.endpoint_from_source(body)["status"], "read")
+
+    def test_literal_candidate_limit_stays_explicit(self):
+        body = b"".join((f'ENDPOINT="https://cache{i}.example"\n').encode() for i in range(10))
+        row = config.runtime_source_metadata(body)
+        self.assertEqual(row["endpoint_assignments"], 10)
+        self.assertEqual(len(row["literal_candidates"]), config.MAX_SOURCE_CANDIDATES)
+        self.assertTrue(row["candidate_limit_reached"])
+        self.assertFalse(row["effective_configuration_determined"])
+
+    def test_collection_reads_two_seeds_helper_and_one_import_without_probe(self):
+        files = {"etc/bazel.bazelrc": b"try-import /opt/sonic-runner/cache.bazelrc\n",
+                 "home/runner/.bazelrc": b"",
+                 "opt/sonic-runner/cache_credentials.py": b'ENDPOINT=dynamic()\n',
+                 "opt/sonic-runner/cache.bazelrc": b"common --remote_cache=https://cache\n"}
+        calls = []
+        def read(root, relative, cap):
+            self.assertEqual(root, Path("/"))
+            self.assertEqual(cap, config.RC_LIMIT)
+            calls.append(relative)
+            return files[relative]
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, {"HOME": "/home/runner"}, clear=True))
+            stack.enter_context(mock.patch.object(config.transport, "read_under", side_effect=read))
+            stack.enter_context(mock.patch.object(config.dns.socket, "getaddrinfo", side_effect=AssertionError("DNS forbidden")))
+            stack.enter_context(mock.patch("subprocess.Popen", side_effect=AssertionError("Execution forbidden")))
+            result = config.collect_files()
+        self.assertEqual(set(calls), set(files))
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(result["schema"], 2)
+        self.assertEqual(config.validate_files(result), result)
+        self.assertEqual(result["first_hop_rc"]["rows"][0]["options"][0]["origin"], "https://cache")
+
+    def test_projection_rejects_raw_fields_and_false_read_accounting(self):
+        with mock.patch.dict(os.environ, {"HOME": "/home/runner"}, clear=True), mock.patch.object(config.transport, "read_under", return_value=b""):
+            good = config.collect_files()
+        self.assertEqual(config.validate_files(good), good)
+        for field, value in (("raw", "private source"), ("source", "ENDPOINT=secret")):
+            bad = json.loads(json.dumps(good))
+            bad["runtime_source"][field] = value
+            with self.assertRaises(config.transport.DiagnosticFailure):
+                config.validate_files(bad)
+        bad = json.loads(json.dumps(good))
+        bad["first_hop_rc"]["read_attempts"] = 1
+        with self.assertRaises(config.transport.DiagnosticFailure):
+            config.validate_files(bad)
+
+    def test_runtime_metadata_hashes_original_bytes_and_preserves_refusal(self):
+        import hashlib
+        body = b'ENDPOINT="https://user:secret@cache/path?token=secret"\n'
+        metadata = []
+        with mock.patch.object(config.transport, "read_under", return_value=body):
+            actual = config.read_runtime_endpoint(metadata)
+        self.assertEqual(metadata[0]["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(metadata[0]["bytes"], len(body))
+        self.assertEqual(actual["endpoint"]["origin"], "https://cache")
+        self.assertNotIn("secret", json.dumps(metadata))
+        with mock.patch.object(config.transport, "read_under", side_effect=SyntaxError("private body")):
+            self.assertEqual(config.read_runtime_endpoint([])["status"], "refused")
+
+
 if __name__ == "__main__":
     unittest.main()

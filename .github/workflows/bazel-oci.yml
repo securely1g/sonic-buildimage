@@ -2680,7 +2680,7 @@ jobs:
           path: ${{ steps.paths.outputs.native }}
           clean: false
           persist-credentials: false
-      - name: Check source identities and 24 pure configuration fixtures
+      - name: Check source identities and 38 pure configuration fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           NATIVE: ${{ steps.paths.outputs.native }}
@@ -2709,8 +2709,8 @@ jobs:
             b6482f26f057d1d822792f12ccb330083ef4e0804e2845d5e4595dff3cb54809 tools/bazel/ci/vs_cache_dns.py \
             18c980acf16e36f286c4e0c62cf816a4a4bb647f0c1f622bb6cdaa597f6f40f7 tools/bazel/tests/vs_cache_dns_test.py | sha256sum --check --status
           printf '%s  %s\n' \
-            8acb2f67ccc66e4731d247ac657a58e19fc887a2011e1f84a10ed245dbca4f01 tools/bazel/ci/vs_cache_configuration.py \
-            66f4a5f70236e75e16ecf4a72db8fb289d27d7a82ab61b361ea42fd87a01ac28 tools/bazel/tests/vs_cache_configuration_test.py | sha256sum --check --status
+            d7b8585e3d29b1ad001b6774727feb8fc02fe3c2238104e322eb035411869540 tools/bazel/ci/vs_cache_configuration.py \
+            072e81bfa684a05cd740fe0dbf13f95f465e6b8d513391d7aaf6f196a8437423 tools/bazel/tests/vs_cache_configuration_test.py | sha256sum --check --status
           python3 -B -m unittest -v tools.bazel.tests.vs_cache_configuration_test
       - name: Read only fixed cache URL candidates and literal rc or runtime endpoints
         id: diagnostic
