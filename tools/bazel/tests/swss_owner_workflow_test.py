@@ -3,20 +3,16 @@
 import ast
 import contextlib
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest import mock
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 CATALOG = "main"
-CONFIG_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
-CONFIG_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
 JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
         ("bazel-supervisor-rust.yml", "native"), ("bazel-yang-models.yml", "package"),
         ("bazel-oci.yml", "archive"), ("bazel-oci.yml", "checks")]
@@ -48,32 +44,44 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
             self.assertFalse((root / "public-receipt.json").exists())
 
     def test_bootstrap_verifies_config_before_appending_to_existing_caches(self):
+        from tools.bazel.ci import source_mirrors
+
+        fixture = ROOT / "tools/bazel/tests/fixtures/source-mirrors-9697f3db.cfg"
+        self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(), source_mirrors.SHA256)
         for filename, job in JOBS:
-            data = (ROOT / "tools/bazel/tests/fixtures/source-mirrors-97cc5025.cfg").read_bytes()
-            self.assertEqual(hashlib.sha256(data).hexdigest(), CONFIG_SHA)
             steps = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())["jobs"][job]["steps"]
-            mirror = next(s for s in steps if s.get("name") == "Configure the verified source mirror")
+            mirror = next(s for s in steps if "tools/bazel/ci/source_mirrors.py" in s.get("run", ""))
             self.assertLess(next(i for i,s in enumerate(steps) if "preserve_setup_bazel_cache.py" in s.get("run", "")), steps.index(mirror))
-            code = mirror["run"].split("python3 - <<'PYCFG'\n", 1)[1].rsplit("\nPYCFG", 1)[0]
             for corrupt in (False, True):
                 with self.subTest(filename=filename, job=job, corrupt=corrupt), tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
+                    (root / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
+                    config = root / ".bazelrc.user"
                     before = "common --repository_cache=/retained/repository\nbuild --disk_cache=/retained/disk\n"
-                    (root / ".bazelrc.user").write_text(before)
-                    with contextlib.chdir(root), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root)}):
-                        with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(data + (b"changed" if corrupt else b""))) as fetch:
-                            if corrupt:
-                                with self.assertRaisesRegex(SystemExit, "checksum mismatch"):
-                                    exec(compile(code, filename, "exec"), {})
-                            else:
-                                exec(compile(code, filename, "exec"), {})
-                        fetch.assert_called_once_with(CONFIG_URL, timeout=60)
+                    config.write_text(before)
+                    data = root / "response"
+                    data.write_bytes(fixture.read_bytes() + (b"changed" if corrupt else b""))
+                    # Run the actual shell and Python CLI, replacing only the HTTP response.
+                    (root / "sitecustomize.py").write_text(
+                        "import io, os, urllib.request\nfrom pathlib import Path\n"
+                        "def fetch(url, timeout):\n"
+                        "    assert url == os.environ['EXPECTED_URL'] and timeout == 60\n"
+                        "    return io.BytesIO(Path('response').read_bytes())\n"
+                        "urllib.request.urlopen = fetch\n")
+                    env = dict(os.environ, PYTHONPATH=str(root), RUNNER_TEMP=str(root), EXPECTED_URL=source_mirrors.URL)
+                    result = subprocess.run(["bash", "-ec", mirror["run"]], cwd=root, env=env,
+                                            capture_output=True, text=True)
                     selected = root / "sonic-source-mirrors.cfg"
-                    self.assertEqual(selected.exists(), not corrupt)
-                    self.assertEqual((root / ".bazelrc.user").read_text(), before + (
-                        "" if corrupt else "common --experimental_downloader_config=" + str(selected) + "\n"))
-                    if not corrupt:
-                        self.assertEqual(selected.read_bytes(), data)
+                    if corrupt:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("checksum mismatch", result.stderr)
+                        self.assertFalse(selected.exists())
+                        self.assertEqual(config.read_text(), before)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(config.read_text(), before + "common --downloader_config=" + str(selected) + "\n")
+                        local = (ROOT / "tools/bazel/debian_mirrors.cfg").read_bytes()
+                        self.assertEqual(selected.read_bytes(), local + b"\n" + fixture.read_bytes())
 
     def test_real_wrapper_selects_complete_catalog_and_respects_private_cache_overrides(self):
         with tempfile.TemporaryDirectory() as temporary:

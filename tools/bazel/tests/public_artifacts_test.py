@@ -698,21 +698,25 @@ class PublicArtifactsTest(unittest.TestCase):
 
     def test_source_publication_requires_exact_validated_archive_hashes(self):
         """Do not upload untested, missing or changed archives under a passing source receipt."""
-        for change in ("missing-bindings", "missing-archive", "extra-archive", "changed-bytes"):
-            with self.subTest(change=change):
-                seed(self.root, "source")
-                name = "artifacts/swss/receipt.json"
-                value = json.loads((self.root / name).read_text())
-                validated = value["validation"]["artifact_sha256"]
-                if change == "missing-bindings": del value["validation"]["artifact_sha256"]
-                elif change == "missing-archive": del validated["swss.tar"]
-                elif change == "extra-archive": validated["unpublished.tar"] = DIGEST
-                else: write(self.root, "artifacts/swss/swss.tar", b"different configured output")
-                write_json(self.root, name, value)
-                summary, paths, ready = self.prepare("source")
-                self.assertFalse(ready, summary)
-                self.assertEqual(paths, [])
-                self.assertIn({"input": "source-receipt", "reason": "validated-artifact-mismatch"}, summary["blocked"])
+        for archive in ("swss.tar", "libteam.tar", "libteamdctl.tar"):
+            for change in ("missing-bindings", "missing-archive", "extra-archive", "changed-bytes"):
+                with self.subTest(archive=archive, change=change):
+                    self.assert_source_archive_change_blocks_publication(archive, change)
+
+    def assert_source_archive_change_blocks_publication(self, archive, change):
+        seed(self.root, "source")
+        name = "artifacts/swss/receipt.json"
+        value = json.loads((self.root / name).read_text())
+        validated = value["validation"]["artifact_sha256"]
+        if change == "missing-bindings": del value["validation"]["artifact_sha256"]
+        elif change == "missing-archive": del validated[archive]
+        elif change == "extra-archive": validated["unpublished.tar"] = DIGEST
+        else: write(self.root, "artifacts/swss/" + archive, b"different configured output")
+        write_json(self.root, name, value)
+        summary, paths, ready = self.prepare("source")
+        self.assertFalse(ready, summary)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "source-receipt", "reason": "validated-artifact-mismatch"}, summary["blocked"])
 
     def test_source_summary_keeps_safe_tested_archive_bindings(self):
         """Preserve the exact filename-to-digest proof in the public source summary."""

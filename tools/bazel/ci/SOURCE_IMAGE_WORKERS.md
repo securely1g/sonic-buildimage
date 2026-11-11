@@ -133,7 +133,10 @@ DEB generation before building.
 The worker also uses Bazel's official mirror for the exact BCR `gawk@5.3.2`
 source archive. Its existing SHA256 and upstream build overlay stay unchanged.
 Only the three selected GNU/kernel source URLs are rewritten; the original
-checksum-verified pigz downloader configuration is retained. Phase resource
+checksum-verified shared downloader configuration is retained. The worker and
+hosted source-base/archive jobs select the same registry policy through
+`source_mirrors.py`, including the release mirror for the unchanged BCR pigz
+archive. Phase resource
 receipts include the observed cgroup memory/swap limits as well as usage and OOM
 counters, so a runtime limit change is not confused with a successful capacity test.
 

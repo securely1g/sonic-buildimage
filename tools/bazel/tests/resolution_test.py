@@ -39,10 +39,39 @@ class GraphInspectionTest(unittest.TestCase):
 
     def test_success(self):
         """Record the module count and complete inspection after a clean graph command."""
-        receipt = resolution.inspect_graph(GRAPH, "", 0)
+        console = io.StringIO()
+        with contextlib.redirect_stderr(console):
+            receipt = resolution.inspect_graph(GRAPH, "", 0)
         self.assertTrue(receipt["extension_inspection_complete"])
         self.assertEqual(receipt["module_count"], 3)
+        self.assertEqual(console.getvalue(), "")
 
+    def test_stored_failures_report_only_the_process_status_and_classified_clues(self):
+        for graph, code, exception in ((GRAPH, 2, ValueError), ("{}", 0, ValueError),
+                                       ("not JSON", 0, json.JSONDecodeError)):
+            console = io.StringIO()
+            primary = "ERROR: download https://private.invalid/file?token=fixture HTTP 503\n"
+            with self.subTest(graph=graph, code=code), contextlib.redirect_stderr(console), \
+                    self.assertRaises(exception):
+                resolution.inspect_graph_with_diagnostics(graph, primary, code)
+            diagnostic = json.loads(console.getvalue())
+            self.assertEqual(diagnostic["returncode"], code)
+            self.assertEqual(diagnostic["http_statuses"], [503])
+            self.assertNotIn("private.invalid", console.getvalue())
+
+    def test_long_graph_warnings_preserve_the_classified_download_error(self):
+        warning = "WARNING: APT avertissement: accès différé\n"
+        cause = "https://private.invalid/python/SHA256SUMS GET returned 503 Service Unavailable\n"
+        for fatal in ("ERROR: interpreter extension failed\n" + "frame\n" * 100,
+                      "Error in download: "):
+            console = io.StringIO()
+            stderr = warning * 100 + fatal + cause + warning * 1000
+            with self.subTest(fatal=fatal), contextlib.redirect_stderr(console), \
+                    self.assertRaisesRegex(ValueError, "Unexpected module graph inspection failure"):
+                resolution.inspect_graph_with_diagnostics(GRAPH, stderr, 2)
+            self.assertEqual(json.loads(console.getvalue())["http_statuses"], [503])
+            self.assertLess(len(console.getvalue()), 1024)
+            self.assertNotIn("private.invalid", console.getvalue())
 
     def test_known_unused_extensions_are_recorded(self):
         """Retain known failures without calling their extension inspection complete."""

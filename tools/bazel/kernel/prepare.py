@@ -443,7 +443,7 @@ def inspect_resolution(workdir, consumer, source, registry, *, fetch=None):
     stderr = (workdir / "module-graph.stderr").read_text()
     status = int(regular(workdir / "module-graph.exit-code").read_text())
     graph_text = graph_path.read_text()
-    inspection = resolution.inspect_graph(graph_text, stderr, status)
+    inspection = resolution.inspect_graph_with_diagnostics(graph_text, stderr, status)
     keys = set()
 
     def visit(node):
