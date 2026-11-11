@@ -371,5 +371,48 @@ class FirstHopConfigurationTest(unittest.TestCase):
             self.assertEqual(config.read_runtime_endpoint([])["status"], "refused")
 
 
+
+class ManagedRemoteRcTest(unittest.TestCase):
+    def test_only_exact_managed_rc_path_is_added(self):
+        home = Path("/home/runner")
+        seed = home / ".bazelrc"
+        selected = Path("/actions/bazel/remote-only.bazelrc")
+        self.assertEqual(config.import_target(str(selected), seed, home), (selected, "runtime_rc"))
+        for value in ("/actions/bazel/other.bazelrc", "/actions/other/remote-only.bazelrc",
+                      "/actions/bazel/../remote-only.bazelrc",
+                      "/actions/bazel/remote-only.bazelrc/private", "$CACHE_ROOT/remote-only.bazelrc"):
+            with self.subTest(value=value):
+                self.assertEqual(config.import_target(value, seed, home), (None, "not_selected"))
+
+    def test_managed_home_import_uses_existing_bounded_reader_and_sanitizer(self):
+        files = {"etc/bazel.bazelrc": b"",
+                 "home/runner/.bazelrc": b"import /actions/bazel/remote-only.bazelrc\n",
+                 "opt/sonic-runner/cache_credentials.py": b"ENDPOINT=dynamic()\n",
+                 "actions/bazel/remote-only.bazelrc":
+                     b"common --remote_cache=https://user:private@cache.example/private?token=private\n"
+                     b"common --credential_helper=cache.example=/opt/sonic-native-runtime/cache_credentials.py\n"
+                     b"common --disk_cache=\ncommon --repository_cache=\n"}
+        calls = []
+        def read(root, relative, cap):
+            self.assertEqual((root, cap), (Path("/"), config.RC_LIMIT))
+            calls.append(relative)
+            return files[relative]
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, {"HOME": "/home/runner"}, clear=True))
+            stack.enter_context(mock.patch.object(config.transport, "read_under", side_effect=read))
+            stack.enter_context(mock.patch.object(config.dns.socket, "getaddrinfo", side_effect=AssertionError("DNS forbidden")))
+            stack.enter_context(mock.patch("subprocess.Popen", side_effect=AssertionError("Execution forbidden")))
+            result = config.collect_files()
+        self.assertEqual(set(calls), set(files))
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(config.validate_files(result), result)
+        row = result["first_hop_rc"]["rows"][0]
+        self.assertEqual(row["target_category"], "runtime_rc")
+        self.assertEqual(row["options"], [{"status": "origin", "origin": "https://cache.example"}])
+        self.assertEqual(row["target_sha256"], "6fb6e653dd8ce8d9a6dde8f711c1fab0fb522c2426ed736051eb0b62ec25acb0")
+        self.assertEqual(result["first_hop_rc"]["read_attempts"], 1)
+        self.assertNotIn("private", json.dumps(result))
+
+
 if __name__ == "__main__":
     unittest.main()

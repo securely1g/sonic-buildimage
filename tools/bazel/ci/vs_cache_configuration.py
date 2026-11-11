@@ -182,6 +182,9 @@ def import_target(value, seed, home):
                bool(re.fullmatch(r"\.bazelrc\.[A-Za-z0-9_.-]+", name)))
     if not rc_name or len(path.parts) > 32 or len(str(path)) > 4096:
         return None, "not_selected"
+    # The managed K3s setup writes this exact file and imports it from HOME.
+    if path == Path("/actions/bazel/remote-only.bazelrc"):
+        return path, "runtime_rc"
     if home != Path("/") and path.is_relative_to(home):
         return path, "runner_home_rc"
     if path.is_relative_to(Path("/opt/sonic-runner")):
