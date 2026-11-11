@@ -40,7 +40,9 @@ class ClientBoundaryTests(unittest.TestCase):
             self.assertEqual(config["auths"], {"sonicdev-microsoft.azurecr.io": {}})
             self.assertFalse({"credsStore", "credHelpers"} & config.keys())
             self.assertFalse({"GITHUB_TOKEN", "DOCKER_AUTH_CONFIG", "HTTPS_PROXY", "SSH_AUTH_SOCK"} & env.keys())
-            self.assertEqual(argv[-4:], ["imagetools", "inspect", "--raw", subject.IMAGE])
+            self.assertEqual(argv[-5:], ["imagetools", "inspect", "--format", subject.FORMAT, subject.IMAGE])
+            self.assertNotIn(":latest", subject.IMAGE)
+            self.assertNotIn("--raw", argv)
             self.assertEqual(env["DOCKER_HOST"], "unix://" + str(directory / "no-daemon.sock"))
 
     def test_existing_configuration_is_preserved(self):
@@ -135,6 +137,84 @@ class ClientBoundaryTests(unittest.TestCase):
             self.assertEqual(result["status"], "FAILED_STOP_NO_RETRY")
             self.assertTrue(process.stdout.closed and process.stderr.closed)
             kill.assert_called_once_with(process.pid, signal.SIGKILL)
+
+
+class ConfigurationProjectionTests(unittest.TestCase):
+    def fixture(self):
+        return {"manifest": {"digest": subject.MANIFEST_DIGEST, "size": subject.MANIFEST_SIZE,
+                             "mediaType": "application/vnd.docker.distribution.manifest.v2+json"},
+                "architecture": "amd64", "os": "linux", "created": None,
+                "labels": {"com.azure.sonic.manifest": "opaque source record"},
+                "rootfs": {"type": "layers", "diff_ids": ["sha256:" + "a" * 64] * 28},
+                "history": [{"created_by": "COPY fixture /debs/"}] * 28 + [{"empty_layer": True}]}
+
+    def test_configuration_counts_history_without_claiming_package_acceptance(self):
+        result = subject.validate_projection(json.dumps(self.fixture()).encode())
+        self.assertEqual(result["history_entries"], 29)
+        self.assertEqual(result["nonempty_history_entries"], 28)
+        self.assertEqual(result["rootfs_diff_ids"], 28)
+        self.assertFalse(result["original_config_bytes_or_digest_independently_verified"])
+        self.assertFalse(result["device_data_layer_identified"])
+        self.assertFalse(result["package_or_source_compatibility_established"])
+
+    def test_changed_descriptor_or_platform_is_rejected(self):
+        for field, value in (("digest", "sha256:" + "b" * 64), ("size", 6180), ("mediaType", "index")):
+            with self.subTest(field=field):
+                data = self.fixture()
+                data["manifest"][field] = value
+                with self.assertRaises(ValueError):
+                    subject.validate_projection(json.dumps(data).encode())
+        for field, value in (("architecture", "arm64"), ("os", "windows")):
+            with self.subTest(field=field):
+                data = self.fixture()
+                data[field] = value
+                with self.assertRaises(ValueError):
+                    subject.validate_projection(json.dumps(data).encode())
+
+    def test_history_and_diff_id_mismatches_are_rejected(self):
+        for change in (lambda data: data["history"].pop(0),
+                       lambda data: data["history"][-1].update(empty_layer=1),
+                       lambda data: data["rootfs"]["diff_ids"].pop(),
+                       lambda data: data["rootfs"]["diff_ids"].__setitem__(0, "not-a-digest")):
+            data = self.fixture()
+            change(data)
+            with self.assertRaises(ValueError):
+                subject.validate_projection(json.dumps(data).encode())
+
+    def test_ambiguous_nonfinite_and_oversized_projection_is_rejected(self):
+        raw = json.dumps(self.fixture()).encode()
+        for bad in (raw.replace(b'"architecture": "amd64"', b'"architecture": "amd64", "architecture": "amd64"'),
+                    raw.replace(b'"created": null', b'"created": NaN'), b' ' * (subject.STDOUT_CAP + 1)):
+            with self.assertRaises(ValueError):
+                subject.validate_projection(bad)
+
+    def test_version_difference_is_provenance_without_a_network_gate(self):
+        data = subject.version_metadata(b"github.com/docker/buildx v0.29.0 abcdef1234567\n")
+        self.assertEqual(data["reported_version"], "v0.29.0")
+        self.assertEqual(data["reported_revision"], "abcdef1234567")
+        self.assertFalse(data["version_difference_blocks_metadata"])
+        self.assertFalse(subject.version_metadata(b"other upstream format")["version_difference_blocks_metadata"])
+
+    def test_version_then_single_metadata_invocation_and_failed_version_stop(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            calls = []
+            def observed(path, argv, env):
+                calls.append(argv)
+                raw = b"github.com/docker/buildx v0.29.0 abcdef1234567\n" if path.name == "version" else json.dumps(self.fixture()).encode()
+                (path / "stdout.data").write_bytes(raw)
+                return {"status": "CAPTURED"}
+            argv = ["docker", "--config", "empty", "buildx", "imagetools", "inspect", "--format", subject.FORMAT, subject.IMAGE]
+            with mock.patch.object(subject, "observe_client", side_effect=observed):
+                result, version_result, version, metadata = subject.collect_metadata(directory, argv, {})
+            self.assertEqual(calls, [argv[:4] + ["version"], argv])
+            self.assertEqual(metadata["nonempty_history_entries"], 28)
+            self.assertEqual(version["reported_version"], "v0.29.0")
+        with tempfile.TemporaryDirectory() as root:
+            with mock.patch.object(subject, "observe_client", return_value={"status": "FAILED_STOP_NO_RETRY"}) as observe:
+                with self.assertRaises(ValueError):
+                    subject.collect_metadata(Path(root), argv, {})
+            observe.assert_called_once()
 
 
 if __name__ == "__main__":

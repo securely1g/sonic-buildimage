@@ -99,7 +99,7 @@ jobs:
           path: ${{ steps.paths.outputs.control }}
           clean: false
           persist-credentials: false
-      - name: Check controller identity and nine pure metadata fixtures
+      - name: Check controller identity and fifteen pure metadata fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           GIT_NO_LAZY_FETCH: '1'
@@ -111,7 +111,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/$CONTROL"
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           python3 -B -m unittest -v tools.bazel.tests.vs_management_image_metadata_test
-      - name: Inspect one anonymous canonical tag manifest with upstream Buildx
+      - name: Observe upstream version and one immutable management image configuration
         id: observe
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
@@ -133,6 +133,10 @@ jobs:
             ${{ runner.temp }}/${{ steps.paths.outputs.output }}/failure.json
             ${{ runner.temp }}/${{ steps.paths.outputs.output }}/stdout.data
             ${{ runner.temp }}/${{ steps.paths.outputs.output }}/stderr.data
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/metadata-summary.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/version/result.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/version/stdout.data
+            ${{ runner.temp }}/${{ steps.paths.outputs.output }}/version/stderr.data
           if-no-files-found: error
           retention-days: 14
 

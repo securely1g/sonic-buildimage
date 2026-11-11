@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Observe one canonical management-image manifest with the installed upstream client.
+"""Observe one immutable management-image configuration with the upstream client.
 
-This is anonymous registry metadata, not an image pull, package recovery or source
-qualification. No daemon is started and no OCI/authentication parser is implemented.
+The installed client owns registry authentication and metadata retrieval. This
+records version provenance and checks its fixed metadata projection; it does not
+pull image layers, start a daemon or establish package/source compatibility.
 """
 import argparse
 import datetime
@@ -17,11 +18,24 @@ import stat
 import subprocess
 import time
 
-IMAGE = "sonicdev-microsoft.azurecr.io/docker-sonic-mgmt:latest"
+MANIFEST_DIGEST = "sha256:e15502a1cb4ff66f9a7de1b566f1a056ca703a72f69b0f0a9943ef92d20f2124"
+MANIFEST_SIZE = 6179
+IMAGE = "sonicdev-microsoft.azurecr.io/docker-sonic-mgmt@" + MANIFEST_DIGEST
+CONFIG_DESCRIPTOR = {
+    "mediaType": "application/vnd.docker.container.image.v1+json",
+    "digest": "sha256:a7bf7704ab8afed8d2769dc6d6ded17b439b09de335c0a229e612441314a88a4",
+    "size": 16670,
+}
+LAYER_COUNT = 28
+REVIEWED_BUILDX_REVISION = "0b265a9f62db554fa9aba6dd19e1bd5704bc7d8a"
+FORMAT = ('{"manifest":{{json .Manifest}},"architecture":{{json .Image.Architecture}},'
+          '"os":{{json .Image.OS}},"created":{{json .Image.Created}},'
+          '"labels":{{json .Image.Config.Labels}},"rootfs":{{json .Image.RootFS}},'
+          '"history":{{json .Image.History}}}')
 DOCKER = Path("/usr/bin/docker")
 BUILDX = Path("/usr/libexec/docker/cli-plugins/docker-buildx")
 TOOL_CAP = 256 * 1024 * 1024
-STDOUT_CAP = 2 * 1024 * 1024
+STDOUT_CAP = 256 * 1024
 STDERR_CAP = 64 * 1024
 sha = lambda data: hashlib.sha256(data).hexdigest()
 now = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -92,7 +106,7 @@ def client_context(directory, inherited):
     env = {key: inherited[key] for key in ("HOME",) if key in inherited}
     env.update(PATH="/usr/bin:/bin", LANG="C.UTF-8", LC_ALL="C.UTF-8", TERM="dumb",
                DOCKER_CONFIG=str(config), BUILDX_CONFIG=str(buildx), DOCKER_HOST="unix://" + str(endpoint))
-    argv = [str(DOCKER), "--config", str(config), "buildx", "imagetools", "inspect", "--raw", IMAGE]
+    argv = [str(DOCKER), "--config", str(config), "buildx", "imagetools", "inspect", "--format", FORMAT, IMAGE]
     return argv, env
 
 
@@ -163,6 +177,86 @@ def observe_client(directory, argv, env):
     return result
 
 
+
+def version_metadata(raw):
+    """Record upstream version text without making a version difference a gate."""
+    match = re.fullmatch(rb"github\.com/docker/buildx ([A-Za-z0-9_.+-]{1,80}) ([0-9a-f]{7,40})", raw.strip())
+    return {"stdout_bytes": len(raw), "stdout_sha256": sha(raw),
+            "reported_version": match[1].decode() if match else None,
+            "reported_revision": match[2].decode() if match else None,
+            "reviewed_reference_revision": REVIEWED_BUILDX_REVISION,
+            "installed_binary_source_equivalence_established": False,
+            "version_difference_blocks_metadata": False}
+
+
+def validate_projection(raw):
+    """Check only the documented upstream template's fixed metadata projection."""
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise ValueError("Duplicate metadata key")
+            value[key] = item
+        return value
+    def nonfinite(value):
+        raise ValueError("Nonfinite metadata value")
+    if not 0 < len(raw) <= STDOUT_CAP:
+        raise ValueError("Metadata projection byte bound")
+    value = json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
+    if not isinstance(value, dict) or set(value) != {"manifest", "architecture", "os", "created", "labels", "rootfs", "history"}:
+        raise ValueError("Unexpected metadata projection fields")
+    descriptor = value["manifest"]
+    if (not isinstance(descriptor, dict) or descriptor.get("digest") != MANIFEST_DIGEST
+            or type(descriptor.get("size")) is not int or descriptor["size"] != MANIFEST_SIZE
+            or descriptor.get("mediaType") != "application/vnd.docker.distribution.manifest.v2+json"):
+        raise ValueError("Resolved immutable manifest descriptor differs")
+    if value["architecture"] != "amd64" or value["os"] != "linux":
+        raise ValueError("Resolved image is not Linux AMD64")
+    rootfs = value["rootfs"]
+    if not isinstance(rootfs, dict) or rootfs.get("type") != "layers":
+        raise ValueError("Unexpected rootfs metadata")
+    diff_ids = rootfs.get("diff_ids")
+    if (not isinstance(diff_ids, list) or len(diff_ids) != LAYER_COUNT
+            or any(not isinstance(item, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", item) for item in diff_ids)):
+        raise ValueError("Rootfs diff-ID cardinality or format differs")
+    history = value["history"]
+    if (not isinstance(history, list) or not 1 <= len(history) <= 256
+            or any(not isinstance(item, dict) or type(item.get("empty_layer", False)) is not bool for item in history)):
+        raise ValueError("Invalid image history metadata")
+    populated = [item for item in history if not item.get("empty_layer", False)]
+    if len(populated) != LAYER_COUNT:
+        raise ValueError("History and layer cardinality differ")
+    for item in history:
+        if any(key in item and not isinstance(item[key], str) for key in ("created_by", "author", "comment")):
+            raise ValueError("Unexpected image history field type")
+    labels = value["labels"]
+    if labels is not None and (not isinstance(labels, dict) or len(labels) > 256
+            or any(not isinstance(key, str) or not isinstance(item, str) for key, item in labels.items())):
+        raise ValueError("Invalid producer label metadata")
+    return {"manifest_descriptor": descriptor, "architecture": value["architecture"], "os": value["os"],
+            "history_entries": len(history), "nonempty_history_entries": len(populated),
+            "rootfs_diff_ids": len(diff_ids), "producer_label_count": len(labels or {}),
+            "original_manifest_config_descriptor": CONFIG_DESCRIPTOR,
+            "configuration_output_is_reencoded_projection": True,
+            "original_config_bytes_or_digest_independently_verified": False,
+            "device_data_layer_identified": False, "package_or_source_compatibility_established": False}
+
+
+def collect_metadata(directory, argv, env):
+    version_dir = directory / "version"
+    version_dir.mkdir(mode=0o700)
+    version_result = observe_client(version_dir, argv[:4] + ["version"], env)
+    if version_result["status"] != "CAPTURED":
+        raise ValueError("Installed upstream version observation failed")
+    version = version_metadata((version_dir / "stdout.data").read_bytes())
+    result = observe_client(directory, argv, env)
+    metadata = None
+    if result["status"] == "CAPTURED":
+        metadata = validate_projection((directory / "stdout.data").read_bytes())
+        write_json(directory / "metadata-summary.json", metadata)
+    return result, version_result, version, metadata
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -190,18 +284,22 @@ def main():
         phase = "fresh_anonymous_configuration"
         argv, env = client_context(directory, os.environ)
         write_json(directory / "client-intent.json", {"argv": argv, "at": now(), "seconds": 30,
-                   "maximum_client_invocations": 1, "credentials_supplied": False,
+                   "maximum_client_invocations": 2, "maximum_registry_client_invocations": 1,
+                   "version_argv": argv[:4] + ["version"], "credentials_supplied": False,
                    "credential_or_proxy_environment_forwarded": False,
                    "image_or_layer_pull": False, "daemon_started": False})
-        phase = "upstream_raw_manifest"
-        result = observe_client(directory, argv, env)
+        phase = "upstream_version_and_immutable_configuration"
+        result, version_result, version, metadata = collect_metadata(directory, argv, env)
         phase = "installed_tool_stability"
         after = [file_identity(path) for path in (DOCKER, BUILDX)]
         if after != identity:
             raise ValueError("Installed client identity changed across observation")
         write_json(directory / "observation.json", {"status": result["status"], "image": IMAGE,
-                   "upstream_result": result, "installed_tools_unchanged": True,
-                   "raw_stdout_parsed": False, "historical_image_identity_established": False,
+                   "upstream_result": result, "version_result": version_result, "version": version,
+                   "metadata_summary": metadata, "installed_tools_unchanged": True,
+                   "raw_stdout_parsed": result["status"] == "CAPTURED",
+                   "configuration_is_reencoded_projection": True,
+                   "historical_image_identity_established": False,
                    "device_data_package_acquired": False, "source_compatibility_established": False})
         print(json.dumps({key: result[key] for key in ("status", "returncode", "reason", "elapsed_seconds", "leader_reaped", "group_closed")}))
         return 0 if result["status"] == "CAPTURED" else 1
