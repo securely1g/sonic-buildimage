@@ -129,53 +129,51 @@ jobs:
           run_bazel test --nocache_test_results --build_event_json_file="$PWD/artifacts/test-events.json" \
             @libteam//:consumer_test \
             2>&1 | tee artifacts/test.log
-          if [[ "$CI_ARCHITECTURE" == amd64 ]]; then
-            output() { run_bazel cquery "//src/libteam:$1" --output=files; }
-            python3 -B src/libteam/verify_runtime.py \
-              --libteam "$(output libteam_runtime)" \
-              --libteam-symbols "$(output libteam_runtime.debug_symbols)" \
-              --libteamdctl "$(output libteamdctl_runtime)" \
-              --libteamdctl-symbols "$(output libteamdctl_runtime.debug_symbols)" \
-              --libteam-utils "$(output libteam_utils_runtime)" \
-              --libteam-utils-symbols "$(output libteam_utils_runtime.debug_symbols)" \
-              --development "$(output libteam_dev)" \
-              --dependency-development "$(run_bazel cquery @libnl3//:libnl-3-dev_files --output=files)" \
-              --output artifacts/installed-runtime.json
-            # Resolve the selected owner's probe in this same Bazel execution
-            # root; cquery's external/ path is not relative to the Git checkout.
-            probe_bazel="$PWD/tools/bazel/ci/libteam_draft_bazel.sh"
-            probe_flags=(
-              "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
-              "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
-              "--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg"
-            )
-            # Bazel 8.5.1 Bzlmod uses the standard output_base/execroot/_main.
-            # Unlike info execution_root, output_base needs no platform configuration.
-            output_base="$("$probe_bazel" info "${probe_flags[@]}" output_base)"
-            if [[ "$output_base" != /* || "$output_base" == *$'\n'* ]]; then
-              printf 'Invalid Bazel output base: %s\n' "$output_base" >&2
-              exit 1
-            fi
-            execution_root="$output_base/execroot/_main"
-            if [[ ! -d "$execution_root" ]]; then
-              printf 'Missing Bazel 8.5.1 Bzlmod execution root: %s\n' "$execution_root" >&2
-              exit 1
-            fi
-            probe_file="$("$probe_bazel" cquery "${probe_flags[@]}" @libteam//:bazel/verify_rebuild.py --output=files)"
-            test -n "$probe_file"
-            [[ "$probe_file" != *$'\n'* ]]
-            case "$probe_file" in
-              /*) owner_probe="$probe_file" ;;
-              *) owner_probe="$execution_root/$probe_file" ;;
-            esac
-            test -f "$owner_probe"
-            python3 -B "$owner_probe" \
-              --bazel "$probe_bazel" \
-              --bazel-arg="--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie" \
-              --bazel-arg="--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}" \
-              --bazel-arg="--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg" \
-              --output artifacts/rebuild
+          output() { run_bazel cquery "//src/libteam:$1" --output=files; }
+          python3 -B src/libteam/verify_runtime.py \
+            --libteam "$(output libteam_runtime)" \
+            --libteam-symbols "$(output libteam_runtime.debug_symbols)" \
+            --libteamdctl "$(output libteamdctl_runtime)" \
+            --libteamdctl-symbols "$(output libteamdctl_runtime.debug_symbols)" \
+            --libteam-utils "$(output libteam_utils_runtime)" \
+            --libteam-utils-symbols "$(output libteam_utils_runtime.debug_symbols)" \
+            --development "$(output libteam_dev)" \
+            --dependency-development "$(run_bazel cquery @libnl3//:libnl-3-dev_files --output=files)" \
+            --output artifacts/installed-runtime.json
+          # Resolve the selected owner's probe in this same Bazel execution
+          # root; cquery's external/ path is not relative to the Git checkout.
+          probe_bazel="$PWD/tools/bazel/ci/libteam_draft_bazel.sh"
+          probe_flags=(
+            "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
+            "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
+            "--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg"
+          )
+          # Bazel 8.5.1 Bzlmod uses the standard output_base/execroot/_main.
+          # Unlike info execution_root, output_base needs no platform configuration.
+          output_base="$("$probe_bazel" info "${probe_flags[@]}" output_base)"
+          if [[ "$output_base" != /* || "$output_base" == *$'\n'* ]]; then
+            printf 'Invalid Bazel output base: %s\n' "$output_base" >&2
+            exit 1
           fi
+          execution_root="$output_base/execroot/_main"
+          if [[ ! -d "$execution_root" ]]; then
+            printf 'Missing Bazel 8.5.1 Bzlmod execution root: %s\n' "$execution_root" >&2
+            exit 1
+          fi
+          probe_file="$("$probe_bazel" cquery "${probe_flags[@]}" @libteam//:bazel/verify_rebuild.py --output=files)"
+          test -n "$probe_file"
+          [[ "$probe_file" != *$'\n'* ]]
+          case "$probe_file" in
+            /*) owner_probe="$probe_file" ;;
+            *) owner_probe="$execution_root/$probe_file" ;;
+          esac
+          test -f "$owner_probe"
+          python3 -B "$owner_probe" \
+            --bazel "$probe_bazel" \
+            --bazel-arg="--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie" \
+            --bazel-arg="--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}" \
+            --bazel-arg="--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg" \
+            --output artifacts/rebuild
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload source outputs and validation evidence
         if: always()
