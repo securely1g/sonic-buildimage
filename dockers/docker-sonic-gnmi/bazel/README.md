@@ -34,20 +34,18 @@ outside this image integration.
 
 ## Acceptance
 
-The Draft CI catalog is pinned through `SONIC_BAZEL_REGISTRY_REVISION` and the
-shared `tools/bazel/ci/review_bazel.sh` wrapper. Normal `.bazelrc` remains on the
-maintained registry. Build, artifact validation and installed-service validation
-are separate commands; run them in a clean, committed source checkout:
+The gNMI image builds use the canonical `.bazelrc` registry configuration.
+Build, artifact validation and installed-service validation are separate commands;
+run them in a clean, committed source checkout:
 
 ```sh
-export SONIC_BAZEL_REGISTRY_REVISION=2d7ac4ec8e38c6e2b7b78b351a90ab763d997c68
 python3 -B tools/bazel/ci/gnmi_image.py build \
-  --bazel tools/bazel/ci/review_bazel.sh --dialout enabled \
+  --bazel bazel --dialout enabled \
   --artifacts artifacts/gnmi/enabled
 python3 -B tools/bazel/ci/gnmi_image.py validate \
   --artifacts artifacts/gnmi/enabled
 python3 -B tools/bazel/ci/gnmi_image.py incremental \
-  --bazel tools/bazel/ci/review_bazel.sh --artifacts artifacts/gnmi/enabled
+  --bazel bazel --artifacts artifacts/gnmi/enabled
 python3 -B tools/bazel/ci/gnmi_loaded.py --artifacts artifacts/gnmi/enabled
 ```
 

@@ -836,7 +836,15 @@ class PublicArtifactsTest(unittest.TestCase):
     def test_recorded_environment_must_be_empty(self):
         value = lock()
         artifacts.dependency_json(value, "lock")
+        value["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {
+            "GOPROXY": None,
+            "SONIC_GO_LOCK_UPDATE": None,
+        }
+        artifacts.dependency_json(value, "lock")
         value["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {"FIXTURE_VALUE": SENTINEL}
+        with self.assertRaises(artifacts.PublicArtifactError):
+            artifacts.dependency_json(value, "lock")
+        value["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {"GOPROXY": "https://x"}
         with self.assertRaises(artifacts.PublicArtifactError):
             artifacts.dependency_json(value, "lock")
 
