@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -2729,5 +2729,169 @@ jobs:
         with:
           name: vs-cache-config-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ steps.paths.outputs.receipt }}
+          if-no-files-found: error
+          retention-days: 14
+  vs_original_p4rt_loaded:
+    name: Original P4RT loaded-only verification (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-native-p4rt-loaded' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: vs-original-p4rt-loaded-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    env:
+      NATIVE_INVENTORY_IMAGE: p4rt
+      GIT_NO_LAZY_FETCH: '1'
+      GIT_NO_REPLACE_OBJECTS: '1'
+      GIT_OPTIONAL_LOCKS: '0'
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - name: Require separate loaded-only scope and fresh paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 - <<'PY_PATHS'
+          import os, re
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Original loaded verification does not accept a native request')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', value) for value in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected assigned runner identity')
+          control = f'vs-p4rt-loaded-control-{run}-{attempt}-{worker}'
+          native, source, owner = (control + suffix for suffix in ('-native-cleanup', '-p4rt-original', '-p4rt-owner'))
+          collection = f'native-original-p4rt-{run}-{attempt}'
+          receipt = f'p4rt-original-loaded-{run}-{attempt}.json'
+          paths = [Path(os.environ['GITHUB_WORKSPACE']) / name for name in (control, native, source, owner)]
+          paths += [Path(os.environ['RUNNER_TEMP']) / name for name in (collection, receipt)]
+          if any(os.path.lexists(path) for path in paths):
+              raise SystemExit('Preserve existing original loaded-verification state')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'worker={worker}\ncontrol={control}\nnative={native}\nsource={source}\nowner={owner}\ncollection={collection}\nreceipt={receipt}\n')
+          PY_PATHS
+      - name: Checkout the immutable observer
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+      - name: Checkout the published private-daemon lifecycle helper
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 4bf648e812f28b05a2683c6cf7559470b0883d2a
+          path: ${{ steps.paths.outputs.native }}
+          clean: false
+          persist-credentials: false
+      - name: Checkout the exact original built source
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ede0723988a4d032eba39928a35f561afd202cec
+          path: ${{ steps.paths.outputs.source }}
+          clean: false
+          persist-credentials: false
+      - name: Checkout the original source-owner runtime checks
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-pins
+          ref: e66b705bc9d87a86b555866914dc1909cbf3e092
+          path: ${{ steps.paths.outputs.owner }}
+          clean: false
+          persist-credentials: false
+      - name: Verify immutable sources and 132 pure fixtures before acquisition
+        timeout-minutes: 2
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+          NATIVE: ${{ steps.paths.outputs.native }}
+          SOURCE: ${{ steps.paths.outputs.source }}
+          OWNER: ${{ steps.paths.outputs.owner }}
+        run: |
+          set -euo pipefail
+          test "$(git -C "$GITHUB_WORKSPACE/$CONTROL" -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/$NATIVE" -c protocol.allow=never rev-parse HEAD)" = "4bf648e812f28b05a2683c6cf7559470b0883d2a"
+          test "$(git -C "$GITHUB_WORKSPACE/$SOURCE" -c protocol.allow=never rev-parse HEAD)" = "ede0723988a4d032eba39928a35f561afd202cec"
+          test "$(git -C "$GITHUB_WORKSPACE/$OWNER" -c protocol.allow=never rev-parse HEAD)" = "e66b705bc9d87a86b555866914dc1909cbf3e092"
+          for checkout in "$CONTROL" "$NATIVE" "$SOURCE"; do
+            test -z "$(git -C "$GITHUB_WORKSPACE/$checkout" -c protocol.allow=never ls-files --others -- tools)"
+          done
+          test -z "$(git -C "$GITHUB_WORKSPACE/$OWNER" -c protocol.allow=never ls-files --others -- p4rt_app)"
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 - <<'PY_SOURCE'
+          import hashlib, json
+          from pathlib import Path
+          expected = json.loads('''{"tools/bazel/ci/image_worker_receipt.py": "d9804dd85f4d8a10f8e2e844ffba3d3eb3dbc6ff6a292abc54fc650df3fe20f9", "tools/bazel/ci/native_payload_inventory.py": "377a8a99b3921090fe74ed0b3591c9b365f065694851180f96cab43a92b78e8c", "tools/bazel/ci/native_payload_inventory_gearbox_input.json": "665c8b74ed882793a2e892526bb0942cb254305729d2a519cca1e5f287e6dee2", "tools/bazel/ci/native_payload_inventory_input.json": "09ad533fe596ca431dc1cabcffa27bfb6b804b0673e7fad5c8c12cf1859f9fce", "tools/bazel/ci/native_payload_inventory_syncd_input.json": "b27977dd2498a294f903281279538a1936b3ebd1eafd8a526bf56e1deab762ad", "tools/bazel/ci/native_payload_recovery.py": "31656a93d825b8e1e4fbab3440ba06781e7efebc929e134e0073385b24c7dae1", "tools/bazel/ci/p4rt_original_loaded.py": "3f3784c702fa86a0f5280387b82f367d66d9dc82373d9765c69662d2c9b30849", "tools/bazel/ci/p4rt_original_loaded_input.json": "dedb5f645ab0514d97d135ad1d17f66b0e242e784e4b932850d8bb9c8ee63962", "tools/bazel/ci/p4rt_receipt_semantics.py": "0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661", "tools/bazel/ci/p4rt_sdk_receipt_semantics.py": "d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9", "tools/bazel/ci/public_artifacts.py": "74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9", "tools/bazel/ci/source_worker_preflight.py": "62b2b764c4473144321584cedc87d152ba5059f68fa67966c24e79c1a5a16897", "tools/bazel/ci/syncd_receipt_semantics.py": "1cd86c9d2323077e7b37929c260e9cf12f0add35c7168da9a98d31e2a684e3b9", "tools/bazel/ci/vs_cache_inspection.py": "03beddcf6d73233988b6eef92c69dfdfcc70dbb6a10421edc4e921a9709c451c", "tools/bazel/ci/vs_runtime_check.py": "12e4493402e5540f06a094fbc4a1d6ab4c7757034ef38e5db0a0b80210c864eb", "tools/bazel/ci/vs_worker_inspection.py": "1676bf4e096f5bc36a913a2f71efd5012f28928e8074853bcb7c3f3b4710f5e3", "tools/bazel/tests/native_payload_inventory_test.py": "b694d0b0f83251910e1c6f8c7c668132a119834ac9e192dda289b467b93212af", "tools/bazel/tests/native_payload_recovery_test.py": "424bf0e9b3f40bbe3872db55c35f877af6ed4f8dea54ead269f5ab1aee59b919", "tools/bazel/tests/p4rt_original_loaded_test.py": "9a87f4260dc09934ea3aa24e0569e47eff1fdc1ddda36c4c67e8e5ce3abb6d36", "tools/bazel/tests/vs_runtime_test.py": "3856b194a7d78a2bdc4f10246583cbb751e7aa925f5cf22d5fdf412531a9a2ef"}''')
+          for name, expected_digest in expected.items():
+              if hashlib.sha256(Path(name).read_bytes()).hexdigest() != expected_digest:
+                  raise SystemExit('Loaded-only observer interface differs')
+          PY_SOURCE
+          python3 -B -m unittest -v \
+            tools.bazel.tests.native_payload_recovery_test \
+            tools.bazel.tests.native_payload_inventory_test \
+            tools.bazel.tests.vs_runtime_test \
+            tools.bazel.tests.p4rt_original_loaded_test
+          python3 -B -m tools.bazel.ci.p4rt_original_loaded preflight --worker "$RUNNER_NAME"
+      - name: Authenticate and inventory the original failed P4RT upload
+        id: collect
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 -B -m tools.bazel.ci.native_payload_inventory
+      - name: Materialize only the thirty original loaded-check inputs
+        id: materialize
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 -B -m tools.bazel.ci.p4rt_original_loaded materialize --worker "$RUNNER_NAME"
+      - name: Run original installed-image probes and current proved private cleanup
+        id: loaded
+        env:
+          CONTROL: ${{ steps.paths.outputs.control }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$CONTROL"
+          python3 -B -m tools.bazel.ci.p4rt_original_loaded validate --worker "$RUNNER_NAME"
+      - name: Retain original custody and separate fresh loaded-only results
+        if: always() && (steps.collect.outcome == 'success' || steps.collect.outcome == 'failure')
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: original-p4rt-loaded-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/${{ steps.paths.outputs.receipt }}
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/summary.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/admission.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/member-inventory.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/public-evidence-map.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/public-semantic-review.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/materialization.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-run.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-run-response.data
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-run-response.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-job.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-job-response.data
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-job-response.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-artifact.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-artifact-response.data
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/original-artifact-response.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/loaded-inputs/docker-sonic-p4rt.runtime.json
+            ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/loaded-inputs/docker-sonic-p4rt-dbg.runtime.json
           if-no-files-found: error
           retention-days: 14

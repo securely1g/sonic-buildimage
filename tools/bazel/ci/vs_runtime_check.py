@@ -808,6 +808,18 @@ def reap_owned_daemon(child):
         signal.signal(signal.SIGCHLD, previous)
 
 
+ORIGINAL_P4RT_NATIVE_CONTROLLER = "4bf648e812f28b05a2683c6cf7559470b0883d2a"
+ORIGINAL_P4RT_BODY_SECONDS = 2400
+
+
+def native_identity(paths):
+    """Keep the ordinary probe pin; select only the fixed original-P4RT route."""
+    if paths.get("original_p4rt_loaded") is True:
+        return "p4rt", ORIGINAL_P4RT_NATIVE_CONTROLLER
+    require("original_p4rt_loaded" not in paths, "Unknown private loaded-workload identity")
+    return "gearbox", NATIVE_CONTROLLER
+
+
 def native_control(paths, source):
     """Create only the real private-daemon control state before its first capture."""
     state, execution = paths["state"], paths["exec"]
@@ -819,7 +831,7 @@ def native_control(paths, source):
     control = state / "native-stop-control"
     control.mkdir(mode=0o700)
     os.chown(control, 1000, 1000)
-    private = {"image": "gearbox", "revision": NATIVE_CONTROLLER, "workspace": str(source),
+    private = {"image": native_identity(paths)[0], "revision": native_identity(paths)[1], "workspace": str(source),
                "pidfile": str(execution / "dockerd.pid"), "docker_root": str(paths["docker_data"]),
                "environment": {"DOCKER_HOST": "unix://" + str(execution / "docker.sock"),
                                "DOCKER_CONFIG": str(state / "client")}}
@@ -837,7 +849,7 @@ def native_action(action, paths, source, seconds):
            "RUNNER_NAME": row["worker"], "WORKER_POOL": inspection.POOL,
            "GITHUB_RUN_ID": row["run"], "GITHUB_RUN_ATTEMPT": row["attempt"]}
     command = [sys.executable, "-B", str(source / "tools/bazel/ci/source_image_worker.py"),
-               action, "--image", "gearbox", "--revision", NATIVE_CONTROLLER,
+               action, "--image", native_identity(paths)[0], "--revision", native_identity(paths)[1],
                "--workspace", str(source), "--artifacts", str(state / "native-stop-control")]
     bounded(command, state, "native-" + action, seconds, env, worker_user=True)
 
@@ -851,7 +863,7 @@ def native_capture(stage, paths, source):
         private = json.loads((paths["state"] / "native-stop-control/worker-private.json").read_text())
         require(type(private.get("docker_mount_protocol")) is int and private["docker_mount_protocol"] == 1,
                 "Native ready capture did not establish its mount proof")
-    return {"status": "passed", "controller": NATIVE_CONTROLLER, "helper_sha256": NATIVE_WORKER_SHA256,
+    return {"status": "passed", "controller": native_identity(paths)[1], "helper_sha256": NATIVE_WORKER_SHA256,
             "phase": stage, "private_control_state_only": True, "native_request_or_receipt_created": False}
 
 
@@ -869,15 +881,18 @@ def native_stop(child, paths, source):
         native_action("stop", paths, source, NATIVE_STOP_SECONDS)
     require(child.poll() == 0 and not paths["docker_data"].exists() and not pidfile.exists(),
             "Native stop did not close and remove only its private state")
-    return {"status": "passed", "controller": NATIVE_CONTROLLER, "helper_sha256": NATIVE_WORKER_SHA256,
+    return {"status": "passed", "controller": native_identity(paths)[1], "helper_sha256": NATIVE_WORKER_SHA256,
             "phase": "stop", "private_control_state_only": True, "native_request_or_receipt_created": False,
             "prospective_mount_proof": True, "daemon_reaped": True,
             "private_data_removed": True, "pidfile_removed": True}
 
 
 
-def private_daemon(paths):
+def private_daemon(paths, p4rt_workload=None):
     """Root supervisor owns exactly one foreground daemon and always waits for it."""
+    require((p4rt_workload is None and "original_p4rt_loaded" not in paths) or
+            (callable(p4rt_workload) and paths.get("original_p4rt_loaded") is True),
+            "Private loaded-workload selection differs")
     require(os.geteuid() == 0 and Path("/.dockerenv").is_file(), "Private daemon requires its disposable slave")
     require(inspection.marker() == {"base_image": BASE_IMAGE, "manager_revision": MANAGER}, "Runner marker differs")
     state, execution = paths["state"], paths["exec"]
@@ -903,7 +918,7 @@ def private_daemon(paths):
         raise ProbeFailure("Private runtime probe interrupted")
     require(stat.S_ISFIFO(os.fstat(0).st_mode), "Root supervisor lifeline must be a pipe")
     os.set_blocking(0, False)
-    deadline = time.monotonic() + ROOT_BODY_SECONDS
+    deadline = time.monotonic() + (ORIGINAL_P4RT_BODY_SECONDS if p4rt_workload is not None else ROOT_BODY_SECONDS)
     previous = {s: signal.signal(s, interrupted) for s in (signal.SIGTERM, signal.SIGINT)}
     previous[signal.SIGALRM] = signal.signal(signal.SIGALRM, lambda signum, frame: root_lifeline_tick(deadline))
     signal.setitimer(signal.ITIMER_REAL, 1, 1)
@@ -945,14 +960,21 @@ def private_daemon(paths):
             version = validate_daemon(observed, paths, child.pid, (execution / "dockerd.pid").read_text())
             result["stage"] = "native-capture-ready"
             result["native_capture_ready"] = native_capture("ready", paths, native)
-            result["stage"] = "stopped-container"
-            result["stopped_container"] = stopped_container(docker, client_env, state)
-            result["container_workload_executed"] = result["stopped_container"]["ever_started_observed"]
-            require(result["stopped_container"]["status"] == "passed", "Stopped-container qualification or cleanup failed")
-            result["stage"] = "running-container"
-            result["running_container"] = running_container(docker, client_env, state)
-            result["container_workload_executed"] = result["running_container"]["running_observed"]
-            require(result["running_container"]["status"] == "passed", "Running-container qualification or cleanup failed")
+            if p4rt_workload is not None:
+                result["stage"] = "original-p4rt-loaded"
+                result["original_p4rt_loaded"] = p4rt_workload(docker, client_env, paths)
+                require(result["original_p4rt_loaded"]["status"] == "passed",
+                        "Original P4RT loaded validation failed")
+                result["container_workload_executed"] = True
+            else:
+                result["stage"] = "stopped-container"
+                result["stopped_container"] = stopped_container(docker, client_env, state)
+                result["container_workload_executed"] = result["stopped_container"]["ever_started_observed"]
+                require(result["stopped_container"]["status"] == "passed", "Stopped-container qualification or cleanup failed")
+                result["stage"] = "running-container"
+                result["running_container"] = running_container(docker, client_env, state)
+                result["container_workload_executed"] = result["running_container"]["running_observed"]
+                require(result["running_container"]["status"] == "passed", "Running-container qualification or cleanup failed")
             result.update(status="passed", driver="overlay2", exact_private_root=True,
                           nonroot_client=True, server_version=version)
     except BaseException as error:
@@ -967,7 +989,7 @@ def private_daemon(paths):
                     result["daemon_closed"] = child.returncode is not None
                     result["daemon_exit_code"] = child.returncode
                 except BaseException as error:
-                    result.update(status="failed", native_stop={"status": "failed", "controller": NATIVE_CONTROLLER,
+                    result.update(status="failed", native_stop={"status": "failed", "controller": native_identity(paths)[1],
                                   "helper_sha256": NATIVE_WORKER_SHA256, "failure": safe_failure(error),
                                   "mount_diagnostics": native_mount_diagnostics(state)})
                     try:
