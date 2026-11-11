@@ -244,5 +244,89 @@ class RemoteCacheSmokeTest(unittest.TestCase):
                         smoke.qualify_version(directory, "/usr/bin/bazel", "8.5.1", configuration, {}, "input")
 
 
+    def test_failed_credential_helper_receipt_survives_returncode_guard(self):
+        endpoint = smoke.worker.K3S_REMOTE_CACHE_POLICY["endpoint"]
+        for error in ({"error_type": "HTTPError", "status": 401}, {"error_type": "URLError"},
+                      {"error_type": "ValueError"}):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                access = dict(endpoint=endpoint, authenticated=False, **error)
+                root = Path(tmp)
+                (root / "access.json").write_text(json.dumps(access))
+                failed = child_result("FAILED_STOP_NO_RETRY")
+                receipt = {"status": "FAILED_NOT_QUALIFIED", "versions": [], "commands": [failed]}
+                with self.assertRaisesRegex(smoke.ProbeFailure, "Credential probe command failed"):
+                    smoke.check_credential_probe_receipt(root, "access.json", endpoint, failed, receipt)
+                self.assertEqual(receipt["credential_probe"], access)
+                self.assertEqual(receipt["commands"][0]["returncode"], 1)
+                self.assertEqual(receipt["status"], "FAILED_NOT_QUALIFIED")
+                self.assertEqual(receipt["versions"], [])
+                self.assertNotIn("authenticated_probe", receipt)
+
+    def test_successful_credential_probe_requires_both_child_and_helper_success(self):
+        endpoint = smoke.worker.K3S_REMOTE_CACHE_POLICY["endpoint"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            success = {"endpoint": endpoint, "authenticated": True, "status": 200}
+            (root / "access.json").write_text(json.dumps(success))
+            receipt = {}
+            smoke.check_credential_probe_receipt(root, "access.json", endpoint, child_result(), receipt)
+            self.assertEqual(receipt["credential_probe"], success)
+            with self.assertRaisesRegex(smoke.ProbeFailure, "Credential probe command failed"):
+                smoke.check_credential_probe_receipt(root, "access.json", endpoint,
+                                                     child_result("FAILED_STOP_NO_RETRY"), {})
+            (root / "access.json").write_text(json.dumps(
+                {"endpoint": endpoint, "authenticated": False, "error_type": "URLError"}))
+            with self.assertRaisesRegex(smoke.ProbeFailure, "Credential probe did not pass"):
+                smoke.check_credential_probe_receipt(root, "access.json", endpoint, child_result(), {})
+
+    def test_credential_probe_rejects_extra_fields_untrusted_classes_and_status_types(self):
+        endpoint = smoke.worker.K3S_REMOTE_CACHE_POLICY["endpoint"]
+        base = {"endpoint": endpoint, "authenticated": False, "error_type": "HTTPError", "status": 401}
+        bad_values = [dict(base, Authorization="fixture-private-value"),
+                      dict(base, error_type="fixture-private-value"), dict(base, status=True),
+                      dict(base, status="fixture-private-value"), dict(base, status=999),
+                      dict(base, authenticated=1), dict(base, endpoint="https://fixture.invalid"),
+                      {k: v for k, v in base.items() if k != "status"},
+                      dict(base, error_type="URLError")]
+        for access in bad_values:
+            with self.subTest(access=access), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "access.json").write_text(json.dumps(access))
+                receipt = {}
+                with self.assertRaises(smoke.ProbeFailure):
+                    smoke.check_credential_probe_receipt(root, "access.json", endpoint,
+                                                         child_result("FAILED_STOP_NO_RETRY"), receipt)
+                self.assertNotIn("credential_probe", receipt)
+                self.assertNotIn("fixture-private-value", json.dumps(receipt))
+
+    def test_credential_probe_missing_receipt_never_qualifies(self):
+        endpoint = smoke.worker.K3S_REMOTE_CACHE_POLICY["endpoint"]
+        with tempfile.TemporaryDirectory() as tmp:
+            for result in (child_result(), child_result("FAILED_STOP_NO_RETRY")):
+                receipt = {"status": "FAILED_NOT_QUALIFIED"}
+                with self.assertRaises(smoke.ProbeFailure):
+                    smoke.check_credential_probe_receipt(Path(tmp), "missing.json", endpoint, result, receipt)
+                self.assertNotIn("credential_probe", receipt)
+                self.assertEqual(receipt["status"], "FAILED_NOT_QUALIFIED")
+
+    def test_credential_probe_keeps_duplicate_key_and_selected_file_guards(self):
+        endpoint = smoke.worker.K3S_REMOTE_CACHE_POLICY["endpoint"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "access.json"
+            path.write_text('{"authenticated":false,"authenticated":true}')
+            with self.assertRaises(ValueError):
+                smoke.check_credential_probe_receipt(root, path.name, endpoint, child_result(), {})
+            path.write_text("x" * 4097)
+            with self.assertRaises(smoke.ProbeFailure):
+                smoke.check_credential_probe_receipt(root, path.name, endpoint, child_result(), {})
+            path.unlink()
+            (root / "other.json").write_text(json.dumps(
+                {"endpoint": endpoint, "authenticated": True, "status": 200}))
+            path.symlink_to(root / "other.json")
+            with self.assertRaises(OSError):
+                smoke.check_credential_probe_receipt(root, path.name, endpoint, child_result(), {})
+
+
 if __name__ == "__main__":
     unittest.main()

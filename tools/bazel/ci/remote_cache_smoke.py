@@ -318,6 +318,44 @@ def qualify_version(directory, binary, version, configuration, inherited, nonce,
             "action_digest_comparison": comparison}
 
 
+def check_credential_probe_receipt(directory, output_name, endpoint, result, receipt):
+    """Preserve only the credential helper's bounded, authored status record."""
+    try:
+        access = json_decoder().decode(read_under(directory, output_name, 4096).decode())
+    except FileNotFoundError:
+        require(result["status"] != "CAPTURED", "Credential probe receipt is missing")
+        raise ProbeFailure("Credential probe command failed") from None
+    require(type(access) is dict and access.get("endpoint") == endpoint and
+            type(access.get("authenticated")) is bool, "Invalid credential probe receipt")
+    public = {"endpoint": endpoint, "authenticated": access["authenticated"]}
+    if access["authenticated"]:
+        require(set(access) == {"endpoint", "authenticated", "status"} and
+                type(access["status"]) is int and access["status"] == 200,
+                "Invalid successful credential probe receipt")
+        public["status"] = 200
+    else:
+        require(set(access) in ({"endpoint", "authenticated", "error_type"},
+                                {"endpoint", "authenticated", "error_type", "status"}) and
+                access["error_type"] in (
+                    "ValueError", "OSError", "URLError", "HTTPError", "TimeoutError",
+                    "ConnectionError", "ConnectionAbortedError", "ConnectionRefusedError",
+                    "ConnectionResetError", "BrokenPipeError", "BlockingIOError",
+                    "InterruptedError", "PermissionError", "FileNotFoundError", "FileExistsError",
+                    "IsADirectoryError", "NotADirectoryError", "ProcessLookupError",
+                    "ChildProcessError", "SSLError", "SSLCertVerificationError"),
+                "Invalid failed credential probe receipt")
+        public["error_type"] = access["error_type"]
+        require((access["error_type"] == "HTTPError") == ("status" in access),
+                "Credential probe HTTP status differs")
+        if "status" in access:
+            require(type(access["status"]) is int and 100 <= access["status"] <= 599,
+                    "Invalid credential probe HTTP status")
+            public["status"] = access["status"]
+    receipt["credential_probe"] = public
+    require(result["status"] == "CAPTURED", "Credential probe command failed")
+    require(access["authenticated"] is True, "Credential probe did not pass")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--native-revision", required=True)
@@ -357,11 +395,7 @@ def main():
         result = run_command(auth, [configuration["helper"], "probe", "--output", str(auth_output)],
                              env, cwd=ROOT, seconds=45,
                              record=lambda value: receipt["commands"].append(dict(stage="credential_probe", **value)))
-        require(result["status"] == "CAPTURED", "Credential probe command failed")
-        access = json_decoder().decode(read_under(auth, auth_output.name, 4096).decode())
-        require(set(access) == {"endpoint", "authenticated", "status"} and
-                access["endpoint"] == configuration["endpoint"] and access["authenticated"] is True and
-                type(access["status"]) is int and access["status"] == 200, "Credential probe did not pass")
+        check_credential_probe_receipt(auth, auth_output.name, configuration["endpoint"], result, receipt)
         receipt["credential_helper_sha256"] = configuration["helper_sha256"]
         receipt["authenticated_probe"] = True
         for version in VERSIONS:
