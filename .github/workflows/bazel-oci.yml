@@ -1350,8 +1350,6 @@ jobs:
       BAZEL_REMOTE_AUTH: ""
       DEFAULT_CONTAINER_REGISTRY: ""
       SONIC_CONFIG_USE_DOCKER_CACHE: "y"
-      SONIC_BAZEL_CACHE_SOURCE: ${{ runner.workspace }}/vs-cache/bazel
-      SONIC_DPKG_CACHE_SOURCE: ${{ runner.workspace }}/vs-cache/packages
       SONIC_DPKG_CACHE_METHOD: rwcache
       SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
@@ -1411,6 +1409,9 @@ jobs:
             --receipt artifacts/vs/p4-source-inputs-verified.json
 
       - name: Configure persistent caches
+        env:
+          SONIC_BAZEL_CACHE_SOURCE: ${{ runner.workspace }}/vs-cache/bazel
+          SONIC_DPKG_CACHE_SOURCE: ${{ runner.workspace }}/vs-cache/packages
         run: |
           set -euo pipefail
           install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE"
@@ -1429,6 +1430,8 @@ jobs:
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" > artifacts/vs/source-download-receipt.json
+          printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_DPKG_CACHE_SOURCE=%s\n' \
+            "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" >> "$GITHUB_ENV"
 
       - name: Prepare the host-driven SONiC slave
         run: |

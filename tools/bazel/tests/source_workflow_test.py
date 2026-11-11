@@ -44,6 +44,47 @@ def shell(step):
 
 
 class ArchiveCachePolicyTest(unittest.TestCase):
+    def test_runner_cache_paths_are_step_scoped_and_exported_to_later_steps(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        for name, job in workflow["jobs"].items():
+            with self.subTest(job=name):
+                for value in job.get("env", {}).values():
+                    self.assertNotRegex(str(value), r"\$\{\{\s*runner\.")
+        job = workflow["jobs"]["vs_container"]
+        configure = next(step for step in job["steps"]
+                         if step.get("name") == "Configure persistent caches")
+        for name, suffix in (("SONIC_BAZEL_CACHE_SOURCE", "bazel"),
+                             ("SONIC_DPKG_CACHE_SOURCE", "packages")):
+            self.assertNotIn(name, job["env"])
+            self.assertEqual(configure["env"][name], "${{ runner.workspace }}/vs-cache/" + suffix)
+        with tempfile.TemporaryDirectory(prefix="vs cache paths ") as temporary:
+            directory = Path(temporary)
+            (directory / "artifacts/vs").mkdir(parents=True)
+            commands = directory / "commands"
+            commands.mkdir()
+            python = commands / "python3"
+            python.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > source-arguments.txt\n")
+            python.chmod(0o755)
+            expected = {name: value.replace("${{ runner.workspace }}", temporary)
+                        for name, value in configure["env"].items()}
+            environment_file = directory / "github-env"
+            result = subprocess.run(
+                ["bash", "-c", configure["run"]], cwd=directory,
+                env=dict(os.environ, **expected, GITHUB_ENV=str(environment_file),
+                         PATH=str(commands) + os.pathsep + os.environ["PATH"]),
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            exported = dict(line.split("=", 1) for line in environment_file.read_text().splitlines())
+            self.assertEqual(exported, expected)
+            for value in exported.values():
+                self.assertTrue(Path(value).is_dir())
+            arguments = (directory / "source-arguments.txt").read_text().splitlines()
+            self.assertEqual(arguments[-2:], ["--output", expected["SONIC_BAZEL_CACHE_SOURCE"] + "/distdir"])
+        configure_index = job["steps"].index(configure)
+        build_index = next(index for index, step in enumerate(job["steps"])
+                           if step.get("name") == "Prepare the host-driven SONiC slave")
+        self.assertLess(configure_index, build_index)
+
     def test_vs_jobs_share_the_master_push_upload_policy(self):
         workflow_jobs = jobs()
         flag = ("--remote_upload_local_results=${{ github.event_name == 'push'"
