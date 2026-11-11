@@ -8,6 +8,13 @@ module(
 
 include("//src/sonic-supervisord-utilities-rs:deps.MODULE.bazel")
 
+# Cache Go module ZIPs by reviewed archive digests.
+bazel_dep(name = "gazelle", version = "0.54.0.sonic.1", repo_name = "bazel_gazelle")
+bazel_dep(name = "rules_go", version = "0.64.1-sonic.1", repo_name = "io_bazel_rules_go")
+go_deps = use_extension("@bazel_gazelle//:extensions.bzl", "go_deps")
+go_deps.zip_lock(file = "//tools/bazel/go:go.zip.sums.json")
+use_repo(go_deps, go_zip_lock_plan = "bazel_gazelle_go_repository_config")
+
 bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.sonic.1")

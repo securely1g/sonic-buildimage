@@ -613,8 +613,10 @@ jobs:
         if: matrix.architecture == 'amd64'
         run: |
           if [[ -d artifacts ]]; then
-            test ! -e "$RUNNER_TEMP/pre-swss-layer-artifacts"
-            mv artifacts "$RUNNER_TEMP/pre-swss-layer-artifacts"
+            umask 077
+            preserved="$(mktemp -d "$RUNNER_TEMP/pre-swss-layer-artifacts.XXXXXXXX")"
+            mv artifacts "$preserved/artifacts"
+            printf 'Completed Sysmgr evidence preserved at %s/artifacts\n' "$preserved"
           fi
 
       - name: Build and inspect the shared runtime and symbols
