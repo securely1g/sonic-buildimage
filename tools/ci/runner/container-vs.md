@@ -32,11 +32,14 @@ push trigger and job-condition allowance before merging.
 
 The publisher uses the Azure slave pipeline's `PLATFORM=generic` profile for
 AMD64, with FIPS enabled and `SONIC_VERSION_CONTROL_COMPONENTS=py2,py3,web,git,docker`.
-It inherits the repository's base-image registry and ordinary slave APT policy.
-The installer remains `PLATFORM=vs` and uses those same repository defaults for
-slave and runtime image builds. It does not override the base-image registry,
-Docker build command or APT retry policy. Make's existing slave selection and
-build machinery are used without slave-specific Makefile extensions.
+Both workflows explicitly enable `MIRROR_SNAPSHOT=y`, selecting timestamped Debian
+repositories under `http://packages.trafficmanager.net/snapshot` instead of the
+ordinary Debian mirror. This intentionally differs from the Azure profile's
+default mirror mode and changes the computed slave tags. The installer remains
+`PLATFORM=vs` with the same snapshot policy for slave and runtime image builds.
+The base-image registry, Docker build command and APT retry policy retain their
+repository defaults. Make's existing slave selection and build machinery are
+used without slave-specific Makefile extensions.
 
 Make computes the image tag from the current checkout's generated slave inputs;
 there are no fixed slave tag overrides. Keep the image-affecting settings aligned
@@ -56,7 +59,12 @@ An installer can build locally if the publisher has not supplied its tag yet.
 Shared package-cache writes remain enabled with the computed build environment.
 
 Both jobs install Azure CLI if missing and authenticate using
-`az login --identity` followed by `az acr login --name sonicdev`.
+`az login --identity`, explicitly select the ACR subscription, then run
+`az acr login --name sonicdev`.
+Set the repository Actions variable `ACR_SUBSCRIPTION_ID` to that subscription's
+ID or name; both workflows pass it as `AZURE_SUBSCRIPTION_ID`. The helper fails
+before authentication if it is missing, and stops if subscription selection fails.
+No subscription ID is stored in source code or inferred from the agent's default.
 Both workflows set `ACR_REGISTRY_NAME=sonicdev` separately from the Docker
 login server `REGISTRY_SERVER=sonicdev-microsoft.azurecr.io`; the Azure resource
 name must not be derived from this hostname.

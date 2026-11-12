@@ -62,7 +62,7 @@ elif name == "docker" and operation == "image":
             PATH=str(self.commands) + os.pathsep + os.defpath,
             CALLS=str(self.calls), SONIC_CI_CONTAINER_LABEL="fixture=slave-images",
             REGISTRY_SERVER="sonicdev-microsoft.azurecr.io", REGISTRY_PORT="443",
-            ACR_REGISTRY_NAME="sonicdev")
+            ACR_REGISTRY_NAME="sonicdev", AZURE_SUBSCRIPTION_ID="fixture-subscription")
         self.publisher = yaml.safe_load(PUBLISH.read_text())["jobs"]["publish"]
         self.consumer = yaml.safe_load(CONSUME.read_text())["jobs"]["vs_container"]
 
@@ -108,6 +108,9 @@ elif name == "docker" and operation == "image":
         self.assertEqual(self.consumer["env"]["SONIC_DPKG_CACHE_METHOD"], "rwcache")
         self.assertEqual(self.publisher["env"]["ACR_REGISTRY_NAME"], "sonicdev")
         self.assertEqual(self.publisher["env"]["REGISTRY_SERVER"], "sonicdev-microsoft.azurecr.io")
+        self.assertEqual(self.publisher["env"]["AZURE_SUBSCRIPTION_ID"],
+                         "${{ vars.ACR_SUBSCRIPTION_ID }}")
+        self.assertEqual(self.publisher["env"]["MIRROR_SNAPSHOT"], "y")
         for job in (self.publisher, self.consumer):
             self.assertFalse(any(name.startswith("SONIC_SLAVE_REUSE_") for name in job["env"]))
             names = [step.get("name") for step in job["steps"]]
@@ -174,13 +177,14 @@ elif name == "docker" and operation == "image":
         expected = [
             ["az", "version", "--output", "none"],
             ["az", "login", "--identity", "--output", "none"],
+            ["az", "account", "set", "--subscription", "fixture-subscription"],
             ["az", "acr", "login", "--name", "sonicdev", "--output", "none"],
         ]
-        for index, failure in enumerate(("", "az version", "az login", "az acr")):
+        for index, failure in enumerate(("", "az version", "az login", "az account", "az acr")):
             with self.subTest(failure=failure):
                 result = self.run_shell(script, FAIL_COMMAND=failure)
                 self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
-                count = 3 if not failure else index
+                count = len(expected) if not failure else index
                 self.assertEqual(self.recorded(), expected[:count])
         environment = dict(self.environment)
         del environment["ACR_REGISTRY_NAME"]
@@ -189,6 +193,22 @@ elif name == "docker" and operation == "image":
             text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ACR_REGISTRY_NAME", result.stderr)
+
+    def test_missing_subscription_fails_before_azure_commands(self):
+        helper = ROOT / "tools/ci/runner/azure_acr_login.sh"
+        for subscription in ("", None):
+            with self.subTest(subscription=subscription):
+                environment = dict(self.environment)
+                if subscription is None:
+                    del environment["AZURE_SUBSCRIPTION_ID"]
+                else:
+                    environment["AZURE_SUBSCRIPTION_ID"] = subscription
+                result = subprocess.run(
+                    ["bash", str(helper), "sonicdev"], cwd=self.directory,
+                    env=environment, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("AZURE_SUBSCRIPTION_ID", result.stderr)
+                self.assertFalse(self.calls.exists())
 
     def test_missing_azure_cli_installs_and_cleans_up_on_failure(self):
         helper = ROOT / "tools/ci/runner/azure_acr_login.sh"

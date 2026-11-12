@@ -1386,9 +1386,11 @@ jobs:
       ENABLE_DOCKER_BASE_PULL: "y"
       REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
       ACR_REGISTRY_NAME: sonicdev
+      AZURE_SUBSCRIPTION_ID: ${{ vars.ACR_SUBSCRIPTION_ID }}
       REGISTRY_PORT: "443"
       INCLUDE_FIPS: "y"
       SONIC_VERSION_CONTROL_COMPONENTS: py2,py3,web,git,docker
+      MIRROR_SNAPSHOT: "y"
       SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"

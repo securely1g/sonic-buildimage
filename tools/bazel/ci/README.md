@@ -198,9 +198,12 @@ registry login, Make reuses a local computed-tag slave image, pulls the matching
 tag if absent, or builds locally if the pull fails. The separate
 [slave publication workflow](../../../.github/workflows/sonic-slave-images.yml)
 publishes generic AMD64 Bookworm and Trixie images on master pushes using the
-Azure slave pipeline's build profile. The VS consumer also inherits the repository's
-base-image registry and ordinary Docker/APT build policy, without separate
-slave-only overrides.
+Azure slave pipeline's generic build profile, with snapshot mode explicitly enabled.
+Both workflows set `MIRROR_SNAPSHOT=y` to use Debian snapshots under
+`packages.trafficmanager.net/snapshot`. They retain the repository's base-image
+registry and Docker/APT retry defaults, without separate slave-only overrides.
+Registry authentication selects the subscription configured in the repository
+Actions variable `ACR_SUBSCRIPTION_ID` after managed-identity login.
 It does not update image pins or create commits. See the
 [host-agent image policy](../../ci/runner/container-vs.md#slave-image-publication-and-selection).
 The installer job checks the installer version and retains runtime/debug archive

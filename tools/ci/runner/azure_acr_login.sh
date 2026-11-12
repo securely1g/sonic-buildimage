@@ -6,6 +6,8 @@ if [[ $# != 1 || -z $1 ]]; then
     exit 1
 fi
 
+: "${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID to the ACR subscription}"
+
 if ! command -v az > /dev/null; then
     installer=$(mktemp)
     trap 'rm -f "$installer"' EXIT
@@ -15,4 +17,5 @@ if ! command -v az > /dev/null; then
 fi
 az version --output none
 az login --identity --output none
+az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 az acr login --name "$1" --output none
