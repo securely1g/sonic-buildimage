@@ -40,14 +40,16 @@ containerd image store; never delete containerd storage files directly.
 Shared layers and retained build cache may continue to occupy disk space.
 
 Both jobs also remove only `_github_home/.cache/bazel`, `bazel-disk`, and
-`bazel-repo` under `RUNNER_TEMP` before the disk-space check. This reclaims local
-Bazel output/server state, disk-cache entries, and repository downloads left by
-previous container jobs. The remote cache and workflow cache settings are unchanged;
-missing local data must be fetched or rebuilt. Cleanup refuses redirected paths,
+`bazel-repo` under `RUNNER_TEMP`, plus `vs-cache/bazel` under the runner workspace,
+before the disk-space check. This reclaims local Bazel state, disk-cache entries,
+and repository downloads left by previous container and VS builds. The remote
+cache and workflow cache settings are unchanged; missing local data must be
+fetched or rebuilt. The VS job recreates its Bazel directory and prepares source
+distdirs after preflight. Cleanup refuses redirected paths,
 remaining mounts, or references from running or stopped Docker containers, and
 reports failures rather than continuing to preflight. Use an idle dedicated agent
 with no active Bazel processes using these directories. It does not remove `_temp`,
-other home/cache directories, `/bazel_cache`, or checkouts.
+other home/cache directories, `vs-cache/packages`, or checkouts.
 
 For pre-merge testing, pushes to the same repository's `vs-runner` branch
 temporarily also publish real images to that registry. Manual dispatch remains
@@ -126,7 +128,8 @@ These are admission limits, not guaranteed maximum build sizes.
 
 Each run uses a distinct checkout and label-scoped builder cleanup. Persistent
 caches live in `vs-cache/bazel` and `vs-cache/packages` under the runner workspace,
-outside the run-specific checkout. Keep them writable by the runner user.
+outside the run-specific checkout. Both host jobs clear the Bazel cache before
+preflight; the package cache is retained. Keep them writable by the runner user.
 After artifact upload attempts, the job removes its labeled containers and then
 its own `vs-<run-id>-<attempt>` checkout, including per-run nested-Docker state.
 Checkout deletion requires noninteractive `sudo rm` for root-owned build output.

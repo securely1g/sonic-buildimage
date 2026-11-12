@@ -205,12 +205,13 @@ elif name == "docker" and operation == "login":
             with self.subTest(job=job["name"]):
                 steps = job["steps"]
                 cleanup = next(step for step in steps
-                               if step.get("name") == "Reclaim container-job Bazel caches")
+                               if step.get("name") == "Reclaim local Bazel caches")
                 preflight = next(step for step in steps
                                  if step.get("name") == "Check host-agent build prerequisites")
                 self.assertLess(steps.index(cleanup), steps.index(preflight))
                 self.assertEqual(cleanup["run"],
-                                 "python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache")
+                                 "python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache"
+                                 ' --runner-workspace "${{ runner.workspace }}"')
                 self.assertNotIn("continue-on-error", cleanup)
 
     def test_private_docker_configuration_is_exported_before_docker_operations(self):
