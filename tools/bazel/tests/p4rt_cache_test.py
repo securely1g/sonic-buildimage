@@ -27,11 +27,14 @@ class P4rtCacheTest(unittest.TestCase):
         (source / 'Makefile').write_text('# P4RT source Makefile\n')
         self.readme = source / 'README.bazel.md'
         self.readme.write_text('P4RT source instructions\n')
+        self.mirrors = source / 'source_mirrors.cfg'
+        self.mirrors.write_text('# P4RT source mirrors\n')
         pins = source / 'sonic-pins'
         pins.mkdir()
         (pins / 'runtime.cc').write_text('// P4RT source\n')
         for directory, files in ((self.root, ['src/sonic-p4rt/Makefile',
-                                            'src/sonic-p4rt/README.bazel.md']),
+                                            'src/sonic-p4rt/README.bazel.md',
+                                            'src/sonic-p4rt/source_mirrors.cfg']),
                                  (pins, ['runtime.cc'])):
             subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
             subprocess.run(['git', 'add', '--', *files], cwd=directory, check=True)
@@ -67,6 +70,7 @@ include Makefile.cache
         files = sidecar.read_text().split()
         self.assertIn('src/sonic-p4rt/README.bazel.md', files)
         self.assertIn('src/sonic-p4rt/Makefile', files)
+        self.assertIn('src/sonic-p4rt/source_mirrors.cfg', files)
         self.assertNotIn('README.bazel.md', files)
         self.assertNotIn('Makefile', files)
         self.assertNotIn('src/sonic-p4rt/sonic-pins', files)
@@ -77,7 +81,10 @@ include Makefile.cache
     def test_deb_cache_tracks_the_source_directory(self):
         before = self.cache_inputs('deb', 'debs')
         self.readme.write_text('Updated P4RT source instructions\n')
-        self.assertNotEqual(before, self.cache_inputs('deb', 'debs'))
+        updated = self.cache_inputs('deb', 'debs')
+        self.assertNotEqual(before, updated)
+        self.mirrors.write_text('# Updated P4RT source mirrors\n')
+        self.assertNotEqual(updated, self.cache_inputs('deb', 'debs'))
 
     def test_tar_cache_tracks_the_source_directory(self):
         self.cache_inputs('tar.bz2', 'files')

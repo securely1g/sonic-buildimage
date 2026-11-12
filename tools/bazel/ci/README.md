@@ -192,14 +192,21 @@ for each pair. The normal installer still selects runtime containers;
 `INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
 not add it to the installer.
 
-The active **VS installer in SONiC slave (AMD64)** job prepares the private
-worker, builds `target/sonic-vs.bin` directly through `slave.mk`, and runs
-`verify_vs_oci.sh` before loading the resulting images with the shared
-`validate_runtime.py` validator. It checks the installer version and retains
-the runtime/debug archive identities across validation. The private Docker
-daemon belongs to this worker and is stopped after evidence publication.
+The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
+the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
+registry login, Make reuses a local computed-tag slave image, pulls the matching
+tag if absent, or builds locally if the pull fails. The separate
+[slave publication workflow](../../../.github/workflows/sonic-slave-images.yml)
+publishes generic AMD64 Bookworm and Trixie images on master pushes using the
+Azure slave pipeline's build profile. The VS consumer also inherits the repository's
+base-image registry and ordinary Docker/APT build policy, without separate
+slave-only overrides.
+It does not update image pins or create commits. See the
+[host-agent image policy](../../ci/runner/container-vs.md#slave-image-publication-and-selection).
+The installer job checks the installer version and retains runtime/debug archive
+identities across validation, using the shared `validate_runtime.py` validator.
 
-The retained legacy wrapper [`build_vs.sh`](build_vs.sh) runs one
+The host wrapper [`build_vs.sh`](build_vs.sh) runs one
 `make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
 The **Build the VS installer (.bin)** workflow step ends
@@ -450,6 +457,15 @@ mirror priorities and the normal repository cache. For example, the unchanged
 BCR `pigz@2.8.bcr.2` archive comes from the registry release, with MacPorts as a
 fallback; Bazel still checks the original SHA256 and applies the BCR patches.
 There is no separate pigz download or pigz distdir.
+
+The native K3s installer tries the locked `snapshot.debian.org` URL first for
+timestamped Debian and Debian security inputs. The SONiC and registry mirrors
+remain available if that snapshot cannot serve the requested bytes.
+
+On native K3s workers, Dockerfile `RUN` steps inherit the job's managed APT
+route for `deb.debian.org` when that route is enabled. BuildKit mounts the APT
+configuration and its public CA for each step. The native preparation receipt
+records the selection in `docker_apt_proxy_enabled`.
 
 The private source-image worker uses the same verified shared configuration
 and retains its additional exact gawk and snapshot fallbacks. Its private

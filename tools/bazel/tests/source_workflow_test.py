@@ -98,11 +98,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
 
     def test_host_installer_is_isolated_and_preserves_input_and_output_contracts(self):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
-        self.assertEqual(job["concurrency"], {
-            "group": "sonic-slave-container-vs",
-            "cancel-in-progress": False,
-            "queue": "max",
-        })
+        self.assertNotIn("concurrency", job)
         self.assertNotIn("container", job)
         self.assertNotIn("EXPECTED_MANAGER_REVISION", job["env"])
         self.assertEqual(job["env"]["BAZEL_REMOTE_AUTH"], "")
@@ -128,6 +124,10 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         scripts = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertNotIn("prepare_vs_slave.sh", scripts)
         self.assertNotIn("sonic-vs-slave.env", scripts)
+        self.assertNotIn("configure_runner_cache.py", scripts)
+        self.assertNotIn("check_native_vs_storage.py", scripts)
+        self.assertNotIn("/actions/bazel", scripts)
+        self.assertNotIn("SONIC_BAZEL_REMOTE_ONLY_RC", job["env"])
         self.assertIn("bash tools/bazel/ci/build_vs.sh", scripts)
         self.assertIn("bash tools/bazel/ci/validate_vs.sh", scripts)
         self.assertIn("--expected-commit-id", scripts)

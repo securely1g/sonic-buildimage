@@ -1370,11 +1370,6 @@ jobs:
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
     runs-on: [self-hosted, linux, bazel-x64, vs]
     timeout-minutes: 720
-    # Run one full installer at a time and keep waiting builds across PRs.
-    concurrency:
-      group: sonic-slave-container-vs
-      cancel-in-progress: false
-      queue: max
     defaults:
       run:
         shell: bash
@@ -1386,19 +1381,16 @@ jobs:
       BAZEL_REMOTE_AUTH: ""
       SONIC_BAZEL_KERNEL_REMOTE_CACHE: grpc://172.16.0.4:9092
       SONIC_BAZEL_KERNEL_REMOTE_UPLOAD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}
-      DEFAULT_CONTAINER_REGISTRY: ""
       SONIC_CONFIG_USE_DOCKER_CACHE: "y"
       SONIC_DPKG_CACHE_METHOD: rwcache
+      ENABLE_DOCKER_BASE_PULL: "y"
+      REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
+      REGISTRY_PORT: "443"
+      INCLUDE_FIPS: "y"
+      SONIC_VERSION_CONTROL_COMPONENTS: py2,py3,web,git,docker
       SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"
-      # Bound native Docker retries; strict APT refreshes keep failed indexes uncached.
-      DOCKER_BUILD: ./scripts/run_with_retry docker build
-      SONIC_BUILD_RETRY_COUNT: "2"
-      SONIC_BUILD_RETRY_INTERVAL: "10"
-      # Contain APT 3.0.3's delayed-retry warning queue (Debian #1117797).
-      # The generator removes this temporary policy before image export.
-      SONIC_DOCKER_APT_RETRIES: "0"
       BAZEL_CONTAINER_ARGS: >-
         --jobs=4 --local_resources=memory=12288
         --remote_cache=grpc://172.16.0.4:9092
@@ -1470,6 +1462,11 @@ jobs:
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" > artifacts/vs/source-download-receipt.json
           printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_DPKG_CACHE_SOURCE=%s\n' \
             "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" >> "$GITHUB_ENV"
+
+      - name: Authenticate to the slave image registry
+        env:
+          AZURE_CONFIG_DIR: ${{ runner.temp }}/vs-azure-cli
+        run: bash tools/ci/runner/azure_acr_login.sh "${REGISTRY_SERVER%.azurecr.io}"
 
       - name: Prepare the host-driven SONiC slave
         run: |

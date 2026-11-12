@@ -16,6 +16,48 @@ Make builder, including applicable host AppArmor rules; do not globally disable
 host protections. The kernel sandbox is exercised in the Trixie builder before
 the installer starts.
 
+### Slave image publication and selection
+
+The [SONiC slave images workflow](../../../.github/workflows/sonic-slave-images.yml)
+runs on master pushes or manual dispatches on master. It builds or reuses the
+AMD64 Bookworm and Trixie slaves and pushes their computed tags to
+`sonicdev-microsoft.azurecr.io`. It does not create Git commits or publish
+mutable `latest` tags. Publication and installer jobs may run independently
+on available dedicated host agents; there is no shared job-level queue.
+
+The publisher uses the Azure slave pipeline's `PLATFORM=generic` profile for
+AMD64, with FIPS enabled and `SONIC_VERSION_CONTROL_COMPONENTS=py2,py3,web,git,docker`.
+It inherits the repository's base-image registry and ordinary slave APT policy.
+The installer remains `PLATFORM=vs` and uses those same repository defaults for
+slave and runtime image builds. It does not override the base-image registry,
+Docker build command or APT retry policy. Make's existing slave selection and
+build machinery are used without slave-specific Makefile extensions.
+
+Make computes the image tag from the current checkout's generated slave inputs;
+there are no fixed slave tag overrides. Keep the image-affecting settings aligned
+when changing either workflow. Matching the Azure build profile does not guarantee
+matching tags across different source revisions or build-hook versions.
+
+The installer enables `ENABLE_DOCKER_BASE_PULL=y`, retaining Make's normal order:
+
+1. Reuse a local slave image with the computed tag.
+2. Otherwise pull that tag from the registry and tag it locally.
+3. If the pull fails, log the failure and build the slave locally.
+
+This includes registry/network pull failures, not only missing tags. A failed
+local build still fails the job. The publisher and installer may queue in either
+order after a master push; publication is an optimization, not a prerequisite.
+An installer can build locally if the publisher has not supplied its tag yet.
+Shared package-cache writes remain enabled with the computed build environment.
+
+Both jobs install Azure CLI if missing and authenticate using
+`az login --identity` followed by `az acr login --name sonicdev-microsoft`.
+The host needs a system-assigned managed identity with registry pull permission;
+the publication job additionally needs push permission. Installing Azure CLI
+requires noninteractive sudo on Debian/Ubuntu hosts. Azure CLI state is stored
+in the job's runner temporary directory. Registry login failures stop the job
+before Make, rather than silently bypassing authentication.
+
 Run `python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD"
 --build-target sonic-vs.bin` from the checkout as the runner user. This retains
 the CPU architecture, process umask, Ghostscript policy, legacy NAT, workspace
@@ -56,8 +98,7 @@ the Make wrapper; it does not inherit `BAZEL_CONTAINER_ARGS`. Its upload policy
 also permits writes only for master pushes. See the
 [kernel cache interface](../../bazel/kernel/README.md#remote-cache-through-make).
 
-The host job keeps the shared `sonic-slave-container-vs` queue. One installer
-runs at a time, and up to 100 can wait. Assign the `vs` label only to
+The host job has no global installer queue. Assign the `vs` label only to
 independently provisioned, adequately sized VMs with one active runner each.
 Workflow-level cancellation rules still apply. Run a full installer and its
 image-validation stages successfully before considering the migration verified.
@@ -66,7 +107,8 @@ image-validation stages successfully before considering the migration verified.
 
 The previous `VS installer in SONiC slave (AMD64)` job ran the
 Actions worker inside the Trixie build container. It used the
-`sonic-slave-container` runner label and invokes the native build directly:
+`sonic-slave-container` runner label. The incoming K3s variant uses
+`sonic-slave-container-k3s`; both invoke the native build directly:
 
 ```bash
 PREFER_DEBIAN_REPO=y make -f slave.mk target/sonic-vs.bin \
@@ -95,10 +137,9 @@ fixes remain a separate component change in
 [sonic-dhcp-relay #1](https://github.com/securely1g/sonic-dhcp-relay/pull/1).
 
 The native P4 dependencies still use their existing Make/Debian producers.
-The lgh4 worker cannot currently connect to the OpenSUSE source endpoint, so
-the hosted checks download the nine published source files pinned in
+The GitHub-hosted Ubuntu OCI regression job stages the nine source files pinned in
 [`src/p4lang/source-inputs.json`](../../../src/p4lang/source-inputs.json).
-They upload a per-run artifact; the native job selects its exact artifact ID
+It uploads a per-run artifact; the native job selects its exact artifact ID
 and independently checks every file's SHA256, size and descriptor identity.
 It then passes `P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources`
 to Make. Staging is separate from `src/p4lang`, where `dget` replaces its working
@@ -119,22 +160,17 @@ This source handoff uses a fresh CI artifact. It adds no persistent P4 source
 cache and changes no shared Make-cache logic. The tracked source pins are
 already covered by the P4 recipes' existing input-file hashing.
 
-The worker manager is maintained in
-[agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/c650551885f8ad22cbc104082d1f1b6171e67eef/sonic-slave-wrk-mgr).
-The workflow selects the shared `sonic-slave-container` pool. The runner image
-must still match this landed commit: preparation compares its recorded manager
-revision with `EXPECTED_MANAGER_REVISION` and rejects a mismatch. The supervisor
-registers replacement workers with the shared label after each job.
+The [K3s runner controller](https://github.com/securely1g/agi-projects/tree/main/sonic-slave-wrk-mgr/k3s)
+registers a replacement worker after each job. Preparation verifies the manager
+revision recorded in the runner image against the workflow's `EXPECTED_MANAGER_REVISION`.
 The native profile requires a privileged container, private PID/cgroup namespaces,
 bridge networking, and passwordless sudo for its UID 1000 build user. Each job
 starts its own Docker daemon; the host Docker socket is not mounted. The Actions
 work volume is mounted at `/actions`, allowing the checkout to be bind-mounted
 at `/sonic` for existing build hooks without hiding the runner's own files.
 
-On lgh4, the manager selects the `sonic-slave-build` AppArmor profile to permit
-the build user's namespaces required by Bazel's Linux sandbox. The profile is
-installed on the host and assigned only to these privileged workers. Preparation
-runs the pinned kernel Bazel sandbox as UID 1000 before building packages. Node-based Actions
+Preparation runs the pinned kernel Bazel sandbox as UID 1000 and stops if
+the worker lacks the required namespace permissions. Node-based Actions
 use the image's existing system CA bundle for verified HTTPS connections.
 The manager also declares `SONIC_BAZEL_JAVA_TRUST_STORE` in the image. The
 isolated kernel adapter reads that default and records the selected trust
@@ -151,17 +187,15 @@ It checks that the selected installer has
 no Bookworm container prerequisites. A future configuration needing those
 prerequisites must add an explicit compatible preparation stage.
 
-The lgh4 profile has four ephemeral runner slots, each capped at six CPUs and
-20 GiB. Workflow concurrency permits one full VS build at a time. Make runs one
-package build at a time with four compilation jobs; Bazel is also limited to
-four jobs. The manager registers a replacement container after each job.
+The K3s controller on lgh117 maintains four disposable workers on lgh100.
+Each has a six-CPU and 20 GiB limit. One full VS job runs at a time across
+the pool. Before building, the workflow requires 256 GiB available on the
+workspace filesystem. Make still uses the shared `/dpkg_cache` in `rwcache`
+mode; that cache holds Debian packages.
 
-Both cache mounts survive worker replacement:
-
-| Mount | Use |
-| --- | --- |
-| `/dpkg_cache` | Existing Make package cache in `rwcache` mode |
-| `/bazel_cache` | Existing Bazel disk, repository, and Bazelisk caches |
+Bazel uses only the worker-configured remote cache. Its disk and repository
+caches are disabled. The short output base, Bazelisk downloads, and verified
+source archives are private to the pod and disappear when it is replaced.
 
 The shared APT policy allows eight retries per transient acquisition failure
 (nine attempts), with exponential delays capped at 30 seconds and 20-second
@@ -172,7 +206,7 @@ Index refreshes fail if any index cannot be downloaded, so an incomplete
 refresh cannot become a successful cached Docker layer. These settings bound
 individual attempts and delays, not the total duration of an APT command.
 
-The native Docker CI job sets `SONIC_DOCKER_APT_RETRIES=0` to avoid APT 3.0.3's
+Legacy native Docker profiles can set `SONIC_DOCKER_APT_RETRIES=0` to avoid APT 3.0.3's
 unbounded delayed-retry warning queue ([Debian bug 1117797](https://bugs.debian.org/1117797)).
 The Dockerfile generator installs a temporary APT fragment with a late-sorting
 name and verifies that APT's effective retry count is zero before each independent
@@ -181,19 +215,19 @@ It refuses a pre-existing override path and removes only its
 own unchanged fragment before the stage can be copied, flattened or exported.
 The resulting image keeps the original eight-retry runtime policy. Unset or
 empty leaves ordinary Make behavior unchanged; other values are rejected.
+The active host-agent workflow leaves this setting unset.
 
-These native Docker builds use the existing `run_with_retry` helper, allowing
-two retries with a ten-second delay. A failed Docker build still fails the job
-after three attempts, and later attempts can reuse completed layers. Strict
+Legacy native Docker profiles can use the existing `run_with_retry` helper
+with two retries and a ten-second delay. A failed Docker build still fails
+after three attempts, and later attempts can reuse completed layers. The active
+host-agent workflow uses Make's default Docker build command instead. Strict
 index refresh errors, timeouts, and TLS, signature and hash checks stay enabled.
 This CI-only mitigation does not change rootfs or native-package APT behavior,
 repair a persistent transport failure, or force APT to refresh DNS.
 
-GitHub supplies `BAZEL_REMOTE_AUTH` only to cache/build steps. The installed
-credential helper sends it only to the configured cache origin. If the cache
-cannot be reached, the job records an explicit local-only fallback. Invalid
-credentials or authorization failures still fail setup. The cache receipt does
-not claim a remote cache hit merely because HTTPS connectivity succeeds.
+The worker supplies the endpoint and scoped credential helper. CI verifies
+that remote reads and writes are enabled and probes access before Make.
+If that check fails, the job stops; there is no local-cache fallback.
 
 The former `Make VS with Bazel SWSS (AMD64)` job is disabled in this workflow.
 After the new native build, CI verifies the installer container
