@@ -41,6 +41,14 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: Reclaim unused images and build cache
+        run: |
+          set -euo pipefail
+          docker system df
+          docker image prune --all --force
+          docker builder prune --all --force
+          docker system df
+
       - name: Check host-agent build prerequisites
         run: python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
 
@@ -71,6 +79,8 @@ jobs:
             remote="$REGISTRY_SERVER:$REGISTRY_PORT/$image"
             docker tag "$image" "$remote"
             docker push "$remote" 2>&1 | tee "artifacts/slave-images/push-$build_env.log"
+            printf 'Removing published local image tags: %s %s\n' "$remote" "$image"
+            docker image rm "$remote" "$image"
           done
 
       - name: Retain slave publication evidence

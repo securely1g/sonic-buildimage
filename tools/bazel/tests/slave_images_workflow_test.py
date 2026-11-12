@@ -42,6 +42,8 @@ with pathlib.Path(os.environ["CALLS"]).open("a") as output:
     output.write(json.dumps([name, *args]) + "\n")
 operation = ("showtag" if "showtag" in args else
              "sonic-slave-build" if "sonic-slave-build" in args else args[0])
+if name == "docker" and args[:2] == ["image", "rm"]:
+    operation = "image rm"
 if os.environ.get("FAIL_COMMAND") == name + " " + operation:
     raise SystemExit(1)
 if name == "make" and operation == "showtag":
@@ -138,7 +140,7 @@ elif name == "docker" and operation == "image":
         calls = self.recorded()
         self.assertEqual(calls[0], ["make", "init"])
         for index, release in enumerate(("bookworm", "trixie")):
-            selected = calls[1 + index * 5:6 + index * 5]
+            selected = calls[1 + index * 6:7 + index * 6]
             image = "sonic-slave-" + release + ":0123456789a"
             remote = "sonicdev-microsoft.azurecr.io:443/" + image
             for command, target in zip(selected[:2], ("showtag", "sonic-slave-build")):
@@ -150,8 +152,31 @@ elif name == "docker" and operation == "image":
                 ["docker", "image", "inspect", image],
                 ["docker", "tag", image, remote],
                 ["docker", "push", remote],
+                ["docker", "image", "rm", remote, image],
             ])
-        self.assertEqual(len(calls), 11)
+        self.assertEqual(len(calls), 13)
+
+    def test_unused_image_cleanup_runs_before_space_check(self):
+        steps = self.publisher["steps"]
+        names = [step["name"] for step in steps]
+        index = names.index("Reclaim unused images and build cache")
+        self.assertLess(index, names.index("Check host-agent build prerequisites"))
+        script = steps[index]["run"]
+        expected = [
+            ["docker", "system", "df"],
+            ["docker", "image", "prune", "--all", "--force"],
+            ["docker", "builder", "prune", "--all", "--force"],
+            ["docker", "system", "df"],
+        ]
+        result = self.run_shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.recorded(), expected)
+        for failure, count in (("docker system", 1), ("docker image", 2),
+                               ("docker builder", 3)):
+            with self.subTest(failure=failure):
+                result = self.run_shell(script, FAIL_COMMAND=failure)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.recorded(), expected[:count])
 
     def test_publication_stops_on_invalid_tags_and_failed_commands(self):
         script = next(step["run"] for step in self.publisher["steps"]
@@ -162,12 +187,33 @@ elif name == "docker" and operation == "image":
                 result = self.run_shell(script, FAIL_COMMAND=failure)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(any("BLDENV=trixie" in call for call in self.recorded()))
+                self.assertFalse(any(call[:3] == ["docker", "image", "rm"]
+                                     for call in self.recorded()))
         for image in ("sonic-slave-bookworm:latest", "sonic-slave-trixie:0123456789a", ""):
             with self.subTest(image=image):
                 result = self.run_shell(script, COMPUTED_IMAGE=image)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Invalid computed slave image reference", result.stderr)
                 self.assertFalse(any(call[0] == "docker" for call in self.recorded()))
+
+    def test_published_image_cleanup_failure_is_reported_without_force_or_pruning(self):
+        script = next(step["run"] for step in self.publisher["steps"]
+                      if step.get("name") == "Build and publish computed slave tags")
+        result = self.run_shell(script, FAIL_COMMAND="docker image rm")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.recorded()
+        image = "sonic-slave-bookworm:0123456789a"
+        remote = "sonicdev-microsoft.azurecr.io:443/" + image
+        self.assertEqual(calls[-2:], [
+            ["docker", "push", remote],
+            ["docker", "image", "rm", remote, image],
+        ])
+        self.assertFalse(any("BLDENV=trixie" in call for call in calls))
+        scripts = "\n".join(step.get("run", "") for step in self.publisher["steps"])
+        self.assertNotIn("docker system prune", scripts)
+        self.assertNotIn("docker container prune", scripts)
+        self.assertNotIn("docker volume prune", scripts)
+        self.assertNotIn("--all", script)
 
     def test_identity_authentication_and_failures(self):
         helper = ROOT / "tools/ci/runner/azure_acr_login.sh"

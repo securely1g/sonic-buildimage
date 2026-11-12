@@ -25,6 +25,20 @@ AMD64 Bookworm and Trixie slaves and pushes their computed tags to
 mutable `latest` tags. Publication and installer jobs may run independently
 on available dedicated host agents; there is no shared job-level queue.
 
+Before the publication job's disk-space preflight, it runs
+`docker image prune --all --force` to remove all unused Docker images, including
+tagged slave and base images, regardless of age. Images referenced by running or
+stopped containers are retained. The job also runs
+`docker builder prune --all --force` to remove all eligible unused build cache
+regardless of age, but does not prune containers or volumes. Run this only on a
+dedicated agent with no other jobs sharing its Docker daemon; future builds may
+need to pull or rebuild removed images. Preflight still requires sufficient free
+space after cleanup. After each successful push, it removes only that image's
+local computed tag and registry-qualified tag, without forcing removal.
+Failed pushes retain their local images. Docker manages reclamation in its
+containerd image store; never delete containerd storage files directly.
+Shared layers and retained build cache may continue to occupy disk space.
+
 For pre-merge testing, pushes to the same repository's `vs-runner` branch
 temporarily also publish real images to that registry. Manual dispatch remains
 master-only, and pull requests do not trigger publication. Remove the `vs-runner`
