@@ -61,7 +61,7 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.30-c8e5486df0147c5652d015bb5ddd49b6dce6b655",
+    version = "0.0.33-0d2435b572eca4a6f1db6e003b04956c09fb1a39",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -321,6 +321,8 @@ source_modules(
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
         "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
+        "@sonic_mgmt_common//:MODULE.bazel": "sonic-mgmt-common",
+        "@sonic_gnmi//:MODULE.bazel": "sonic-gnmi",
         "@scapy//:MODULE.bazel": "scapy",
         "@libyang//:MODULE.bazel": "libyang",
         "@libyang_python//:MODULE.bazel": "libyang-python",
@@ -392,4 +394,91 @@ use_repo(apt, "sysmgr_debian", "sysmgr_debug_debian", "sysmgr_test_debian")
 apt_inputs(
     name = "sysmgr_apt_inputs",
     lock = "@sonic_build_infra//apt:apt.lock.json",
+)
+
+# The gNMI and schema owners supply direct runtime TARs; the image adds only
+# its original startup/configuration files and pinned external dependencies.
+bazel_dep(name = "sonic-gnmi", version = "0.1.0-3cc2cba22ba980128518aafe4ddae14aeebebb08", repo_name = "sonic_gnmi")
+bazel_dep(name = "sonic-mgmt-common", version = "1.0.1-05f83dcab8fe2e1a0e0fc37ac172b289d6968e2b", repo_name = "sonic_mgmt_common")
+bazel_dep(name = "openconfig_goyang", version = "0.0.0.sonic.1-20200309174518-a00bece872fc", repo_name = "com_github_openconfig_goyang")
+bazel_dep(name = "openconfig_ygot", version = "0.7.1.sonic.1", repo_name = "com_github_openconfig_ygot")
+
+go_sdk = use_extension("@io_bazel_rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.25.9")
+
+use_repo(apt, "gnmi_debian", "gnmi_debug_debian", "gnmi_test_debian")
+
+apt_inputs(
+    name = "gnmi_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+)
+
+
+go_deps.from_file(go_work = "@sonic_gnmi//:go.bazel.work")
+
+go_patches = use_extension("@bazel_gazelle//:extensions.bzl", "go_deps", dev_dependency = True)
+
+# The public goyang/ygot owners supply the same Go types as Management
+# Common. Keep the remaining upstream Go dependency settings unchanged.
+go_patches.gazelle_override(
+    directives = ["gazelle:proto disable_global"],
+    path = "github.com/openconfig/gnmi",
+)
+
+# These modules ship C++/proto Bazel files for their own workspace. Generate
+# their checked-in Go bindings as native Go packages for this consuming graph.
+[go_patches.gazelle_override(
+    build_file_generation = "clean",
+    directives = ["gazelle:proto disable_global"],
+    path = path,
+) for path in [
+    "github.com/openconfig/gnoi",
+    "github.com/openconfig/gnsi",
+]]
+
+# These are the existing Make/vendor patches, applied to isolated dependency
+# repositories. Build actions never modify go.mod, vendor, or the checkout.
+go_patches.module_override(
+    patch_strip = 1,
+    patches = ["@sonic_mgmt_common//patches:jsonquery.patch"],
+    path = "github.com/antchfx/jsonquery",
+)
+go_patches.module_override(
+    patch_strip = 1,
+    patches = ["@sonic_mgmt_common//patches:xmlquery.patch"],
+    path = "github.com/antchfx/xmlquery",
+)
+go_patches.module_override(
+    patch_strip = 1,
+    patches = ["@sonic_mgmt_common//patches:xpath.patch"],
+    path = "github.com/antchfx/xpath",
+)
+
+[go_patches.module_override(
+    patch_strip = 1,
+    patches = ["@sonic_gnmi//patches/bazel:" + patch] + (["@sonic_gnmi//patches/bazel:" + {
+        "0001-gnxi.patch": "0005-gnxi-build.patch",
+        "0002-gnmi.patch": "0006-gnmi-build.patch",
+    }[patch]] if path in [
+        "github.com/google/gnxi",
+        "github.com/openconfig/gnmi",
+    ] else []),
+    path = path,
+) for path, patch in [
+    ("github.com/google/gnxi", "0001-gnxi.patch"),
+    ("github.com/openconfig/gnmi", "0002-gnmi.patch"),
+    ("github.com/fsnotify/fsnotify", "0003-fsnotify.patch"),
+    ("google.golang.org/grpc/security/advancedtls", "0004-advancedtls.patch"),
+]]
+# Native gNMI deliberately omits Common's glog.patch for glog v1.2.4.
+
+go_patches.module_override(
+    patch_strip = 1,
+    patches = ["@sonic_gnmi//patches/bazel:0007-gnoi-build.patch"],
+    path = "github.com/openconfig/gnoi",
+)
+go_patches.module_override(
+    patch_strip = 1,
+    patches = ["@sonic_gnmi//patches/bazel:0008-pam-build.patch"],
+    path = "github.com/msteinert/pam",
 )
