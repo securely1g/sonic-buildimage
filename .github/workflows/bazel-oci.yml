@@ -1466,11 +1466,14 @@ jobs:
 
       - name: Build sonic-vs.bin directly with slave.mk
         id: native_build
+        env:
+          TERM: dumb
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/sonic-vs-slave.env"
           cd /sonic
           git rev-parse HEAD > artifacts/vs/build-revision.txt
+          echo "+++ --- Making target/sonic-vs.bin --- +++"
           make -f slave.mk target/sonic-vs.bin \
             P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources \
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
