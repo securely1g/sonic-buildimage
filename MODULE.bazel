@@ -7,12 +7,19 @@ module(
 )
 
 include("//src/sonic-supervisord-utilities-rs:deps.MODULE.bazel")
+include("//src/sonic-frr:deps.MODULE.bazel")
+
+# Cache Go module ZIPs by reviewed archive digests.
+bazel_dep(name = "gazelle", version = "0.54.0.sonic.1", repo_name = "bazel_gazelle")
+bazel_dep(name = "rules_go", version = "0.64.1-sonic.1", repo_name = "io_bazel_rules_go")
+go_deps = use_extension("@bazel_gazelle//:extensions.bzl", "go_deps")
+go_deps.zip_lock(file = "//tools/bazel/go:go.zip.sums.json")
+use_repo(go_deps, go_zip_lock_plan = "bazel_gazelle_go_repository_config")
 
 bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "gawk", version = "5.3.2.sonic.1")
 bazel_dep(name = "googletest", version = "1.16.0")
-bazel_dep(name = "pigz", version = "2.8.bcr.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # P4 producers retain their upstream Make/configure builds and export TARs.
@@ -24,13 +31,21 @@ bazel_dep(name = "sonic-dash", version = "0.0.3-2cbfdfa1205c0d03003444e5c80f89ad
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
 bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_pkg", version = "1.1.0")
+bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # Share APT lock metadata across dependency sets.
 bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.18")
+# Shared-only pkg-config ordering anchors carry no static object code.
+single_version_override(
+    module_name = "rules_distroless",
+    version = "0.9.4.sonic.18",
+    patches = ["//src/sonic-frr:0003-distroless-shared-link-sequences.patch"],
+    patch_strip = 1,
+)
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
-bazel_dep(name = "rules_multirun", version = "0.14.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "rules_python", version = "1.9.0.sonic.1")
 bazel_dep(name = "rules_rs", version = "0.1.0")
@@ -39,13 +54,13 @@ bazel_dep(name = "tar.bzl", version = "0.10.5.sonic.2")
 bazel_dep(name = "toolchain_utils", version = "1.0.2")
 
 # rules_gzip owns compression; this toolchain keeps gzip headers reproducible.
-register_toolchains("//tools/bazel/gzip:toolchain")
+register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 
 # Build SWSS and its runtime libraries from source without changing the source
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.28-9965823498ab54816de5addb6084638470dd04d7",
+    version = "0.0.30-c8e5486df0147c5652d015bb5ddd49b6dce6b655",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -256,6 +271,23 @@ single_version_override(
 )
 
 bazel_dep(name = "sonic-fips", version = "0.0.6-18a778db501d455f8a1b6d1e3ef8e17121661177", repo_name = "sonic_fips")
+
+# Fixed target C/C++ runtime and JSON headers for sonic-fib.
+apt.install(
+    dependency_set = "fib_deps",
+    packages = ["libc6", "libstdc++6", "libgcc-s1", "nlohmann-json3-dev"],
+    suites = ["trixie", "trixie-updates", "trixie-security"],
+)
+use_repo(apt, "fib_deps")
+
+# Reuse the isolated Bookworm snapshot declared by the FRR dependency include.
+apt_bookworm_metadata = use_extension("@sonic_build_infra//toolchains/bookworm:apt.bzl", "apt")
+apt_bookworm_metadata.install(
+    dependency_set = "fib_bookworm_deps",
+    packages = ["libc6", "libstdc++6", "libgcc-s1", "nlohmann-json3-dev"],
+    suites = ["bookworm", "bookworm-updates", "bookworm-security"],
+)
+use_repo(apt_bookworm_metadata, "fib_bookworm_deps")
 
 # Bind image receipts to the modules that Bazel actually selected.
 source_modules = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "source_modules")
