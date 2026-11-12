@@ -20,8 +20,8 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.bazel import build_helpers
 from tools.bazel.ci import make_cache_sandbox
+from tools.bazel.ci.preserve_setup_bazel_cache import PRIVATE_REMOTE_CACHE
 
 ARCHITECTURES = {"amd64": "x86_64", "arm64": "aarch64"}
 SLAVE_REPOSITORY = "sonicdev-microsoft.azurecr.io/sonic-slave-trixie"
@@ -57,6 +57,12 @@ def sha256(path):
 def native_architecture(architecture, machine=None):
     require((platform.machine() if machine is None else machine) == ARCHITECTURES[architecture],
             "The cache proof requires a native " + architecture + " runner")
+
+
+def require_native_builder(architecture):
+    native_architecture(architecture)
+    require(ROOT == Path("/sonic") and Path("/.dockerenv").is_file(),
+            "Run inside the native sonic-slave through outer Make")
 
 
 def command(argv, *, log=None, helpers=None, env=None, preflight_diagnostics=False):
@@ -103,8 +109,10 @@ def preflight(architecture):
     environment.pop("BAZEL_REMOTE_AUTH", None)
     def docker(arguments, **kwargs):
         return command(["docker", *arguments], env=environment, preflight_diagnostics=True, **kwargs)
-    tag_digest = digest(docker(["buildx", "imagetools", "inspect", tag,
-                               "--format", "{{.Manifest.Digest}}"]).strip())
+    # Some Buildx versions render .Manifest.Digest as a human-readable report.
+    descriptor = json.loads(docker(["buildx", "imagetools", "inspect", tag,
+                                    "--format", "{{json .Manifest}}"]))
+    tag_digest = digest(descriptor["digest"])
     reference = SLAVE_REPOSITORY + "@" + tag_digest
     manifest = json.loads(docker(["buildx", "imagetools", "inspect", "--raw", reference]))
     selected = native_manifest(manifest, architecture)
@@ -145,6 +153,9 @@ def common_helpers(checkout):
 
 def seed_receipt(architecture):
     path = ROOT / PUBLIC / "seed/cross-repo.json"
+    access = json.loads((path.parent / "cache-access.json").read_text())
+    require(access.get("endpoint") == PRIVATE_REMOTE_CACHE and access.get("status") == "OK",
+            "Common CI must verify and seed the same Bazel remote cache used by Make")
     seed = json.loads(path.read_text())
     require(seed.get("passed") is True and seed.get("mode") == "make_seed",
             "A successful Common CI make_seed receipt is required")
@@ -223,6 +234,8 @@ def container_options():
             "--strategy=CopyToDirectory=local",
             "--noincompatible_legacy_local_fallback", "--disk_cache=",
             "--repository_cache=" + str(CONTAINER_PRIVATE / "repository-cache"),
+            "--remote_cache=" + PRIVATE_REMOTE_CACHE, "--remote_executor=",
+            "--remote_accept_cached=true", "--remote_upload_local_results=false",
             "--remote_download_outputs=all", "--remote_cache_async=false",
             # Avoid sorting the full execution log in Bazel's heap at shutdown.
             "--execution_log_sort=false",
@@ -246,14 +259,17 @@ def make_command(architecture, builder, cache_root):
 
 
 def make_environment():
-    return dict(os.environ, BAZEL=str(CONTAINER_PRIVATE / "bazel-read"),
-                BAZEL_CONTAINER_ARGS=shlex.join(container_options()),
-                BAZEL_CONTAINER_CACHE_DIR="", BAZEL_SWSS_CACHE_DIR="")
+    environment = dict(os.environ, BAZEL=str(CONTAINER_PRIVATE / "bazel-read"),
+                       BAZEL_CONTAINER_ARGS=shlex.join(container_options()),
+                       BAZEL_CONTAINER_CACHE_DIR="", BAZEL_SWSS_CACHE_DIR="")
+    # The legacy credential opts ordinary Make builds into a different cache.
+    environment.pop("BAZEL_REMOTE_AUTH", None)
+    return environment
 
 
 def prepare(architecture, checkout):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
+    require(os.geteuid() != 0, "Outer Make requires a non-root runner user")
     helpers = common_helpers(checkout)
     seed, seed_hash = seed_receipt(architecture)
     helpers.check_actions(seed["phases"][0], remote=False)
@@ -266,7 +282,8 @@ def prepare(architecture, checkout):
     local_image = json.loads(command(["docker", "image", "inspect",
                                      builder["local_image"] + ":" + builder["local_tag"]]))[0]
     require(local_image["Id"] == builder["image_id"], "Pinned local builder changed after preflight")
-    cache_root = Path(os.environ["RUNNER_TEMP"]) / "make-common-cache"
+    scratch = os.environ.get("MAKE_CACHE_SCRATCH") or os.environ["RUNNER_TEMP"]
+    cache_root = Path(scratch) / "make-common-cache"
     require(not cache_root.exists(), "The Make proof requires fresh job cache directories")
     for name in ("dpkg", "versions", "bazel"):
         (cache_root / name).mkdir(parents=True)
@@ -286,7 +303,8 @@ def prepare(architecture, checkout):
                "seed_buildimage_revision": seed["buildimage_revision"],
                "common_revision": seed["common_revision"], "common_source_archive_sha256": source_hash,
                "seed_receipt_sha256": seed_hash, "builder": builder, "make_command": [*prefix, IMAGE],
-               "cache_writes": False, "disk_cache": False, "fresh_workspace": True,
+               "remote_cache": PRIVATE_REMOTE_CACHE, "cache_writes": False,
+               "disk_cache": False, "fresh_workspace": True,
                "fresh_output_base": True, "yang": True}
     write_json(ROOT / PUBLIC / "result.json", receipt)
     write_json(private / "make-plan.json", {"architecture": architecture, "make_prefix": prefix,
@@ -299,8 +317,7 @@ def prepare(architecture, checkout):
 
 def build(architecture):
     native_architecture(architecture)
-    require(os.geteuid() != 0, "Run outer Make as the hosted runner user, not root")
-    build_helpers.credentials.authorization()
+    require(os.geteuid() != 0, "Outer Make requires a non-root runner user")
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     private = ROOT / PRIVATE
     plan = json.loads((private / "make-plan.json").read_text())
@@ -332,16 +349,10 @@ def build(architecture):
 
 def sandbox_probe(architecture, phase):
     """Exercise the installed sandbox as Make's non-root builder before compilation."""
-    native_architecture(architecture)
-    require(ROOT == Path("/sonic") and Path("/.dockerenv").is_file() and os.geteuid() != 0,
-            "Probe must run as Make's non-root user inside sonic-slave")
+    require_native_builder(architecture)
+    require(os.geteuid() != 0, "Probe must run as Make's non-root user inside sonic-slave")
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     restriction_before = make_cache_sandbox.restriction_value()
-    host = {"installed": False, "restriction_before": restriction_before}
-    if phase == "after":
-        host = json.loads((ROOT / PUBLIC / "sandbox-host.json").read_text())
-        require(host["executable"] == str(INSTALL_BASE / "linux-sandbox"),
-                "Host sandbox policy has a different executable attachment")
     command(bazel_invocation(["version"]), log=ROOT / PRIVATE / "bazel-version.log", helpers=helpers)
     sandbox = INSTALL_BASE / "linux-sandbox"
     require(sandbox.is_file() and not sandbox.is_symlink(), "Bazel did not install the expected sandbox")
@@ -354,11 +365,11 @@ def sandbox_probe(architecture, phase):
                             cwd=ROOT, env={}, text=True, capture_output=True, timeout=30)
     (ROOT / PRIVATE / ("linux-sandbox-" + phase + ".log")).write_text(result.stdout + result.stderr)
     restriction = make_cache_sandbox.restriction_value()
-    require(restriction == host["restriction_before"], "Global namespace restriction changed before sandbox probe")
+    require(restriction == restriction_before, "Global namespace restriction changed during sandbox probe")
     receipt = {"passed": False, "phase": phase, "architecture": architecture, "builder_uid": os.geteuid(),
                "sandbox_path": str(sandbox), "sandbox_sha256": sha256(sandbox),
-               "host_profile_installed": host["installed"], "returncode": result.returncode,
-               "restriction_before": host["restriction_before"], "restriction_after": restriction,
+               "host_profile_installed": False, "returncode": result.returncode,
+               "restriction_before": restriction_before, "restriction_after": restriction,
                "global_policy_changed": False, "parent_namespaces": before}
     path = ROOT / PUBLIC / ("sandbox-probe-" + phase + ".json")
     if result.returncode:
@@ -366,27 +377,28 @@ def sandbox_probe(architecture, phase):
         # its bounded startup error, never Bazel action or build diagnostics.
         receipt["startup_error"] = result.stderr[-2000:]
         write_json(path, receipt)
-        if phase == "before":
-            return
         helpers.validate.print_safe_diagnostics(result.stderr)
-        raise ValueError("Non-root linux-sandbox probe failed after scoped AppArmor setup")
+        raise ValueError("The self-hosted runner must allow the non-root sonic-slave Linux sandbox")
     child = json.loads(result.stdout)
     receipt.update(profile=child["profile"], sandbox_profile=child["sandbox_profile"],
                    sandbox_namespaces=child["namespaces"], sandbox_uid=child["uid"])
     write_json(path, receipt)
     require(all(child["namespaces"][kind] != before[kind] for kind in before),
             "linux-sandbox did not create user and mount namespaces")
-    if host["installed"]:
-        require(child["sandbox_profile"] == host["profile"] + " (unconfined)",
-                "linux-sandbox did not enter the job's exact AppArmor profile")
     if phase == "after":
         baseline = json.loads((ROOT / PUBLIC / "sandbox-probe-before.json").read_text())
-        require(baseline["restriction_before"] == host["restriction_before"],
-                "Global namespace restriction changed between sandbox probes")
-        require(baseline["sandbox_sha256"] == receipt["sandbox_sha256"],
-                "The sandbox executable changed between probes")
+        verify_sandbox_baseline(baseline, receipt)
     receipt["passed"] = True
     write_json(path, receipt)
+
+
+def verify_sandbox_baseline(baseline, receipt):
+    require(baseline["passed"] and baseline["architecture"] == receipt["architecture"],
+            "Missing successful native sandbox baseline")
+    require(baseline["restriction_before"] == receipt["restriction_before"],
+            "Global namespace restriction changed between sandbox probes")
+    require(baseline["sandbox_sha256"] == receipt["sandbox_sha256"],
+            "The sandbox executable changed between probes")
 
 
 def compare_image_actions(seed, image):
@@ -414,10 +426,7 @@ def image_receipt(path, architecture):
 
 
 def inspect(architecture):
-    native_architecture(architecture)
-    require(ROOT == Path("/sonic") and Path("/.dockerenv").is_file(),
-            "Inspect must run inside the real sonic-slave through outer Make")
-    build_helpers.credentials.authorization()
+    require_native_builder(architecture)
     helpers = common_helpers(ROOT / PRIVATE / "common-source")
     seed, seed_hash = seed_receipt(architecture)
     receipt_path = ROOT / PUBLIC / "result.json"
@@ -435,7 +444,7 @@ def inspect(architecture):
     compare_image_actions(seed["phases"][0], summary)
     image_log_hash = sha256(ACTION_LOG)
     platform_label = "@sonic_build_infra//platforms:" + helpers.MACHINES[architecture][1]
-    options = [*container_options(), *build_helpers.remote_cache_options(),
+    options = [*container_options(),
                "--platforms=" + platform_label, "--host_platform=" + platform_label]
     artifacts = {}
     outputs = {}

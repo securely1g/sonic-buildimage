@@ -30,8 +30,11 @@ rc. Ordinary builds and hosted validation jobs therefore do not require access
 to the private cache; existing HTTPS-cache callers can retain their own policy.
 Self-hosted status alone does not enable the endpoint. Kernel jobs retain their
 explicit `--remote-cache` selection, including the disposable loopback cache
-used by cold-cache verification. Make/VS worker pools retain their existing
-authenticated cache configuration rather than inheriting the private endpoint.
+used by cold-cache verification. The manual Make cache preflight checks this
+same private cache on the native Bazel pools. It pulls the production builder
+with a job-specific Docker daemon whose image layers live on the runner build
+disk. A full Make run uses the same daemon and pinned image. The dedicated VS
+installer worker uses its own cache configuration.
 
 The remote downloader's local-fallback flag applies to repository downloads;
 it does not make an unreachable gRPC action cache safe for ordinary build
@@ -161,7 +164,7 @@ package expectations remain in the owner declarations and tests.
 
 [`.github/workflows/bazel-oci.yml`](../../../.github/workflows/bazel-oci.yml) is
 the shared entrypoint for Bazel OCI container CI. It runs common AMD64/ARM64
-archive checks, lightweight hosted regressions and the full VS integration
+archive checks, lightweight regressions on `bazel-x64` and the full VS integration
 job. The active `vs_container` job builds inside a privileged SONiC slave,
 then runs shared SWSS/Syncd static image checks and Docker-load validation in
 that same worker. Build and validation share its Bazel server and caches.
@@ -177,9 +180,8 @@ and [`platform/vs/docker-syncd-vs/BUILD.bazel`](../../../platform/vs/docker-sync
 The shared runner accepts either package path; it does not require owners to
 live under `dockers/`.
 Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
-job after hosted regressions and dependency resolution pass. Fork PRs and
-manual `skip_vs=true` runs omit source-package/full-image validation; hosted
-success alone does not establish those results.
+job after OCI regression checks and dependency resolution pass. Fork PRs and
+manual `skip_vs=true` runs omit the full VS job.
 
 SWSS compilation, package contents and component tests are validated in the
 [SWSS source repository](https://github.com/securely1g/sonic-swss). Buildimage

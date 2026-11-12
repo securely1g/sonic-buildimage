@@ -6,6 +6,9 @@ from pathlib import Path
 import shlex
 
 
+PRIVATE_REMOTE_CACHE = "grpc://172.16.0.4:9092"
+
+
 def preserve(workspace, home, repository_only=False, private_remote_cache=False):
     prefixes = {"common --repository_cache=": "repository"}
     if not repository_only:
@@ -26,8 +29,8 @@ def preserve(workspace, home, repository_only=False, private_remote_cache=False)
     selected = list(settings.values())
     if private_remote_cache:
         selected.extend([
-            "common --remote_cache=grpc://172.16.0.4:9092",
-            "common --experimental_remote_downloader=grpc://172.16.0.4:9092",
+            f"common --remote_cache={PRIVATE_REMOTE_CACHE}",
+            f"common --experimental_remote_downloader={PRIVATE_REMOTE_CACHE}",
             "common --experimental_remote_downloader_local_fallback",
         ])
     user = workspace / ".bazelrc.user"

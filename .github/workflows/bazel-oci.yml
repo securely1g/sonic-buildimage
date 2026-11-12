@@ -44,9 +44,41 @@ jobs:
   source_image_inputs:
     name: Fetch pinned source-image downloads
     if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 20
     steps:
+      - &restore-workspace
+        name: Restore workspace access before checkout
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY##*/}"
+          pipeline_workspace="${RUNNER_WORKSPACE%/}"
+          expected="$pipeline_workspace/$repository"
+          if [[ "$GITHUB_WORKSPACE" != "$expected" ]]; then
+            printf 'Refusing permission repair: expected workspace %s, got %s.\n' \
+              "$expected" "$GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          if [[ ! -e "$expected" && ! -L "$expected" ]]; then
+            echo 'No existing workspace to repair.'
+            exit 0
+          fi
+          work_root="$(realpath -e -- "$pipeline_workspace/..")"
+          physical_workspace="$work_root/$repository/$repository"
+          if [[ ! -d "$expected" || "$(realpath -e -- "$expected")" != "$physical_workspace" ]]; then
+            echo 'Refusing permission repair on a redirected workspace.' >&2
+            exit 1
+          fi
+          expected="$physical_workspace"
+          owner="$(id -u):$(id -g)"
+          sudo -n find -P "$expected" -xdev -type d \
+            -exec chown --no-dereference -- "$owner" {} +
+          sudo -n find -P "$expected" -xdev -type d \
+            -exec chmod u+rwx -- {} +
+          sudo -n find -P "$expected" -xdev -type f -links 1 \
+            -exec chown --no-dereference -- "$owner" {} +
       - name: Checkout reviewed source-download verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -723,9 +755,13 @@ jobs:
   swss_layer_runtime:
     name: Load and run the shared SWSS image (AMD64)
     needs: archive
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 20
+    env:
+      SWSS_IMAGE: sonic-swss-layer-check:${{ github.run_id }}-${{ github.run_attempt }}
+      SWSS_CONTAINER: sonic-swss-layer-check-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - *restore-workspace
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -734,9 +770,10 @@ jobs:
           name: swss-layer-amd64
           path: artifacts/swss-layer
       - name: Verify and load this run's archive
+        id: load
         run: |
           python3 - <<'PY'
-          import hashlib, json, subprocess
+          import hashlib, json, os, subprocess
           from pathlib import Path
           from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
           root = Path('artifacts/swss-layer')
@@ -746,7 +783,8 @@ jobs:
           name = 'docker-swss-layer-trixie.gz'
           assert hashlib.sha256((root / name).read_bytes()).hexdigest() == receipt['artifacts'][name]['sha256']
           report = json.loads((root / 'validation.json').read_text())
-          actual, config, _ = load_archive(root / name, report['archive']['tag'], report['config_digest'])
+          assert report['archive']['tag'] == 'docker-swss-layer-trixie:latest'
+          actual, config, _ = load_archive(root / name, os.environ['SWSS_IMAGE'], report['config_digest'])
           verify_loaded_image(actual, config, report['config_digest'])
           assert actual['Architecture'] == report['architecture'] == 'amd64'
           assert actual['RootFS']['Layers'] == report['rootfs']['diff_ids']
@@ -754,14 +792,23 @@ jobs:
       - name: Verify installed source hashes and complete loader closure
         run: |
           set -o pipefail
-          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+          docker run --rm --name "$SWSS_CONTAINER" --pull=never --network=none --cap-drop=ALL --security-opt=no-new-privileges \
             --read-only --pids-limit=128 --memory=4g --cpus=2 \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
             --mount "type=bind,src=$PWD/tools/bazel/oci/swss_layer_runtime.py,dst=/probe/swss_layer_runtime.py,readonly" \
             --mount "type=bind,src=$PWD/tools/bazel/oci/runtime_smoke.py,dst=/probe/runtime_smoke.py,readonly" \
             --mount "type=bind,src=$PWD/artifacts/swss-layer/validation.json,dst=/probe/validation.json,readonly" \
-            --entrypoint /usr/bin/python3 docker-swss-layer-trixie:latest \
+            --entrypoint /usr/bin/python3 "$SWSS_IMAGE" \
             -B /probe/swss_layer_runtime.py /probe/validation.json | tee artifacts/swss-layer/runtime-smoke.json
+      - name: Remove this run's SWSS container and image tag
+        if: always() && steps.load.outcome != 'skipped'
+        run: |
+          if docker container inspect "$SWSS_CONTAINER" >/dev/null 2>&1; then
+            docker rm --force "$SWSS_CONTAINER"
+          fi
+          if docker image inspect "$SWSS_IMAGE" >/dev/null 2>&1; then
+            docker image rm "$SWSS_IMAGE"
+          fi
       - name: Retain installed-image evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -774,9 +821,10 @@ jobs:
   sysmgr_runtime:
     name: Load and run Sysmgr images (AMD64)
     needs: archive
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 30
     steps:
+      - *restore-workspace
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -813,7 +861,7 @@ jobs:
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: OCI regression checks (AMD64)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, bazel-x64]
     outputs:
       p4_sources_artifact_id: ${{ steps.p4_sources_upload.outputs.artifact-id }}
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
@@ -848,7 +896,7 @@ jobs:
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
 
-      - name: Check hosted storage
+      - name: Check runner storage
         run: df -h "$GITHUB_WORKSPACE" "$HOME"
 
       - name: Initialize Sysmgr's pinned gNOI source
@@ -864,6 +912,8 @@ jobs:
           cache-version: "8.5.1"
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
+      - name: Restore default Bazel startup ownership
+        run: python3 tools/bazel/ci/repair_bazel_startup.py
 
       - name: Configure shared source download mirrors
         run: |
@@ -992,7 +1042,7 @@ jobs:
 
       - name: Report validation scope
         run: |
-          echo 'Hosted checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'OCI checks cover regressions and dependency resolution; the VS installer builds directly in the SONiC slave container job.' >> "$GITHUB_STEP_SUMMARY"
 
   vs:
     name: Make VS with Bazel SWSS (AMD64)

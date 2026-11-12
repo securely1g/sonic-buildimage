@@ -278,33 +278,20 @@ configuration; an empty value does not disable Bazel or its own local caches.
 
 ### Read the remote cache from Make image builds
 
-When the host environment contains `BAZEL_REMOTE_AUTH`, Make forwards that
-variable by name into `sonic-slave`. The Bazel image recipe then reads the shared
-HTTPS cache at `lgh-bazel-87263989.eastus.cloudapp.azure.com`. For example, a Make
-build of `target/docker-config-engine-trixie.gz` with
-`BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` can reuse Common compilation seeded by Common
-CI when its source inputs, toolchains and build settings match.
+The manual **Common cache reuse through Make** workflow uses the native
+`bazel-x64` and `bazel-arm64` pools. Both can reach the private Bazel remote
+cache at `grpc://172.16.0.4:9092`. The workflow checks read access and pins
+and pulls the native Debian Trixie `sonic-slave` builder on each architecture.
+Run that preflight without a seed or an image build:
 
-| Authentication | Make's Bazel image recipe |
-| --- | --- |
-| Missing or empty | Uses the existing caller-selected caches |
-| Valid `BAZEL_REMOTE_AUTH` environment value | Reads the shared remote cache with uploads disabled |
-| Malformed value | Stops with a sanitized error before invoking Bazel |
+```sh
+gh workflow run bazel-make-cache.yml --repo securely1g/sonic-buildimage -f preflight_only=true
+```
 
-Supply the complete Basic Authorization header through a secret manager or the
-GitHub Actions `BAZEL_REMOTE_AUTH` secret. Do not put its value in a Make argument,
-`BAZEL_CONTAINER_ARGS`, `.bazelrc` or a Docker command. The origin-scoped
-[`credentials.py`](cache/credentials.py) helper supplies it only to this HTTPS
-host. The variable remains in the Bazel client's environment; it is not an
-action/test environment setting.
-
-Remote reads work independently of `SONIC_BAZEL_CACHE_SOURCE`, including when
-that local mount is disabled. The recipe applies the remote endpoint, credential
-helper, local-execution and read-only upload settings after caller options, so
-an accidental `--remote_upload_local_results=true` cannot enable writes. Remove
-`BAZEL_REMOTE_AUTH` from the environment to use ordinary caller-selected cache
-settings instead. This integration covers the Bazel container recipe; it does
-not change legacy DEB/Make compilation or the separate kernel launcher.
+The cache proof passes the same endpoint to Make with remote uploads disabled.
+Ordinary Make invocations continue to use the caller's cache settings. The
+optional `BAZEL_REMOTE_AUTH` helper targets the retired Azure HTTPS service.
+Leave that variable unset for the private gRPC cache.
 
 Both image builds and Common CI use `--incompatible_strict_action_env`. Bazel
 otherwise inherits the caller's `PATH` and `LD_LIBRARY_PATH` when an action runs:
@@ -318,24 +305,23 @@ Keep raw Bazel Java/client and execution logs private: they can contain client
 environment values. CI publishes only sanitized cache receipts and the explicit
 image-validation artifact list.
 
-To test the real Make path, first run Common's manual **Bazel remote cache
-validation** workflow from `master` with `seed_for_make=true`. After it succeeds, dispatch
-buildimage's **Common cache reuse through Make** workflow with that run ID as
-`seed_run`. Each native AMD64/ARM64 job downloads only seed evidence, checks out
-the exact Common source revision, and starts with no local Bazel outputs or
-action cache. It resolves the published native `sonic-slave-trixie` builder to
+The full cache-reuse test additionally requires a successful Common
+`make_seed` run on this same cache for both architectures. Pass its run ID as
+`seed_run` with `preflight_only=false`. Common's maintained branch currently
+has no producer for this seed. Each native AMD64/ARM64 job downloads the seed
+evidence, checks out the exact Common revision, and starts with no local Bazel
+outputs or action cache. It resolves the published native `sonic-slave-trixie` builder to
 an immutable digest, runs outer Make's `configure` and
 `target/docker-config-engine-trixie.gz` recipes, and requires every executed
 Common C++ compile/link action to be a remote hit matching the producer's seed.
 
-The workflow probes Bazel's Linux sandbox as Make's non-root builder before and
-after host setup. On an AppArmor-restricted GitHub runner, it allows user
-namespaces only for this job's sandbox executable at
-`/sonic/artifacts/private/bazel-install/linux-sandbox`. It leaves the host-wide
-restriction unchanged and removes its own profile after the job. Compilation
-and linking still require the Linux sandbox. Upstream OCI directory-copy actions
-run locally because their rule explicitly disables sandboxing; this exception
-does not allow local Common compilation to pass the cache proof.
+The native jobs run on `bazel-x64` and `bazel-arm64`. The pinned
+`sonic-slave` builder must allow Make's non-root user to create the user and
+mount namespaces required by Bazel's Linux sandbox. The workflow probes
+those capabilities without changing the runner's AppArmor policy. Common
+compilation and linking still require the Linux sandbox. Upstream OCI
+directory-copy actions run locally because their rule explicitly disables
+sandboxing. The cache proof rejects locally executed Common compilation.
 
 The jobs compare all six Common runtime/debug TAR hashes, then load the actual
 Make-produced image and import its Common Python binding and shared library.
