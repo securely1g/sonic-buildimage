@@ -7,12 +7,23 @@ const PHASES = ["setup", "build", "validation", "upload", "other"];
 // Match collect.py's IMAGE_STEPS. Exact names preserve historical timing boundaries.
 const IMAGE_STEP_LABELS = {
   "Build the VS installer (.bin)": "VS installer (.bin); VM generation and boot checks excluded",
+  "Build sonic-vs.bin directly with slave.mk": "VS installer (.bin), direct slave.mk; VM generation and boot checks excluded",
   "Build the VS image": "VS build with embedded boot checks; post-build validation excluded",
   "Build the VS image with Bazel SWSS archives": "Build the VS image with Bazel SWSS archives",
   "Build the VS image and both OCI container variants": "VS build, OCI follow-up and archive validation",
   "Build the Bazel VS installer": "Build the Bazel VS installer",
   "Build Bazel VS installer": "Build Bazel VS installer",
   "Build and verify sonic-vs.bin with Bazel": "Build and verify sonic-vs.bin with Bazel",
+};
+const IMAGE_SERIES_STYLES = {
+  "Build the VS installer (.bin)": ["Outer Make .bin", "#007f78"],
+  "Build sonic-vs.bin directly with slave.mk": ["Direct slave .bin", "#a34d12"],
+  "Build the VS image": ["Legacy VM image", "#7458a6"],
+  "Build the VS image with Bazel SWSS archives": ["Legacy VM + SWSS archives", "#8d4773"],
+  "Build the VS image and both OCI container variants": ["Legacy image + OCI validation", "#536775"],
+  "Build the Bazel VS installer": ["Installer build", "#23548a"],
+  "Build Bazel VS installer": ["Installer build (earlier step)", "#356aa0"],
+  "Build and verify sonic-vs.bin with Bazel": ["Installer + verification", "#5165a0"],
 };
 // Keep this vocabulary in sync with breakdown.py. Never display labels or log text from a snapshot.
 const SECTION_LABELS = {
@@ -92,6 +103,37 @@ function imageTrendGroups(points) {
     groups.get(key).push(item);
   }
   return [...groups.values()];
+}
+function imageSeries(job) {
+  const measurement = imageMeasurement(job);
+  const names = measurement.signature === null ? [] : JSON.parse(measurement.signature);
+  const label = names.length ? names.map(name => IMAGE_SERIES_STYLES[name][0]).join(" + ") : "Boundary unknown";
+  return {
+    key: JSON.stringify([job.kind, job.architecture || "unknown", measurement.signature]),
+    label: `${kindLabel(job)} · ${label} · ${architecture(job)}`,
+    color: names.length === 1 ? IMAGE_SERIES_STYLES[names[0]][1] : "#536775",
+  };
+}
+function selectTrendPoints(points, {series = "all", days = "all", limit = "60", reference = Date.now()} = {}) {
+  const cutoff = days === "all" ? null : reference - Number(days) * 86400000;
+  const matching = points.filter(item => (series === "all" || imageSeries(item.job).key === series) &&
+    (cutoff === null || (runTime(item.run) >= cutoff && runTime(item.run) <= reference)))
+    .sort((a, b) => runTime(b.run) - runTime(a.run) || b.run.attempt - a.run.attempt || b.run.run_id - a.run.run_id);
+  return {matching, points: (limit === "all" ? [...matching] : matching.slice(0, Number(limit))).reverse()};
+}
+function chartScale(maximum) {
+  const target = Math.max(1, maximum * 1.08) / 5;
+  const step = [1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400]
+    .find(value => value >= target) || Math.ceil(target / 86400) * 86400;
+  const end = Math.ceil(Math.max(1, maximum * 1.08) / step) * step;
+  return {maximum: end, ticks: Array.from({length: end / step + 1}, (_, index) => index * step)};
+}
+function imageBreakdownLabel(job) {
+  const details = (Array.isArray(job.steps) ? job.steps : []).filter(step => Object.hasOwn(IMAGE_STEP_LABELS, step?.name))
+    .map(step => normalizeBreakdown(step.breakdown));
+  const available = details.filter(detail => detail?.status === "available").length;
+  return available ? available === details.length ? "Measured breakdown" : "Partial breakdown" :
+    details.some(Boolean) ? "Breakdown unavailable" : "Breakdown not recorded";
 }
 function imageResult(jobs) {
   const outcomes = jobs.filter(imageJob).map(result);
@@ -285,25 +327,45 @@ function svgEl(tag, attrs, text) {
 }
 function renderTrend() {
   const all = successfulImages().filter(item => matchesRun(item.run) && matchesJob(item.job));
-  const points = all.slice(0, 60).reverse();
+  const select = byId("series-filter"), old = select.value;
+  const series = [...new Map(all.map(item => { const value = imageSeries(item.job); return [value.key, value]; })).values()]
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const option = el("option", "", "All measurement series (scatter)"); option.value = "all";
+  select.replaceChildren(option);
+  for (const value of series) {
+    const option = el("option", "", value.label); option.value = value.key; select.append(option);
+  }
+  select.value = series.some(value => value.key === old) ? old : "all";
+  const {matching, points} = selectTrendPoints(all, {
+    series: select.value, days: byId("date-filter").value, limit: byId("limit-filter").value,
+    reference: timestamp(state.data.generated_at) ?? Date.now(),
+  });
   const container = byId("trend");
   container.replaceChildren();
-  byId("trend-note").textContent = `Showing ${points.length} of ${all.length} matching successful image measurements. Select a point to inspect its job. Lines join only the same build path, architecture and measured step; they do not imply a controlled comparison.`;
+  const legend = byId("history-legend"); legend.replaceChildren();
+  for (const value of series.filter(value => points.some(item => imageSeries(item.job).key === value.key))) {
+    const item = el("span"), dot = el("i"); dot.style.backgroundColor = value.color; dot.setAttribute("aria-hidden", "true");
+    item.append(dot, document.createTextNode(value.label)); legend.append(item);
+  }
+  legend.hidden = !points.length;
+  const preview = byId("trend-preview");
+  preview.replaceChildren(el("p", "", "Hover or focus a point to inspect its measurement, source revision and breakdown availability. Select it to open the full run details."));
+  byId("trend-note").textContent = `${points.length < matching.length ? `Showing the newest ${points.length} of ${matching.length}` : `Showing all ${points.length}`} matching successful image measurements. ${select.value === "all" ? "Scatter overview: select one measurement series to show its trend." : "Lines join only one build path, architecture and exact measured step."} Date ranges end at the published snapshot. Cache state and runner configuration are not controlled; this is not a performance comparison.`;
   if (!points.length) { container.append(el("p", "empty", "No successful image measurements match these filters.\nFailed, skipped, and pending runs remain visible below.")); return; }
   const padding = getComputedStyle(container);
   const width = Math.max(240, Math.round(container.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)));
   const height = width < 520 ? 250 : 265;
   const left = 55, right = 40, top = 19, bottom = 41;
-  const maxSeconds = Math.max(60, ...points.map(item => item.job.image_build_seconds)) * 1.14;
-  const firstTime = Math.min(...points.map(item => runTime(item.run)));
-  const lastTime = Math.max(...points.map(item => runTime(item.run)));
+  const scale = chartScale(points.reduce((maximum, item) => Math.max(maximum, item.job.image_build_seconds), 0));
+  const maxSeconds = scale.maximum;
+  const firstTime = runTime(points[0].run);
+  const lastTime = runTime(points[points.length - 1].run);
   const x = item => lastTime === firstTime ? (width + left - right) / 2 : left + (runTime(item.run) - firstTime) / (lastTime - firstTime) * (width - left - right);
   const y = item => top + (1 - item.job.image_build_seconds / maxSeconds) * (height - top - bottom);
-  const svg = svgEl("svg", {viewBox: `0 0 ${width} ${height}`, role: "group", "aria-label": "Successful image build times, in minutes, ordered by run start time. Each point opens run details."});
-  for (let step = 0; step <= 4; step++) {
-    const value = maxSeconds * step / 4;
-    const position = top + (1 - step / 4) * (height - top - bottom);
-    svg.append(svgEl("line", {x1: left, y1: position, x2: width - right, y2: position, stroke: "#e6edef", "stroke-dasharray": step ? "3 4" : "0"}), svgEl("text", {x: left - 11, y: position + 4, "text-anchor": "end"}, `${Math.round(value / 60)}m`));
+  const svg = svgEl("svg", {viewBox: `0 0 ${width} ${height}`, role: "group", "aria-label": "Successful image build durations, ordered by run start time. Each point opens run details."});
+  for (const value of scale.ticks) {
+    const position = top + (1 - value / maxSeconds) * (height - top - bottom);
+    svg.append(svgEl("line", {x1: left, y1: position, x2: width - right, y2: position, stroke: "#e6edef", "stroke-dasharray": value ? "3 4" : "0"}), svgEl("text", {x: left - 11, y: position + 4, "text-anchor": "end"}, value ? duration(value).replace(/ 0[ms]$/, "") : "0"));
   }
   const dateCount = lastTime === firstTime ? 1 : width < 400 ? 2 : width < 700 ? 3 : 5;
   for (let index = 0; index < dateCount; index++) {
@@ -311,18 +373,28 @@ function renderTrend() {
     const tick = firstTime + (lastTime - firstTime) * fraction;
     svg.append(svgEl("text", {x: left + fraction * (width - left - right), y: height - 13, "text-anchor": "middle"}, dateTime(new Date(tick).toISOString(), true)));
   }
-  for (const items of imageTrendGroups(points)) {
-    const color = items[0].job.kind === "make-vs" ? "#007f78" : "#23548a";
+  for (const items of select.value === "all" ? [] : imageTrendGroups(points).filter(items => items.length > 1)) {
+    const color = imageSeries(items[0].job).color;
     const line = svgEl("polyline", {points: items.map(item => `${x(item)},${y(item)}`).join(" "), fill: "none", stroke: color, "stroke-opacity": ".45", "stroke-width": "2", "stroke-dasharray": items[0].job.architecture === "arm64" ? "5 4" : "0"});
     svg.append(line);
   }
   for (const item of points) {
     const prs = prNumbers(item.run).map(number => `PR #${number}`).join(", ") || item.run.branch || "Branch build";
-    const label = `${prs} · ${kindLabel(item.job)} · ${architecture(item.job)} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · ${dateTime(item.run.started_at)}`;
+    const source = String(item.run.source_sha || "unknown").slice(0, 12), breakdown = imageBreakdownLabel(item.job);
+    const label = `${prs} · ${imageSeries(item.job).label} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · Source ${source} · ${breakdown} · ${dateTime(item.run.started_at)}`;
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
-    point.append(svgEl("circle", {class: "chart-marker", cx: x(item), cy: y(item), r: 4.5, fill: item.job.kind === "make-vs" ? "#007f78" : "#23548a", stroke: "white", "stroke-width": 2, "pointer-events": "none"}));
+    point.append(svgEl("circle", {class: "chart-marker", cx: x(item), cy: y(item), r: 4.5, fill: imageSeries(item.job).color, stroke: "white", "stroke-width": 2, "pointer-events": "none"}));
+    const inspect = () => {
+      const heading = el("div", "chart-preview-heading");
+      heading.append(el("strong", "", duration(item.job.image_build_seconds)), el("span", "", imageSeries(item.job).label));
+      preview.replaceChildren(heading,
+        el("p", "", `${item.run.workflow_name || "Workflow"} · ${prs} · ${source} · ${dateTime(item.run.started_at)}`),
+        el("p", "", `${imageMeasurement(item.job).label}. ${breakdown}.`));
+    };
+    point.addEventListener("mouseenter", inspect);
+    point.addEventListener("focus", inspect);
     point.addEventListener("click", () => setSelected(item.run, item.job.job_id));
     point.addEventListener("keydown", event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); setSelected(item.run, item.job.job_id); } });
     svg.append(point);
@@ -556,6 +628,7 @@ async function refresh() {
 if (typeof document !== "undefined") {
   byId("refresh").addEventListener("click", refresh);
   for (const id of ["path-filter", "arch-filter", "pr-filter"]) byId(id).addEventListener("change", () => { if (state.data) renderFiltered(); });
+  for (const id of ["series-filter", "date-filter", "limit-filter"]) byId(id).addEventListener("change", () => { if (state.data) renderTrend(); });
   let chartWidth = 0;
   const chartResize = new ResizeObserver(entries => {
     const width = Math.round(entries[0].contentRect.width);
@@ -568,4 +641,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageMeasurement, imageTrendGroups, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageMeasurement, imageTrendGroups, imageSeries, selectTrendPoints, chartScale, imageBreakdownLabel, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep};

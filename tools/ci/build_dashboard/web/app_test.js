@@ -1,8 +1,10 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const {readFileSync} = require("node:fs");
 const test = require("node:test");
-const {duration, measured, imageMeasurement, imageTrendGroups, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
+const vm = require("node:vm");
+const {duration, measured, imageMeasurement, imageTrendGroups, imageSeries, selectTrendPoints, chartScale, imageBreakdownLabel, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep} = require("./app.js");
 
 test("unmeasured and invalid durations never look like fast builds", () => {
   for (const value of [null, undefined, "12", -1, NaN, Infinity]) assert.equal(duration(value), "—");
@@ -81,6 +83,73 @@ test("measurement signatures include every counted image step but exclude separa
   assert.equal(imageMeasurement(combined.job).signature,
     imageMeasurement({...combined.job, steps: [...combined.job.steps].reverse()}).signature);
   assert.deepEqual(imageTrendGroups([point, combined, validated]), [[point, validated], [combined]]);
+});
+
+test("direct-slave, outer-Make and legacy image scopes have distinct stable series", () => {
+  const points = ["Build sonic-vs.bin directly with slave.mk", "Build the VS installer (.bin)",
+    "Build the VS image", "Build the VS image and both OCI container variants"].map(name => timingPoint(name));
+  const before = structuredClone(points);
+  assert.equal(new Set(points.map(point => imageSeries(point.job).key)).size, 4);
+  assert.equal(new Set(points.map(point => imageSeries(point.job).color)).size, 4);
+  assert.match(imageMeasurement(points[0].job).label, /direct slave.mk; VM generation and boot checks excluded/);
+  assert.deepEqual(imageTrendGroups([points[0], timingPoint("Build sonic-vs.bin directly with slave.mk"), points[1]]),
+    [[points[0], timingPoint("Build sonic-vs.bin directly with slave.mk")], [points[1]]]);
+  assert.notEqual(imageSeries(points[0].job).key, imageSeries({...points[0].job, architecture: "arm64"}).key);
+  assert.notEqual(imageSeries(points[0].job).key, imageSeries({...points[0].job, kind: "bazel-vs"}).key);
+  assert.deepEqual(points, before, "series metadata must not change recorded timings");
+});
+
+function datedPoint(run_id, started_at, name = "Build the VS installer (.bin)") {
+  return {...timingPoint(name), run: {run_id, attempt: 1, started_at, pr_numbers: [], source_sha: "abcdef0123456789",
+    workflow_name: "Bazel OCI", branch: "master"}};
+}
+
+test("chart limits expose the newest measurements and show-all preserves the entire selection", () => {
+  const reference = Date.parse("2026-11-12T00:00:00Z");
+  const points = Array.from({length: 84}, (_, index) => datedPoint(index + 1,
+    new Date(reference - index * 3600000).toISOString(),
+    index % 2 ? "Build sonic-vs.bin directly with slave.mk" : "Build the VS installer (.bin)"));
+  const before = structuredClone(points);
+  const selection = selectTrendPoints(points);
+  assert.equal(selection.matching.length, 84);
+  assert.equal(selection.points.length, 60);
+  assert.deepEqual([selection.points[0].run.run_id, selection.points.at(-1).run.run_id], [60, 1]);
+  assert.equal(selectTrendPoints(points, {limit: "all"}).points.length, 84);
+  const direct = selectTrendPoints(points, {series: imageSeries(points[1].job).key, limit: "all"});
+  assert.equal(direct.points.length, 42);
+  assert.ok(direct.points.every(point => point.job.steps[0].name.includes("directly")));
+  assert.deepEqual(points, before);
+});
+
+test("date windows are inclusive and anchored to the snapshot rather than the viewer clock", () => {
+  const reference = Date.parse("2026-11-12T00:00:00Z"), cutoff = reference - 7 * 86400000;
+  const points = [datedPoint(1, new Date(cutoff - 1).toISOString()), datedPoint(2, new Date(cutoff).toISOString()),
+    datedPoint(3, new Date(reference).toISOString()), datedPoint(4, new Date(reference + 1).toISOString()),
+    datedPoint(5, null)];
+  assert.deepEqual(selectTrendPoints(points, {days: "7", reference}).points.map(point => point.run.run_id), [2, 3]);
+  assert.equal(selectTrendPoints(points, {days: "all", reference}).points.length, 5);
+  assert.equal(selectTrendPoints(points.slice(0, 1), {days: "7", reference}).points.length, 0);
+});
+
+test("duration scales use readable intervals without clipping long or zero-length builds", () => {
+  assert.deepEqual(chartScale(269 * 60), {maximum: 5 * 3600, ticks: [0, 3600, 7200, 10800, 14400, 18000]});
+  for (const maximum of [0, 0.1, 25, 120, 5399, 3 * 86400]) {
+    const scale = chartScale(maximum);
+    assert.ok(scale.maximum > maximum);
+    assert.equal(scale.ticks[0], 0);
+    assert.equal(scale.ticks.at(-1), scale.maximum);
+    assert.ok(scale.ticks.length >= 2 && scale.ticks.length <= 6);
+  }
+});
+
+test("point previews distinguish available, partial, missing and malformed breakdowns", () => {
+  const job = timingPoint("Build the VS installer (.bin)").job;
+  assert.equal(imageBreakdownLabel(job), "Breakdown not recorded");
+  assert.equal(imageBreakdownLabel({...job, steps: [{...job.steps[0], breakdown: {version: 99}}]}), "Breakdown unavailable");
+  const step = {...job.steps[0], breakdown: exampleBreakdown()};
+  assert.equal(imageBreakdownLabel({...job, steps: [step]}), "Measured breakdown");
+  assert.equal(imageBreakdownLabel({...job, steps: [step, {name: "Build the VS image"}]}), "Partial breakdown");
+  assert.equal(imageBreakdownLabel({...job, steps: [step, {name: "Validate archives"}]}), "Measured breakdown");
 });
 
 function imageOutcome(conclusion, extra = {}) {
@@ -272,8 +341,11 @@ test("small timestamp rounding differences and empty task lists remain supported
 
 // A deliberately small DOM fixture: rendering must use nodes and text, never an HTML parser.
 class TestElement {
-  constructor(tag) { this.tagName = tag; this.children = []; this.style = {}; this.attributes = {}; this.text = ""; }
+  constructor(tag) { this.tagName = tag; this.children = []; this.style = {}; this.attributes = {}; this.text = ""; this.listeners = {}; }
   append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.text = ""; this.children = [...children]; }
+  addEventListener(name, callback) { this.listeners[name] = callback; }
+  get options() { return this.children; }
   set textContent(value) { this.text = value; this.children = []; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(""); }
   set innerHTML(_) { throw new Error("Untrusted data must not use innerHTML"); }
@@ -287,6 +359,99 @@ function withDocument(callback) {
 function descendants(node, predicate) {
   return [node, ...(node.children || []).flatMap(child => descendants(child, predicate))].filter(predicate);
 }
+function chartFixture(points, width = 1100) {
+  const nodes = Object.fromEntries(["trend", "trend-note", "trend-preview", "history-legend",
+    "series-filter", "path-filter", "arch-filter", "pr-filter", "date-filter", "limit-filter"]
+    .map(id => [id, new TestElement(id.endsWith("filter") ? "select" : "div")]));
+  for (const node of Object.values(nodes)) node.value = "all";
+  nodes["limit-filter"].value = "60";
+  nodes.trend.clientWidth = width;
+  const context = vm.createContext({module: {exports: {}}, getComputedStyle: () => ({paddingLeft: "17px", paddingRight: "17px"})});
+  vm.runInContext(readFileSync(require.resolve("./app.js"), "utf8"), context);
+  context.document = {getElementById: id => nodes[id], createElement: tag => new TestElement(tag),
+    createElementNS: (_, tag) => new TestElement(tag), createTextNode: text => ({textContent: text})};
+  context.snapshot = {generated_at: "2026-11-12T00:00:00Z",
+    runs: points.map(point => ({...point.run, jobs: [point.job]}))};
+  const render = () => vm.runInContext("state.data = snapshot; renderTrend();", context);
+  render();
+  return {nodes, render};
+}
+
+test("chart overview is scatter-only with a visible-series legend and keyboard point previews", () => {
+  const points = [datedPoint(1, "2026-11-10T00:00:00Z"), datedPoint(2, "2026-11-11T00:00:00Z"),
+    datedPoint(3, "2026-11-12T00:00:00Z", "Build sonic-vs.bin directly with slave.mk")];
+  points[2].job.image_build_seconds = 269 * 60;
+  const {nodes, render} = chartFixture(points);
+  assert.equal(descendants(nodes.trend, node => node.tagName === "polyline").length, 0);
+  assert.equal(nodes["history-legend"].children.length, 2);
+  assert.doesNotMatch(nodes["history-legend"].textContent, /Bazel VS installer/);
+  assert.match(nodes["trend-note"].textContent, /Showing all 3.*Scatter overview/);
+  const ticks = descendants(nodes.trend, node => node.tagName === "text").map(node => node.textContent);
+  assert.ok(ticks.includes("1h") && ticks.includes("5h"), "long builds should use rounded hour ticks");
+  const point = descendants(nodes.trend, node => node.attributes?.class === "chart-point")[0];
+  assert.equal(point.attributes.tabindex, "0");
+  point.listeners.focus();
+  assert.match(nodes["trend-preview"].textContent, /2m 0s.*Outer Make .bin.*Bazel OCI.*abcdef012345.*VM generation and boot checks excluded.*Breakdown not recorded/);
+  nodes["series-filter"].value = imageSeries(points[0].job).key;
+  render();
+  assert.equal(descendants(nodes.trend, node => node.tagName === "polyline").length, 1);
+  assert.equal(nodes["history-legend"].children.length, 1);
+  assert.doesNotMatch(nodes["history-legend"].textContent, /Direct slave/);
+  assert.match(nodes["trend-note"].textContent, /Showing all 2.*Lines join only one/);
+});
+
+test("unknown boundaries never gain trend lines and empty filters clear stale chart details", () => {
+  const points = [datedPoint(1, "2026-11-01T00:00:00Z", "Unknown image step"),
+    datedPoint(2, "2026-11-02T00:00:00Z", "Unknown image step")];
+  const {nodes, render} = chartFixture(points, 320);
+  nodes["series-filter"].value = imageSeries(points[0].job).key;
+  render();
+  assert.equal(descendants(nodes.trend, node => node.tagName === "polyline").length, 0);
+  nodes["date-filter"].value = "7";
+  render();
+  assert.match(nodes.trend.textContent, /No successful image measurements/);
+  assert.equal(nodes["history-legend"].children.length, 0);
+  assert.equal(nodes["history-legend"].hidden, true);
+  assert.match(nodes["trend-preview"].textContent, /Hover or focus a point/);
+  assert.doesNotMatch(nodes.trend.textContent, /NaN|Infinity/);
+});
+
+test("page startup wires chart-only filters without hiding retained workflow history", async () => {
+  const html = readFileSync(require.resolve("./index.html"), "utf8");
+  const nodes = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new TestElement("div")]));
+  for (const node of Object.values(nodes)) node.value = "all";
+  nodes["limit-filter"].value = "60";
+  nodes.trend.clientWidth = 1100;
+  const points = [datedPoint(1, "2026-11-01T00:00:00Z"),
+    datedPoint(2, "2026-11-12T00:00:00Z", "Build sonic-vs.bin directly with slave.mk")];
+  const snapshot = {schema_version: 1, repository: "securely1g/sonic-buildimage", generated_at: "2026-11-12T00:00:00Z",
+    pull_requests: [], runs: points.map(point => ({...point.run, jobs: [point.job]}))};
+  const context = vm.createContext({
+    document: {getElementById: id => nodes[id], createElement: tag => new TestElement(tag),
+      createElementNS: (_, tag) => new TestElement(tag), createTextNode: text => ({textContent: text})},
+    getComputedStyle: () => ({paddingLeft: "17px", paddingRight: "17px"}),
+    ResizeObserver: class { observe() {} },
+    setInterval() {}, URL, AbortSignal,
+    window: {location: {href: "https://example.test/"}},
+    fetch: async () => ({ok: true, json: async () => snapshot}),
+  });
+  vm.runInContext(readFileSync(require.resolve("./app.js"), "utf8"), context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nodes["load-status"].textContent, "", "the actual page must load without missing-element errors");
+  assert.equal(nodes.dashboard.hidden, false);
+  assert.equal(nodes["run-count"].textContent, "2 of 2");
+  nodes["date-filter"].value = "7";
+  nodes["date-filter"].listeners.change();
+  assert.match(nodes["trend-note"].textContent, /Showing all 1/);
+  assert.equal(nodes["run-count"].textContent, "2 of 2", "chart date controls must not change retained history");
+  nodes["series-filter"].value = imageSeries(points[1].job).key;
+  nodes["series-filter"].listeners.change();
+  const point = descendants(nodes.trend, node => node.attributes?.class === "chart-point")[0];
+  assert.match(point.attributes["aria-label"], /Source abcdef012345.*Breakdown not recorded/);
+  point.listeners.mouseenter();
+  assert.match(nodes["trend-preview"].textContent, /Direct slave .bin/);
+});
+
 function stepWith(breakdown) { return {name: "Make VS image", status: "completed", conclusion: "success", duration_seconds: 101, ...(breakdown === undefined ? {} : {breakdown})}; }
 
 test("legacy snapshots keep their step duration without requiring a breakdown", () => withDocument(() => {
