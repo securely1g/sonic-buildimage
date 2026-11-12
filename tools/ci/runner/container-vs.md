@@ -2,7 +2,7 @@
 
 The `VS installer in SONiC slave (AMD64)` job in `bazel-oci.yml` runs the
 Actions worker inside the Trixie build container. It uses the
-`sonic-slave-container` runner label and invokes the native build directly:
+`sonic-slave-container-k3s` runner label and invokes the native build directly:
 
 ```bash
 PREFER_DEBIAN_REPO=y make -f slave.mk target/sonic-vs.bin \
@@ -31,10 +31,9 @@ fixes remain a separate component change in
 [sonic-dhcp-relay #1](https://github.com/securely1g/sonic-dhcp-relay/pull/1).
 
 The native P4 dependencies still use their existing Make/Debian producers.
-The lgh4 worker cannot currently connect to the OpenSUSE source endpoint, so
-the hosted checks download the nine published source files pinned in
+The GitHub-hosted Ubuntu OCI regression job stages the nine source files pinned in
 [`src/p4lang/source-inputs.json`](../../../src/p4lang/source-inputs.json).
-They upload a per-run artifact; the native job selects its exact artifact ID
+It uploads a per-run artifact; the native job selects its exact artifact ID
 and independently checks every file's SHA256, size and descriptor identity.
 It then passes `P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources`
 to Make. Staging is separate from `src/p4lang`, where `dget` replaces its working
@@ -55,22 +54,17 @@ This source handoff uses a fresh CI artifact. It adds no persistent P4 source
 cache and changes no shared Make-cache logic. The tracked source pins are
 already covered by the P4 recipes' existing input-file hashing.
 
-The worker manager is maintained in
-[agi-projects/sonic-slave-wrk-mgr](https://github.com/securely1g/agi-projects/tree/c650551885f8ad22cbc104082d1f1b6171e67eef/sonic-slave-wrk-mgr).
-The workflow selects the shared `sonic-slave-container` pool. The runner image
-must still match this landed commit: preparation compares its recorded manager
-revision with `EXPECTED_MANAGER_REVISION` and rejects a mismatch. The supervisor
-registers replacement workers with the shared label after each job.
+The [K3s runner controller](https://github.com/securely1g/agi-projects/tree/main/sonic-slave-wrk-mgr/k3s)
+registers a replacement worker after each job. Preparation verifies the manager
+revision recorded in the runner image against the workflow's `EXPECTED_MANAGER_REVISION`.
 The native profile requires a privileged container, private PID/cgroup namespaces,
 bridge networking, and passwordless sudo for its UID 1000 build user. Each job
 starts its own Docker daemon; the host Docker socket is not mounted. The Actions
 work volume is mounted at `/actions`, allowing the checkout to be bind-mounted
 at `/sonic` for existing build hooks without hiding the runner's own files.
 
-On lgh4, the manager selects the `sonic-slave-build` AppArmor profile to permit
-the build user's namespaces required by Bazel's Linux sandbox. The profile is
-installed on the host and assigned only to these privileged workers. Preparation
-runs the pinned kernel Bazel sandbox as UID 1000 before building packages. Node-based Actions
+Preparation runs the pinned kernel Bazel sandbox as UID 1000 and stops if
+the worker lacks the required namespace permissions. Node-based Actions
 use the image's existing system CA bundle for verified HTTPS connections.
 The manager also declares `SONIC_BAZEL_JAVA_TRUST_STORE` in the image. The
 isolated kernel adapter reads that default and records the selected trust
@@ -87,17 +81,15 @@ It checks that the selected installer has
 no Bookworm container prerequisites. A future configuration needing those
 prerequisites must add an explicit compatible preparation stage.
 
-The lgh4 profile has four ephemeral runner slots, each capped at six CPUs and
-20 GiB. Workflow concurrency permits one full VS build at a time. Make runs one
-package build at a time with four compilation jobs; Bazel is also limited to
-four jobs. The manager registers a replacement container after each job.
+The K3s controller on lgh117 maintains four disposable workers on lgh100.
+Each has a six-CPU and 20 GiB limit. One full VS job runs at a time across
+the pool. Before building, the workflow requires 256 GiB available on the
+workspace filesystem. Make still uses the shared `/dpkg_cache` in `rwcache`
+mode; that cache holds Debian packages.
 
-Both cache mounts survive worker replacement:
-
-| Mount | Use |
-| --- | --- |
-| `/dpkg_cache` | Existing Make package cache in `rwcache` mode |
-| `/bazel_cache` | Existing Bazel disk, repository, and Bazelisk caches |
+Bazel uses only the worker-configured remote cache. Its disk and repository
+caches are disabled. The short output base, Bazelisk downloads, and verified
+source archives are private to the pod and disappear when it is replaced.
 
 The shared APT policy allows eight retries per transient acquisition failure
 (nine attempts), with exponential delays capped at 30 seconds and 20-second
@@ -125,11 +117,9 @@ index refresh errors, timeouts, and TLS, signature and hash checks stay enabled.
 This CI-only mitigation does not change rootfs or native-package APT behavior,
 repair a persistent transport failure, or force APT to refresh DNS.
 
-GitHub supplies `BAZEL_REMOTE_AUTH` only to cache/build steps. The installed
-credential helper sends it only to the configured cache origin. If the cache
-cannot be reached, the job records an explicit local-only fallback. Invalid
-credentials or authorization failures still fail setup. The cache receipt does
-not claim a remote cache hit merely because HTTPS connectivity succeeds.
+The worker supplies the endpoint and scoped credential helper. CI verifies
+that remote reads and writes are enabled and probes access before Make.
+If that check fails, the job stops; there is no local-cache fallback.
 
 The former `Make VS with Bazel SWSS (AMD64)` job is disabled in this workflow.
 After the new native build, CI verifies the installer container
