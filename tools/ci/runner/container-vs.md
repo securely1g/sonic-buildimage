@@ -56,7 +56,10 @@ An installer can build locally if the publisher has not supplied its tag yet.
 Shared package-cache writes remain enabled with the computed build environment.
 
 Both jobs install Azure CLI if missing and authenticate using
-`az login --identity` followed by `az acr login --name sonicdev-microsoft`.
+`az login --identity` followed by `az acr login --name sonicdev`.
+Both workflows set `ACR_REGISTRY_NAME=sonicdev` separately from the Docker
+login server `REGISTRY_SERVER=sonicdev-microsoft.azurecr.io`; the Azure resource
+name must not be derived from this hostname.
 The host needs a system-assigned managed identity with registry pull permission;
 the publication job additionally needs push permission. Installing Azure CLI
 requires noninteractive sudo on Debian/Ubuntu hosts. Azure CLI state is stored

@@ -1385,6 +1385,7 @@ jobs:
       SONIC_DPKG_CACHE_METHOD: rwcache
       ENABLE_DOCKER_BASE_PULL: "y"
       REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
+      ACR_REGISTRY_NAME: sonicdev
       REGISTRY_PORT: "443"
       INCLUDE_FIPS: "y"
       SONIC_VERSION_CONTROL_COMPONENTS: py2,py3,web,git,docker
@@ -1466,7 +1467,7 @@ jobs:
       - name: Authenticate to the slave image registry
         env:
           AZURE_CONFIG_DIR: ${{ runner.temp }}/vs-azure-cli
-        run: bash tools/ci/runner/azure_acr_login.sh "${REGISTRY_SERVER%.azurecr.io}"
+        run: bash tools/ci/runner/azure_acr_login.sh "${ACR_REGISTRY_NAME:?}"
 
       - name: Prepare the host-driven SONiC slave
         run: |

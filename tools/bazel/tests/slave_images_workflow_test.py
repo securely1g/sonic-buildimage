@@ -61,7 +61,8 @@ elif name == "docker" and operation == "image":
         self.environment = dict(
             PATH=str(self.commands) + os.pathsep + os.defpath,
             CALLS=str(self.calls), SONIC_CI_CONTAINER_LABEL="fixture=slave-images",
-            REGISTRY_SERVER="sonicdev-microsoft.azurecr.io", REGISTRY_PORT="443")
+            REGISTRY_SERVER="sonicdev-microsoft.azurecr.io", REGISTRY_PORT="443",
+            ACR_REGISTRY_NAME="sonicdev")
         self.publisher = yaml.safe_load(PUBLISH.read_text())["jobs"]["publish"]
         self.consumer = yaml.safe_load(CONSUME.read_text())["jobs"]["vs_container"]
 
@@ -105,6 +106,8 @@ elif name == "docker" and operation == "image":
                 self.assertNotIn(name, job["env"])
         self.assertEqual(self.consumer["env"]["ENABLE_DOCKER_BASE_PULL"], "y")
         self.assertEqual(self.consumer["env"]["SONIC_DPKG_CACHE_METHOD"], "rwcache")
+        self.assertEqual(self.publisher["env"]["ACR_REGISTRY_NAME"], "sonicdev")
+        self.assertEqual(self.publisher["env"]["REGISTRY_SERVER"], "sonicdev-microsoft.azurecr.io")
         for job in (self.publisher, self.consumer):
             self.assertFalse(any(name.startswith("SONIC_SLAVE_REUSE_") for name in job["env"]))
             names = [step.get("name") for step in job["steps"]]
@@ -113,7 +116,7 @@ elif name == "docker" and operation == "image":
                      else "Prepare the host-driven SONiC slave")
             self.assertLess(login, names.index(build))
             self.assertEqual(job["steps"][login]["run"],
-                             'bash tools/ci/runner/azure_acr_login.sh "${REGISTRY_SERVER%.azurecr.io}"')
+                             'bash tools/ci/runner/azure_acr_login.sh "${ACR_REGISTRY_NAME:?}"')
         scripts = "\n".join(step.get("run", "") for step in self.publisher["steps"])
         self.assertNotIn("git commit", scripts)
         self.assertNotIn("git push", scripts)
@@ -165,11 +168,13 @@ elif name == "docker" and operation == "image":
 
     def test_identity_authentication_and_failures(self):
         helper = ROOT / "tools/ci/runner/azure_acr_login.sh"
-        script = 'bash "' + str(helper) + '" sonicdev-microsoft'
+        login = next(step for step in self.publisher["steps"]
+                     if step["name"] == "Authenticate to the slave image registry")
+        script = login["run"].replace("tools/ci/runner/azure_acr_login.sh", str(helper))
         expected = [
             ["az", "version", "--output", "none"],
             ["az", "login", "--identity", "--output", "none"],
-            ["az", "acr", "login", "--name", "sonicdev-microsoft", "--output", "none"],
+            ["az", "acr", "login", "--name", "sonicdev", "--output", "none"],
         ]
         for index, failure in enumerate(("", "az version", "az login", "az acr")):
             with self.subTest(failure=failure):
@@ -177,6 +182,13 @@ elif name == "docker" and operation == "image":
                 self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
                 count = 3 if not failure else index
                 self.assertEqual(self.recorded(), expected[:count])
+        environment = dict(self.environment)
+        del environment["ACR_REGISTRY_NAME"]
+        result = subprocess.run(
+            ["bash", "-c", script], cwd=self.directory, env=environment,
+            text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ACR_REGISTRY_NAME", result.stderr)
 
     def test_missing_azure_cli_installs_and_cleans_up_on_failure(self):
         helper = ROOT / "tools/ci/runner/azure_acr_login.sh"
@@ -184,7 +196,7 @@ elif name == "docker" and operation == "image":
         script = (
             'command() { if [[ $1 == -v && $2 == az ]]; then return 1; fi; '
             'builtin command "$@"; }; export -f command\n'
-            'bash "' + str(helper) + '" sonicdev-microsoft')
+            'bash "' + str(helper) + '" sonicdev')
         for failure in ("", "curl --fail", "sudo -n"):
             with self.subTest(failure=failure):
                 result = self.run_shell(script, FAIL_COMMAND=failure)
