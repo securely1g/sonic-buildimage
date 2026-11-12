@@ -3,6 +3,7 @@
 import hashlib
 import io
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -37,6 +38,25 @@ class SourceMirrorsTest(unittest.TestCase):
                 source_mirrors.prepare(output, local)
             fetch.assert_called_once_with(source_mirrors.URL, timeout=60)
             self.assertEqual(output.read_bytes(), local.read_bytes() + b'\n' + shared)
+
+    def test_native_policy_adds_only_the_original_timestamped_snapshot_first(self):
+        shared = (Path(__file__).parent / 'fixtures/source-mirrors-9697f3db.cfg').read_bytes()
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(source_mirrors, 'urlopen', side_effect=lambda *_a, **_k: io.BytesIO(shared)):
+            output = Path(temporary) / 'mirrors.cfg'
+            source_mirrors.prepare(output)
+            default = output.read_bytes()
+            source_mirrors.prepare(output, prefer_debian_snapshot=True)
+            rule, fallbacks = output.read_bytes().split(b'\n', 1)
+            self.assertEqual(fallbacks, default)
+            operation, pattern, replacement = rule.decode().split()
+            self.assertEqual(operation, 'rewrite')
+            for archive in ('debian', 'debian-security'):
+                url = f'snapshot.debian.org/archive/{archive}/20260726T121236Z/pool/locked.deb'
+                match = re.fullmatch(pattern, url)
+                self.assertIsNotNone(match)
+                self.assertEqual(replacement.replace('$1', match[1]), 'https://' + url)
+            self.assertIsNone(re.fullmatch(pattern, 'snapshot.debian.org/file/abc'))
 
 
 if __name__ == '__main__':
