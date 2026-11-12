@@ -51,6 +51,7 @@ def main():
     command("/usr/bin/start.sh")
     debug_checks = []
     if variant.endswith("-dbg"):
+        require("Huge version" in command("/usr/bin/vim", "--version"), "debug image still selects vim.tiny")
         pairs = [item for item in report["source_debug_pairs"]
                  if item["path"] in {"usr/bin/eventd", "usr/bin/eventdb", "usr/bin/events_tool"}]
         require(len(pairs) == 3, "Eventd debugger inputs are incomplete")

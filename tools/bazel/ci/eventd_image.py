@@ -147,6 +147,9 @@ def validate_images(directory):
                           and path not in runtime, "debug symbols differ: " + path)
     check.require(debug["usr/bin/ssh-agent"]["gid"] == 104 and debug["usr/bin/ssh-agent"]["mode"] == 0o2755,
                   "source OpenSSH permissions differ")
+    check.require(debug.get("usr/bin/vim", {}).get("kind") == "symlink" and
+                  debug["usr/bin/vim"].get("linkname") == "/etc/alternatives/vim",
+                  "debug image does not point /usr/bin/vim at /etc/alternatives/vim")
     for name in IMAGES:
         reports[name]["native_paths"] = sorted(set(native).intersection(inventories[name]))
     report = {"status": "passed", "revision": receipt["revision"], "architecture": "amd64", "image_version": receipt["image_version"],
@@ -155,9 +158,21 @@ def validate_images(directory):
     print(json.dumps({"status": "passed", "source_elf_debug_pairs": len(pairs)}))
 
 
+def require_clean_incremental_source(source, expected_revision):
+    relative = str(source.relative_to(ROOT))
+    check.require(not subprocess.check_output(
+        ["git", "status", "--porcelain", "--", relative], cwd=ROOT, text=True),
+        "uncommitted changes in incremental probe input: " + relative)
+    subprocess.run(["git", "diff", "--exit-code", "--ignore-submodules=none", "HEAD"], cwd=ROOT, check=True)
+    check.require(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip() == expected_revision,
+                  "source revision changed from build receipt")
+
+
 def incremental(args, directory):
     receipt = json.loads((directory / "build-receipt.json").read_text())
     check.require(receipt["status"] == "built", "missing accepted build")
+    source = ROOT / "dockers/docker-eventd/host_events_info.json"
+    require_clean_incremental_source(source, receipt["revision"])
     labels = [OWNER + name + suffix for name in IMAGES for suffix in ("", ".gz")]
     labels += [PARENT, TARGETS["eventd-runtime.tar"], TARGETS["all-debug.tar"]]
     paths = {label: ROOT / subprocess.check_output(
@@ -176,20 +191,23 @@ def incremental(args, directory):
     check.require(results["noop"]["sha256"] == original, "no-op changed outputs")
     for name in IMAGES:
         check.require(original[OWNER + name + ".gz"] == receipt["artifacts"][name + ".gz"]["sha256"], "incremental baseline changed")
-    source = ROOT / "dockers/docker-eventd/host_events_info.json"
     content = source.read_bytes()
+    data = json.loads(content)
+    data["proclist"][0]["name"] = "eventd-ci-incremental"
+    edited = (json.dumps(data, indent=2) + "\n").encode()
     try:
-        data = json.loads(content)
-        data["proclist"][0]["name"] = "eventd-ci-incremental"
-        source.write_text(json.dumps(data, indent=2) + "\n")
+        check.require(source.read_bytes() == content, "concurrent host event config change")
+        source.write_bytes(edited)
         results["edit"] = snapshot("edit")
         changed = {label for label, digest in results["edit"]["sha256"].items() if original[label] != digest}
         check.require(changed == {OWNER + name + suffix for name in IMAGES for suffix in ("", ".gz")},
                       "host event config edit changed unrelated source outputs: " + repr(changed))
     finally:
+        check.require(source.read_bytes() in (content, edited), "concurrent host event config change; refusing overwrite")
         source.write_bytes(content)
     results["restore"] = snapshot("restore")
     check.require(results["restore"]["sha256"] == original, "restored inputs changed output digests")
+    require_clean_incremental_source(source, receipt["revision"])
     (directory / "incremental.json").write_text(json.dumps(results, indent=2) + "\n")
 
 

@@ -2,10 +2,14 @@
 
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+from tools.bazel.ci import eventd_image
 
 class EventdMakeTest(unittest.TestCase):
     def evaluate(self, **overrides):
@@ -52,6 +56,14 @@ class EventdMakeTest(unittest.TestCase):
                 self.assertEqual(values[:4], ["", "", "", ""])
                 self.assertEqual(values[8:], ["", "dockers/docker-eventd", "", ""])
                 self.assertEqual(values[4:7], ["eventd.deb", "utilities.whl", "bindings.deb"])
+
+    def test_incremental_source_guard_rejects_uncommitted_probe_input(self):
+        source = ROOT / "dockers/docker-eventd/host_events_info.json"
+        with mock.patch.object(eventd_image.subprocess, "check_output",
+                               return_value=" M dockers/docker-eventd/host_events_info.json\n"):
+            with self.assertRaisesRegex(ValueError, "uncommitted changes in incremental probe input"):
+                eventd_image.require_clean_incremental_source(source, "deadbeef")
+
 
 if __name__ == "__main__":
     unittest.main()
