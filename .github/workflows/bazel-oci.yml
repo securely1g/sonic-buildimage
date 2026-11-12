@@ -1435,6 +1435,9 @@ jobs:
           docker builder prune --all --force
           docker system df
 
+      - name: Reclaim container-job Bazel caches
+        run: python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache
+
       - name: Check host-agent build prerequisites
         run: python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
 

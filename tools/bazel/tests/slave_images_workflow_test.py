@@ -200,6 +200,19 @@ elif name == "docker" and operation == "login":
                         self.assertNotEqual(result.returncode, 0)
                         self.assertEqual(self.recorded(), expected[:count])
 
+    def test_bazel_cache_cleanup_runs_before_space_check(self):
+        for job in (self.publisher, self.consumer):
+            with self.subTest(job=job["name"]):
+                steps = job["steps"]
+                cleanup = next(step for step in steps
+                               if step.get("name") == "Reclaim container-job Bazel caches")
+                preflight = next(step for step in steps
+                                 if step.get("name") == "Check host-agent build prerequisites")
+                self.assertLess(steps.index(cleanup), steps.index(preflight))
+                self.assertEqual(cleanup["run"],
+                                 "python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache")
+                self.assertNotIn("continue-on-error", cleanup)
+
     def test_private_docker_configuration_is_exported_before_docker_operations(self):
         expected = ("${{ runner.temp }}/docker-config-${{ github.run_id }}-"
                     "${{ github.run_attempt }}-${{ github.job }}")

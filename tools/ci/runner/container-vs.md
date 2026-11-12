@@ -39,6 +39,16 @@ Failed pushes retain their local images. Docker manages reclamation in its
 containerd image store; never delete containerd storage files directly.
 Shared layers and retained build cache may continue to occupy disk space.
 
+Both jobs also remove only `_github_home/.cache/bazel`, `bazel-disk`, and
+`bazel-repo` under `RUNNER_TEMP` before the disk-space check. This reclaims local
+Bazel output/server state, disk-cache entries, and repository downloads left by
+previous container jobs. The remote cache and workflow cache settings are unchanged;
+missing local data must be fetched or rebuilt. Cleanup refuses redirected paths,
+remaining mounts, or references from running or stopped Docker containers, and
+reports failures rather than continuing to preflight. Use an idle dedicated agent
+with no active Bazel processes using these directories. It does not remove `_temp`,
+other home/cache directories, `/bazel_cache`, or checkouts.
+
 For pre-merge testing, pushes to the same repository's `vs-runner` branch
 temporarily also publish real images to that registry. Manual dispatch remains
 master-only, and pull requests do not trigger publication. Remove the `vs-runner`

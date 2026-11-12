@@ -25,7 +25,7 @@ def check_mounts(checkout):
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
         mount = Path(re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), line.split()[4]))
         if mount.is_relative_to(checkout):
-            raise ValueError(f"Refusing cleanup while a mount remains in the VS checkout: {mount}")
+            raise ValueError(f"Refusing cleanup while a mount remains in the cleanup path: {mount}")
 
 
 def check_container_users(checkout):
@@ -42,7 +42,7 @@ def check_container_users(checkout):
                 continue
             source = Path(source).resolve()
             if source.is_relative_to(checkout) or checkout.is_relative_to(source):
-                raise ValueError(f"A Docker container still references the VS checkout: {source}")
+                raise ValueError(f"A Docker container still references the cleanup path: {source}")
 
 
 def cleanup(workspace, run_id, run_attempt):
