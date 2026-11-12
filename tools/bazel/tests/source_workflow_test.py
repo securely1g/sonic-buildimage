@@ -51,7 +51,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertIn(flag, workflow_jobs[name])
         self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
-        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container]",
+        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]",
                       workflow_jobs["vs_container"])
 
     def test_upload_override_preserves_checkout_cleanliness(self):
