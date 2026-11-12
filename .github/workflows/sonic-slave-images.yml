@@ -41,6 +41,14 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: Initialize private Docker configuration
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$DOCKER_CONFIG"
+          printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
+
       - name: Reclaim unused images and build cache
         run: |
           set -euo pipefail
@@ -92,6 +100,18 @@ jobs:
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/slave-images/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Log out of the slave image registry
+        if: always()
+        working-directory: ${{ runner.temp }}
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          status=0
+          docker logout "$REGISTRY_SERVER:$REGISTRY_PORT" || status=$?
+          rm -f -- "${DOCKER_CONFIG:?}/config.json"
+          exit "$status"
 
       - name: Remove only this run's checkout
         if: always() && steps.evidence.outcome == 'success'

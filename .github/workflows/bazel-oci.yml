@@ -1419,6 +1419,22 @@ jobs:
           name: bazel-repository-inputs
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
 
+      - name: Initialize private Docker configuration
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$DOCKER_CONFIG"
+          printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
+
+      - name: Reclaim unused images and build cache
+        run: |
+          set -euo pipefail
+          docker system df
+          docker image prune --all --force
+          docker builder prune --all --force
+          docker system df
+
       - name: Check host-agent build prerequisites
         run: python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
 
@@ -1601,6 +1617,18 @@ jobs:
               printf 'Job container already removed: %s\n' "$container"
             fi
           done <<< "$containers"
+
+      - name: Log out of the slave image registry
+        if: always()
+        working-directory: ${{ runner.temp }}
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          status=0
+          docker logout "$REGISTRY_SERVER:$REGISTRY_PORT" || status=$?
+          rm -f -- "${DOCKER_CONFIG:?}/config.json"
+          exit "$status"
 
       - name: Remove only this run's checkout
         if: >-

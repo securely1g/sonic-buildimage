@@ -25,7 +25,7 @@ AMD64 Bookworm and Trixie slaves and pushes their computed tags to
 mutable `latest` tags. Publication and installer jobs may run independently
 on available dedicated host agents; there is no shared job-level queue.
 
-Before the publication job's disk-space preflight, it runs
+Before either the publication or VS installer job's disk-space preflight, it runs
 `docker image prune --all --force` to remove all unused Docker images, including
 tagged slave and base images, regardless of age. Images referenced by running or
 stopped containers are retained. The job also runs
@@ -33,7 +33,7 @@ stopped containers are retained. The job also runs
 regardless of age, but does not prune containers or volumes. Run this only on a
 dedicated agent with no other jobs sharing its Docker daemon; future builds may
 need to pull or rebuild removed images. Preflight still requires sufficient free
-space after cleanup. After each successful push, it removes only that image's
+space after cleanup. After each successful publisher push, it removes only that image's
 local computed tag and registry-qualified tag, without forcing removal.
 Failed pushes retain their local images. Docker manages reclamation in its
 containerd image store; never delete containerd storage files directly.
@@ -92,8 +92,18 @@ the publication job additionally needs push permission (`AcrPush` for this
 registry's `LegacyRegistryPermissions` mode). Successful login alone does not
 prove push permission. Installing Azure CLI
 requires noninteractive sudo on Debian/Ubuntu hosts. Azure CLI state is stored
-in the job's runner temporary directory. Registry login failures stop the job
-before Make, rather than silently bypassing authentication.
+in the job's runner temporary directory. Each job also creates a private Docker
+configuration directory there, named with the run ID, attempt and job ID, with
+mode `0700`. An initialization step exports `DOCKER_CONFIG` through `GITHUB_ENV`
+before host Docker commands, so login, Make's host-side slave pulls and publication
+share the private configuration rather than `~/.docker/config.json`. Registry
+credentials are not mounted into the slave containers.
+An independent `always()` step logs out of the exact registry endpoint and removes
+the private `config.json`, even if logout fails; logout failures still fail the
+job. It runs from the runner temporary directory, independently of checkout
+availability and artifact-upload results. An abrupt agent/VM termination can
+prevent this step from executing. Registry login failures stop the job before
+Make, rather than silently bypassing authentication.
 
 Run `python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD"
 --build-target sonic-vs.bin` from the checkout as the runner user. This retains
@@ -117,8 +127,9 @@ An installer upload skipped because the build failed does not block cleanup
 after the always-run evidence uploads succeed.
 Missing cleanup tooling in a partial checkout also fails explicitly; inspect
 and clean that checkout manually after verifying it is unused.
-The host Docker daemon, other jobs' checkouts/containers, persistent caches,
-and reusable images/build layers are not pruned. Operators must still manage
+End-of-job cleanup does not prune the host Docker daemon, other jobs'
+checkouts/containers, persistent caches, or reusable images/build layers.
+Startup image/build-cache pruning is described above. Operators must still manage
 cache/image retention and leftovers from interrupted runners; cleanup cannot
 run after VM termination or a runner crash. This does not move Docker's data
 root or remove the free-space admission checks.

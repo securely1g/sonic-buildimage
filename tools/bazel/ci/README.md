@@ -204,6 +204,10 @@ Both workflows set `MIRROR_SNAPSHOT=y` to use Debian snapshots under
 registry and Docker/APT retry defaults, without separate slave-only overrides.
 Registry authentication selects the subscription configured in the repository
 Actions variable `ACR_SUBSCRIPTION_ID` after managed-identity login.
+Both jobs export a private `DOCKER_CONFIG` before Docker operations and always
+attempt registry logout and credential-file removal at job completion. They also
+prune unused Docker images and build cache before checking free space, so their
+agents must not share a Docker daemon with concurrent jobs.
 It does not update image pins or create commits. See the
 [host-agent image policy](../../ci/runner/container-vs.md#slave-image-publication-and-selection).
 The installer job checks the installer version and retains runtime/debug archive

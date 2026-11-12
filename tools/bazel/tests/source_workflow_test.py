@@ -190,14 +190,16 @@ class ArchiveCachePolicyTest(unittest.TestCase):
     def test_checkout_cleanup_follows_uploads_and_requires_successful_container_cleanup(self):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
         cleanup = job["steps"][-1]
-        containers = job["steps"][-2]
+        containers = next(step for step in job["steps"]
+                          if step.get("id") == "vs_container_cleanup")
         self.assertEqual(containers["id"], "vs_container_cleanup")
+        self.assertLess(job["steps"].index(containers), job["steps"].index(cleanup))
         self.assertEqual(cleanup["name"], "Remove only this run's checkout")
         self.assertIn("always() && steps.vs_container_cleanup.outcome == 'success'", cleanup["if"])
         for upload in ("vs_receipts_upload", "vs_validation_upload", "vs_installer_upload"):
             self.assertIn(f"steps.{upload}.outcome == 'success'", cleanup["if"])
             self.assertTrue(any(step.get("id") == upload and "upload-artifact@" in step.get("uses", "")
-                                for step in job["steps"][:-2]))
+                                for step in job["steps"][:job["steps"].index(containers)]))
         self.assertIn("steps.vs_installer_upload.outcome == 'skipped'", cleanup["if"])
         self.assertEqual(cleanup["working-directory"], "${{ github.workspace }}")
         self.assertIn("cleanup_vs_workspace.py", cleanup["run"])

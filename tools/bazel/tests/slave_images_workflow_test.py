@@ -69,7 +69,8 @@ elif name == "docker" and operation == "login":
             PATH=str(self.commands) + os.pathsep + os.defpath,
             CALLS=str(self.calls), SONIC_CI_CONTAINER_LABEL="fixture=slave-images",
             REGISTRY_SERVER="sonicdev-microsoft.azurecr.io", REGISTRY_PORT="443",
-            ACR_REGISTRY_NAME="sonicdev", AZURE_SUBSCRIPTION_ID="fixture-subscription")
+            ACR_REGISTRY_NAME="sonicdev", AZURE_SUBSCRIPTION_ID="fixture-subscription",
+            DOCKER_CONFIG=str(self.directory / "docker-config"))
         self.publisher = yaml.safe_load(PUBLISH.read_text())["jobs"]["publish"]
         self.consumer = yaml.safe_load(CONSUME.read_text())["jobs"]["vs_container"]
 
@@ -176,26 +177,87 @@ elif name == "docker" and operation == "login":
                 ])
 
     def test_unused_image_cleanup_runs_before_space_check(self):
-        steps = self.publisher["steps"]
-        names = [step["name"] for step in steps]
-        index = names.index("Reclaim unused images and build cache")
-        self.assertLess(index, names.index("Check host-agent build prerequisites"))
-        script = steps[index]["run"]
         expected = [
             ["docker", "system", "df"],
             ["docker", "image", "prune", "--all", "--force"],
             ["docker", "builder", "prune", "--all", "--force"],
             ["docker", "system", "df"],
         ]
-        result = self.run_shell(script)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.recorded(), expected)
-        for failure, count in (("docker system", 1), ("docker image", 2),
-                               ("docker builder", 3)):
-            with self.subTest(failure=failure):
-                result = self.run_shell(script, FAIL_COMMAND=failure)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(self.recorded(), expected[:count])
+        for job in (self.publisher, self.consumer):
+            with self.subTest(job=job["name"]):
+                steps = job["steps"]
+                names = [step["name"] for step in steps]
+                index = names.index("Reclaim unused images and build cache")
+                self.assertLess(index, names.index("Check host-agent build prerequisites"))
+                script = steps[index]["run"]
+                result = self.run_shell(script)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.recorded(), expected)
+                for failure, count in (("docker system", 1), ("docker image", 2),
+                                       ("docker builder", 3)):
+                    with self.subTest(failure=failure):
+                        result = self.run_shell(script, FAIL_COMMAND=failure)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(self.recorded(), expected[:count])
+
+    def test_private_docker_configuration_is_exported_before_docker_operations(self):
+        expected = ("${{ runner.temp }}/docker-config-${{ github.run_id }}-"
+                    "${{ github.run_attempt }}-${{ github.job }}")
+        for index, job in enumerate((self.publisher, self.consumer)):
+            with self.subTest(job=job["name"]):
+                names = [step["name"] for step in job["steps"]]
+                initialize = job["steps"][names.index("Initialize private Docker configuration")]
+                self.assertEqual(initialize["env"]["DOCKER_CONFIG"], expected)
+                self.assertLess(names.index(initialize["name"]),
+                                names.index("Reclaim unused images and build cache"))
+                self.assertLess(names.index(initialize["name"]),
+                                names.index("Authenticate to the slave image registry"))
+                config = self.directory / ("docker-config-" + str(index))
+                environment_file = self.directory / ("github-env-" + str(index))
+                result = self.run_shell(initialize["run"], DOCKER_CONFIG=str(config),
+                                        GITHUB_ENV=str(environment_file))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(config.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(environment_file.read_text(), "DOCKER_CONFIG=" + str(config) + "\n")
+                logout = job["steps"][names.index("Log out of the slave image registry")]
+                self.assertEqual(logout["if"], "always()")
+                self.assertEqual(logout["working-directory"], "${{ runner.temp }}")
+                self.assertEqual(logout["env"]["DOCKER_CONFIG"], expected)
+                self.assertGreater(names.index(logout["name"]),
+                                   names.index("Authenticate to the slave image registry"))
+                self.assertLess(names.index(logout["name"]),
+                                names.index("Remove only this run's checkout"))
+                for step in job["steps"]:
+                    if step not in (initialize, logout):
+                        self.assertNotIn("DOCKER_CONFIG", step.get("env", {}))
+
+    def test_logout_removes_only_private_credentials_even_on_failure(self):
+        home = self.directory / "home"
+        shared = home / ".docker"
+        shared.mkdir(parents=True)
+        shared_config = shared / "config.json"
+        shared_config.write_text("shared credentials\n")
+        config = Path(self.environment["DOCKER_CONFIG"])
+        for job in (self.publisher, self.consumer):
+            script = next(step["run"] for step in job["steps"]
+                          if step.get("name") == "Log out of the slave image registry")
+            for failure in ("", "docker logout"):
+                with self.subTest(job=job["name"], failure=failure):
+                    config.mkdir(exist_ok=True)
+                    credentials = config / "config.json"
+                    credentials.write_text("private credentials\n")
+                    retained = config / "buildx-metadata"
+                    retained.write_text("retain\n")
+                    result = self.run_shell(script, HOME=str(home), FAIL_COMMAND=failure)
+                    self.assertEqual(result.returncode, 1 if failure else 0,
+                                     result.stdout + result.stderr)
+                    self.assertEqual(self.recorded(),
+                                     [["docker", "logout", "sonicdev-microsoft.azurecr.io:443"]])
+                    self.assertFalse(credentials.exists())
+                    self.assertTrue(retained.exists())
+                    self.assertEqual(shared_config.read_text(), "shared credentials\n")
+            result = self.run_shell(script, HOME=str(home))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_publication_stops_on_invalid_tags_and_failed_commands(self):
         script = next(step["run"] for step in self.publisher["steps"]
@@ -274,7 +336,7 @@ elif name == "docker" and operation == "login":
 
     def test_missing_registry_configuration_fails_before_azure_commands(self):
         helper = ROOT / "tools/ci/runner/azure_acr_login.sh"
-        for name in ("AZURE_SUBSCRIPTION_ID", "REGISTRY_SERVER", "REGISTRY_PORT"):
+        for name in ("AZURE_SUBSCRIPTION_ID", "REGISTRY_SERVER", "REGISTRY_PORT", "DOCKER_CONFIG"):
             for value in ("", None):
                 with self.subTest(name=name, value=value):
                     environment = dict(self.environment)

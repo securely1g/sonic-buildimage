@@ -9,6 +9,9 @@ fi
 : "${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID to the ACR subscription}"
 : "${REGISTRY_SERVER:?Set REGISTRY_SERVER to the Docker registry hostname}"
 : "${REGISTRY_PORT:?Set REGISTRY_PORT to the Docker registry port}"
+: "${DOCKER_CONFIG:?Set DOCKER_CONFIG to the job-private Docker configuration directory}"
+
+install -d -m 0700 "$DOCKER_CONFIG"
 
 if ! command -v az > /dev/null; then
     installer=$(mktemp)
