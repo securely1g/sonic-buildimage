@@ -25,6 +25,11 @@ AMD64 Bookworm and Trixie slaves and pushes their computed tags to
 mutable `latest` tags. Publication and installer jobs may run independently
 on available dedicated host agents; there is no shared job-level queue.
 
+For pre-merge testing, pushes to the same repository's `vs-runner` branch
+temporarily also publish real images to that registry. Manual dispatch remains
+master-only, and pull requests do not trigger publication. Remove the `vs-runner`
+push trigger and job-condition allowance before merging.
+
 The publisher uses the Azure slave pipeline's `PLATFORM=generic` profile for
 AMD64, with FIPS enabled and `SONIC_VERSION_CONTROL_COMPONENTS=py2,py3,web,git,docker`.
 It inherits the repository's base-image registry and ordinary slave APT policy.

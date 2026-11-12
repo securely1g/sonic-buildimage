@@ -2,7 +2,7 @@ name: SONiC slave images
 
 on:
   push:
-    branches: [master]
+    branches: [master, vs-runner]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,10 @@ permissions:
 jobs:
   publish:
     name: Publish VS slave images (AMD64)
-    if: github.ref == 'refs/heads/master'
+    if: >-
+      github.ref == 'refs/heads/master' ||
+      (github.event_name == 'push' &&
+       github.ref == 'refs/heads/vs-runner')
     runs-on: [self-hosted, linux, bazel-x64, vs]
     timeout-minutes: 720
     defaults:

@@ -74,14 +74,17 @@ elif name == "docker" and operation == "image":
     def recorded(self):
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
 
-    def test_publication_is_master_only_and_uses_matching_profile(self):
+    def test_publication_allows_pr_branch_pushes_and_uses_matching_profile(self):
         workflow = yaml.safe_load(PUBLISH.read_text())
         # PyYAML's YAML 1.1 parser treats the unquoted Actions "on" key as True.
         triggers = workflow.get("on", workflow.get(True))
-        self.assertEqual(triggers["push"]["branches"], ["master"])
+        self.assertEqual(triggers["push"]["branches"], ["master", "vs-runner"])
         self.assertNotIn("pull_request", triggers)
         self.assertIn("workflow_dispatch", triggers)
-        self.assertEqual(self.publisher["if"], "github.ref == 'refs/heads/master'")
+        self.assertEqual(
+            " ".join(self.publisher["if"].split()),
+            "github.ref == 'refs/heads/master' || "
+            "(github.event_name == 'push' && github.ref == 'refs/heads/vs-runner')")
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         self.assertEqual(self.publisher["runs-on"], self.consumer["runs-on"])
         self.assertNotIn("concurrency", self.publisher)
