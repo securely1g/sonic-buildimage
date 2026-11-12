@@ -7,6 +7,8 @@ if [[ $# != 1 || -z $1 ]]; then
 fi
 
 : "${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID to the ACR subscription}"
+: "${REGISTRY_SERVER:?Set REGISTRY_SERVER to the Docker registry hostname}"
+: "${REGISTRY_PORT:?Set REGISTRY_PORT to the Docker registry port}"
 
 if ! command -v az > /dev/null; then
     installer=$(mktemp)
@@ -18,4 +20,10 @@ fi
 az version --output none
 az login --identity --output none
 az account set --subscription "$AZURE_SUBSCRIPTION_ID"
-az acr login --name "$1" --output none
+registry_token=$(az acr login --name "$1" --expose-token --query accessToken --output tsv)
+if [[ -z "$registry_token" ]]; then
+    echo 'ACR returned an empty access token' >&2
+    exit 1
+fi
+printf '%s' "$registry_token" | docker login "$REGISTRY_SERVER:$REGISTRY_PORT" \
+    --username 00000000-0000-0000-0000-000000000000 --password-stdin

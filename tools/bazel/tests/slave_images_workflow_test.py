@@ -55,6 +55,11 @@ elif name == "docker" and operation == "pull":
     raise SystemExit(0 if os.environ.get("PULL_HIT") == "1" else 1)
 elif name == "docker" and operation == "image":
     print("{}")
+elif name == "az" and operation == "acr":
+    print(os.environ.get("ACR_TOKEN", "fixture-acr-token"))
+elif name == "docker" and operation == "login":
+    if sys.stdin.read() != os.environ.get("ACR_TOKEN", "fixture-acr-token"):
+        raise SystemExit(1)
 '''
         for name in ("make", "docker", "az", "curl", "sudo"):
             executable = self.commands / name
@@ -156,6 +161,20 @@ elif name == "docker" and operation == "image":
             ])
         self.assertEqual(len(calls), 13)
 
+    def test_publisher_uses_explicit_registry_port(self):
+        script = next(step["run"] for step in self.publisher["steps"]
+                      if step.get("name") == "Build and publish computed slave tags")
+        for port in ("443", "5000"):
+            with self.subTest(port=port):
+                result = self.run_shell(script, REGISTRY_PORT=port)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                pushes = [call for call in self.recorded() if call[:2] == ["docker", "push"]]
+                self.assertEqual(pushes, [
+                    ["docker", "push", "sonicdev-microsoft.azurecr.io:" + port
+                     + "/sonic-slave-" + release + ":0123456789a"]
+                    for release in ("bookworm", "trixie")
+                ])
+
     def test_unused_image_cleanup_runs_before_space_check(self):
         steps = self.publisher["steps"]
         names = [step["name"] for step in steps]
@@ -224,14 +243,27 @@ elif name == "docker" and operation == "image":
             ["az", "version", "--output", "none"],
             ["az", "login", "--identity", "--output", "none"],
             ["az", "account", "set", "--subscription", "fixture-subscription"],
-            ["az", "acr", "login", "--name", "sonicdev", "--output", "none"],
+            ["az", "acr", "login", "--name", "sonicdev", "--expose-token",
+             "--query", "accessToken", "--output", "tsv"],
+            ["docker", "login", "sonicdev-microsoft.azurecr.io:443",
+             "--username", "00000000-0000-0000-0000-000000000000", "--password-stdin"],
         ]
-        for index, failure in enumerate(("", "az version", "az login", "az account", "az acr")):
+        for index, failure in enumerate(("", "az version", "az login", "az account",
+                                         "az acr", "docker login")):
             with self.subTest(failure=failure):
                 result = self.run_shell(script, FAIL_COMMAND=failure)
                 self.assertEqual(result.returncode, 1 if failure else 0, result.stderr)
                 count = len(expected) if not failure else index
                 self.assertEqual(self.recorded(), expected[:count])
+                self.assertNotIn("fixture-acr-token", result.stdout + result.stderr)
+                self.assertNotIn("fixture-acr-token", self.calls.read_text())
+        result = self.run_shell(script, ACR_TOKEN="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ACR returned an empty access token", result.stderr)
+        self.assertEqual(self.recorded(), expected[:-1])
+        result = self.run_shell(script, REGISTRY_PORT="5000")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.recorded()[-1][2], "sonicdev-microsoft.azurecr.io:5000")
         environment = dict(self.environment)
         del environment["ACR_REGISTRY_NAME"]
         result = subprocess.run(
@@ -240,21 +272,22 @@ elif name == "docker" and operation == "image":
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ACR_REGISTRY_NAME", result.stderr)
 
-    def test_missing_subscription_fails_before_azure_commands(self):
+    def test_missing_registry_configuration_fails_before_azure_commands(self):
         helper = ROOT / "tools/ci/runner/azure_acr_login.sh"
-        for subscription in ("", None):
-            with self.subTest(subscription=subscription):
-                environment = dict(self.environment)
-                if subscription is None:
-                    del environment["AZURE_SUBSCRIPTION_ID"]
-                else:
-                    environment["AZURE_SUBSCRIPTION_ID"] = subscription
-                result = subprocess.run(
-                    ["bash", str(helper), "sonicdev"], cwd=self.directory,
-                    env=environment, text=True, capture_output=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("AZURE_SUBSCRIPTION_ID", result.stderr)
-                self.assertFalse(self.calls.exists())
+        for name in ("AZURE_SUBSCRIPTION_ID", "REGISTRY_SERVER", "REGISTRY_PORT"):
+            for value in ("", None):
+                with self.subTest(name=name, value=value):
+                    environment = dict(self.environment)
+                    if value is None:
+                        del environment[name]
+                    else:
+                        environment[name] = value
+                    result = subprocess.run(
+                        ["bash", str(helper), "sonicdev"], cwd=self.directory,
+                        env=environment, text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+                    self.assertFalse(self.calls.exists())
 
     def test_missing_azure_cli_installs_and_cleans_up_on_failure(self):
         helper = ROOT / "tools/ci/runner/azure_acr_login.sh"
@@ -277,7 +310,8 @@ elif name == "docker" and operation == "image":
                 if failure:
                     self.assertFalse(any(call[0] == "az" for call in calls))
                 else:
-                    self.assertEqual(calls[-1][:3], ["az", "acr", "login"])
+                    self.assertEqual(calls[-1][:3],
+                                     ["docker", "login", "sonicdev-microsoft.azurecr.io:443"])
 
     def test_make_reuses_local_then_pulls_then_builds(self):
         source = (ROOT / "Makefile.work").read_text()
@@ -291,7 +325,7 @@ elif name == "docker" and operation == "image":
             "SLAVE_BASE_IMAGE := sonic-slave-trixie\nSLAVE_BASE_TAG := 0123456789a\n"
             "SLAVE_DIR := sonic-slave-trixie\nENABLE_DOCKER_BASE_PULL := y\n"
             "SONIC_DPKG_CACHE_METHOD := rwcache\nREGISTRY_SERVER := sonicdev-microsoft.azurecr.io\n"
-            "REGISTRY_PORT := 443\nPREPARE_DOCKER := echo prepared\n"
+            "REGISTRY_PORT ?= 443\nPREPARE_DOCKER := echo prepared\n"
             "COLLECT_DOCKER := echo collected\n"
             + "".join(assignment(source, name) for name in names) + selection
             + "\nall:\n\t@$(SONIC_SLAVE_BASE_BUILD)\n")
@@ -315,8 +349,25 @@ elif name == "docker" and operation == "image":
                 self.assertEqual([call[1] for call in calls], expected)
                 if "pull" in expected:
                     self.assertIn("sonicdev-microsoft.azurecr.io:443/" + image, calls[1])
+                    if hit == "1":
+                        self.assertEqual(calls[2], ["docker", "tag", calls[1][2], image])
                 if "build" in expected:
                     self.assertIn(image, calls[-1])
+        for port in ("443", "5000"):
+            with self.subTest(port=port):
+                self.calls.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["/usr/bin/make", "-s", "-f", str(makefile), "all",
+                     "REGISTRY_PORT=" + port, "REGISTRY_SERVER_PATH=/slaves"],
+                    cwd=self.directory, env=dict(self.environment, PULL_HIT="1"),
+                    text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                remote = "sonicdev-microsoft.azurecr.io:" + port + "/slaves/" + image
+                self.assertEqual(self.recorded(), [
+                    ["docker", "inspect", "--type", "image", image],
+                    ["docker", "pull", remote],
+                    ["docker", "tag", remote, image],
+                ])
 
     def test_generic_and_vs_slave_tags_match_with_repository_defaults(self):
         source = (ROOT / "Makefile.work").read_text()

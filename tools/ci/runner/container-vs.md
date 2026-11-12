@@ -73,8 +73,13 @@ An installer can build locally if the publisher has not supplied its tag yet.
 Shared package-cache writes remain enabled with the computed build environment.
 
 Both jobs install Azure CLI if missing and authenticate using
-`az login --identity`, explicitly select the ACR subscription, then run
-`az acr login --name sonicdev`.
+`az login --identity`, explicitly select the ACR subscription, then obtain an ACR
+token with `az acr login --name sonicdev --expose-token`. The helper passes the
+token through `docker login --password-stdin` using the exact
+`REGISTRY_SERVER:REGISTRY_PORT` endpoint used by Make and publication, currently
+`sonicdev-microsoft.azurecr.io:443`. This avoids storing credentials only for the
+hostname without the port and leaves Make's registry formatting unchanged.
+The token is not printed or passed as a command-line argument.
 Set the repository Actions variable `ACR_SUBSCRIPTION_ID` to that subscription's
 ID or name; both workflows pass it as `AZURE_SUBSCRIPTION_ID`. The helper fails
 before authentication if it is missing, and stops if subscription selection fails.
@@ -83,7 +88,9 @@ Both workflows set `ACR_REGISTRY_NAME=sonicdev` separately from the Docker
 login server `REGISTRY_SERVER=sonicdev-microsoft.azurecr.io`; the Azure resource
 name must not be derived from this hostname.
 The host needs a system-assigned managed identity with registry pull permission;
-the publication job additionally needs push permission. Installing Azure CLI
+the publication job additionally needs push permission (`AcrPush` for this
+registry's `LegacyRegistryPermissions` mode). Successful login alone does not
+prove push permission. Installing Azure CLI
 requires noninteractive sudo on Debian/Ubuntu hosts. Azure CLI state is stored
 in the job's runner temporary directory. Registry login failures stop the job
 before Make, rather than silently bypassing authentication.
