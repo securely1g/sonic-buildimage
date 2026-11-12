@@ -270,13 +270,18 @@ The pool rules do not change package indexes, source archives or other hosts.
 The standalone [debian-pool.cfg](debian-pool.cfg) remains available to callers
 that explicitly need the pool and then the snapshot without the SONiC mirrors.
 The base image, eventd, supervisor, YANG, OCI and libteam workflows used for pull
-requests use the checksum-verified source mirror helper, which appends the shared
-registry policy after `debian_mirrors.cfg`. This preserves the maintained local
+requests use the checksum-verified source mirror helper. By default, it appends the
+shared registry policy after `debian_mirrors.cfg`. This preserves the maintained local
 priority: the SONiC mirror, pool and dated snapshot appear before any additional
 shared mirror choices at the configured timestamps. Other dated package URLs list
 the pool and snapshot before the shared choices. Existing non-package fallbacks
-retain their order. Libteam retains the effective configuration, its checksum and
-the shared source URL.
+retain their order.
+
+The native VS installer passes `--prefer-debian-snapshot`, which puts the original
+dated Debian and Debian security URLs first in the URL list, including package
+indexes and source archives. The local and shared fallback candidates remain listed
+afterward. Libteam retains the effective configuration, its checksum and the shared
+source URL.
 
 The shared default path is relative to the Bazel workspace root, including commands
 run from subdirectories. It precedes `.bazelrc.user`, so a user downloader option
