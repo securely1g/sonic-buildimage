@@ -18,34 +18,74 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def run_sysmgr_public_evidence(self, directory):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        step = next(step for step in workflow["jobs"]["archive"]["steps"]
+                    if step.get("name") == "Prepare reviewed public evidence")
+        # The existing guard owns when the step runs. Exercise its Python
+        # publication boundary after an attempted build, including early failure.
+        script = step["run"].split("python3 - <<'PYCODE'\n", 1)[1].split("\nPYCODE", 1)[0]
+        previous = Path.cwd()
+        sys.path.insert(0, str(ROOT))
+        try:
+            os.chdir(directory)
+            exec(compile(script, "<sysmgr-public-evidence>", "exec"), {})
+        finally:
+            os.chdir(previous)
+            sys.path.pop(0)
+
+    def test_sysmgr_public_evidence_handles_failure_before_build_directory_exists(self):
+        with tempfile.TemporaryDirectory(prefix="sysmgr early failure ") as temporary:
+            directory = Path(temporary)
+            self.run_sysmgr_public_evidence(directory)
+            root = directory / "artifacts/sysmgr"
+            self.assertEqual(json.loads((root / "build-summary.json").read_text()), {})
+            self.assertEqual([path.name for path in root.iterdir()], ["build-summary.json"])
+
+    def test_sysmgr_public_evidence_preserves_failed_receipt_without_private_commands(self):
+        with tempfile.TemporaryDirectory(prefix="sysmgr failed receipt ") as temporary:
+            directory = Path(temporary)
+            root = directory / "artifacts/sysmgr"
+            root.mkdir(parents=True)
+            receipt = {"status": "failed", "architecture": "amd64", "revision": "a" * 40,
+                       "artifacts": {}, "commands": [["private diagnostic"]]}
+            (root / "build-receipt.json").write_text(json.dumps(receipt))
+            self.run_sysmgr_public_evidence(directory)
+            self.assertEqual(json.loads((root / "public-receipt.json").read_text()),
+                             {key: value for key, value in receipt.items() if key != "commands"})
+            self.assertEqual(json.loads((root / "build-summary.json").read_text()), {})
+
+    def test_sysmgr_public_evidence_rejects_malformed_or_private_present_evidence(self):
+        for name, contents in (("validation.json", "{malformed"),
+                               ("validation.json", '{"environment": {"PRIVATE": "value"}}'),
+                               ("build-receipt.json", "{malformed")):
+            with self.subTest(name=name, contents=contents):
+                with tempfile.TemporaryDirectory(prefix="sysmgr rejected evidence ") as temporary:
+                    directory = Path(temporary)
+                    root = directory / "artifacts/sysmgr"
+                    root.mkdir(parents=True)
+                    (root / name).write_text(contents)
+                    with self.assertRaises(ValueError):
+                        self.run_sysmgr_public_evidence(directory)
+                    self.assertFalse((root / "build-summary.json").exists())
+
     def test_archive_evidence_preservation_is_unique_and_keeps_previous_runs(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         steps = workflow["jobs"]["archive"]["steps"]
-        names = [step.get("name") for step in steps]
-        stages = (
-            ("sysmgr", "Upload public archive evidence",
-             "Preserve completed archive evidence before Sysmgr acceptance",
-             "Build Sysmgr runtime and debug images"),
-            ("swss-layer", "Retain Sysmgr image artifacts and evidence",
-             "Preserve completed Sysmgr evidence before SWSS layer acceptance",
-             "Build and inspect the shared runtime and symbols"),
-            ("orchagent", "Retain reviewed artifacts and receipts",
-             "Preserve completed SWSS layer evidence before Orchagent acceptance",
-             "Build Orchagent variants from source owners"),
+        preserve = next(
+            step for step in steps
+            if step.get("name") == "Preserve completed archive evidence before Sysmgr acceptance"
         )
-        for stage, upload, preserve, build in stages:
-            with self.subTest(stage=stage):
-                self.assertLess(names.index(upload), names.index(preserve))
-                self.assertLess(names.index(preserve), names.index(build))
-                self.check_evidence_preservation(steps[names.index(preserve)], stage)
-
-    def check_evidence_preservation(self, preserve, stage):
+        upload = next(step for step in steps if step.get("name") == "Upload public archive evidence")
+        build = next(step for step in steps if step.get("name") == "Build Sysmgr runtime and debug images")
+        self.assertLess(steps.index(upload), steps.index(preserve))
+        self.assertLess(steps.index(preserve), steps.index(build))
         self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
         with tempfile.TemporaryDirectory(prefix="archive evidence ") as temporary:
             root = Path(temporary)
             scratch = root / "scratch"
             scratch.mkdir()
-            old = scratch / f"pre-{stage}-artifacts"
+            old = scratch / "pre-sysmgr-artifacts"
             old.mkdir()
             (old / "receipt").write_text("retained")
             destinations = []
@@ -56,11 +96,11 @@ class VerificationWorkflowTest(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                     cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=str(scratch), **preserve.get("env", {})),
+                    env=dict(os.environ, RUNNER_TEMP=str(scratch)),
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(artifacts.exists())
-                candidates = set(scratch.glob(f"pre-{stage}-artifacts.*")) - set(destinations)
+                candidates = set(scratch.glob("pre-sysmgr-artifacts.*")) - set(destinations)
                 self.assertEqual(len(candidates), 1)
                 destination = candidates.pop()
                 self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
@@ -71,18 +111,108 @@ class VerificationWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                 cwd=root, capture_output=True, text=True,
-                env=dict(os.environ, RUNNER_TEMP=str(scratch), **preserve.get("env", {})),
+                env=dict(os.environ, RUNNER_TEMP=str(scratch)),
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(set(scratch.glob(f"pre-{stage}-artifacts.*")), set(destinations))
+            self.assertEqual(set(scratch.glob("pre-sysmgr-artifacts.*")), set(destinations))
             artifacts = root / "artifacts"
             artifacts.mkdir()
             (artifacts / "receipt").write_text("keep on failure")
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                 cwd=root, capture_output=True, text=True,
-                env=dict(os.environ, RUNNER_TEMP=str(root / "missing"), **preserve.get("env", {})),
+                env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
             )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
+
+    def test_sysmgr_evidence_preserves_previous_and_repeated_runs(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        preserve = next(
+            step for step in workflow["jobs"]["archive"]["steps"]
+            if step.get("name") == "Preserve completed Sysmgr evidence before SWSS layer acceptance"
+        )
+        with tempfile.TemporaryDirectory(prefix="sysmgr evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            old = scratch / "pre-swss-layer-artifacts"
+            old.mkdir(parents=True)
+            (old / "receipt").write_text("previous")
+
+            def run(directory=scratch):
+                return subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(directory)),
+                )
+
+            for value in ("first", "second"):
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "receipt").write_text(value)
+                result = run()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(artifacts.exists())
+            receipts = {p: p.read_text() for p in scratch.rglob("receipt")}
+            self.assertCountEqual(receipts.values(), ["previous", "first", "second"])
+            self.assertEqual((old / "receipt").read_text(), "previous")
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual({p: p.read_text() for p in scratch.rglob("receipt")}, receipts)
+            artifacts.mkdir()
+            (artifacts / "receipt").write_text("keep on failure")
+            result = run(root / "missing")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
+
+    def test_swss_layer_evidence_preserves_previous_and_repeated_runs(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        upload = next(step for step in steps if step.get("name") == "Retain reviewed artifacts and receipts")
+        preserve = next(
+            step for step in steps
+            if step.get("name") == "Preserve completed SWSS layer evidence before Orchagent acceptance"
+        )
+        build = next(step for step in steps if step.get("name") == "Build Orchagent variants from source owners")
+        self.assertLess(steps.index(upload), steps.index(preserve))
+        self.assertLess(steps.index(preserve), steps.index(build))
+        self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
+        with tempfile.TemporaryDirectory(prefix="swss-layer evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            old = scratch / "pre-orchagent-artifacts"
+            old.mkdir(parents=True)
+            (old / "receipt").write_text("previous")
+
+            def run(directory=scratch):
+                return subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(directory)),
+                )
+
+            destinations = []
+            for value in ("first", "second"):
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "receipt").write_text(value)
+                result = run()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(artifacts.exists())
+                candidates = set(scratch.glob("pre-orchagent-artifacts.*")) - set(destinations)
+                self.assertEqual(len(candidates), 1)
+                destination = candidates.pop()
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+                destinations.append(destination)
+            receipts = {p: p.read_text() for p in scratch.rglob("receipt")}
+            self.assertCountEqual(receipts.values(), ["previous", "first", "second"])
+            self.assertEqual((old / "receipt").read_text(), "previous")
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual({p: p.read_text() for p in scratch.rglob("receipt")}, receipts)
+            artifacts.mkdir()
+            (artifacts / "receipt").write_text("keep on failure")
+            result = run(root / "missing")
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
 
@@ -366,7 +496,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         legacy, active = workflow.split("\n  vs_container:\n", 1)
         self.assertIn("if: ${{ false }}", legacy.split("\n  vs:\n", 1)[1])
-        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container]", active)
+        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]", active)
         names = [line.split(": ", 1)[1] for line in active.splitlines()
                  if line.startswith("      - name: ")]
         self.assertLess(names.index("Validate the installer and retained container pairs"),

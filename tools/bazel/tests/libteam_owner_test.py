@@ -69,10 +69,15 @@ with open(os.environ["CALLS"], "a") as output:
             self.assertFalse((ROOT / "src/libteam" / filename).exists(), filename)
 
     def test_probe_uses_the_same_wrapper_execution_root_and_preserves_flags(self):
+        for cpu in ("x86_64", "aarch64"):
+            with self.subTest(cpu=cpu):
+                self._check_probe_caller(cpu)
+
+    def _check_probe_caller(self, cpu):
         workflow = yaml.safe_load(WORKFLOW.read_text())
         step = next(step for step in workflow["jobs"]["native"]["steps"]
                     if step.get("name") == "Build source outputs and execute native tests")
-        block = re.search(r'(?ms)^  probe_bazel=.*?--output artifacts/rebuild', step["run"])[0]
+        block = re.search(r'(?ms)^ *probe_bazel=.*?--output artifacts/rebuild', step["run"])[0]
         with tempfile.TemporaryDirectory(prefix="owner probe caller ") as temporary:
             work = Path(temporary) / "image checkout"
             work.mkdir()
@@ -104,7 +109,7 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
                 recorder.chmod(0o755)
             environment = dict(os.environ, PATH=str(commands) + ":/usr/bin:/bin",
                                CALLS=str(calls), OUTPUT_BASE=str(output_base),
-                               CI_CPU="x86_64", CI_DISTRIBUTION="trixie", RUNNER_TEMP=temporary)
+                               CI_CPU=cpu, CI_DISTRIBUTION="trixie", RUNNER_TEMP=temporary)
             for result in ("external/libteam+/bazel/verify_rebuild.py", str(probe)):
                 with self.subTest(path=result):
                     calls.unlink(missing_ok=True)
@@ -118,8 +123,8 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
                     self.assertIn("@libteam//:bazel/verify_rebuild.py", recorded[1])
                     self.assertEqual(recorded[2][1:3], ["-B", str(probe)])
                     self.assertEqual(recorded[2][3:5], ["--bazel", str(wrapper)])
-                    flags = ["--host_platform=@sonic_build_infra//platforms:x86_64_trixie",
-                             "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
+                    flags = [f"--host_platform=@sonic_build_infra//platforms:{cpu}_trixie",
+                             f"--platforms=@sonic_build_infra//platforms:{cpu}_trixie",
                              "--experimental_downloader_config=" + temporary + "/libteam-source-mirrors.cfg"]
                     for flag in flags:
                         self.assertTrue(all(flag in call for call in recorded[:2]))
